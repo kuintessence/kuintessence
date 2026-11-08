@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import {
   createPgDb,
   federationBudgets,
+  federationCommercialAdjustments,
   federationCommercialAttempts,
+  federationCommercialBills,
   federationCommercialSettlements,
   federationCommercialSubmissions,
   federationMarketAttempts,
@@ -14,6 +16,7 @@ import {
   jobs,
 } from "@kuintessence/db";
 import { FederationDelegationSchema, FederationError } from "@kuintessence/shared/federation";
+import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { UnixCommercialClient } from "../../packages/server/src/federation/commercial-client";
 import { FederationExecutionConfirmationService } from "../../packages/server/src/federation/execution-confirmation";
@@ -53,6 +56,7 @@ try {
       stage: federationCommercialAttempts.stage,
       validationCode: federationCommercialAttempts.validationCode,
       blockNumber: federationCommercialAttempts.blockNumber,
+      recoveryDigest: sql<string>`md5(${federationCommercialAttempts.recovery})`,
     })
     .from(federationCommercialAttempts);
   const budgets = await db.select({ domainId: federationBudgets.domainId }).from(federationBudgets);
@@ -71,6 +75,8 @@ try {
       settledAmount: federationOutbound.settledAmount,
     })
     .from(federationOutbound);
+  const bills = await db.select().from(federationCommercialBills);
+  const adjustments = await db.select().from(federationCommercialAdjustments);
   const settlements = await db.select().from(federationCommercialSettlements);
   const bindings = await db
     .select({
@@ -185,7 +191,9 @@ try {
         budgets,
         reservations,
         outbound,
+        bills,
         settlements,
+        adjustments,
         bindings,
         execution,
         demand,

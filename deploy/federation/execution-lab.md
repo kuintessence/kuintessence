@@ -38,6 +38,7 @@ bun run test:fabric:execution
 | 终态关闭（成功场景） | 作业提交前双方通过 API 分别预授权仅 completed 结果；提供方后台从真实 Job 自动归集并签署终态，源方后台经 mTLS 分块取得材料，以本地结果导入及签名回执独立复核并自动签署，随后后台自动回传对签并核验提供方签名 ACK；生产 worker 自动提交私有终态和公共关闭，两端分别查询 CLOSED 与一致的 TERMINAL gate 哈希；两边终态关联各自授权 ID，本地重新执行被拒绝 |
 | 账单（成功/Workflow 场景） | 独立读取真实 Pod 容器起止时间核对 job.elapsed；提供方自动签署用量并经 mTLS 传给需求方。停 Orderer 后双方通过 HTTP 各自配置仅 completed、单笔/累计不超过原预留且仅一次的账单政策，生产后台生成唯一原文、分别批准并交换原签名，链待办保持 pending；恢复 Orderer 后原待办取得唯一 VALID 回执。两边授权来源/批准次数/金额与同文签名一致，终态 gate 与资金余额不因确认账单而改变 |
 | 独立额度结算（成功/Workflow 场景） | 停 Orderer 后双方另授独立结算政策，后台生成绑定原账单/终态的同一结算并自动批准；mTLS 原签名交换完成时两端 appliedAt 仍为空、名额未释放。恢复后原待办均取得 VALID 才处理本地名额；原预留金额不变，没有本地链预算，终态 gate 与 CLOSED 需求及 Job 不变。另用 Node Gateway 读取实际私有 block events，核验双方所记交易确为 VALID、原预算只扣用一次、同文重放不再改预算、第三机构无私有结算内容 |
+| 结算后调整（成功/Workflow 场景） | 原净额 → 0 → 原净额，两次独立人工批准同文草稿，后台经 mTLS 自动交换原签名。停 Orderer 等双方持久保存已背书交易后，首次调整强制结束两边 Server 与商业 Adapter，使用原数据库和密钥重启；原提交编号、交易 ID 和恢复检查点不变。恢复 Orderer 后双方各自 VALID 才应用净额；重复批准不再次记账，第二次调整绑定第一笔回执。独立私有区块检查预算和调整索引各更新一次，同文重放只保留原记录，原账单/结算/预留/gate 不改写，C 无私有正文 |
 | 锁额 | 两边数据库都不生成本地预算；断链/期限到达不改变 ACTIVE 需求与原私有 gate 哈希；恢复 Orderer 不重启终态作业 |
 
 运行打印私有证据目录 `temp/federation-execution-{success,outage,stop}-*`。成功场景另保存 `approval-exchange.json`（双方合同及预留签名交换进度）、`terminal-evidence.json`（双方签名、源方复核、自动交换回执及两次链上交易回执）；`terminal-policies.json` 保存提交作业前的两份机构预授权；终态阶段不调用人工批准/对签 API，归集、独立复核、双签和回传全部由生产后台完成。合同、预留与执行准入仍由夹具显式批准，尚不是完整无人值守商务握手。`billing-offline-evidence.json` 保存原 Pod 观测、用量及两端账单/交换状态，`billing-committed-evidence.json` 保存恢复后的原提交与 VALID 回执；`bill-automatic-policies.json` 保存双方独立政策、各一次的批准计数和提供方完成待办；不调用账单草稿、批准或手工附签 API。`settlement-offline-evidence.json` 与双方 `settlement-offline` 状态保存断链期间的结算同意和未释放名额，`settlement-committed-evidence.json` 保存原待办、双方 VALID 尝试及本地处理状态；`settlement-private-ledger.json` 由独立 Node Gateway 读取真实区块生成，证明预算单次扣用及机构隔离。`settlement-automatic-policies.json` 同样核对独立政策授权；不调用结算草稿、批准或手工附签 API。为隔离断链检查，本场景在作业结束后才启用账单与结算政策，验证历史待办自动发现和收尾，不覆盖任务开始前配置政策的完整长期运行。`appliedAt` 不代表付款。`source/provider-before/after.json` 保存公开意图、交易 ID、验证码、区块号、预留和作业关联；`result-delivery-evidence.json` 保存结果摘要与版本；`running-process.txt` 与 `provider-running.json` 保存断链前的进程和确认，`outage-evidence.json` 保存停止请求时间、终止宽限期及实际 Job/Pod/Workflow 状态。主动停止另保存 `stop-api.json`、`stop-evidence.json` 与双方 `stop-recovery.json`；该场景与自然到期断链场景分别验收。不存在的场景文件不代表通过；以进程退出码和该场景全部断言为准。
@@ -45,3 +46,11 @@ bun run test:fabric:execution
 目录权限为 0700、文件默认 0600；完整 Server/Agent 日志与本机 Fabric 的测试身份仅供本地排查，不上传 CI artifact 或纳入 Git。导出证据必须另行筛除内部路径、测试签名与存储信息。
 
 每个场景在 `finally` 关闭自建进程、停止自建 PostgreSQL、删除随机 namespace/RBAC/seccomp 文件及私钥。清理失败会报错并保留私有目录；SIGKILL 或主机断电无法保证 finally，须根据保留日志中的随机资源名人工清理。测试未完成前不要移除这些目录，也不要把已清理的测试链视为结算成功。
+
+## 调整进程恢复证据
+
+成功与 Workflow 场景新增 `adjustment-1/2-offline-evidence.json`、`adjustment-1/2-committed-evidence.json` 和双方同名前缀的数据库快照。首次调整另有 `adjustment-crash-recovery.json`，保存本次自建进程的退出状态、新旧 PID 和恢复检查点摘要，不导出可恢复签名交易的原始密文。检查点摘要仅用于比较字节是否改变，不作为业务签名或安全凭证。
+
+`adjustment-1/2-private-ledger.json` 与原结算的证明一样，直接读取 A/B/C 实际区块及私有写集，核验 Server 持久化的交易 ID、VALID 验证码和区块号。两站同时提交同文记录可能先出现 MVCC 冲突；生产 worker 只有核对原不可变回执后才继续，不由测试清租约、改时间或新建提交绕过。进程恢复使用原 `live-recovery.key`；密钥丢失不是本用例所覆盖的可恢复条件。
+
+此处的费用调整是账面净额变更，不是银行付款或退款。调整须经双方独立人员批准；本用例不将原签名自动交换称为自动商务批准。只有整条命令成功、上述证据均存在且断言通过，才能记为该场景通过；仍不代表长期无人值守、Slurm/PBS、旧链升级或完整 PR 预览已验收。

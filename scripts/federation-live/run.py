@@ -911,6 +911,154 @@ def verify_settlement():
     print("REAL SETTLEMENT RECOVERY PASSED: original submissions VALID -> both local slots released; no local chain balance and terminal gate remains closed", flush=True)
 
 
+def restart_commercial_servers():
+    global server, sourceserver
+    crashed = []
+    for name, process in (("provider", server), ("source", sourceserver)):
+        assert process.poll() is None and os.getpgid(process.pid) == process.pid
+        os.killpg(process.pid, signal.SIGKILL)
+        assert process.wait(timeout=15) == -signal.SIGKILL
+        crashed.append({"site": name, "oldPid": process.pid, "exitCode": process.returncode})
+    request_id = str(uuid.uuid4())
+    acknowledgement = networkroot / "execution-commercial-restart.ack"
+    (networkroot / "execution-commercial-restart").write_text(request_id)
+    deadline = time.monotonic() + 45
+    while True:
+        try:
+            reply = json.loads(acknowledgement.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            reply = {}
+        if reply.get("requestId") == request_id:
+            break
+        assert time.monotonic() < deadline, "Commercial Adapter restart timeout"
+        time.sleep(0.3)
+    assert len(reply["restarts"]) == 2 and {r["site"] for r in reply["restarts"]} == {"A", "B"}
+    for row in reply["restarts"]:
+        assert row["oldPid"] != row["newPid"] and row["exitCode"] != 0
+    command = ["bun", "--no-env-file", "run", "scripts/federation-live/server.ts"]
+    server = subprocess.Popen(command, cwd=repo, env=env, stdout=serverlog, stderr=serverlog, start_new_session=True)
+    sourceserver = subprocess.Popen(command, cwd=repo, env=sourceenv, stdout=sourcelog, stderr=sourcelog, start_new_session=True)
+    for row, process, read in zip(crashed, (server, sourceserver), (api, sourceapi)):
+        row["newPid"] = process.pid
+        assert row["oldPid"] != process.pid
+        for _ in range(45):
+            assert process.poll() is None, "Restarted Server exited"
+            try:
+                read("health")
+                break
+            except (OSError, ValueError):
+                time.sleep(1)
+        else:
+            raise AssertionError("Restarted Server health timeout")
+    return {"servers": crashed, "adapters": reply["restarts"]}
+
+
+def verify_adjustments():
+    config = json.loads((root / "source-init.json").read_text())
+    original = json.loads((logs / "settlement-committed-evidence.json").read_text())["draft"]
+    path = "federation/commercial-agreements/" + config["request"]["agreementRevisionId"] + "/adjustments"
+    parties = (("provider", api, token), ("source", sourceapi, sourcetoken))
+    previous = None
+    for number, amount in enumerate(("0", original["chargedAmount"]), 1):
+        label = "adjustment-" + str(number)
+        draft = api(path + "/draft", {"settlementId": original["settlementId"], "adjustmentId": str(uuid.uuid4()), "chargedAmount": amount, "reason": "Isolated recovery acceptance " + str(number), "supportingEvidenceDigest": None}, token)["data"]
+        assert draft["previous"] == previous
+        assert draft["previousChargedAmount"] == (original["chargedAmount"] if number == 1 else "0")
+        statuses, approvals, original_ids = {}, {}, {}
+
+        def refresh():
+            for name, read, auth in parties:
+                result = read(path + "?recordId=" + draft["adjustmentId"] + "&settlementId=" + draft["settlementId"], token=auth)["data"]
+                assert len(result["data"]) == 1
+                record = result["data"][0]
+                assert record["adjustment"]["payload"] == draft
+                assert record["adjustment"]["approvalJws"] == approvals[name]["approvalJws"]
+                if record["ledger"]:
+                    original_ids.setdefault(name, record["ledger"]["id"])
+                    assert record["ledger"]["id"] == original_ids[name]
+                    assert record["ledger"]["state"] != "needs_review", json.dumps(record["ledger"])
+                statuses[name] = {"record": record, "summary": result["summary"]}
+
+        orderer("stop")
+        try:
+            for name, read, auth in parties:
+                approvals[name] = read(path + "/approve", draft, auth)["data"]
+            for _ in range(90):
+                refresh()
+                if len(original_ids) == 2:
+                    break
+                time.sleep(2)
+            else:
+                raise AssertionError("Adjustment originals were not exchanged over mTLS")
+            for name, other in (("provider", "source"), ("source", "provider")):
+                record = statuses[name]["record"]
+                assert record["adjustment"]["counterpartyJws"] == approvals[other]["approvalJws"]
+                assert record["ledger"]["state"] == "pending" and record["adjustment"]["appliedAt"] is None
+                assert statuses[name]["summary"]["currentChargedAmount"] == draft["previousChargedAmount"]
+            for _ in range(60):
+                inspect_ledgers(label + "-offline")
+                checkpoints = {}
+                for name, _, _ in parties:
+                    local = json.loads((logs / (name + "-" + label + "-offline.json")).read_text())
+                    checkpoints[name] = [r for r in local["commercialTransactions"] if r["submissionId"] == original_ids[name]]
+                if all(len(rows) == 1 and rows[0]["stage"] == "transaction" and rows[0]["recoveryDigest"] for rows in checkpoints.values()):
+                    break
+                time.sleep(3)
+            else:
+                raise AssertionError("Signed adjustment transaction checkpoints were not persisted")
+            if number == 1:
+                recovery = restart_commercial_servers()
+                refresh()
+                inspect_ledgers(label + "-restarted")
+                for name, _, _ in parties:
+                    local = json.loads((logs / (name + "-" + label + "-restarted.json")).read_text())
+                    attempts = [r for r in local["commercialTransactions"] if r["submissionId"] == original_ids[name]]
+                    assert attempts == checkpoints[name], "Restart replaced a durable transaction checkpoint"
+                    assert statuses[name]["record"]["adjustment"]["appliedAt"] is None
+                (logs / "adjustment-crash-recovery.json").write_text(json.dumps({**recovery, "checkpoints": checkpoints}, indent=2) + "\n")
+            for name, _, _ in parties:
+                local = json.loads((logs / (name + "-" + label + "-offline.json")).read_text())
+                assert not local["budgets"]
+                tasks = local["reservations"] if name == "provider" else local["outbound"]
+                assert len(tasks) == 1 and tasks[0]["settledAmount"] == draft["previousChargedAmount"]
+            (logs / (label + "-offline-evidence.json")).write_text(json.dumps({"draft": draft, "statuses": statuses, "checkpoints": checkpoints}, indent=2) + "\n")
+        finally:
+            orderer("start")
+        for _ in range(100):
+            refresh()
+            if all(v["record"]["adjustment"]["appliedAt"] and v["record"]["ledger"]["state"] == "committed" for v in statuses.values()):
+                break
+            time.sleep(3)
+        else:
+            raise AssertionError("Adjustment did not recover to VALID on both platforms")
+        for name, read, auth in parties:
+            replay = read(path + "/approve", draft, auth)["data"]
+            assert replay == statuses[name]["record"]["adjustment"], "Approval replay changed an applied original"
+            assert statuses[name]["summary"]["currentChargedAmount"] == amount
+            assert statuses[name]["summary"]["pendingAdjustmentId"] is None
+        inspect_ledgers(label + "-committed")
+        transactions = {}
+        for name, _, _ in parties:
+            local = json.loads((logs / (name + "-" + label + "-committed.json")).read_text())
+            before = json.loads((logs / (name + "-" + label + "-offline.json")).read_text())
+            for key in ("bills", "settlements", "gate", "demand", "execution"):
+                assert local[key] == before[key], "Adjustment changed original " + key
+            assert not local["budgets"] and len(local["adjustments"]) == number
+            tasks = local["reservations"] if name == "provider" else local["outbound"]
+            assert len(tasks) == 1 and tasks[0]["amount"] == original["reservedAmount"] and tasks[0]["settledAmount"] == amount
+            attempts = [r for r in local["commercialTransactions"] if r["submissionId"] == original_ids[name]]
+            valid = [r for r in attempts if r["stage"] == "committed" and r["validationCode"] == 0 and r["blockNumber"] is not None]
+            assert len(valid) == 1
+            recovered = next(r for r in attempts if r["transactionId"] == checkpoints[name][0]["transactionId"])
+            assert recovered["recoveryDigest"] == checkpoints[name][0]["recoveryDigest"]
+            transactions[name] = attempts
+        evidence = {"draft": draft, "statuses": statuses, "transactions": transactions, "budgetDomainId": config["request"]["budgetDomainId"], "epoch": config["request"]["epoch"], "evidenceDirectory": str(logs)}
+        (logs / (label + "-committed-evidence.json")).write_text(json.dumps(evidence, indent=2) + "\n")
+        (networkroot / ("live-" + label + "-proof.json")).write_text(json.dumps(evidence, indent=2) + "\n")
+        previous = {"adjustmentId": draft["adjustmentId"], "digest": statuses["provider"]["record"]["adjustment"]["digest"]}
+        print("REAL " + label.upper() + " RECOVERY PASSED: original signatures exchanged; durable transactions VALID; net charge " + amount + "; replay and original settlement unchanged", flush=True)
+
+
 try:
     # Executed only inside the disposable lab namespace.
     k(["create", "namespace", namespace])
@@ -1941,7 +2089,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         for name, setting in [("source", sourceenv), ("provider", env)]:
             subprocess.run(
                 ["bun", "--no-env-file", "scripts/federation-live/inspect.ts"]
-                + (["--closed"] if scenario in ("success", "workflow") and suffix in ("after", "settlement-offline", "settlement-committed") else []),
+                + (["--closed"] if scenario in ("success", "workflow") and (suffix in ("after", "settlement-offline", "settlement-committed") or suffix.startswith("adjustment-")) else []),
                 cwd=repo,
                 env={
                     **setting,
@@ -2072,6 +2220,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         verify_terminal()
         bill_record = verify_billing()
         verify_settlement()
+        verify_adjustments()
     inspect_ledgers("after")
     if scenario in ("success", "workflow"):
         state = json.loads((logs / "provider-after.json").read_text())

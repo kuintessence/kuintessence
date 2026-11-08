@@ -15,8 +15,8 @@ export async function verifyLiveExecution(
     "1",
     "Explicit disposable local k3s opt-in required",
   );
-  const cleanup = await startAdapters(root);
-  controls.onCleanup(cleanup);
+  const adapters = await startAdapters(root);
+  controls.onCleanup(adapters.cleanup);
   const selection = process.env.KQ_FEDERATION_LAB_SCENARIO ?? "both";
   assert(["success", "outage", "stop", "workflow", "both"].includes(selection));
   for (const scenario of selection === "both" ? ["success", "outage"] : [selection]) {
@@ -57,6 +57,17 @@ export async function verifyLiveExecution(
             await Bun.write(ack, requestId);
           }
         }
+        const restartRequest = Bun.file(join(root, "execution-commercial-restart"));
+        const restartAck = Bun.file(join(root, "execution-commercial-restart.ack"));
+        if (await restartRequest.exists()) {
+          const requestId = await restartRequest.text();
+          const prior = (await restartAck.exists()) ? await restartAck.json() : null;
+          if (prior?.requestId !== requestId)
+            await Bun.write(
+              restartAck,
+              JSON.stringify({ requestId, restarts: await adapters.restartCommercial() }),
+            );
+        }
         await Bun.sleep(300);
       }
       assert.equal(await child.exited, 0, `Real coordinated execution ${scenario} failed`);
@@ -70,11 +81,16 @@ export async function verifyLiveExecution(
         assert(build.success && build.outputs[0]);
         const entry = join(root, "live-settlement-proof.mjs");
         await Bun.write(entry, await build.outputs[0].text());
-        const probe = Bun.spawn(["node", entry, root], { stdout: "inherit", stderr: "inherit" });
-        try {
-          assert.equal(await probe.exited, 0, "Real settlement private ledger proof failed");
-        } finally {
-          if (probe.exitCode === null) probe.kill("SIGTERM");
+        for (const record of ["settlement", "adjustment-1", "adjustment-2"]) {
+          const probe = Bun.spawn(["node", entry, root, record], {
+            stdout: "inherit",
+            stderr: "inherit",
+          });
+          try {
+            assert.equal(await probe.exited, 0, "Real settlement private ledger proof failed");
+          } finally {
+            if (probe.exitCode === null) probe.kill("SIGTERM");
+          }
         }
       }
     } finally {

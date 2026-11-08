@@ -6,6 +6,7 @@ import { Client, credentials } from "@grpc/grpc-js";
 import { connect, signers } from "@hyperledger/fabric-gateway";
 import { common, ledger, peer } from "@hyperledger/fabric-protos";
 import {
+  CommercialAdjustmentSchema,
   CommercialSettlementSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
@@ -13,12 +14,15 @@ import { z } from "zod";
 import { Site } from "../fabric-evidence-fixture";
 
 const root = z.string().min(1).parse(process.argv[2]);
+const recordName = z
+  .enum(["settlement", "adjustment-1", "adjustment-2"])
+  .parse(process.argv[3] ?? "settlement");
 const network = z
   .object({ channel: z.string(), sites: z.array(Site), trust: FabricCommercialTrustSchema })
   .parse(JSON.parse(await readFile(join(root, "network.json"), "utf8")));
 const proof = z
   .object({
-    draft: CommercialSettlementSchema,
+    draft: z.union([CommercialSettlementSchema, CommercialAdjustmentSchema]),
     budgetDomainId: z.uuid(),
     epoch: z.uuid(),
     evidenceDirectory: z.string(),
@@ -26,7 +30,8 @@ const proof = z
       z.string(),
       z.object({
         record: z.object({
-          settlement: z.object({ digest: z.string() }),
+          settlement: z.object({ digest: z.string() }).optional(),
+          adjustment: z.object({ digest: z.string() }).optional(),
           ledger: z.object({ id: z.uuid() }),
         }),
       }),
@@ -43,7 +48,13 @@ const proof = z
       ),
     ),
   })
-  .parse(JSON.parse(await readFile(join(root, "live-settlement-proof.json"), "utf8")));
+  .parse(JSON.parse(await readFile(join(root, `live-${recordName}-proof.json`), "utf8")));
+const isAdjustment = proof.draft.kind === "commercial-adjustment";
+assert.equal(isAdjustment, recordName !== "settlement");
+const receipt = isAdjustment
+  ? proof.statuses.provider?.record.adjustment
+  : proof.statuses.provider?.record.settlement;
+assert(receipt);
 for (const name of ["source", "provider"]) {
   const state = z
     .object({
@@ -53,7 +64,7 @@ for (const name of ["source", "provider"]) {
     })
     .parse(
       JSON.parse(
-        await readFile(join(proof.evidenceDirectory, `${name}-settlement-offline.json`), "utf8"),
+        await readFile(join(proof.evidenceDirectory, `${name}-${recordName}-offline.json`), "utf8"),
       ),
     );
   const id = proof.statuses[name]?.record.ledger.id;
@@ -61,7 +72,7 @@ for (const name of ["source", "provider"]) {
   for (const attempt of state.commercialTransactions.filter((v) => v.submissionId === id)) {
     assert(
       proof.transactions[name]?.some((v) => v.transactionId === attempt.transactionId),
-      "Recovery discarded an original settlement checkpoint",
+      "Recovery discarded an original commercial checkpoint",
     );
   }
 }
@@ -79,6 +90,8 @@ const results: Record<
     budgetWrites: number;
     settlementWrites: number;
     reservationWrites: number;
+    adjustmentWrites: number;
+    headWrites: number;
   }
 > = {};
 for (const name of ["A", "B", "C"]) {
@@ -114,6 +127,8 @@ for (const name of ["A", "B", "C"]) {
     budgetWrites: 0,
     settlementWrites: 0,
     reservationWrites: 0,
+    adjustmentWrites: 0,
+    headWrites: 0,
   };
   try {
     for (const number of blocks) {
@@ -130,7 +145,7 @@ for (const name of ["A", "B", "C"]) {
           assert.equal(String(block.getHeader()?.getNumber()), number);
           assert(
             !Buffer.from(block.serializeBinary()).includes(Buffer.from(proof.draft.salt)),
-            "Settlement plaintext leaked into public block",
+            "Commercial plaintext leaked into public block",
           );
           const codes = block.getMetadata()?.getMetadataList_asU8()[
             common.BlockMetadataIndex.TRANSACTIONS_FILTER
@@ -161,7 +176,7 @@ for (const name of ["A", "B", "C"]) {
                   assert.equal(
                     writes.length,
                     0,
-                    "Third institution received private settlement data",
+                    "Third institution received private commercial data",
                   );
                   continue;
                 }
@@ -180,21 +195,47 @@ for (const name of ["A", "B", "C"]) {
                     assert.equal(budget.targetSiteId, proof.draft.targetSiteId);
                     result.budgetWrites++;
                   }
+                  if (proof.draft.kind === "commercial-adjustment") {
+                    if (
+                      write.getKey() ===
+                      `\u0000adjustment\u0000${proof.draft.domainId}\u0000${proof.draft.adjustmentId}\u0000`
+                    ) {
+                      const record = JSON.parse(Buffer.from(write.getValue_asU8()).toString());
+                      assert.deepEqual(record.terms, proof.draft);
+                      assert.equal(record.receipt.digest, receipt.digest);
+                      result.adjustmentWrites++;
+                    }
+                    if (
+                      write.getKey() ===
+                      `\u0000adjustment-head\u0000${proof.draft.domainId}\u0000${proof.draft.settlementId}\u0000`
+                    ) {
+                      const head = JSON.parse(Buffer.from(write.getValue_asU8()).toString());
+                      assert.deepEqual(head, {
+                        adjustmentId: proof.draft.adjustmentId,
+                        salt: proof.draft.salt,
+                      });
+                      result.headWrites++;
+                    }
+                    for (const prefix of ["settlement", "reservation", "bill"])
+                      assert(
+                        !write.getKey().startsWith(`\u0000${prefix}\u0000`),
+                        "Adjustment rewrote an original record",
+                      );
+                  }
                   if (
+                    proof.draft.kind === "commercial-settlement" &&
                     write.getKey() ===
-                    `\u0000settlement\u0000${proof.draft.domainId}\u0000${proof.draft.settlementId}\u0000`
+                      `\u0000settlement\u0000${proof.draft.domainId}\u0000${proof.draft.settlementId}\u0000`
                   ) {
                     const record = JSON.parse(Buffer.from(write.getValue_asU8()).toString());
                     assert.deepEqual(record.terms, proof.draft);
-                    assert.equal(
-                      record.receipt.digest,
-                      proof.statuses.provider?.record.settlement.digest,
-                    );
+                    assert.equal(record.receipt.digest, receipt.digest);
                     result.settlementWrites++;
                   }
                   if (
+                    proof.draft.kind === "commercial-settlement" &&
                     write.getKey() ===
-                    `\u0000reservation\u0000${proof.draft.domainId}\u0000${proof.draft.reservationId}\u0000`
+                      `\u0000reservation\u0000${proof.draft.domainId}\u0000${proof.draft.reservationId}\u0000`
                   ) {
                     const reservation = JSON.parse(Buffer.from(write.getValue_asU8()).toString());
                     assert.equal(reservation.state, "settled");
@@ -207,7 +248,7 @@ for (const name of ["A", "B", "C"]) {
                   }
                   assert(
                     !write.getKey().startsWith("\u0000execution-gate\u0000"),
-                    "Settlement changed execution gate",
+                    "Commercial record changed execution gate",
                   );
                 }
               }
@@ -225,14 +266,16 @@ for (const name of ["A", "B", "C"]) {
     assert.equal(
       result.budgetWrites,
       name === "C" ? 0 : 1,
-      "The original budget must be spent exactly once",
+      "Budget must change exactly once per commercial record",
     );
     assert.equal(
       result.settlementWrites,
-      name === "C" ? 0 : 2,
-      "Both VALID transactions retain the same immutable settlement",
+      name === "C" || isAdjustment ? 0 : 2,
+      "Only settlement transactions write the original settlement",
     );
-    assert.equal(result.reservationWrites, name === "C" ? 0 : 1);
+    assert.equal(result.reservationWrites, name === "C" || isAdjustment ? 0 : 1);
+    assert.equal(result.adjustmentWrites, name !== "C" && isAdjustment ? 2 : 0);
+    assert.equal(result.headWrites, name !== "C" && isAdjustment ? 1 : 0);
     results[name] = result;
   } finally {
     gateway.close();
@@ -240,12 +283,13 @@ for (const name of ["A", "B", "C"]) {
   }
 }
 await writeFile(
-  join(proof.evidenceDirectory, "settlement-private-ledger.json"),
+  join(proof.evidenceDirectory, `${recordName}-private-ledger.json`),
   `${JSON.stringify(
     {
       settlementId: proof.draft.settlementId,
       chargedAmount: proof.draft.chargedAmount,
-      releasedAmount: proof.draft.releasedAmount,
+      recordName,
+      adjustmentId: proof.draft.kind === "commercial-adjustment" ? proof.draft.adjustmentId : null,
       results,
     },
     null,
@@ -254,5 +298,5 @@ await writeFile(
   { mode: 0o600 },
 );
 console.log(
-  "REAL SETTLEMENT PDC PASSED: both platform transactions are VALID; one private budget debit, identical settlement replay, unchanged terminal gate and no third-party private writes",
+  `REAL ${recordName.toUpperCase()} PDC PASSED: both platform transactions VALID; exactly one private budget change, immutable replay, unchanged terminal gate and no third-party private writes`,
 );

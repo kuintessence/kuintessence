@@ -26,6 +26,12 @@ export async function startAdapters(root: string) {
   await writeFile(entry, await build.outputs[0].text(), { mode: 0o600 });
   await writeFile(join(root, "live-recovery.key"), randomBytes(32), { mode: 0o600 });
   const children: Bun.Subprocess[] = [];
+  const restarts: (() => Promise<{
+    site: string;
+    oldPid: number;
+    newPid: number;
+    exitCode: number;
+  }>)[] = [];
   const cleanup = async () => {
     for (const child of children) {
       if (child.exitCode !== null) continue;
@@ -77,37 +83,59 @@ export async function startAdapters(root: string) {
           }),
           { mode: 0o600 },
         );
-        const fd = openSync(join(root, `live-${site.name}-${kind}.log`), "a", 0o600);
-        let child: Bun.Subprocess;
-        try {
-          child = Bun.spawn(["node", entry], {
-            env: { ...process.env, KQ_FABRIC_ADAPTER_KIND: kind, KQ_FABRIC_ADAPTER_CONFIG: path },
-            stdout: fd,
-            stderr: fd,
-          });
-          children.push(child);
-        } finally {
-          closeSync(fd);
-        }
-        const deadline = Date.now() + 15000;
-        for (;;) {
-          assert.equal(child.exitCode, null, "Adapter exited before readiness");
+        const launch = async () => {
+          const fd = openSync(join(root, `live-${site.name}-${kind}.log`), "a", 0o600);
+          let child: Bun.Subprocess;
           try {
-            const response = await fetch("http://localhost/health", {
-              unix: join(runDirectory, `${kind}.sock`),
-              signal: AbortSignal.timeout(1000),
+            child = Bun.spawn(["node", entry], {
+              env: { ...process.env, KQ_FABRIC_ADAPTER_KIND: kind, KQ_FABRIC_ADAPTER_CONFIG: path },
+              stdout: fd,
+              stderr: fd,
             });
-            await response.body?.cancel();
-            if (response.ok) break;
-          } catch (error) {
-            if (Date.now() >= deadline) throw error;
+            children.push(child);
+          } finally {
+            closeSync(fd);
           }
-          assert(Date.now() < deadline, "Adapter health timed out");
-          await Bun.sleep(200);
-        }
+          const deadline = Date.now() + 15000;
+          for (;;) {
+            assert.equal(child.exitCode, null, "Adapter exited before readiness");
+            try {
+              const response = await fetch("http://localhost/health", {
+                unix: join(runDirectory, `${kind}.sock`),
+                signal: AbortSignal.timeout(1000),
+              });
+              await response.body?.cancel();
+              if (response.ok) break;
+            } catch (error) {
+              if (Date.now() >= deadline) throw error;
+            }
+            assert(Date.now() < deadline, "Adapter health timed out");
+            await Bun.sleep(200);
+          }
+          return child;
+        };
+        let child = await launch();
+        if (kind === "commercial")
+          restarts.push(async () => {
+            assert.equal(child.exitCode, null, "Expected live owned commercial Adapter");
+            const oldPid = child.pid;
+            child.kill("SIGKILL");
+            const exitCode = await child.exited;
+            assert.notEqual(exitCode, 0, "Adapter crash must not be a graceful exit");
+            child = await launch();
+            assert.notEqual(child.pid, oldPid);
+            return { site: site.name, oldPid, newPid: child.pid, exitCode };
+          });
       }
     }
-    return cleanup;
+    return {
+      cleanup,
+      restartCommercial: async () => {
+        const results = [];
+        for (const restart of restarts) results.push(await restart());
+        return results;
+      },
+    };
   } catch (error) {
     await cleanup();
     throw error;

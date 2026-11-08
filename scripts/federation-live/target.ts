@@ -110,6 +110,7 @@ if (process.argv[2] === "inspect") {
     "agreement.approve",
     "billing.approve",
     "settlement.approve",
+    "adjustment.approve",
     "asset.map",
   ] as const)
     await new FederationPermissionService(db).set(
@@ -179,6 +180,7 @@ if (process.argv[2] === "inspect") {
           "commercial-usage-page",
           "commercial-bill",
           "commercial-settlement",
+          "commercial-adjustment",
           "agreement",
           "delegation",
           "acceptance",
