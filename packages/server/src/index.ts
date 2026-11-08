@@ -675,6 +675,22 @@ const sandboxManifestSigner = config.SANDBOX_ENABLED
     })
   : undefined;
 
+// Managed local datasets do not require an object storage service.
+const localDataDeliveryResolver = new DataDeliveryResolver(db, undefined, {
+  verifyAccess: (input) => dataPrerequisiteRepository.verifyAccess(input),
+});
+orchestrator.setDataDeliveryResolver((input) =>
+  localDataDeliveryResolver.resolveForDispatch(input),
+);
+if (sandboxManifestSigner) {
+  const restrictedSandboxDeliveryBinder = new RestrictedSandboxDeliveryBinder(
+    sandboxManifestSigner,
+  );
+  orchestrator.setRestrictedSandboxDeliveryBinder((manifest, deliveries) =>
+    restrictedSandboxDeliveryBinder.bind(manifest, deliveries),
+  );
+}
+
 const app = new Hono();
 
 app.onError(createErrorHandler(logger));
@@ -2225,14 +2241,6 @@ if (config.NETDRIVE_ENABLED) {
     };
   });
   orchestrator.setDataDeliveryResolver((input) => dataDeliveryResolver.resolveForDispatch(input));
-  if (sandboxManifestSigner) {
-    const restrictedSandboxDeliveryBinder = new RestrictedSandboxDeliveryBinder(
-      sandboxManifestSigner,
-    );
-    orchestrator.setRestrictedSandboxDeliveryBinder((manifest, deliveries) =>
-      restrictedSandboxDeliveryBinder.bind(manifest, deliveries),
-    );
-  }
   netdriveServiceForWorkflowOutputs = netdriveService;
   protectedApi.route(
     "/",

@@ -2557,3 +2557,18 @@ verified 导入结果现在与 `verified-private` 回执事实同事务保存；
 全仓 lint 通过（既有 47 warnings / 1 info），全仓 typecheck（含 protobuf 生成与 Fabric 测试类型）通过；最后调整完成包满盘恢复后，相关 7 项恢复/满盘测试、Agent 类型及 lint 再次通过。859 个文档目标离线检查及 diff 检查通过。
 
 旧版未加锁的临时目录不能安全自动认领；升级须先停止共享目录的旧 Agent，再核对处理。当前清理按下一次操作触发，不包含定时扫描；主机掉电、跨主机 DATA_WAITING/运行中撤权、介质运输/副本生命周期、任务输入/结果包、Slurm/PBS 完整矩阵、支付争议、治理归档/Peer 恢复及 UI/CLI/PR 预览仍属于完整目标。未推送、合并或远程部署，完整目标保持进行中。操作要求和复现入口见[Agent 恢复](media-package.md#agent-中断与满盘恢复)。
+
+
+## 介质导入副本的 Sandbox 执行接线与运行授权
+
+检查真实执行路径时发现：已发布副本固定为受限 cp-local，但原 RestrictedSandboxDeliveryBinder 只接受 object-download，Agent 同时拒绝将受限原始 DataDelivery 直接交给调度器。因此原有发布/权限验证并不能证明副本可被工作流使用。本轮新增明确的 protobuf 本地数据来源和独立 Agent 能力，Server 把本地文件绑定到签名 FileBatch，Agent 从配置根复制到私有 Sandbox 输入并按原摘要校验；不借 file://、任意绝对路径或对象存储中转。protobuf 由 buf 生成，没有手改生成文件，无数据库迁移。
+
+来源位置、受管根及相对路径作为不可变派发内容，续租仅更新许可。准备时固定位置并在事务内复核；运行时检查原位置仍有效、归属原 Agent、包含原文件，并返回实际来源凭证期限限制执行许可。测试覆盖同一版本还有有效副本时撤销当前副本，确保不能借另一个副本续租。缺少来源许可会走已有 DENIED/租约到期和独立 watchdog 停机路径，未增设第二套停止机制。常规非联邦任务尚无该持续授权，Server/Agent 明确拒绝，完整目标仍需后续补齐适用路径及实际跨主机验收。
+
+本地输入的 Data Market 解析和签名挂载在未启用 NetDrive 时也接线，MinIO 仅用于对象输入。Agent 拒绝链接、特殊文件、非受管根、路径越界、混合 URL/本地来源；每块复制响应授权取消，签名内容校验仍由 SandboxStager 执行。原本地数据权限、受限无网络/输出与独立调度器 watchdog 边界均保留。
+
+129 个不同相关场景通过：组件与 dispatcher/proto 94 项（含真实 age 导入到 Sandbox 输入及无对象存储路径），Agent stream 7 项（3 项新路由/拒绝，4 项既有运行拒绝/超时/接管/停机重试），隔离 PostgreSQL 28 项（5 项新发布→准备→运行授权，1 项受影响的来源租约，22 项原派发/运行校验回归）。初始新增夹具使用了非法 assetKind，扩展准备验收时将测试步骤误放进过期分支，均修正夹具后重跑相应范围；类型检查发现两处夹具推导和一处派发内部 DTO 未同步，按真实接口补齐。没有修改数据库约束或放宽执行策略以通过测试。
+
+全仓 lint 通过，保持既有 47 warnings / 1 info；修正后全仓 typecheck（含 protobuf 生成与 Fabric 测试类型）通过，861 个文档目标离线检查和 diff 检查通过。全部自建 PostgreSQL 已停止删除。
+
+本轮未执行真实跨主机 AgentStream、Slurm/PBS Sandbox 或科学软件任务；DATA_WAITING 自动恢复、真实来源撤权停机、介质交接/副本生命周期、任务输入/结果包、支付争议、治理归档/Peer 恢复、其余 UI/CLI 和 PR 预览仍属完整交付。未推送、合并或远端部署，整体目标保持进行中。

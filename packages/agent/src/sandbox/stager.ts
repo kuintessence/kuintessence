@@ -25,6 +25,7 @@ export interface SandboxInputSource {
   sourceUrl: string;
   deliveryLeaseId?: string;
   deliveryLeaseExpiresAtUnixMs?: bigint;
+  localDataSource?: SandboxInputDownload["localDataSource"];
 }
 
 export interface SandboxPreparationOptions {
@@ -297,7 +298,9 @@ async function materializeExternalInputs(
         posix.isAbsolute(source.stagePath) ||
         posix.normalize(source.stagePath) !== source.stagePath ||
         source.stagePath.split("/").includes("..") ||
-        !source.sourceUrl.trim()
+        (source.localDataSource
+          ? !!source.sourceUrl || !source.deliveryLeaseId
+          : !source.sourceUrl.trim())
       ) {
         throw new Error("Sandbox input source path or URL is invalid");
       }
@@ -328,6 +331,7 @@ async function materializeExternalInputs(
           sourceUrl: current.sourceUrl,
           targetPath,
           maxBytes: limits.maxBytes,
+          ...(current.localDataSource ? { localDataSource: current.localDataSource } : {}),
           ...(preparation.signal ? { signal: preparation.signal } : {}),
         });
         await currentInput(source, preparation);
@@ -368,6 +372,10 @@ async function currentInput(
   preparation.signal?.throwIfAborted();
   if (
     current.stagePath !== source.stagePath ||
+    current.localDataSource?.locationId !== source.localDataSource?.locationId ||
+    current.localDataSource?.managedRootId !== source.localDataSource?.managedRootId ||
+    current.localDataSource?.relativePath !== source.localDataSource?.relativePath ||
+    (!!current.localDataSource && !!current.sourceUrl) ||
     Boolean(current.deliveryLeaseId) !== Boolean(source.deliveryLeaseId) ||
     (!source.deliveryLeaseId &&
       (current.sourceUrl !== source.sourceUrl ||

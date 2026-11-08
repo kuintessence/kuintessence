@@ -88,6 +88,7 @@ export type DispatchInputStaging = {
   expectedSha256?: string;
   expectedSizeBytes?: number;
   netdriveInput?: boolean;
+  localDataSource?: { locationId: string; managedRootId: string; relativePath: string };
 };
 
 export interface PlaceAndDispatchInput {
@@ -765,6 +766,8 @@ export class PlacementOrchestrator {
             );
           }
           const bound = this.restrictedSandboxDeliveryBinder(signedSandbox, dataDeliveries);
+          if (bound.inputStaging.some((source) => source.localDataSource) && !scoped)
+            throw new Error("Managed local Sandbox data requires federation runtime authorization");
           signedSandbox = bound.manifest;
           restrictedSandboxInputs = bound.inputStaging;
           dataDeliveries = [];

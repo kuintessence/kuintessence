@@ -37,8 +37,12 @@ import {
   users,
 } from "@kuintessence/db";
 import {
+  DispatchJobSchema,
   FederationMediaExportLeaseResponseSchema,
   FederationMediaImportGrantResponseSchema,
+  SandboxIoType,
+  SandboxMountMode,
+  ServerMessageSchema,
 } from "@kuintessence/proto";
 import {
   assertDatasetUseGrant,
@@ -76,6 +80,7 @@ import {
 import { PgDataMarketRepository } from "../services/data-market-repository-drizzle";
 import { PgDataPrerequisiteRepository } from "../services/data-prerequisite-repository-drizzle";
 import { FederationAdmission } from "./admission";
+import { assertRunningDataBindings, FederationDataDispatch } from "./data-dispatch";
 import { datasetSourceAuthority } from "./dataset-authority";
 import { FederationDatasetPublicationService } from "./dataset-publication";
 import { FederationDatasetUseClient } from "./dataset-use-client";
@@ -1640,6 +1645,140 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     now = new Date(testNow.getTime() + 60_001);
     expect((await f.access(r)).allowed).toBe(false);
   });
+
+  test.each([
+    "revoked-replica",
+    "expired",
+    "moved-root",
+    "other-agent",
+    "changed-path",
+  ] as const)("running media Sandbox input checks its actual replica: %s", async (change) => {
+    const f = await publicationFixture();
+    const r = await f.publish();
+    await f.allowLocal(r);
+    const otherCopy =
+      change === "revoked-replica" ? await (await publicationFixture()).publish() : undefined;
+    const id = crypto.randomUUID();
+    await db.insert(jobs).values({
+      id,
+      name: "Media runtime authorization",
+      command: "true",
+      cpus: 1,
+      memoryMb: 16,
+      submittedBy: actor.userId,
+      orgId: actor.orgId,
+      agentId,
+      status: "queued",
+      dispatchEpoch: 1,
+    });
+    const [binding] = await db
+      .insert(jobDataBindings)
+      .values({
+        jobId: id,
+        inputDescriptor: "dataset",
+        source: "data-market",
+        assetId: r.assetId,
+        versionId: r.versionId,
+        manifestDigest: f.use.approval.asset.digest,
+        assetKind: "scientific-dataset",
+        allowedLocationIds: [r.locationId, ...(otherCopy ? [otherCopy.locationId] : [])],
+        selectedEntries: ["input.dat"],
+        stagePath: "inputs/dataset",
+        sensitivity: "restricted",
+        egressPolicy: "deny",
+      })
+      .returning();
+    if (!binding) throw new Error("Missing binding");
+    const relativePath = `.federation-media/${f.media.input.packageId}/files`;
+    const dispatch = create(DispatchJobSchema, {
+      jobId: id,
+      dispatchEpoch: 1n,
+      federationExecution: true,
+      restrictedNoEgress: true,
+      sandboxExecution: {
+        networkDisabled: true,
+        artifactMounts: [
+          {
+            descriptor: "dataset",
+            mode: SandboxMountMode.READ_ONLY,
+            ioType: SandboxIoType.FILE_BATCH,
+            relativePath: "inputs/dataset",
+            containerPath: "/kq/inputs/dataset",
+            batchEntries: [
+              {
+                relativePath: "input.dat",
+                sha256: createHash("sha256").update("data").digest("hex"),
+                sizeBytes: 4n,
+              },
+            ],
+          },
+        ],
+      },
+      inputStaging: [
+        {
+          fileMetadataId: `data-delivery-${binding.id}-0`,
+          stagePath: "inputs/dataset/input.dat",
+          deliveryLeaseId: crypto.randomUUID(),
+          deliveryLeaseExpiresAtUnixMs: 1n,
+          localDataSource: {
+            locationId: r.locationId,
+            managedRootId: rootId,
+            relativePath: `${relativePath}/input.dat`,
+          },
+        },
+      ],
+    });
+    try {
+      setSystemTime(now);
+      const envelope = create(ServerMessageSchema, {
+        payload: { case: "dispatchJob", value: dispatch },
+      });
+      const prepared = await new FederationDataDispatch(db).prepare(agentId, envelope);
+      await db.transaction(prepared.authorize);
+      if (prepared.message.payload.case !== "dispatchJob")
+        throw new Error("Missing prepared dispatch");
+      expect(prepared.message.payload.value.inputStaging[0]?.localDataSource).toEqual(
+        dispatch.inputStaging[0]?.localDataSource,
+      );
+      await db.update(jobs).set({ status: "running" }).where(eq(jobs.id, id));
+      expect(await db.transaction((tx) => assertRunningDataBindings(tx, dispatch))).toBe(
+        now.getTime() + 60_000,
+      );
+      if (change === "revoked-replica") {
+        await f.publication.revoke(actor, r.replicaId, { reason: "Stop this replica only" });
+        const available = await datasetSourceAuthority(
+          db,
+          { assetId: r.assetId, versionId: r.versionId },
+          now,
+        );
+        expect(available?.allowed).toBe(true);
+        if (!otherCopy) throw new Error("Missing other replica");
+        expect(available?.locationIds).toEqual([otherCopy.locationId]);
+      }
+      if (change === "expired") {
+        now = new Date(now.getTime() + 60_001);
+        setSystemTime(now);
+      }
+      if (change === "moved-root")
+        await db
+          .update(clusterFileRoots)
+          .set({ enabled: false })
+          .where(eq(clusterFileRoots.id, rootId));
+      if (change === "other-agent")
+        await db.update(jobs).set({ agentId: null }).where(eq(jobs.id, id));
+      if (change === "changed-path")
+        await db
+          .update(dataLocations)
+          .set({ relativePath: "other" })
+          .where(eq(dataLocations.id, r.locationId));
+      await expect(db.transaction((tx) => assertRunningDataBindings(tx, dispatch))).rejects.toThrow(
+        "Running data binding changed",
+      );
+    } finally {
+      setSystemTime();
+      await db.delete(jobs).where(eq(jobs.id, id));
+    }
+  }, 15_000);
 
   test("dataset delivery lease never outlives source authority and imported data cannot be delegated again", async () => {
     const f = await publicationFixture();

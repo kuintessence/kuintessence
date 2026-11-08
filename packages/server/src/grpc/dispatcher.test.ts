@@ -794,3 +794,44 @@ test("NetDrive preparation requires advertised authority support and verified tr
   message.payload.value.federationExecution = false;
   expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
 });
+
+test("local Sandbox inputs require authenticated advertised capability and a live federation lease", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    verifiedCertFingerprint: "verified",
+    federationExecutionV1: true,
+    federationComputeLeaseV1: true,
+    federationSandboxSignatureRenewalV1: true,
+    federationSandboxInputLeaseV1: true,
+    federationSandboxLocalInputV1: false,
+  };
+  dispatcher.register("agent", channel);
+  const message = create(ServerMessageSchema, {
+    payload: {
+      case: "dispatchJob",
+      value: {
+        federationExecution: true,
+        sandboxExecution: { networkDisabled: true },
+        inputStaging: [
+          {
+            localDataSource: {
+              locationId: "location",
+              managedRootId: "root",
+              relativePath: "dataset/input.dat",
+            },
+          },
+        ],
+      },
+    },
+  });
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  channel.federationSandboxLocalInputV1 = true;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  if (message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+  message.payload.value.federationExecution = false;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  message.payload.value.federationExecution = true;
+  channel.verifiedCertFingerprint = "";
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+});

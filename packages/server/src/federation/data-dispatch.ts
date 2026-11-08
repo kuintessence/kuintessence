@@ -26,10 +26,14 @@ import {
 import { DataDeliveryPolicySchema, WorkflowExecutionInterrupted } from "@kuintessence/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import { dataDeliveryToProto } from "../grpc/dispatcher";
-import { DataDeliveryResolver, type ResolvedDataDelivery } from "../services/data-delivery";
+import {
+  DataDeliveryResolver,
+  type ResolvedDataDelivery,
+  sandboxDataInputSource,
+} from "../services/data-delivery";
 import { PgDataPrerequisiteRepository } from "../services/data-prerequisite-repository-drizzle";
 import { factsRequireRestrictedNoEgress } from "../services/restricted-no-egress";
-
+import { datasetSourceAuthority, isFederationDataset } from "./dataset-authority";
 import { assertNetdriveSnapshots } from "./netdrive-inputs";
 
 export interface PreparedFederationDataDispatch {
@@ -73,7 +77,22 @@ export class FederationDataDispatch {
           )
         : undefined;
     const bindings = await this.bindings(this.db, input.jobId);
-    const deliveries = await this.resolver(this.db).resolveForDispatch(input, { locations });
+    const pinnedLocations = new Map(locations);
+    for (const binding of bindings) {
+      const inputs = dispatch.inputStaging.filter(
+        (item) =>
+          item.fileMetadataId.startsWith(`data-delivery-${binding.id}-`) && item.localDataSource,
+      );
+      for (const item of inputs) {
+        const id = item.localDataSource?.locationId;
+        if (!id || (pinnedLocations.has(binding.id) && pinnedLocations.get(binding.id) !== id))
+          rejectDataDispatch();
+        pinnedLocations.set(binding.id, id);
+      }
+    }
+    const deliveries = await this.resolver(this.db).resolveForDispatch(input, {
+      locations: pinnedLocations,
+    });
     const refreshed = refreshDataCredentials(message, deliveries);
     if (refreshed.payload.case !== "dispatchJob") throw new Error("Expected dispatch");
     const netdrive = refreshed.payload.value.inputStaging.filter((input) => input.netdriveInput);
@@ -203,7 +222,7 @@ export class FederationDataDispatch {
         }
         // This resolver performs only local reads and authorization; it never signs URLs under locks.
         const current = await this.resolver(tx).resolveForDispatch(input, {
-          locations,
+          locations: pinnedLocations,
           issueCredentials: false,
         });
         if (!sameResolvedData(deliveries, current)) rejectDataDispatch();
@@ -264,7 +283,7 @@ export function refreshDataCredentials(
       !dispatch.sandboxExecution?.networkDisabled ||
       mount.mode !== SandboxMountMode.READ_ONLY ||
       mount.ioType !== SandboxIoType.FILE_BATCH ||
-      delivery.method !== "object-download" ||
+      !["object-download", "readonly-mount"].includes(delivery.method) ||
       mount.relativePath !== `inputs/${delivery.inputDescriptor}` ||
       mount.containerPath !== `/kq/inputs/${delivery.inputDescriptor}` ||
       mount.batchEntries.length !== delivery.selectedEntries.length
@@ -287,9 +306,17 @@ export function refreshDataCredentials(
           item.deliveryLeaseId,
       );
       const input = dispatch.inputStaging[index];
-      if (!input || staged.has(index) || !entry.objectDownloadUrl) rejectDataDispatch();
+      if (!input || staged.has(index)) rejectDataDispatch();
+      const source = sandboxDataInputSource(delivery, entry);
+      if (
+        input.localDataSource?.locationId !== source.localDataSource?.locationId ||
+        input.localDataSource?.managedRootId !== source.localDataSource?.managedRootId ||
+        input.localDataSource?.relativePath !== source.localDataSource?.relativePath ||
+        (source.localDataSource && input.sourceUrl)
+      )
+        rejectDataDispatch();
       staged.add(index);
-      input.sourceUrl = entry.objectDownloadUrl;
+      input.sourceUrl = source.sourceUrl;
       input.deliveryLeaseId = delivery.leaseId;
       input.deliveryLeaseExpiresAtUnixMs = BigInt(delivery.leaseExpiresAtUnixMs);
     }
@@ -359,7 +386,8 @@ function rejectDataDispatch(): never {
 export async function assertRunningDataBindings(
   tx: PgTransaction,
   dispatch: DispatchJob,
-): Promise<void> {
+): Promise<number> {
+  let expiresAtUnixMs = Number.POSITIVE_INFINITY;
   function reject(): never {
     throw new WorkflowExecutionInterrupted("Running data binding changed", { retryable: false });
   }
@@ -405,6 +433,7 @@ export async function assertRunningDataBindings(
         (binding.selectedEntries.length && selected.length !== binding.selectedEntries.length)
       )
         reject();
+      const foreign = !!binding.assetId && (await isFederationDataset(tx, binding.assetId));
       for (const expected of mount.batchEntries) {
         if (
           !selected.some(
@@ -425,6 +454,47 @@ export async function assertRunningDataBindings(
         );
         if (index < 0 || staged.has(index)) reject();
         staged.add(index);
+        const input = dispatch.inputStaging[index];
+        const local = input?.localDataSource;
+        if (foreign && !local) reject();
+        if (local) {
+          const [job] = await tx.select().from(jobs).where(eq(jobs.id, dispatch.jobId));
+          const [location] = await tx
+            .select()
+            .from(dataLocations)
+            .where(eq(dataLocations.id, local.locationId))
+            .for("share", { noWait: true });
+          if (
+            !job ||
+            !binding.assetId ||
+            !location ||
+            input?.sourceUrl ||
+            input?.netdriveInput ||
+            !binding.allowedLocationIds.includes(location.id) ||
+            location.kind !== "cp-local" ||
+            location.status !== "available" ||
+            location.dataAssetVersionId !== binding.versionId ||
+            location.agentId !== job.agentId ||
+            location.managedRootId !== local.managedRootId ||
+            `${location.relativePath}/${expected.relativePath}` !== local.relativePath
+          )
+            reject();
+          const source = await datasetSourceAuthority(
+            tx,
+            {
+              assetId: binding.assetId,
+              versionId: binding.versionId,
+              locationId: location.id,
+              orgIds: job.orgId ? [job.orgId] : [],
+            },
+            new Date(),
+          );
+          if (source && !source.allowed) reject();
+          expiresAtUnixMs = Math.min(
+            expiresAtUnixMs,
+            source?.expiresAtUnixMs ?? Number.POSITIVE_INFINITY,
+          );
+        }
       }
       continue;
     }
@@ -467,4 +537,5 @@ export async function assertRunningDataBindings(
     )
   )
     reject();
+  return expiresAtUnixMs;
 }

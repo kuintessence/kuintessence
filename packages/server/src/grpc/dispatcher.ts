@@ -162,6 +162,7 @@ export interface AgentChannel {
   federationComputeLeaseV1?: boolean;
   federationSandboxSignatureRenewalV1?: boolean;
   federationSandboxInputLeaseV1?: boolean;
+  federationSandboxLocalInputV1?: boolean;
   federationDataPreparationLeaseV1?: boolean;
   federationNetdriveInputLeaseV1?: boolean;
   federationInstallationV1?: boolean;
@@ -254,6 +255,12 @@ export class AgentDispatcher {
 
   pushPreparedDispatch(agentId: string, message: ServerMessage): boolean {
     if (message.payload.case !== "dispatchJob") throw new Error("Expected a job dispatch message");
+    if (
+      message.payload.value.inputStaging.some((input) => input.localDataSource) &&
+      (!message.payload.value.federationExecution ||
+        !this.supportsFederationSandboxLocalInput(agentId))
+    )
+      return false;
     if (message.payload.value.federationExecution && !this.supportsFederationExecution(agentId))
       return false;
     if (
@@ -310,6 +317,13 @@ export class AgentDispatcher {
     return (
       this.supportsFederationSandboxSignatureRenewal(agentId) &&
       this.getChannel(agentId)?.federationSandboxInputLeaseV1 === true
+    );
+  }
+
+  supportsFederationSandboxLocalInput(agentId: string): boolean {
+    return (
+      this.supportsFederationSandboxInputLease(agentId) &&
+      this.getChannel(agentId)?.federationSandboxLocalInputV1 === true
     );
   }
 
@@ -380,6 +394,7 @@ export class AgentDispatcher {
         expectedSha256?: string;
         expectedSizeBytes?: number;
         netdriveInput?: boolean;
+        localDataSource?: { locationId: string; managedRootId: string; relativePath: string };
       }>;
       dataDeliveries?: ResolvedDataDelivery[];
       federationExecution?: boolean;
@@ -410,6 +425,7 @@ export class AgentDispatcher {
               expectedSha256: input.expectedSha256 ?? "",
               expectedSizeBytes: BigInt(input.expectedSizeBytes ?? 0),
               netdriveInput: input.netdriveInput ?? false,
+              localDataSource: input.localDataSource,
             }),
           ),
           expectedOutputs: (job.expectedOutputs ?? []).map((output) => ({

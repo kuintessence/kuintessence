@@ -256,6 +256,7 @@ message RegisterRequest {
   bool federation_accounting_v1 = 35;
   bool federation_media_export_v1 = 36;
   bool federation_media_import_v1 = 37;
+  bool federation_sandbox_local_input_v1 = 38;
 }
 
 message RegisterResponse {
@@ -662,6 +663,14 @@ message InputStaging {
   int64 expected_size_bytes = 7;
   // Pins a NetDrive file separately from a Data Market delivery binding.
   bool netdrive_input = 8;
+  // Mutually exclusive with source_url; only Server-authorized managed data roots.
+  SandboxLocalDataSource local_data_source = 9;
+}
+
+message SandboxLocalDataSource {
+  string location_id = 1;
+  string managed_root_id = 2;
+  string relative_path = 3;
 }
 
 // P4-f: one output the agent is expected to surface after the run.

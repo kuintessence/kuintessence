@@ -43,7 +43,7 @@ export function dispatchIntent(
   for (const index of renewableInputs) {
     const staged = copy.inputStaging[index];
     if (staged) {
-      staged.sourceUrl = "";
+      if (!staged.localDataSource) staged.sourceUrl = "";
       staged.deliveryLeaseId = "";
       staged.deliveryLeaseExpiresAtUnixMs = 0n;
     }

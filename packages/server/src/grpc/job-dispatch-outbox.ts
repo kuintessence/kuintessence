@@ -261,6 +261,12 @@ export class JobDispatchOutbox {
     if (preparedMessage.payload.case !== "dispatchJob") throw new Error("Invalid dispatch payload");
     const originalDispatch = preparedMessage.payload.value;
     const running = grant?.request.runtimeRenewal === true;
+    if (
+      originalDispatch.inputStaging.some((input) => input.localDataSource) &&
+      (!originalDispatch.federationExecution ||
+        !this.dispatcher.supportsFederationSandboxLocalInput(identity.agentId))
+    )
+      throw new WorkflowExecutionInterrupted("Agent does not support leased Sandbox local inputs");
     if (Boolean(reservationId) !== preparedMessage.payload.value.federationExecution)
       throw new WorkflowExecutionInterrupted(
         "Dispatch federation capability does not match its binding",
@@ -415,7 +421,9 @@ export class JobDispatchOutbox {
       )
         throw new WorkflowExecutionInterrupted("Sandbox signature needs renewal");
       await data?.authorize(tx);
-      if (running) await assertRunningDataBindings(tx, originalDispatch);
+      const dataDeadline = running
+        ? await assertRunningDataBindings(tx, originalDispatch)
+        : Number.POSITIVE_INFINITY;
       if (grant) {
         const [binding] = await tx
           .select({
@@ -437,6 +445,7 @@ export class JobDispatchOutbox {
         const expiry = Math.min(
           Date.now() + 10_000,
           authorizationDeadline ?? Number.POSITIVE_INFINITY,
+          dataDeadline,
           federationExecutionDeadline(binding.snapshot.request),
           Date.parse(binding.terms.validUntil),
           ...(running

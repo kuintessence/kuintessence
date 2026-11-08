@@ -110,10 +110,9 @@ export class DataDeliveryResolver {
 
   constructor(
     private readonly db: PgDb | PgTransaction,
-    private readonly minio: Pick<
-      MinioBackend,
-      "dataMarketImmutableBucket" | "presignImmutableDownload"
-    >,
+    private readonly minio:
+      | Pick<MinioBackend, "dataMarketImmutableBucket" | "presignImmutableDownload">
+      | undefined,
     private readonly options: DataDeliveryResolverOptions,
   ) {
     this.presignTtlSec = options.presignTtlSec ?? DEFAULT_PRESIGN_TTL_SEC;
@@ -155,7 +154,8 @@ export class DataDeliveryResolver {
       const permitted = candidates.filter(
         (location) =>
           binding.allowedLocationIds.includes(location.id) &&
-          (!options.locations || options.locations.get(binding.id) === location.id),
+          (!options.locations?.has(binding.id) ||
+            options.locations.get(binding.id) === location.id),
       );
       let restricted = factsRequireRestrictedNoEgress({
         assetKind: binding.assetKind as "licensed-material" | null,
@@ -208,7 +208,10 @@ export class DataDeliveryResolver {
         });
         continue;
       }
-      const locationKey = objectKey(location.uri, this.minio.dataMarketImmutableBucket);
+      const minio = this.minio;
+      if (!minio)
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "DATA_OBJECT_STORAGE_UNAVAILABLE", 503);
+      const locationKey = objectKey(location.uri, minio.dataMarketImmutableBucket);
       assertImmutableObjectKey(locationKey);
       const fallbackKey = entries.length === 1 ? locationKey : null;
       resolved.push({
@@ -224,7 +227,7 @@ export class DataDeliveryResolver {
             objectDownloadUrl:
               options.issueCredentials === false
                 ? undefined
-                : await this.minio.presignImmutableDownload(
+                : await minio.presignImmutableDownload(
                     immutableObjectKey(entry.objectKey ?? fallbackKey ?? missingObjectKey()),
                     this.presignTtlSec,
                     requiredObjectVersionId(entry.objectVersionId),
@@ -399,6 +402,7 @@ export interface RestrictedSandboxDeliveryBinding {
     sourceUrl: string;
     deliveryLeaseId: string;
     deliveryLeaseExpiresAtUnixMs: number;
+    localDataSource?: { locationId: string; managedRootId: string; relativePath: string };
   }>;
 }
 
@@ -411,8 +415,12 @@ export class RestrictedSandboxDeliveryBinder {
     deliveries: readonly ResolvedDataDelivery[],
   ): RestrictedSandboxDeliveryBinding {
     if (deliveries.length === 0) return { manifest, inputStaging: [] };
-    if (deliveries.some((delivery) => delivery.method !== "object-download")) {
-      throw new Error("Restricted Sandbox delivery requires immutable object entries");
+    if (
+      deliveries.some(
+        (delivery) => !["object-download", "readonly-mount"].includes(delivery.method),
+      )
+    ) {
+      throw new Error("Restricted Sandbox delivery requires immutable readonly entries");
     }
     const existing = new Set(manifest.mounts.map((mount) => mount.descriptor));
     const mounts = deliveries.map((delivery) => {
@@ -462,13 +470,41 @@ export class RestrictedSandboxDeliveryBinder {
         delivery.selectedEntries.map((entry, entryIndex) => ({
           fileMetadataId: `data-delivery-${delivery.bindingId}-${entryIndex}`,
           stagePath: `inputs/${mounts[deliveryIndex]?.descriptor ?? ""}/${entry.path}`,
-          sourceUrl: requireObjectDownloadUrl(entry.objectDownloadUrl),
+          ...sandboxDataInputSource(delivery, entry),
           deliveryLeaseId: delivery.leaseId,
           deliveryLeaseExpiresAtUnixMs: delivery.leaseExpiresAtUnixMs,
         })),
       ),
     };
   }
+}
+
+export function sandboxDataInputSource(
+  delivery: ResolvedDataDelivery,
+  entry: ResolvedDataDeliveryEntry,
+) {
+  if (delivery.method === "object-download")
+    return {
+      sourceUrl: requireObjectDownloadUrl(entry.objectDownloadUrl),
+      localDataSource: undefined,
+    };
+  if (
+    delivery.method !== "readonly-mount" ||
+    !delivery.restricted ||
+    !delivery.managedRootId ||
+    !delivery.relativePath ||
+    !delivery.locationId ||
+    entry.objectDownloadUrl
+  )
+    throw new Error("Sandbox local data source is invalid");
+  return {
+    sourceUrl: "",
+    localDataSource: {
+      locationId: delivery.locationId,
+      managedRootId: delivery.managedRootId,
+      relativePath: safeEntryPath(`${delivery.relativePath}/${entry.path}`),
+    },
+  };
 }
 
 function sandboxDescriptor(delivery: ResolvedDataDelivery): string {

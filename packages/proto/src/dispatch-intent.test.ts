@@ -175,3 +175,31 @@ test("NetDrive renewal preserves file identity, digest, size, marker and target 
   });
   expect(sameDispatchIntent(legacy, renewed)).toBe(false);
 });
+
+test("local data source identity is immutable across execution renewal", () => {
+  const dispatch = create(DispatchJobSchema, {
+    inputStaging: [
+      {
+        stagePath: "inputs/data/input.dat",
+        deliveryLeaseId: "old",
+        deliveryLeaseExpiresAtUnixMs: 1n,
+        localDataSource: {
+          locationId: "location",
+          managedRootId: "root",
+          relativePath: "dataset/input.dat",
+        },
+      },
+    ],
+  });
+  const renewed = clone(DispatchJobSchema, dispatch);
+  const input = renewed.inputStaging[0];
+  if (!input?.localDataSource) throw new Error("Missing local source");
+  input.deliveryLeaseId = "new";
+  input.deliveryLeaseExpiresAtUnixMs = 2n;
+  expect(sameDispatchIntent(dispatch, renewed)).toBe(true);
+  input.localDataSource.locationId = "other";
+  expect(sameDispatchIntent(dispatch, renewed)).toBe(false);
+  input.localDataSource.locationId = "location";
+  input.sourceUrl = "https://unexpected.test/data";
+  expect(sameDispatchIntent(dispatch, renewed)).toBe(false);
+});

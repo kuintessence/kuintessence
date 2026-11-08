@@ -15,6 +15,9 @@ import {
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import type { SandboxSignedManifest, SandboxUnsignedManifest } from "@kuintessence/shared";
+import { importFederationMedia } from "../data-market/media-import";
+import { mediaImportFixture } from "../data-market/media-import-test-fixture";
+import { downloadSandboxInput } from "./input-downloader";
 import type { VerifiedSandboxManifest } from "./manifest-verifier";
 import { removeSandboxRun, SandboxStager, validateSandboxOutputs } from "./stager";
 
@@ -521,3 +524,69 @@ test.each([
     });
   }
 });
+
+const liveMedia = process.env.KQ_MEDIA_AGE_TEST_BIN ? test : test.skip;
+liveMedia(
+  "verified media import becomes readonly Sandbox input with digest and renewal checks",
+  async () => {
+    const media = await mediaImportFixture();
+    const root = await mkdtemp(join(tmpdir(), "kq-sandbox-media-"));
+    roots.push(root);
+    try {
+      await importFederationMedia(media.options);
+      const jobId = crypto.randomUUID();
+      const fixture = verified(hash(media.bytes), jobId);
+      fixture.unsigned.mounts = fixture.unsigned.mounts.filter(
+        (mount) => mount.mode === "ReadOnly",
+      );
+      const mount = fixture.unsigned.mounts[0];
+      if (!mount) throw new Error("Missing mount");
+      mount.sizeLimitBytes = media.bytes.length;
+      const stager = new SandboxStager({
+        root,
+        ownerUid: process.getuid?.() ?? 0,
+        downloadInput: (input) => downloadSandboxInput({ ...input, roots: media.options.roots }),
+      });
+      const source = {
+        stagePath: "inputs/data.txt",
+        sourceUrl: "",
+        deliveryLeaseId: crypto.randomUUID(),
+        deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 20_000),
+        localDataSource: {
+          locationId: crypto.randomUUID(),
+          managedRootId: media.options.task.managedRootId,
+          relativePath: `.federation-media/${media.manifest.packageId}/files/input.dat`,
+        },
+      };
+      const prepared = await stager.prepare(fixture, [source]);
+      expect(prepared.sandbox.mounts[0]?.mode).toBe("ReadOnly");
+      expect(await readFile(join(root, jobId, "inputs", "data.txt"))).toEqual(media.bytes);
+      await stager.cleanup(jobId);
+      await expect(
+        stager.prepare(fixture, [source], {
+          renewInput: async (original) => ({
+            ...original,
+            localDataSource: { ...source.localDataSource, locationId: crypto.randomUUID() },
+          }),
+        }),
+      ).rejects.toThrow("binding");
+      await stager.cleanup(jobId);
+      let permits = 0;
+      await expect(
+        stager.prepare(fixture, [source], {
+          renewInput: async (original) => {
+            if (++permits === 2) throw new Error("source revoked");
+            return original;
+          },
+        }),
+      ).rejects.toThrow("source revoked");
+      expect(await Bun.file(join(root, jobId, "inputs", "data.txt")).exists()).toBe(false);
+      await stager.cleanup(jobId);
+      await writeFile(join(media.target, "files", "input.dat"), Buffer.alloc(media.bytes.length));
+      await expect(stager.prepare(fixture, [source])).rejects.toThrow();
+    } finally {
+      await media.cleanup();
+    }
+  },
+  30_000,
+);

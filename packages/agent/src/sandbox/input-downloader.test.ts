@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { AgentDataRoots } from "../data-market/local-data-security";
 import { ExecutionAuthorization } from "../execution-authorization";
 import { downloadSandboxInput } from "./input-downloader";
 
@@ -138,4 +139,72 @@ test.each([
     await lease.close();
     server.stop(true);
   }
+});
+
+test("local Sandbox input copies only configured regular files and stops on cancellation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kq-sandbox-local-"));
+  roots.push(root);
+  const data = join(root, "data");
+  await mkdir(data, { mode: 0o700 });
+  await writeFile(join(data, "input.dat"), Buffer.alloc(256 * 1024, 42));
+  const managed = new AgentDataRoots({
+    datasetRoot: data,
+    jobWorkRoot: join(root, "jobs"),
+    managedRoots: { science: "." },
+  });
+  await managed.initialize();
+  const options = {
+    sourceUrl: "",
+    roots: managed,
+    localDataSource: {
+      locationId: "location",
+      managedRootId: "science",
+      relativePath: "input.dat",
+    },
+    maxBytes: 256 * 1024,
+    targetPath: join(root, "sandbox", "input.dat"),
+    fetcher: async () => {
+      throw new Error("Network must not be used");
+    },
+  };
+  await downloadSandboxInput(options);
+  expect(await readFile(options.targetPath)).toEqual(await readFile(join(data, "input.dat")));
+  await rm(options.targetPath);
+  await expect(downloadSandboxInput({ ...options, maxBytes: 1 })).rejects.toThrow("size limit");
+  await expect(
+    downloadSandboxInput({ ...options, sourceUrl: "https://unexpected.test/data" }),
+  ).rejects.toThrow("source");
+  for (const relativePath of ["../outside", "/etc/passwd"])
+    await expect(
+      downloadSandboxInput({
+        ...options,
+        localDataSource: { ...options.localDataSource, relativePath },
+      }),
+    ).rejects.toThrow();
+  await expect(
+    downloadSandboxInput({
+      ...options,
+      localDataSource: { ...options.localDataSource, managedRootId: "unknown" },
+    }),
+  ).rejects.toThrow("not configured");
+  await symlink(join(data, "input.dat"), join(data, "symlink"));
+  await link(join(data, "input.dat"), join(data, "hardlink"));
+  for (const relativePath of ["symlink", "hardlink"])
+    await expect(
+      downloadSandboxInput({
+        ...options,
+        localDataSource: { ...options.localDataSource, relativePath },
+      }),
+    ).rejects.toThrow("without links");
+  await rm(join(data, "hardlink"));
+  const controller = new AbortController();
+  let calls = 0;
+  const signal = controller.signal;
+  const check = signal.throwIfAborted.bind(signal);
+  signal.throwIfAborted = () => {
+    if (++calls === 3) controller.abort(new Error("lease expired"));
+    check();
+  };
+  await expect(downloadSandboxInput({ ...options, signal })).rejects.toThrow("lease expired");
+  expect(await readdir(dirname(options.targetPath))).toEqual([]);
 });

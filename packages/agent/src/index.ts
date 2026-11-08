@@ -301,6 +301,7 @@ async function main() {
           downloadInput: (input) =>
             downloadSandboxInput({
               ...input,
+              roots: dataRoots,
               connectTo: config.AGENT_FILE_TRANSFER_CONNECT_TO,
             }),
         }),

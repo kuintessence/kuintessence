@@ -3,6 +3,7 @@ import { create, equals, toBinary } from "@bufbuild/protobuf";
 import {
   SandboxExecutionSchema,
   SandboxIoType,
+  SandboxLocalDataSourceSchema,
   SandboxMountMode,
   ServerMessageSchema,
 } from "@kuintessence/proto";
@@ -40,7 +41,7 @@ function fixture() {
     dispatchEpoch: 1,
     dataDeliveries: [delivery],
   });
-  const next = {
+  const next: ResolvedDataDelivery = {
     ...delivery,
     leaseId: crypto.randomUUID(),
     leaseExpiresAtUnixMs: Date.now() + 60_000,
@@ -199,4 +200,34 @@ test("restricted data renewal rejects content changes and leaves signature renew
   if (!envelope) throw new Error("Expected envelope");
   envelope.expiresAtUnixMs = 1n;
   expect(() => refreshDataCredentials(f.message, [f.next])).not.toThrow();
+});
+
+test("local Sandbox renewal keeps the selected replica and path fixed", () => {
+  const { message, next, input } = restrictedFixture();
+  const local = {
+    locationId: next.locationId,
+    managedRootId: crypto.randomUUID(),
+    relativePath: ".federation-media/package/files/input.txt",
+  };
+  input.sourceUrl = "";
+  input.localDataSource = create(SandboxLocalDataSourceSchema, local);
+  next.method = "readonly-mount";
+  next.restricted = true;
+  next.managedRootId = local.managedRootId;
+  next.relativePath = ".federation-media/package/files";
+  next.selectedEntries = next.selectedEntries.map(({ objectDownloadUrl: _url, ...entry }) => entry);
+  const renewed = refreshDataCredentials(message, [next]);
+  if (renewed.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+  expect(renewed.payload.value.inputStaging[0]?.localDataSource).toEqual(input.localDataSource);
+  expect(renewed.payload.value.inputStaging[0]?.deliveryLeaseId).toBe(next.leaseId);
+  for (const change of [
+    { locationId: crypto.randomUUID() },
+    { managedRootId: crypto.randomUUID() },
+    { relativePath: "other" },
+  ])
+    expect(() => refreshDataCredentials(message, [{ ...next, ...change }])).toThrow(
+      "authorized binding",
+    );
+  input.sourceUrl = "https://unexpected.test/input";
+  expect(() => refreshDataCredentials(message, [next])).toThrow("authorized binding");
 });

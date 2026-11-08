@@ -2122,6 +2122,10 @@ export class AgentStream {
             this.federationExecutionCapable() && !!this.deps.sandboxProcessor,
           federationSandboxInputLeaseV1:
             this.federationExecutionCapable() && !!this.deps.sandboxProcessor,
+          federationSandboxLocalInputV1:
+            this.federationExecutionCapable() &&
+            !!this.deps.sandboxProcessor &&
+            (this.deps.managedDatasetRootIds?.length ?? 0) > 0,
           federationDataPreparationLeaseV1:
             this.federationExecutionCapable() && !!this.deps.dataDeliveryExecutor,
           federationNetdriveInputLeaseV1:
@@ -3345,6 +3349,24 @@ export class AgentStream {
         isBatch: o.isBatch,
         pathsOnly: o.pathsOnly,
       }));
+      if (
+        dj.inputStaging.some((input) => input.localDataSource) &&
+        (!dj.federationExecution ||
+          !dj.restrictedNoEgress ||
+          !dj.sandboxExecution ||
+          dj.inputStaging.some(
+            (input) =>
+              input.localDataSource &&
+              (input.sourceUrl || input.netdriveInput || !input.deliveryLeaseId),
+          ))
+      ) {
+        await this.onJobTransition({
+          jobId: dj.jobId,
+          status: "failed",
+          message: "Local inputs require leased restricted Sandbox execution",
+        });
+        return;
+      }
       if (dj.restrictedNoEgress && !this.hasTrustedRestrictedExecutionProfile()) {
         await this.onJobTransition({
           jobId: dj.jobId,
@@ -3420,6 +3442,7 @@ export class AgentStream {
               current().inputStaging.map((input) => ({
                 stagePath: input.stagePath,
                 sourceUrl: input.sourceUrl,
+                localDataSource: input.localDataSource,
                 ...(input.deliveryLeaseId
                   ? {
                       deliveryLeaseId: input.deliveryLeaseId,

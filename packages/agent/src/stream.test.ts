@@ -9878,3 +9878,132 @@ test("jobStatusReportToProto preserves partial accounting and large integer stri
   expect(msg.payload.value.accounting?.elapsedMilliseconds).toBeUndefined();
   expect(msg.payload.value.eventId).toBe("original-event");
 });
+
+test.each([
+  "forward",
+  "non-federated",
+  "mixed-source",
+] as const)("Sandbox local input wire routing: %s", async (mode) => {
+  const db = createSqliteDb(":memory:");
+  const original = create(DispatchJobSchema, {
+    jobId: crypto.randomUUID(),
+    dispatchEpoch: 1n,
+    federationExecution: mode !== "non-federated",
+    restrictedNoEgress: true,
+    cpus: 1,
+    memoryMb: 128n,
+    sandboxExecution: {
+      networkDisabled: true,
+      envelope: { nonce: "original", manifestSha256: "fixed", expiresAtUnixMs: 1n },
+    },
+    inputStaging: [
+      {
+        stagePath: "inputs/data/input.dat",
+        sourceUrl: mode === "mixed-source" ? "https://unexpected.test/data" : "",
+        deliveryLeaseId: crypto.randomUUID(),
+        deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 10_000),
+        localDataSource: {
+          locationId: "location",
+          managedRootId: "root",
+          relativePath: ".federation-media/package/files/input.dat",
+        },
+      },
+    ],
+  });
+  const renewed = clone(DispatchJobSchema, original);
+  if (!renewed.sandboxExecution?.envelope) throw new Error("Missing envelope");
+  renewed.sandboxExecution.envelope.nonce = "renewed";
+  renewed.sandboxExecution.envelope.expiresAtUnixMs = BigInt(Date.now() + 30_000);
+  let advertised = false,
+    prepared = false;
+  const reports: JobStatusReport[] = [];
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case === "register")
+          advertised = message.payload.value.federationSandboxLocalInputV1;
+        if (message.payload.case !== "federationExecutionRequest") return;
+        const request = message.payload.value;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: {
+                requestId: request.requestId,
+                jobId: request.jobId,
+                dispatchEpoch: request.dispatchEpoch,
+                decision: FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                dispatch: renewed,
+              },
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter({
+      submit: async () => {
+        throw new Error("No submission in routing test");
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 60_000,
+    inboundAcks: new InboundAcks(db),
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+    assertFederationRuntimeWatchdog: async () => {},
+    managedDatasetRootIds: ["root"],
+    restrictedExecutionProfile: {
+      enabled: true,
+      ready: true,
+      runtimeDigest: `sha256:${"1".repeat(64)}`,
+      runtimePath: "/trusted/runtime.sif",
+      apptainerPath: "apptainer",
+      trustedWrapperPath: "/trusted/wrapper",
+      missingRequirements: [],
+    },
+    sandboxProcessor: {
+      cleanup: async () => {},
+      prepare: async (_jobId, _execution, sources, options) => {
+        prepared = true;
+        expect(sources?.[0]?.localDataSource).toMatchObject({
+          locationId: "location",
+          managedRootId: "root",
+          relativePath: ".federation-media/package/files/input.dat",
+        });
+        const input = sources?.[0];
+        if (!input) throw new Error("Missing input");
+        expect((await options?.renewInput?.(input))?.localDataSource).toEqual(
+          input.localDataSource,
+        );
+        throw new Error("Verified local routing; stop before staging");
+      },
+    },
+  });
+  stream.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await settle(20);
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: original } }),
+    );
+    await waitForCondition(() => reports.some((report) => report.status === "failed"));
+    expect(advertised).toBe(true);
+    expect(prepared).toBe(mode === "forward");
+    expect(reports.find((report) => report.status === "failed")?.message).toContain(
+      mode === "forward" ? "Verified local routing" : "Local inputs require",
+    );
+  } finally {
+    await stream.stop();
+    await running;
+  }
+});

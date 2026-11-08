@@ -93,3 +93,8 @@ Content-Type: application/json
 Drizzle 生成迁移 `0162_lazy_wong.sql` / `0163_known_nick_fury.sql` 保存结构化来源、副本、续期令牌和原发布名称；未修改历史生成文件。签名导入回执独立记录 verified 私有接收事实，见[回执说明](media-receipts.md)；任务输入/结果介质、跨主机 DATA_WAITING 恢复和运行中撤权仍属于后续完整验收。
 
 普通 CP 扫描也拒绝 `.federation-media` 保留目录：Server 拦截直接路径，Agent 拒绝扫描该目录、包含它的父目录或指向其内部的受管根别名，避免把外来数据重新登记为本地自有资产。正常的独立数据目录扫描和已授权只读派发仍可使用。
+
+
+### 运行中的本地副本
+
+导入数据通过签名 Sandbox 只读输入参与联邦作业，准备和运行租约都绑定实际位置；续租不允许切换同版本副本。`assertRunningDataBindings` 返回实际来源许可期限，Server 将其纳入执行许可上限；位置停用/改写、Agent 不符、来源许可到期或副本撤销均不再发放执行许可，既有独立 watchdog 负责停止并确认调度器作业。详细接线、部署要求和当前验收边界见[Sandbox 输入](media-package.md#导入数据作为-sandbox-输入)。普通非联邦作业尚不能使用该受限本地输入，不会借旧派发路径绕过持续授权。
