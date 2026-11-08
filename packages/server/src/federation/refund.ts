@@ -449,7 +449,13 @@ export class FederationRefundService {
       if (operation)
         await tx
           .update(outbound)
-          .set({ settledAmount: "0" })
+          .set({
+            settledAmount: "0",
+            // An unexecuted refund has no future workflow status; fence in-flight poll responses.
+            statusClaim: null,
+            statusNextAttemptAt: null,
+            statusLastError: null,
+          })
           .where(
             and(
               eq(outbound.localSiteId, this.signing.siteId),

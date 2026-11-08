@@ -1236,7 +1236,9 @@ export class FederationOutboundService {
           .update(federationOutbound)
           .set({
             state: "accepted",
-            statusNextAttemptAt: this.clock(),
+            // A late acceptance must preserve a completed cancellation refund's polling fence.
+            statusNextAttemptAt: sql`CASE WHEN ${federationOutbound.cancelState} = 'stopped'
+              AND ${federationOutbound.settledAmount} = 0 THEN NULL ELSE ${this.clock().toISOString()}::timestamptz END`,
             receipt,
             receiptJws,
             lastError: null,

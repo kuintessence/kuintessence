@@ -1,12 +1,20 @@
-import type { federationCompletionClaims, PgTransaction } from "@kuintessence/db";
+import { createHash } from "node:crypto";
+import {
+  type federationCompletionClaims,
+  type PgTransaction,
+  federationCommercialRefunds as refunds,
+} from "@kuintessence/db";
 import { FederationDelegationSchema } from "@kuintessence/shared/federation";
-import { sql } from "drizzle-orm";
+import { CommercialRefundSchema } from "@kuintessence/shared/federation/commercial";
+import { and, eq, sql } from "drizzle-orm";
 import { federationMaterialDigest } from "./assets";
 import { readFederationCancellationState } from "./cancellation-state";
 import { preexecutionBlocker } from "./completion-preexecution";
 import { unreservedCompletionBlocker } from "./completion-unreserved";
 
 type Claim = typeof federationCompletionClaims.$inferSelect;
+const wireDigest = (value: unknown) =>
+  `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 
 /** Called with the claim locked: new post-completion obligations cannot commit during this read. */
 export async function completionBlocker(tx: PgTransaction, claim: Claim): Promise<string | null> {
@@ -36,9 +44,40 @@ export async function completionBlocker(tx: PgTransaction, claim: Claim): Promis
       AND b.task_id = ${taskId}::uuid AND b.attempt = ${attempt}::integer
       AND b.counterparty_jws IS NOT NULL AND s.counterparty_jws IS NOT NULL AND s.applied_at IS NOT NULL
   `);
+  const refundRows = await tx
+    .select()
+    .from(refunds)
+    .where(
+      and(
+        eq(refunds.localSiteId, site),
+        eq(refunds.agreementRevisionId, revision ?? ""),
+        sql`${refunds.payload}->'request'->>'taskId' = ${taskId}`,
+        sql`${refunds.payload}->'request'->>'attempt' = ${attempt}`,
+      ),
+    )
+    .limit(2);
+  if (refundRows.length > 1) return "refund-identity";
+  const refund = refundRows[0];
+  if (refund) {
+    const value = CommercialRefundSchema.safeParse(refund.payload);
+    if (
+      !value.success ||
+      value.data.request.mode === "ledger_coordinated" ||
+      value.data.refundId !== refund.refundId ||
+      value.data.request.operationId !== refund.operationId ||
+      value.data.request.agreementRevisionId !== revision ||
+      value.data.request.taskId !== taskId ||
+      value.data.request.attempt !== Number(attempt) ||
+      value.data.requestDigest !== wireDigest(value.data.request) ||
+      wireDigest(value.data) !== refund.digest
+    )
+      return "refund-identity";
+    if (!refund.appliedAt || !refund.counterpartyJws) return "refund";
+    if (bill) return "refund-conflict";
+  }
   // Unknown or unsigned early intents retain their allocation.
-  if (!bill) return preexecutionBlocker(tx, claim);
-  const parsed = FederationDelegationSchema.safeParse(bill.request);
+  if (!bill && !refund) return preexecutionBlocker(tx, claim);
+  const parsed = FederationDelegationSchema.safeParse(refund?.payload.request ?? bill?.request);
   if (!parsed.success) return "identity";
   const request = parsed.data;
   if (federationMaterialDigest(request) !== claim.digest) return "identity";
@@ -46,7 +85,8 @@ export async function completionBlocker(tx: PgTransaction, claim: Claim): Promis
   if (!provider && site !== request.senderSiteId) return "identity";
   if (provider) {
     const stopped = await readFederationCancellationState(tx, request);
-    if (!stopped.stopped || stopped.runs.length !== 1) return "execution-or-input-cleanup";
+    if (!stopped.stopped || stopped.runs.length !== (refund ? 0 : 1))
+      return "execution-or-input-cleanup";
   }
   const [pending] = await tx.execute<{ blocker: string | null }>(sql`
     WITH reservations AS (
@@ -74,14 +114,15 @@ export async function completionBlocker(tx: PgTransaction, claim: Claim): Promis
         AND reservation_id IN (SELECT record_id FROM approvals)
     ), adjustments AS (
       SELECT * FROM federation_commercial_adjustments WHERE local_site_id = ${site}
-        AND settlement_id = ${bill.settlementId}::uuid
+        AND settlement_id = ${bill?.settlementId ?? null}::uuid
     ), discounts AS (
       SELECT * FROM federation_commercial_discounts WHERE local_site_id = ${site}
         AND agreement_revision_id = ${revision}::uuid AND payload->>'taskId' = ${taskId}
         AND payload->>'attempt' = ${attempt}
     ), records AS (
-      SELECT ${revision}::uuid AS id UNION ALL SELECT ${bill.billId}::uuid
-      UNION ALL SELECT ${bill.settlementId}::uuid
+      SELECT ${revision}::uuid AS id UNION ALL SELECT ${bill?.billId ?? null}::uuid
+      UNION ALL SELECT ${bill?.settlementId ?? null}::uuid
+      UNION ALL SELECT ${refund?.refundId ?? null}::uuid
       UNION ALL SELECT id FROM federation_usage_reports WHERE reservation_id IN (SELECT id FROM reservations)
       UNION ALL SELECT adjustment_id FROM adjustments UNION ALL SELECT discount_id FROM discounts
       UNION ALL SELECT record_id FROM execution_records UNION ALL SELECT terminal_id FROM terminals
@@ -96,10 +137,35 @@ export async function completionBlocker(tx: PgTransaction, claim: Claim): Promis
       SELECT * FROM federation_result_imports WHERE local_site_id = ${site} AND operation_id = ${request.operationId}
     )
     SELECT CASE
-      WHEN ${provider} AND NOT EXISTS (SELECT 1 FROM reservations WHERE state = 'reserved' AND settled_amount IS NOT NULL)
-        THEN 'reservation'
+      WHEN ${!!refund} AND ${provider} AND NOT EXISTS (
+        SELECT 1 FROM federation_cancellations WHERE local_site_id = ${site}
+          AND sender_site_id = ${request.senderSiteId} AND operation_id = ${request.operationId}
+          AND agreement_revision_id = ${revision}::uuid AND request_digest = ${refund?.payload.requestDigest ?? null}
+          AND confirmed_at IS NOT NULL) THEN 'cancellation'
+      WHEN ${!!refund} AND (EXISTS (SELECT 1 FROM federation_commercial_bills WHERE local_site_id = ${site}
+          AND agreement_revision_id = ${revision}::uuid AND task_id = ${taskId}::uuid AND attempt = ${attempt}::integer)
+        OR EXISTS (SELECT 1 FROM federation_usage_reports WHERE reservation_id IN (SELECT id FROM reservations))
+        OR EXISTS (SELECT 1 FROM federation_received_usage WHERE local_site_id = ${site}
+          AND operation_id = ${request.operationId})) THEN 'refund-conflict'
+      WHEN ${provider} AND CASE WHEN ${!!refund} THEN EXISTS (SELECT 1 FROM reservations
+          WHERE state <> 'reserved' OR settled_amount IS DISTINCT FROM 0
+            OR request_digest <> ${refund?.payload.requestDigest ?? null} OR amount <> ${request.maxAmount}::numeric)
+        ELSE NOT EXISTS (SELECT 1 FROM reservations WHERE state = 'reserved' AND settled_amount IS NOT NULL)
+        END THEN 'reservation'
+      WHEN ${!!refund} AND ${provider} AND ${request.mode} = 'bilateral_attested' AND NOT EXISTS (
+        SELECT 1 FROM federation_commercial_submissions c JOIN LATERAL (
+          SELECT * FROM federation_commercial_attempts WHERE submission_id = c.id ORDER BY number DESC LIMIT 1
+        ) a ON true WHERE c.local_site_id = ${site} AND c.agreement_revision_id = ${revision}::uuid
+          AND c.input->>'operation' = 'record-refund' AND c.input->>'recordId' = ${refund?.refundId ?? null}
+          AND c.input->>'digest' = ${refund?.digest ?? null} AND c.state = 'committed' AND c.lease_token IS NULL
+          AND a.stage = 'committed' AND a.validation_code = 0 AND a.block_number IS NOT NULL
+        ) THEN 'refund-ledger'
       WHEN NOT ${provider} AND NOT EXISTS (SELECT 1 FROM federation_outbound WHERE local_site_id = ${site}
-        AND operation_id = ${request.operationId} AND state = 'accepted' AND settled_amount IS NOT NULL
+        AND operation_id = ${request.operationId} AND CASE WHEN ${!!refund}
+          THEN cancel_state = 'stopped' AND settled_amount = 0 AND request_digest = ${refund?.payload.requestDigest ?? null}
+            AND cancel_receipt_jws = ${refund?.payload.cancellationReceiptJws ?? null}
+            AND amount = ${request.maxAmount}::numeric
+          ELSE state = 'accepted' AND settled_amount IS NOT NULL END
         AND adjustment_held_amount = 0 AND (cancel_state IS NULL OR cancel_state = 'stopped')
         AND status_claim IS NULL AND status_next_attempt_at IS NULL AND status_last_error IS NULL
         AND lease_owner IS NULL AND cancel_lease_owner IS NULL) THEN 'outbound'
@@ -116,7 +182,7 @@ export async function completionBlocker(tx: PgTransaction, claim: Claim): Promis
         AND s.agreement_revision_id = ${revision}::uuid AND s.record_id IN (SELECT id FROM records)
         AND (s.state <> 'complete' OR s.lease_token IS NOT NULL)) THEN 'signature-exchange'
       WHEN EXISTS (SELECT 1 FROM federation_closing_tasks t WHERE t.local_site_id = ${site}
-        AND (t.reference_id IN (SELECT id FROM reservations) OR t.reference_id = ${bill.billId}::uuid)
+        AND (t.reference_id IN (SELECT id FROM reservations) OR t.reference_id = ${bill?.billId ?? null}::uuid)
         AND (t.state <> 'complete' OR t.lease_token IS NOT NULL)) THEN 'closing'
       WHEN EXISTS (SELECT 1 FROM federation_usage_tasks WHERE local_site_id = ${site}
         AND reservation_id IN (SELECT id FROM reservations) AND state <> 'reported') THEN 'usage'

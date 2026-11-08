@@ -9447,7 +9447,7 @@ async function unreservedCapacityFixture(signed = false) {
     await f.service.advanceNext();
     await providerLedger.advanceNext();
   }
-  const capacities = [];
+  const capacities: InstanceType<typeof FederationCompletionCapacity>[] = [];
   for (const site of [f.a.signing.siteId, f.b.signing.siteId]) {
     const storage = testCompletionStorage();
     const capacity = new FederationCompletionCapacity(db, site, storage.guard);
@@ -10333,4 +10333,264 @@ test("attested refund rolls back local release if its private evidence outbox ca
     appliedAt: null,
     counterpartyJws: null,
   });
+});
+
+async function refundCapacityFixture(admitted = true, mode: FederationMode = "bilateral_direct") {
+  const f = await refundFixture(admitted, mode);
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const { federationCompletionClaims: claims } = await import("@kuintessence/db");
+  const a = await f.source.approve(f.actor, f.revisionId, f.value);
+  const b = await f.provider.approve(f.actor, f.revisionId, f.value);
+  const capacities: InstanceType<typeof FederationCompletionCapacity>[] = [];
+  for (const key of [f.a, f.b]) {
+    const storage = testCompletionStorage();
+    const capacity = new FederationCompletionCapacity(db, key.signing.siteId, storage.guard);
+    await capacity.configure(
+      { reserveId: storage.reserveId, capacityBytes: "100", taskBytes: "60", marketBytes: "20" },
+      f.actor.userId,
+    );
+    capacities.push(capacity);
+  }
+  const scan = async (provider = false) => {
+    const site = (provider ? f.b : f.a).signing.siteId;
+    await db
+      .update(claims)
+      .set({ nextCheckAt: new Date(0) })
+      .where(eq(claims.localSiteId, site));
+    const capacity = capacities[provider ? 1 : 0];
+    if (!capacity) throw new Error("Missing refund capacity fixture");
+    await capacity.advanceNext();
+    const [claim] = await db.select().from(claims).where(eq(claims.localSiteId, site));
+    return { ...(await capacity.inspect()), claim };
+  };
+  const apply = async () => {
+    await f.source.attachCounterparty(f.actor, f.revisionId, f.value.refundId, b.approvalJws);
+    await f.provider.attachCounterparty(f.actor, f.revisionId, f.value.refundId, a.approvalJws);
+  };
+  return { ...f, aApproval: a, bApproval: b, scan, apply, claims, capacities };
+}
+
+test.each([
+  true,
+  false,
+])("refund completion retains single signatures then reclaims both sites without reopening the cancelled task (admitted=%s)", async (admitted) => {
+  const f = await refundCapacityFixture(admitted);
+  for (const provider of [false, true]) {
+    expect(await f.scan(provider)).toMatchObject({
+      allocatedBytes: "60",
+      claim: { releaseBlocker: "refund" },
+    });
+  }
+  await f.apply();
+  const budget = await f.budget();
+  for (const provider of [false, true]) {
+    expect(await f.scan(provider)).toMatchObject({
+      allocatedBytes: "0",
+      claim: { releaseBlocker: null },
+    });
+  }
+  await f.apply();
+  expect(await f.budget()).toEqual(budget);
+  expect(await f.scan(true)).toMatchObject({ allocatedBytes: "0" });
+  expect(
+    await db
+      .select()
+      .from(federationCancellations)
+      .where(eq(federationCancellations.operationId, f.request.operationId)),
+  ).toHaveLength(1);
+});
+
+test("refund completion waits for signature delivery and source leases after financial application", async () => {
+  const f = await refundCapacityFixture();
+  const exchange = (await approvalTransport(f)).a;
+  await exchange.discover();
+  await f.apply();
+  expect(await f.scan()).toMatchObject({
+    allocatedBytes: "60",
+    claim: { releaseBlocker: "signature-exchange" },
+  });
+  expect(await exchange.advanceNext()).toBe(true);
+  await db
+    .update(federationOutbound)
+    .set({ cancelLeaseOwner: randomUUID(), cancelLeaseUntil: new Date(Date.now() + 60000) })
+    .where(eq(federationOutbound.operationId, f.request.operationId));
+  expect(await f.scan()).toMatchObject({
+    allocatedBytes: "60",
+    claim: { releaseBlocker: "outbound" },
+  });
+  await db
+    .update(federationOutbound)
+    .set({ cancelLeaseOwner: null, cancelLeaseUntil: null })
+    .where(eq(federationOutbound.operationId, f.request.operationId));
+  expect(await f.scan()).toMatchObject({ allocatedBytes: "0" });
+});
+
+test("refund completion requires the original refund evidence VALID and retains the separate acceptance obligation", async () => {
+  const f = await refundCapacityFixture(true, "bilateral_attested");
+  await f.apply();
+  expect(await f.scan(true)).toMatchObject({
+    allocatedBytes: "60",
+    claim: { releaseBlocker: "refund-ledger" },
+  });
+  const [refundSubmission] = await db
+    .select()
+    .from(submissions)
+    .where(
+      and(
+        eq(submissions.localSiteId, f.b.signing.siteId),
+        sql`${submissions.input}->>'operation' = 'record-refund'`,
+      ),
+    );
+  if (!refundSubmission) throw new Error("Missing refund submission");
+  await db
+    .update(submissions)
+    .set({ state: "committed" })
+    .where(eq(submissions.id, refundSubmission.id));
+  expect(await f.scan(true)).toMatchObject({
+    allocatedBytes: "60",
+    claim: { releaseBlocker: "refund-ledger" },
+  });
+  await db
+    .update(submissions)
+    .set({ state: "pending" })
+    .where(eq(submissions.id, refundSubmission.id));
+  const adapter = new Adapter();
+  const worker = new FederationCommercialSubmissionService(db, f.b.signing.siteId, adapter);
+  for (let i = 0; i < 8; i++) if (!(await worker.advanceNext())) break;
+  expect(await f.scan(true)).toMatchObject({
+    allocatedBytes: "60",
+    claim: { releaseBlocker: "attestation" },
+  });
+  // Acceptance batching is covered separately; isolate its outstanding obligation here.
+  await db.delete(federationAttestationOutbox).where(
+    inArray(
+      federationAttestationOutbox.evidenceId,
+      db
+        .select({ id: federationEvidence.id })
+        .from(federationEvidence)
+        .where(eq(federationEvidence.reservationId, f.accepted?.reservationId ?? "")),
+    ),
+  );
+  expect(await f.scan(true)).toMatchObject({ allocatedBytes: "0" });
+  expect((await f.budget())?.reserved).toBe("0");
+});
+
+test("refund completion retains corrupt refund identities and unconfirmed permanent cancellation", async () => {
+  const f = await refundCapacityFixture();
+  await f.apply();
+  const { federationCommercialRefunds: refunds } = await import("@kuintessence/db");
+  await db
+    .update(refunds)
+    .set({ digest: `sha256:${"0".repeat(64)}` })
+    .where(eq(refunds.localSiteId, f.b.signing.siteId));
+  expect(await f.scan(true)).toMatchObject({
+    allocatedBytes: "60",
+    claim: { releaseBlocker: "refund-identity" },
+  });
+  await db
+    .update(refunds)
+    .set({ digest: f.bApproval.digest })
+    .where(eq(refunds.localSiteId, f.b.signing.siteId));
+  await db
+    .update(federationCancellations)
+    .set({ confirmedAt: null })
+    .where(eq(federationCancellations.operationId, f.request.operationId));
+  expect(await f.scan(true)).toMatchObject({
+    allocatedBytes: "60",
+    claim: { releaseBlocker: "cancellation" },
+  });
+});
+
+test("refund completion audit failure retains the allocation and a concurrent owner excludes release", async () => {
+  const f = await refundCapacityFixture();
+  await f.apply();
+  await db.execute(
+    sql`CREATE FUNCTION refund_release_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.storage.completion.release' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER refund_release_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION refund_release_audit_fail()`,
+  );
+  try {
+    await expect(f.scan(true)).rejects.toThrow();
+    const [claim] = await db
+      .select()
+      .from(f.claims)
+      .where(eq(f.claims.localSiteId, f.b.signing.siteId));
+    expect(claim?.releasedAt).toBeNull();
+  } finally {
+    await db.execute(sql`DROP TRIGGER refund_release_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION refund_release_audit_fail()`);
+  }
+  await db.transaction(async (tx) => {
+    await tx
+      .select()
+      .from(f.claims)
+      .where(eq(f.claims.localSiteId, f.b.signing.siteId))
+      .for("share");
+    expect(await f.capacities[1]?.advanceNext()).toBe(false);
+  });
+  expect(await f.scan(true)).toMatchObject({ allocatedBytes: "0" });
+});
+
+test.each([
+  true,
+  false,
+])("refund completion fences a late status poll after refund (response=%s)", async (response) => {
+  const f = await refundCapacityFixture();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "delegation.read", enabled: true },
+    f.actor.userId,
+  );
+  let sent = false;
+  const worker = new FederationOutboundService(
+    db,
+    f.a.signing,
+    async (_endpoint, jws) => {
+      sent = true;
+      const { payload: query, digest } = await verifyFederationMessage(
+        FederationStatusQuerySchema,
+        jws,
+        f.aKey,
+        new Date(),
+      );
+      await f.apply();
+      if (!response) throw new Error("Connection lost after refund");
+      const { issuedAt: _issuedAt, expiresAt: _expiresAt, ...identity } = query;
+      return signFederationMessage(
+        FederationStatusReportSchema,
+        {
+          ...identity,
+          kind: "status-report",
+          senderSiteId: query.recipientSiteId,
+          recipientSiteId: query.senderSiteId,
+          queryDigest: digest,
+          observedAt: new Date().toISOString(),
+          preparation: null,
+          workflow: null,
+        },
+        f.b.signing,
+      );
+    },
+    new FederationAssetService(db, {
+      authorizeSoftware: async () => {
+        throw new Error("No software access expected");
+      },
+    }),
+  );
+  expect(await worker.refreshStatusNext()).toBe(true);
+  expect(sent).toBe(true);
+  const [row] = await db
+    .select()
+    .from(federationOutbound)
+    .where(eq(federationOutbound.operationId, f.request.operationId));
+  expect(row).toMatchObject({
+    statusClaim: null,
+    statusNextAttemptAt: null,
+    statusLastError: null,
+    statusReport: null,
+    settledAmount: "0",
+  });
+  expect(await worker.refreshStatusNext()).toBe(false);
+  expect(await f.scan()).toMatchObject({ allocatedBytes: "0" });
 });

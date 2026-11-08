@@ -1791,7 +1791,10 @@ test("cancellation late worker cannot overwrite recovered stop confirmation", as
   });
 });
 
-test("cancellation preserves an acceptance that arrives after the stop intent", async () => {
+test.each([
+  false,
+  true,
+])("cancellation preserves late acceptance without restarting refunded status polling (refunded=%s)", async (refunded) => {
   const f = await cancellationFixture();
   let release!: () => void, entered!: () => void;
   const blocked = new Promise<void>((resolve) => {
@@ -1814,6 +1817,13 @@ test("cancellation preserves an acceptance that arrives after the stop intent", 
     await f.monitor.tick();
     time = new Date(time.getTime() + 11_000);
     await f.source.cancellations.deliverNext();
+    if (refunded) {
+      // Model the local refund checkpoint; financial approval/application is covered by refund tests.
+      await db
+        .update(federationOutbound)
+        .set({ settledAmount: "0", statusClaim: null, statusNextAttemptAt: null })
+        .where(eq(federationOutbound.operationId, f.request.operationId));
+    }
   } finally {
     release();
     await sending;
@@ -1823,6 +1833,7 @@ test("cancellation preserves an acceptance that arrives after the stop intent", 
   if (!saved.receipt || !saved.cancelReceipt?.reservationId)
     throw new Error("Missing matching remote receipts");
   expect(saved.receipt.reservationId).toBe(saved.cancelReceipt.reservationId);
+  expect(saved.statusNextAttemptAt === null).toBe(refunded);
 });
 
 const resultPolicy: NonNullable<FederationAgreement["resultPolicy"]> = {
