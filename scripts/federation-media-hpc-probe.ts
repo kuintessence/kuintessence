@@ -197,6 +197,7 @@ ${mode === "complete" ? "" : "/bin/sleep 120"}
           required: true,
         },
       ],
+      resources: { cpus: 1, memoryMb: 128 },
       limits: { pids: 128, outputBytes: 1048576, logBytes: 16384 },
       networkDisabled: true,
       executionProfile: profile,

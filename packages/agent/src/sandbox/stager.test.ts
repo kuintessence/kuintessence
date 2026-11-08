@@ -93,6 +93,7 @@ function verified(inputHash: string, jobId: string): VerifiedSandboxManifest {
         required: true,
       },
     ],
+    resources: { cpus: 1, memoryMb: 128 },
     limits: { pids: 16, outputBytes: 2_000, logBytes: 1_000 },
     networkDisabled: true,
   };

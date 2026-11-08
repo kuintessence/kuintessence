@@ -64,7 +64,10 @@ describe("ActiveRemoteJobs", () => {
   });
 });
 
-test("recovers Sandbox identity, isolation and output-validation metadata without dropping fields", async () => {
+test.each([
+  false,
+  true,
+])("recovers Sandbox metadata without inventing signed resources (legacy=%s)", async (legacy) => {
   const db = createSqliteDb(":memory:");
   const store = new ActiveRemoteJobs(db);
   const spec = {
@@ -109,6 +112,7 @@ test("recovers Sandbox identity, isolation and output-validation metadata withou
           batchEntries: [],
         },
       ],
+      ...(legacy ? {} : { resources: { cpus: 1, memoryMb: 128 } }),
       limits: { pids: 8, outputBytes: 100, logBytes: 100 },
       kubernetesArtifactPvc: "original-pvc",
     },
@@ -123,4 +127,7 @@ test("recovers Sandbox identity, isolation and output-validation metadata withou
   expect(restored?.dispatchId).toBe("job:7");
   expect(restored?.spec).toMatchObject(spec);
   expect(restored?.spec.sandbox?.mounts).toHaveLength(1);
+  expect(restored?.spec.sandbox?.resources).toEqual(
+    legacy ? undefined : { cpus: 1, memoryMb: 128 },
+  );
 });

@@ -99,6 +99,7 @@ test("Sandbox renewal changes only envelope credentials and requires the origina
   const dispatch = clone(DispatchJobSchema, original);
   dispatch.sandboxExecution = create(SandboxExecutionSchema, {
     runtime: { digest: "original-image" },
+    computeResources: { cpus: 1, memoryMb: 128n },
     networkDisabled: true,
     envelope: {
       keyId: "old-key",
@@ -120,6 +121,13 @@ test("Sandbox renewal changes only envelope credentials and requires the origina
     signature: new Uint8Array([2]),
   });
   expect(sameDispatchIntent(dispatch, renewed)).toBe(true);
+  if (!execution.computeResources) throw new Error("Missing resources");
+  execution.computeResources.cpus = 2;
+  expect(sameDispatchIntent(dispatch, renewed)).toBe(false);
+  execution.computeResources.cpus = 1;
+  execution.computeResources.memoryMb = 256n;
+  expect(sameDispatchIntent(dispatch, renewed)).toBe(false);
+  execution.computeResources.memoryMb = 128n;
   execution.runtime.digest = "changed-image";
   expect(sameDispatchIntent(dispatch, renewed)).toBe(false);
   execution.runtime.digest = "original-image";

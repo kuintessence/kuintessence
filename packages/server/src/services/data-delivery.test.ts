@@ -125,6 +125,7 @@ describe("Data Market delivery integrity", () => {
       containerPath: "/kq/inputs/potcar",
       batchEntries: [{ relativePath: "POTCAR", sha256: "a".repeat(64), sizeBytes: 8 }],
     });
+    expect(bound.manifest.resources).toEqual(base.resources);
     expect(bound.manifest.executionMode).toBe("RootImpersonation");
     expect(bound.manifest.executionProfile).toEqual(executionProfile);
     expect(bound.inputStaging).toEqual([
@@ -184,6 +185,7 @@ describe("Data Market delivery integrity", () => {
       },
     ]);
 
+    expect(bound.manifest.resources).toEqual(base.resources);
     expect(bound.manifest.executionMode).toBe("SelfAccount");
     expect(bound.manifest.runtimeAttestationId).toBe(runtimeAttestationId);
   });
@@ -430,6 +432,7 @@ function sandboxManifest(): SandboxSignedManifest {
       allowedQueues: [],
     },
     mounts: [],
+    resources: { cpus: 1, memoryMb: 128 },
     limits: { pids: 1, outputBytes: 1, logBytes: 1 },
     networkDisabled: true,
     envelope: {

@@ -290,6 +290,18 @@ PBS/Torque 不可用，restrictedNoEgress 也不可用。
 `executionMode` 属于签名协议，升级需先 drain/暂停 Sandbox，再协调 Server/Agent 升级；
 混用版本会拒绝任务。
 
+Sandbox 清单必须包含签名 `resources: { cpus, memoryMb }`，内存单位为 MiB。
+Server 取实际持久化 Job 的资源值；追加只读数据挂载及续签保留这些值。
+Agent 在消费 nonce、下载输入及清理重试目录前核对派发值，在 Slurm/PBS/Torque/Kubernetes
+提交入口再次核对实际调度参数。联邦续期还要求持久化 Job、原始 outbox 与签名资源一致，
+即使改动后仍低于政策上限也不接受。CPU 必须为正 int32，内存必须为正整数且换算字节不丢精度。
+
+升级须先停止新 Sandbox 提交，并排空或取消旧的待派发/运行任务，再同步 Server 与 Agent；
+旧清单不补默认资源，也不自动重新签名。Agent 仍可恢复旧运行记录以轮询、收尾或取消，
+但不能据此重新提交；联邦旧清单不能续期，仍按原租约到期停止。
+此约束证明资源需求没有被替换，尚不证明 HPC 节点的逐作业 CPU/内存 cgroup 已强制生效。
+需另行验收实际内核限额，不能使用 Agent 配置开关、cgroup 路径或整个 Pod 的限额代替。
+
 受限 HPC 任务使用 signed `executionProfile` 固定 Apptainer、SIF 和 trusted wrapper 的
 canonical path/SHA-256。compute node 的 root-owned
 `/usr/libexec/kuintessence/kq-sandbox-wrapper` 读取

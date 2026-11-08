@@ -49,6 +49,7 @@ function unsigned(): SandboxUnsignedManifest {
       allowedQueues: ["compute"],
     },
     mounts: [],
+    resources: { cpus: 1, memoryMb: 128 },
     limits: { pids: 32, outputBytes: 1_000_000, logBytes: 100_000 },
     networkDisabled: true,
   };

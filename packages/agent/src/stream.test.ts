@@ -4362,7 +4362,8 @@ describe("AgentStream", () => {
       logger: silent,
       sandboxProcessor: {
         cleanup: async () => {},
-        prepare: async (_jobId, _execution, inputSources) => {
+        prepare: async (_jobId, _execution, resources, inputSources) => {
+          expect(resources).toEqual({ cpus: 1, memoryMb: 512n });
           sandboxInputSources.push(inputSources);
           return {
             workingDir: "/managed/sandbox/job",
@@ -4395,6 +4396,7 @@ describe("AgentStream", () => {
                 required: true,
                 sizeLimitBytes: 1000,
               })),
+              resources: { cpus: 1, memoryMb: 512 },
               limits: { pids: 32, outputBytes: 1_000, logBytes: 1_000 },
             },
           };
@@ -4496,6 +4498,7 @@ describe("AgentStream", () => {
               allowedQueues: [],
             },
             mounts: [],
+            resources: { cpus: 1, memoryMb: 512 },
             limits: { pids: 32, outputBytes: 1_000, logBytes: 1_000 },
           },
         }),
@@ -9804,7 +9807,7 @@ for (const kind of ["Sandbox", "Data Market", "NetDrive"] as const)
       },
       sandboxProcessor: {
         cleanup: async () => {},
-        prepare: async (_jobId, _execution, inputs, preparation) => {
+        prepare: async (_jobId, _execution, _resources, inputs, preparation) => {
           attempts++;
           expect(preparation?.restart).toBe(true);
           const input = inputs?.[0];
@@ -9969,7 +9972,7 @@ test.each([
     },
     sandboxProcessor: {
       cleanup: async () => {},
-      prepare: async (_jobId, _execution, sources, options) => {
+      prepare: async (_jobId, _execution, _resources, sources, options) => {
         prepared = true;
         expect(sources?.[0]?.localDataSource).toMatchObject({
           locationId: "location",

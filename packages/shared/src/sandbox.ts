@@ -478,6 +478,16 @@ export const SandboxDispatchMountSchema = z.strictObject({
 });
 export type SandboxDispatchMount = z.infer<typeof SandboxDispatchMountSchema>;
 
+export const SandboxComputeResourcesSchema = z.strictObject({
+  cpus: z.number().int().positive().max(2_147_483_647),
+  memoryMb: z
+    .number()
+    .int()
+    .positive()
+    .max(Math.floor(Number.MAX_SAFE_INTEGER / 1_048_576)),
+});
+export type SandboxComputeResources = z.infer<typeof SandboxComputeResourcesSchema>;
+
 export const SandboxUnsignedManifestSchema = z
   .strictObject({
     jobId: UuidSchema,
@@ -499,6 +509,7 @@ export const SandboxUnsignedManifestSchema = z
     executionProfile: SandboxTrustedExecutionProfileSchema.optional(),
     identity: SandboxDispatchIdentitySchema,
     mounts: z.array(SandboxDispatchMountSchema).max(256),
+    resources: SandboxComputeResourcesSchema,
     limits: z.strictObject({
       pids: z.number().int().positive(),
       outputBytes: z.number().int().positive(),

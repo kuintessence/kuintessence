@@ -109,6 +109,10 @@ export async function checkFederationSandboxJob(
   if (
     !persisted.success ||
     persisted.data.jobId !== jobId ||
+    persisted.data.resources.cpus !== job.cpus ||
+    persisted.data.resources.memoryMb !== job.memoryMb ||
+    message.payload.value.cpus !== job.cpus ||
+    message.payload.value.memoryMb !== BigInt(job.memoryMb) ||
     !manifest ||
     !equals(SandboxExecutionSchema, sandboxExecutionToProto(persisted.data), manifest)
   )

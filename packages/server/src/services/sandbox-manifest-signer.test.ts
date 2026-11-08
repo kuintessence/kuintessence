@@ -41,6 +41,7 @@ function fixture() {
       allowedQueues: ["compute"],
     },
     mounts: [],
+    resources: { cpus: 1, memoryMb: 128 },
     limits: { pids: 64, outputBytes: 1_000_000, logBytes: 100_000 },
     networkDisabled: true as const,
   };

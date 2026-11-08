@@ -461,6 +461,7 @@ export class RestrictedSandboxDeliveryBinder {
       ...(manifest.executionProfile ? { executionProfile: manifest.executionProfile } : {}),
       identity: manifest.identity,
       mounts: [...manifest.mounts, ...mounts],
+      resources: manifest.resources,
       limits: manifest.limits,
       networkDisabled: manifest.networkDisabled,
     });

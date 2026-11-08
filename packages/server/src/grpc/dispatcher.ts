@@ -128,6 +128,10 @@ export function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
         ),
       }),
     ),
+    computeResources: {
+      cpus: manifest.resources.cpus,
+      memoryMb: BigInt(manifest.resources.memoryMb),
+    },
     limits: create(SandboxResourceLimitsSchema, {
       pids: manifest.limits.pids,
       outputBytes: BigInt(manifest.limits.outputBytes),

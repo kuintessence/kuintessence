@@ -5,6 +5,7 @@ import { createLogger } from "@kuintessence/shared";
 import { z } from "zod";
 import { schedulerAccounting } from "./accounting";
 import {
+  assertSandboxComputeResources,
   COMPUTE_HEALTH_CLI_TIMEOUT_MS,
   type ComputeHealthObservation,
   commandWithOptionalStdin,
@@ -202,6 +203,7 @@ export class K8sAdapter implements SchedulerAdapter {
   private buildSandboxResources(spec: JobSpec): Record<string, unknown> {
     const sandbox = spec.sandbox;
     if (!sandbox) throw new Error("Sandbox specification is required");
+    assertSandboxComputeResources(spec);
     if (sandbox.runtimeKind !== "OCI" || !sandbox.runtimePath.includes("@sha256:")) {
       throw new Error("Kubernetes Sandbox requires a digest-pinned OCI image");
     }

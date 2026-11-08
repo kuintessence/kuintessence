@@ -2948,6 +2948,7 @@ test.each([
         quotaPolicy: null,
       },
       mounts: [],
+      resources: { cpus: 1, memoryMb: 128 },
       limits: { pids: 8, outputBytes: 128, logBytes: 128 },
       networkDisabled: true,
     });

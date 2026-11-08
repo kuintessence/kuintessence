@@ -576,6 +576,12 @@ message SandboxBatchEntry {
   int64 size_bytes = 3;
 }
 
+// Signed per-job scheduler resources; memory is measured in MiB.
+message SandboxComputeResources {
+  int32 cpus = 1;
+  int64 memory_mb = 2;
+}
+
 message SandboxResourceLimits {
   int32 pids = 1;
   int64 output_bytes = 2;
@@ -616,6 +622,7 @@ message SandboxExecution {
   string execution_mode = 9;
   // Required for SelfAccount; this is an opaque SHA-256 evidence id.
   string runtime_attestation_id = 10;
+  SandboxComputeResources compute_resources = 11;
 }
 
 message SandboxRuntimeCacheEntry {

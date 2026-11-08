@@ -1,12 +1,14 @@
-import type {
-  QueueFailureCode,
-  QueueTargetMode,
-  QueueValidationMode,
-  SandboxExecutionMode,
-  SandboxSelfAccount,
-  SandboxTrustedExecutionProfile,
-  SchedulerAccounting,
-  SchedulerQueueInventory,
+import {
+  type QueueFailureCode,
+  type QueueTargetMode,
+  type QueueValidationMode,
+  type SandboxComputeResources,
+  SandboxComputeResourcesSchema,
+  type SandboxExecutionMode,
+  type SandboxSelfAccount,
+  type SandboxTrustedExecutionProfile,
+  type SchedulerAccounting,
+  type SchedulerQueueInventory,
 } from "@kuintessence/shared";
 
 export interface JobSpec {
@@ -95,6 +97,8 @@ export interface SandboxJobSpec {
   executionProfile?: SandboxTrustedExecutionProfile;
   identity: SandboxJobIdentity;
   mounts: SandboxJobMount[];
+  /** Legacy running jobs may be monitored, but cannot be submitted without signed resources. */
+  resources?: SandboxComputeResources;
   limits: { pids: number; outputBytes: number; logBytes: number };
   kubernetesArtifactPvc?: string;
 }
@@ -293,7 +297,16 @@ function assertSelfAccountSubmission(sandbox: SandboxJobSpec): void {
   }
 }
 
+export function assertSandboxComputeResources(spec: JobSpec): void {
+  if (!spec.sandbox) return;
+  const resources = SandboxComputeResourcesSchema.parse(spec.sandbox.resources);
+  if (resources.cpus !== spec.cpus || resources.memoryMb !== spec.memoryMb) {
+    throw new Error("Sandbox scheduler resources do not match the signed manifest");
+  }
+}
+
 export function assertSandboxSchedulerMetadata(spec: JobSpec): void {
+  assertSandboxComputeResources(spec);
   if (spec.queueName && !isSchedulerQueueName(spec.queueName)) {
     throw new QueueValidationError("QUEUE_NOT_FOUND");
   }

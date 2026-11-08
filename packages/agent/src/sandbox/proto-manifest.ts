@@ -88,6 +88,7 @@ export function decodeSandboxExecution(
     !value.runtime ||
     !value.executionIdentity ||
     !value.limits ||
+    !value.computeResources ||
     !value.envelope
   ) {
     throw new Error("Sandbox execution manifest is incomplete");
@@ -141,6 +142,10 @@ export function decodeSandboxExecution(
       sizeLimitBytes: safeInt(mount.sizeLimitBytes, "artifact size limit"),
       required: mount.required,
     })),
+    resources: {
+      cpus: value.computeResources.cpus,
+      memoryMb: safeInt(value.computeResources.memoryMb, "memory"),
+    },
     limits: {
       pids: value.limits.pids,
       outputBytes: safeInt(value.limits.outputBytes, "output limit"),

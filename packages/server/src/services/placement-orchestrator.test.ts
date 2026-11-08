@@ -164,6 +164,7 @@ describe("PlacementOrchestrator", () => {
           required: true,
         },
       ],
+      resources: { cpus: 1, memoryMb: 128 },
       limits: { pids: 16, outputBytes: 1_024, logBytes: 1_024 },
       networkDisabled: true,
       envelope: {

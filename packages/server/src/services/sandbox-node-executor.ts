@@ -13,6 +13,7 @@ import {
   type NodeInvocation,
   type RoleName,
   type SandboxArtifactMember,
+  type SandboxComputeResources,
   type SandboxDispatchIdentity,
   type SandboxDispatchMount,
   type SandboxExecutionMode,
@@ -162,6 +163,7 @@ interface RootImpersonationExecutionFacts {
 
 interface SelfAccountManifestInput {
   jobId: string;
+  resources: SandboxComputeResources;
   source: ResolvedSandboxSource;
   scriptContent: Uint8Array;
   bundleSha256: string;
@@ -579,6 +581,7 @@ export class SandboxNodeExecutor {
           if (executionMode.executionMode === "SelfAccount") {
             return this.signSelfAccountManifest({
               jobId: job.id,
+              resources: { cpus: job.cpus, memoryMb: job.memoryMb },
               source,
               scriptContent,
               bundleSha256,
@@ -596,6 +599,7 @@ export class SandboxNodeExecutor {
             : undefined;
           return this.options.signer.sign({
             jobId: job.id,
+            resources: { cpus: job.cpus, memoryMb: job.memoryMb },
             script: {
               language: source.language,
               entrypoint: source.entrypoint,
@@ -833,6 +837,7 @@ export class SandboxNodeExecutor {
   private signSelfAccountManifest(input: SelfAccountManifestInput) {
     return this.options.signer.sign({
       jobId: input.jobId,
+      resources: input.resources,
       script: {
         language: input.source.language,
         entrypoint: input.source.entrypoint,

@@ -146,6 +146,7 @@ describe("AgentDispatcher", () => {
       allowedQueues: ["compute"],
     },
     mounts: [],
+    resources: { cpus: 1, memoryMb: 128 },
     limits: { pids: 32, outputBytes: 1_000, logBytes: 1_000 },
     networkDisabled: true,
     envelope: {
@@ -345,6 +346,7 @@ describe("AgentDispatcher", () => {
     expect(message?.payload.case).toBe("dispatchJob");
     if (message?.payload.case !== "dispatchJob") return;
     const sandbox = message.payload.value.sandboxExecution;
+    expect(sandbox?.computeResources).toMatchObject({ cpus: 1, memoryMb: 128n });
     expect(sandbox?.script?.entrypoint).toBe("main.py");
     expect(sandbox?.runtime?.digest).toBe(`sha256:${"3".repeat(64)}`);
     expect(sandbox?.executionMode).toBe("RootImpersonation");

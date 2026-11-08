@@ -3453,20 +3453,28 @@ export class AgentStream {
                     }
                   : {}),
               }));
-            return processor.prepare(dj.jobId, current().sandboxExecution, inputs(), {
-              signal,
-              restart: dj.federationExecution,
-              ...(dj.federationExecution
-                ? {
-                    renewInput: async (source) => {
-                      const latest = inputs().find((input) => input.stagePath === source.stagePath);
-                      if (!latest)
-                        throw new Error("Sandbox input renewal lost its original binding");
-                      return latest;
-                    },
-                  }
-                : {}),
-            });
+            return processor.prepare(
+              dj.jobId,
+              current().sandboxExecution,
+              { cpus: dj.cpus, memoryMb: dj.memoryMb },
+              inputs(),
+              {
+                signal,
+                restart: dj.federationExecution,
+                ...(dj.federationExecution
+                  ? {
+                      renewInput: async (source) => {
+                        const latest = inputs().find(
+                          (input) => input.stagePath === source.stagePath,
+                        );
+                        if (!latest)
+                          throw new Error("Sandbox input renewal lost its original binding");
+                        return latest;
+                      },
+                    }
+                  : {}),
+              },
+            );
           },
           () => processor.cleanup(dj.jobId),
         )

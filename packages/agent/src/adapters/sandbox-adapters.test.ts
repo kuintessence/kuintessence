@@ -54,6 +54,7 @@ function unixSandbox(): SandboxJobSpec {
         required: true,
       },
     ],
+    resources: { cpus: 2, memoryMb: 512 },
     limits: { pids: 32, outputBytes: 2_000, logBytes: 1_000 },
   };
 }
@@ -93,6 +94,29 @@ function job(sandbox: SandboxJobSpec = unixSandbox()): JobSpec {
     sandbox,
   };
 }
+
+test.each([
+  "cpu",
+  "memory",
+  "legacy",
+] as const)("all Sandbox adapters reject altered or unsigned scheduler resources: %s", (field) => {
+  for (const adapter of [new SlurmAdapter("23"), new PbsProAdapter("23"), new TorqueAdapter("6")]) {
+    const spec = job();
+    if (field === "cpu") spec.cpus++;
+    if (field === "memory") spec.memoryMb++;
+    if (field === "legacy" && spec.sandbox) delete spec.sandbox.resources;
+    expect(() => adapter.buildSubmitScript(spec)).toThrow(
+      field === "legacy" ? "expected object" : "resources do not match",
+    );
+  }
+  const spec = job(kubernetesSandbox());
+  if (field === "cpu") spec.cpus++;
+  if (field === "memory") spec.memoryMb++;
+  if (field === "legacy" && spec.sandbox) delete spec.sandbox.resources;
+  expect(() => new K8sAdapter("1.30").buildJobManifest(spec)).toThrow(
+    field === "legacy" ? "expected object" : "resources do not match",
+  );
+});
 
 describe("HPC Sandbox adapters", () => {
   test("builds a minimal Apptainer command without the user command or host environment", () => {

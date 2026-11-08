@@ -509,6 +509,7 @@ export class SandboxStager {
           executionProfile: verified.unsigned.executionProfile,
           identity: jobIdentity(identity),
           mounts,
+          resources: verified.unsigned.resources,
           limits: verified.unsigned.limits,
           kubernetesArtifactPvc: this.options.kubernetesArtifactPvc,
         },
@@ -599,6 +600,7 @@ export class SandboxStager {
           : {}),
         identity: jobIdentity(identity),
         mounts,
+        resources: verified.unsigned.resources,
         limits: verified.unsigned.limits,
       },
     };

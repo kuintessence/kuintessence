@@ -63,6 +63,7 @@ const kubernetesSandbox: SandboxJobSpec = {
     serviceAccount: "user",
   },
   mounts: [],
+  resources: { cpus: 1, memoryMb: 1024 },
   limits: { pids: 16, outputBytes: 1_000, logBytes: 1_000 },
   kubernetesArtifactPvc: "artifacts",
 };

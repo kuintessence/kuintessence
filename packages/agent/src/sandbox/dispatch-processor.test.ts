@@ -29,6 +29,12 @@ test.each([
   "restart",
   "invalid",
   "aborted",
+  "cpu-mismatch",
+  "memory-mismatch",
+  "unsigned-resources",
+  "invalid-memory",
+  "tampered-cpu",
+  "tampered-memory",
 ] as const)("Sandbox preparation cleans only verified work: %s", async (mode) => {
   const parent = await mkdtemp(join(tmpdir(), "kq-sandbox-prepare-"));
   roots.push(parent);
@@ -68,6 +74,7 @@ test.each([
         required: true,
       },
     ],
+    computeResources: { cpus: 1, memoryMb: 128n },
     limits: { pids: 16, outputBytes: 100n, logBytes: 100n },
     networkDisabled: true,
     envelope: {
@@ -86,12 +93,24 @@ test.each([
   execution.envelope.manifestSha256 = hash(json);
   execution.envelope.signature = sign(null, Buffer.from(json), privateKey);
   if (mode === "invalid") execution.envelope.signature = new Uint8Array(64);
+  if (mode === "unsigned-resources") execution.computeResources = undefined;
+  if (mode === "invalid-memory" && execution.computeResources)
+    execution.computeResources.memoryMb = 0n;
+  if (mode === "tampered-cpu" && execution.computeResources) execution.computeResources.cpus = 2;
+  if (mode === "tampered-memory" && execution.computeResources)
+    execution.computeResources.memoryMb = 256n;
+  let noncesConsumed = 0;
   const verifier = new SandboxManifestVerifier({
     publicKeys: { test: publicKey.export({ type: "spki", format: "pem" }).toString() },
     runtimeCache: {
       [runtimeDigest]: { kind: "OCI", localPath: "registry.test/runtime", signatureVerified: true },
     },
-    nonceConsumer: { consume: async () => true },
+    nonceConsumer: {
+      consume: async () => {
+        noncesConsumed++;
+        return true;
+      },
+    },
     accountVerifier: { verify: async () => true },
     adapterType: "kubernetes",
     localExecutionMode: "RootImpersonation",
@@ -113,13 +132,40 @@ test.each([
       },
     }),
   );
+  const resources = {
+    cpus: mode === "cpu-mismatch" || mode === "tampered-cpu" ? 2 : 1,
+    memoryMb: mode === "memory-mismatch" || mode === "tampered-memory" ? 256n : 128n,
+  };
   const preparation = processor.prepare(
     jobId,
     execution,
+    resources,
     [{ stagePath: "inputs/data", sourceUrl: "https://objects.test/input" }],
     { restart: true, signal: controller.signal },
   );
-  if (mode === "invalid") {
+  if (
+    [
+      "cpu-mismatch",
+      "memory-mismatch",
+      "unsigned-resources",
+      "invalid-memory",
+      "tampered-cpu",
+      "tampered-memory",
+    ].includes(mode)
+  ) {
+    await expect(preparation).rejects.toThrow(
+      mode.endsWith("mismatch")
+        ? "resources do not match"
+        : mode === "unsigned-resources"
+          ? "manifest is incomplete"
+          : mode === "invalid-memory"
+            ? "safe integer range"
+            : "manifest hash mismatch",
+    );
+    expect(downloads).toBe(0);
+    expect(noncesConsumed).toBe(0);
+    expect(await readFile(target, "utf8")).toBe("old input");
+  } else if (mode === "invalid") {
     await expect(preparation).rejects.toThrow("signature verification failed");
     expect(downloads).toBe(0);
     expect(await readFile(target, "utf8")).toBe("old input");
@@ -131,12 +177,15 @@ test.each([
     await processor.prepare(
       jobId,
       execution,
+      { cpus: 1, memoryMb: 128n },
       [{ stagePath: "inputs/data", sourceUrl: "https://objects.test/input" }],
       { restart: true, signal: new AbortController().signal },
     );
     expect(await readFile(target, "utf8")).toBe("new input");
   } else {
-    expect((await preparation).runtimeDigest).toBe(runtimeDigest);
+    const prepared = await preparation;
+    expect(prepared.runtimeDigest).toBe(runtimeDigest);
+    expect(prepared.sandbox.resources).toEqual({ cpus: 1, memoryMb: 128 });
     expect(downloads).toBe(1);
     expect(await readFile(target, "utf8")).toBe("new input");
   }

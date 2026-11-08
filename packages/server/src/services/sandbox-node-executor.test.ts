@@ -44,6 +44,8 @@ describe("SandboxNodeExecutor", () => {
     { pendingDelivery: false, constraint: "none" },
     { pendingDelivery: true, constraint: "none" },
     { pendingDelivery: false, constraint: "locked" },
+    { pendingDelivery: false, constraint: "persisted-resources" },
+    { pendingDelivery: false, constraint: "self-account" },
     { pendingDelivery: false, constraint: "wrong-runtime" },
     { pendingDelivery: false, constraint: "excess-cpu" },
   ])("signed manifest delivery: $constraint, pending=$pendingDelivery", async ({
@@ -163,7 +165,7 @@ describe("SandboxNodeExecutor", () => {
           id: JOB_ID,
           name: "transform",
           command: input.command,
-          cpus: input.resources.cpus,
+          cpus: constraint === "persisted-resources" ? 2 : input.resources.cpus,
           memoryMb: input.resources.memoryMb,
           gpus: 0,
           wallTimeSec: input.resources.wallTimeSec ?? 60,
@@ -177,7 +179,28 @@ describe("SandboxNodeExecutor", () => {
     const delegated = constraint !== "none";
     if (constraint === "excess-cpu") node.requirements = { ...node.requirements, cpuCores: 3 };
     const executor = new SandboxNodeExecutor({
-      db: fakeDb(),
+      db:
+        constraint === "self-account"
+          ? fakeDb({
+              siteId: "site-a",
+              clusterId: "cluster-a",
+              rootMode: false,
+              sandboxCapabilities: {
+                executionMode: "SelfAccount",
+                selfAccount: { username: "scientist", uid: 1001, gid: 1001 },
+              },
+              sandboxRuntimeCache: [
+                {
+                  kind: "SIF",
+                  digest: `sha256:${"a".repeat(64)}`,
+                  signatureVerified: true,
+                  runtimeAttestationId: "8".repeat(64),
+                  attestedNodes: ["slurm-2"],
+                  expiresAtUnixMs: Date.now() + 60_000,
+                },
+              ],
+            })
+          : fakeDb(),
       ...(delegated
         ? {
             resourceLimits: { cpus: 2, memoryMb: 128, gpus: 0, wallTimeSec: 30 },
@@ -215,7 +238,7 @@ describe("SandboxNodeExecutor", () => {
       resolvePolicy: async () => ({
         sandboxEnabled: true,
         impersonationEnabled: true,
-        selfAccountEnabled: false,
+        selfAccountEnabled: constraint === "self-account",
         degradedImpersonationAllowed: false,
         sharedServiceAllowed: false,
         runtimePrecacheRequired: true,
@@ -252,7 +275,13 @@ describe("SandboxNodeExecutor", () => {
       },
     });
     expect(signedScript).toBe("print('safe')");
-    expect(signedManifest?.executionMode).toBe("RootImpersonation");
+    expect(signedManifest?.executionMode).toBe(
+      constraint === "self-account" ? "SelfAccount" : "RootImpersonation",
+    );
+    expect(signedManifest?.resources).toEqual({
+      cpus: constraint === "persisted-resources" ? 2 : 1,
+      memoryMb: delegated ? 128 : 1024,
+    });
     expect(result).toEqual({ status: "Succeeded", values: { result: { ok: true } } });
     expect(registered[0]).toMatchObject({
       workflowRunId: RUN_ID,

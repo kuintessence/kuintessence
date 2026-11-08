@@ -38,6 +38,7 @@ function unsignedManifest() {
       allowedQueues: [],
     },
     mounts: [],
+    resources: { cpus: 1, memoryMb: 128 },
     limits: { pids: 16, outputBytes: 1_024, logBytes: 1_024 },
     networkDisabled: true as const,
   };
@@ -151,6 +152,23 @@ describe("tightenSandboxPolicy", () => {
 });
 
 describe("SandboxUnsignedManifestSchema", () => {
+  test.each([
+    undefined,
+    { cpus: 0, memoryMb: 128 },
+    { cpus: 1.5, memoryMb: 128 },
+    { cpus: 2_147_483_648, memoryMb: 128 },
+    { cpus: 1, memoryMb: 0 },
+    { cpus: 1, memoryMb: 1.5 },
+    { cpus: 1, memoryMb: 8_589_934_592 },
+  ])("rejects missing or unsafe compute resources: %j", (resources) => {
+    expect(
+      SandboxUnsignedManifestSchema.safeParse({
+        ...unsignedManifest(),
+        runtimeAttestationId: "4".repeat(64),
+        resources,
+      }).success,
+    ).toBe(false);
+  });
   test("requires a runtime attestation for SelfAccount execution", () => {
     expect(() => SandboxUnsignedManifestSchema.parse(unsignedManifest())).toThrow(
       "runtime attestation id",

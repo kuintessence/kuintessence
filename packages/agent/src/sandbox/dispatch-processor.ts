@@ -23,11 +23,19 @@ export class SandboxDispatchProcessor {
   async prepare(
     jobId: string,
     execution: SandboxExecution | undefined,
+    dispatchResources: { cpus: number; memoryMb: bigint },
     inputSources: SandboxInputSource[] = [],
     preparation: SandboxPreparationOptions = {},
   ): Promise<PreparedSandboxDispatch> {
     preparation.signal?.throwIfAborted();
     const manifest = decodeSandboxExecution(jobId, execution);
+    const resources = manifest.resources;
+    if (
+      dispatchResources.cpus !== resources.cpus ||
+      dispatchResources.memoryMb !== BigInt(resources.memoryMb)
+    ) {
+      throw new Error("Sandbox dispatch resources do not match the signed manifest");
+    }
     const verified = await this.verifier.verify(jobId, manifest);
     if (preparation.restart) await this.stager.cleanup(jobId);
     try {

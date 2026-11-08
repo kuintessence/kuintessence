@@ -195,6 +195,7 @@ async function fixture(shared = false, kubernetes = false) {
           }),
     },
     mounts: [],
+    resources: { cpus: 1, memoryMb: 128 },
     limits: { pids: 8, outputBytes: 128, logBytes: 128 },
     networkDisabled: true,
     envelope: {
@@ -886,6 +887,52 @@ test("incomplete placement is retried without masking a revoked Sandbox source",
       .where(eq(softwareAssets.id, f.assetId));
     const revoked = await f.check().catch((error: unknown) => error);
     expect(federationExecutionDenial(revoked)).toBe("POLICY_DENIED");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test.each([
+  "job-cpu",
+  "job-memory",
+  "manifest-cpu",
+  "manifest-memory",
+  "dispatch-cpu",
+  "dispatch-memory",
+  "legacy",
+] as const)("Sandbox renewal refuses resource drift even within policy limits: %s", async (change) => {
+  const f = await fixture();
+  try {
+    if (change === "job-cpu" || change === "job-memory") {
+      await db
+        .update(jobs)
+        .set(change === "job-cpu" ? { cpus: 2 } : { memoryMb: 256 })
+        .where(eq(jobs.id, f.jobId));
+    } else if (change === "manifest-cpu" || change === "manifest-memory") {
+      if (change === "manifest-cpu") f.manifest.resources.cpus = 2;
+      else f.manifest.resources.memoryMb = 256;
+      await f.persist();
+    } else if (change === "legacy") {
+      const { resources: _resources, ...legacy } = f.manifest;
+      await db.update(jobs).set({ sandboxExecution: legacy }).where(eq(jobs.id, f.jobId));
+    } else {
+      const [row] = await db
+        .select()
+        .from(jobDispatchOutbox)
+        .where(eq(jobDispatchOutbox.jobId, f.jobId));
+      if (!row) throw new Error("Missing outbox");
+      const message = fromBinary(ServerMessageSchema, Buffer.from(row.payloadBase64, "base64"));
+      if (message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+      if (change === "dispatch-cpu") message.payload.value.cpus = 2;
+      else message.payload.value.memoryMb = 256n;
+      await db
+        .update(jobDispatchOutbox)
+        .set({
+          payloadBase64: Buffer.from(toBinary(ServerMessageSchema, message)).toString("base64"),
+        })
+        .where(eq(jobDispatchOutbox.jobId, f.jobId));
+    }
+    await expect(db.transaction((tx) => f.check(tx))).rejects.toThrow("OPERATION_CONFLICT");
   } finally {
     await f.cleanup();
   }
