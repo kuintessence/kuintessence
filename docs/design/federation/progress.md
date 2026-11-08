@@ -1931,3 +1931,18 @@ Federation 节点新增可选 market（policyId/title/description），协调协
 隔离 PostgreSQL 共 11 个不同专项通过：直接模式并发附签与精确退还、独立权限/组织/正文、事务失败回滚、异步交换不等链、交换租约失效、签名用途撤销、HTTP 私密与自动化拒绝、账单存证等待和同提交恢复、需求方与提供方接单余额/名额、协调 pending/INVALID 不释放而 VALID 仅处理本地名额。协调用例明确使用预批准记录和受控 Adapter 结果，只验证 worker 结果投影；不冒称完整协调审批或真实链联合验收。预留 60、消费 53、退回 7 后双方后续最多可预留 47，原回执重放保持一致；异步上链完成不再次扣账。首轮 worker 夹具误用非 base64 恢复令牌，被生产校验正确拒绝；修正夹具后仅重跑失败项及尚未执行的相关接单测试。
 
 日志 temp/settlement-service-pg.log、temp/settlement-service-extra-pg.log、temp/settlement-coordinated-pg.log；每次隔离数据库均已清理。既有在线权限组件 8 项通过，包含枚举标签检查。全仓类型检查（含 protobuf 与 Fabric 脚本）已通过；新增末批测试的 Server 定向检查也已通过。最终 lint 无错误，保留原有 47 warning / 1 info；733 个本地文档目标与差异格式检查通过。没有重跑已通过的真实 Fabric gate，也没有运行科学软件。真实双 Server/mTLS/Fabric 结算及断链恢复、专用结算 Web/CLI、自动审批、支付退款/争议、物理介质、归档与 PR 预览继续待完成，未合并或部署 main。API 与升级见[Server 额度结算](../../../deploy/federation/fabric-commercial.md#server-额度结算)。
+
+
+## 真实双平台结算与断链恢复
+
+既有 success 样例增加真实结算：双方显式授予 settlement.approve 和 commercial-settlement 签名用途；成功任务预留额从 1 调到 10，让真实账单之外保留可验证的退额。生产接口从已双签原账单生成草稿，两端独立 HTTP 批准，后台经 mTLS 交换原签名。停止 Orderer 时两端 pending、appliedAt 为空、名额未释放；恢复后必须由同一持久待办取得 VALID 才应用本地投影，批准重放保留原 JWS。
+
+最终运行退出 0：日志 `temp/settlement-live-execution-final.log`，执行证据 `temp/federation-execution-success-ukslgumi`，网络材料 `temp/fabric-network-n5VyBU`。两个轻量 Kubernetes Bash Job 的原始时长累计 1,000 毫秒，应付 1，结算预留 10、消耗 1、退回 9。提供方原交易 VALID 在区块 24；需求方原交易在区块 25 发生 MVCC INVALID 11，生产 worker 保留原失败记录，核对同一原 PDC 回执并重新背书，自动取得区块 26 的 VALID，无人工重试或重新批准。
+
+新增独立 Node Gateway 证明脚本读取 A/B/C 真实区块：核对两端持久交易确实位于所称区块且 VALID，断链 checkpoint 全部保留；A/B 各看到一次预算写入、一次原预留 settled 写入、两次相同结算写入。预算 locked=0、spent=1、reservations=0；C 可见公共交易，但三类私有写入均为 0。执行 gate 未变、公共需求仍 CLOSED，无额外 Job；两端没有复制链预算，原接单金额/回执/执行状态保留，settledAmount=1。
+
+证据文件为 settlement-offline-evidence.json、settlement-committed-evidence.json、settlement-private-ledger.json，私有材料仅保存在忽略目录。首次运行因样例预留 1 与实际账单 1 相等，无法验证正退额，在发现后主动停止并正常清理；它不是完整通过记录。修正仅涉及成功样例预留额，不放宽生产校验。最终运行后的临时服务、PostgreSQL、Fabric 进程及两次测试 namespace 已清理。
+
+本次只新增协调结算的真实联合验收，未重复 outage/stop 场景，未运行 Spack 或科学重负载。直接/异步结算沿用隔离数据库证明，尚无真实双平台结算证明；Orderer 中断与实际 MVCC 恢复不替代结算专用进程崩溃验证。专用 Web/CLI、自动账单/结算授权、付款/调整/争议、物理介质、归档及完整 PR 预览仍待完成，不将本次结算通过视为全蓝图验收。
+
+收尾检查：全仓类型检查（含 protobuf 生成及 Fabric 联调脚本）退出 0；lint 退出 0，保留既有 47 warning / 1 info；735 个本地文档目标有效，差异格式检查通过。

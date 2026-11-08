@@ -106,7 +106,12 @@ if (process.argv[2] === "inspect") {
     .insert(userOrgMemberships)
     .values([actor, identity].map((x) => ({ ...x, role: "member" })))
     .onConflictDoNothing();
-  for (const capability of ["agreement.approve", "billing.approve", "asset.map"] as const)
+  for (const capability of [
+    "agreement.approve",
+    "billing.approve",
+    "settlement.approve",
+    "asset.map",
+  ] as const)
     await new FederationPermissionService(db).set(
       { ...actor, capability, enabled: true },
       actor.userId,
@@ -173,6 +178,7 @@ if (process.argv[2] === "inspect") {
           "commercial-usage-query",
           "commercial-usage-page",
           "commercial-bill",
+          "commercial-settlement",
           "agreement",
           "delegation",
           "acceptance",
@@ -413,7 +419,7 @@ printf 'federation-file-consumed:42\\n'
     inputManifestDigest: federationMaterialDigest(inputs),
     environmentLockDigest: federationMaterialDigest(environment),
     resources: terms.resourceLimit,
-    maxAmount: "1",
+    maxAmount: ["success", "workflow"].includes(process.env.LAB_SCENARIO ?? "success") ? "10" : "1",
     unit: terms.unit,
   });
   await Bun.write(`${root}/source-signing.pem`, await exportPKCS8(sourcePair.privateKey), {

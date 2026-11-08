@@ -60,6 +60,23 @@ export async function verifyLiveExecution(
         await Bun.sleep(300);
       }
       assert.equal(await child.exited, 0, `Real coordinated execution ${scenario} failed`);
+      if (["success", "workflow"].includes(scenario)) {
+        const build = await Bun.build({
+          entrypoints: [join(import.meta.dir, "settlement-proof.ts")],
+          target: "node",
+          format: "esm",
+          external: ["@hyperledger/fabric-gateway", "@hyperledger/fabric-protos", "@grpc/grpc-js"],
+        });
+        assert(build.success && build.outputs[0]);
+        const entry = join(root, "live-settlement-proof.mjs");
+        await Bun.write(entry, await build.outputs[0].text());
+        const probe = Bun.spawn(["node", entry, root], { stdout: "inherit", stderr: "inherit" });
+        try {
+          assert.equal(await probe.exited, 0, "Real settlement private ledger proof failed");
+        } finally {
+          if (probe.exitCode === null) probe.kill("SIGTERM");
+        }
+      }
     } finally {
       await stop();
       if (stopped) await controls.startOrderer();

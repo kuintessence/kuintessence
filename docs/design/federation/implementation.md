@@ -837,3 +837,5 @@ Kubernetes Agent 从当前 Job UID 所属单个工作容器的终止时间采集
 
 
 Server 的实际 API、权限与升级边界见[额度结算](../../../deploy/federation/fabric-commercial.md#server-额度结算)。源方保留已消费额度，提供方只退回未用部分；原接单金额、回执与执行状态不被结算改写。
+
+协调结算已在真实双 Server/独立数据库、mTLS、Agent/Kubernetes 与 Fabric 上联调：实际非零计量及账单产生后分别批准结算，停 Orderer 时只交换原签名，恢复后原待办 VALID 才释放各自名额。一次竞争提交产生原生 MVCC INVALID，后台保留原交易并核对同文回执后自动恢复；独立 PDC 区块证明预算只扣一次，终态 gate/公共关闭不变、C 无私有写入。详细证据与未覆盖范围见[真实结算联调](progress.md#真实双平台结算与断链恢复)。

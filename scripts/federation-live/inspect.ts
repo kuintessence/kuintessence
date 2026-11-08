@@ -4,9 +4,11 @@ import {
   createPgDb,
   federationBudgets,
   federationCommercialAttempts,
+  federationCommercialSettlements,
   federationCommercialSubmissions,
   federationMarketAttempts,
   federationMarketSubmissions,
+  federationOutbound,
   federationReservations,
   federationWorkflowBindings,
   jobs,
@@ -55,8 +57,21 @@ try {
     .from(federationCommercialAttempts);
   const budgets = await db.select({ domainId: federationBudgets.domainId }).from(federationBudgets);
   const reservations = await db
-    .select({ id: federationReservations.id, operationId: federationReservations.operationId })
+    .select({
+      id: federationReservations.id,
+      operationId: federationReservations.operationId,
+      amount: federationReservations.amount,
+      settledAmount: federationReservations.settledAmount,
+    })
     .from(federationReservations);
+  const outbound = await db
+    .select({
+      operationId: federationOutbound.operationId,
+      amount: federationOutbound.amount,
+      settledAmount: federationOutbound.settledAmount,
+    })
+    .from(federationOutbound);
+  const settlements = await db.select().from(federationCommercialSettlements);
   const bindings = await db
     .select({
       reservationId: federationWorkflowBindings.reservationId,
@@ -106,7 +121,7 @@ try {
     domainId: config.commercial.domainId,
     reservationId: proof.reservationId,
   });
-  assert(gate.hash, "Reservation remains locked");
+  assert(gate.hash, "Original reservation gate remains available");
   if (closed) {
     const closure = demand.demand.closure;
     assert(closure);
@@ -169,6 +184,8 @@ try {
         commercialTransactions,
         budgets,
         reservations,
+        outbound,
+        settlements,
         bindings,
         execution,
         demand,

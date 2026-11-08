@@ -827,6 +827,82 @@ def verify_billing():
     return record
 
 
+def verify_settlement():
+    config = json.loads((root / "source-init.json").read_text())
+    bill = json.loads((logs / "billing-offline-evidence.json").read_text())["draft"]
+    path = "federation/commercial-agreements/" + config["request"]["agreementRevisionId"]
+    draft = api(path + "/settlements/draft", {"billId": bill["billId"], "settlementId": str(uuid.uuid4())}, token=token)["data"]
+    assert draft["chargedAmount"] == bill["calculation"]["dueAmount"]
+    assert int(draft["reservedAmount"]) == int(draft["chargedAmount"]) + int(draft["releasedAmount"])
+    assert int(draft["chargedAmount"]) > 0 and int(draft["releasedAmount"]) > 0
+    orderer("stop")
+    statuses = {}
+    try:
+        provider = api(path + "/settlements/approve", draft, token=token)["data"]
+        source = sourceapi(path + "/settlements/approve", draft, token=sourcetoken)["data"]
+        for _ in range(60):
+            for name, read, auth in (("provider", api, token), ("source", sourceapi, sourcetoken)):
+                rows = read(path + "/settlements", token=auth)["data"]["data"]
+                assert len(rows) == 1
+                syncs = read(path + "/approval-exchange", token=auth)["data"]["records"]
+                sync = next((r for r in syncs if r["recordKind"] == "settlement" and r["recordId"] == draft["settlementId"]), None)
+                assert not sync or sync["state"] != "needs_review", json.dumps(sync)
+                statuses[name] = {"record": rows[0], "exchange": sync}
+            if all(v["exchange"] and v["exchange"]["state"] == "complete" for v in statuses.values()):
+                break
+            time.sleep(3)
+        else:
+            raise AssertionError("Settlement signatures did not exchange while Orderer was stopped")
+        for name, signature in (("provider", source["approvalJws"]), ("source", provider["approvalJws"])):
+            saved = statuses[name]["record"]
+            assert saved["settlement"]["counterpartyJws"] == signature
+            assert saved["settlement"]["appliedAt"] is None
+            assert saved["ledger"]["state"] == "pending"
+        inspect_ledgers("settlement-offline")
+        for name in ("provider", "source"):
+            local = json.loads((logs / (name + "-settlement-offline.json")).read_text())
+            assert not local["budgets"]
+            for task in local["reservations"] + local["outbound"]:
+                assert task["settledAmount"] is None, "Unconfirmed settlement released a local slot"
+        (logs / "settlement-offline-evidence.json").write_text(json.dumps({"draft": draft, "statuses": statuses}, indent=2) + "\n")
+        print("REAL SETTLEMENT EXCHANGE PASSED: independent HTTP approvals -> original signatures over mTLS while Orderer stopped; no local slot or balance released", flush=True)
+    finally:
+        orderer("start")
+    original_ids = {name: value["record"]["ledger"]["id"] for name, value in statuses.items()}
+    for _ in range(80):
+        for name, read, auth in (("provider", api, token), ("source", sourceapi, sourcetoken)):
+            rows = read(path + "/settlements", token=auth)["data"]["data"]
+            assert len(rows) == 1
+            value = rows[0]
+            assert value["ledger"]["id"] == original_ids[name]
+            assert value["ledger"]["state"] != "needs_review", json.dumps(value["ledger"])
+            statuses[name]["record"] = value
+        if all(v["record"]["settlement"]["appliedAt"] and v["record"]["ledger"]["state"] == "committed" for v in statuses.values()):
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError("Original settlements did not reach VALID and local accounting after recovery")
+    for read, auth, expected in ((api, token, provider), (sourceapi, sourcetoken, source)):
+        assert read(path + "/settlements/approve", draft, token=auth)["data"]["approvalJws"] == expected["approvalJws"]
+    inspect_ledgers("settlement-committed")
+    transactions = {}
+    for name in ("provider", "source"):
+        local = json.loads((logs / (name + "-settlement-committed.json")).read_text())
+        before = json.loads((logs / (name + "-settlement-offline.json")).read_text())
+        assert local["gate"] == before["gate"] and local["demand"] == before["demand"]
+        assert local["execution"] == before["execution"] and not local["budgets"]
+        tasks = local["reservations"] if name == "provider" else local["outbound"]
+        assert len(tasks) == 1 and tasks[0]["amount"] == draft["reservedAmount"] and tasks[0]["settledAmount"] == draft["chargedAmount"]
+        attempts = [r for r in local["commercialTransactions"] if r["submissionId"] == original_ids[name]]
+        valid = [r for r in attempts if r["stage"] == "committed" and r["validationCode"] == 0 and r["blockNumber"] is not None]
+        assert len(valid) == 1
+        transactions[name] = attempts
+    evidence = {"draft": draft, "statuses": statuses, "transactions": transactions, "budgetDomainId": config["request"]["budgetDomainId"], "epoch": config["request"]["epoch"], "evidenceDirectory": str(logs)}
+    (logs / "settlement-committed-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    (networkroot / "live-settlement-proof.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    print("REAL SETTLEMENT RECOVERY PASSED: original submissions VALID -> both local slots released; no local chain balance and terminal gate remains closed", flush=True)
+
+
 try:
     # Executed only inside the disposable lab namespace.
     k(["create", "namespace", namespace])
@@ -1857,7 +1933,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         for name, setting in [("source", sourceenv), ("provider", env)]:
             subprocess.run(
                 ["bun", "--no-env-file", "scripts/federation-live/inspect.ts"]
-                + (["--closed"] if scenario in ("success", "workflow") and suffix == "after" else []),
+                + (["--closed"] if scenario in ("success", "workflow") and suffix in ("after", "settlement-offline", "settlement-committed") else []),
                 cwd=repo,
                 env={
                     **setting,
@@ -1987,6 +2063,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         verify_success()
         verify_terminal()
         bill_record = verify_billing()
+        verify_settlement()
     inspect_ledgers("after")
     if scenario in ("success", "workflow"):
         state = json.loads((logs / "provider-after.json").read_text())
@@ -1994,7 +2071,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         valid = [r for r in transactions if r["stage"] == "committed" and r["validationCode"] == 0 and r["blockNumber"] is not None]
         assert len(valid) == 1, "Expected one original VALID bill transaction"
         (logs / "billing-committed-evidence.json").write_text(json.dumps({"record": bill_record, "transactions": transactions}, indent=2) + "\n")
-        print("REAL BILL EVIDENCE PASSED: original durable intent -> VALID private bill after Orderer recovery; no payment or balance settlement", flush=True)
+        print("REAL BILL EVIDENCE PASSED: original durable intent -> VALID private bill after Orderer recovery; bill confirmation alone does not settle balances", flush=True)
 
 finally:
     cleanup_errors = []

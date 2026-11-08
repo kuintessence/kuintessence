@@ -82,6 +82,7 @@ if (process.argv[2] === "inspect") {
           "commercial-usage-query",
           "commercial-usage-page",
           "commercial-bill",
+          "commercial-settlement",
           "agreement",
           "delegation",
           "acceptance",
@@ -112,6 +113,7 @@ if (process.argv[2] === "inspect") {
   for (const capability of [
     "agreement.approve",
     "billing.approve",
+    "settlement.approve",
     "delegation.submit",
     "asset.map",
     "result.read",
