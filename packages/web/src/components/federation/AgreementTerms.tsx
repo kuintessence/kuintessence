@@ -46,6 +46,28 @@ export function AgreementTerms({
         <AgreementFact label={t("federation.agreements.reservations")}>
           {terms.maxReservations.toLocaleString(i18n.language)}
         </AgreementFact>
+        {terms.mode === "bilateral_attested" ? (
+          terms.attestationLimits ? (
+            <>
+              <AgreementFact label={t("federation.agreements.backlog.taskLimit")}>
+                {terms.attestationLimits.maxOutstandingTasks.toLocaleString(i18n.language)}
+              </AgreementFact>
+              <AgreementFact label={t("federation.agreements.backlog.amountLimit")}>
+                {BigInt(terms.attestationLimits.maxOutstandingAmount).toLocaleString(i18n.language)}{" "}
+                {terms.unit}
+              </AgreementFact>
+              <AgreementFact label={t("federation.agreements.backlog.ageLimit")}>
+                {t("federation.agreements.backlog.seconds", {
+                  value: terms.attestationLimits.maxOutstandingAgeSec.toLocaleString(i18n.language),
+                })}
+              </AgreementFact>
+            </>
+          ) : (
+            <AgreementFact label={t("federation.agreements.backlog.limits")}>
+              {t("federation.agreements.backlog.unconfigured")}
+            </AgreementFact>
+          )
+        ) : null}
         <AgreementFact label={t("federation.agreements.resourceLimit")}>
           {t("federation.agreements.resourceValues", terms.resourceLimit)}
         </AgreementFact>

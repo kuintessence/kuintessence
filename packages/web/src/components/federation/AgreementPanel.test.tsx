@@ -429,3 +429,54 @@ test("a failed context load leaves refresh usable and blocks signing", async () 
     ).toBe(false),
   );
 });
+
+test("signed attestation limits are visible during agreement review before approval", async () => {
+  mount();
+  await importTerms({
+    ...terms,
+    attestationLimits: {
+      maxOutstandingTasks: 25,
+      maxOutstandingAmount: "9007199254740993",
+      maxOutstandingAgeSec: 7200,
+    },
+  });
+  expect(screen.getByText("Outstanding execution limit")).toBeTruthy();
+  expect(screen.getByText("25")).toBeTruthy();
+  expect(screen.getByText("Outstanding original amount limit")).toBeTruthy();
+  expect(screen.getByText("7,200 seconds")).toBeTruthy();
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test("provider agreement detail loads its own backlog but the source never guesses provider totals", async () => {
+  localSiteId = target;
+  rows = [{ ...approval, localSiteId: target }];
+  const original = vi.mocked(api.get).getMockImplementation();
+  vi.mocked(api.get).mockImplementation(async (path, options) => {
+    if (path.endsWith("/backlog"))
+      return {
+        data: {
+          agreementRevisionId: revisionId,
+          unit: terms.unit,
+          limits: null,
+          outstandingTasks: 0,
+          outstandingAmount: "0",
+          oldestPendingAt: null,
+          oldestAgeSec: null,
+          observedAt: "2026-11-08T00:00:00.000Z",
+        },
+      };
+    if (!original) throw new Error("Missing API fixture");
+    return original(path, options);
+  });
+  const view = mount();
+  await openDetail();
+  await screen.findByText("No outstanding tasks");
+  expect(api.get).toHaveBeenCalledWith(`/federation/agreements/${revisionId}/backlog`, scope);
+  view.unmount();
+  vi.mocked(api.get).mockClear();
+  rows = [approval];
+  localSiteId = source;
+  mount();
+  await openDetail();
+  expect(api.get).not.toHaveBeenCalledWith(`/federation/agreements/${revisionId}/backlog`, scope);
+});

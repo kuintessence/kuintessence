@@ -49,6 +49,7 @@ let source: Awaited<ReturnType<typeof testKeys>>;
 let target: Awaited<ReturnType<typeof testKeys>>;
 let fingerprint: string;
 let agreement: ReturnType<typeof testAgreement>;
+const installed: ReturnType<typeof testAgreement>[] = [];
 
 async function site() {
   const keys = await testKeys();
@@ -151,6 +152,7 @@ beforeAll(async () => {
     validFrom: new Date(Date.now() - 86400000).toISOString(),
     validUntil: new Date(Date.now() + 86400000).toISOString(),
   };
+  installed.push(agreement);
   await new FederationAdmission(db, target.signing, target.verification).installApprovedAgreement({
     sourceApprovalJws: await signFederationMessage(
       FederationAgreementSchema,
@@ -169,7 +171,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (agreement) {
+  for (const agreement of installed) {
     const reservations = db
       .select({ id: federationReservations.id })
       .from(federationReservations)
@@ -432,4 +434,90 @@ test("browser trust routes require bound administrator and never expose peer ing
     }),
   });
   expect(invalid.status).toBe(400);
+});
+
+test("attestation backlog ingress returns retryable 503 without exposing private aggregates", async () => {
+  const [requester, provider] = await Promise.all([site(), site()]);
+  const certificatePath = join(dir, "backlog-client.pem");
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      join(dir, "backlog-client.key"),
+      "-out",
+      certificatePath,
+      "-days",
+      "1",
+      "-subj",
+      "/CN=Independent backlog test",
+      "-addext",
+      "basicConstraints=CA:FALSE",
+      "-addext",
+      "extendedKeyUsage=clientAuth",
+    ],
+    { stdio: "ignore" },
+  );
+  const backlogFingerprint = (
+    await trust.addCertificate(
+      requester.signing.siteId,
+      { certificatePem: await readFile(certificatePath, "utf8") },
+      actor,
+    )
+  ).fingerprint;
+  const terms = {
+    ...testAgreement(requester.signing.siteId, provider.signing.siteId, "bilateral_attested"),
+    validFrom: agreement.validFrom,
+    validUntil: agreement.validUntil,
+    attestationLimits: {
+      maxOutstandingTasks: 1,
+      maxOutstandingAmount: "0",
+      maxOutstandingAgeSec: 60,
+    },
+  };
+  installed.push(terms);
+  await new FederationAdmission(
+    db,
+    provider.signing,
+    provider.verification,
+  ).installApprovedAgreement({
+    sourceApprovalJws: await signFederationMessage(
+      FederationAgreementSchema,
+      terms,
+      requester.signing,
+    ),
+    targetApprovalJws: await signFederationMessage(
+      FederationAgreementSchema,
+      terms,
+      provider.signing,
+    ),
+    sourceKey: requester.verification,
+    targetKey: provider.verification,
+    identity,
+  });
+  const ingress = createFederationIngress(db, provider.signing);
+  const request = {
+    ...testDelegation(terms),
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60000).toISOString(),
+  };
+  const send = async (value: typeof request) =>
+    ingress.request("/federation/v1/delegations", {
+      method: "POST",
+      headers: { "content-type": "application/jose", "x-kq-federation-cert": backlogFingerprint },
+      body: await signFederationMessage(FederationDelegationSchema, value, requester.signing),
+    });
+  const blocked = await send(request);
+  expect(blocked.status).toBe(503);
+  expect(await blocked.json()).toEqual({ error: { code: "ATTESTATION_BACKLOG" } });
+  const free = { ...request, maxAmount: "0" };
+  expect((await send(free)).status).toBe(200);
+  expect((await send(free)).status).toBe(200);
+  expect(
+    (await send({ ...free, taskId: crypto.randomUUID(), operationId: crypto.randomUUID() })).status,
+  ).toBe(503);
 });

@@ -18,6 +18,7 @@ import {
 } from "@kuintessence/shared/federation";
 import { and, asc, desc, eq, ilike, or } from "drizzle-orm";
 import { FederationAdmission } from "./admission";
+import { readAttestationBacklog } from "./attestation-backlog";
 import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
 import { executionIdentityEligibility, requireExecutionIdentity } from "./execution-identity";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -153,6 +154,22 @@ export class FederationAgreementService {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
       return this.localApproval(tx, actor, revisionId);
+    });
+  }
+
+  async backlog(actor: FederationActor, revisionId: string) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "agreement.read");
+      const approval = await this.localApproval(tx, actor, revisionId);
+      const terms = FederationAgreementSchema.parse(approval.terms);
+      if (terms.targetSiteId !== this.signingKey.siteId || terms.mode !== "bilateral_attested")
+        throw new FederationError("AGREEMENT_UNAVAILABLE");
+      return {
+        agreementRevisionId: revisionId,
+        unit: terms.unit,
+        limits: terms.attestationLimits ?? null,
+        ...(await readAttestationBacklog(tx, terms, this.clock())),
+      };
     });
   }
 

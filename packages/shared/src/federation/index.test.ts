@@ -176,3 +176,38 @@ test("legacy execution authority ends at the original request deadline", () => {
     assertDelegationPolicy(agreement, request, new Date(request.expiresAt), "execution"),
   ).toThrow("AUTHORIZATION_EXPIRED");
 });
+
+test("attestation limits are optional signed terms and cannot silently alter other modes", () => {
+  expect(FederationAgreementSchema.parse(agreement)).not.toHaveProperty("attestationLimits");
+  const limits = {
+    maxOutstandingTasks: 5,
+    maxOutstandingAmount: "9007199254740993000",
+    maxOutstandingAgeSec: 3600,
+  };
+  expect(
+    FederationAgreementSchema.parse({
+      ...agreement,
+      mode: "bilateral_attested",
+      attestationLimits: limits,
+    }).attestationLimits,
+  ).toEqual(limits);
+  for (const mode of ["bilateral_direct", "ledger_coordinated"])
+    expect(
+      FederationAgreementSchema.safeParse({ ...agreement, mode, attestationLimits: limits })
+        .success,
+    ).toBe(false);
+  for (const change of [
+    { maxOutstandingTasks: 0 },
+    { maxOutstandingAgeSec: 0 },
+    { maxOutstandingAmount: 1 },
+    { maxOutstandingAmount: "-1" },
+    { extra: true },
+  ])
+    expect(
+      FederationAgreementSchema.safeParse({
+        ...agreement,
+        mode: "bilateral_attested",
+        attestationLimits: { ...limits, ...change },
+      }).success,
+    ).toBe(false);
+});

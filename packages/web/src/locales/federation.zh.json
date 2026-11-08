@@ -362,6 +362,22 @@
           "invalid": "收到的签名或响应无效，请检查对方配置。",
           "connection": "交换尚未完成，请检查机构连接与信任配置。"
         }
+      },
+      "backlog": {
+        "title": "待结清与存证",
+        "tasks": "执行次数",
+        "amount": "原预留额",
+        "age": "最久等待",
+        "none": "无待处理任务",
+        "seconds": "{{value}} 秒",
+        "scope": "未结算或凭证未上链的执行尝试，每次只计一次。",
+        "unconfigured": "协议未设置存证积压上限",
+        "observedAt": "数据时间",
+        "taskLimit": "待结清执行次数上限",
+        "amountLimit": "待结清原预留额上限",
+        "ageLimit": "最长待处理时间",
+        "limits": "存证积压上限",
+        "limit": "上限"
       }
     },
     "commercial": {

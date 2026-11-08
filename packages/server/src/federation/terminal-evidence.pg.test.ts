@@ -82,6 +82,7 @@ import { JobService } from "../services/job-service";
 import { FederationAccountingCollection } from "./accounting-collection";
 import { FederationAdjustmentService } from "./adjustment";
 import { federationMaterialDigest } from "./assets";
+import { readAttestationBacklog } from "./attestation-backlog";
 import { FederationBillingService } from "./billing";
 import { FederationClosingAutomation } from "./closing-automation";
 import { ClosingPolicyInputSchema, FederationClosingPolicyService } from "./closing-policy";
@@ -5708,4 +5709,48 @@ test("adjustment history does not present an unapplied settlement as current acc
     currentChargedAmount: null,
     pendingAdjustmentId: null,
   });
+});
+
+test("attestation backlog deduplicates commercial evidence and ages new adjustments independently", async () => {
+  const f = await adjustmentServiceFixture("bilateral_attested");
+  const read = () => readAttestationBacklog(db, f.terms, new Date());
+  expect(await read()).toMatchObject({ outstandingTasks: 1, outstandingAmount: "60" });
+  const records = await db
+    .select()
+    .from(federationCommercialSubmissions)
+    .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+  expect(records.some((r) => r.input.operation === "record-usage")).toBe(true);
+  expect(records.some((r) => r.input.operation === "confirm-bill")).toBe(true);
+  expect(records.some((r) => r.input.operation === "settle-bill")).toBe(true);
+  // Isolate each obligation; this is a DB aggregation test, not proof of a Fabric commit.
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+  expect(await read()).toMatchObject({
+    outstandingTasks: 0,
+    outstandingAmount: "0",
+    oldestAgeSec: null,
+  });
+  for (const record of records) {
+    await db
+      .update(federationCommercialSubmissions)
+      .set({ state: "needs_review" })
+      .where(eq(federationCommercialSubmissions.id, record.id));
+    expect(await read()).toMatchObject({ outstandingTasks: 1, outstandingAmount: "60" });
+    await db
+      .update(federationCommercialSubmissions)
+      .set({ state: "committed" })
+      .where(eq(federationCommercialSubmissions.id, record.id));
+  }
+  await db
+    .update(federationReservations)
+    .set({ createdAt: new Date("2020-01-01T00:00:00Z") })
+    .where(eq(federationReservations.id, f.reservationId));
+  const value = await f.make("40"),
+    signed = await f.approveAdjustment(value);
+  await f.attachAdjustment(signed);
+  expect(await read()).toMatchObject({ outstandingTasks: 1, outstandingAmount: "60" });
+  expect((await read()).oldestAgeSec).toBeLessThan(60);
+  expect(await f.budget()).toMatchObject({ available: "60", reserved: "0", spent: "40" });
 });

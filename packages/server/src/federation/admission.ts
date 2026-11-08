@@ -15,6 +15,7 @@ import {
   FederationError,
 } from "@kuintessence/shared/federation";
 import { and, count, eq, sql } from "drizzle-orm";
+import { assertAttestationCapacity } from "./attestation-backlog";
 import { assertFederationNotCancelled } from "./cancellation-fence";
 import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
@@ -278,6 +279,7 @@ export class FederationAdmission {
         : undefined;
       const admittedAt = this.clock();
       if (!confirmation) assertDelegationPolicy(terms, request, admittedAt);
+      await assertAttestationCapacity(tx, terms, request.maxAmount, admittedAt);
       const id = confirmation?.reservationId ?? crypto.randomUUID();
       const receipt: FederationAcceptance = {
         protocolVersion: 1,

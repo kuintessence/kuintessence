@@ -362,6 +362,22 @@
           "invalid": "The received signature or response is invalid. Check the counterparty configuration.",
           "connection": "Exchange has not completed. Check institution connectivity and trust configuration."
         }
+      },
+      "backlog": {
+        "title": "Outstanding tasks and evidence",
+        "tasks": "Executions",
+        "amount": "Original reservation amount",
+        "age": "Oldest wait",
+        "none": "No outstanding tasks",
+        "seconds": "{{value}} seconds",
+        "scope": "Unsettled execution attempts or attempts with uncommitted evidence, counted once each.",
+        "unconfigured": "No attestation backlog limits in this agreement",
+        "observedAt": "Observed at",
+        "taskLimit": "Outstanding execution limit",
+        "amountLimit": "Outstanding original amount limit",
+        "ageLimit": "Maximum outstanding age",
+        "limits": "Attestation backlog limits",
+        "limit": "limit"
       }
     },
     "commercial": {

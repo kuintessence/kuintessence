@@ -890,3 +890,12 @@ CLI 的 adjustments 沿用合同作用域、精确整数字符串、有限文件
 
 
 Web 调整沿用现有商业面板，新增独立权限控制的调整标签和从已应用结算进入的筛选历史。Server list 的 settlementId 筛选同时返回当前净额汇总：锁住原结算，核对本站/机构/合同归属，读取最新调整；未应用取其 previousChargedAmount，已应用取 chargedAmount，原结算未应用返回 null。所有分页和历史编号都保留同一汇总，按结算历史按 number 降序，避免时间戳/UUID 顺序误代表前驱关系。页面草稿、确认与附签均核对作用域；单位与金额不转浮点数，差额通过 BigInt 展示。
+
+
+## 异步存证的准入积压保护
+
+共享执行协议新增可选 `attestationLimits`（次数、原预留额、最长等待秒数），无默认值注入旧签名，仅允许 `bilateral_attested`。提供方在现有协议锁内、重放处理之后用同一 SQL 快照汇总 reservation 的未结算和待存证义务，每次尝试只计一次。原预留额使用 PostgreSQL numeric 和 BigInt；本地退款不提前释放存证容量。用量、减免、账单、结算和调整经各自原记录关联任务，合同待办覆盖其 revision；`needs_review` 不视为完成。已结算旧任务新建调整按新义务时间计龄。
+
+超限为 `ATTESTATION_BACKLOG` / 503，源方既有交付队列保留原请求重试。原签名恢复、旧请求回放及原任务收尾不受该准入检查阻断。提供方人工查询复用 `agreement.read`、本机构审批记录和 `no-store`；Web 协议核对/详情显示签署上限，提供方独有汇总显示实时观测时间。配置见[部署说明](../../../deploy/federation/fabric-commercial.md#异步存证的接单积压上限)。本次无需数据库迁移。
+
+该功能只补充 O01 的业务积压边界。实际磁盘水位、跨 revision 容量、结束/取消/恢复空间预留和 Peer 历史恢复仍按原范围待完成，不能由这几个业务限额替代。

@@ -19,6 +19,7 @@ import {
 } from "@kuintessence/shared/federation";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { FederationAdmission } from "./admission";
+import { readAttestationBacklog } from "./attestation-backlog";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
 
@@ -410,4 +411,118 @@ test("settlement projection frees receiver concurrency but preserves spent budge
   await expect(
     service.receive(await requestInput({ ...testDelegation(terms), maxAmount: "0" })),
   ).rejects.toThrow("BUDGET_EXHAUSTED");
+});
+
+test("attestation backlog serializes concurrent admissions and preserves replay at capacity", async () => {
+  const terms = await install({
+    mode: "bilateral_attested",
+    budgetLimit: "1000",
+    attestationLimits: {
+      maxOutstandingTasks: 2,
+      maxOutstandingAmount: "120",
+      maxOutstandingAgeSec: 3600,
+    },
+  });
+  const inputs = await Promise.all(
+    Array.from({ length: 6 }, () => requestInput(testDelegation(terms))),
+  );
+  const results = await Promise.allSettled(inputs.map((input) => service.receive(input)));
+  expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(2);
+  for (const result of results)
+    if (result.status === "rejected") expect(result.reason.code).toBe("ATTESTATION_BACKLOG");
+  const successful = results.findIndex((r) => r.status === "fulfilled");
+  const input = inputs[successful];
+  if (!input) throw new Error("Missing admitted request");
+  await service.receive(input);
+  const state = await rows(terms);
+  expect(state.budget).toMatchObject({ available: "880", reserved: "120" });
+  expect(state.outbox).toHaveLength(4);
+  // Local settlement alone must not free evidence capacity, even for a full refund.
+  await db
+    .update(federationReservations)
+    .set({ settledAmount: "0" })
+    .where(eq(federationReservations.agreementRevisionId, terms.agreementRevisionId));
+  expect(await readAttestationBacklog(db, terms, testNow)).toMatchObject({
+    outstandingTasks: 2,
+    outstandingAmount: "120",
+  });
+  await expect(service.receive(await requestInput(testDelegation(terms)))).rejects.toThrow(
+    "ATTESTATION_BACKLOG",
+  );
+});
+
+test("attestation backlog amount preserves precision and permits zero-price tasks at a zero amount limit", async () => {
+  const amount = "900719925474099399999999";
+  const terms = await install({
+    mode: "bilateral_attested",
+    budgetLimit: "9999999999999999999999999",
+    maxTaskAmount: amount,
+    attestationLimits: {
+      maxOutstandingTasks: 10,
+      maxOutstandingAmount: amount,
+      maxOutstandingAgeSec: 3600,
+    },
+  });
+  await service.receive(await requestInput({ ...testDelegation(terms), maxAmount: amount }));
+  await expect(
+    service.receive(await requestInput({ ...testDelegation(terms), maxAmount: "1" })),
+  ).rejects.toThrow("ATTESTATION_BACKLOG");
+  expect((await readAttestationBacklog(db, terms, testNow)).outstandingAmount).toBe(amount);
+  const free = await install({
+    mode: "bilateral_attested",
+    attestationLimits: {
+      maxOutstandingTasks: 1,
+      maxOutstandingAmount: "0",
+      maxOutstandingAgeSec: 3600,
+    },
+  });
+  await service.receive(await requestInput({ ...testDelegation(free), maxAmount: "0" }));
+  await expect(
+    service.receive(await requestInput({ ...testDelegation(free), maxAmount: "0" })),
+  ).rejects.toThrow("ATTESTATION_BACKLOG");
+});
+
+test("attestation backlog age stops only new admissions and receipt recovery still completes", async () => {
+  const terms = await install({
+    mode: "bilateral_attested",
+    budgetLimit: "1000",
+    attestationLimits: {
+      maxOutstandingTasks: 10,
+      maxOutstandingAmount: "1000",
+      maxOutstandingAgeSec: 60,
+    },
+  });
+  const input = await requestInput(testDelegation(terms));
+  const broken = new FederationAdmission(
+    db,
+    b.signing,
+    { ...b.verification, revoked: true },
+    () => testNow,
+  );
+  await expect(broken.receive(input)).rejects.toThrow("UNTRUSTED_IDENTITY");
+  await db
+    .update(federationReservations)
+    .set({ createdAt: testNow })
+    .where(eq(federationReservations.agreementRevisionId, terms.agreementRevisionId));
+  const later = new Date(testNow.getTime() + 60000);
+  const recovered = new FederationAdmission(db, b.signing, b.verification, () => later);
+  await expect(recovered.receive(await requestInput(testDelegation(terms)))).rejects.toThrow(
+    "ATTESTATION_BACKLOG",
+  );
+  await recovered.receive(input);
+  const state = await rows(terms);
+  expect(state.reservations).toHaveLength(1);
+  expect(state.reservations[0]?.state).toBe("reserved");
+  expect(state.evidence).toHaveLength(2);
+  expect((await readAttestationBacklog(db, terms, later)).oldestAgeSec).toBe(60);
+  const expired = new FederationAdmission(
+    db,
+    b.signing,
+    b.verification,
+    () => new Date(testNow.getTime() + 11 * 60000),
+  );
+  await expect(expired.receive(await requestInput(testDelegation(terms)))).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+  await expired.receive(input);
 });

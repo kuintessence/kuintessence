@@ -39,7 +39,13 @@ export function createFederationIngress(
   r.onError((error, c) => {
     if (error instanceof FederationError) {
       const status =
-        error.code === "INVALID_MESSAGE" ? 400 : error.code === "UNTRUSTED_IDENTITY" ? 401 : 409;
+        error.code === "ATTESTATION_BACKLOG"
+          ? 503
+          : error.code === "INVALID_MESSAGE"
+            ? 400
+            : error.code === "UNTRUSTED_IDENTITY"
+              ? 401
+              : 409;
       return c.json({ error: { code: error.code } }, status);
     }
     // No payload, keys, database error or stack trace crosses the institution boundary.

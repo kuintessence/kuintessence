@@ -75,6 +75,7 @@ beforeAll(async () => {
       if (!req.socket.authorized || req.socket.getPeerCertificate().subject.CN !== 'source' || req.method !== 'POST' || !['/federation/v1/delegations','/federation/v1/status','/federation/v1/usage','/federation/v1/agreement-approvals','/federation/v1/commercial-approvals','/federation/v1/commercial-closing','/federation/v1/market-requests','/federation/v1/reservation-proposals','/federation/v1/cancellations','/federation/v1/results','/federation/v1/result-downloads','/federation/v1/result-receipts','/federation/v1/materials','/federation/v1/input-downloads'].includes(req.url) || req.headers['content-type'] !== 'application/jose') { res.writeHead(403).end(); return; }
       let body=''; for await (const chunk of req) body+=chunk;
       if (body==='redirect') { res.writeHead(307,{location:'/unexpected'}).end(); return; }
+      if (body==='backlog') { res.writeHead(503,{'content-type':'application/json'}).end(JSON.stringify({error:{code:'ATTESTATION_BACKLOG'}})); return; }
       if (body==='slow') return;
       if (body==='broken') { res.writeHead(200,{'content-type':'application/jose','content-length':'100'}); res.write('short'); setTimeout(()=>res.destroy(),20); return; }
       res.writeHead(200,{'content-type':'application/jose'}).end(body==='large' ? 'x'.repeat(524289) : 'signed-receipt');
@@ -167,4 +168,8 @@ test("outbound origins cannot contain credentials, redirects, a query or alterna
     `${endpoint}?next=elsewhere`,
   ])
     expect(() => send(origin, "request")).toThrow();
+});
+
+test("attestation backlog HTTP 503 remains retryable without disclosing provider totals", async () => {
+  await expect(send(endpoint, "backlog")).rejects.toThrow("DELIVERY_UNAVAILABLE");
 });

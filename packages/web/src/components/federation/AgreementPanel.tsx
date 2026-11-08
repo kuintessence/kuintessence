@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Textarea } from "../ui/input";
+import { AgreementBacklog } from "./AgreementBacklog";
 import { AgreementExchangeStatus } from "./AgreementExchangeStatus";
 import { AgreementImport } from "./AgreementImport";
 import { AgreementFact, AgreementTerms } from "./AgreementTerms";
@@ -422,6 +423,10 @@ function AgreementDetail({
           onRetry={() => onAction({ kind: "exchange", revisionId: approval.revisionId })}
         />
         <AgreementTerms terms={approval.terms} />
+        {approval.localSiteId === approval.terms.targetSiteId &&
+        approval.terms.mode === "bilateral_attested" ? (
+          <AgreementBacklog scope={scope} revisionId={approval.revisionId} />
+        ) : null}
         <section className="space-y-3 border-t border-border pt-4">
           <h3 className="text-sm font-semibold">{t("federation.agreements.localSignature")}</h3>
           <Button variant="outline" onClick={() => void copy()}>

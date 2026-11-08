@@ -37,6 +37,7 @@ import { createFederationAgreementRoutes } from "../routes/federation-agreements
 import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
 import { FederationAttestationService } from "./attestation";
+import { readAttestationBacklog } from "./attestation-backlog";
 import { type AttestationClient, AttestationFailure } from "./attestation-client";
 import { FederationAttestationWorker } from "./attestation-worker";
 import { signFederationMessage } from "./signatures";
@@ -89,7 +90,10 @@ class Adapter implements AttestationClient {
   }
 }
 
-async function fixture(mode: FederationMode = "bilateral_attested") {
+async function fixture(
+  mode: FederationMode = "bilateral_attested",
+  limits?: FederationAgreement["attestationLimits"],
+) {
   const [source, target] = await Promise.all([testKeys(), testKeys()]);
   const identity = { orgId: randomUUID(), userId: randomUUID() };
   const actor = { orgId: identity.orgId, userId: randomUUID() };
@@ -129,7 +133,10 @@ async function fixture(mode: FederationMode = "bilateral_attested") {
     allowedKinds: ["agreement", "delegation", "acceptance", "evidence-batch"],
   });
   const admission = new FederationAdmission(db, target.signing, target.verification, () => testNow);
-  const terms = testAgreement(source.signing.siteId, target.signing.siteId, mode);
+  const terms = {
+    ...testAgreement(source.signing.siteId, target.signing.siteId, mode),
+    ...(limits ? { attestationLimits: limits } : {}),
+  };
   await admission.installApprovedAgreement({
     sourceApprovalJws: await signFederationMessage(
       FederationAgreementSchema,
@@ -473,4 +480,35 @@ test("attestation HTTP query and retry enforce human org authority and conceal r
     .set({ capability: "agreement.approve" })
     .where(eq(federationCapabilities.orgId, f.actor.orgId));
   expect((await app().request(`${path}/${batch.id}/retry`, { method: "POST" })).status).toBe(200);
+});
+
+test("attestation backlog resumes admission only after local closure and evidence anchoring", async () => {
+  const f = await fixture("bilateral_attested", {
+    maxOutstandingTasks: 1,
+    maxOutstandingAmount: "10",
+    maxOutstandingAgeSec: 3600,
+  });
+  await expect(f.admit()).rejects.toThrow("ATTESTATION_BACKLOG");
+  await db
+    .update(federationReservations)
+    .set({ settledAmount: "0" })
+    .where(eq(federationReservations.agreementRevisionId, f.terms.agreementRevisionId));
+  f.adapter.offline = true;
+  await f.service.assemble();
+  await advance(f.service, 1);
+  await expect(f.admit()).rejects.toThrow("ATTESTATION_BACKLOG");
+  const batch = await batchFor(f.target.signing.siteId);
+  f.adapter.offline = false;
+  await ready(batch.id);
+  await advance(f.service, 3);
+  expect(await readAttestationBacklog(db, f.terms, testNow)).toMatchObject({
+    outstandingTasks: 0,
+    outstandingAmount: "0",
+    oldestPendingAt: null,
+  });
+  await f.admit();
+  expect(await readAttestationBacklog(db, f.terms, testNow)).toMatchObject({
+    outstandingTasks: 1,
+    outstandingAmount: "10",
+  });
 });

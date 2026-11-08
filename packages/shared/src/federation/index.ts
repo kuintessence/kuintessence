@@ -46,6 +46,12 @@ export const FederationExecutionTargetSchema = z.strictObject({
 });
 export type FederationExecutionTarget = z.infer<typeof FederationExecutionTargetSchema>;
 
+export const FederationAttestationLimitsSchema = z.strictObject({
+  maxOutstandingTasks: z.number().int().min(1).max(100_000),
+  maxOutstandingAmount: FederationAmountSchema,
+  maxOutstandingAgeSec: z.number().int().min(1).max(31_536_000),
+});
+
 export const FederationAgreementSchema = z
   .strictObject({
     protocolVersion: z.literal(1),
@@ -60,6 +66,7 @@ export const FederationAgreementSchema = z
     budgetLimit: FederationAmountSchema,
     maxTaskAmount: FederationAmountSchema,
     maxReservations: z.number().int().min(1).max(100_000),
+    attestationLimits: FederationAttestationLimitsSchema.optional(),
     validFrom: Time,
     validUntil: Time,
     templates: z.array(FederationAssetRefSchema).min(1).max(100),
@@ -70,6 +77,8 @@ export const FederationAgreementSchema = z
     termsDigest: FederationDigestSchema,
   })
   .superRefine((value, ctx) => {
+    if (value.attestationLimits && value.mode !== "bilateral_attested")
+      ctx.addIssue({ code: "custom", message: "Attestation limits require attested cooperation" });
     if (value.sourceSiteId === value.targetSiteId)
       ctx.addIssue({ code: "custom", message: "Cooperation requires different sites" });
     if (Date.parse(value.validUntil) <= Date.parse(value.validFrom))
@@ -94,6 +103,18 @@ export const FederationAgreementSchema = z
       });
   });
 export type FederationAgreement = z.infer<typeof FederationAgreementSchema>;
+
+export const FederationAttestationBacklogSchema = z.strictObject({
+  agreementRevisionId: Id,
+  unit: Unit,
+  limits: FederationAttestationLimitsSchema.nullable(),
+  outstandingTasks: z.number().int().nonnegative(),
+  // The sum of many valid 38-digit reservations can exceed 38 digits.
+  outstandingAmount: z.string().regex(/^(0|[1-9][0-9]*)$/),
+  oldestPendingAt: Time.nullable(),
+  oldestAgeSec: z.number().int().nonnegative().nullable(),
+  observedAt: Time,
+});
 
 export const FederationAgreementApprovalSchema = z.object({
   localSiteId: Id,

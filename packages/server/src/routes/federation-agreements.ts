@@ -124,6 +124,12 @@ export function createFederationAgreementRoutes(
       });
     },
   );
+  r.get("/federation/agreements/:revisionId/backlog", kqValidator("param", id), async (c) =>
+    c.json({
+      success: true,
+      data: await service.backlog(c.get("federationActor"), c.req.valid("param").revisionId),
+    }),
+  );
   r.get("/federation/agreements/:revisionId", kqValidator("param", id), async (c) =>
     c.json({
       success: true,

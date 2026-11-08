@@ -973,3 +973,39 @@ test("membership deletion atomically revokes local federation grants and rejoini
     authz.close();
   }
 });
+
+test("attestation backlog HTTP is private to the provider organization and exposes absent limits", async () => {
+  const value = { ...terms(), mode: "bilateral_attested" as const };
+  await bService.approve(bActor, { terms: value, executionUserId });
+  await aService.approve(aActor, { terms: value });
+  const app = (actor: typeof bActor, automated = false) => {
+    const r = new Hono();
+    r.onError(createErrorHandler(pino({ level: "silent" })));
+    r.use("*", async (c, next) => {
+      c.set("principal" as never, { ...actor, role: "user" });
+      if (automated) c.set("automation" as never, { userId: actor.userId });
+      await next();
+    });
+    r.route("/api", createFederationAgreementRoutes(bService));
+    return r;
+  };
+  const path = `/api/federation/agreements/${value.agreementRevisionId}/backlog`;
+  const response = await app(bActor).request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toMatchObject({
+    success: true,
+    data: {
+      limits: null,
+      outstandingTasks: 0,
+      outstandingAmount: "0",
+      oldestPendingAt: null,
+    },
+  });
+  expect((await app(aActor).request(path)).status).toBe(409);
+  expect((await app(bActor, true).request(path)).status).toBe(403);
+  expect((await app({ ...bActor, userId: adminId }).request(path)).status).toBe(403);
+  await expect(aService.backlog(aActor, value.agreementRevisionId)).rejects.toThrow(
+    "AGREEMENT_UNAVAILABLE",
+  );
+});
