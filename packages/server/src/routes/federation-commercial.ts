@@ -111,9 +111,12 @@ export function createFederationCommercialRoutes(
     r.get(
       path,
       kqValidator("param", id),
-      kqValidator("query", page.extend({ recordId: z.uuid().optional() })),
+      kqValidator(
+        "query",
+        page.extend({ recordId: z.uuid().optional(), settlementId: z.uuid().optional() }),
+      ),
       async (c) => {
-        const { limit, offset, recordId } = c.req.valid("query");
+        const { limit, offset, recordId, settlementId } = c.req.valid("query");
         return c.json({
           data: await adjustments.list(
             c.get("federationActor"),
@@ -121,6 +124,7 @@ export function createFederationCommercialRoutes(
             limit,
             offset,
             recordId,
+            settlementId,
           ),
         });
       },

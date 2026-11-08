@@ -35,6 +35,7 @@ type SettlementProps = {
   busy: boolean;
   recordId?: string;
   billId?: string;
+  onOpenAdjustments?: (settlementId: string) => void;
 };
 
 export function CommercialSettlementPanel(props: SettlementProps) {
@@ -46,7 +47,15 @@ export function CommercialSettlementPanel(props: SettlementProps) {
   );
 }
 
-function SettlementPanel({ approval, scope, writable, busy, billId, recordId }: SettlementProps) {
+function SettlementPanel({
+  approval,
+  scope,
+  writable,
+  busy,
+  billId,
+  recordId,
+  onOpenAdjustments,
+}: SettlementProps) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
   const id = useId();
@@ -430,6 +439,15 @@ function SettlementPanel({ approval, scope, writable, busy, billId, recordId }: 
             </Button>
           ) : null}
           <CommercialSettlementTerms settlement={current.settlement.payload} />
+          {onOpenAdjustments && current.settlement.appliedAt ? (
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => onOpenAdjustments(current.settlement.settlementId)}
+            >
+              {t("federation.adjustment.openHistory")}
+            </Button>
+          ) : null}
           <details className="space-y-3 border-t border-border pt-4 text-sm">
             <summary className="cursor-pointer">{t("federation.billing.signatures")}</summary>
             <Button variant="outline" onClick={() => void copy(current.settlement.approvalJws)}>

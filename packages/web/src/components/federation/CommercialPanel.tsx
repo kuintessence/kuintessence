@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { CommercialAdjustmentPanel } from "./CommercialAdjustmentPanel";
 import { CommercialBillingPanel } from "./CommercialBillingPanel";
 import { CommercialClosingPanel } from "./CommercialClosingPanel";
 import { CommercialDetail } from "./CommercialDetail";
@@ -55,6 +56,7 @@ export function CommercialPanel({
     kind: "bill" | "settlement";
     recordId: string;
   } | null>(null);
+  const [adjustmentSettlement, setAdjustmentSettlement] = useState<string | undefined>();
   const [settlementBill, setSettlementBill] = useState<string | undefined>();
   const [billingReport, setBillingReport] = useState<string | undefined>();
   const [page, setPage] = useState(0);
@@ -74,6 +76,7 @@ export function CommercialPanel({
       : [];
   const canRead = grants.includes("agreement.read");
   const canApprove = grants.includes("agreement.approve") && !readOnly;
+  const canAdjust = grants.includes("adjustment.approve") && !readOnly;
   const canSettle = grants.includes("settlement.approve") && !readOnly;
   const canBill = grants.includes("billing.approve") && !readOnly;
   const context = useQuery({
@@ -154,6 +157,7 @@ export function CommercialPanel({
         setClosingRecord(null);
         setBillingReport(undefined);
         setSettlementBill(undefined);
+        setAdjustmentSettlement(undefined);
       }
       await client.invalidateQueries({ queryKey: key });
     },
@@ -252,6 +256,7 @@ export function CommercialPanel({
                 setClosingRecord(null);
                 setBillingReport(undefined);
                 setSettlementBill(undefined);
+                setAdjustmentSettlement(undefined);
               }}
             >
               <TabsList aria-label={t("federation.usage.contractSections")}>
@@ -259,6 +264,7 @@ export function CommercialPanel({
                 <TabsTrigger value="usage">{t("federation.usage.title")}</TabsTrigger>
                 <TabsTrigger value="bills">{t("federation.billing.title")}</TabsTrigger>
                 <TabsTrigger value="settlements">{t("federation.settlement.title")}</TabsTrigger>
+                <TabsTrigger value="adjustments">{t("federation.adjustment.title")}</TabsTrigger>
                 <TabsTrigger value="closing">{t("federation.closing.title")}</TabsTrigger>
               </TabsList>
               <TabsContent value="terms">
@@ -322,6 +328,24 @@ export function CommercialPanel({
                     closingRecord?.kind === "settlement" ? closingRecord.recordId : undefined
                   }
                   billId={settlementBill}
+                  onOpenAdjustments={(settlementId) => {
+                    setAdjustmentSettlement(settlementId);
+                    setSection("adjustments");
+                  }}
+                />
+              </TabsContent>
+              <TabsContent value="adjustments">
+                <CommercialAdjustmentPanel
+                  approval={detail.data}
+                  scope={scope}
+                  writable={canAdjust}
+                  busy={busy || detail.isFetching}
+                  settlementId={adjustmentSettlement}
+                  onOpenSettlement={(recordId) => {
+                    setClosingRecord({ kind: "settlement", recordId });
+                    setSettlementBill(undefined);
+                    setSection("settlements");
+                  }}
                 />
               </TabsContent>
               <TabsContent value="closing">
@@ -335,6 +359,7 @@ export function CommercialPanel({
                     setClosingRecord({ kind, recordId });
                     setBillingReport(undefined);
                     setSettlementBill(undefined);
+                    setAdjustmentSettlement(undefined);
                     setSection(kind === "bill" ? "bills" : "settlements");
                   }}
                 />
@@ -361,6 +386,7 @@ export function CommercialPanel({
                       setClosingRecord(null);
                       setBillingReport(undefined);
                       setSettlementBill(undefined);
+                      setAdjustmentSettlement(undefined);
                     }}
                   >
                     <span className="min-w-0 space-y-1">

@@ -131,7 +131,11 @@ beforeEach(async () => {
         data: { localSiteId: source, supportedModes: ["bilateral_direct", "bilateral_attested"] },
       };
     if (path.startsWith("/federation/agreements?")) return { data: [base] };
-    if (path.includes("/bills?") || path.includes("/settlements?"))
+    if (
+      path.includes("/bills?") ||
+      path.includes("/settlements?") ||
+      path.includes("/adjustments?")
+    )
       return { data: { data: [], hasMore: false } };
     if (path.includes("/submissions?")) return { data: status };
     if (path.includes("/closing-policies?")) return { data: [] };
@@ -746,4 +750,32 @@ test.each([
   await screen.findByText("No automatic approval authority granted");
   expect(!!screen.queryByRole("button", { name: "Authorize bills" })).toBe(bill);
   expect(!!screen.queryByRole("button", { name: "Authorize settlements" })).toBe(settlement);
+});
+
+test.each([
+  {
+    capabilities: ["agreement.read", "agreement.approve", "billing.approve", "settlement.approve"],
+    mobile: false,
+    canAdjust: false,
+  },
+  { capabilities: ["agreement.read", "adjustment.approve"], mobile: false, canAdjust: true },
+  { capabilities: ["agreement.read", "adjustment.approve"], mobile: true, canAdjust: false },
+])("adjustment tab respects independent permission and mobile policy: %j", async ({
+  capabilities,
+  mobile,
+  canAdjust,
+}) => {
+  listed = true;
+  row.counterpartyJws = "peer.signature";
+  grants = capabilities;
+  device.readOnly = mobile;
+  mount();
+  await openDetail();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Adjustments" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  await screen.findByText("No approved adjustments");
+  expect(!!screen.queryByRole("button", { name: "Create adjustment" })).toBe(canAdjust);
+  expect(api.post).not.toHaveBeenCalled();
 });

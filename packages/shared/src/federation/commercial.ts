@@ -458,6 +458,15 @@ export const CommercialAdjustmentListSchema = z.object({
     }),
   ),
   hasMore: z.boolean(),
+  summary: z
+    .object({
+      settlementId: Id,
+      originalChargedAmount: FederationAmountSchema,
+      currentChargedAmount: FederationAmountSchema.nullable(),
+      pendingAdjustmentId: Id.nullable(),
+    })
+    .nullable()
+    .optional(),
 });
 
 export const CommercialUsageEnvelopeSchema = z.strictObject({

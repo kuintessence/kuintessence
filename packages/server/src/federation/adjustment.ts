@@ -634,6 +634,7 @@ export class FederationAdjustmentService {
     limit: number,
     offset: number,
     recordId?: string,
+    settlementId?: string,
   ) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
@@ -648,6 +649,35 @@ export class FederationAdjustmentService {
           ),
         );
       if (!contract) throw new FederationError("AGREEMENT_UNAVAILABLE");
+      let summary = null;
+      if (settlementId) {
+        const [original] = await tx
+          .select()
+          .from(settlements)
+          .where(
+            and(
+              eq(settlements.localSiteId, this.signing.siteId),
+              eq(settlements.localOrgId, actor.orgId),
+              eq(settlements.agreementRevisionId, revisionId),
+              eq(settlements.settlementId, settlementId),
+            ),
+          )
+          .for("share");
+        if (!original) throw new FederationError("ASSET_UNAVAILABLE");
+        const latest = await head(tx, this.signing.siteId, settlementId);
+        summary = {
+          settlementId,
+          originalChargedAmount: original.payload.chargedAmount,
+          currentChargedAmount: !original.appliedAt
+            ? null
+            : latest
+              ? latest.appliedAt
+                ? latest.payload.chargedAmount
+                : latest.payload.previousChargedAmount
+              : original.payload.chargedAmount,
+          pendingAdjustmentId: latest && !latest.appliedAt ? latest.adjustmentId : null,
+        };
+      }
       const rows = await tx
         .select({
           adjustment: adjustments,
@@ -672,12 +702,17 @@ export class FederationAdjustmentService {
             eq(adjustments.localOrgId, actor.orgId),
             eq(adjustments.agreementRevisionId, revisionId),
             recordId ? eq(adjustments.adjustmentId, recordId) : undefined,
+            settlementId ? eq(adjustments.settlementId, settlementId) : undefined,
           ),
         )
-        .orderBy(desc(adjustments.createdAt), desc(adjustments.adjustmentId))
+        .orderBy(
+          ...(settlementId ? [desc(adjustments.number)] : []),
+          desc(adjustments.createdAt),
+          desc(adjustments.adjustmentId),
+        )
         .limit(limit + 1)
         .offset(offset);
-      return { data: rows.slice(0, limit), hasMore: rows.length > limit };
+      return { data: rows.slice(0, limit), hasMore: rows.length > limit, summary };
     });
   }
 }

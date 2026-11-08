@@ -646,6 +646,42 @@
         "OPERATION_CONFLICT": "Original records conflict or a discount exists; review the bill",
         "UNTRUSTED_IDENTITY": "Institution, certificate or signing trust unavailable"
       }
+    },
+    "adjustment": {
+      "title": "Adjustments",
+      "adjustmentId": "Adjustment ID",
+      "previousChargedAmount": "Previous net charge",
+      "chargedAmount": "New net charge",
+      "originalCharge": "Original settled charge",
+      "currentCharge": "Current local net charge",
+      "reason": "Reason",
+      "evidenceOptional": "Supporting SHA-256 (optional)",
+      "evidence": "Supporting evidence digest",
+      "noEvidence": "Not provided",
+      "settlementDigest": "Original settlement digest",
+      "previous": "Previous adjustment",
+      "previousDigest": "Previous digest",
+      "initial": "First adjustment",
+      "heldAmount": "Hold at approval (historical)",
+      "openSettlement": "View original settlement",
+      "openHistory": "View charge adjustments",
+      "newAdjustment": "Create adjustment",
+      "back": "Back to adjustments",
+      "exportAdjustment": "Export adjustment",
+      "importJson": "Adjustment JSON",
+      "empty": "No approved adjustments",
+      "confirmation": "Adjustment signatures",
+      "draftFailed": "Draft unavailable. Check the applied settlement, completed previous adjustment and charge limit.",
+      "invalidAdjustment": "Invalid adjustment or contract mismatch. Import the complete original for this contract.",
+      "approvalBoundary": "Approve the same original at both institutions. Increases reserve funds at local approval; accounting and decreases apply after countersigning. Signed holds do not expire automatically. No bank payment or refund is made.",
+      "actionFailed": "Action unconfirmed. Refresh and check the original adjustment ID, approval permission, predecessor and signing trust. Retry the same original.",
+      "actions": {
+        "approve": "Approve charge adjustment",
+        "attach": "Verify and import counterparty signature",
+        "retry": "Retry adjustment evidence"
+      },
+      "difference": "Charge difference",
+      "coordinatedBoundary": "Both institutions sign the same original. Local accounting waits for VALID. No bank payment or refund is made."
     }
   }
 }

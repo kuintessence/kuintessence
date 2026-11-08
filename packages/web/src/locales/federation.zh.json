@@ -646,6 +646,42 @@
         "OPERATION_CONFLICT": "原记录不一致或存在减免，请核对原账单",
         "UNTRUSTED_IDENTITY": "机构、证书或签名信任不可用"
       }
+    },
+    "adjustment": {
+      "title": "账务调整",
+      "adjustmentId": "调整编号",
+      "previousChargedAmount": "调整前净额",
+      "chargedAmount": "调整后净额",
+      "originalCharge": "原结算净额",
+      "currentCharge": "本站当前净额",
+      "reason": "调整原因",
+      "evidenceOptional": "佐证 SHA-256（可选）",
+      "evidence": "佐证摘要",
+      "noEvidence": "未提供",
+      "settlementDigest": "原结算摘要",
+      "previous": "前一笔调整",
+      "previousDigest": "前一笔摘要",
+      "initial": "首次调整",
+      "heldAmount": "批准时占额（历史记录）",
+      "openSettlement": "查看原结算",
+      "openHistory": "查看账务调整",
+      "newAdjustment": "新增调整",
+      "back": "返回调整列表",
+      "exportAdjustment": "导出调整",
+      "importJson": "调整 JSON",
+      "empty": "暂无已批准调整",
+      "confirmation": "调整签署",
+      "draftFailed": "无法生成草稿。请核对原结算已记账、前一笔调整已完成及净额上限。",
+      "invalidAdjustment": "调整格式或所属合同不符，请导入当前合同的完整调整原文。",
+      "approvalBoundary": "双方须批准同一原文。调增批准先占额，双签后记账；调减不提前退额。已签占额不自动到期。不执行银行付款或退款。",
+      "actionFailed": "操作未确认。请先刷新核对原调整编号，再检查调整权限、前驱与签名信任；重试保留同一原文。",
+      "actions": {
+        "approve": "批准账务调整",
+        "attach": "验证并导入对方签名",
+        "retry": "重试调整存证"
+      },
+      "difference": "本次差额",
+      "coordinatedBoundary": "双方签署同一原文后，待本站交易 VALID 才更新净额。不执行银行付款或退款。"
     }
   }
 }

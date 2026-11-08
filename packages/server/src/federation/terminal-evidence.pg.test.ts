@@ -54,6 +54,7 @@ import {
   type FederationAgreement,
 } from "@kuintessence/shared/federation";
 import {
+  CommercialAdjustmentListSchema,
   CommercialAdjustmentSchema,
   CommercialAgreementSchema,
   CommercialBillSchema,
@@ -71,7 +72,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
-import type { z } from "zod";
+import { z } from "zod";
 import { createErrorHandler } from "../middleware/error-handler";
 import { federationOrganizationContext } from "../middleware/federation-organization";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
@@ -5635,3 +5636,76 @@ test("adjustment CLI real HTTP and PostgreSQL approve, hold, attach and query th
   expect((await run("attach", f.revisionId, id, jws)).code).toBe(0);
   expect(await f.budget()).toMatchObject({ available: "40", reserved: "0", spent: "60" });
 }, 30000);
+
+test("adjustment history filters the original settlement and keeps current net charge independent of pagination", async () => {
+  const f = await adjustmentServiceFixture(),
+    initial = await f.make("40");
+  const list = (offset = 0, recordId?: string) =>
+    f.providerAdjustment.list(f.actor, f.revisionId, 1, offset, recordId, f.draft.settlementId);
+  expect((await list()).summary).toMatchObject({
+    originalChargedAmount: "53",
+    currentChargedAmount: "53",
+    pendingAdjustmentId: null,
+  });
+  await f.attachAdjustment(await f.approveAdjustment(initial));
+  const next = await f.make("60"),
+    approved = await f.approveAdjustment(next);
+  expect((await list()).data[0]?.adjustment.adjustmentId).toBe(next.adjustmentId);
+  expect((await list()).hasMore).toBe(true);
+  const older = await list(1);
+  expect(older.data[0]?.adjustment.adjustmentId).toBe(initial.adjustmentId);
+  expect(older.summary).toMatchObject({
+    originalChargedAmount: "53",
+    currentChargedAmount: "40",
+    pendingAdjustmentId: next.adjustmentId,
+  });
+  await f.attachAdjustment(approved);
+  const historical = await list(0, initial.adjustmentId);
+  expect(historical.data[0]?.adjustment.payload.chargedAmount).toBe("40");
+  expect(historical.summary).toMatchObject({
+    originalChargedAmount: "53",
+    currentChargedAmount: "60",
+    pendingAdjustmentId: null,
+  });
+  await expect(
+    f.providerAdjustment.list(f.sourceActor, f.revisionId, 10, 0, undefined, f.draft.settlementId),
+  ).rejects.toThrow("AGREEMENT_UNAVAILABLE");
+  await expect(
+    f.providerAdjustment.list(f.actor, f.revisionId, 10, 0, undefined, randomUUID()),
+  ).rejects.toThrow("ASSET_UNAVAILABLE");
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [
+    f.approvals,
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  deps[19] = f.providerAdjustment;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...deps));
+  const path = `/federation/commercial-agreements/${f.revisionId}/adjustments`;
+  const response = await app.request(
+    `${path}?settlementId=${f.draft.settlementId}&limit=1&offset=1`,
+  );
+  expect(response.status).toBe(200);
+  expect(
+    z.object({ data: CommercialAdjustmentListSchema }).parse(await response.json()).data.summary
+      ?.currentChargedAmount,
+  ).toBe("60");
+  expect((await app.request(`${path}?settlementId=bad`)).status).toBe(400);
+});
+
+test("adjustment history does not present an unapplied settlement as current accounting", async () => {
+  const f = await settlementFixture();
+  await f.approve();
+  const service = new FederationAdjustmentService(db, f.provider.signing);
+  const view = await service.list(f.actor, f.revisionId, 20, 0, undefined, f.draft.settlementId);
+  expect(view.data).toHaveLength(0);
+  expect(view.summary).toMatchObject({
+    originalChargedAmount: "53",
+    currentChargedAmount: null,
+    pendingAdjustmentId: null,
+  });
+});

@@ -365,3 +365,13 @@ test("closing navigation loads the exact settlement and back clears its query fi
     expect(api.get).toHaveBeenCalledWith(`${base}/settlements?limit=20&offset=0`, scope),
   );
 });
+
+test("an applied settlement opens adjustment history without granting adjustment approval", async () => {
+  first().settlement.appliedAt = settlement.issuedAt;
+  const open = vi.fn();
+  mount({ writable: false, onOpenAdjustments: open });
+  await openSettlement();
+  fireEvent.click(screen.getByRole("button", { name: "View charge adjustments" }));
+  expect(open).toHaveBeenCalledWith(settlementId);
+  expect(api.post).not.toHaveBeenCalled();
+});
