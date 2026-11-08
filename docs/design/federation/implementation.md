@@ -833,9 +833,14 @@ Kubernetes Agent 从当前 Job UID 所属单个工作容器的终止时间采集
 
 ## 独立额度结算与预算唯一权威
 
-账单确认后另签 commercial-settlement，绑定原账单/合同/机构/单位及守恒的预留、消耗、归还金额；协调任务另绑原终态回执。链码/Adapter 已接 SettleBill：协调私有事务扣减 locked、增加 spent 并保留 settled 记录，终态 gate 不变；幂等原记录及按账单唯一索引阻止重复花费。异步存证仅记录原链下事实，直接模式不提交链。业务签署用途必须显式新增，原账单批准不扩权。Server 独立批准、双边 spent 记账和原签名自动交换已接通（迁移 0140），专用 Web/CLI、自动批准及退款/支付/争议仍待完成。直接/异步模式本地处理不等待链，协调模式仅在本站持久化 VALID 后释放本地任务名额，不复制链预算。详见[额度结算协议](../../../deploy/federation/fabric-commercial.md#独立额度结算协议)。
+账单确认后另签 commercial-settlement，绑定原账单/合同/机构/单位及守恒的预留、消耗、归还金额；协调任务另绑原终态回执。链码/Adapter 已接 SettleBill：协调私有事务扣减 locked、增加 spent 并保留 settled 记录，终态 gate 不变；幂等原记录及按账单唯一索引阻止重复花费。异步存证仅记录原链下事实，直接模式不提交链。业务签署用途必须显式新增，原账单批准不扩权。Server 独立批准、双边 spent 记账和原签名自动交换已接通（迁移 0140），专用结算 Web 入口见下文；CLI、自动批准及退款/支付/争议仍待完成。直接/异步模式本地处理不等待链，协调模式仅在本站持久化 VALID 后释放本地任务名额，不复制链预算。详见[额度结算协议](../../../deploy/federation/fabric-commercial.md#独立额度结算协议)。
 
 
 Server 的实际 API、权限与升级边界见[额度结算](../../../deploy/federation/fabric-commercial.md#server-额度结算)。源方保留已消费额度，提供方只退回未用部分；原接单金额、回执与执行状态不被结算改写。
 
 协调结算已在真实双 Server/独立数据库、mTLS、Agent/Kubernetes 与 Fabric 上联调：实际非零计量及账单产生后分别批准结算，停 Orderer 时只交换原签名，恢复后原待办 VALID 才释放各自名额。一次竞争提交产生原生 MVCC INVALID，后台保留原交易并核对同文回执后自动恢复；独立 PDC 区块证明预算只扣一次，终态 gate/公共关闭不变、C 无私有写入。详细证据与未覆盖范围见[真实结算联调](progress.md#真实双平台结算与断链恢复)。
+
+
+## 结算 Web 入口
+
+合同详情新增独立结算页签，账单详情在已双签时提供原 billId 的生成入口。共用读取 schema 验证本组织/站点/合同与原账单标识，保留精确整数金额；手工导入同文、显式批准、原签名导出/附签和本站链待办重试复用既有接口。签署状态、appliedAt 与链状态分别显示，不把账单确认或对签当作协调结算完成。独立 settlement.approve、手机只读与组织/登录草稿隔离生效。完整操作见[Web 额度结算](../../../deploy/federation/fabric-commercial.md#web-额度结算)；CLI、自动授权和银行付款仍待完成。

@@ -302,6 +302,30 @@ export const CommercialBillListSchema = z.object({
   hasMore: z.boolean(),
 });
 
+export const CommercialSettlementApprovalSchema = z.object({
+  localSiteId: Id,
+  localOrgId: Id,
+  agreementRevisionId: Id,
+  billId: Id,
+  settlementId: Id,
+  payload: CommercialSettlementSchema,
+  digest: FederationDigestSchema,
+  approvalJws: z.string().min(1).max(524288),
+  counterpartyJws: z.string().min(1).max(524288).nullable(),
+  approvedBy: Id,
+  appliedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export const CommercialSettlementListSchema = z.object({
+  data: z.array(
+    z.object({
+      settlement: CommercialSettlementApprovalSchema,
+      ledger: CommercialBillListSchema.shape.data.element.shape.ledger,
+    }),
+  ),
+  hasMore: z.boolean(),
+});
+
 export const CommercialUsageEnvelopeSchema = z.strictObject({
   providerJws: z.string().min(1).max(524288),
 });

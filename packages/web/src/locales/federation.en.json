@@ -181,7 +181,9 @@
       "desktopOnly": "Read-only on mobile. Change federation permissions on desktop.",
       "pagination": "Grant list pagination",
       "capabilities": {
-        "settlement": { "approve": "Approve allocation settlements" },
+        "settlement": {
+          "approve": "Approve allocation settlements"
+        },
         "billing": {
           "approve": "Approve bills and discounts"
         },
@@ -536,6 +538,36 @@
         "needs_review": "Evidence needs review",
         "awaitingSignatures": "Awaiting both signatures",
         "remoteLedger": "Provider submits evidence; status not synchronized"
+      }
+    },
+    "settlement": {
+      "title": "Settlements",
+      "settlementId": "Settlement ID",
+      "unit": "Budget unit",
+      "reservedAmount": "Original reservation",
+      "chargedAmount": "Consumed amount",
+      "releasedAmount": "Returned amount",
+      "billDigest": "Original bill digest",
+      "terminalId": "Terminal ID",
+      "terminalDigest": "Terminal digest",
+      "back": "Back to settlements",
+      "newSettlement": "Create settlement",
+      "exportSettlement": "Export settlement",
+      "draftFailed": "Draft unavailable. Check both bill approvals, the original reservation and terminal record.",
+      "importJson": "Settlement JSON",
+      "invalidSettlement": "Invalid settlement, amounts or contract mismatch. Import the complete settlement for this contract.",
+      "confirmation": "Settlement signatures",
+      "accounting": "Local accounting",
+      "applied": "Applied",
+      "notApplied": "Not applied",
+      "empty": "No approved settlements",
+      "approvalBoundary": "Both institutions must approve the same settlement. Direct and attested cooperation apply accounting after countersigning; coordinated mode waits for VALID. This does not make a bank payment.",
+      "actionFailed": "Action not confirmed. Check settlement permissions, the original bill, terminal record and signing trust, then retry the same request.",
+      "notQueued": "No local evidence record yet",
+      "actions": {
+        "approve": "Approve settlement",
+        "attach": "Verify and import counterparty signature",
+        "retry": "Retry settlement evidence"
       }
     }
   }

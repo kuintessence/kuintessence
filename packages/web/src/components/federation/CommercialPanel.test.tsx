@@ -131,7 +131,8 @@ beforeEach(async () => {
         data: { localSiteId: source, supportedModes: ["bilateral_direct", "bilateral_attested"] },
       };
     if (path.startsWith("/federation/agreements?")) return { data: [base] };
-    if (path.includes("/bills?")) return { data: { data: [], hasMore: false } };
+    if (path.includes("/bills?") || path.includes("/settlements?"))
+      return { data: { data: [], hasMore: false } };
     if (path.includes("/submissions?")) return { data: status };
     if (path.includes("?limit="))
       return {
@@ -669,5 +670,33 @@ test("latest provider report opens a bill draft without granting correction perm
   fireEvent.click(await screen.findByRole("button", { name: "Create bill" }));
   expect(draft).toHaveBeenCalledWith(fixture.record.report.reportId);
   expect(screen.queryByRole("button", { name: "Add technical correction" })).toBeNull();
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test.each([
+  {
+    capabilities: ["agreement.read", "agreement.approve", "billing.approve"],
+    mobile: false,
+    canSettle: false,
+  },
+  { capabilities: ["agreement.read", "settlement.approve"], mobile: false, canSettle: true },
+  { capabilities: ["agreement.read", "settlement.approve"], mobile: true, canSettle: false },
+])("settlement tab respects independent permission and mobile policy: %j", async ({
+  capabilities,
+  mobile,
+  canSettle,
+}) => {
+  listed = true;
+  row.counterpartyJws = "peer.signature";
+  grants = capabilities;
+  device.readOnly = mobile;
+  mount();
+  await openDetail();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Settlements" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  await screen.findByText("No approved settlements");
+  expect(!!screen.queryByRole("button", { name: "Create settlement" })).toBe(canSettle);
   expect(api.post).not.toHaveBeenCalled();
 });

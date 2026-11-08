@@ -380,3 +380,15 @@ test("changing organization clears pending confirmation rather than submitting i
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(api.post).not.toHaveBeenCalled();
 });
+
+test("only a countersigned bill offers settlement and does not require billing approval", async () => {
+  const create = vi.fn();
+  const page = mount({ writable: false, onDraftSettlement: create });
+  await openBill();
+  expect(screen.queryByRole("button", { name: "Create settlement" })).toBeNull();
+  first().bill.counterpartyJws = "peer.bill.signature";
+  await page.client.invalidateQueries();
+  fireEvent.click(await screen.findByRole("button", { name: "Create settlement" }));
+  expect(create).toHaveBeenCalledWith(billId);
+  expect(api.post).not.toHaveBeenCalled();
+});

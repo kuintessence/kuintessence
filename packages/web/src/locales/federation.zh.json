@@ -181,7 +181,9 @@
       "desktopOnly": "手机端仅供查看，请在桌面端修改联邦权限。",
       "pagination": "授权列表分页",
       "capabilities": {
-        "settlement": { "approve": "审批额度结算" },
+        "settlement": {
+          "approve": "审批额度结算"
+        },
         "billing": {
           "approve": "确认账单与商务减免"
         },
@@ -536,6 +538,36 @@
         "needs_review": "存证需复核",
         "awaitingSignatures": "等待双方签名",
         "remoteLedger": "由提供方存证，状态尚未同步"
+      }
+    },
+    "settlement": {
+      "title": "结算",
+      "settlementId": "结算编号",
+      "unit": "额度单位",
+      "reservedAmount": "原预留",
+      "chargedAmount": "已用额度",
+      "releasedAmount": "归还额度",
+      "billDigest": "原账单摘要",
+      "terminalId": "终态编号",
+      "terminalDigest": "终态摘要",
+      "back": "返回结算",
+      "newSettlement": "生成结算",
+      "exportSettlement": "导出结算",
+      "draftFailed": "无法生成草稿。请检查原账单是否已获双方确认、原预留与终态是否就绪。",
+      "importJson": "结算 JSON",
+      "invalidSettlement": "结算格式、金额或所属合同不符，请导入当前合同的完整结算。",
+      "confirmation": "结算签署",
+      "accounting": "本地额度处理",
+      "applied": "已记账",
+      "notApplied": "尚未记账",
+      "empty": "暂无已批准结算",
+      "approvalBoundary": "双方须批准同一份结算。直接合作及异步存证在收到对签后记账；链协调等待 VALID 后处理。结算不执行银行付款。",
+      "actionFailed": "操作未确认。请检查结算权限、原账单、终态及签名信任，核对后重试同一请求。",
+      "notQueued": "尚无本站存证记录",
+      "actions": {
+        "approve": "批准结算",
+        "attach": "验证并导入对方签名",
+        "retry": "重试结算存证"
       }
     }
   }

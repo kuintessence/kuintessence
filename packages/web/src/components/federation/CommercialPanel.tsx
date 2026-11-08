@@ -28,6 +28,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { CommercialBillingPanel } from "./CommercialBillingPanel";
 import { CommercialDetail } from "./CommercialDetail";
 import { CommercialEditor } from "./CommercialEditor";
+import { CommercialSettlementPanel } from "./CommercialSettlementPanel";
 import { CommercialTerms } from "./CommercialTerms";
 import { CommercialUsagePanel } from "./CommercialUsagePanel";
 
@@ -49,6 +50,7 @@ export function CommercialPanel({
   const key = ["federation", "commercial", scope.organizationId, scope.authRevision];
   const readOnly = useMobileMutationBlocked(path);
   const [section, setSection] = useState("terms");
+  const [settlementBill, setSettlementBill] = useState<string | undefined>();
   const [billingReport, setBillingReport] = useState<string | undefined>();
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
@@ -67,6 +69,7 @@ export function CommercialPanel({
       : [];
   const canRead = grants.includes("agreement.read");
   const canApprove = grants.includes("agreement.approve") && !readOnly;
+  const canSettle = grants.includes("settlement.approve") && !readOnly;
   const canBill = grants.includes("billing.approve") && !readOnly;
   const context = useQuery({
     queryKey: ["federation", "agreements", scope.organizationId, scope.authRevision, "context"],
@@ -144,6 +147,7 @@ export function CommercialPanel({
         setSelected(action.terms.agreement.agreementRevisionId);
         setSection("terms");
         setBillingReport(undefined);
+        setSettlementBill(undefined);
       }
       await client.invalidateQueries({ queryKey: key });
     },
@@ -240,12 +244,14 @@ export function CommercialPanel({
               onValueChange={(value) => {
                 setSection(value);
                 setBillingReport(undefined);
+                setSettlementBill(undefined);
               }}
             >
               <TabsList aria-label={t("federation.usage.contractSections")}>
                 <TabsTrigger value="terms">{t("federation.commercial.terms")}</TabsTrigger>
                 <TabsTrigger value="usage">{t("federation.usage.title")}</TabsTrigger>
                 <TabsTrigger value="bills">{t("federation.billing.title")}</TabsTrigger>
+                <TabsTrigger value="settlements">{t("federation.settlement.title")}</TabsTrigger>
               </TabsList>
               <TabsContent value="terms">
                 <CommercialDetail
@@ -287,6 +293,23 @@ export function CommercialPanel({
                   writable={canBill}
                   busy={busy || detail.isFetching}
                   reportId={billingReport}
+                  onDraftSettlement={
+                    canSettle
+                      ? (billId) => {
+                          setSettlementBill(billId);
+                          setSection("settlements");
+                        }
+                      : undefined
+                  }
+                />
+              </TabsContent>
+              <TabsContent value="settlements">
+                <CommercialSettlementPanel
+                  approval={detail.data}
+                  scope={scope}
+                  writable={canSettle}
+                  busy={busy || detail.isFetching}
+                  billId={settlementBill}
                 />
               </TabsContent>
             </Tabs>
@@ -309,6 +332,7 @@ export function CommercialPanel({
                       setSelected(row.revisionId);
                       setSection("terms");
                       setBillingReport(undefined);
+                      setSettlementBill(undefined);
                     }}
                   >
                     <span className="min-w-0 space-y-1">

@@ -34,6 +34,7 @@ type BillingProps = {
   writable: boolean;
   busy: boolean;
   reportId?: string;
+  onDraftSettlement?: (billId: string) => void;
 };
 
 export function CommercialBillingPanel(props: BillingProps) {
@@ -45,7 +46,14 @@ export function CommercialBillingPanel(props: BillingProps) {
   );
 }
 
-function BillingPanel({ approval, scope, writable, busy, reportId }: BillingProps) {
+function BillingPanel({
+  approval,
+  scope,
+  writable,
+  busy,
+  reportId,
+  onDraftSettlement,
+}: BillingProps) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
   const id = useId();
@@ -378,6 +386,11 @@ function BillingPanel({ approval, scope, writable, busy, reportId }: BillingProp
             </Button>
           ) : null}
           <CommercialBillTerms bill={current.bill.payload} />
+          {onDraftSettlement && current.bill.counterpartyJws ? (
+            <Button disabled={blocked} onClick={() => onDraftSettlement(current.bill.billId)}>
+              {t("federation.settlement.newSettlement")}
+            </Button>
+          ) : null}
           <details className="space-y-3 border-t border-border pt-4 text-sm">
             <summary className="cursor-pointer">{t("federation.billing.signatures")}</summary>
             <Button variant="outline" onClick={() => void copy(current.bill.approvalJws)}>
