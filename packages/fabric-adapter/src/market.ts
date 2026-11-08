@@ -23,6 +23,7 @@ import {
   MarketQueryInputSchema,
   type MarketQueryResult,
   MarketReceiptSchema,
+  type MarketUnreservedClosure,
 } from "@kuintessence/shared/federation/market";
 import { z } from "zod";
 import { FabricSubmission } from "./submission";
@@ -70,7 +71,8 @@ export class FabricMarketAdapter {
       | z.infer<typeof MarketActivationSchema>
       | MarketExecutionAuthorization
       | MarketExecutionStop
-      | MarketClosure;
+      | MarketClosure
+      | MarketUnreservedClosure;
     if (input.operation === "publish-demand") {
       if (input.demand.sourceSiteId !== this.config.siteId) throw new Error("POLICY_DENIED");
       name = "PublishDemand";
@@ -97,6 +99,11 @@ export class FabricMarketAdapter {
       value = input.stop;
     } else if (input.operation === "close-demand") {
       name = "CloseDemand";
+      recordId = input.closure.closureId;
+      value = input.closure;
+    } else if (input.operation === "close-unreserved-demand") {
+      if (input.closure.issuerSiteId !== this.config.siteId) throw new Error("POLICY_DENIED");
+      name = "CloseUnreservedDemand";
       recordId = input.closure.closureId;
       value = input.closure;
     } else {

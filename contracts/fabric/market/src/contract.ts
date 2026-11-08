@@ -12,6 +12,7 @@ import {
   MarketExecutionAuthorizationSchema,
   MarketExecutionStopSchema,
   MarketPageRequestSchema,
+  MarketUnreservedClosureSchema,
 } from "@kuintessence/shared/federation/market";
 import type { ChaincodeInterface, ChaincodeStub } from "fabric-shim";
 import shim from "fabric-shim";
@@ -89,6 +90,7 @@ export class MarketLedger {
         "AuthorizeExecution",
         "RequestExecutionStop",
         "CloseDemand",
+        "CloseUnreservedDemand",
       ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
@@ -162,6 +164,56 @@ export class MarketLedger {
       return encode({ recordId: id, digest: hash });
     }
     if (!prior) return fail("ASSET_UNAVAILABLE");
+    if (fcn === "CloseUnreservedDemand") {
+      const closure = this.input(stub, MarketUnreservedClosureSchema);
+      if (
+        closure.demandId !== id ||
+        closure.issuerSiteId !== org.siteId ||
+        ![prior.demand.sourceSiteId, prior.claim?.providerSiteId].includes(org.siteId)
+      )
+        return fail("POLICY_DENIED");
+      if (prior.unreservedClosure) {
+        if (digest(prior.unreservedClosure) !== digest(closure)) return fail("OPERATION_CONFLICT");
+        return encode({ recordId: closure.closureId, digest: digest(closure) });
+      }
+      if (
+        prior.status !== "CLAIMED" ||
+        prior.activation ||
+        !prior.claim ||
+        prior.version !== closure.expectedVersion ||
+        prior.claim.claimId !== closure.claimId ||
+        prior.claim.commercialDomainId !== closure.commercialDomainId
+      )
+        return fail("OPERATION_CONFLICT");
+      const response = await stub.invokeChaincode(
+        "kq-commercial",
+        ["GetExecutionGatePresence", closure.commercialDomainId, closure.claimId],
+        stub.getChannelID(),
+      );
+      if (response.status !== 200 || !response.payload) return fail("LEDGER_REQUIRED");
+      const current = z
+        .strictObject({
+          hash: z
+            .string()
+            .regex(/^[a-f0-9]{64}$/)
+            .nullable(),
+        })
+        .parse(JSON.parse(Buffer.from(response.payload).toString()));
+      if (current.hash !== null) return fail("OPERATION_CONFLICT");
+      // An absent private hash is a native MVCC read, so a concurrent reservation cannot also win.
+      await stub.putState(
+        key,
+        encode(
+          MarketDemandStateSchema.parse({
+            ...prior,
+            status: "CLOSED",
+            version: prior.version + 1,
+            unreservedClosure: closure,
+          }),
+        ),
+      );
+      return encode({ recordId: closure.closureId, digest: digest(closure) });
+    }
     if (fcn === "CloseDemand") {
       const closure = this.input(stub, MarketClosureSchema);
       if (

@@ -76,6 +76,8 @@
 
 O01 执行前释放补充：真实 Fabric 3.1.5、双方各自身份的 Node Adapter 和 Server 生产服务已联合验证私有释放 VALID、源方公共关闭及本地占额回收，关闭响应丢失后按原 txId 恢复，旧激活仍拒绝。入口为 `--gate --preexecution-closure --database`，见[操作说明](../../../deploy/federation/fabric-execution-gate.md#执行前释放后的公共关闭)。这组检查在同一隔离 PostgreSQL 内保存不同站点记录，物理容量观测为受控报告，不替代 A/B/C 独立部署或完整 O01 满盘验收。
 
+L06/L07 未锁额关闭补充：`--gate --unreserved-closure` 使用真实链验证明确 gate 缺失的原认领关闭。关闭先提交则迟到私有预留 INVALID，预留先提交则关闭 INVALID；非参与机构不能发起，原关闭重放不重新开放。公共 CLOSED 后两端本地提案/签名队列的终止、占额回收与作业侧联合验收仍须补齐，不能将 L06/L07/O01 整项标为完成。
+
 
 ## 执行 gate 的当前验证覆盖
 

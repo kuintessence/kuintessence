@@ -1550,3 +1550,26 @@ test("missing adjustment head bytes cannot reset the adjustment chain and refund
   );
   expect(f.stub.privateState).toEqual(before);
 });
+
+test("execution gate presence reports explicit absence only for a configured commercial domain", async () => {
+  const f = await reservationFixture();
+  const presence = () =>
+    f.call(
+      "GetExecutionGatePresence",
+      f.reservation.reservationId,
+      undefined,
+      identity(2, "market"),
+    );
+  expect(JSON.parse((await presence()).toString())).toEqual({ hash: null });
+  await expect(
+    f.call("GetExecutionGateHash", f.reservation.reservationId, undefined, identity(2, "market")),
+  ).rejects.toThrow("ASSET_UNAVAILABLE");
+  await f.reserve();
+  expect(JSON.parse((await presence()).toString()).hash).toMatch(/^[a-f0-9]{64}$/);
+  await expect(
+    f.call("GetExecutionGatePresence", randomUUID(), undefined, identity(2, "trust-admin")),
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+  f.stub.fcn = "GetExecutionGatePresence";
+  f.stub.params = [randomUUID(), f.reservation.reservationId];
+  await expect(f.ledger.invoke(f.stub, identity(2, "market"))).rejects.toThrow("ASSET_UNAVAILABLE");
+});

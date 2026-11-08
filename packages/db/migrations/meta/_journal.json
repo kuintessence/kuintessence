@@ -1051,6 +1051,13 @@
       "when": 1794123136693,
       "tag": "0149_youthful_abomination",
       "breakpoints": true
+    },
+    {
+      "idx": 150,
+      "version": "7",
+      "when": 1794125833487,
+      "tag": "0150_ancient_oracle",
+      "breakpoints": true
     }
   ]
 }

@@ -495,3 +495,111 @@ test("completion pool backfills public market obligations and prevents new publi
   ).rejects.toThrow("STORAGE_PRESSURE");
   expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "20", obligations: 1 });
 });
+
+test("unreserved source closure requires owned committed publication and serializes duplicate intents", async () => {
+  const f = await fixture();
+  const input = {
+    operation: "close-unreserved-demand" as const,
+    closure: {
+      demandId: f.id,
+      closureId: randomUUID(),
+      claimId: randomUUID(),
+      commercialDomainId: randomUUID(),
+      issuerSiteId: f.siteId,
+      expectedVersion: 2,
+    },
+  };
+  await expect(f.service.enqueue(f.actor, input)).rejects.toThrow("ASSET_UNAVAILABLE");
+  await f.service.enqueue(f.actor, f.input);
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  await f.service.enqueue(f.actor, {
+    operation: "cancel-open-demand",
+    cancellation: {
+      demandId: f.id,
+      cancellationId: randomUUID(),
+      expectedVersion: 1,
+    },
+  });
+  f.adapter.outcome = "invalid";
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  const replies = await Promise.all(
+    Array.from({ length: 4 }, () => f.service.enqueue(f.actor, input)),
+  );
+  expect(new Set(replies.map((r) => r.id)).size).toBe(1);
+  await expect(
+    f.service.enqueue(f.actor, {
+      ...input,
+      closure: { ...input.closure, closureId: randomUUID() },
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  const other = await fixture();
+  await expect(f.service.enqueue(other.actor, input)).rejects.toThrow("ASSET_UNAVAILABLE");
+  f.adapter.outcome = "invalid";
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  expect((await f.service.get(f.actor, input.closure.closureId)).operation.state).toBe(
+    "needs_review",
+  );
+  await db
+    .update(submissions)
+    .set({ digest: `sha256:${"f".repeat(64)}` })
+    .where(eq(submissions.id, input.closure.closureId));
+  await expect(f.service.retry(f.actor, input.closure.closureId)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  expect((await f.service.get(f.actor, input.closure.closureId)).operation.state).toBe(
+    "needs_review",
+  );
+});
+
+test("unreserved provider closure and retry use claim authority and preserve original claim binding", async () => {
+  const f = await fixture(false);
+  await f.permissions.set(
+    { ...f.actor, capability: "market.claim", enabled: true },
+    f.actor.userId,
+  );
+  const claim = {
+    demandId: randomUUID(),
+    claimId: randomUUID(),
+    providerSiteId: f.siteId,
+    commercialDomainId: randomUUID(),
+    expectedVersion: 1,
+    expiresAt: new Date(Date.now() + 3600000).toISOString(),
+  };
+  await f.service.enqueue(f.actor, { operation: "claim-demand", claim });
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  const input = {
+    operation: "close-unreserved-demand" as const,
+    closure: {
+      demandId: claim.demandId,
+      closureId: randomUUID(),
+      claimId: claim.claimId,
+      commercialDomainId: claim.commercialDomainId,
+      issuerSiteId: f.siteId,
+      expectedVersion: 2,
+    },
+  };
+  await expect(
+    f.service.enqueue(f.actor, {
+      ...input,
+      closure: { ...input.closure, issuerSiteId: randomUUID() },
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  for (const patch of [{ commercialDomainId: randomUUID() }, { expectedVersion: 3 }])
+    await expect(
+      f.service.enqueue(f.actor, { ...input, closure: { ...input.closure, ...patch } }),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+  await f.service.enqueue(f.actor, input);
+  f.adapter.outcome = "invalid";
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  await f.permissions.set(
+    { ...f.actor, capability: "market.claim", enabled: false },
+    f.actor.userId,
+  );
+  await expect(f.service.retry(f.actor, input.closure.closureId)).rejects.toThrow("POLICY_DENIED");
+  await f.permissions.set(
+    { ...f.actor, capability: "market.claim", enabled: true },
+    f.actor.userId,
+  );
+  await f.service.retry(f.actor, input.closure.closureId);
+  expect((await f.service.get(f.actor, input.closure.closureId)).operation.state).toBe("pending");
+});

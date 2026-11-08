@@ -32,6 +32,7 @@ import {
   MarketExecutionAuthorizationSchema,
   MarketExecutionGateSchema,
   MarketExecutionStopSchema,
+  MarketUnreservedClosureSchema,
 } from "@kuintessence/shared/federation/market";
 import { signFederationMessage } from "@kuintessence/shared/federation/signatures";
 import { importPKCS8 } from "jose";
@@ -436,6 +437,80 @@ async function run() {
     probes.push(signed.sourceJws, signed.targetJws);
     return { value, signed };
   };
+  if (process.argv.includes("--unreserved-closure")) {
+    for (const reserveFirst of [false, true]) {
+      const task = await claimed();
+      const issuer = reserveFirst ? source : target;
+      const caller = reserveFirst ? am : bm;
+      const closure = MarketUnreservedClosureSchema.parse({
+        demandId: task.demand.demandId,
+        closureId: randomUUID(),
+        claimId: task.reservation.reservationId,
+        commercialDomainId: domain.domainId,
+        issuerSiteId: issuer.siteId,
+        expectedVersion: 2,
+      });
+      await assert.rejects(
+        market(cm, "CloseUnreservedDemand", task.demand.demandId, {
+          ...closure,
+          issuerSiteId: site("C").siteId,
+        }).endorse(),
+        rejected("POLICY_DENIED"),
+      );
+      const [reserveTx, closeTx] = await Promise.all([
+        commercial(a, "ReserveExecution", task.reservation.reservationId, task.signed).endorse(),
+        market(caller, "CloseUnreservedDemand", task.demand.demandId, closure, [
+          "AMSP",
+          "CMSP",
+        ]).endorse(),
+      ]);
+      assert.equal((await commit(reserveFirst ? reserveTx : closeTx)).successful, true);
+      assert.equal(
+        (await commit(reserveFirst ? closeTx : reserveTx)).code,
+        peer.TxValidationCode.MVCC_READ_CONFLICT,
+      );
+      await synced(task.demand.demandId, reserveFirst ? "CLAIMED" : "CLOSED");
+      if (reserveFirst) {
+        await assert.rejects(
+          market(caller, "CloseUnreservedDemand", task.demand.demandId, closure).endorse(),
+          rejected("OPERATION_CONFLICT"),
+        );
+        passed.push(
+          "private reserve wins: native absent-hash MVCC rejects concurrent unreserved closure and funded claim stays open",
+        );
+      } else {
+        const closed = await current(task.demand.demandId);
+        assert.equal(closed.activation, null);
+        assert.deepEqual(closed.unreservedClosure, closure);
+        assert.equal(
+          (
+            await commit(
+              await market(
+                caller,
+                "CloseUnreservedDemand",
+                task.demand.demandId,
+                closure,
+              ).endorse(),
+            )
+          ).successful,
+          true,
+        );
+        await assert.rejects(
+          commercial(a, "ReserveExecution", task.reservation.reservationId, task.signed).endorse(),
+          rejected("OPERATION_CONFLICT"),
+        );
+        passed.push(
+          "provider closes unreserved claim with A/C endorsement: concurrent private reserve is INVALID, closure replay is stable and late funding is denied",
+        );
+      }
+    }
+    await writeFile(
+      z.string().parse(process.argv[3]),
+      JSON.stringify({ passed, probes }, null, 2),
+      { mode: 0o600 },
+    );
+    return;
+  }
   const first = await claimed();
   const endorsed = await commercial(
     a,

@@ -72,3 +72,40 @@ bun run test:fabric:market
 已验证单机构背书提交为 ENDORSEMENT_POLICY_FAILURE，两机构发布 VALID；B/C 同时认领时只有一个 VALID，另一个 MVCC_READ_CONFLICT；原请求重试不重置认领，竞争方不能覆盖，未认领撤回接口不能作用于认领后状态，旧的非协议 Activate 调用拒绝；实际 ActivateDemand 由独立 gate 验收覆盖。测试已接入现有 Fabric CI。追加检查使用真实 Node Market Adapter、私有 Unix socket 和 Server 客户端，先持久保存提案/背书检查点，停止 Orderer 得到 pending，再恢复 Orderer；提交 VALID 后让进程退出而不保存响应，新进程仍从原检查点取得同一 transactionId/blockNumber。每次调用是新进程，未以同一内存对象代替恢复；此故障恢复样例是发布需求操作。追加目录检查通过同一生产 Node Adapter/Server Unix 客户端逐页读取两条真实提交需求，核对单条详情、书签不重复及不存在记录；读取使用 evaluate，无额外市场提交。
 
 Market Adapter、Server 持久待办与操作 API 已接通，已接入公共需求分页浏览 API，尚缺自动同步和 Web 入口、PDC 报价与额度锁定的应用接入、执行许可验权、终态与结算。私有预留/激活前释放与跨链码 gate 已在链码实现并有独立真实网络检查入口。这些完成前不允许把“已认领”接入作业派发，当前检查不代表市场到真实计算的端到端交付。
+
+## 关闭尚未锁额的认领
+
+`close-unreserved-demand` 适用于已认领、但尚未在私有商业域建立执行 gate 的需求。发起者可以是原发布机构或当前认领机构。关闭会保留原认领、写入 `unreservedClosure` 并将公开状态置为 CLOSED；不重新开放，不生成资金退款，也不撤销已经建立的私有预留。已有 READY、REVOKED 或 TERMINAL gate 均拒绝此入口，分别沿原释放/终态流程处理。
+
+Market 链码调用同通道 Commercial 的 `GetExecutionGatePresence`，仅已配置商业域内的缺失键返回明确的 `hash:null`。未知域、调用失败、无响应和不合法数据均不能冒充没有 gate。缺失哈希读与公开需求写进入同一个 Fabric MVCC 集合：关闭与私有预留并发时，先提交者 VALID，另一笔 INVALID。此规则无需公开价格、合同、用量或完整委派。
+
+通过既有 `POST /api/federation/market/operations` 提交，正文为：
+
+```json
+{
+  "operation": "close-unreserved-demand",
+  "closure": {
+    "demandId": "10000000-0000-4000-8000-000000000001",
+    "closureId": "10000000-0000-4000-8000-000000000002",
+    "claimId": "10000000-0000-4000-8000-000000000003",
+    "commercialDomainId": "10000000-0000-4000-8000-000000000004",
+    "issuerSiteId": "10000000-0000-4000-8000-000000000005",
+    "expectedVersion": 2
+  }
+}
+```
+
+示例标识不能直接执行。`demandId`、`claimId`、商业域和版本取自原公开认领，`issuerSiteId` 必须为本站；只有首次创建 `closureId`，未知结果继续原 ID。源方要求本组织已 committed 的发布记录与 `market.publish`，提供方要求本组织已 committed 的原认领与 `market.claim`，重试保持相同权限；平台管理员身份本身不代替这些授权。无商业域的旧认领不通过此接口推测归属。
+
+入队仍返回 202/pending，只有原交易 VALID 才标 committed。同一原发布/认领的并发关闭串行去重；改用另一 closureId 拒绝。已有未认领撤回因认领竞争失败，不妨碍发起本关闭。新待办锁定原市场占额，已释放占额不能被新 ID 重新使用；精确重放返回原记录。此步骤尚不自动终止本地提案、签名交换或回收任务占额，不能把公共 CLOSED 当作所有本地义务已结束。
+
+升级须应用 Drizzle 生成的 [0150](../../packages/db/migrations/0150_ancient_oracle.sql)，同步部署共享 schema、Commercial/Market 链码、Adapter 和 Server，再启用该入口。先让 Commercial 支持存在性查询；旧 Market 客户端无法解析新增 CLOSED 记录，不应与新写入混用。Web 专用操作、自动取消编排及两端本地提案收尾仍需继续接线。
+
+真实并发专项：
+
+```sh
+KQ_FABRIC_TOOLS=/path/to/verified-fabric-3.1.5 \
+bun scripts/fabric-evidence-network.ts --gate --unreserved-closure
+```
+
+已验证提供方通过 A/C 公共背书关闭、关闭/锁额两种提交顺序的 MVCC 互斥、非参与机构拒绝、原关闭重放及迟到锁额拒绝。另有 71 项链码/Adapter 模块和 13 项隔离 PostgreSQL 检查通过。该专项不启动 k3s 或科学计算，不替代 Server/Agent 完整联合验收。

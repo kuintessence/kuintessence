@@ -215,7 +215,7 @@ export async function allocateMarketCompletion(
   input: MarketProposalInput,
   guard?: Guard,
 ) {
-  if (input.operation === "cancel-open-demand") return;
+  if (input.operation !== "publish-demand" && input.operation !== "claim-demand") return;
   const intentId =
     input.operation === "publish-demand" ? input.demand.demandId : input.claim.claimId;
   await allocate(

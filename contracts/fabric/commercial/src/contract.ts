@@ -1097,7 +1097,7 @@ export class CommercialLedger {
     if (!Buffer.from(await stub.getState(ConfigKey)).equals(this.configBytes))
       return fail("POLICY_DENIED");
     const { fcn, params } = stub.getFunctionAndParameters();
-    if (fcn === "GetExecutionGateHash") {
+    if (fcn === "GetExecutionGateHash" || fcn === "GetExecutionGatePresence") {
       const role = identity.getAttributeValue("kq.federation.role");
       if (role !== "market" && role !== "commercial") return fail("UNTRUSTED_IDENTITY");
       this.organization(identity, role);
@@ -1109,7 +1109,10 @@ export class CommercialLedger {
         domain.collection,
         stub.createCompositeKey("execution-gate", [domainId, reservationId]),
       );
-      if (!hash.length) return fail("ASSET_UNAVAILABLE");
+      if (!hash.length) {
+        if (fcn === "GetExecutionGatePresence") return encode({ hash: null });
+        return fail("ASSET_UNAVAILABLE");
+      }
       return encode({ hash: Buffer.from(hash).toString("hex") });
     }
     if (fcn === "RevokeKey") {

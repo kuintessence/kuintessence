@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   federationMarketAttempts as attempts,
   auditLog,
+  federationCompletionClaims as completionClaims,
   type PgDb,
   type PgTransaction,
   federationMarketSubmissions as submissions,
@@ -18,6 +19,7 @@ import {
   type MarketQueryInput,
   MarketQueryInputSchema,
   MarketQueryResultSchema,
+  type MarketUnreservedClosure,
 } from "@kuintessence/shared/federation/market";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -266,16 +268,24 @@ export class FederationMarketService {
         ? input.demand.demandId
         : input.operation === "claim-demand"
           ? input.claim.claimId
-          : input.cancellation.cancellationId;
+          : input.operation === "close-unreserved-demand"
+            ? input.closure.closureId
+            : input.cancellation.cancellationId;
     const demandId =
       input.operation === "publish-demand"
         ? input.demand.demandId
         : input.operation === "claim-demand"
           ? input.claim.demandId
-          : input.cancellation.demandId;
+          : input.operation === "close-unreserved-demand"
+            ? input.closure.demandId
+            : input.cancellation.demandId;
     const digest = federationMaterialDigest(input);
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, capability);
+      const origin =
+        input.operation === "close-unreserved-demand"
+          ? await this.unreservedAuthority(tx, actor, input.closure)
+          : undefined;
+      if (!origin) await requireFederationCapability(tx, actor, capability);
       const [prior] = await tx.select().from(submissions).where(eq(submissions.id, id));
       if (prior) {
         if (prior.localSiteId !== this.siteId || prior.localOrgId !== actor.orgId)
@@ -303,6 +313,33 @@ export class FederationMarketService {
           .for("share");
         if (published?.input.operation !== "publish-demand")
           throw new FederationError("ASSET_UNAVAILABLE");
+      } else if (input.operation === "close-unreserved-demand") {
+        if (!origin) throw new FederationError("ASSET_UNAVAILABLE");
+        const [capacity] = await tx
+          .select()
+          .from(completionClaims)
+          .where(
+            and(
+              eq(completionClaims.localSiteId, this.siteId),
+              eq(completionClaims.kind, "market"),
+              eq(completionClaims.intentId, origin.id),
+            ),
+          )
+          .for("update");
+        if (capacity && (capacity.releasedAt || capacity.digest !== origin.digest))
+          throw new FederationError("OPERATION_CONFLICT");
+        const [other] = await tx
+          .select({ id: submissions.id })
+          .from(submissions)
+          .where(
+            and(
+              eq(submissions.localSiteId, this.siteId),
+              eq(submissions.demandId, demandId),
+              sql`${submissions.input}->>'operation' = 'close-unreserved-demand'`,
+            ),
+          )
+          .limit(1);
+        if (other) throw new FederationError("OPERATION_CONFLICT");
       } else {
         await allocateMarketCompletion(tx, this.siteId, input, this.storageGuard);
         await this.storageGuard?.assertAdmission("ledger_coordinated");
@@ -348,6 +385,37 @@ export class FederationMarketService {
       });
       return { id, state: "pending", demandId };
     });
+  }
+  private async unreservedAuthority(
+    tx: PgTransaction,
+    actor: FederationActor,
+    closure: MarketUnreservedClosure,
+  ) {
+    if (closure.issuerSiteId !== this.siteId) throw new FederationError("POLICY_DENIED");
+    const [origin] = await tx
+      .select()
+      .from(submissions)
+      .where(
+        and(
+          this.owned(actor),
+          eq(submissions.demandId, closure.demandId),
+          eq(submissions.state, "committed"),
+          sql`((${submissions.id} = ${closure.demandId}::uuid AND ${submissions.input}->>'operation' = 'publish-demand')
+        OR (${submissions.id} = ${closure.claimId}::uuid AND ${submissions.input}->>'operation' = 'claim-demand'))`,
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!origin) throw new FederationError("ASSET_UNAVAILABLE");
+    if (origin.input.operation === "claim-demand") {
+      if (
+        origin.input.claim.commercialDomainId !== closure.commercialDomainId ||
+        origin.input.claim.expectedVersion + 1 !== closure.expectedVersion
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      await requireFederationCapability(tx, actor, "market.claim");
+    } else await requireFederationCapability(tx, actor, "market.publish");
+    return origin;
   }
   private owned(actor: FederationActor, id?: string) {
     return and(
@@ -443,17 +511,20 @@ export class FederationMarketService {
       await requireFederationCapability(tx, actor, "market.read");
       const [row] = await tx.select().from(submissions).where(this.owned(actor, id)).for("update");
       if (!row) throw new FederationError("ASSET_UNAVAILABLE");
-      await requireFederationCapability(
-        tx,
-        actor,
-        row.input.operation === "authorize-execution" ||
-          row.input.operation === "request-execution-stop" ||
-          row.input.operation === "close-demand"
-          ? "agreement.approve"
-          : row.input.operation === "claim-demand"
-            ? "market.claim"
-            : "market.publish",
-      );
+      if (row.input.operation === "close-unreserved-demand")
+        await this.unreservedAuthority(tx, actor, row.input.closure);
+      else
+        await requireFederationCapability(
+          tx,
+          actor,
+          row.input.operation === "authorize-execution" ||
+            row.input.operation === "request-execution-stop" ||
+            row.input.operation === "close-demand"
+            ? "agreement.approve"
+            : row.input.operation === "claim-demand"
+              ? "market.claim"
+              : "market.publish",
+        );
       if (row.input.operation === "activate-demand")
         await requireFederationCapability(tx, actor, "agreement.approve");
       const [time] = await tx
@@ -465,7 +536,7 @@ export class FederationMarketService {
         (row.leaseUntil && row.leaseUntil > new Date(time?.now ?? NaN))
       )
         throw new FederationError("OPERATION_CONFLICT");
-      this.validate(row);
+      await this.validate(row);
       const [attempt] = await this.latest(tx, id);
       if (attempt?.stage === "proposal")
         await tx

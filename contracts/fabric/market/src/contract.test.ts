@@ -734,3 +734,87 @@ test("pre-execution closure cannot replace termination of an active task", async
   ).rejects.toThrow("OPERATION_CONFLICT");
   expect((await f.invoke("GetDemand", undefined)).status).toBe("ACTIVE");
 });
+
+test("unreserved closure binds the claimant and explicit absence; either participant can close but a funded gate cannot", async () => {
+  for (const issuer of [0, 1]) {
+    const f = await fixture();
+    await f.invoke("PublishDemand", f.demand);
+    const claim = { ...f.claim(), commercialDomainId: randomUUID() };
+    await f.invoke("ClaimDemand", claim, 1);
+    const closure = {
+      demandId: f.demand.demandId,
+      closureId: randomUUID(),
+      claimId: claim.claimId,
+      commercialDomainId: claim.commercialDomainId,
+      issuerSiteId: sites[issuer],
+      expectedVersion: 2,
+    };
+    let response: { status: number; payload: Buffer } = {
+      status: 500,
+      payload: Buffer.from("ASSET_UNAVAILABLE"),
+    };
+    f.stub.onInvoke = async (name, args, channel) => {
+      expect([name, ...args, channel]).toEqual([
+        "kq-commercial",
+        "GetExecutionGatePresence",
+        claim.commercialDomainId,
+        claim.claimId,
+        "cooperation",
+      ]);
+      return response;
+    };
+    await expect(f.invoke("CloseUnreservedDemand", closure, issuer)).rejects.toThrow(
+      "LEDGER_REQUIRED",
+    );
+    response = { status: 200, payload: Buffer.from(JSON.stringify({ hash: "a".repeat(64) })) };
+    await expect(f.invoke("CloseUnreservedDemand", closure, issuer)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    response = { status: 200, payload: Buffer.from(JSON.stringify({ hash: null })) };
+    await expect(
+      f.invoke("CloseUnreservedDemand", { ...closure, issuerSiteId: sites[2] }, 2),
+    ).rejects.toThrow("POLICY_DENIED");
+    for (const patch of [
+      { claimId: randomUUID() },
+      { commercialDomainId: randomUUID() },
+      { expectedVersion: 1 },
+    ])
+      await expect(
+        f.invoke("CloseUnreservedDemand", { ...closure, ...patch }, issuer),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+    const receipt = await f.invoke("CloseUnreservedDemand", closure, issuer);
+    expect(await f.invoke("CloseUnreservedDemand", closure, issuer)).toEqual(receipt);
+    const state = await f.invoke("GetDemand", undefined);
+    expect(state).toMatchObject({
+      status: "CLOSED",
+      version: 3,
+      activation: null,
+      claim,
+      unreservedClosure: closure,
+    });
+    expect(MarketDemandStateSchema.safeParse(state).success).toBe(true);
+    for (const patch of [
+      { status: "CLAIMED" },
+      { version: 4 },
+      { claim: null },
+      {
+        cancellation: {
+          demandId: f.demand.demandId,
+          cancellationId: randomUUID(),
+          expectedVersion: 1,
+        },
+      },
+    ])
+      expect(MarketDemandStateSchema.safeParse({ ...state, ...patch }).success).toBe(false);
+    expect(
+      MarketDemandStateSchema.safeParse({
+        ...state,
+        unreservedClosure: { ...closure, issuerSiteId: sites[2] },
+      }).success,
+    ).toBe(false);
+    await expect(
+      f.invoke("CloseUnreservedDemand", { ...closure, closureId: randomUUID() }, issuer),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    await expect(f.invoke("ClaimDemand", f.claim(2), 2)).rejects.toThrow("OPERATION_CONFLICT");
+  }
+});

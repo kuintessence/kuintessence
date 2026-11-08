@@ -201,6 +201,17 @@ function decode(f: ReturnType<typeof fixture>, token: string) {
 test("market checkpoint binds exact canonical payload and leaves native endorsement discovery to Gateway", async () => {
   const f = fixture();
   const variants: MarketProposalInput[] = [
+    {
+      operation: "close-unreserved-demand",
+      closure: {
+        demandId: f.demand.demandId,
+        closureId: randomUUID(),
+        claimId: randomUUID(),
+        commercialDomainId: randomUUID(),
+        issuerSiteId: f.config.siteId,
+        expectedVersion: 2,
+      },
+    },
     { operation: "publish-demand", demand: f.demand },
     {
       operation: "claim-demand",
@@ -229,8 +240,14 @@ test("market checkpoint binds exact canonical payload and leaves native endorsem
         ? ["PublishDemand", input.demand, input.demand.demandId]
         : input.operation === "claim-demand"
           ? ["ClaimDemand", input.claim, input.claim.claimId]
-          : ["CancelOpenDemand", input.cancellation, input.cancellation.cancellationId];
+          : input.operation === "close-unreserved-demand"
+            ? ["CloseUnreservedDemand", input.closure, input.closure.closureId]
+            : ["CancelOpenDemand", input.cancellation, input.cancellation.cancellationId];
     const bytes = federationCanonicalJson(value);
+    if (input.operation === "close-unreserved-demand")
+      await expect(
+        f.adapter.prepare({ ...input, closure: { ...input.closure, issuerSiteId: randomUUID() } }),
+      ).rejects.toThrow("POLICY_DENIED");
     expect(stored).toMatchObject({
       batchId: id,
       domainId: f.config.trust.generationId,

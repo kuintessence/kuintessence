@@ -2243,3 +2243,15 @@ Server 查询新增可选 settlementId 及 summary，不改变旧列表调用，
 4 项原生链安全条件和 1 项新增 Server/Adapter/PostgreSQL 回收联合检查通过。测试使用同一隔离数据库中的不同站点记录，物理容量观测仍为受控报告；不宣称已覆盖独立部署双 Server、Agent、磁盘满载、完整 O01 或全部交付。临时数据库、Peer/Orderer/Adapter、私钥和账本已清理，仅保留忽略目录内的脱敏通过记录。完整验收范围及 PR 预览目标不变。
 
 全仓 lint/typecheck（含 Fabric 脚本）通过，lint 保持原有 47 warning / 1 info；离线文档链接检查通过，覆盖 801 个本地目标。未改链码、数据库迁移或依赖，未重跑无关调度器或科学计算测试。
+
+### 未锁额认领的原子关闭
+
+新增 `close-unreserved-demand` 公开操作和 `unreservedClosure` 状态，保留原认领且不重新开放。发布方/认领方之一可关闭尚无私有 gate 的原任务；Commercial 的 `GetExecutionGatePresence` 只对已配置域返回明确缺失，未知域或错误不冒充 absence。Market 在同通道读取原 gate 的哈希存在性，与公开 CLOSED 写入共同进入原生 MVCC，已有 READY/REVOKED/TERMINAL 均继续使用原释放/终态流程。
+
+Node Adapter、Server 原持久市场提交/API 与重试接通。源方核对本组织原发布及 publish 权限，提供方核对本组织原认领、商业域、版本及 claim 权限；同原意图并发去重，另换 closureId 拒绝，未知交易不换编号。新关闭待办锁定原市场占额，已释放记录拒绝新写入。原 CancelOpenDemand 因认领竞争失效不阻止后续正确关闭。修正市场人工重试未等待异步校验的问题，校验失败不再先排入重试。数据库约束由 Drizzle 生成迁移 0150，未手写迁移或新增依赖。
+
+71 项链码/Adapter 模块、13 项市场 PostgreSQL、2 项原停止/激活重试回归通过。最后调整撤回与关闭的衔接后，仅重跑受影响的 1 项源方用例通过。真实 Fabric 3.1.5 专项另验证两种顺序：提供方经 A/C 背书先关闭，原并发私有预留 INVALID；私有预留先 VALID，缺失哈希读冲突使关闭 INVALID。原关闭可重放，非参与方及迟到锁额被拒绝。所有临时进程、数据库、私钥与账本清理，只留脱敏报告。
+
+这补齐了未预留认领的权威关闭事实，尚未据此自动结束本地提案/签名交换队列或回收任务占额，也未完成 Web 操作、自动工作流取消编排及独立 Server/Agent 联合验收。现有任务预算继续保留，不将本项误报为 O01、L06/L07 或整套联盟链交付完成；完整 PR 预览目标继续推进。
+
+全仓 lint/typecheck（含 Fabric 脚本）通过，lint 保持原有 47 warning / 1 info；离线文档链接检查覆盖 803 个本地目标。迁移仅应用于隔离测试库，未部署或合并。

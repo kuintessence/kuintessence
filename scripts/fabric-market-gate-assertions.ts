@@ -24,6 +24,7 @@ export async function verifyExecutionGateNetwork(
     result = join(root, "gate-result.json");
   await writeFile(entry, await build.outputs[0].text(), { mode: 0o600 });
   const preexecution = process.argv.includes("--preexecution-closure");
+  const unreserved = process.argv.includes("--unreserved-closure");
   const child = Bun.spawn(
     [
       "node",
@@ -31,6 +32,7 @@ export async function verifyExecutionGateNetwork(
       join(root, "network.json"),
       result,
       ...(preexecution ? ["--preexecution-closure"] : []),
+      ...(unreserved ? ["--unreserved-closure"] : []),
       ...(process.argv.includes("--database") ? ["--database"] : []),
     ],
     {
@@ -64,7 +66,7 @@ export async function verifyExecutionGateNetwork(
           "production execution confirmation, stop, private terminal and public closure recover their original VALID transactions after Orderer outage and process exit",
         );
       }
-    } else if (!preexecution) {
+    } else if (!preexecution && !unreserved) {
       await verifyAdapterRecovery(root, controls);
       report.passed.push(
         "production commercial and market runtimes recover release/reserve/activate/authorize/stop/terminal/close across process loss; reserve, authorize, stop, terminal and close survive Orderer outage with the original transaction",

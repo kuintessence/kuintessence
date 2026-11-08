@@ -25,6 +25,16 @@ import { verifyLiveExecution } from "./federation-live/verify";
 const repo = resolve(import.meta.dir, "..");
 const execution = process.argv.includes("--execution");
 if (
+  process.argv.includes("--unreserved-closure") &&
+  (!process.argv.includes("--gate") ||
+    process.argv.includes("--database") ||
+    process.argv.includes("--preexecution-closure") ||
+    execution)
+)
+  throw new Error(
+    "Use --unreserved-closure only with --gate (without database/execution/preexecution-closure)",
+  );
+if (
   process.argv.includes("--preexecution-closure") &&
   (!process.argv.includes("--gate") || execution)
 )

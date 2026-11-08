@@ -118,6 +118,16 @@ export const MarketClosureSchema = z
     "Closure must bind a terminal or revoked gate",
   );
 export type MarketClosure = z.infer<typeof MarketClosureSchema>;
+/** A claim can close without a private release only while no execution gate exists. */
+export const MarketUnreservedClosureSchema = z.strictObject({
+  demandId: Id,
+  closureId: Id,
+  claimId: Id,
+  commercialDomainId: Id,
+  issuerSiteId: Id,
+  expectedVersion: Version,
+});
+export type MarketUnreservedClosure = z.infer<typeof MarketUnreservedClosureSchema>;
 export const MarketDemandStateSchema = z
   .strictObject({
     demand: MarketDemandSchema,
@@ -129,6 +139,7 @@ export const MarketDemandStateSchema = z
     activation: MarketActivationSchema.nullable().default(null),
     stopRequest: MarketExecutionStopSchema.optional(),
     closure: MarketClosureSchema.optional(),
+    unreservedClosure: MarketUnreservedClosureSchema.optional(),
   })
   .superRefine((value, ctx) => {
     const stop = value.stopRequest;
@@ -147,6 +158,25 @@ export const MarketDemandStateSchema = z
     )
       ctx.addIssue({ code: "custom", message: "Invalid execution stop binding" });
     const closure = value.closure;
+    const unreserved = value.unreservedClosure;
+    if (unreserved) {
+      if (
+        value.status !== "CLOSED" ||
+        closure ||
+        value.activation ||
+        stop ||
+        value.cancellation ||
+        !value.claim ||
+        unreserved.demandId !== value.demand.demandId ||
+        unreserved.claimId !== value.claim.claimId ||
+        unreserved.commercialDomainId !== value.claim.commercialDomainId ||
+        unreserved.expectedVersion !== value.claim.expectedVersion + 1 ||
+        value.version !== unreserved.expectedVersion + 1 ||
+        ![value.demand.sourceSiteId, value.claim.providerSiteId].includes(unreserved.issuerSiteId)
+      )
+        ctx.addIssue({ code: "custom", message: "Invalid unreserved claim closure binding" });
+      return;
+    }
     if (value.status !== "CLOSED") {
       if (closure) ctx.addIssue({ code: "custom", message: "Unexpected execution closure" });
       return;
@@ -216,6 +246,10 @@ export const MarketProposalInputSchema = z.discriminatedUnion("operation", [
   z.strictObject({
     operation: z.literal("cancel-open-demand"),
     cancellation: MarketCancelOpenSchema,
+  }),
+  z.strictObject({
+    operation: z.literal("close-unreserved-demand"),
+    closure: MarketUnreservedClosureSchema,
   }),
 ]);
 export type MarketProposalInput = z.infer<typeof MarketProposalInputSchema>;
