@@ -32,6 +32,7 @@ import {
   QueueFailureCodeSchema,
   SandboxRuntimeAttestationIdSchema,
   SandboxSelfAccountSchema,
+  SandboxTrustedExecutionProfileSchema,
   SchedulerAccountingSchema,
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
@@ -118,6 +119,18 @@ export function sandboxCapabilityFacts(capability: SandboxCapability | undefined
           gid: capability.selfAccount.gid,
         })
       : undefined;
+  const profile = capability.restrictedExecutionProfile;
+  const restrictedProfile = SandboxTrustedExecutionProfileSchema.safeParse(
+    profile && {
+      profileId: profile.profileId,
+      apptainerCanonicalPath: profile.apptainerCanonicalPath,
+      apptainerSha256: profile.apptainerSha256,
+      sifCanonicalPath: profile.sifCanonicalPath,
+      sifSha256: profile.sifSha256,
+      trustedWrapperCanonicalPath: profile.trustedWrapperCanonicalPath,
+      trustedWrapperSha256: profile.trustedWrapperSha256,
+    },
+  );
   return {
     rootMode: capability.rootMode,
     sandboxReadiness: readiness,
@@ -133,9 +146,7 @@ export function sandboxCapabilityFacts(capability: SandboxCapability | undefined
       managedRoot: capability.managedRoot,
       ...(executionMode ? { executionMode } : {}),
       ...(selfAccount?.success ? { selfAccount: selfAccount.data } : {}),
-      ...(capability.restrictedExecutionProfile
-        ? { restrictedExecutionProfile: capability.restrictedExecutionProfile }
-        : {}),
+      ...(restrictedProfile.success ? { restrictedExecutionProfile: restrictedProfile.data } : {}),
     },
     sandboxRuntimeCache: capability.runtimeCache.flatMap((runtime) => {
       const kind = sandboxRuntimeKindFact(runtime.kind);

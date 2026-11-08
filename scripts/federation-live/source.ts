@@ -14,6 +14,7 @@ import { FederationPermissionService } from "../../packages/server/src/federatio
 import { FederationTrustRegistry } from "../../packages/server/src/federation/trust-registry";
 import { SoftwareAvailabilityService } from "../../packages/server/src/services/software-availability";
 import { approveContract } from "./fixture";
+import { importMediaScript } from "./media-execution";
 
 const root = z.string().min(1).parse(process.env.LAB_ROOT);
 const url = z.string().min(1).parse(process.env.SOURCE_DATABASE_URL);
@@ -160,6 +161,13 @@ if (process.argv[2] === "inspect") {
     .insert(softwareAssetRevisions)
     .values({ id: revisionId, assetId, revision: 1, payload: config.payload });
   await assets.register(actor, { reference: config.reference, localRevisionId: revisionId });
+  if (process.env.LAB_MEDIA_EXECUTION === "slurm") {
+    const script = await importMediaScript(db, root, actor.userId, config.scriptBundle);
+    await assets.register(actor, {
+      reference: config.scriptReference,
+      localRevisionId: script.assetRevisionId,
+    });
+  }
   await assets.putMaterial(actor, config.source.siteId, config.inputs);
   await assets.putMaterial(actor, config.source.siteId, config.environment);
   const key = {

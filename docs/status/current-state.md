@@ -695,3 +695,19 @@ queued/running 软件操作。入口要求 Agent 离线、显式确认 worker �
 ## 联邦取消退款的满盘联合验证
 
 双 Server/独立数据库的无链和异步存证执行前取消，已在独立 1 GiB ext4 上完成真实 ENOSPC/SQL 53100、显式释放两份 64 MiB 物理预留、原 PostgreSQL/Server 重启、原取消签名恢复、自动退款及逻辑占额回收。填充文件保留至收尾完成；新 HTTP 委派继续被拒绝，仅删除填充文件不能解除，需要显式 restore。每站只释放原一笔 16 MiB 逻辑占额，原记录与签名保留。异步模式在链停止期间先完成本地退款，提供方后台保持 refund-ledger 阻断；两端 Server/商业 Adapter 再次恢复、原证据 VALID 后才回收，真实 PDC 隔离检查通过。该实验不执行作业，数据库探针表触发错误，不覆盖所有业务 SQL 失败位置；运行中任务、结果正文、独立 WAL/Peer 卷与完整 O01 仍待完成。入口见[满盘执行实验](../../deploy/federation/execution-lab.md#满盘后的取消与退款收尾)。
+
+
+### 联邦介质执行的 Script 数据输入与能力传输
+
+Script 现支持静态 Dataset 槽，但同名 `inputs` 必须声明为 FileBatch；
+提交前递归检查冻结身份的本地数据使用权，执行器将 immutable 引用保存到 Job dataInputs，继续走受限交付和持续授权。
+NoAction 与动态 Dataset 绑定仍拒绝。Web 输入配置已验证选定数据集写回 YAML 后仍可解析。
+Agent 注册/心跳的受信执行配置现在提取并验证业务字段，避免 Protobuf 的 `$typeName` 进入数据库后被严格 manifest 校验拒绝。
+已有记录由后续有效心跳更新，不需要修改签名契约或数据库迁移。
+
+双平台 media 实验增加真实 Slurm 变体，使用签名导入脚本、临时签名 SIF、独立 Server/数据库及实际 mTLS。
+2026-11-09 完整实验通过：DATA_WAITING→加密导出/导入→来源批准/显式发布→版本映射→真实 Slurm 执行→源方 HTTP 撤权→原短期许可失效→调度器 CANCELLED、进程退出及 Agent 正向停止证明。
+作业实际读取导入数据，并验证只读、seccomp、no-new-privs 和 socket 被拒绝；没有注入停止决定或伪造调度终态。
+来源撤权仍表现为 RENEWAL_FAILED 后原许可到期，不是即时签名撤权。此项不代表 PBS 联合链路或完整蓝图已验收。
+运行器的本地人员/服务身份数据授权为显式夹具，Pod 总资源限制不能替代生产逐作业 cgroup 证明。
+操作步骤见[双平台执行实验](../../deploy/federation/execution-lab.md#介质交付后的真实-slurm-执行)。

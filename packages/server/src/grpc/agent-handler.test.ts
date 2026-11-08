@@ -44,12 +44,14 @@ import {
   SandboxRuntimeCacheEntrySchema,
   SandboxRuntimeKind,
   SandboxSelfAccountSchema,
+  SandboxTrustedExecutionProfileSchema,
   SchedulerQueueFactSchema,
   SchedulerQueueState,
   SchedulerQueueType,
   SchedulerType,
   type ServerMessage,
 } from "@kuintessence/proto";
+import { SandboxTrustedExecutionProfileSchema as TrustedProfileSchema } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
 import { eq } from "drizzle-orm";
 import pino from "pino";
@@ -86,6 +88,33 @@ test("restricted no-egress completion discards a malicious Agent payload", () =>
     {},
   );
   expect(collectedForJobCompletion(false, { result: "safe" })).toEqual({ result: "safe" });
+});
+
+test("normalizes protobuf restricted execution profile and rejects incomplete claims", () => {
+  const profile = {
+    profileId: "ca12ed00-4f54-4000-8000-000000000001",
+    apptainerCanonicalPath: "/usr/bin/apptainer",
+    apptainerSha256: "a".repeat(64),
+    sifCanonicalPath: "/opt/kq/bash.sif",
+    sifSha256: "b".repeat(64),
+    trustedWrapperCanonicalPath: "/usr/libexec/kuintessence/kq-sandbox-wrapper",
+    trustedWrapperSha256: "c".repeat(64),
+  };
+  for (const valid of [true, false]) {
+    const message = create(SandboxCapabilitySchema, {
+      restrictedExecutionProfile: create(SandboxTrustedExecutionProfileSchema, {
+        ...profile,
+        trustedWrapperSha256: valid ? profile.trustedWrapperSha256 : "",
+      }),
+    });
+    expect(message.restrictedExecutionProfile?.$typeName).toBeDefined();
+    const facts = sandboxCapabilityFacts(message);
+    const stored = facts.sandboxCapabilities?.restrictedExecutionProfile;
+    if (valid) {
+      expect(stored).toEqual(profile);
+      expect(TrustedProfileSchema.parse(stored)).toEqual(profile);
+    } else expect(stored).toBeUndefined();
+  }
 });
 
 test("normalizes SelfAccount capability and rejects unsafe runtime attestation timestamps", () => {

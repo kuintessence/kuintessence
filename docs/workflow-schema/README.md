@@ -346,7 +346,8 @@ Server 通过 cluster-to-cloud 传输发布 artifact，再把 FileValue 写入�
 声明的文件输出缺失或 normal/batch 形状错误会使节点失败。
 需要提取值时采集文件内容；仅作为 artifact 的输出可只回传路径。
 
-Dataset 仅支持 `SoftwareUsecaseComputing` 的静态 node-level Data Market binding：
+Dataset 支持 `SoftwareUsecaseComputing` 和 `Script` 的静态 node-level Data Market binding。
+Script 必须在 `inputs` 中将同名 descriptor 声明为 `FileBatch`：
 ```yaml
 inputSlots:
   - type: Dataset
@@ -361,7 +362,9 @@ inputSlots:
 ```
 
 使用时替换示例 UUID 与 digest。Dataset 不支持 `from/sources/select`、
-NetDrive source、上游动态输出，也不适用于 Script/NoAction。
+NetDrive source、上游动态输出，也不适用于 NoAction。
+Script 将完整引用冻结到 Job 的 `dataInputs`，继续使用数据市场授权、受限 placement 和只读交付；
+声明 Dataset 不授予访问权，也不会把受限文件转换为普通暂存文件。
 不同节点同名 descriptor 可绑定不同版本；Web 保存 draft 时持久化完整引用。
 Server 在创建 run 前递归预检顶层、Loop 和 Inline/ByVersion SubWorkflow，
 冻结提交组织；审批恢复、可恢复排队及叶子 Job 再按该组织校验权限、digest 和 typed constraints。

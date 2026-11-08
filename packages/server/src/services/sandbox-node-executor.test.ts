@@ -460,7 +460,17 @@ describe("SandboxNodeExecutor", () => {
     });
   });
 
-  test("freezes Data Market FileBatch inputs on the Sandbox Job before placement", async () => {
+  test.each([
+    "parameter",
+    "static",
+  ] as const)("freezes %s Data Market FileBatch inputs before placement", async (binding) => {
+    const dataInput = {
+      source: "data-market" as const,
+      assetId: "88888888-8888-4888-8888-888888888888",
+      versionId: "99999999-9999-4999-8999-999999999999",
+      manifestDigest: `sha256:${"b".repeat(64)}`,
+      selectedEntries: ["restricted/input.dat"],
+    };
     const node = workflowDsl.WorkflowNodeSchema.parse({
       type: "Script",
       id: "restricted_transform",
@@ -476,12 +486,9 @@ describe("SandboxNodeExecutor", () => {
       executionIdentity: { type: "MappedAuto" },
       inputs: { dataset: { type: "FileBatch" } },
       inputSlots: [
-        {
-          type: "File",
-          descriptor: "dataset",
-          isBatch: true,
-          from: { param: "dataset" },
-        },
+        binding === "static"
+          ? { type: "Dataset", descriptor: "dataset", contents: dataInput }
+          : { type: "File", descriptor: "dataset", isBatch: true, from: { param: "dataset" } },
       ],
       outputs: {},
     });
@@ -550,16 +557,12 @@ describe("SandboxNodeExecutor", () => {
       },
       limits: { pids: 64, outputBytes: 1_024, logBytes: 1_024 },
     });
-    const dataInput = {
-      source: "data-market" as const,
-      assetId: "88888888-8888-4888-8888-888888888888",
-      versionId: "99999999-9999-4999-8999-999999999999",
-      manifestDigest: `sha256:${"b".repeat(64)}`,
-      selectedEntries: ["restricted/input.dat"],
-    };
 
     await expect(
-      executor.execute(node, { nodes: {}, params: { dataset: dataInput } }),
+      executor.execute(node, {
+        nodes: {},
+        params: binding === "static" ? {} : { dataset: dataInput },
+      }),
     ).resolves.toEqual({
       status: "Failed",
       values: {},

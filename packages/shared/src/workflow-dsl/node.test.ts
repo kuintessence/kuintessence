@@ -63,22 +63,32 @@ describe("WorkflowNodeSchema — node variants", () => {
     const inputSlots = [{ type: "Dataset", descriptor: "trainingData" }];
     expect(() =>
       WorkflowNodeSchema.parse({ type: "NoAction", id: "noop", name: "noop", inputSlots }),
-    ).toThrow("Dataset input slots are only supported on SoftwareUsecaseComputing nodes");
-    expect(() =>
-      WorkflowNodeSchema.parse({
-        type: "Script",
-        id: "script",
-        name: "script",
-        source: {
-          type: "AssetRevision",
-          assetId: UUID,
-          revision: 1,
-          sha256: "a".repeat(64),
-        },
-        runtimeProfileId: UUID,
-        inputSlots,
-      }),
-    ).toThrow("Dataset input slots are only supported on SoftwareUsecaseComputing nodes");
+    ).toThrow("Dataset input slots are only supported on SoftwareUsecaseComputing or Script nodes");
+    const script = {
+      type: "Script",
+      id: "script",
+      name: "script",
+      source: {
+        type: "AssetRevision",
+        assetId: UUID,
+        revision: 1,
+        sha256: "a".repeat(64),
+      },
+      runtimeProfileId: UUID,
+      inputSlots,
+    };
+    expect(
+      WorkflowNodeSchema.parse({ ...script, inputs: { trainingData: { type: "FileBatch" } } }).type,
+    ).toBe("Script");
+    for (const inputs of [
+      {},
+      { trainingData: { type: "Text" } },
+      { trainingData: { type: "File" } },
+    ]) {
+      expect(() => WorkflowNodeSchema.parse({ ...script, inputs })).toThrow(
+        "Script Dataset inputs require a declared FileBatch input",
+      );
+    }
   });
 });
 

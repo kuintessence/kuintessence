@@ -233,6 +233,7 @@ function resolveSlotValue(
   ctx: Record<string, workflowDsl.CelValue>,
 ) {
   if (!slot) return undefined;
+  if (slot.type === "Dataset") return slot.contents ?? undefined;
   if (slot.from) return resolveBinding(slot.from, ctx);
   if (slot.sources && slot.sources.length > 0) {
     const available = slot.sources

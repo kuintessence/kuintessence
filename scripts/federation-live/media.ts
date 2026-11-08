@@ -8,6 +8,7 @@ import {
   dataAssetManifestEntries,
   dataAssets,
   dataAssetVersions,
+  dataGrants,
   dataLocations,
   federationDatasetReplicas,
   jobs,
@@ -26,14 +27,54 @@ const db = createPgDb(url);
 const rootId = z.uuid().parse(process.env.LAB_MEDIA_ROOT_ID);
 const agentId = z.string().min(1).parse(process.env.LAB_AGENT);
 const command = process.argv[2];
-assert(command === "source" || command === "target" || command === "inspect");
+assert(
+  command === "source" || command === "target" || command === "inspect" || command === "authorize",
+);
 try {
-  if (command === "inspect") {
+  if (command === "authorize") {
+    assert.equal(process.env.LAB_MEDIA_EXECUTION, "slurm");
+    const actor = z
+      .object({ orgId: z.uuid(), userId: z.uuid() })
+      .parse(await Bun.file(`${root}/registration.json`).json());
+    const probe = z
+      .object({ identity: z.object({ userId: z.uuid() }) })
+      .parse(await Bun.file(`${root}/federation-probe.json`).json());
+    const [replica] = await db.select().from(federationDatasetReplicas);
+    assert(replica);
+    assert((await datasetSourceAuthority(db, replica, new Date()))?.allowed);
+    // Explicit local grant fixtures for the operator mapping and restricted service identity.
+    // No job/execution state or source approval is fabricated by this setup command.
+    await db.insert(dataGrants).values(
+      [actor.userId, probe.identity.userId].map((userId) => ({
+        dataAssetId: replica.assetId,
+        dataAssetVersionId: replica.versionId,
+        subjectKind: "user",
+        subjectId: userId,
+        capabilities: ["use"],
+        grantedBy: actor.userId,
+        startsAt: new Date(),
+        expiresAt: new Date(Date.now() + 3600_000),
+      })),
+    );
+  } else if (command === "inspect") {
     const replicas = await db.select().from(federationDatasetReplicas);
     assert.equal(replicas.length, 1);
     const replica = replicas[0];
     assert(replica);
-    const authority = await datasetSourceAuthority(db, replica, new Date());
+    const authority = await datasetSourceAuthority(db, replica, new Date()).catch(
+      (error: unknown) => {
+        if (
+          error instanceof Error &&
+          error.cause &&
+          typeof error.cause === "object" &&
+          "code" in error.cause &&
+          error.cause.code === "55P03"
+        ) {
+          return { allowed: null };
+        }
+        throw error;
+      },
+    );
     const entries = await db
       .select({
         sha256: dataAssetManifestEntries.digest,
@@ -45,7 +86,7 @@ try {
     await Bun.write(
       `${root}/media-authority.json`,
       JSON.stringify({
-        allowed: authority?.allowed ?? false,
+        allowed: authority ? authority.allowed : false,
         lastError: replica.lastError,
         jobs: (await db.select({ id: jobs.id }).from(jobs)).length,
         entries,
@@ -75,9 +116,10 @@ try {
     ] as const)
       await permissions.set({ ...actor, capability, enabled: true }, actor.userId);
     if (command === "source") {
-      const assetId = crypto.randomUUID();
-      const versionId = crypto.randomUUID();
-      const locationId = crypto.randomUUID();
+      const configuration = await Bun.file(`${root}/source-init.json`).json();
+      const assetId = configuration.media?.assetId ?? crypto.randomUUID();
+      const versionId = configuration.media?.versionId ?? crypto.randomUUID();
+      const locationId = configuration.media?.locationId ?? crypto.randomUUID();
       const sha256 = createHash("sha256").update("data").digest("hex");
       const metadata = {
         license: "CC0-1.0",

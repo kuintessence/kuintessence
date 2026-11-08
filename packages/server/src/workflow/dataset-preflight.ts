@@ -63,6 +63,12 @@ async function validateSpec(
       );
       continue;
     }
+    if (node.type === "Script") {
+      const dataInputs = datasetInputsFromNode(node);
+      if (Object.keys(dataInputs).length > 0)
+        await verifyDatasetAccess(deps, dataInputs, principal);
+      continue;
+    }
     if (node.type !== "SoftwareUsecaseComputing") continue;
     if (!node.usecaseVersionId) {
       throw new Error(`workflow node ${node.id} has no resolved usecase version`);
@@ -83,33 +89,44 @@ async function validateSpec(
         "Workflow execution requires a governed usecase package with a software selector",
       );
     }
-    for (const input of Object.values(dataInputs)) {
-      if (input.source !== "data-market") continue;
-      if (
-        !(await deps.verifyAccess({
-          actorUserId: principal.userId,
-          orgId: principal.orgId,
-          assetId: input.assetId,
-          versionId: input.versionId,
-        }))
-      ) {
-        throw new AppError(
-          ErrorCode.FORBIDDEN,
-          "Not authorized to use the selected Data Market version",
-          403,
-        );
-      }
-    }
+    await verifyDatasetAccess(deps, dataInputs, principal);
     await deps.validateUsecase({ pkg, dataInputs });
   }
 }
 
 function datasetInputsFromNode(
-  node: Extract<workflowDsl.WorkflowNode, { type: "SoftwareUsecaseComputing" }>,
+  node: Extract<workflowDsl.WorkflowNode, { type: "SoftwareUsecaseComputing" | "Script" }>,
 ): Record<string, DataInputRef> {
   return Object.fromEntries(
     (node.inputSlots ?? []).flatMap((slot) =>
       slot.type === "Dataset" && slot.contents ? [[slot.descriptor, slot.contents]] : [],
     ),
   );
+}
+
+async function verifyDatasetAccess(
+  deps: DatasetPreflightDeps,
+  dataInputs: Record<string, DataInputRef>,
+  principal: { userId: string | null; orgId: string | null } | undefined,
+): Promise<void> {
+  if (!principal?.userId) {
+    throw new AppError(ErrorCode.FORBIDDEN, "Canonical workflow principal is required", 403);
+  }
+  for (const input of Object.values(dataInputs)) {
+    if (input.source !== "data-market") continue;
+    if (
+      !(await deps.verifyAccess({
+        actorUserId: principal.userId,
+        orgId: principal.orgId,
+        assetId: input.assetId,
+        versionId: input.versionId,
+      }))
+    ) {
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        "Not authorized to use the selected Data Market version",
+        403,
+      );
+    }
+  }
 }

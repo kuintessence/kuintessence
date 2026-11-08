@@ -26,6 +26,9 @@ assert not disk_pressure or automatic_refund, "Disk recovery currently requires 
 assert not refund_scenario if coordinated else scenario in ("success", "refund", "refund-auto", "media")
 assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto", "media")
 media_scenario = scenario == "media"
+media_execution = os.environ.get("KQ_MEDIA_EXECUTION", "")
+assert media_execution in ("", "slurm")
+assert not media_execution or media_scenario
 assert not media_scenario or mode == "bilateral_direct"
 media_age = pathlib.Path(os.environ["KQ_MEDIA_AGE_BIN"]).resolve(strict=True) if media_scenario else None
 media_source_root, media_target_root = str(uuid.uuid4()), str(uuid.uuid4())
@@ -104,6 +107,8 @@ env.update(
 )
 if media_scenario:
     env.update(FEDERATION_MEDIA_AGE_DIRECTORY=str(media_age), FEDERATION_MEDIA_WRAPPING_KEY=secrets.token_hex(32), LAB_MEDIA_ROOT_ID=media_target_root)
+if media_execution:
+    env["LAB_MEDIA_EXECUTION"] = media_execution
 networkroot = pathlib.Path(os.environ["LAB_FABRIC_ROOT"]) if coordinated or attested else None
 fixture = json.loads((pathlib.Path(env["LAB_FIXTURE_ROOT"]) / "execution-fixture.json").read_text())
 siteb = next(site for site in fixture["sites"] if site["name"] == "B")
@@ -295,8 +300,12 @@ def api(path, body=None, token=None, headers=None):
             **(headers or {}),
         },
     )
-    with urllib.request.urlopen(req, timeout=10) as response:
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        (logs / "target-http-error.json").write_bytes(error.read())
+        raise
 
 
 def orderer(action):
@@ -1867,6 +1876,13 @@ try:
         SANDBOX_SIGNING_KEY_ID="lab-sandbox",
         SANDBOX_SIGNING_PRIVATE_KEY_PEM=(root / "sandbox.key").read_text(),
     )
+    if media_execution:
+        from media_hpc import prepare_runtime, configure_target
+        hpc_runtime, hpc_metadata = prepare_runtime(root, os.environ["KQ_MEDIA_RUNTIME_DIR"], log)
+        import base64
+        public_der = subprocess.check_output(["openssl", "pkey", "-pubin", "-in", str(root / "sandbox.pub"), "-outform", "DER"])
+        env.update(SANDBOX_IMPERSONATION_ENABLED="true",
+                   ECOSYSTEM_RELEASE_TRUSTED_KEYS=json.dumps({"lab-sandbox": base64.b64encode(public_der).decode()}))
     # Two independent cloud buckets and non-root credentials in the disposable storage instance.
     import copy
 
@@ -2034,7 +2050,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             "--output-dir",
             str(root / "agent"),
             "--scheduler",
-            "kubernetes",
+            "slurm" if media_execution else "kubernetes",
         ]
     )
     (root / "agent/agent.env").open("a").write(
@@ -2044,7 +2060,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     node = json.loads(k(["get", "nodes", "-o", "json"]).stdout)["items"][0]["metadata"][
         "name"
     ]
-    runtimeimage = "docker.io/bitnamilegacy/kubectl@sha256:f65b74480c37b65099453fb3a5ca7eaaea235b3d4268ef3b1ed0f0150d340646"
+    runtimeimage = "sif@" + hpc_metadata["digest"] if media_execution else "docker.io/bitnamilegacy/kubectl@sha256:f65b74480c37b65099453fb3a5ca7eaaea235b3d4268ef3b1ed0f0150d340646"
     profileroot = pathlib.Path("/var/lib/kubelet/seccomp")
     profileroot.mkdir(mode=0o755, exist_ok=True)
     profilepath = profileroot / (namespace + ".json")
@@ -2075,10 +2091,9 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     profilehash = hashlib.sha256(profilepath.read_bytes()).hexdigest()
     env.update(LAB_RUNTIME_IMAGE=runtimeimage, LAB_NAMESPACE=namespace)
     digest = runtimeimage.split("@")[1]
-    raw = subprocess.check_output(["k3s", "ctr", "content", "get", digest])
-    assert (
-        "sha256:" + hashlib.sha256(raw).hexdigest() == digest
-    ), "Runtime OCI manifest digest mismatch"
+    if not media_execution:
+        raw = subprocess.check_output(["k3s", "ctr", "content", "get", digest])
+        assert "sha256:" + hashlib.sha256(raw).hexdigest() == digest, "Runtime OCI manifest digest mismatch"
     (root / "runtime-digest").write_text(digest)
     run(
         [
@@ -2327,12 +2342,18 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     if media_scenario:
         pod["spec"]["volumes"].append({"name": "age", "hostPath": {"path": str(media_age), "type": "Directory"}})
         pod["spec"]["containers"][0]["volumeMounts"].append({"name": "age", "mountPath": "/opt/kq/age", "readOnly": True})
+    source_pod_template = copy.deepcopy(pod)
+    if media_execution:
+        configure_target(pod, root, hpc_runtime, hpc_metadata)
     k(["apply", "-f", "-"], json.dumps(pod))
     token = api(
         "auth/login",
         {"email": "federation-lab-admin@test.invalid", "role": "platform_admin"},
     )["token"]
-    for _ in range(60):
+    for _ in range(180 if media_execution else 60):
+        if media_execution:
+            phase = json.loads(k(["get", "pod", "scheduler", "-n", namespace, "-o", "json"]).stdout)["status"].get("phase")
+            assert phase not in ("Failed", "Succeeded"), "Slurm Agent bootstrap exited; inspect agent.log"
         status = api("agents", token=token)
         rows = (
             status
@@ -2347,17 +2368,26 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         time.sleep(1)
     else:
         raise RuntimeError("Agent did not become online")
-    print("Real Kubernetes Agent online through direct mTLS", flush=True)
+    print("Real " + ("Slurm" if media_execution else "Kubernetes") + " Agent online through direct mTLS", flush=True)
+    if media_execution:
+        for _ in range(90):
+            inventory = api("admin/agents/" + env["LAB_AGENT"] + "/queue-inventory", token=token)
+            if inventory["status"] == "available" and any(q["queueName"] == "debug" for q in inventory["queues"]):
+                break
+            time.sleep(1)
+        else:
+            (logs / "media-queue-inventory.json").write_text(json.dumps(inventory, indent=2))
+            raise RuntimeError("Actual Slurm queue inventory is unavailable")
     api(
         "admin/queues",
         {
             "queueId": "federation-lab-debug",
-            "name": "Isolated Kubernetes",
+            "name": "Isolated Slurm" if media_execution else "Isolated Kubernetes",
             "providerOrgId": registration["orgId"],
             "visibleOrgIds": [registration["orgId"]],
             "agentId": env["LAB_AGENT"],
-            "schedulerType": "kubernetes",
-            "queueName": namespace,
+            "schedulerType": "slurm" if media_execution else "kubernetes",
+            "queueName": "debug" if media_execution else namespace,
         },
         token,
     )
@@ -2517,8 +2547,12 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
                 **({"Authorization": "Bearer " + token} if token else {}),
             },
         )
-        with urllib.request.urlopen(req, timeout=15) as response:
-            return json.load(response)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            (logs / "source-http-error.json").write_bytes(error.read())
+            raise
 
     for _ in range(45):
         if sourceserver.poll() is not None:
@@ -2617,7 +2651,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             grant_closing(path, "settlement")
             (logs / "preauthorized-closing.json").write_text(json.dumps(closing_grants, indent=2) + "\n")
         if media_scenario:
-            print("Media-only scenario: no compute submission", flush=True)
+            print("Media execution scenario: submission waits for source dataset setup" if media_execution else "Media-only scenario: no compute submission", flush=True)
         elif scenario == "workflow":
             print("Ordinary Workflow owns delegation; no manual outbound submission", flush=True)
         else:
@@ -2682,7 +2716,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         (root / "source-agent/agent.env").open("a").write(
             "\nAGENT_DB_PATH=/var/lib/kuintessence/agent.db\nHEARTBEAT_INTERVAL_SEC=1\nAGENT_QUEUE_INVENTORY_INTERVAL_SEC=2\n"
         )
-        sourcepod = copy.deepcopy(pod)
+        sourcepod = copy.deepcopy(source_pod_template)
         sourcepod["metadata"]["name"] = "result-copy-agent"
         sourceagentenv = {
             **agentenv,
@@ -2745,7 +2779,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
                 if attested:
                     verify_attested_recovery()
         inspect_ledgers("after")
-        if media_scenario:
+        if media_scenario and not media_execution:
             verify_media_accounting(logs)
         if coordinated and scenario in ("success", "workflow"):
             state = json.loads((logs / "provider-after.json").read_text())

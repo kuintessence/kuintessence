@@ -156,3 +156,30 @@ bun run test:federation:direct
 结果保存为私有 `media-evidence.json`，必须整条命令退出 0 且全部断言通过才记为通过。本场景没有提交计算任务，不证明 DATA_WAITING 恢复、持续运行停止、真实多主机或物理物流；现有 Kubernetes 文件工作流夹具不能代替受限数据要求的签名生态脚本和 SIF 执行配置。相关 Slurm/PBS 组件实验见[导入数据执行](media-slurm-lab.md)。
 
 2026-11-09：该场景真实通过。首次联调发现并修复来源协议关联错误；修复后的单次完整运行通过，源端无计算预算，双方原预算不变、无计算及账务任务。来源撤权在原短期许可到期后生效，当前续租失败显示 RENEWAL_FAILED，不冒充即时签名撤权。
+
+
+### 介质交付后的真实 Slurm 执行
+
+在上述 `media` 场景增加 `KQ_MEDIA_EXECUTION=slurm` 和 `KQ_MEDIA_RUNTIME_DIR=/absolute/path/to/runtime`。
+运行目录需包含[组件实验](media-slurm-lab.md)相同的 Apptainer 1.4.3 主包、setuid 包及 Bash SIF。
+运行器核验安装包固定摘要，在自建目录生成临时密钥、签署 SIF、离线验证并删除私钥；
+接收节点导入公钥并实际检查签名镜像可运行、未签名镜像被 ECL 拒绝。
+仅在一次性 privileged Pod 内安装运行库和 setuid 工具，限制 1 CPU/1 GiB；该限制不是生产逐作业 cgroup 证明。
+
+脚本通过真实 Ecosystem Release 签名导入，在两个独立数据库激活。
+先提交缺少接收副本的委派，断言 DATA_WAITING 且没有 Job；完成加密交付、来源使用批准及显式发布后，
+设置本地 `use` 权限夹具，并通过映射 API 关联接收版本。
+本地操作员及服务身份的授权是显式测试夹具，不代表已完成服务身份的数据授权管理界面。
+生产后台自动启动映射账号下的 Slurm 作业，读取只读导入数据，检查 seccomp、no-new-privs 和创建 socket 被拒绝，随后 sleep。
+通过来源 HTTP 撤销使用政策，等待短期来源许可失效，再核验原调度器 Job 为 CANCELLED、进程消失，且 Agent 保存正向停止证明。
+不注入停止收据、不直接改任务状态，也不把命令发送成功算作停止。
+
+私有证据增加 `media-data-waiting.json`、`media-running.json` 和 `media-stopped.json`。
+这条联合实验不证明 PBS 联合链路、真实科学软件安装/结果、物理邮寄、掉电或跨主机恢复；
+未通过完整命令之前不得将其登记为验收通过。
+
+
+2026-11-09：此 Slurm 联合场景完整通过。真实读取与隔离检查后，经来源政策 HTTP 撤销，
+接收方记录 RENEWAL_FAILED，原许可到期后同一 Slurm Job 为 CANCELLED、映射进程退出、Agent 持久停止证明为 true。
+观测遇到 55P03 行锁冲突仅返回未知，继续限时重读，未知不视为撤权成功；其他观测错误仍使验收失败。
+完整命令退出 0，独立两端账本守恒且无链待办，所有隔离资源清理；未用本轮结果替代 PBS 或完整生产隔离验收。

@@ -39,6 +39,7 @@ import { signFederationMessage } from "../../packages/server/src/federation/sign
 import { FederationTrustRegistry } from "../../packages/server/src/federation/trust-registry";
 import { SoftwareAvailabilityService } from "../../packages/server/src/services/software-availability";
 import { approveContract, executionFixture } from "./fixture";
+import { mediaExecutionFixture } from "./media-execution";
 
 const root = z.string().min(1).parse(process.env.LAB_ROOT);
 if (
@@ -82,10 +83,11 @@ if (process.argv[2] === "inspect") {
       })),
       preparations,
       jobs: submitted.map(
-        ({ id, status, schedulerJobId, placementTrace, reason, errorMessage }) => ({
+        ({ id, status, schedulerJobId, dispatchEpoch, placementTrace, reason, errorMessage }) => ({
           id,
           status,
           schedulerJobId,
+          dispatchEpoch,
           placementTrace,
           reason,
           errorMessage,
@@ -235,6 +237,10 @@ if (process.argv[2] === "inspect") {
   const runtimeImage = process.env.LAB_RUNTIME_IMAGE;
   if (!runtimeImage) throw Error("Pinned runtime required");
   const outage = ["outage", "stop"].includes(process.env.LAB_SCENARIO ?? "");
+  const mediaWork =
+    process.env.LAB_MEDIA_EXECUTION === "slurm"
+      ? await mediaExecutionFixture(db, root, actor.userId, source.siteId)
+      : undefined;
   const producer = `set -euo pipefail
 ${outage ? "printf 'federation-sleep-started\\n'; sleep 600" : "sleep 1"}
 [ "$(id -u)" -gt 0 ]
@@ -251,40 +257,42 @@ printf 'federation-file-produced:42\\n'
 printf 'verified:%s\\n' "$(cat /kq/inputs/source)" > /kq/outputs/result
 printf 'federation-file-consumed:42\\n'
 `;
-  const workflow = workflowDsl.WorkflowSchema.parse({
-    name: "Federation file transfer probe",
-    parameters: [{ name: "value", type: "string", required: true }],
-    spec: {
-      nodeDrafts: [
-        {
-          id: "producer",
-          name: "Write result file",
-          type: "Script",
-          source: { type: "Inline", language: "bash", content: producer },
-          runtimeContractRef: { name: "bash", version: "1" },
-          inputs: { value: { type: "Text" } },
-          inputSlots: [{ descriptor: "value", type: "Text", from: { param: "value" } }],
-          outputs: {
-            result: { type: "File", durability: "Checkpoint" },
-            optional: { type: "File", required: false },
+  const workflow =
+    mediaWork?.workflow ??
+    workflowDsl.WorkflowSchema.parse({
+      name: "Federation file transfer probe",
+      parameters: [{ name: "value", type: "string", required: true }],
+      spec: {
+        nodeDrafts: [
+          {
+            id: "producer",
+            name: "Write result file",
+            type: "Script",
+            source: { type: "Inline", language: "bash", content: producer },
+            runtimeContractRef: { name: "bash", version: "1" },
+            inputs: { value: { type: "Text" } },
+            inputSlots: [{ descriptor: "value", type: "Text", from: { param: "value" } }],
+            outputs: {
+              result: { type: "File", durability: "Checkpoint" },
+              optional: { type: "File", required: false },
+            },
           },
-        },
-        {
-          id: "consumer",
-          name: "Read result file",
-          type: "Script",
-          source: { type: "Inline", language: "bash", content: consumer },
-          runtimeContractRef: { name: "bash", version: "1" },
-          inputs: { source: { type: "File" } },
-          inputSlots: [
-            { descriptor: "source", type: "File", from: { node: "producer", output: "result" } },
-          ],
-          outputs: { result: { type: "File", durability: "Persistent" } },
-        },
-      ],
-      nodeRelations: [{ fromId: "producer", toId: "consumer", slotRelations: [] }],
-    },
-  });
+          {
+            id: "consumer",
+            name: "Read result file",
+            type: "Script",
+            source: { type: "Inline", language: "bash", content: consumer },
+            runtimeContractRef: { name: "bash", version: "1" },
+            inputs: { source: { type: "File" } },
+            inputSlots: [
+              { descriptor: "source", type: "File", from: { node: "producer", output: "result" } },
+            ],
+            outputs: { result: { type: "File", durability: "Persistent" } },
+          },
+        ],
+        nodeRelations: [{ fromId: "producer", toId: "consumer", slotRelations: [] }],
+      },
+    });
   const payload = SoftwareAssetPayloadSchema.parse({
     kind: "workflow-template",
     yamlContent: stringify(workflow),
@@ -301,9 +309,9 @@ printf 'federation-file-consumed:42\\n'
       name: "Isolated signed Bash runtime",
       language: "bash",
       languageVersion: "5",
-      ociDigest: runtimeDigest,
+      ...(mediaWork ? { sifDigest: runtimeDigest } : { ociDigest: runtimeDigest }),
       signature: await Bun.file(`${root}/runtime-signature.txt`).text(),
-      adapters: ["kubernetes"],
+      adapters: [mediaWork ? "slurm" : "kubernetes"],
       securityRequirements: {},
       lifecycle: "active",
     });
@@ -322,10 +330,19 @@ printf 'federation-file-consumed:42\\n'
       id: accountId,
       providerOrgId: actor.orgId,
       agentId: agent.agentId,
-      displayName: "Isolated Kubernetes worker",
-      backendType: "kubernetes",
-      namespace: z.string().min(1).parse(process.env.LAB_NAMESPACE),
-      serviceAccount: "worker",
+      displayName: mediaWork ? "Mapped Slurm scientist" : "Isolated Kubernetes worker",
+      backendType: mediaWork ? "unix" : "kubernetes",
+      ...(mediaWork
+        ? {
+            username: "scientist",
+            uid: 24001,
+            gid: 24001,
+            allowedQueues: [z.string().min(1).parse(queue.queueName)],
+          }
+        : {
+            namespace: z.string().min(1).parse(process.env.LAB_NAMESPACE),
+            serviceAccount: "worker",
+          }),
     });
     await db
       .insert(userClusterAccountMappings)
@@ -359,7 +376,12 @@ printf 'federation-file-consumed:42\\n'
     digest: federationMaterialDigest(payload),
   };
   await assets.register(actor, { reference, localRevisionId: revisionId });
-  const inputs = {
+  if (mediaWork)
+    await assets.register(actor, {
+      reference: mediaWork.scriptReference,
+      localRevisionId: mediaWork.scriptRevisionId,
+    });
+  const inputs = mediaWork?.inputs ?? {
     protocolVersion: 1 as const,
     kind: "inputs" as const,
     parameters: { value: "6" },
@@ -373,7 +395,7 @@ printf 'federation-file-consumed:42\\n'
     nativeLockDigest: federationMaterialDigest({ software: [], runtime: runtimeImage }),
     software: [],
     sandboxRuntime: {
-      kind: "OCI" as const,
+      kind: mediaWork ? ("SIF" as const) : ("OCI" as const),
       digest: z
         .string()
         .regex(/^sha256:[a-f0-9]{64}$/)
@@ -408,7 +430,12 @@ printf 'federation-file-consumed:42\\n'
         queueId: queue.queueId,
       },
     ],
-    resourceLimit: { cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: outage ? 900 : 30 },
+    resourceLimit: {
+      cpus: 1,
+      memoryMb: 128,
+      gpus: 0,
+      wallTimeSec: outage ? 900 : mediaWork ? 600 : 30,
+    },
     resultPolicy: {
       scope: "persistent-files",
       maxFiles: 4,
@@ -463,6 +490,13 @@ printf 'federation-file-consumed:42\\n'
       payload,
       reference,
       request,
+      ...(mediaWork
+        ? {
+            media: mediaWork.dataset,
+            scriptBundle: mediaWork.bundle,
+            scriptReference: mediaWork.scriptReference,
+          }
+        : {}),
     }),
   );
   await Bun.write(

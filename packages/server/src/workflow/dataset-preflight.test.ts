@@ -94,6 +94,52 @@ function deps(overrides: Partial<DatasetPreflightDeps> = {}): DatasetPreflightDe
 const principal = { userId: "ffffffff-ffff-4fff-8fff-ffffffffffff", orgId: null };
 
 describe("Dataset workflow preflight", () => {
+  test("checks Script Dataset access with the frozen principal, including nested nodes", async () => {
+    const script = workflowDsl.WorkflowNodeSchema.parse({
+      type: "Script",
+      id: "reader",
+      name: "Reader",
+      source: { type: "Inline", language: "bash", content: "true" },
+      runtimeProfileId: USECASE_ID,
+      inputs: { dataset: { type: "FileBatch" } },
+      inputSlots: [{ type: "Dataset", descriptor: "dataset", contents: dataset }],
+    });
+    const calls: Array<Parameters<DatasetPreflightDeps["verifyAccess"]>[0]> = [];
+    let allowed = true;
+    const validate = createDatasetPreflight(
+      deps({
+        verifyAccess: async (input) => {
+          calls.push(input);
+          return allowed;
+        },
+        loadUsecasePackage: async () => {
+          throw new Error("Script is not a usecase");
+        },
+      }),
+    );
+    const document = workflow([
+      {
+        type: "SubWorkflow",
+        id: "nested",
+        name: "Nested",
+        maxDepth: 2,
+        ref: { kind: "Inline", body: { nodeDrafts: [script], nodeRelations: [] } },
+      },
+    ]);
+    await validate(document, principal);
+    expect(calls).toEqual([
+      {
+        actorUserId: principal.userId,
+        orgId: null,
+        assetId: dataset.assetId,
+        versionId: dataset.versionId,
+      },
+    ]);
+    allowed = false;
+    await expect(validate(document, principal)).rejects.toThrow("Not authorized");
+    await expect(validate(document)).rejects.toThrow("Canonical workflow principal is required");
+  });
+
   test("validates top-level Dataset slots after checking actor access", async () => {
     const accessCalls: Array<Parameters<DatasetPreflightDeps["verifyAccess"]>[0]> = [];
     const usecaseAccessCalls: Array<

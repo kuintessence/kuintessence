@@ -44,7 +44,8 @@ const NonDatasetInputSlotsSchema = z.array(NodeInputSlotSchema).superRefine((slo
       ctx.addIssue({
         code: "custom",
         path: [index],
-        message: "Dataset input slots are only supported on SoftwareUsecaseComputing nodes",
+        message:
+          "Dataset input slots are only supported on SoftwareUsecaseComputing or Script nodes",
       });
     }
   }
@@ -194,10 +195,19 @@ export const WorkflowNodeSchema = z.union([
       placementConstraint: PlacementConstraintSchema.optional(),
       inputs: z.record(z.string().min(1), ScriptInputSpecSchema).default({}),
       outputs: z.record(z.string().min(1), ScriptOutputSpecSchema).default({}),
-      inputSlots: NonDatasetInputSlotsSchema.optional(),
+      inputSlots: z.array(NodeInputSlotSchema).optional(),
       outputSlots: z.array(NodeOutputSlotSchema).optional(),
     })
     .superRefine((node, ctx) => {
+      for (const [index, slot] of (node.inputSlots ?? []).entries()) {
+        if (slot.type === "Dataset" && node.inputs[slot.descriptor]?.type !== "FileBatch") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["inputSlots", index],
+            message: "Script Dataset inputs require a declared FileBatch input",
+          });
+        }
+      }
       const hasSource = node.source !== undefined;
       const hasNamedSource = node.scriptRef !== undefined;
       const hasRuntimeProfile = node.runtimeProfileId !== undefined;
