@@ -6,6 +6,7 @@ import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementExchange } from "./agreement-exchange";
 import { FederationCancellationReceiver } from "./cancellation";
+import { FederationClosingAutomation } from "./closing-automation";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationDownloadStorage } from "./download-credential";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
@@ -156,6 +157,24 @@ export function createFederationIngress(
       "content-type": "application/jose",
       "cache-control": "no-store",
     });
+  });
+  r.post("/federation/v1/commercial-closing", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    try {
+      const response = await new FederationClosingAutomation(db, signingKey).receive(
+        await c.req.text(),
+        c.req.header("x-kq-federation-cert") ?? "",
+      );
+      return c.body(response, 200, {
+        "content-type": "application/jose",
+        "cache-control": "no-store",
+      });
+    } catch (error) {
+      if (error instanceof FederationError && error.code === "DATA_WAITING")
+        return c.json({ error: { code: "DATA_WAITING" } }, 503);
+      throw error;
+    }
   });
   r.post("/federation/v1/commercial-approvals", async (c) => {
     if (c.req.header("content-type") !== "application/jose")

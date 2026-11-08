@@ -1150,6 +1150,53 @@ export const federationClosingPolicies = pgTable(
   ],
 );
 
+/** Provider-owned closing progress; signatures and ledger checkpoints remain in their original tables. */
+export const federationClosingTasks = pgTable(
+  "federation_closing_tasks",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    kind: varchar("kind", { length: 16 }).$type<"bill" | "settlement">().notNull(),
+    referenceId: uuid("reference_id").notNull(),
+    policyId: uuid("policy_id")
+      .notNull()
+      .references(() => federationClosingPolicies.id),
+    recordId: uuid("record_id"),
+    state: varchar("state", { length: 16 })
+      .$type<"pending" | "complete" | "needs_review">()
+      .notNull()
+      .default("pending"),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    lastError: varchar("last_error", { length: 80 }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.kind, t.referenceId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    index("federation_closing_task_due").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check("federation_closing_task_kind", sql`${t.kind} IN ('bill','settlement')`),
+    check(
+      "federation_closing_task_state",
+      sql`${t.state} IN ('pending','complete','needs_review') AND (${t.state} <> 'complete' OR (${t.recordId} IS NOT NULL AND ${t.completedAt} IS NOT NULL))`,
+    ),
+    check(
+      "federation_closing_task_lease",
+      sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
+    ),
+  ],
+);
+
 /** Local business signatures are immutable; no payment or balance fields belong here. */
 export const federationCommercialBills = pgTable(
   "federation_commercial_bills",

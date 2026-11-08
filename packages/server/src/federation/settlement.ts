@@ -271,29 +271,38 @@ export class FederationSettlementService {
   async draft(actor: FederationActor, revisionId: string, billId: string, settlementId: string) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
-      const bill = await this.original(tx, actor, revisionId, billId),
-        value = bill.payload;
-      return CommercialSettlementSchema.parse({
-        protocolVersion: 1,
-        kind: "commercial-settlement",
-        settlementId,
-        billId,
-        domainId: value.domainId,
-        agreementRevisionId: revisionId,
-        billDigest: bill.digest,
-        sourceSiteId: value.request.senderSiteId,
-        targetSiteId: value.request.recipientSiteId,
-        reservationId: value.reservationId,
-        terminal: await this.terminal(tx, bill),
-        unit: value.request.unit,
-        reservedAmount: value.request.maxAmount,
-        chargedAmount: value.calculation.dueAmount,
-        releasedAmount: (
-          BigInt(value.request.maxAmount) - BigInt(value.calculation.dueAmount)
-        ).toString(),
-        issuedAt: new Date().toISOString(),
-        salt: randomBytes(32).toString("hex"),
-      });
+      return this.draftInTransaction(tx, actor, revisionId, billId, settlementId);
+    });
+  }
+  private async draftInTransaction(
+    tx: PgTransaction,
+    actor: FederationActor,
+    revisionId: string,
+    billId: string,
+    settlementId: string,
+  ) {
+    const bill = await this.original(tx, actor, revisionId, billId),
+      value = bill.payload;
+    return CommercialSettlementSchema.parse({
+      protocolVersion: 1,
+      kind: "commercial-settlement",
+      settlementId,
+      billId,
+      domainId: value.domainId,
+      agreementRevisionId: revisionId,
+      billDigest: bill.digest,
+      sourceSiteId: value.request.senderSiteId,
+      targetSiteId: value.request.recipientSiteId,
+      reservationId: value.reservationId,
+      terminal: await this.terminal(tx, bill),
+      unit: value.request.unit,
+      reservedAmount: value.request.maxAmount,
+      chargedAmount: value.calculation.dueAmount,
+      releasedAmount: (
+        BigInt(value.request.maxAmount) - BigInt(value.calculation.dueAmount)
+      ).toString(),
+      issuedAt: new Date().toISOString(),
+      salt: randomBytes(32).toString("hex"),
     });
   }
   async approve(actor: FederationActor, revisionId: string, raw: CommercialSettlement) {
@@ -304,20 +313,58 @@ export class FederationSettlementService {
     });
   }
   /** Only local orchestration can use institution-owned authority; HTTP approval cannot supply a policy. */
-  async automate(policyId: string, raw: CommercialSettlement) {
+  async automate(
+    policyId: string,
+    raw: CommercialSettlement,
+    authorize?: (tx: PgTransaction) => Promise<void>,
+  ) {
     const value = CommercialSettlementSchema.parse(raw);
     return this.db.transaction(async (tx) => {
       const policy = await new FederationClosingPolicyService(
         this.db,
         this.signing.siteId,
       ).authority(tx, policyId, "settlement");
-      return this.approveInTransaction(
+      await authorize?.(tx);
+      const saved = await this.approveInTransaction(
         tx,
         { orgId: policy.localOrgId, userId: policy.grantedBy },
         policy.agreementRevisionId,
         value,
         policy,
       );
+      await authorize?.(tx);
+      assertClosingPolicyActive(policy);
+      return saved;
+    });
+  }
+  async automateDraft(
+    policyId: string,
+    billId: string,
+    finish: (tx: PgTransaction, row: typeof settlements.$inferSelect) => Promise<void>,
+  ) {
+    return this.db.transaction(async (tx) => {
+      const policy = await new FederationClosingPolicyService(
+        this.db,
+        this.signing.siteId,
+      ).authority(tx, policyId, "settlement");
+      const actor = { orgId: policy.localOrgId, userId: policy.grantedBy },
+        revisionId = policy.agreementRevisionId;
+      const bill = await this.original(tx, actor, revisionId, billId);
+      if (bill.payload.request.recipientSiteId !== this.signing.siteId)
+        throw new FederationError("POLICY_DENIED");
+      const [prior] = await tx
+        .select()
+        .from(settlements)
+        .where(
+          and(eq(settlements.localSiteId, this.signing.siteId), eq(settlements.billId, billId)),
+        );
+      const payload =
+        prior?.payload ??
+        (await this.draftInTransaction(tx, actor, revisionId, billId, randomUUID()));
+      const saved = await this.approveInTransaction(tx, actor, revisionId, payload, policy);
+      await finish(tx, saved);
+      assertClosingPolicyActive(policy);
+      return saved;
     });
   }
   private async approveInTransaction(

@@ -1,6 +1,7 @@
 import { createLogger } from "@kuintessence/shared";
 import type { FederationAccountingCollection } from "./accounting-collection";
 import type { FederationAgreementExchange } from "./agreement-exchange";
+import type { FederationClosingAutomation } from "./closing-automation";
 import type { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
 import type { FederationExecutionAutomation } from "./execution-automation";
@@ -32,6 +33,7 @@ export class FederationCommercialWorker {
     private readonly executionAutomation?: FederationExecutionAutomation,
     private readonly agreements?: FederationAgreementExchange,
     private readonly marketRequests?: FederationMarketRequestService,
+    private readonly closing?: FederationClosingAutomation,
   ) {}
 
   start() {
@@ -152,6 +154,17 @@ export class FederationCommercialWorker {
             if (!(await this.exchange.advanceNext())) break;
         } catch {
           logger.error("Usage exchange scan failed; received evidence remains in PostgreSQL");
+        }
+      }
+      if (this.closing) {
+        try {
+          await this.closing.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.closing.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Automatic commercial closing failed; original approvals and progress remain in PostgreSQL",
+          );
         }
       }
       if (this.market) {

@@ -35,6 +35,7 @@ export function createFederationGateway(options: FederationGatewayOptions) {
         (req.url !== "/federation/v1/delegations" &&
           req.url !== "/federation/v1/agreement-approvals" &&
           req.url !== "/federation/v1/commercial-approvals" &&
+          req.url !== "/federation/v1/commercial-closing" &&
           req.url !== "/federation/v1/market-requests" &&
           req.url !== "/federation/v1/reservation-proposals" &&
           req.url !== "/federation/v1/usage" &&

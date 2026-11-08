@@ -15,6 +15,7 @@ import {
   federationCapabilities,
   federationCertificates,
   federationClosingPolicies,
+  federationClosingTasks,
   federationCommercialAgreements,
   federationCommercialApprovalSyncs,
   federationCommercialAttempts,
@@ -72,6 +73,7 @@ import { JobService } from "../services/job-service";
 import { FederationAccountingCollection } from "./accounting-collection";
 import { federationMaterialDigest } from "./assets";
 import { FederationBillingService } from "./billing";
+import { FederationClosingAutomation } from "./closing-automation";
 import { ClosingPolicyInputSchema, FederationClosingPolicyService } from "./closing-policy";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
@@ -79,7 +81,7 @@ import { FederationCommercialSubmissionService } from "./commercial-submissions"
 import { FederationCommercialWorker } from "./commercial-worker";
 import { FabricClientFailure } from "./fabric-client";
 import { createFederationIngress } from "./ingress";
-import type { FederationSend } from "./outbound-client";
+import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { FederationSettlementService } from "./settlement";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
@@ -3610,6 +3612,7 @@ async function grantClosing(
     ...overrides,
   });
   cleanup.push(async () => {
+    await db.delete(federationClosingTasks).where(eq(federationClosingTasks.policyId, policy.id));
     await db
       .update(federationCommercialBills)
       .set({ authorizationPolicyId: null })
@@ -3961,4 +3964,498 @@ test("closing policy revocation serializes with approval and a replacement canno
   expect(replay.authorizationPolicyId).toBe(p.policy.id);
   expect(await replacement.read()).toMatchObject({ approvedRecords: 0, approvedAmount: "0" });
   expect(await p.read()).toMatchObject({ approvedRecords: 1, approvedAmount: "60" });
+});
+
+async function closingFlowFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  sourceAuthorized = true,
+) {
+  const f = await billingExchangeFixture(mode);
+  cleanup.push(async () => {
+    for (const site of [f.source.signing.siteId, f.provider.signing.siteId]) {
+      await db.delete(federationClosingTasks).where(eq(federationClosingTasks.localSiteId, site));
+      await db
+        .delete(federationCommercialSettlements)
+        .where(eq(federationCommercialSettlements.localSiteId, site));
+      await db
+        .delete(auditLog)
+        .where(
+          inArray(auditLog.actor, [
+            `closing:${site}`,
+            `settlement:${site}`,
+            `settlement-exchange:${site}`,
+          ]),
+        );
+    }
+  });
+  for (const actor of [f.actor, f.sourceActor])
+    await new FederationPermissionService(db).set(
+      { ...actor, capability: "settlement.approve", enabled: true },
+      actor.userId,
+    );
+  const billPolicy = await grantClosing(f, "bill"),
+    settlementPolicy = await grantClosing(f, "settlement");
+  const sourceBillPolicy = sourceAuthorized ? await grantClosing(f, "bill", true) : undefined;
+  const sourceSettlementPolicy = sourceAuthorized
+    ? await grantClosing(f, "settlement", true)
+    : undefined;
+  const ingress = createFederationIngress(db, f.source.signing);
+  const network: { bodies: string[]; afterResponse?: (jws: string) => Promise<string> } = {
+    bodies: [],
+  };
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/commercial-closing");
+    if (!path) throw new Error("Closing route is required");
+    network.bodies.push(jws);
+    const response = await ingress.request(path, {
+      method: "POST",
+      headers: {
+        "content-type": "application/jose",
+        "x-kq-federation-cert": f.providerFingerprint,
+      },
+      body: jws,
+    });
+    if (response.status !== 200)
+      throw new FederationDeliveryError(
+        response.status >= 500 ? "DELIVERY_UNAVAILABLE" : "INVALID_RECEIPT_RESPONSE",
+      );
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const result = await response.text();
+    return network.afterResponse ? network.afterResponse(result) : result;
+  };
+  const closing = new FederationClosingAutomation(db, f.provider.signing, send);
+  const view = () => closing.list(f.actor, f.revisionId);
+  const due = () =>
+    db
+      .update(federationClosingTasks)
+      .set({ nextAttemptAt: sql`clock_timestamp()`, leaseToken: null, leaseUntil: null })
+      .where(eq(federationClosingTasks.localSiteId, f.provider.signing.siteId));
+  return {
+    ...f,
+    billPolicy,
+    settlementPolicy,
+    sourceBillPolicy,
+    sourceSettlementPolicy,
+    ingress,
+    network,
+    send,
+    closing,
+    view,
+    due,
+  };
+}
+
+test("closing automation production worker generates and exchanges bills and settlements from independent policies", async () => {
+  const f = await closingFlowFixture();
+  const args: ConstructorParameters<typeof FederationCommercialWorker> = [
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  args[13] = f.closing;
+  const worker = new FederationCommercialWorker(...args);
+  await worker.tick();
+  await worker.tick();
+  expect((await f.view()).records.map((r) => [r.kind, r.state])).toEqual([
+    ["bill", "complete"],
+    ["settlement", "complete"],
+  ]);
+  expect(f.network.bodies).toHaveLength(2);
+  const rows = await db
+    .select()
+    .from(federationCommercialSettlements)
+    .where(
+      inArray(federationCommercialSettlements.localSiteId, [
+        f.source.signing.siteId,
+        f.provider.signing.siteId,
+      ]),
+    );
+  expect(rows).toHaveLength(2);
+  expect(new Set(rows.map((r) => r.digest)).size).toBe(1);
+  expect(rows.every((r) => r.counterpartyJws && r.appliedAt && r.authorizationPolicyId)).toBe(true);
+  expect(await f.billPolicy.read()).toMatchObject({ approvedAmount: "60", approvedRecords: 1 });
+  expect(await f.settlementPolicy.read()).toMatchObject({
+    approvedAmount: "60",
+    approvedRecords: 1,
+  });
+  expect(await f.sourceBillPolicy?.read()).toMatchObject({
+    approvedAmount: "60",
+    approvedRecords: 1,
+  });
+  expect(await f.sourceSettlementPolicy?.read()).toMatchObject({
+    approvedAmount: "60",
+    approvedRecords: 1,
+  });
+  expect(
+    (
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.terms.budgetDomainId))
+    )[0],
+  ).toMatchObject({ available: "40", reserved: "0", spent: "60" });
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(
+        inArray(federationCommercialSubmissions.localSiteId, [
+          f.source.signing.siteId,
+          f.provider.signing.siteId,
+        ]),
+      ),
+  ).toHaveLength(0);
+});
+
+test("closing automation attested accounting completes without an Adapter and leaves evidence pending", async () => {
+  const f = await closingFlowFixture("bilateral_attested");
+  await f.closing.discover();
+  await f.closing.advanceNext();
+  await f.closing.discover();
+  await f.closing.advanceNext();
+  expect((await f.view()).records.every((r) => r.state === "complete")).toBe(true);
+  const rows = await db
+    .select()
+    .from(federationCommercialSettlements)
+    .where(
+      inArray(federationCommercialSettlements.localSiteId, [
+        f.source.signing.siteId,
+        f.provider.signing.siteId,
+      ]),
+    );
+  expect(rows).toHaveLength(2);
+  expect(rows.every((r) => r.appliedAt)).toBe(true);
+  const pending = await db
+    .select()
+    .from(federationCommercialSubmissions)
+    .where(
+      and(
+        eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId),
+        sql`${federationCommercialSubmissions.input}->>'operation' IN ('confirm-bill','settle-bill')`,
+      ),
+    );
+  expect(pending).toHaveLength(2);
+  expect(pending.every((r) => r.state === "pending")).toBe(true);
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(
+        and(
+          eq(federationCommercialSubmissions.localSiteId, f.source.signing.siteId),
+          sql`${federationCommercialSubmissions.input}->>'operation' IN ('confirm-bill','settle-bill')`,
+        ),
+      ),
+  ).toHaveLength(0);
+});
+
+test("closing automation never infers counterparty authority and retry retains the original proposal", async () => {
+  const f = await closingFlowFixture("bilateral_direct", false);
+  await f.closing.discover();
+  await f.closing.advanceNext();
+  const original = (await f.view()).records[0];
+  expect(original?.state).toBe("needs_review");
+  expect((await f.sourceBilling.list(f.sourceActor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  await grantClosing(f, "bill", true);
+  await f.closing.retry(f.actor, f.revisionId, "bill", f.reservationId);
+  await f.closing.advanceNext();
+  expect((await f.view()).records[0]).toMatchObject({
+    state: "complete",
+    recordId: original?.recordId,
+  });
+  expect(f.network.bodies[0]).toBe(f.network.bodies[1]);
+  expect(await f.billPolicy.read()).toMatchObject({ approvedRecords: 1 });
+});
+
+test("closing automation waits for missing received usage and recovers without new signatures", async () => {
+  const f = await closingFlowFixture();
+  const received = await db
+    .select()
+    .from(federationReceivedUsage)
+    .where(eq(federationReceivedUsage.localSiteId, f.source.signing.siteId));
+  await db
+    .delete(federationReceivedUsage)
+    .where(eq(federationReceivedUsage.localSiteId, f.source.signing.siteId));
+  await f.closing.discover();
+  await f.closing.advanceNext();
+  expect((await f.view()).records[0]).toMatchObject({
+    state: "pending",
+    lastError: "DELIVERY_UNAVAILABLE",
+  });
+  expect(await f.sourceBillPolicy?.read()).toMatchObject({ approvedRecords: 0 });
+  await db.insert(federationReceivedUsage).values(received);
+  await f.due();
+  await f.closing.advanceNext();
+  expect((await f.view()).records[0]?.state).toBe("complete");
+  expect(f.network.bodies[0]).toBe(f.network.bodies[1]);
+});
+
+test("closing automation recovers a lost approved response after remote policy revocation without repeating consent", async () => {
+  const f = await closingFlowFixture();
+  f.network.afterResponse = async () => {
+    throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+  };
+  await f.closing.discover();
+  await f.closing.advanceNext();
+  const remote = (await f.sourceBilling.list(f.sourceActor, f.revisionId, 10, 0)).data[0]?.bill;
+  expect(remote?.counterpartyJws).toBeTruthy();
+  if (!f.sourceBillPolicy) throw new Error("Missing policy");
+  await f.sourceBillPolicy.service.revoke(
+    f.sourceActor,
+    f.revisionId,
+    f.sourceBillPolicy.policy.id,
+  );
+  f.network.afterResponse = undefined;
+  await f.due();
+  await new FederationClosingAutomation(db, f.provider.signing, f.send).advanceNext();
+  expect((await f.view()).records[0]?.state).toBe("complete");
+  expect(
+    (await f.sourceBilling.list(f.sourceActor, f.revisionId, 10, 0)).data[0]?.bill.approvalJws,
+  ).toBe(remote?.approvalJws);
+  expect(f.network.bodies[0]).toBe(f.network.bodies[1]);
+  expect(await f.sourceBillPolicy.read()).toMatchObject({ approvedRecords: 1 });
+});
+
+test("closing automation fences a late response after lease loss and resumes the original intent", async () => {
+  const f = await closingFlowFixture();
+  f.network.afterResponse = async (jws) => {
+    await db
+      .update(federationClosingTasks)
+      .set({ leaseToken: randomUUID(), leaseUntil: new Date(Date.now() + 60000) })
+      .where(eq(federationClosingTasks.localSiteId, f.provider.signing.siteId));
+    return jws;
+  };
+  await f.closing.discover();
+  await f.closing.advanceNext();
+  expect((await f.view()).records[0]?.state).toBe("pending");
+  expect(
+    (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.counterpartyJws,
+  ).toBeNull();
+  f.network.afterResponse = undefined;
+  await f.due();
+  await f.closing.advanceNext();
+  expect((await f.view()).records[0]?.state).toBe("complete");
+  expect(f.network.bodies[0]).toBe(f.network.bodies[1]);
+});
+
+test("closing automation rolls generation and policy consumption back if its lease is superseded", async () => {
+  const f = await closingFlowFixture();
+  await f.closing.discover();
+  const generate = FederationBillingService.prototype.automateDraft;
+  const hook = spyOn(FederationBillingService.prototype, "automateDraft").mockImplementation(
+    async (policy, reference, finish) =>
+      generate.call(f.providerBilling, policy, reference, async (tx, row) => {
+        await db
+          .update(federationClosingTasks)
+          .set({ leaseToken: randomUUID(), leaseUntil: new Date(Date.now() + 60000) })
+          .where(eq(federationClosingTasks.localSiteId, f.provider.signing.siteId));
+        await finish(tx, row);
+      }),
+  );
+  try {
+    await f.closing.advanceNext();
+  } finally {
+    hook.mockRestore();
+  }
+  expect((await f.view()).records[0]?.recordId).toBeNull();
+  expect((await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  expect(await f.billPolicy.read()).toMatchObject({ approvedRecords: 0, approvedAmount: "0" });
+  expect(f.network.bodies).toHaveLength(0);
+  await f.due();
+  await f.closing.advanceNext();
+  expect((await f.view()).records[0]?.state).toBe("complete");
+});
+
+test("closing automation rechecks peer certificate during approval and keeps business authority atomic", async () => {
+  const f = await closingFlowFixture();
+  const approve = FederationBillingService.prototype.automate;
+  const hook = spyOn(FederationBillingService.prototype, "automate").mockImplementation(
+    async (policy, payload, authorize) => {
+      await db
+        .update(federationCertificates)
+        .set({ revokedAt: new Date() })
+        .where(eq(federationCertificates.fingerprint, f.providerFingerprint));
+      return approve.call(f.sourceBilling, policy, payload, authorize);
+    },
+  );
+  try {
+    await f.closing.discover();
+    await f.closing.advanceNext();
+  } finally {
+    hook.mockRestore();
+  }
+  expect((await f.view()).records[0]?.state).toBe("needs_review");
+  expect((await f.sourceBilling.list(f.sourceActor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  expect(await f.sourceBillPolicy?.read()).toMatchObject({ approvedRecords: 0 });
+});
+
+test("closing automation stays off without local policy or transport and cannot send a source-side offer", async () => {
+  const f = await closingFlowFixture();
+  await f.billPolicy.service.revoke(f.actor, f.revisionId, f.billPolicy.policy.id);
+  await f.settlementPolicy.service.revoke(f.actor, f.revisionId, f.settlementPolicy.policy.id);
+  await f.closing.discover();
+  expect((await f.view()).records).toHaveLength(0);
+  const offline = new FederationClosingAutomation(db, f.provider.signing);
+  await offline.discover();
+  expect(await offline.advanceNext()).toBe(false);
+  const wrong = await signFederationMessage(CommercialBillSchema, f.draft, f.source.signing);
+  const response = await f.ingress.request("/federation/v1/commercial-closing", {
+    method: "POST",
+    headers: { "content-type": "application/jose", "x-kq-federation-cert": f.fingerprint },
+    body: wrong,
+  });
+  expect(response.status).toBe(401);
+  expect(f.network.bodies).toHaveLength(0);
+});
+
+test("closing automation refuses to bypass a prepared concession, then reuses its explicitly approved bill", async () => {
+  const f = await closingFlowFixture();
+  const discount = CommercialDiscountSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-discount",
+    discountId: randomUUID(),
+    billId: f.draft.billId,
+    domainId: f.draft.domainId,
+    agreementRevisionId: f.revisionId,
+    agreementDigest: f.draft.agreementDigest,
+    reportId: f.draft.reportId,
+    reportDigest: f.draft.reportDigest,
+    taskId: f.draft.request.taskId,
+    attempt: 1,
+    sourceSiteId: f.source.signing.siteId,
+    targetSiteId: f.provider.signing.siteId,
+    unit: f.draft.request.unit,
+    amount: "7",
+    reason: "Agreed concession",
+    issuedAt: new Date().toISOString(),
+    salt: "e".repeat(64),
+  });
+  const original = await f.providerBilling.approveDiscount(f.actor, f.revisionId, discount);
+  await f.closing.discover();
+  await f.closing.advanceNext();
+  expect((await f.view()).records[0]).toMatchObject({
+    state: "needs_review",
+    lastError: "OPERATION_CONFLICT",
+    recordId: null,
+  });
+  expect(await f.billPolicy.read()).toMatchObject({ approvedRecords: 0 });
+  expect(f.network.bodies).toHaveLength(0);
+  await f.sourceBilling.importDiscount(f.sourceActor, f.revisionId, original.providerJws);
+  const draft = await f.providerBilling.draft(
+    f.actor,
+    f.revisionId,
+    f.draft.reportId,
+    f.draft.billId,
+    discount.discountId,
+  );
+  const approved = await f.providerBilling.approve(f.actor, f.revisionId, draft);
+  await f.closing.retry(f.actor, f.revisionId, "bill", f.reservationId);
+  await f.closing.advanceNext();
+  expect(
+    (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.approvalJws,
+  ).toBe(approved.approvalJws);
+  await f.closing.discover();
+  await f.closing.advanceNext();
+  expect((await f.view()).records.every((v) => v.state === "complete")).toBe(true);
+  expect(
+    (
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.terms.budgetDomainId))
+    )[0],
+  ).toMatchObject({ available: "47", reserved: "0", spent: "53" });
+  expect(await f.billPolicy.read()).toMatchObject({ approvedRecords: 0 });
+});
+
+test("closing automation rejects changed endpoint after response, retaining the original for authorized retry", async () => {
+  const f = await closingFlowFixture();
+  const [site] = await db
+    .select()
+    .from(federationSites)
+    .where(eq(federationSites.id, f.source.signing.siteId));
+  if (!site) throw new Error("Missing site");
+  f.network.afterResponse = async (jws) => {
+    await db
+      .update(federationSites)
+      .set({ endpoint: "https://changed.example.test" })
+      .where(eq(federationSites.id, site.id));
+    return jws;
+  };
+  await f.closing.discover();
+  await f.closing.advanceNext();
+  expect((await f.view()).records[0]).toMatchObject({
+    state: "needs_review",
+    lastError: "UNTRUSTED_IDENTITY",
+  });
+  expect(
+    (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.counterpartyJws,
+  ).toBeNull();
+  f.network.afterResponse = undefined;
+  await db
+    .update(federationSites)
+    .set({ endpoint: site.endpoint })
+    .where(eq(federationSites.id, site.id));
+  await f.closing.retry(f.actor, f.revisionId, "bill", f.reservationId);
+  await f.closing.advanceNext();
+  expect((await f.view()).records[0]?.state).toBe("complete");
+  expect(f.network.bodies[0]).toBe(f.network.bodies[1]);
+});
+
+test("closing automation rechecks policy expiry after its final ingress authorization callback", async () => {
+  const f = await closingFlowFixture();
+  if (!f.sourceBillPolicy) throw new Error("Missing policy");
+  const expiry = f.sourceBillPolicy.policy.validUntil;
+  const approve = FederationBillingService.prototype.automate;
+  const hook = spyOn(FederationBillingService.prototype, "automate").mockImplementation(
+    async (policy, payload, authorize) => {
+      let calls = 0;
+      return approve.call(f.sourceBilling, policy, payload, async (tx) => {
+        await authorize?.(tx);
+        if (++calls === 2) setSystemTime(new Date(expiry.getTime() + 1));
+      });
+    },
+  );
+  try {
+    await f.closing.discover();
+    await f.closing.advanceNext();
+  } finally {
+    hook.mockRestore();
+    setSystemTime();
+  }
+  expect((await f.sourceBilling.list(f.sourceActor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  expect(await f.sourceBillPolicy.read()).toMatchObject({ approvedRecords: 0 });
+});
+
+test("closing automation task HTTP scopes reads and requires the matching independent retry authority", async () => {
+  const f = await closingFlowFixture("bilateral_direct", false);
+  await f.closing.discover();
+  await f.closing.advanceNext();
+  const args: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.provider.signing),
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  args[18] = f.closing;
+  const app = new Hono();
+  let actor = f.actor;
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...args));
+  const path = `/federation/commercial-agreements/${f.revisionId}/closing-tasks`;
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: false },
+    f.userId,
+  );
+  const request = { method: "POST", headers: { "content-type": "application/json" }, body: "{}" };
+  expect((await app.request(`${path}/bill/${f.reservationId}/retry`, request)).status).toBe(403);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: true },
+    f.userId,
+  );
+  expect((await app.request(`${path}/bill/${f.reservationId}/retry`, request)).status).toBe(200);
+  actor = f.sourceActor;
+  expect((await app.request(path)).status).toBe(409);
 });

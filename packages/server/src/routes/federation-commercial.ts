@@ -16,6 +16,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationBillingService } from "../federation/billing";
+import type { FederationClosingAutomation } from "../federation/closing-automation";
 import {
   ClosingPolicyInputSchema,
   type FederationClosingPolicyService,
@@ -66,6 +67,7 @@ export function createFederationCommercialRoutes(
   billing?: FederationBillingService,
   settlements?: FederationSettlementService,
   closingPolicies?: FederationClosingPolicyService,
+  closing?: FederationClosingAutomation,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -456,6 +458,38 @@ export function createFederationCommercialRoutes(
           recordKind,
           recordId,
         });
+        return c.json({ success: true });
+      },
+    );
+  }
+  if (closing) {
+    const path = "/federation/commercial-agreements/:revisionId/closing-tasks";
+    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) =>
+      c.json({
+        success: true,
+        data: await closing.list(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          c.req.valid("query").limit,
+          c.req.valid("query").offset,
+        ),
+      }),
+    );
+    r.post(
+      `${path}/:kind/:referenceId/retry`,
+      kqValidator(
+        "param",
+        id.extend({ kind: z.enum(["bill", "settlement"]), referenceId: z.uuid() }),
+      ),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        const params = c.req.valid("param");
+        await closing.retry(
+          c.get("federationActor"),
+          params.revisionId,
+          params.kind,
+          params.referenceId,
+        );
         return c.json({ success: true });
       },
     );

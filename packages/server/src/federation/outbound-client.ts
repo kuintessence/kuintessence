@@ -14,6 +14,7 @@ export type FederationSend = (
     | "/federation/v1/delegations"
     | "/federation/v1/agreement-approvals"
     | "/federation/v1/commercial-approvals"
+    | "/federation/v1/commercial-closing"
     | "/federation/v1/market-requests"
     | "/federation/v1/reservation-proposals"
     | "/federation/v1/usage"
@@ -40,6 +41,7 @@ export function createFederationSender(tls: {
       path !== "/federation/v1/delegations" &&
       path !== "/federation/v1/agreement-approvals" &&
       path !== "/federation/v1/commercial-approvals" &&
+      path !== "/federation/v1/commercial-closing" &&
       path !== "/federation/v1/market-requests" &&
       path !== "/federation/v1/reservation-proposals" &&
       path !== "/federation/v1/usage" &&

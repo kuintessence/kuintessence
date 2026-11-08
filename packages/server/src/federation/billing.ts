@@ -285,29 +285,39 @@ export class FederationBillingService {
   ) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
-      const f = await this.originals(tx, actor, revisionId, reportId),
-        discount = await this.concession(tx, actor, revisionId, discountId);
-      const bill = CommercialBillSchema.parse({
-        protocolVersion: 1,
-        kind: "commercial-bill",
-        billId,
-        domainId: f.terms.domainId,
-        agreementDigest: f.contract.digest,
-        priceVersionId: f.terms.priceVersionId,
-        reportId,
-        reportDigest: f.reportDigest,
-        request: f.request,
-        reservationId: f.reservationId,
-        discount: discount
-          ? { discountId: discount.terms.discountId, digest: discount.digest }
-          : null,
-        calculation: calculateCommercialBill(f.terms, f.request, f.report, discount?.terms.amount),
-        issuedAt: new Date().toISOString(),
-        salt: randomBytes(32).toString("hex"),
-      });
-      assertCommercialBill(bill, f.terms, f.contract.digest, f.report, f.reportDigest, discount);
-      return bill;
+      return this.draftInTransaction(tx, actor, revisionId, reportId, billId, discountId);
     });
+  }
+  private async draftInTransaction(
+    tx: PgTransaction,
+    actor: FederationActor,
+    revisionId: string,
+    reportId: string,
+    billId: string,
+    discountId?: string,
+  ) {
+    const f = await this.originals(tx, actor, revisionId, reportId),
+      discount = await this.concession(tx, actor, revisionId, discountId);
+    const bill = CommercialBillSchema.parse({
+      protocolVersion: 1,
+      kind: "commercial-bill",
+      billId,
+      domainId: f.terms.domainId,
+      agreementDigest: f.contract.digest,
+      priceVersionId: f.terms.priceVersionId,
+      reportId,
+      reportDigest: f.reportDigest,
+      request: f.request,
+      reservationId: f.reservationId,
+      discount: discount
+        ? { discountId: discount.terms.discountId, digest: discount.digest }
+        : null,
+      calculation: calculateCommercialBill(f.terms, f.request, f.report, discount?.terms.amount),
+      issuedAt: new Date().toISOString(),
+      salt: randomBytes(32).toString("hex"),
+    });
+    assertCommercialBill(bill, f.terms, f.contract.digest, f.report, f.reportDigest, discount);
+    return bill;
   }
   async approve(actor: FederationActor, revisionId: string, raw: CommercialBill) {
     const value = CommercialBillSchema.parse(raw);
@@ -317,20 +327,103 @@ export class FederationBillingService {
     });
   }
   /** Only local orchestration can use institution-owned authority; HTTP approval cannot supply a policy. */
-  async automate(policyId: string, raw: CommercialBill) {
+  async automate(
+    policyId: string,
+    raw: CommercialBill,
+    authorize?: (tx: PgTransaction) => Promise<void>,
+  ) {
     const value = CommercialBillSchema.parse(raw);
     return this.db.transaction(async (tx) => {
       const policy = await new FederationClosingPolicyService(
         this.db,
         this.signing.siteId,
       ).authority(tx, policyId, "bill");
-      return this.approveInTransaction(
+      await authorize?.(tx);
+      const saved = await this.approveInTransaction(
         tx,
         { orgId: policy.localOrgId, userId: policy.grantedBy },
         policy.agreementRevisionId,
         value,
         policy,
       );
+      await authorize?.(tx);
+      assertClosingPolicyActive(policy);
+      return saved;
+    });
+  }
+  async automateDraft(
+    policyId: string,
+    reservationId: string,
+    finish: (tx: PgTransaction, row: typeof bills.$inferSelect) => Promise<void>,
+  ) {
+    return this.db.transaction(async (tx) => {
+      const policy = await new FederationClosingPolicyService(
+        this.db,
+        this.signing.siteId,
+      ).authority(tx, policyId, "bill");
+      const actor = { orgId: policy.localOrgId, userId: policy.grantedBy },
+        revisionId = policy.agreementRevisionId;
+      const [task] = await tx
+        .select()
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.localSiteId, this.signing.siteId),
+            eq(tasks.localOrgId, actor.orgId),
+            eq(tasks.agreementRevisionId, revisionId),
+            eq(tasks.reservationId, reservationId),
+          ),
+        )
+        .for("update");
+      if (!task || task.state !== "reported") throw new FederationError("DATA_WAITING");
+      const [binding] = await tx
+        .select()
+        .from(bindings)
+        .where(eq(bindings.reservationId, reservationId));
+      if (!binding || binding.snapshot.request.recipientSiteId !== this.signing.siteId)
+        throw new FederationError("POLICY_DENIED");
+      const request = binding.snapshot.request;
+      const [prior] = await tx
+        .select()
+        .from(bills)
+        .where(
+          and(
+            eq(bills.localSiteId, this.signing.siteId),
+            eq(bills.localOrgId, actor.orgId),
+            eq(bills.agreementRevisionId, revisionId),
+            eq(bills.taskId, request.taskId),
+            eq(bills.attempt, request.attempt),
+          ),
+        );
+      let payload = prior?.payload;
+      if (!payload) {
+        const [discount] = await tx
+          .select({ id: discounts.discountId })
+          .from(discounts)
+          .where(
+            and(
+              eq(discounts.localSiteId, this.signing.siteId),
+              eq(discounts.localOrgId, actor.orgId),
+              eq(discounts.agreementRevisionId, revisionId),
+              sql`${discounts.payload}->>'taskId' = ${request.taskId}`,
+              sql`(${discounts.payload}->>'attempt')::int = ${request.attempt}`,
+            ),
+          )
+          .limit(1);
+        if (discount) throw new FederationError("OPERATION_CONFLICT");
+        const [report] = await tx
+          .select({ id: reports.id })
+          .from(reports)
+          .where(eq(reports.reservationId, reservationId))
+          .orderBy(desc(reports.number))
+          .limit(1);
+        if (!report) throw new FederationError("DATA_WAITING");
+        payload = await this.draftInTransaction(tx, actor, revisionId, report.id, randomUUID());
+      }
+      const saved = await this.approveInTransaction(tx, actor, revisionId, payload, policy);
+      await finish(tx, saved);
+      assertClosingPolicyActive(policy);
+      return saved;
     });
   }
   private async approveInTransaction(
