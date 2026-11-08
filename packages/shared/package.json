@@ -31,6 +31,11 @@
       "types": "./src/federation/signatures.ts",
       "default": "./src/federation/signatures.ts"
     },
+    "./federation/media-age": {
+      "bun": "./src/federation/media-age.ts",
+      "types": "./src/federation/media-age.ts",
+      "default": "./src/federation/media-age.ts"
+    },
     "./federation/ledger": {
       "bun": "./src/federation/ledger.ts",
       "types": "./src/federation/ledger.ts",

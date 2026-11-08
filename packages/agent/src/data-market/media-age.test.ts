@@ -13,13 +13,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FederationMediaManifestSchema } from "@kuintessence/shared/federation";
+import { MediaAge } from "@kuintessence/shared/federation/media-age";
 import {
   signFederationMessage,
   verifyFederationMediaManifest,
 } from "@kuintessence/shared/federation/signatures";
 import { generateKeyPair } from "jose";
 import { AgentDataRoots } from "./local-data-security";
-import { MediaAge } from "./media-age";
 import { exportMediaArchive, quarantineMediaArchive } from "./media-archive";
 
 const binaryDirectory = process.env.KQ_MEDIA_AGE_TEST_BIN;

@@ -20,6 +20,7 @@ import {
   type WorkflowPlacementConfig,
   WorkflowPlacementConfigSchema,
 } from "@kuintessence/shared";
+import { MediaAge } from "@kuintessence/shared/federation/media-age";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
@@ -94,6 +95,7 @@ import { FederationMarketService } from "./federation/market";
 import { UnixMarketClient } from "./federation/market-client";
 import { FederationMarketRequestService } from "./federation/market-requests";
 import { FederationMaterialExchange } from "./federation/material-exchange";
+import { FederationMediaExportService } from "./federation/media-exports";
 import { FederationMediaPackageService } from "./federation/media-packages";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
@@ -1880,7 +1882,19 @@ protectedApi.route("/", createFederationAssetRoutes(federationAssets, federation
 if (config.FEDERATION_SITE_ID)
   protectedApi.route(
     "/",
-    createFederationMediaRoutes(new FederationMediaPackageService(db, config.FEDERATION_SITE_ID)),
+    createFederationMediaRoutes(
+      new FederationMediaPackageService(db, config.FEDERATION_SITE_ID),
+      federationSigningKey &&
+        config.FEDERATION_MEDIA_AGE_DIRECTORY &&
+        config.FEDERATION_MEDIA_WRAPPING_KEY
+        ? new FederationMediaExportService(
+            db,
+            federationSigningKey,
+            new MediaAge(config.FEDERATION_MEDIA_AGE_DIRECTORY),
+            config.FEDERATION_MEDIA_WRAPPING_KEY,
+          )
+        : undefined,
+    ),
   );
 if (federationSigningKey)
   protectedApi.route(

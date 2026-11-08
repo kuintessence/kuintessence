@@ -5,6 +5,15 @@ import { FederationAssetRefSchema, FederationDigestSchema } from "./references";
 export const FEDERATION_MEDIA_MAX_BYTES = 5 * 1024 ** 4;
 export const FEDERATION_MEDIA_MAX_FILES = 1000;
 
+export type FederationMediaJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | FederationMediaJsonValue[]
+  | { [key: string]: FederationMediaJsonValue };
+const JsonValue: z.ZodType<FederationMediaJsonValue> = z.json();
+
 const TaskPackage = z.strictObject({
   kind: z.enum(["task-input", "task-result"]),
   operationId: z.uuid(),
@@ -28,6 +37,8 @@ export const FederationMediaManifestSchema = z
       z.strictObject({
         kind: z.literal("dataset"),
         asset: FederationAssetRefSchema.refine((asset) => asset.kind === "dataset"),
+        license: z.string().trim().min(1).max(256).nullable().optional(),
+        provenance: z.record(z.string().min(1).max(128), JsonValue).nullable().optional(),
       }),
       TaskPackage,
     ]),
@@ -38,12 +49,7 @@ export const FederationMediaManifestSchema = z
           sizeBytes: z.number().int().nonnegative().max(FEDERATION_MEDIA_MAX_BYTES),
           sha256: z.string().regex(/^[a-f0-9]{64}$/),
           license: z.string().trim().min(1).max(256).nullable(),
-          provenance: z
-            .strictObject({
-              source: z.string().trim().min(1).max(2048),
-              revision: z.string().trim().min(1).max(256).nullable(),
-            })
-            .nullable(),
+          provenance: z.record(z.string().min(1).max(128), JsonValue).nullable(),
         }),
       )
       .min(1)
@@ -82,3 +88,14 @@ export type FederationMediaImportApproval = z.infer<typeof FederationMediaImport
 export const FederationMediaRevocationSchema = z.strictObject({
   reason: z.string().trim().min(1).max(500),
 });
+
+/** Source-local selectors, never filesystem paths or caller-supplied file inventories. */
+export const FederationMediaExportApprovalSchema = z.strictObject({
+  packageId: z.uuid(),
+  agreementRevisionId: z.uuid(),
+  recipientSiteId: z.uuid(),
+  versionId: z.uuid(),
+  locationId: z.uuid(),
+  expiresAt: z.iso.datetime(),
+});
+export type FederationMediaExportApproval = z.infer<typeof FederationMediaExportApprovalSchema>;

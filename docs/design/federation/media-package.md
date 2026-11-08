@@ -1,6 +1,32 @@
 # 加密介质包：格式与 Agent 底层
 
-当前已实现格式、签名验证、流式归档、age 加解密底层，以及 Server 的接收方包登记和本地导入授权 API。已用真实官方二进制完成受管数据集往返至隔离区；**来源方当前导出许可、独立密钥授权通道、Agent 操作入口、原子副本发布和导入回执尚未接通**。登记或本地批准均不会解密文件、创建可用副本或解除 `DATA_WAITING`；这仍不是完整硬盘交付。
+当前已实现格式、签名验证、流式归档、age 加解密底层，以及 Server 的来源方导出批准/密钥加密托管、接收方包登记和本地导入授权 API。已用真实官方二进制完成受管数据集往返至隔离区；**独立密钥授权通道、Agent 操作入口、原子副本发布和导入回执尚未接通**。来源批准仅准备清单与密钥，登记或本地批准均不会解密文件、创建可用副本或解除 `DATA_WAITING`；这仍不是完整硬盘交付。
+
+## 来源方数据集导出准备
+
+Server 配置 `FEDERATION_ENABLED` 及既有站点/签名配置后，同时配置：
+
+| 配置 | 含义 |
+| --- | --- |
+| `FEDERATION_MEDIA_AGE_DIRECTORY` | 官方固定版本 age 和 age-keygen 所在绝对目录；工具摘要见下文 |
+| `FEDERATION_MEDIA_WRAPPING_KEY` | 至少 32 字符的独立高熵密钥，不得复用 JWT/SSO 密钥；仅通过部署秘密配置注入 |
+
+两项缺一时启动校验拒绝；均未配置时可使用接收登记，但来源导出接口返回 503 `MEDIA_EXPORT_UNAVAILABLE`。Server 镜像尚未包含 age，需要由部署方提供经 pin 校验的工具。托管密钥依赖 wrapping key 恢复，必须独立安全备份；当前无在线轮换工具，直接替换会使历史包密钥无法解密。
+
+以下 API 均以 `/api/federation/media` 开头，要求当前组织的人工会话：
+
+| 方法与路径 | 作用 |
+| --- | --- |
+| `POST /exports` | 以独立 `media.export` 权限准备指定不可变版本的签名清单及独立包身份 |
+| `GET /exports?limit=50&offset=0` | 以 `asset.read` 权限查询当前组织摘要 |
+| `GET /exports/:id` | 查询原签名、公钥和批准/撤销记录，不返回私钥及其密文 |
+| `POST /exports/:id/revoke` | 以 `media.export` 权限撤销来源批准，保留历史；正文为 `reason` |
+
+准备参数为 `packageId`、`agreementRevisionId`、`recipientSiteId`、`versionId`、`locationId`、`expiresAt`，有效期最多 7 天且不超过合作协议与数据授权的有效期。文件列表、大小、摘要、许可证和完整 provenance 从已发布资产的 ready/不可变版本读取，不接受调用者自报路径或清单。当前只接受本组织 Agent/启用受管目录中的 available `cp-local` 位置；不支持对象存储位置、任务输入包或结果包的来源准备。
+
+必须存在对当前用户/组织适用、有效的显式 download 数据策略，且 download、redistribution、crossCenterReplication 三项均为 allow；适用的禁止/限制优先。公开可见、资产所有权或普通 use 权限不能代替跨机构披露许可。当前数据策略管理写入 API/页面尚未接通，不能宣称运营人员已有完整配置流程。
+
+每包由真实 age 生成独立身份；私钥使用现有 AES-GCM/HKDF 加密，派生域绑定本站、包编号及原清单摘要。数据库只保存密文，普通 API/审计不返回或记录密钥。签名及生成在事务外执行，落库前重查授权、源数据和签名信任；同编号并发重试只保留原签名、公钥、密文与一次审计，修改参数或重放已撤销批准被拒绝。内部使用 guard 再检查原批准人权限、有效期、当前数据策略/位置、协议和原签名密钥。尚无私钥交付端点，也没有自动下发文件导出命令。
 
 ## Server 包登记与本地授权
 
@@ -58,7 +84,7 @@ age 子进程与归档流使用调用方的取消信号；生产服务需要传�
 | linux-amd64 | `cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10` |
 | linux-arm64 | `6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4` |
 
-可执行文件摘要见 `packages/agent/src/data-market/media-age.ts` 的 `MEDIA_AGE_RELEASE`。版本升级必须更新归档和两个可执行文件的 pin，并复核加解密验收。二进制分发、安装脚本和部署镜像接线仍待完成。
+可执行文件摘要见 `packages/shared/src/federation/media-age.ts` 的 `MEDIA_AGE_RELEASE`。版本升级必须更新归档和两个可执行文件的 pin，并复核加解密验收。二进制分发、安装脚本和部署镜像接线仍待完成。
 
 ## 当前验证
 
@@ -79,4 +105,6 @@ KQ_MEDIA_AGE_TEST_BIN=/absolute/path/to/age-directory \
 
 新增 `packages/server/src/federation/media-packages.pg.test.ts` 在独立 `kuintessence_unit_*` PostgreSQL 数据库运行：验证真实签名/HTTP 登记、组织隔离、并发幂等、独立导入权限、限额/到期/目录约束、当前权限重查、撤销后重放、审计失败回滚、数据库约束和授权历史分页。迁移 `0156_many_shiva.sql` 由 Drizzle 生成，两张表只保存清单和接收方批准，没有存储密钥或发布数据位置。
 
-W07/W08 仍未完成：来源方授权与密钥通道、持续撤权、发布回执、完整导入重放/版本复用、物理介质及运输批次生命周期、崩溃恢复、真实 ENOSPC 和作业解锁需在完整服务接通后联合验证。其他已经通过的取消退款、满盘恢复测试不因此重复运行。
+来源准备测试 `packages/server/src/federation/media-exports.pg.test.ts` 需要独立 `kuintessence_unit_*` PostgreSQL 和显式 `KQ_MEDIA_AGE_TEST_BIN`。真实 age 验证覆盖 API 签名/元数据、密钥托管恢复、域绑定、披露限制、并发幂等、动态撤权、生成过程撤权和重启后撤销保持。夹具使用同一隔离数据库中的站点记录及 4 字节合成数据，不是双平台交付或科学计算验收。Drizzle 生成 `0157_fancy_mathemanic.sql`，增加来源托管表及 `media.export` 权限约束。
+
+W07/W08 仍未完成：数据策略管理、密钥通道、持续撤权、发布回执、完整导入重放/版本复用、物理介质及运输批次生命周期、崩溃恢复、真实 ENOSPC 和作业解锁需在完整服务接通后联合验证。其他已经通过的取消退款、满盘恢复测试不因此重复运行。

@@ -33,6 +33,10 @@ Server 设置：
 | `FEDERATION_INPUT_DOWNLOAD_ORIGINS` | 本机构输入文件存储的 HTTPS origin，逗号分隔；独立于结果授权，默认空（关闭） |
 | `FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS` | 接收输入文件允许访问的源站存储 HTTPS origin，逗号分隔；独立于本地/结果存储配置，默认空（不发输入搬运凭据） |
 | `FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS` | 导入结果允许访问的对端存储 HTTPS origin，逗号分隔；默认空，不启用 Agent 结果传输服务 |
+| `FEDERATION_MEDIA_AGE_DIRECTORY` | 可选，来源介质包使用的固定版本官方 age 工具绝对目录；须与 wrapping key 同时配置 |
+| `FEDERATION_MEDIA_WRAPPING_KEY` | 可选，来源包私钥托管的独立高熵密钥，至少 32 字符，不得复用 JWT/SSO 密钥；需安全备份 |
+
+介质来源准备接口只生成签名清单和托管密钥，不自动复制文件或发放私钥；工具版本、数据披露授权要求及未完成边界见[介质包说明](../../docs/design/federation/media-package.md)。当前 Compose 叠加文件未挂载 age 工具或配置其密钥，启用时须由部署方单独注入。
 
 Gateway 设置 `FEDERATION_TLS_CA_FILE`、`FEDERATION_TLS_CERT_FILE`、`FEDERATION_TLS_KEY_FILE`、`FEDERATION_SOCKET_PATH`、`FEDERATION_TLS_PORT`。服务端证书须含正确 DNS SAN 和 serverAuth；机构客户端证书须含 clientAuth。CA 信任与本站证书登记都要满足；仅持有某受信任 CA 签发的证书仍不能接单。JWS 私钥和 TLS 私钥分别管理，均不进入镜像、仓库或 seed。
 

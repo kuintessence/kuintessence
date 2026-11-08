@@ -59,6 +59,8 @@ const ServerConfigSchema = z.object({
     .regex(/^[a-zA-Z0-9_.:-]{1,128}$/)
     .optional(),
   FEDERATION_SIGNING_KEY_FILE: z.string().min(1).optional(),
+  FEDERATION_MEDIA_AGE_DIRECTORY: z.string().startsWith("/").optional(),
+  FEDERATION_MEDIA_WRAPPING_KEY: z.string().min(32).optional(),
   FEDERATION_CLIENT_CERT_FILE: z.string().startsWith("/").optional(),
   FEDERATION_CLIENT_KEY_FILE: z.string().startsWith("/").optional(),
   FEDERATION_CLIENT_CA_FILE: z.string().startsWith("/").optional(),
@@ -359,6 +361,26 @@ const ServerConfigSchema = z.object({
 });
 
 const ValidatedServerConfigSchema = ServerConfigSchema.superRefine((cfg, ctx) => {
+  if (cfg.FEDERATION_MEDIA_AGE_DIRECTORY || cfg.FEDERATION_MEDIA_WRAPPING_KEY) {
+    if (
+      cfg.FEDERATION_MEDIA_WRAPPING_KEY &&
+      [cfg.JWT_SECRET, cfg.SSO_SECRET_KEY].includes(cfg.FEDERATION_MEDIA_WRAPPING_KEY)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["FEDERATION_MEDIA_WRAPPING_KEY"],
+        message: "Media identities require an independent wrapping key",
+      });
+    }
+    for (const key of [
+      "FEDERATION_ENABLED",
+      "FEDERATION_MEDIA_AGE_DIRECTORY",
+      "FEDERATION_MEDIA_WRAPPING_KEY",
+    ] as const) {
+      if (!cfg[key])
+        ctx.addIssue({ code: "custom", path: [key], message: "Required for source media exports" });
+    }
+  }
   if (cfg.FEDERATION_STORAGE_GUARD_FILE && !cfg.FEDERATION_ENABLED)
     ctx.addIssue({
       code: "custom",

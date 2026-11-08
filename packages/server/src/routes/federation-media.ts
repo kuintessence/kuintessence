@@ -1,6 +1,7 @@
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import {
   FederationError,
+  FederationMediaExportApprovalSchema,
   FederationMediaImportApprovalSchema,
   FederationMediaRegistrationSchema,
   FederationMediaRevocationSchema,
@@ -8,12 +9,16 @@ import {
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import type { FederationMediaExportService } from "../federation/media-exports";
 import type { FederationMediaPackageService } from "../federation/media-packages";
 import type { FederationActor } from "../federation/permissions";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
 
-export function createFederationMediaRoutes(service: FederationMediaPackageService) {
+export function createFederationMediaRoutes(
+  service: FederationMediaPackageService,
+  exports?: FederationMediaExportService,
+) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/media/*", async (c, next) => {
     c.header("cache-control", "no-store");
@@ -36,6 +41,59 @@ export function createFederationMediaRoutes(service: FederationMediaPackageServi
       );
     throw error;
   });
+  const source = () => {
+    if (!exports) throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_EXPORT_UNAVAILABLE", 503);
+    return exports;
+  };
+  r.post(
+    "/federation/media/exports",
+    kqValidator("json", FederationMediaExportApprovalSchema),
+    async (c) =>
+      c.json(
+        {
+          success: true,
+          data: await source().prepare(c.get("federationActor"), c.req.valid("json")),
+        },
+        201,
+      ),
+  );
+  r.get(
+    "/federation/media/exports",
+    kqValidator(
+      "query",
+      z.object({
+        limit: z.coerce.number().int().min(1).max(100).default(50),
+        offset: z.coerce.number().int().nonnegative().default(0),
+      }),
+    ),
+    async (c) =>
+      c.json({
+        success: true,
+        data: await source().list(
+          c.get("federationActor"),
+          c.req.valid("query").limit,
+          c.req.valid("query").offset,
+        ),
+      }),
+  );
+  r.get(
+    "/federation/media/exports/:id",
+    kqValidator("param", z.object({ id: z.uuid() })),
+    async (c) =>
+      c.json({
+        success: true,
+        data: await source().details(c.get("federationActor"), c.req.valid("param").id),
+      }),
+  );
+  r.post(
+    "/federation/media/exports/:id/revoke",
+    kqValidator("param", z.object({ id: z.uuid() })),
+    kqValidator("json", FederationMediaRevocationSchema),
+    async (c) => {
+      await source().revoke(c.get("federationActor"), c.req.valid("param").id, c.req.valid("json"));
+      return c.json({ success: true });
+    },
+  );
   r.get(
     "/federation/media/packages",
     kqValidator(

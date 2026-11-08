@@ -9,6 +9,7 @@ export const FederationCapabilitySchema = z.enum([
   "asset.read",
   "asset.map",
   "media.import",
+  "media.export",
   "delegation.read",
   "delegation.submit",
   "delegation.cancel",

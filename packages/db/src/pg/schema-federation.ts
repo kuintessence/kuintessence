@@ -66,6 +66,7 @@ import {
   agents,
   clusterFileRoots,
   dataAssetVersions,
+  dataLocations,
   jobs,
   orgs,
   softwareAssetRevisions,
@@ -191,7 +192,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'asset.read', 'asset.map', 'media.import', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'asset.read', 'asset.map', 'media.import', 'media.export', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -2509,6 +2510,67 @@ export const federationMediaImportAuthorizations = pgTable(
       "federation_media_import_limits",
       sql`(
       ${t.maxBytes} BETWEEN 0 AND 5497558138880
+      AND ${t.expiresAt} > ${t.approvedAt}
+      AND ${t.expiresAt} <= ${t.approvedAt} + interval '7 days'
+      AND ((${t.revokedAt} IS NULL) = (${t.revocationReason} IS NULL))) IS TRUE`,
+    ),
+  ],
+);
+
+/** Source-side consent and encrypted package identity; no plaintext key is a public API field. */
+export const federationMediaExports = pgTable(
+  "federation_media_exports",
+  {
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    packageId: uuid("package_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    recipientSiteId: uuid("recipient_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    agreementRevisionId: uuid("agreement_revision_id")
+      .notNull()
+      .references(() => federationAgreements.revisionId),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => dataAssetVersions.id),
+    locationId: uuid("location_id")
+      .notNull()
+      .references(() => dataLocations.id),
+    source: jsonb("source")
+      .$type<{ agentId: string; managedRootId: string; relativePath: string }>()
+      .notNull(),
+    manifest: jsonb("manifest").$type<FederationMediaManifest>().notNull(),
+    manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
+    manifestJws: text("manifest_jws").notNull(),
+    recipient: varchar("recipient", { length: 62 }).notNull(),
+    identityEncrypted: text("identity_encrypted").notNull(),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    approvedAt: timestamp("approved_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReason: text("revocation_reason"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.packageId] }),
+    index("federation_media_export_org").on(t.localSiteId, t.localOrgId, t.approvedAt),
+    check(
+      "federation_media_export_identity",
+      sql`(
+      ${t.manifest}->>'kind' = 'media-manifest'
+      AND ${t.manifest}->>'packageId' = ${t.packageId}::text
+      AND ${t.manifest}->>'senderSiteId' = ${t.localSiteId}::text
+      AND ${t.manifest}->>'recipientSiteId' = ${t.recipientSiteId}::text
+      AND ${t.manifest}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND ${t.localSiteId} <> ${t.recipientSiteId}
+      AND ${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.recipient} ~ '^age1[0-9a-z]{58}$'
+      AND octet_length(${t.identityEncrypted}) BETWEEN 1 AND 1024
       AND ${t.expiresAt} > ${t.approvedAt}
       AND ${t.expiresAt} <= ${t.approvedAt} + interval '7 days'
       AND ((${t.revokedAt} IS NULL) = (${t.revocationReason} IS NULL))) IS TRUE`,

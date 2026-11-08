@@ -7,6 +7,32 @@ const VALID_BASE = {
   JWT_SECRET: "x".repeat(32),
 };
 
+describe("Media export configuration", () => {
+  test("requires federation, pinned tools and an independent wrapping key together", () => {
+    const configured = {
+      ...VALID_BASE,
+      FEDERATION_ENABLED: "true",
+      FEDERATION_SITE_ID: crypto.randomUUID(),
+      FEDERATION_SOCKET_PATH: "/tmp/federation.sock",
+      FEDERATION_SIGNING_KEY_ID: "media-test",
+      FEDERATION_SIGNING_KEY_FILE: "/private/signing.pem",
+      FEDERATION_MEDIA_AGE_DIRECTORY: "/opt/age/1.3.2",
+      FEDERATION_MEDIA_WRAPPING_KEY: "media-only".repeat(5),
+    };
+    expect(loadServerConfig(configured).FEDERATION_MEDIA_AGE_DIRECTORY).toBe("/opt/age/1.3.2");
+    for (const patch of [
+      { FEDERATION_ENABLED: "false" },
+      { FEDERATION_MEDIA_AGE_DIRECTORY: undefined },
+      { FEDERATION_MEDIA_WRAPPING_KEY: undefined },
+      { FEDERATION_MEDIA_WRAPPING_KEY: VALID_BASE.JWT_SECRET },
+      { FEDERATION_MEDIA_AGE_DIRECTORY: "relative/path" },
+      { FEDERATION_MEDIA_WRAPPING_KEY: "short" },
+    ])
+      expect(() => loadServerConfig({ ...configured, ...patch })).toThrow();
+    expect(loadServerConfig(VALID_BASE).FEDERATION_MEDIA_WRAPPING_KEY).toBeUndefined();
+  });
+});
+
 describe("Spack material delivery configuration", () => {
   test("validates the rollout epoch independently of material delivery enablement", () => {
     const epoch = "12345678-abcd-4123-8123-123456789abc";
