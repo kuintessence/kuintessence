@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
+  assertCommercialAdjustment,
   assertCommercialBill,
   assertCommercialDiscount,
   assertCommercialSettlement,
   calculateCommercialBill,
 } from "./billing";
 import {
+  CommercialAdjustmentSchema,
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialDiscountSchema,
@@ -354,4 +356,119 @@ test("zero-charge settlements return reserved capacity without creating a reward
       f.digest,
     ),
   ).not.toThrow();
+});
+
+function adjustmentFixture() {
+  const f = settlementFixture();
+  f.request.maxAmount = "9007199254740993";
+  f.bill.request = f.request;
+  f.value.reservedAmount = f.request.maxAmount;
+  f.value.releasedAmount = (BigInt(f.request.maxAmount) - BigInt(f.value.chargedAmount)).toString();
+  const value = CommercialAdjustmentSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-adjustment",
+    adjustmentId: randomUUID(),
+    domainId: f.bill.domainId,
+    agreementRevisionId: f.request.agreementRevisionId,
+    billId: f.bill.billId,
+    billDigest: f.digest,
+    settlementId: f.value.settlementId,
+    settlementDigest: f.digest,
+    sourceSiteId: f.value.sourceSiteId,
+    targetSiteId: f.value.targetSiteId,
+    unit: f.value.unit,
+    previous: null,
+    previousChargedAmount: f.value.chargedAmount,
+    chargedAmount: "0",
+    reason: "Agreed full credit",
+    supportingEvidenceDigest: null,
+    issuedAt: f.value.issuedAt,
+    salt: "a".repeat(64),
+  });
+  const originals = {
+    agreement: f.terms,
+    bill: { terms: f.bill, digest: f.digest },
+    settlement: { terms: f.value, digest: f.digest },
+  };
+  return { ...f, adjustment: value, originals };
+}
+test("adjustments preserve exact integers and immutable originals across a credit and subsequent debit", () => {
+  const f = adjustmentFixture(),
+    before = structuredClone(f.originals);
+  expect(() => assertCommercialAdjustment(f.adjustment, f.originals)).not.toThrow();
+  const next = {
+    ...f.adjustment,
+    adjustmentId: randomUUID(),
+    previous: { adjustmentId: f.adjustment.adjustmentId, digest: f.digest },
+    previousChargedAmount: "0",
+    chargedAmount: "9007199254740993",
+  };
+  expect(() =>
+    assertCommercialAdjustment(next, {
+      ...f.originals,
+      previous: { terms: f.adjustment, digest: f.digest },
+    }),
+  ).not.toThrow();
+  expect(f.originals).toEqual(before);
+});
+test("adjustments reject substituted originals, reordered heads, units, institutions and task cap overflow", () => {
+  const f = adjustmentFixture();
+  for (const change of [
+    { domainId: randomUUID() },
+    { agreementRevisionId: randomUUID() },
+    { billId: randomUUID() },
+    { billDigest: `sha256:${"0".repeat(64)}` },
+    { settlementId: randomUUID() },
+    { settlementDigest: `sha256:${"0".repeat(64)}` },
+    { sourceSiteId: randomUUID() },
+    { targetSiteId: randomUUID() },
+    { unit: "other.micro" },
+    { previous: { adjustmentId: randomUUID(), digest: f.digest } },
+    { previousChargedAmount: "9" },
+    { chargedAmount: (BigInt(f.value.reservedAmount) + 1n).toString() },
+    { issuedAt: "2027-01-01T00:00:00Z" },
+  ])
+    expect(() => assertCommercialAdjustment({ ...f.adjustment, ...change }, f.originals)).toThrow();
+  const next = {
+    ...f.adjustment,
+    adjustmentId: randomUUID(),
+    previous: { adjustmentId: f.adjustment.adjustmentId, digest: f.digest },
+    previousChargedAmount: "0",
+    chargedAmount: "1",
+  };
+  for (const previous of [
+    { terms: { ...f.adjustment, settlementId: randomUUID() }, digest: f.digest },
+    { terms: f.adjustment, digest: `sha256:${"0".repeat(64)}` },
+  ])
+    expect(() => assertCommercialAdjustment(next, { ...f.originals, previous })).toThrow(
+      "OPERATION_CONFLICT",
+    );
+});
+test("adjustments reject no-op, self reference, noncanonical and negative amounts", () => {
+  const f = adjustmentFixture();
+  for (const change of [
+    { chargedAmount: f.adjustment.previousChargedAmount },
+    { chargedAmount: "-1" },
+    { chargedAmount: "01" },
+    { chargedAmount: "0.1" },
+    { chargedAmount: "9".repeat(39) },
+    { previous: { adjustmentId: f.adjustment.adjustmentId, digest: f.digest } },
+  ])
+    expect(CommercialAdjustmentSchema.safeParse({ ...f.adjustment, ...change }).success).toBe(
+      false,
+    );
+});
+test("charity cannot become a paid charge through an adjustment", () => {
+  const f = adjustmentFixture();
+  const agreement = {
+    ...f.terms,
+    consideration: "charity" as const,
+    prices: f.terms.prices.map((price) => ({ ...price, amount: "0" })),
+  };
+  expect(() =>
+    assertCommercialAdjustment(
+      { ...f.adjustment, chargedAmount: "1" },
+      { ...f.originals, agreement },
+    ),
+  ).toThrow("POLICY_DENIED");
 });

@@ -52,6 +52,7 @@ const recordTypes = {
   "record-discount": "discount",
   "confirm-bill": "bill",
   "settle-bill": "settlement",
+  "adjust-settlement": "adjustment",
 } as const;
 
 export class FederationCommercialSubmissionService {
@@ -531,6 +532,8 @@ export class FederationCommercialSubmissionService {
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
+    // Server adjustment approvals and local accounting are not connected yet.
+    if (input.operation === "adjust-settlement") throw new FederationError("POLICY_DENIED");
     if (input.operation === "settle-bill") {
       const [row] = await (tx ?? this.db)
         .select()
@@ -722,6 +725,7 @@ export class FederationCommercialSubmissionService {
         )
         .for("update");
       if (!row || row.state !== "needs_review") throw new FederationError("OPERATION_CONFLICT");
+      if (row.input.operation === "adjust-settlement") throw new FederationError("POLICY_DENIED");
       await requireFederationCapability(
         tx,
         actor,

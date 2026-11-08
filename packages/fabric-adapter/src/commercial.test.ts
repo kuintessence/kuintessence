@@ -11,6 +11,7 @@ import { connect, GatewayError, signers } from "@hyperledger/fabric-gateway";
 import { peer, gateway as proto } from "@hyperledger/fabric-protos";
 import {
   CommercialAdapterProposalInputSchema,
+  CommercialAdjustmentSchema,
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialDiscountSchema,
@@ -86,6 +87,7 @@ beforeAll(async () => {
           "commercial-discount",
           "commercial-bill",
           "commercial-settlement",
+          "commercial-adjustment",
         ],
       })),
     },
@@ -762,7 +764,42 @@ async function billingInputs() {
     salt: randomBytes(32).toString("hex"),
   });
   const settlementJws = await signFederationMessage(CommercialSettlementSchema, settlement, source);
+  const adjustment = CommercialAdjustmentSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-adjustment",
+    adjustmentId: randomUUID(),
+    domainId: settlement.domainId,
+    agreementRevisionId: settlement.agreementRevisionId,
+    billId: bill.billId,
+    billDigest: settlement.billDigest,
+    settlementId: settlement.settlementId,
+    settlementDigest: hash(settlementJws),
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    unit: settlement.unit,
+    previous: null,
+    previousChargedAmount: settlement.chargedAmount,
+    chargedAmount: "0",
+    reason: "PRIVATE-ADJUSTMENT-PROBE",
+    supportingEvidenceDigest: null,
+    issuedAt: settlement.issuedAt,
+    salt: randomBytes(32).toString("hex"),
+  });
+  const adjustmentJws = await signFederationMessage(CommercialAdjustmentSchema, adjustment, source);
+
   return [
+    CommercialAdapterProposalInputSchema.parse({
+      operation: "adjust-settlement",
+      domainId: adjustment.domainId,
+      recordId: adjustment.adjustmentId,
+      digest: hash(adjustmentJws),
+      envelope: {
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        sourceJws: adjustmentJws,
+        targetJws: await signFederationMessage(CommercialAdjustmentSchema, adjustment, target),
+      },
+    }),
     CommercialAdapterProposalInputSchema.parse({
       operation: "settle-bill",
       domainId: settlement.domainId,
@@ -797,7 +834,7 @@ async function billingInputs() {
   ];
 }
 
-test("bill, discount and settlement proposals disclose only to the two PDC institutions, never normal arguments", async () => {
+test("bill, discount, settlement and adjustment proposals disclose only to the two PDC institutions, never normal arguments", async () => {
   for (const value of await billingInputs()) {
     const provider = keys[1];
     if (!provider) throw new Error("Missing provider");
@@ -826,7 +863,9 @@ test("bill, discount and settlement proposals disclose only to the two PDC insti
         ? "ConfirmBill"
         : value.operation === "settle-bill"
           ? "SettleBill"
-          : "RecordDiscount",
+          : value.operation === "adjust-settlement"
+            ? "AdjustSettlement"
+            : "RecordDiscount",
       value.domainId,
       value.recordId,
     ]);
@@ -847,7 +886,11 @@ test("new billing operations reject mismatched identities, old key authority and
     expect(
       CommercialAdapterProposalInputSchema.safeParse({ ...value, dueAmount: "10" }).success,
     ).toBe(false);
-    if (value.operation === "confirm-bill" || value.operation === "settle-bill")
+    if (
+      value.operation === "confirm-bill" ||
+      value.operation === "settle-bill" ||
+      value.operation === "adjust-settlement"
+    )
       await expect(
         f.adapter.prepare({
           ...value,

@@ -7,6 +7,7 @@ import {
 import {
   type CommercialAdapterProposalInput,
   CommercialAdapterProposalInputSchema,
+  CommercialAdjustmentSchema,
   type CommercialAgreementEnvelopeSchema,
   CommercialAgreementSchema,
   CommercialBillSchema,
@@ -127,6 +128,18 @@ export class FabricCommercialAdapter {
         Date.parse(value.issuedAt) > now.getTime() + 60000
       )
         throw new Error("POLICY_DENIED");
+    } else if (input.operation === "adjust-settlement") {
+      const signed = await this.verifyPair(CommercialAdjustmentSchema, input.envelope, now),
+        value = signed.payload;
+      if (
+        signed.digest !== input.digest ||
+        value.domainId !== input.domainId ||
+        value.adjustmentId !== input.recordId ||
+        value.sourceSiteId !== input.envelope.sourceSiteId ||
+        value.targetSiteId !== input.envelope.targetSiteId ||
+        Date.parse(value.issuedAt) > now.getTime() + 60000
+      )
+        throw new Error("POLICY_DENIED");
     } else if (input.operation === "settle-bill") {
       const signed = await this.verifyPair(CommercialSettlementSchema, input.envelope, now),
         value = signed.payload;
@@ -195,6 +208,7 @@ export class FabricCommercialAdapter {
       "record-discount": "RecordDiscount",
       "confirm-bill": "ConfirmBill",
       "settle-bill": "SettleBill",
+      "adjust-settlement": "AdjustSettlement",
     } as const;
     const proposal = this.gateway
       .getNetwork(this.config.channel)

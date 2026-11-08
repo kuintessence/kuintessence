@@ -6,11 +6,13 @@ import {
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import {
+  assertCommercialAdjustment,
   assertCommercialBill,
   assertCommercialDiscount,
   assertCommercialSettlement,
 } from "@kuintessence/shared/federation/billing";
 import {
+  CommercialAdjustmentSchema,
   CommercialAgreementEnvelopeSchema,
   CommercialAgreementSchema,
   CommercialBillSchema,
@@ -65,6 +67,11 @@ const StoredSettlement = z.strictObject({
   receipt: CommercialReceiptSchema,
   envelope: CommercialAgreementEnvelopeSchema,
   terms: CommercialSettlementSchema,
+});
+const StoredAdjustment = z.strictObject({
+  receipt: CommercialReceiptSchema,
+  envelope: CommercialAgreementEnvelopeSchema,
+  terms: CommercialAdjustmentSchema,
 });
 const StoredReservation = z.strictObject({
   receipt: CommercialReceiptSchema,
@@ -924,6 +931,147 @@ export class CommercialLedger {
     );
     return encode(receipt);
   }
+  private async adjust(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    recordId: string,
+  ) {
+    const envelope = this.input(stub, CommercialAgreementEnvelopeSchema),
+      now = stub.getDateTimestamp();
+    if (
+      envelope.sourceSiteId === envelope.targetSiteId ||
+      !domain.siteIds.includes(envelope.sourceSiteId) ||
+      !domain.siteIds.includes(envelope.targetSiteId)
+    )
+      return fail("POLICY_DENIED");
+    const signed = await this.verify(
+      stub,
+      CommercialAdjustmentSchema,
+      envelope.sourceJws,
+      envelope.sourceSiteId,
+      now,
+    );
+    const other = await this.verify(
+      stub,
+      CommercialAdjustmentSchema,
+      envelope.targetJws,
+      envelope.targetSiteId,
+      now,
+    );
+    if (signed.digest !== other.digest) return fail("OPERATION_CONFLICT");
+    const terms = signed.payload;
+    if (
+      terms.adjustmentId !== recordId ||
+      terms.domainId !== domain.domainId ||
+      terms.sourceSiteId !== envelope.sourceSiteId ||
+      terms.targetSiteId !== envelope.targetSiteId ||
+      Date.parse(terms.issuedAt) > now.getTime() + 60000
+    )
+      return fail("POLICY_DENIED");
+    const key = stub.createCompositeKey("adjustment", [domain.domainId, recordId]);
+    const bytes = await this.privateValue(stub, domain.collection, key);
+    if (bytes.length) {
+      const prior = StoredAdjustment.parse(JSON.parse(Buffer.from(bytes).toString()));
+      if (prior.receipt.digest !== signed.digest) return fail("OPERATION_CONFLICT");
+      await stub.putPrivateData(domain.collection, key, bytes);
+      return encode(prior.receipt);
+    }
+    const billBytes = await this.privateValue(
+      stub,
+      domain.collection,
+      stub.createCompositeKey("bill", [domain.domainId, terms.billId]),
+    );
+    const settlementBytes = await this.privateValue(
+      stub,
+      domain.collection,
+      stub.createCompositeKey("settlement", [domain.domainId, terms.settlementId]),
+    );
+    if (!billBytes.length || !settlementBytes.length) return fail("ASSET_UNAVAILABLE");
+    const bill = StoredBill.parse(JSON.parse(Buffer.from(billBytes).toString()));
+    const settlement = StoredSettlement.parse(JSON.parse(Buffer.from(settlementBytes).toString()));
+    if (bill.terms.request.mode === "bilateral_direct") return fail("POLICY_DENIED");
+    const { agreement } = await this.billingOriginals(stub, domain, bill.terms.reportId);
+    const headKey = stub.createCompositeKey("adjustment-head", [
+      domain.domainId,
+      terms.settlementId,
+    ]);
+    const headBytes = await this.privateValue(stub, domain.collection, headKey);
+    let previous: z.infer<typeof StoredAdjustment> | undefined;
+    if (headBytes.length) {
+      const head = z
+        .object({ adjustmentId: z.uuid() })
+        .parse(JSON.parse(Buffer.from(headBytes).toString()));
+      const priorBytes = await this.privateValue(
+        stub,
+        domain.collection,
+        stub.createCompositeKey("adjustment", [domain.domainId, head.adjustmentId]),
+      );
+      if (!priorBytes.length) return fail("DATA_WAITING");
+      previous = StoredAdjustment.parse(JSON.parse(Buffer.from(priorBytes).toString()));
+      if (previous.terms.adjustmentId !== head.adjustmentId) return fail("OPERATION_CONFLICT");
+    }
+    assertCommercialAdjustment(terms, {
+      agreement: agreement.terms,
+      bill: { terms: bill.terms, digest: bill.receipt.digest },
+      settlement: { terms: settlement.terms, digest: settlement.receipt.digest },
+      previous: previous ? { terms: previous.terms, digest: previous.receipt.digest } : undefined,
+    });
+    if (settlement.terms.reservationId) {
+      const reservationBytes = await this.privateValue(
+        stub,
+        domain.collection,
+        stub.createCompositeKey("reservation", [domain.domainId, settlement.terms.reservationId]),
+      );
+      if (!reservationBytes.length) return fail("ASSET_UNAVAILABLE");
+      const stored = StoredReservation.parse(JSON.parse(Buffer.from(reservationBytes).toString()));
+      if (
+        stored.state !== "settled" ||
+        stored.release ||
+        stored.settlement?.receipt.recordId !== settlement.receipt.recordId ||
+        stored.settlement.receipt.digest !== settlement.receipt.digest ||
+        federationCanonicalJson(stored.reservation.request) !==
+          federationCanonicalJson(bill.terms.request)
+      )
+        return fail("OPERATION_CONFLICT");
+      const request = bill.terms.request;
+      const budgetKey = stub.createCompositeKey("budget", [
+        domain.domainId,
+        request.budgetDomainId,
+        request.epoch,
+      ]);
+      const budget = Budget.parse(
+        JSON.parse(
+          Buffer.from(await this.privateValue(stub, domain.collection, budgetKey)).toString(),
+        ),
+      );
+      const spent = BigInt(budget.spent),
+        locked = BigInt(budget.locked),
+        limit = BigInt(budget.limit);
+      const adjusted = spent - BigInt(terms.previousChargedAmount) + BigInt(terms.chargedAmount);
+      if (
+        budget.sourceSiteId !== terms.sourceSiteId ||
+        budget.targetSiteId !== terms.targetSiteId ||
+        budget.unit !== terms.unit ||
+        spent < BigInt(terms.previousChargedAmount) ||
+        locked + spent > limit
+      )
+        return fail("OPERATION_CONFLICT");
+      if (adjusted < 0n || locked + adjusted > limit) return fail("BUDGET_EXHAUSTED");
+      await stub.putPrivateData(
+        domain.collection,
+        budgetKey,
+        encode({ ...budget, spent: adjusted.toString() }),
+      );
+    }
+    const receipt = { recordId, digest: signed.digest };
+    await stub.putPrivateData(domain.collection, key, encode({ receipt, envelope, terms }));
+    await stub.putPrivateData(
+      domain.collection,
+      headKey,
+      encode({ adjustmentId: recordId, salt: terms.salt }),
+    );
+    return encode(receipt);
+  }
   async initialize(stub: Stub, identity: Identity): Promise<Buffer> {
     this.organization(identity, "trust-admin");
     const { fcn, params } = stub.getFunctionAndParameters();
@@ -1010,6 +1158,7 @@ export class CommercialLedger {
         "RecordDiscount",
         "ConfirmBill",
         "SettleBill",
+        "AdjustSettlement",
       ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
@@ -1018,6 +1167,7 @@ export class CommercialLedger {
     const domain = this.trust.domains.find((domain) => domain.domainId === domainId);
     if (!domain?.siteIds.includes(org.siteId)) return fail("POLICY_DENIED");
     if (fcn === "RecordDiscount") return this.discount(stub, domain, recordId, org.siteId);
+    if (fcn === "AdjustSettlement") return this.adjust(stub, domain, recordId);
     if (fcn === "SettleBill") return this.settle(stub, domain, recordId);
     if (fcn === "ConfirmBill") return this.bill(stub, domain, recordId);
     if (fcn === "ReserveExecution") return this.reserve(stub, domain, recordId);

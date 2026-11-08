@@ -862,3 +862,12 @@ Web 自动审批沿用商业合同的本组织作用域与现有账单/结算详
 ## 联邦财务 CLI 与会话机构断言
 
 CLI 复用生产商业 API，新增合同读取、账单/结算原文操作、政策和待办命令；不增加签名权或直连 Fabric。每项私有操作要求明确机构，主 Server 在 principal 绑定后比较可选 X-KQ-Active-Organization，失配或无当前机构拒绝请求，不变更身份。无头旧客户端兼容，mTLS 和平台管理入口不受此会话机制影响。CLI 显式 use 调用现有登录会话切换接口；输入有界、文件不覆盖、金额精确、业务编号与正文一致，写入未知不自动重放。无迁移或新依赖，Server 与 CLI 应同时升级。实际操作与未覆盖范围见[CLI](../../federation-cli.md)。
+
+
+## 结算后的不可变调整记录
+
+共享 commercial-adjustment 与纯核对函数绑定原合同/账单/结算和当前上一笔调整，签署变更前后净扣用额、原因及可选依据摘要；双方业务签名和指定机构原生背书分别验证。链码 AdjustSettlement 将新记录和当前索引同事务追加，协调模式仅改变原预算 spent，保留 limit、locked、原结算、预留与终态 gate。新扣用不得超过原任务限额或可用预算，慈善不能变为收费；同文重放不重新应用余额，私有数据缺失不能重置索引。
+
+Adapter 新增 adjust-settlement，只有成员机构 transient 携带正文。新 commercial-adjustment 用途需显式配置；共享 trust schema 和中英文用途名称已更新，不自动授权旧密钥。Server 暂时明确拒绝这一队列类型，避免未完成本地审批与记账时落入合同权限路径。
+
+后续 Server 实现须提供独立 adjustment.approve、双方持久批准/原签名交换及三模式账目应用；direct/attested 不等链，coordinated 仅本站 VALID 后应用投影。Web/CLI 应显示原值、调整历史及当前净额，付款与争议另建记录，不能覆盖本协议。当前实现、部署与已验范围见[账务调整](../../../deploy/federation/fabric-commercial.md#结算后的独立账务调整)。

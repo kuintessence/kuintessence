@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { FederationDelegationSchema } from "@kuintessence/shared/federation";
 import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
+  CommercialAdjustmentSchema,
   type CommercialAgreement,
   CommercialAgreementSchema,
   CommercialBillSchema,
@@ -71,6 +72,7 @@ beforeAll(async () => {
         "commercial-discount",
         "commercial-bill",
         "commercial-settlement",
+        "commercial-adjustment",
       ],
     })),
   });
@@ -1389,4 +1391,162 @@ test("missing settlement private data cannot be mistaken for an unspent reservat
   const key = `commercial_AB_v1:${f.stub.createCompositeKey("settlement", [domainId, f.value.settlementId])}`;
   f.stub.privateState.delete(key);
   await expect(f.settle()).rejects.toThrow("DATA_WAITING");
+});
+
+async function adjustmentFixture(coordinated = true) {
+  const f = await settlementFixture(coordinated);
+  const receipt = CommercialReceiptSchema.parse(JSON.parse((await f.settle()).toString()));
+  const value = CommercialAdjustmentSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-adjustment",
+    adjustmentId: randomUUID(),
+    domainId,
+    agreementRevisionId: f.value.agreementRevisionId,
+    billId: f.value.billId,
+    billDigest: f.value.billDigest,
+    settlementId: f.value.settlementId,
+    settlementDigest: receipt.digest,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    unit: f.value.unit,
+    previous: null,
+    previousChargedAmount: f.value.chargedAmount,
+    chargedAmount: "0",
+    reason: "PRIVATE-ADJUSTMENT-REASON",
+    supportingEvidenceDigest: null,
+    issuedAt: f.stub.timestamp.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const adjust = (body = value, actor = identity()) =>
+    bilateral(CommercialAdjustmentSchema, body).then((envelope) =>
+      f.call("AdjustSettlement", body.adjustmentId, envelope, actor),
+    );
+  return { ...f, adjustment: value, adjust };
+}
+test("coordinated adjustment credits once, supports a bounded debit and preserves original settlement and gate", async () => {
+  const f = await adjustmentFixture(),
+    before = new Map(f.stub.privateState);
+  const receipt = CommercialReceiptSchema.parse(JSON.parse((await f.adjust()).toString()));
+  const creditBudget = JSON.parse(
+    Buffer.from(f.stub.privateState.get(f.budgetKey) ?? []).toString(),
+  );
+  expect(creditBudget.spent).toBe("0");
+  const next = {
+    ...f.adjustment,
+    adjustmentId: randomUUID(),
+    previous: { adjustmentId: f.adjustment.adjustmentId, digest: receipt.digest },
+    previousChargedAmount: "0",
+    chargedAmount: f.value.reservedAmount,
+  };
+  await f.adjust(next);
+  const after = JSON.parse(Buffer.from(f.stub.privateState.get(f.budgetKey) ?? []).toString());
+  expect(after.spent).toBe(f.value.reservedAmount);
+  expect(after.locked).toBe(creditBudget.locked);
+  expect(after.reservations).toBe(creditBudget.reservations);
+  const privateAfter = new Map(f.stub.privateState);
+  await f.adjust();
+  await f.adjust(next);
+  expect(f.stub.privateState).toEqual(privateAfter);
+  for (const [key, value] of before)
+    if (key !== f.budgetKey) expect(f.stub.privateState.get(key)).toEqual(value);
+  await expect(f.adjust({ ...f.adjustment, adjustmentId: randomUUID() })).rejects.toThrow();
+  await expect(f.adjust({ ...f.adjustment, reason: "changed" })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+});
+test("attested adjustment stores private append-only facts without creating a chain budget", async () => {
+  const f = await adjustmentFixture(false),
+    publicBefore = new Map(f.stub.state);
+  const receipt = CommercialReceiptSchema.parse(JSON.parse((await f.adjust()).toString()));
+  expect([...f.stub.privateState.keys()].some((key) => key.includes("budget"))).toBe(false);
+  expect(f.stub.state).toEqual(publicBefore);
+  f.stub.fcn = "GetRecordReceipt";
+  f.stub.params = [domainId, "adjustment", f.adjustment.adjustmentId];
+  f.stub.transient.clear();
+  expect(JSON.parse((await f.ledger.invoke(f.stub, identity(1))).toString())).toEqual({ receipt });
+  await expect(f.ledger.invoke(f.stub, identity(2))).rejects.toThrow("POLICY_DENIED");
+});
+test("adjustment requires independent current signatures from both members and explicit key purposes", async () => {
+  const f = await adjustmentFixture(),
+    signed = await bilateral(CommercialAdjustmentSchema, f.adjustment);
+  await expect(
+    f.call("AdjustSettlement", f.adjustment.adjustmentId, {
+      ...signed,
+      targetJws: signed.sourceJws,
+    }),
+  ).rejects.toThrow();
+  const changed = await bilateral(CommercialAdjustmentSchema, { ...f.adjustment, reason: "other" });
+  await expect(
+    f.call("AdjustSettlement", f.adjustment.adjustmentId, {
+      ...signed,
+      targetJws: changed.targetJws,
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(f.adjust(f.adjustment, identity(2))).rejects.toThrow("POLICY_DENIED");
+  const denied = structuredClone(trust);
+  for (const item of denied.keyPurposes)
+    item.kinds = item.kinds.filter((kind) => kind !== "commercial-adjustment");
+  const g = await setup(denied);
+  await expect(g.call("AdjustSettlement", f.adjustment.adjustmentId, signed)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  f.stub.fcn = "RevokeKey";
+  f.stub.params = [sites[0], "commercial-0"];
+  f.stub.transient.clear();
+  await f.ledger.invoke(f.stub, identity(0, "trust-admin"));
+  await expect(f.adjust()).rejects.toThrow("UNTRUSTED_IDENTITY");
+});
+test("adjustment rejects changed originals and missing private bytes without touching the budget", async () => {
+  const f = await adjustmentFixture(),
+    before = new Map(f.stub.privateState);
+  for (const change of [
+    { settlementDigest: `sha256:${"f".repeat(64)}` },
+    { billId: randomUUID() },
+    { chargedAmount: (BigInt(f.value.reservedAmount) + 1n).toString() },
+    { previousChargedAmount: "1" },
+    { issuedAt: new Date(+f.stub.timestamp + 120000).toISOString() },
+  ])
+    await expect(f.adjust({ ...f.adjustment, ...change })).rejects.toThrow();
+  expect(f.stub.privateState).toEqual(before);
+  const privateKey = `commercial_AB_v1:${f.stub.createCompositeKey("settlement", [domainId, f.value.settlementId])}`;
+  f.stub.privateState.delete(privateKey);
+  await expect(f.adjust()).rejects.toThrow("DATA_WAITING");
+  expect(f.stub.privateState.get(f.budgetKey)).toEqual(before.get(f.budgetKey));
+});
+test("debit adjustments cannot spend capacity already locked by other tasks", async () => {
+  const f = await adjustmentFixture();
+  const receipt = CommercialReceiptSchema.parse(JSON.parse((await f.adjust()).toString()));
+  const key = f.stub.createCompositeKey("budget", [
+    domainId,
+    f.bill.request.budgetDomainId,
+    f.bill.request.epoch,
+  ]);
+  const budget = JSON.parse(Buffer.from(f.stub.privateState.get(f.budgetKey) ?? []).toString());
+  await f.stub.putPrivateData(
+    "commercial_AB_v1",
+    key,
+    Buffer.from(JSON.stringify({ ...budget, locked: budget.limit, reservations: 1 })),
+  );
+  const before = new Map(f.stub.privateState);
+  await expect(
+    f.adjust({
+      ...f.adjustment,
+      adjustmentId: randomUUID(),
+      previous: { adjustmentId: f.adjustment.adjustmentId, digest: receipt.digest },
+      previousChargedAmount: "0",
+      chargedAmount: "1",
+    }),
+  ).rejects.toThrow("BUDGET_EXHAUSTED");
+  expect(f.stub.privateState).toEqual(before);
+});
+test("missing adjustment head bytes cannot reset the adjustment chain and refund again", async () => {
+  const f = await adjustmentFixture();
+  await f.adjust();
+  const key = `commercial_AB_v1:${f.stub.createCompositeKey("adjustment-head", [domainId, f.value.settlementId])}`;
+  f.stub.privateState.delete(key);
+  const before = new Map(f.stub.privateState);
+  await expect(f.adjust({ ...f.adjustment, adjustmentId: randomUUID() })).rejects.toThrow(
+    "DATA_WAITING",
+  );
+  expect(f.stub.privateState).toEqual(before);
 });

@@ -13,6 +13,7 @@ import { connect, EndorseError, signers, type Transaction } from "@hyperledger/f
 import { common, ledger, msp, peer, gateway as proto } from "@hyperledger/fabric-protos";
 import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
+  CommercialAdjustmentSchema,
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialReceiptSchema,
@@ -1134,10 +1135,149 @@ async function run() {
   passed.push(
     "separately approved allocation settlement charges 7 and returns 93; missing organizational endorsement is INVALID, native MVCC admits one settlement and replay cannot reopen the terminal gate",
   );
+  const settledReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(settleTx.getResult()).toString()),
+  );
+  const adjustment = CommercialAdjustmentSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-adjustment",
+    adjustmentId: randomUUID(),
+    domainId: domain.domainId,
+    agreementRevisionId: settlement.agreementRevisionId,
+    billId: settlement.billId,
+    billDigest: settlement.billDigest,
+    settlementId: settlement.settlementId,
+    settlementDigest: settledReceipt.digest,
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    unit: settlement.unit,
+    previous: null,
+    previousChargedAmount: "7",
+    chargedAmount: "4",
+    reason: `PRIVATE-ADJUSTMENT-${randomUUID()}`,
+    supportingEvidenceDigest: null,
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const adjustmentEnvelope = await bilateral(CommercialAdjustmentSchema, adjustment);
+  probes.push(
+    adjustment.reason,
+    adjustment.salt,
+    adjustmentEnvelope.sourceJws,
+    adjustmentEnvelope.targetJws,
+  );
+  await assert.rejects(
+    commercial(c, "AdjustSettlement", adjustment.adjustmentId, adjustmentEnvelope).endorse(),
+    rejected("POLICY_DENIED"),
+  );
+  const missingAdjustmentEndorsement = await commercial(
+    a,
+    "AdjustSettlement",
+    adjustment.adjustmentId,
+    adjustmentEnvelope,
+    ["AMSP"],
+  ).endorse();
+  const missingAdjustmentStatus = await commit(missingAdjustmentEndorsement);
+  assert.equal(missingAdjustmentStatus.code, peer.TxValidationCode.ENDORSEMENT_POLICY_FAILURE);
+  const competingAdjustment = {
+    ...adjustment,
+    adjustmentId: randomUUID(),
+    chargedAmount: "3",
+    salt: randomBytes(32).toString("hex"),
+  };
+  const competingEnvelope = await bilateral(CommercialAdjustmentSchema, competingAdjustment);
+  const [credit, competingCredit] = await Promise.all([
+    commercial(a, "AdjustSettlement", adjustment.adjustmentId, adjustmentEnvelope).endorse(),
+    commercial(
+      b,
+      "AdjustSettlement",
+      competingAdjustment.adjustmentId,
+      competingEnvelope,
+    ).endorse(),
+  ]);
+  const credited = await commit(credit),
+    conflicted = await commit(competingCredit);
+  assert.equal(credited.successful, true);
+  assert.equal(conflicted.code, peer.TxValidationCode.MVCC_READ_CONFLICT);
+  await assert.rejects(
+    commercial(
+      b,
+      "AdjustSettlement",
+      competingAdjustment.adjustmentId,
+      competingEnvelope,
+    ).endorse(),
+  );
+  const creditReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(credit.getResult()).toString()),
+  );
+  const debit = CommercialAdjustmentSchema.parse({
+    ...adjustment,
+    adjustmentId: randomUUID(),
+    previous: { adjustmentId: adjustment.adjustmentId, digest: creditReceipt.digest },
+    previousChargedAmount: "4",
+    chargedAmount: "5",
+    reason: "PRIVATE-AGREED-DEBIT",
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const debitEnvelope = await bilateral(CommercialAdjustmentSchema, debit);
+  probes.push(debit.reason, debit.salt, debitEnvelope.sourceJws, debitEnvelope.targetJws);
+  const debitTx = await commercial(
+    b,
+    "AdjustSettlement",
+    debit.adjustmentId,
+    debitEnvelope,
+  ).endorse();
+  const debited = await commit(debitTx);
+  assert.equal(debited.successful, true);
+  // Historical credit replay must not rewind the head or credit the balance a second time.
+  const creditReplay = await commercial(
+    b,
+    "AdjustSettlement",
+    adjustment.adjustmentId,
+    adjustmentEnvelope,
+  ).endorse();
+  assert.deepEqual(creditReplay.getResult(), credit.getResult());
+  assert.equal((await commit(creditReplay)).successful, true);
+  const originalSettlementReplay = await commercial(
+    a,
+    "SettleBill",
+    settlement.settlementId,
+    settlementEnvelope,
+  ).endorse();
+  assert.deepEqual(originalSettlementReplay.getResult(), settleTx.getResult());
+  assert.equal((await commit(originalSettlementReplay)).successful, true);
+  assert.equal(await hash(settlementTask.reservation.reservationId), closedSettlementGateHash);
+  assert.equal((await current(settlementTask.demand.demandId)).status, "CLOSED");
+  await writeFile(
+    join(dirname(z.string().parse(process.argv[2])), "gate-adjustment.json"),
+    JSON.stringify({
+      adjustment,
+      debitTerms: debit,
+      credit: {
+        transactionId: credited.transactionId,
+        blockNumber: String(credited.blockNumber),
+        code: credited.code,
+      },
+      debit: {
+        transactionId: debited.transactionId,
+        blockNumber: String(debited.blockNumber),
+        code: debited.code,
+      },
+      invalidMissingEndorsement: missingAdjustmentStatus.code,
+      invalidCompetingHead: conflicted.code,
+      gateHash: closedSettlementGateHash,
+    }),
+    { mode: 0o600 },
+  );
+  passed.push(
+    "private bilateral adjustments change spent 7 → 4 → 5, require both organizational endorsements and native MVCC head serialization; historical replay does not refund again or reopen execution",
+  );
   // Read actual committed PDC writes, independently of application projections.
   const outsiders = [c, await connection("C", false, "A"), await connection("A", false, "C")];
   let latestBudget: { locked: string; spent: string; reservations: number } | undefined;
   let settlementBudget: typeof latestBudget;
+  const settlementSpending: string[] = [];
   for (const block of [...blocks].sort((x, y) => (x < y ? -1 : 1))) {
     for (const gateway of [a, b, ...outsiders]) {
       const events = await gateway
@@ -1177,9 +1317,10 @@ async function run() {
                   const budget = z
                     .object({ locked: z.string(), spent: z.string(), reservations: z.number() })
                     .parse(JSON.parse(Buffer.from(write.value).toString()));
-                  if (write.key.includes(settlementTerms.agreement.budgetDomainId))
+                  if (write.key.includes(settlementTerms.agreement.budgetDomainId)) {
                     settlementBudget = budget;
-                  else if (write.key.includes(terms.agreement.budgetDomainId))
+                    settlementSpending.push(budget.spent);
+                  } else if (write.key.includes(terms.agreement.budgetDomainId))
                     latestBudget = budget;
                 }
           }
@@ -1192,7 +1333,8 @@ async function run() {
       assert(received);
     }
   }
-  assert.deepEqual(settlementBudget, { locked: "0", spent: "7", reservations: 0 });
+  assert.deepEqual(settlementBudget, { locked: "0", spent: "5", reservations: 0 });
+  for (const amount of ["7", "4", "5"]) assert(settlementSpending.includes(amount));
   assert.deepEqual(latestBudget, {
     locked: (BigInt(amount) * 2n).toString(),
     spent: "0",

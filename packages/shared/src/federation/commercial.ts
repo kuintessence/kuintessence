@@ -31,6 +31,7 @@ export const CommercialSigningKindSchema = z.enum([
   "commercial-discount",
   "commercial-bill",
   "commercial-settlement",
+  "commercial-adjustment",
 ]);
 
 /** Private rates use integer amount per integer quantity; the execution agreement fixes the money unit. */
@@ -274,6 +275,38 @@ export const CommercialSettlementSchema = z
   );
 export type CommercialSettlement = z.infer<typeof CommercialSettlementSchema>;
 
+/** An append-only bilateral change to a settled charge, never a bank payment or a new execution permit. */
+export const CommercialAdjustmentSchema = z
+  .strictObject({
+    protocolVersion: z.literal(1),
+    kind: z.literal("commercial-adjustment"),
+    adjustmentId: Id,
+    domainId: Id,
+    agreementRevisionId: Id,
+    billId: Id,
+    billDigest: FederationDigestSchema,
+    settlementId: Id,
+    settlementDigest: FederationDigestSchema,
+    sourceSiteId: Id,
+    targetSiteId: Id,
+    unit: FederationDelegationSchema.shape.unit,
+    previous: z.strictObject({ adjustmentId: Id, digest: FederationDigestSchema }).nullable(),
+    previousChargedAmount: FederationAmountSchema,
+    chargedAmount: FederationAmountSchema,
+    reason: z.string().trim().min(1).max(4096),
+    supportingEvidenceDigest: FederationDigestSchema.nullable(),
+    issuedAt: z.iso.datetime(),
+    salt: Salt,
+  })
+  .refine(
+    (v) =>
+      v.sourceSiteId !== v.targetSiteId &&
+      v.previous?.adjustmentId !== v.adjustmentId &&
+      v.previousChargedAmount !== v.chargedAmount,
+    "An adjustment must change the charge and reference a different original",
+  );
+export type CommercialAdjustment = z.infer<typeof CommercialAdjustmentSchema>;
+
 export const ClosingPolicyInputSchema = z
   .strictObject({
     kind: z.enum(["bill", "settlement"]),
@@ -409,6 +442,7 @@ export const CommercialRecordTypeSchema = z.enum([
   "discount",
   "bill",
   "settlement",
+  "adjustment",
 ]);
 export const CommercialReceiptQuerySchema = z.strictObject({
   operation: z.literal("get-commercial-receipt"),
@@ -503,9 +537,15 @@ export const CommercialExecutionProposalInputSchema = z.discriminatedUnion("oper
 export type CommercialExecutionProposalInput = z.infer<
   typeof CommercialExecutionProposalInputSchema
 >;
+export const CommercialAdjustmentProposalInputSchema = z.strictObject({
+  ...ProposalIdentity,
+  operation: z.literal("adjust-settlement"),
+  envelope: CommercialAgreementEnvelopeSchema,
+});
 export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operation", [
   ...CommercialProposalInputSchema.options,
   ...CommercialExecutionProposalInputSchema.options,
+  CommercialAdjustmentProposalInputSchema,
   z.strictObject({
     ...ProposalIdentity,
     operation: z.literal("record-discount"),

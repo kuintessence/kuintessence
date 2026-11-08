@@ -343,3 +343,18 @@ Server 内部自动批准入口在签署事务中锁定政策，检查当前机�
 ## CLI 财务管理
 
 `kq federation` 已接本机构合同查询、账单/结算原文草稿与批准/附签、有限政策授予/撤销以及原待办复核。命令要求显式 `--org`，Server 仅比较已绑定的会话机构；机构变化返回 409，不把头部当作选择器。财务权限继续独立于合同权限，机器凭据不能授予人类审批权。输入有界、导出文件 0600 且不覆盖，写入不自动重试，结果未知先查原记录。完整命令、精确金额和三状态说明见[联邦财务 CLI](../../docs/federation-cli.md)。
+
+
+## 结算后的独立账务调整
+
+新增 `commercial-adjustment` 原文、`AdjustSettlement` 私有链码与 `adjust-settlement` Adapter 操作。它将一笔已结算任务的净扣用额改为双方新认可的金额，支持调减和在原任务限额内调增；原用量、账单、结算和历史调整都不修改。它不是银行退款、实际付款、重新执行许可，也不自动认定技术更正正确。
+
+原文固定 domainId、agreementRevisionId、双方 siteId、unit、billId/billDigest、settlementId/settlementDigest，以及 previousChargedAmount、chargedAmount、reason、可选 supportingEvidenceDigest、issuedAt 和随机 salt。第一笔 previous 为 null；后续必须引用当前最后一笔 adjustmentId/digest，并精确匹配它的 chargedAmount。无变化、自引用、负数、小数、超出 38 位或原任务金额上限、旧时间与跨机构/合同/结算引用均拒绝。支持材料摘要只绑定双方依据，不是科研正确性证明。
+
+双方使用显式授予 `commercial-adjustment` 用途的业务密钥签同一原文；原合同、账单和结算签名用途不会自动扩权。Fabric 原生集合背书仍要求指定的两家机构，发起者与背书 Peer 权限不能代替双方业务签署。正文和签名仅通过 transient 发送到成员 Peer，保存在双方 PDC；普通参数、响应和公开区块不携带金额或原因。`GetRecordReceipt` 新增成员限定的 adjustment 类型，只返回原编号和摘要。
+
+协调模式在原预算同一私有事务中执行 `spent = spent − previousChargedAmount + chargedAmount`，拒绝负余额及 `locked + spent > limit`。limit、locked、未结算预留数、原结算和 TERMINAL gate 不变；调增不能占用其他任务已经锁定的额度，调减只恢复本预算可用额，不增发积分。调整记录和最后一笔索引一同写入，原生 MVCC 防止并发分叉与重复余额修改；同编号同文重放返回原回执，不回退索引或重复退额。PDC 哈希存在但正文缺失时返回 DATA_WAITING，不当作首次调整。
+
+异步存证仅记录链下已经批准的调整，不创建链预算；直接模式不提交此链操作。Server 本地双边记账、独立机构审批 API、签名交换和 Web/CLI 调整入口尚未接通，因此当前 Server 商业队列明确拒绝 adjust-settlement，不能套用合同审批权发送。后续接通必须与上述模式边界保持一致，不能把 Adapter/链码已实现当作用户流程已交付。
+
+本能力需配套更新共享协议、商业 Adapter、商业链码，并在共同批准的 trust 中显式配置新用途；既有原文和旧用途不改写。当前 Init 固化 trust，已运行链若未预置该用途，不能只改 trust 文件或重复 Init 来升级；其受治理的信任/代际迁移仍待实现，也不能新建一个复制余额的域绕过迁移。本次验证使用新建隔离网络，不证明旧链升级完成；无需降低集合背书策略，本单元没有数据库迁移。真实 `test:fabric:gate` 已验证私有 spent 的 7 → 4 → 5、缺机构背书 INVALID、同一旧记录并发 MVCC INVALID、历史重放不重复退额，以及第三机构无私有写入；具体记录见[调整验收进展](../../docs/design/federation/progress.md#结算后的私有账务调整)。
