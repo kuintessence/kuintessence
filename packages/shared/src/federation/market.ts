@@ -110,10 +110,12 @@ export const MarketClosureSchema = z
   })
   .refine(
     (value) =>
-      value.gate.state === "TERMINAL" &&
-      value.closureId === value.gate.terminal?.terminalId &&
-      value.demandId === value.gate.demandId,
-    "Closure must bind the exact terminal gate",
+      value.demandId === value.gate.demandId &&
+      ((value.gate.state === "TERMINAL" && value.closureId === value.gate.terminal?.terminalId) ||
+        (value.gate.state === "REVOKED" &&
+          value.gate.version === 2 &&
+          value.expectedVersion === value.gate.claimVersion)),
+    "Closure must bind a terminal or revoked gate",
   );
 export type MarketClosure = z.infer<typeof MarketClosureSchema>;
 export const MarketDemandStateSchema = z
@@ -147,6 +149,21 @@ export const MarketDemandStateSchema = z
     const closure = value.closure;
     if (value.status !== "CLOSED") {
       if (closure) ctx.addIssue({ code: "custom", message: "Unexpected execution closure" });
+      return;
+    }
+    if (closure?.gate.state === "REVOKED") {
+      if (
+        value.activation ||
+        stop ||
+        value.cancellation ||
+        !value.claim ||
+        closure.demandId !== value.demand.demandId ||
+        closure.gate.reservationId !== value.claim.claimId ||
+        closure.gate.domainId !== value.claim.commercialDomainId ||
+        closure.expectedVersion !== value.claim.expectedVersion + 1 ||
+        value.version !== closure.expectedVersion + 1
+      )
+        ctx.addIssue({ code: "custom", message: "Invalid pre-execution closure binding" });
       return;
     }
     if (

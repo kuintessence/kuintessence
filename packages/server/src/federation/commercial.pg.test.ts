@@ -8722,3 +8722,201 @@ test("completion release retains public market claims until cancellation is comm
   await capacity.advanceNext();
   expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "0", releasedObligations: 1 });
 });
+
+async function preexecutionClosureFixture() {
+  const f = await executionFixture();
+  await approveReservation(f);
+  const release = await releasePayload(f);
+  await f.execution.approve(f.actor, f.revisionId, release);
+  await f.execution.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    release.releaseId,
+    await signFederationMessage(CommercialExecutionApprovalSchema, release, f.b.signing),
+  );
+  const view = async () =>
+    (
+      await db.select().from(marketSubmissions).where(eq(marketSubmissions.id, release.releaseId))
+    )[0];
+  const marketAdapter = new ActivationAdapter();
+  const market = new FederationMarketService(db, f.a.signing.siteId, marketAdapter);
+  const advance = async (count = 9) => {
+    for (let i = 0; i < count; i++) await f.service.advanceNext();
+  };
+  return { ...f, release, view, market, marketAdapter, advance };
+}
+
+test("pre-execution closure waits for VALID release then closes the public market and drains the original stop", async () => {
+  const f = await preexecutionClosureFixture();
+  const stops = new FederationExecutionStopService(db, f.a.signing.siteId, {
+    query: async () => ({ operation: "get-demand", demand: f.state }),
+  });
+  const stop = await stops.request(f.actor, f.revisionId, f.reservation.reservationId);
+  await stops.advanceNext();
+  expect(
+    (await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId)).stopLastError,
+  ).toBe("ACTIVATION_PENDING");
+  await f.advance(8);
+  expect(await f.view()).toBeUndefined();
+  await f.advance(1);
+  const closure = await f.view();
+  if (closure?.input.operation !== "close-demand") throw new Error("Missing release closure");
+  expect(closure).toMatchObject({ state: "pending", requestedBy: f.actor.userId });
+  expect(closure.input.closure).toMatchObject({
+    closureId: f.release.releaseId,
+    expectedVersion: 2,
+    gate: { state: "REVOKED", version: 2, reservationId: f.reservation.reservationId },
+  });
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  expect((await f.view())?.state).toBe("committed");
+  expect(f.marketAdapter.inputs).toHaveLength(1);
+  expect(JSON.stringify(f.marketAdapter.inputs)).not.toContain("maxAmount");
+  f.state.status = "CLOSED";
+  f.state.version = 3;
+  f.state.closure = closure.input.closure;
+  await db
+    .update(executionApprovals)
+    .set({ stopNextAttemptAt: new Date(0) })
+    .where(eq(executionApprovals.recordId, f.reservation.reservationId));
+  await stops.advanceNext();
+  expect(await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId)).toMatchObject({
+    stopId: stop.id,
+    stopNextAttemptAt: null,
+    stopLastError: null,
+  });
+  expect(await stops.request(f.actor, f.revisionId, f.reservation.reservationId)).toEqual(stop);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "market.publish", enabled: true },
+    f.actor.userId,
+  );
+  await expect(
+    f.execution.activate(f.actor, f.revisionId, f.reservation.reservationId, randomUUID()),
+  ).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+});
+
+test("pre-execution closure audit failure retains the release checkpoint and retries without another private transaction", async () => {
+  const f = await preexecutionClosureFixture();
+  await f.advance(8);
+  const before = (await f.execution.get(f.actor, f.revisionId, f.release.releaseId)).submission;
+  if (!before) throw new Error("Missing release submission");
+  const constraint = sql.identifier(`test_release_close_${randomUUID().replaceAll("-", "")}`);
+  await db.execute(sql`ALTER TABLE audit_log ADD CONSTRAINT ${constraint}
+    CHECK (action <> 'federation.execution.close_enqueue') NOT VALID`);
+  try {
+    await f.advance(1);
+    expect(await f.view()).toBeUndefined();
+    expect(
+      (await f.execution.get(f.actor, f.revisionId, f.release.releaseId)).submission?.transaction
+        ?.stage,
+    ).toBe("transaction");
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT ${constraint}`);
+  }
+  await db
+    .update(submissions)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(eq(submissions.id, before.id));
+  await f.advance(1);
+  expect((await f.view())?.state).toBe("pending");
+  expect(
+    (await f.execution.get(f.actor, f.revisionId, f.release.releaseId)).submission?.transaction,
+  ).toMatchObject({ stage: "committed", transactionId: before.transaction?.transactionId });
+  expect(
+    f.adapter.prepares.filter((input) => input.operation === "release-execution"),
+  ).toHaveLength(1);
+});
+
+test("pre-execution closure rejects an invalid private commit and a changed public gate", async () => {
+  const f = await preexecutionClosureFixture();
+  await f.advance(8);
+  f.adapter.outcome = "invalid";
+  await f.advance(1);
+  expect(await f.view()).toBeUndefined();
+  const g = await preexecutionClosureFixture();
+  await g.advance();
+  const closure = await g.view();
+  if (closure?.input.operation !== "close-demand") throw new Error("Missing release closure");
+  const input = {
+    ...closure.input,
+    closure: {
+      ...closure.input.closure,
+      gate: { ...closure.input.closure.gate, reservationDigest: `sha256:${"a".repeat(64)}` },
+    },
+  };
+  await db
+    .update(marketSubmissions)
+    .set({ input, digest: federationMaterialDigest(input) })
+    .where(eq(marketSubmissions.id, closure.id));
+  await g.market.advanceNext();
+  expect(g.marketAdapter.inputs).toHaveLength(0);
+  expect((await g.view())?.state).toBe("needs_review");
+});
+
+test("pre-execution closure recovers a committed legacy release without requiring current signing trust", async () => {
+  const f = await preexecutionClosureFixture();
+  await f.advance();
+  const first = await f.view();
+  if (!first) throw new Error("Missing closure");
+  await db.delete(marketSubmissions).where(eq(marketSubmissions.id, first.id));
+  await db
+    .update(federationSigningKeys)
+    .set({ revokedAt: new Date() })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  await f.advance(1);
+  expect((await f.view())?.input).toEqual(first.input);
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  expect((await f.view())?.state).toBe("committed");
+  expect(
+    f.adapter.prepares.filter((input) => input.operation === "release-execution"),
+  ).toHaveLength(1);
+});
+
+test("pre-execution closure is queued only by the source after both institutions commit the same release", async () => {
+  const f = await executionApprovalExchangeFixture();
+  await Promise.all([f.transport.a.discover(), f.transport.b.discover()]);
+  await Promise.all([f.transport.a.advanceNext(), f.transport.b.advanceNext()]);
+  const release = await releasePayload(f);
+  await f.execution.approve(f.actor, f.revisionId, release);
+  await f.executionB.approve(f.actor, f.revisionId, release);
+  await Promise.all([f.transport.a.discover(), f.transport.b.discover()]);
+  await Promise.all([f.transport.a.advanceNext(), f.transport.b.advanceNext()]);
+  const provider = new FederationCommercialSubmissionService(db, f.b.signing.siteId, new Adapter());
+  for (let i = 0; i < 9; i++) await provider.advanceNext();
+  expect((await f.executionB.get(f.actor, f.revisionId, release.releaseId)).submission?.state).toBe(
+    "committed",
+  );
+  expect(
+    await db.select().from(marketSubmissions).where(eq(marketSubmissions.id, release.releaseId)),
+  ).toHaveLength(0);
+  expect(await provider.advanceNext()).toBe(false);
+  for (let i = 0; i < 9; i++) await f.service.advanceNext();
+  const [closure] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, release.releaseId));
+  expect(closure).toMatchObject({ localSiteId: f.a.signing.siteId, state: "pending" });
+});
+
+test("pre-execution closure for a different reservation cannot retire a local stop", async () => {
+  const f = await preexecutionClosureFixture();
+  await f.advance();
+  const closure = await f.view();
+  if (closure?.input.operation !== "close-demand") throw new Error("Missing release closure");
+  const changed = {
+    ...f.state,
+    status: "CLOSED" as const,
+    version: 3,
+    closure: {
+      ...closure.input.closure,
+      gate: { ...closure.input.closure.gate, reservationDigest: `sha256:${"f".repeat(64)}` },
+    },
+  };
+  const stops = new FederationExecutionStopService(db, f.a.signing.siteId, {
+    query: async () => ({ operation: "get-demand", demand: changed }),
+  });
+  await stops.request(f.actor, f.revisionId, f.reservation.reservationId);
+  await stops.advanceNext();
+  const row = await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId);
+  expect(row.stopLastError).toBe("OPERATION_CONFLICT");
+  expect(row.stopNextAttemptAt).not.toBeNull();
+});

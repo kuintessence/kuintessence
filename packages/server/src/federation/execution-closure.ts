@@ -11,6 +11,7 @@ import {
 import { FederationError } from "@kuintessence/shared/federation";
 import {
   CommercialAdapterProposalInputSchema,
+  CommercialReleaseSchema,
   CommercialReservationSchema,
   CommercialTerminalSchema,
 } from "@kuintessence/shared/federation/commercial";
@@ -116,8 +117,12 @@ export async function enqueueExecutionClosure(
   tx: PgTransaction,
   siteId: string,
   terminalId: string,
+  kind: "terminal" | "release" = "terminal",
 ) {
-  const closure = await executionClosure(tx, siteId, terminalId);
+  const closure =
+    kind === "release"
+      ? await releaseClosure(tx, siteId, terminalId)
+      : await executionClosure(tx, siteId, terminalId);
   const digest = federationMaterialDigest(closure.input);
   const inserted = await tx
     .insert(market)
@@ -158,4 +163,94 @@ export async function enqueueExecutionClosure(
       },
     },
   });
+}
+
+/** A VALID bilateral release proves the private gate can never authorize activation. */
+export async function releaseClosure(tx: PgTransaction, siteId: string, releaseId: string) {
+  const [row] = await tx
+    .select()
+    .from(submissions)
+    .where(
+      and(
+        eq(submissions.localSiteId, siteId),
+        sql`${submissions.input}->>'operation' = 'release-execution'`,
+        sql`${submissions.input}->>'recordId' = ${releaseId}`,
+      ),
+    );
+  if (row?.state !== "committed") throw new FederationError("OPERATION_CONFLICT");
+  const [attempt] = await tx
+    .select()
+    .from(attempts)
+    .where(eq(attempts.submissionId, row.id))
+    .orderBy(desc(attempts.number))
+    .limit(1);
+  if (
+    attempt?.stage !== "committed" ||
+    attempt.validationCode !== 0 ||
+    attempt.blockNumber === null
+  )
+    throw new FederationError("OPERATION_CONFLICT");
+  const [release] = await tx
+    .select()
+    .from(approvals)
+    .where(and(eq(approvals.localSiteId, siteId), eq(approvals.recordId, releaseId)));
+  if (!release?.counterpartyJws) throw new FederationError("OPERATION_CONFLICT");
+  const payload = CommercialReleaseSchema.parse(release.payload);
+  const [original] = await tx
+    .select()
+    .from(approvals)
+    .where(and(eq(approvals.localSiteId, siteId), eq(approvals.recordId, payload.reservationId)));
+  if (!original?.counterpartyJws) throw new FederationError("OPERATION_CONFLICT");
+  const reserve = CommercialReservationSchema.parse(original.payload);
+  const input = CommercialAdapterProposalInputSchema.parse(row.input);
+  const wireDigest = (value: unknown) =>
+    `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+  if (
+    input.operation !== "release-execution" ||
+    payload.sourceSiteId !== siteId ||
+    payload.releaseId !== releaseId ||
+    input.domainId !== payload.domainId ||
+    input.digest !== release.digest ||
+    wireDigest(payload) !== release.digest ||
+    input.envelope.sourceSiteId !== siteId ||
+    input.envelope.targetSiteId !== payload.targetSiteId ||
+    input.envelope.sourceJws !== release.approvalJws ||
+    input.envelope.targetJws !== release.counterpartyJws ||
+    payload.reservationId !== reserve.reservationId ||
+    payload.reservationDigest !== original.digest ||
+    wireDigest(reserve) !== original.digest ||
+    reserve.domainId !== payload.domainId ||
+    reserve.request.mode !== "ledger_coordinated" ||
+    reserve.request.senderSiteId !== siteId ||
+    reserve.request.recipientSiteId !== payload.targetSiteId ||
+    reserve.request.agreementRevisionId !== row.agreementRevisionId ||
+    release.agreementRevisionId !== row.agreementRevisionId ||
+    original.agreementRevisionId !== row.agreementRevisionId ||
+    original.localOrgId !== release.localOrgId ||
+    payload.expectedGateVersion !== 1
+  )
+    throw new FederationError("OPERATION_CONFLICT");
+  return {
+    localOrgId: original.localOrgId,
+    requestedBy: release.approvedBy,
+    authorizationPolicyId: release.authorizationPolicyId,
+    input: {
+      operation: "close-demand" as const,
+      closure: MarketClosureSchema.parse({
+        demandId: reserve.demandId,
+        closureId: releaseId,
+        expectedVersion: reserve.claimVersion,
+        gate: {
+          domainId: reserve.domainId,
+          reservationId: reserve.reservationId,
+          demandId: reserve.demandId,
+          claimVersion: reserve.claimVersion,
+          version: 2,
+          state: "REVOKED",
+          reservationDigest: original.digest,
+          expiresAt: reserve.request.expiresAt,
+        },
+      }),
+    },
+  };
 }

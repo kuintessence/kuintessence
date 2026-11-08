@@ -23,7 +23,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
 import { allocateMarketCompletion } from "./completion-capacity";
-import { executionClosure } from "./execution-closure";
+import { executionClosure, releaseClosure } from "./execution-closure";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -228,7 +228,11 @@ export class FederationMarketService {
     if (federationMaterialDigest(input) !== row.digest)
       throw new FederationError("OPERATION_CONFLICT");
     if (input.operation === "close-demand") {
-      const closure = await this.db.transaction((tx) => executionClosure(tx, this.siteId, row.id));
+      const closure = await this.db.transaction((tx) =>
+        input.closure.gate.state === "REVOKED"
+          ? releaseClosure(tx, this.siteId, row.id)
+          : executionClosure(tx, this.siteId, row.id),
+      );
       if (
         row.localOrgId !== closure.localOrgId ||
         row.requestedBy !== closure.requestedBy ||

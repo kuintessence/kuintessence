@@ -77,7 +77,7 @@ export class FederationCommercialSubmissionService {
             eq(submissions.localSiteId, this.siteId),
             sql`(${submissions.state} = 'pending' OR (
               ${submissions.state} = 'committed'
-              AND ${submissions.input}->>'operation' = 'record-execution-terminal'
+              AND ${submissions.input}->>'operation' IN ('record-execution-terminal','release-execution')
               AND ${submissions.input}->'envelope'->>'sourceSiteId' = ${this.siteId}
               AND NOT EXISTS (SELECT 1 FROM ${marketSubmissions} closure
                 WHERE closure.id::text = ${submissions.input}->>'recordId'
@@ -244,7 +244,9 @@ export class FederationCommercialSubmissionService {
       reconciling = submission.lastError === MvccReconciling;
       if (submission.state === "committed" || attempt?.stage === "committed") {
         if (
-          submission.input.operation !== "record-execution-terminal" ||
+          !["record-execution-terminal", "release-execution"].includes(
+            submission.input.operation,
+          ) ||
           attempt?.stage !== "committed"
         )
           throw new FederationError("OPERATION_CONFLICT");
@@ -253,7 +255,12 @@ export class FederationCommercialSubmissionService {
             .update(submissions)
             .set({ state: "committed", lastError: null })
             .where(eq(submissions.id, submission.id));
-          await enqueueExecutionClosure(tx, this.siteId, submission.input.recordId);
+          await enqueueExecutionClosure(
+            tx,
+            this.siteId,
+            submission.input.recordId,
+            submission.input.operation === "release-execution" ? "release" : "terminal",
+          );
         });
       } else if (!attempt || attempt.stage === "invalid" || attempt.stage === "abandoned") {
         await this.beforeDisclosure(submission.input);
@@ -435,9 +442,16 @@ export class FederationCommercialSubmissionService {
             }
             if (
               result.state === "committed" &&
-              submission.input.operation === "record-execution-terminal"
+              (submission.input.operation === "record-execution-terminal" ||
+                (submission.input.operation === "release-execution" &&
+                  submission.input.envelope.sourceSiteId === this.siteId))
             )
-              await enqueueExecutionClosure(tx, this.siteId, submission.input.recordId);
+              await enqueueExecutionClosure(
+                tx,
+                this.siteId,
+                submission.input.recordId,
+                submission.input.operation === "release-execution" ? "release" : "terminal",
+              );
           }
         });
       }

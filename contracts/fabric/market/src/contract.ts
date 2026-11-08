@@ -174,19 +174,33 @@ export class MarketLedger {
         return encode({ recordId: closure.closureId, digest: digest(closure) });
       }
       const gate = closure.gate;
-      if (
-        !["ACTIVE", "STOPPING"].includes(prior.status) ||
-        !prior.activation ||
-        closure.expectedVersion !== prior.activation.expectedVersion + 1 ||
-        gate.terminal?.activationId !== prior.activation.activationId ||
-        gate.domainId !== prior.claim?.commercialDomainId ||
-        gate.reservationId !== prior.claim.claimId ||
-        gate.claimVersion !== prior.activation.expectedVersion ||
-        gate.version !== prior.activation.gate.version + 1 ||
-        gate.reservationDigest !== prior.activation.gate.reservationDigest ||
-        gate.expiresAt !== prior.activation.gate.expiresAt
-      )
-        return fail("OPERATION_CONFLICT");
+      if (gate.state === "REVOKED") {
+        if (org.siteId !== prior.demand.sourceSiteId) return fail("POLICY_DENIED");
+        if (
+          prior.status !== "CLAIMED" ||
+          prior.activation ||
+          !prior.claim ||
+          prior.version !== closure.expectedVersion ||
+          gate.claimVersion !== prior.version ||
+          gate.domainId !== prior.claim.commercialDomainId ||
+          gate.reservationId !== prior.claim.claimId
+        )
+          return fail("OPERATION_CONFLICT");
+      } else {
+        if (
+          !["ACTIVE", "STOPPING"].includes(prior.status) ||
+          !prior.activation ||
+          closure.expectedVersion !== prior.activation.expectedVersion + 1 ||
+          gate.terminal?.activationId !== prior.activation.activationId ||
+          gate.domainId !== prior.claim?.commercialDomainId ||
+          gate.reservationId !== prior.claim.claimId ||
+          gate.claimVersion !== prior.activation.expectedVersion ||
+          gate.version !== prior.activation.gate.version + 1 ||
+          gate.reservationDigest !== prior.activation.gate.reservationDigest ||
+          gate.expiresAt !== prior.activation.gate.expiresAt
+        )
+          return fail("OPERATION_CONFLICT");
+      }
       const response = await stub.invokeChaincode(
         "kq-commercial",
         ["GetExecutionGateHash", gate.domainId, gate.reservationId],

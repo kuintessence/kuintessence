@@ -650,3 +650,87 @@ test.each([
   ).rejects.toThrow("OPERATION_CONFLICT");
   expect((await f.invoke("GetDemand", undefined)).version).toBe(state.version);
 });
+
+test("pre-execution closure requires a committed revoked gate and prevents every later activation", async () => {
+  const f = await fixture();
+  await f.invoke("PublishDemand", f.demand);
+  const claim = { ...f.claim(), commercialDomainId: randomUUID() };
+  await f.invoke("ClaimDemand", claim, 1);
+  const gate = MarketExecutionGateSchema.parse({
+    domainId: claim.commercialDomainId,
+    reservationId: claim.claimId,
+    demandId: claim.demandId,
+    claimVersion: 2,
+    version: 2,
+    state: "REVOKED",
+    reservationDigest: `sha256:${"a".repeat(64)}`,
+    expiresAt: claim.expiresAt,
+  });
+  const closure = { demandId: claim.demandId, closureId: randomUUID(), expectedVersion: 2, gate };
+  let hash = "0".repeat(64);
+  f.stub.onInvoke = async (name, args, channel) => {
+    expect([name, ...args, channel]).toEqual([
+      "kq-commercial",
+      "GetExecutionGateHash",
+      gate.domainId,
+      gate.reservationId,
+      "cooperation",
+    ]);
+    return { status: 200, payload: Buffer.from(JSON.stringify({ hash })) };
+  };
+  await expect(f.invoke("CloseDemand", closure)).rejects.toThrow("OPERATION_CONFLICT");
+  for (const caller of [1, 2])
+    await expect(f.invoke("CloseDemand", closure, caller)).rejects.toThrow("POLICY_DENIED");
+  for (const changed of [
+    { ...closure, expectedVersion: 3 },
+    { ...closure, gate: { ...gate, version: 3 } },
+    { ...closure, gate: { ...gate, reservationId: randomUUID() } },
+    { ...closure, gate: { ...gate, domainId: randomUUID() } },
+    { ...closure, contract: "private" },
+  ])
+    await expect(f.invoke("CloseDemand", changed)).rejects.toThrow();
+  hash = createHash("sha256").update(JSON.stringify(gate)).digest("hex");
+  f.stub.timestamp = new Date(+now + 7200000);
+  const receipt = await f.invoke("CloseDemand", closure);
+  const closed = await f.invoke("GetDemand", undefined);
+  expect(closed).toMatchObject({ status: "CLOSED", version: 3, activation: null, closure });
+  expect(MarketDemandStateSchema.safeParse(closed).success).toBe(true);
+  expect(MarketProposalInputSchema.safeParse({ operation: "close-demand", closure }).success).toBe(
+    false,
+  );
+  f.stub.onInvoke = async () => {
+    throw new Error("Replay must not access private state");
+  };
+  expect(await f.invoke("CloseDemand", closure)).toEqual(receipt);
+  await expect(f.invoke("CloseDemand", { ...closure, closureId: randomUUID() })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(
+    f.invoke("ActivateDemand", {
+      demandId: claim.demandId,
+      activationId: randomUUID(),
+      expectedVersion: 2,
+      gate: { ...gate, state: "READY", version: 1 },
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(f.invoke("ClaimDemand", f.claim(2), 2)).rejects.toThrow("OPERATION_CONFLICT");
+  for (const changed of [
+    { ...closed, version: 4 },
+    { ...closed, claim: { ...closed.claim, claimId: randomUUID() } },
+    { ...closed, closure: { ...closure, expectedVersion: 3 } },
+  ])
+    expect(MarketDemandStateSchema.safeParse(changed).success).toBe(false);
+});
+
+test("pre-execution closure cannot replace termination of an active task", async () => {
+  const f = await activated();
+  await expect(
+    f.invoke("CloseDemand", {
+      demandId: f.demand.demandId,
+      closureId: randomUUID(),
+      expectedVersion: 2,
+      gate: { ...f.authorization.gate, state: "REVOKED", version: 2 },
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect((await f.invoke("GetDemand", undefined)).status).toBe("ACTIVE");
+});

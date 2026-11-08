@@ -934,3 +934,8 @@ Server 启动时把同一容量策略传入源方出站、任务市场、自动�
 `renewTaskCompletion` 由已有任务的后续写入入口调用，锁定原占额行后判断是否需要恢复；未释放任务不再争全站新接收锁。恢复时同时取得全站预算事务锁，按原 `allocatedBytes` 检查物理预留和共享余量，恢复标记、审计、后续业务记录以及资金预留一起提交或回滚。普通初始准入不能复用已释放的 taskId/attempt 新建意图；业务层的原记录重放仍先返回原签名和原编号。
 
 已接入调整、用量更正与同步、新账单/减免、输入/结果新导入和取消双方；Server/Ingress 构造器传递原 storage guard。用量同步新增容量错误保留 pending 和原游标，其他真实性/授权错误继续复核。恢复占额 I/O 后继续检查网络响应期限、当前签名身份和同步租约。释放扫描按同一占额行 `FOR UPDATE SKIP LOCKED` 协调，不等待业务行。自动结算发现与执行停止的首次写入同样恢复占额，主 Server 与私有 Ingress 传递 guard。详见[自动回收条件](../../../deploy/federation/storage-capacity.md#自动回收条件与边界)。
+
+
+## 执行前释放与市场关闭
+
+已提交的双签私有释放由源站按原 releaseId 自动生成公共 `close-demand`，生成与提交前重验本地最新 VALID、签名原文及完整预留关联。`CloseDemand` 在 CLAIMED 上核对 REVOKED gate 的同通道 PDC 哈希后变为 CLOSED，不产生 activation；ACTIVE/STOPPING 仍须 TERMINAL。停止 worker 校验原任务绑定后结束无须激活的停止待办，错误关闭不会清除原意图。迁移 0149 扩展既有提交约束，无新增对外写接口或私有字段公开。部署顺序与未完成回收范围见[执行前公共关闭](../../../deploy/federation/fabric-execution-gate.md#执行前释放后的公共关闭)。

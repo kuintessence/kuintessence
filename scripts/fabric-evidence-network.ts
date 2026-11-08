@@ -24,6 +24,11 @@ import { verifyLiveExecution } from "./federation-live/verify";
 
 const repo = resolve(import.meta.dir, "..");
 const execution = process.argv.includes("--execution");
+if (
+  process.argv.includes("--preexecution-closure") &&
+  (!process.argv.includes("--gate") || process.argv.includes("--database") || execution)
+)
+  throw new Error("Use --preexecution-closure only with --gate (without database/execution)");
 if (execution && process.env.KQ_FEDERATION_EXECUTION_LAB !== "1")
   throw new Error("Set KQ_FEDERATION_EXECUTION_LAB=1 for the disposable local k3s lab");
 const toolsRoot = process.env.KQ_FABRIC_TOOLS;

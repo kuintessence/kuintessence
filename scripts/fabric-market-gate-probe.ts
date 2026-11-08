@@ -505,6 +505,38 @@ async function run() {
   passed.push(
     "release commits first: cross-chaincode hashed read invalidates activation and old gate cannot reactivate",
   );
+  const releasedClosure = {
+    demandId: one.demand.demandId,
+    closureId: cancel.value.releaseId,
+    expectedVersion: 2,
+    gate: { ...one.gate, state: "REVOKED", version: 2 },
+  };
+  await assert.rejects(
+    market(bm, "CloseDemand", one.demand.demandId, releasedClosure).endorse(),
+    rejected("POLICY_DENIED"),
+  );
+  const closedTx = await market(am, "CloseDemand", one.demand.demandId, releasedClosure, [
+    "AMSP",
+    "CMSP",
+  ]).endorse();
+  assert.equal((await commit(closedTx)).successful, true);
+  await synced(one.demand.demandId, "CLOSED");
+  const releasedState = await current(one.demand.demandId);
+  assert.equal(releasedState.activation, null);
+  assert.equal(releasedState.version, 3);
+  assert.deepEqual(releasedState.closure, releasedClosure);
+  assert.equal(
+    (await commit(await market(am, "CloseDemand", one.demand.demandId, releasedClosure).endorse()))
+      .successful,
+    true,
+  );
+  await assert.rejects(
+    market(am, "ActivateDemand", one.demand.demandId, activate).endorse(),
+    rejected("OPERATION_CONFLICT"),
+  );
+  passed.push(
+    "VALID bilateral pre-execution release closes the public claim using the PDC hash with A/C endorsement, replays once and never activates",
+  );
   const two = await lock(await claimed()),
     cancelTwo = await release(two);
   const [winner, loser] = await Promise.all([
@@ -521,6 +553,23 @@ async function run() {
   passed.push(
     "activation commits first: cross-chaincode public read invalidates release and ACTIVE funds remain locked",
   );
+  await assert.rejects(
+    market(am, "CloseDemand", two.demand.demandId, {
+      demandId: two.demand.demandId,
+      closureId: cancelTwo.value.releaseId,
+      expectedVersion: 2,
+      gate: { ...two.gate, state: "REVOKED", version: 2 },
+    }).endorse(),
+    rejected("OPERATION_CONFLICT"),
+  );
+  if (process.argv.includes("--preexecution-closure")) {
+    await writeFile(
+      z.string().parse(process.argv[3]),
+      JSON.stringify({ passed, probes }, null, 2),
+      { mode: 0o600 },
+    );
+    return;
+  }
 
   const active = await current(two.demand.demandId);
   assert(active.activation);

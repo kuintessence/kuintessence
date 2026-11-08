@@ -384,3 +384,18 @@ market:
 `test:fabric:gate` 现额外使用独立预算验证 SettleBill，保持原竞态与恢复夹具不变。测试明确另签结算，原预留 100、账单应付 7、归还 93；读取实际提交的 PDC 写入核对 locked=0、spent=7、预留数=0。原 TERMINAL gate 与 CLOSED 公共需求不变；缺 B 背书为 INVALID 10，两份竞争结算只有一份 VALID，另一份为 MVCC INVALID 11；第三机构不获得结算私有正文。
 
 该样例使用签名终态/用量夹具，不运行真实科研作业。结果保存在忽略的网络目录 `gate-settlement.json`；正常参数和回执不包含价格/用量。Server 双边结算及新结算专用断链/崩溃联合验收仍待接入，既有 Adapter 七类恢复检查不代替这些项目。协议、升级边界见[独立额度结算](fabric-commercial.md#独立额度结算协议)。
+
+
+## 执行前释放后的公共关闭
+
+双签 `ReleaseExecution` 的本地最新尝试确认 VALID 后，源方商业 worker 同事务创建原 releaseId 对应的 `close-demand`；已提交但没有关闭待办的历史释放也会被重新发现。提供方只保存自己的私有释放结果，不冒用源方排入公开关闭。生成与提交前均核对原预留、双方签名原字节、私有提交摘要和 VALID 检查点，已经完成的历史事实不因当前业务签名密钥到期而要求重签。
+
+公共 `CloseDemand` 新增 REVOKED 分支：只有需求机构可以关闭仍为 CLAIMED 的原认领，要求 gate 为 version 2、绑定原 claimId/商业域/认领版本。同通道读取当前 PDC gate 哈希并匹配公开前像；第三机构可参与公共背书而无须读取价格、合同或完整委派。成功变为 CLOSED，activation 保持 null，不重新开放任务，也不产生新的执行权。原文重放返回原回执；已激活任务继续走 TERMINAL 关闭，不能借 REVOKED 分支绕过停止证据。
+
+双方停止 worker 读取这种 CLOSED 后，逐项匹配原需求、双方、认领、gate 摘要和期限，再清除原停止交付待办。闭合记录错绑时保留重试与错误，不把其他任务的关闭当成本任务已停止。该步骤不新增计算、账单或付款，资金释放仍由原私有双签交易完成。
+
+升级须同步更新 Market 链码、共享 schema、Adapter/Server，并先应用迁移 [0149](../../packages/db/migrations/0149_youthful_abomination.sql)。原有 TERMINAL 闭合保持兼容；不让尚不理解 REVOKED 闭合的旧副本消费新记录。普通市场 HTTP 提交仍不接受 `close-demand`，后台仅从已确认的私有记录生成。
+
+专项真实网络入口：`KQ_FABRIC_TOOLS=<Fabric 3.1.5目录> bun scripts/fabric-evidence-network.ts --gate --preexecution-closure`。它使用隔离的本机 Peer/Orderer，检查缺少 B 背书、释放/激活两种提交顺序、A/C 对公开关闭背书、关闭重放及旧激活拒绝；不启用 k3s、不运行科学计算，也不代替完整数据库/Agent 联合验收。完整 `--gate` 仍包含原 Adapter 故障恢复矩阵。 本次专项已实际通过上述 4 项，临时进程、密钥和账本已清理；尚未将这次新增关闭路径与生产 Server worker 作真实链联合验收。
+
+尚未据此释放无账单早期任务的本地收尾容量；待补齐提案/自动执行队列的终止证据与各方本地回收条件。未获双签的提案、未完成认领、直接合作的未执行退款及机构预授权自动释放，仍需各自独立的关闭协议。
