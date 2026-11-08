@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  federationCommercialAdjustments as adjustments,
   federationCommercialExecutionApprovals as approvals,
   auditLog,
   federationCommercialBills as bills,
@@ -12,6 +13,7 @@ import {
 } from "@kuintessence/db";
 import { assertFederationStatusQueryFresh, FederationError } from "@kuintessence/shared/federation";
 import {
+  CommercialAdjustmentSchema,
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialExecutionApprovalSchema,
@@ -23,6 +25,7 @@ import {
 } from "@kuintessence/shared/federation/commercial-approval-exchange";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
+import { FederationAdjustmentService } from "./adjustment";
 import { federationMaterialDigest } from "./assets";
 import { FederationBillingService } from "./billing";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
@@ -41,6 +44,7 @@ import { FederationTrustRegistry } from "./trust-registry";
 type Sync = typeof syncs.$inferSelect;
 type Identity = Pick<Sync, "agreementRevisionId" | "recordKind" | "recordId">;
 const businessSchema = z.union([
+  CommercialAdjustmentSchema,
   CommercialAgreementSchema,
   CommercialExecutionApprovalSchema,
   CommercialBillSchema,
@@ -101,6 +105,38 @@ export class FederationCommercialApprovalExchange {
         digest: contract.digest,
         approvalJws: contract.approvalJws,
         counterpartyJws: contract.counterpartyJws,
+      };
+    }
+    if (identity.recordKind === "adjustment") {
+      const [record] = await tx
+        .select()
+        .from(adjustments)
+        .where(
+          and(
+            eq(adjustments.localSiteId, this.signing.siteId),
+            eq(adjustments.adjustmentId, identity.recordId),
+            eq(adjustments.agreementRevisionId, identity.agreementRevisionId),
+            eq(adjustments.localOrgId, contract.localOrgId),
+          ),
+        );
+      if (!record) return null;
+      const payload = CommercialAdjustmentSchema.parse(record.payload);
+      if (
+        !contract.counterpartyJws ||
+        payload.adjustmentId !== identity.recordId ||
+        payload.domainId !== terms.domainId ||
+        payload.agreementRevisionId !== identity.agreementRevisionId ||
+        payload.sourceSiteId !== terms.agreement.sourceSiteId ||
+        payload.targetSiteId !== terms.agreement.targetSiteId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return {
+        contract,
+        other,
+        payload,
+        digest: record.digest,
+        approvalJws: record.approvalJws,
+        counterpartyJws: record.counterpartyJws,
       };
     }
     if (identity.recordKind === "settlement") {
@@ -380,6 +416,35 @@ export class FederationCommercialApprovalExchange {
         .insert(syncs)
         .values(pendingSettlements.map((v) => ({ ...v, recordKind: "settlement" as const })))
         .onConflictDoNothing();
+    const pendingAdjustments = await this.db
+      .select({
+        localSiteId: adjustments.localSiteId,
+        agreementRevisionId: adjustments.agreementRevisionId,
+        recordId: adjustments.adjustmentId,
+      })
+      .from(adjustments)
+      .leftJoin(
+        syncs,
+        and(
+          eq(syncs.localSiteId, adjustments.localSiteId),
+          eq(syncs.recordKind, "adjustment"),
+          eq(syncs.recordId, adjustments.adjustmentId),
+        ),
+      )
+      .where(
+        and(
+          eq(adjustments.localSiteId, this.signing.siteId),
+          isNull(adjustments.counterpartyJws),
+          isNull(syncs.recordId),
+        ),
+      )
+      .orderBy(asc(adjustments.adjustmentId))
+      .limit(8);
+    if (pendingAdjustments.length)
+      await this.db
+        .insert(syncs)
+        .values(pendingAdjustments.map((v) => ({ ...v, recordKind: "adjustment" as const })))
+        .onConflictDoNothing();
     const executions = await this.db
       .select({
         localSiteId: approvals.localSiteId,
@@ -566,6 +631,13 @@ export class FederationCommercialApprovalExchange {
         response,
         (tx) => authorize(tx, true),
       );
+    else if (claim.recordKind === "adjustment")
+      await new FederationAdjustmentService(this.db, this.signing).attachExchanged(
+        claim.agreementRevisionId,
+        claim.recordId,
+        response,
+        (tx) => authorize(tx, true),
+      );
     else if (claim.recordKind === "settlement")
       await new FederationSettlementService(this.db, this.signing).attachExchanged(
         claim.agreementRevisionId,
@@ -693,11 +765,13 @@ export class FederationCommercialApprovalExchange {
       await requireFederationCapability(
         tx,
         actor,
-        identity.recordKind === "settlement"
-          ? "settlement.approve"
-          : identity.recordKind === "bill"
-            ? "billing.approve"
-            : "agreement.approve",
+        identity.recordKind === "adjustment"
+          ? "adjustment.approve"
+          : identity.recordKind === "settlement"
+            ? "settlement.approve"
+            : identity.recordKind === "bill"
+              ? "billing.approve"
+              : "agreement.approve",
       );
       const [existing] = await tx
         .select()

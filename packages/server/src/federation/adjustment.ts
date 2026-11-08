@@ -502,14 +502,39 @@ export class FederationAdjustmentService {
       return row;
     });
   }
+  async attachExchanged(
+    revisionId: string,
+    adjustmentId: string,
+    jws: string,
+    authorize: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const [row] = await this.db
+      .select()
+      .from(adjustments)
+      .where(
+        and(
+          key(this.signing.siteId, adjustmentId),
+          eq(adjustments.agreementRevisionId, revisionId),
+        ),
+      );
+    if (!row) throw new FederationError("ASSET_UNAVAILABLE");
+    return this.attachCounterparty(
+      { userId: row.approvedBy, orgId: row.localOrgId },
+      revisionId,
+      adjustmentId,
+      jws,
+      authorize,
+    );
+  }
   async attachCounterparty(
     actor: FederationActor,
     revisionId: string,
     adjustmentId: string,
     jws: string,
+    authorize?: (tx: PgTransaction) => Promise<void>,
   ) {
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "adjustment.approve");
+      if (!authorize) await requireFederationCapability(tx, actor, "adjustment.approve");
       const [snapshot] = await tx
         .select()
         .from(adjustments)
@@ -548,6 +573,7 @@ export class FederationAdjustmentService {
         )
           throw new FederationError("OPERATION_CONFLICT");
       }
+      await authorize?.(tx);
       if (row.counterpartyJws) {
         await this.verifyOriginals(tx, original);
         if (row.counterpartyJws !== jws) throw new FederationError("OPERATION_CONFLICT");
@@ -593,7 +619,7 @@ export class FederationAdjustmentService {
           }),
         });
       await tx.insert(auditLog).values({
-        actor: actor.userId,
+        actor: authorize ? `adjustment-exchange:${this.signing.siteId}` : actor.userId,
         orgId: actor.orgId,
         action: "federation.adjustment.counterparty",
         target: adjustmentId,

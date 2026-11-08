@@ -4662,7 +4662,9 @@ async function adjustmentServiceFixture(
       await db
         .delete(federationCommercialAdjustments)
         .where(eq(federationCommercialAdjustments.localSiteId, siteId));
-      await db.delete(auditLog).where(eq(auditLog.actor, `adjustment:${siteId}`));
+      await db
+        .delete(auditLog)
+        .where(inArray(auditLog.actor, [`adjustment:${siteId}`, `adjustment-exchange:${siteId}`]));
     }
   });
   for (const [keys, actor] of [
@@ -5224,4 +5226,292 @@ test("adjustment concurrent counterpart attachment applies each institution exac
       ),
     );
   expect(audits).toHaveLength(2);
+});
+
+async function adjustmentExchangeFixture(
+  amount = "60",
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await adjustmentServiceFixture(mode),
+    value = await f.make(amount);
+  const syncKey = and(
+    eq(federationCommercialApprovalSyncs.localSiteId, f.provider.signing.siteId),
+    eq(federationCommercialApprovalSyncs.recordKind, "adjustment"),
+    eq(federationCommercialApprovalSyncs.recordId, value.adjustmentId),
+  );
+  const status = async (provider = true) =>
+    (
+      await (provider ? f.providerAuto : f.sourceAuto).list(
+        provider ? f.actor : f.sourceActor,
+        f.revisionId,
+        10,
+        0,
+      )
+    ).records.find((row) => row.recordId === value.adjustmentId);
+  const view = async () => (await f.providerAdjustment.list(f.actor, f.revisionId, 10, 0)).data[0];
+  return { ...f, value, syncKey, status, view };
+}
+
+for (const amount of ["40", "60"]) {
+  test(`adjustment exchange waits for independent consent before applying charge ${amount}`, async () => {
+    const f = await adjustmentExchangeFixture(amount);
+    const original = await f.providerAdjustment.approve(f.actor, f.revisionId, f.value);
+    await f.providerAuto.discover();
+    await f.providerAuto.advanceNext();
+    expect((await f.status())?.state).toBe("pending");
+    expect((await f.sourceAdjustment.list(f.sourceActor, f.revisionId, 10, 0)).data).toHaveLength(
+      0,
+    );
+    expect(await f.budget()).toMatchObject({
+      available: amount === "60" ? "40" : "47",
+      reserved: amount === "60" ? "7" : "0",
+      spent: "53",
+    });
+    const source = await f.sourceAdjustment.approve(f.sourceActor, f.revisionId, f.value);
+    await f.sourceAuto.discover();
+    await f.due();
+    await Promise.all([f.providerAuto.advanceNext(), f.sourceAuto.advanceNext()]);
+    expect((await f.status())?.state).toBe("complete");
+    expect((await f.status(false))?.state).toBe("complete");
+    expect((await f.view())?.adjustment).toMatchObject({
+      approvalJws: original.approvalJws,
+      counterpartyJws: source.approvalJws,
+    });
+    expect(await f.budget()).toMatchObject({
+      available: amount === "60" ? "40" : "60",
+      reserved: "0",
+      spent: amount,
+    });
+    expect(await f.sourceProjection()).toMatchObject({
+      settledAmount: amount,
+      adjustmentHeldAmount: "0",
+    });
+    expect(await f.providerAuto.advanceNext()).toBe(false);
+  });
+}
+
+test("adjustment exchange recovers a lost response once without waiting for attestation", async () => {
+  const f = await adjustmentExchangeFixture("60", "bilateral_attested");
+  await f.approveAdjustment(f.value);
+  await f.providerAuto.discover();
+  f.transport.afterResponse = async () => {
+    throw new Error("Dropped response");
+  };
+  await f.providerAuto.advanceNext();
+  expect(await f.status()).toMatchObject({ state: "pending", lastError: "EXCHANGE_RETRY" });
+  expect((await f.view())?.adjustment.counterpartyJws).toBeNull();
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "7", spent: "53" });
+  delete f.transport.afterResponse;
+  await f.due();
+  const restarted = new FederationCommercialApprovalExchange(
+    db,
+    f.provider.signing,
+    f.sendProvider,
+  );
+  await Promise.all([restarted.advanceNext(), restarted.advanceNext()]);
+  expect((await f.status())?.state).toBe("complete");
+  expect((await f.view())?.ledger).toMatchObject({ state: "pending" });
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "0", spent: "60" });
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(
+        and(
+          eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId),
+          sql`${federationCommercialSubmissions.input}->>'recordId' = ${f.value.adjustmentId}`,
+        ),
+      ),
+  ).toHaveLength(1);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, f.value.adjustmentId),
+          eq(auditLog.action, "federation.adjustment.apply"),
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+test("adjustment exchange keeps signed consent after staff loses approval authority but cannot approve again", async () => {
+  const f = await adjustmentExchangeFixture();
+  await f.approveAdjustment(f.value);
+  await f.providerAuto.discover();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "adjustment.approve", enabled: false },
+    f.userId,
+  );
+  await f.providerAuto.advanceNext();
+  expect((await f.status())?.state).toBe("complete");
+  await expect(
+    f.providerAdjustment.approve(f.actor, f.revisionId, { ...f.value, adjustmentId: randomUUID() }),
+  ).rejects.toThrow("POLICY_DENIED");
+  expect(await f.budget()).toMatchObject({ reserved: "0", spent: "60" });
+});
+
+for (const change of ["purpose", "endpoint"] as const) {
+  test(`adjustment exchange rejects ${change} changes during transport and preserves its hold`, async () => {
+    const f = await adjustmentExchangeFixture();
+    await f.approveAdjustment(f.value);
+    await f.providerAuto.discover();
+    f.transport.afterResponse = async (response) => {
+      if (change === "purpose")
+        await db
+          .update(federationSigningKeys)
+          .set({
+            allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'commercial-adjustment'`,
+          })
+          .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+      else
+        await db
+          .update(federationSites)
+          .set({ endpoint: "https://changed.example.invalid" })
+          .where(eq(federationSites.id, f.source.signing.siteId));
+      return response;
+    };
+    await f.providerAuto.advanceNext();
+    expect(await f.status()).toMatchObject({
+      state: "needs_review",
+      lastError: "UNTRUSTED_IDENTITY",
+    });
+    expect((await f.view())?.adjustment.counterpartyJws).toBeNull();
+    expect(await f.budget()).toMatchObject({ available: "40", reserved: "7", spent: "53" });
+  });
+}
+
+test("adjustment exchange late response cannot apply or overwrite a replacement lease; retry needs adjustment permission", async () => {
+  const f = await adjustmentExchangeFixture();
+  await f.approveAdjustment(f.value);
+  await f.providerAuto.discover();
+  const replacement = randomUUID();
+  f.transport.afterResponse = async (response) => {
+    await db
+      .update(federationCommercialApprovalSyncs)
+      .set({ leaseToken: replacement, leaseUntil: sql`clock_timestamp() + interval '60 seconds'` })
+      .where(f.syncKey);
+    return response;
+  };
+  await f.providerAuto.advanceNext();
+  expect(
+    (await db.select().from(federationCommercialApprovalSyncs).where(f.syncKey))[0],
+  ).toMatchObject({ state: "pending", leaseToken: replacement });
+  expect((await f.view())?.adjustment.counterpartyJws).toBeNull();
+  expect(await f.budget()).toMatchObject({ reserved: "7", spent: "53" });
+  const identity = {
+    agreementRevisionId: f.revisionId,
+    recordKind: "adjustment" as const,
+    recordId: f.value.adjustmentId,
+  };
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "adjustment.approve", enabled: false },
+    f.userId,
+  );
+  await expect(f.providerAuto.retry(f.actor, identity)).rejects.toThrow("POLICY_DENIED");
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "adjustment.approve", enabled: true },
+    f.userId,
+  );
+  await expect(f.providerAuto.retry(f.actor, identity)).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationCommercialApprovalSyncs)
+    .set({ leaseUntil: new Date(0) })
+    .where(f.syncKey);
+  await f.providerAuto.retry(f.actor, identity);
+  delete f.transport.afterResponse;
+  await f.providerAuto.advanceNext();
+  expect((await f.status())?.state).toBe("complete");
+  expect(await f.budget()).toMatchObject({ reserved: "0", spent: "60" });
+});
+
+test("adjustment exchange finishes a manual attachment race without resending or applying twice", async () => {
+  const f = await adjustmentExchangeFixture(),
+    signed = await f.approveAdjustment(f.value);
+  await f.providerAuto.discover();
+  await f.attachAdjustment(signed);
+  await f.providerAuto.advanceNext();
+  expect((await f.status())?.state).toBe("complete");
+  expect(f.transport.calls).toBe(0);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, f.value.adjustmentId),
+          eq(auditLog.action, "federation.adjustment.apply"),
+        ),
+      ),
+  ).toHaveLength(2);
+  expect(await f.budget()).toMatchObject({ reserved: "0", spent: "60" });
+});
+
+test("adjustment exchange audit failure rolls back signature, application, sync and outbox together", async () => {
+  const f = await adjustmentExchangeFixture("60", "bilateral_attested");
+  await f.approveAdjustment(f.value);
+  await f.providerAuto.discover();
+  await db.execute(
+    sql.raw(
+      `ALTER TABLE audit_log ADD CONSTRAINT adjustment_exchange_audit_fixture CHECK (action <> 'federation.adjustment.counterparty' OR target <> '${f.value.adjustmentId}')`,
+    ),
+  );
+  try {
+    await f.providerAuto.advanceNext();
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT adjustment_exchange_audit_fixture`);
+  }
+  expect((await f.status())?.state).toBe("pending");
+  expect((await f.view())?.adjustment.counterpartyJws).toBeNull();
+  expect((await f.view())?.ledger).toBeNull();
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "7", spent: "53" });
+  await f.due();
+  await f.providerAuto.advanceNext();
+  expect((await f.status())?.state).toBe("complete");
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "0", spent: "60" });
+});
+
+test("adjustment exchange HTTP exposes scoped progress and requires independent adjustment retry authority", async () => {
+  const f = await adjustmentExchangeFixture();
+  await f.providerAdjustment.approve(f.actor, f.revisionId, f.value);
+  await f.providerAuto.discover();
+  const app = new Hono();
+  let actor = f.actor;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    await next();
+  });
+  const dependencies: Parameters<typeof createFederationCommercialRoutes> = [
+    f.approvals,
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  dependencies[10] = f.providerAuto;
+  app.route("/", createFederationCommercialRoutes(...dependencies));
+  const path = `/federation/commercial-agreements/${f.revisionId}/approval-exchange`;
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const body = await response.text();
+  expect(body).toContain(f.value.adjustmentId);
+  for (const field of ["approvalJws", "leaseToken", "chargedAmount", "prices", "payload"])
+    expect(body).not.toContain(field);
+  const retry = (value: unknown = {}) =>
+    app.request(`${path}/adjustment/${f.value.adjustmentId}/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(value),
+    });
+  expect((await retry({ approve: true })).status).toBe(400);
+  const permissions = new FederationPermissionService(db);
+  await permissions.set({ ...f.actor, capability: "adjustment.approve", enabled: false }, f.userId);
+  expect((await retry()).status).toBe(403);
+  await permissions.set({ ...f.actor, capability: "adjustment.approve", enabled: true }, f.userId);
+  await permissions.set({ ...f.actor, capability: "agreement.approve", enabled: false }, f.userId);
+  expect((await retry()).status).toBe(200);
+  actor = f.sourceActor;
+  expect((await app.request(path)).status).toBe(409);
+  expect((await retry()).status).toBe(403);
+  expect(f.transport.calls).toBe(0);
 });

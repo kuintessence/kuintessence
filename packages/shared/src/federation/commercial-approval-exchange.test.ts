@@ -32,20 +32,15 @@ test("commercial approval exchange binds record kind, digest, distinct parties a
     { autoApprove: true },
   ])
     expect(CommercialApprovalQuerySchema.safeParse({ ...query, ...patch }).success).toBe(false);
-  expect(
-    CommercialApprovalQuerySchema.safeParse({
-      ...query,
-      recordKind: "bill",
-      recordId: crypto.randomUUID(),
-    }).success,
-  ).toBe(true);
-  expect(
-    CommercialApprovalQuerySchema.safeParse({
-      ...query,
-      recordKind: "reservation",
-      recordId: crypto.randomUUID(),
-    }).success,
-  ).toBe(true);
+  for (const recordKind of ["bill", "reservation", "settlement", "adjustment"]) {
+    expect(
+      CommercialApprovalQuerySchema.safeParse({
+        ...query,
+        recordKind,
+        recordId: crypto.randomUUID(),
+      }).success,
+    ).toBe(true);
+  }
 });
 
 test("commercial approval waiting message has no contract body and explicit separate signing purpose", () => {

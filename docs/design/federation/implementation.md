@@ -870,7 +870,7 @@ CLI 复用生产商业 API，新增合同读取、账单/结算原文操作、�
 
 Adapter 新增 adjust-settlement，只有成员机构 transient 携带正文。新 commercial-adjustment 用途需显式配置；共享 trust schema 和中英文用途名称已更新，不自动授权旧密钥。Server 已接独立 adjustment.approve、人工批准/附签及原待办，按三模式应用本地账目，见下文。
 
-Server 的双方持久批准与三模式账目应用已接通，原签名自动交换仍待接入；direct/attested 不等链，coordinated 仅本站 VALID 后应用投影。Web/CLI 应显示原值、调整历史及当前净额，付款与争议另建记录，不能覆盖本协议。当前实现、部署与已验范围见[账务调整](../../../deploy/federation/fabric-commercial.md#结算后的独立账务调整)。
+Server 的双方持久批准与三模式账目应用已接通，原签名自动交换已沿用 commercial-approvals 接入；direct/attested 不等链，coordinated 仅本站 VALID 后应用投影。Web/CLI 应显示原值、调整历史及当前净额，付款与争议另建记录，不能覆盖本协议。当前实现、部署与已验范围见[账务调整](../../../deploy/federation/fabric-commercial.md#结算后的独立账务调整)。
 
 
 ## Server 调整占额与记账
@@ -878,3 +878,6 @@ Server 的双方持久批准与三模式账目应用已接通，原签名自动�
 新增持久调整表，按本站/原结算的序号和前驱唯一性防分叉；原结算行锁串行化审批与应用。直接/异步模式的增额在批准时先锁正差额：提供方用原预算 available/reserved，源方用原 outbound.adjustmentHeldAmount 并纳入接单聚合。双签时原子转为净扣用，调减不提前退款；原业务正文及接单金额保持不变。协调模式不复制链余额，仅在本地持久 VALID 后投影净额。事务内审计与签名/占额/应用共同回滚，旧原文重放不改当前头或再次记账。
 
 主 Server 挂载独立人类管理 API，链 worker 在披露前核对本地双签原文、当前机构/密钥用途和原结算/前驱私有回执，重试需 adjustment.approve。迁移 0143/0144 必须与接单代码同步升级，旧代码不能忽略增额占额；已签待办不因超时或员工撤权自动释放。详细接口、未完成的解除占额/争议与联合验收范围见[Server 调整](../../../deploy/federation/fabric-commercial.md#server-账务调整)。
+
+
+已批准调整沿用原签名查询协议，recordKind 新增 adjustment（迁移 0145）。发现器每轮每种记录最多 8 条；网络调用在数据库事务外，附签前重核当前信任、端点、同文摘要、分钟查询窗口及任务租约。附签、账目应用、存证待办、交换完成和审计同事务；迟到响应不能覆盖新租约。员工撤权阻止新的批准，不抹除已有机构签署；已签原文继续交换，主动重试仍需 adjustment.approve。未批准的一方只返回等待，不自动生成新批准；直接/异步本地处理不依赖链。既有页面和 CLI 尚无调整专用入口，真实联合恢复仍待验收。
