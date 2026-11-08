@@ -65,8 +65,10 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { type FederationTransaction, FederationTrustRegistry } from "./trust-registry";
 import {
+  assertWorkflowDelegationCapacity,
   assertWorkflowDelegationOwner,
   bindWorkflowDelegation,
   type WorkflowDelegationPlan,
@@ -113,6 +115,7 @@ export class FederationOutboundService {
     private readonly clock: () => Date = () => new Date(),
     private readonly confirmations?: FederationExecutionConfirmationService,
     private readonly marketRequests?: FederationMarketRequestService,
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     this.trust = new FederationTrustRegistry(db);
     this.resultReceipts = new FederationResultReceiptSender(db, signingKey, send, clock);
@@ -282,6 +285,14 @@ export class FederationOutboundService {
     if ((plan.mode === "ledger_coordinated") !== !!selection)
       throw new FederationError("POLICY_DENIED");
     if (selection && !this.marketRequests) throw new FederationError("LEDGER_REQUIRED");
+    await assertWorkflowDelegationCapacity(
+      lease,
+      actor,
+      nodeId,
+      invocation,
+      plan,
+      this.storageGuard,
+    );
     if (files !== undefined) {
       const snapshot = await this.inputExports.capture(actor, lease, nodeId, invocation, files);
       if (plan.inputFilesDigest && plan.inputFilesDigest !== snapshot.manifestDigest)
@@ -310,6 +321,7 @@ export class FederationOutboundService {
       admissionWindowSec,
       this.clock,
       selection,
+      this.storageGuard,
     );
     return this.enqueueRequest(actor, request, lease, selection);
   }
@@ -398,6 +410,26 @@ export class FederationOutboundService {
       this.clock(),
     );
     return transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "delegation.submit");
+      const existing = async () => {
+        const [row] = await tx
+          .select()
+          .from(federationOutbound)
+          .where(this.key(request.operationId));
+        if (!row) return undefined;
+        if (
+          row.localOrgId !== actor.orgId ||
+          row.submittedBy !== actor.userId ||
+          row.requestDigest !== verified.digest
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        return summary(row);
+      };
+      const prior = await existing();
+      if (prior) return prior;
+      // Workflow bindings and coordinated approvals already accepted this intent durably.
+      if (!lease && request.mode !== "ledger_coordinated")
+        await this.storageGuard?.assertAdmission(request.mode);
       const { terms, endpoint, confirmation } = await this.authorize(
         tx,
         actor,
@@ -405,19 +437,9 @@ export class FederationOutboundService {
         materials,
         true,
       );
-      const [existing] = await tx
-        .select()
-        .from(federationOutbound)
-        .where(this.key(request.operationId));
-      if (existing) {
-        if (
-          existing.localOrgId !== actor.orgId ||
-          existing.submittedBy !== actor.userId ||
-          existing.requestDigest !== verified.digest
-        )
-          throw new FederationError("OPERATION_CONFLICT");
-        return summary(existing);
-      }
+      // Another request can commit while authorization waits for institutional locks.
+      const duplicate = await existing();
+      if (duplicate) return duplicate;
       (confirmation ? assertDelegationTerms : assertDelegationPolicy)(terms, request, this.clock());
       // One source budget epoch cannot be copied to another agreement or recipient.
       await tx.execute(

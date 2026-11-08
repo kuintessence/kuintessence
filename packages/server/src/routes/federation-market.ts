@@ -27,6 +27,10 @@ export function createFederationMarketRoutes(service: FederationMarketService) {
   r.onError((error, c) => {
     if (error instanceof FabricClientFailure)
       return c.json({ error: { code: error.code } }, error.needsReview ? 502 : 503);
+    if (error instanceof FederationError && error.code === "STORAGE_PRESSURE") {
+      c.header("cache-control", "no-store");
+      return c.json({ error: { code: error.code } }, 503);
+    }
     if (error instanceof FederationError)
       return c.json(
         { error: { code: error.code } },

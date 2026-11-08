@@ -30,6 +30,7 @@ import { federationMaterialDigest } from "./assets";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { assertReservationCapacity } from "./reservation-capacity";
 import {
   assertReservationPolicyActive,
   FederationReservationPolicyService,
@@ -40,6 +41,7 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
 import { assertWorkflowRequestActive } from "./workflow-delegations";
 
@@ -72,6 +74,7 @@ export class FederationCommercialExecutionService {
     private readonly signingKey: FederationSigningKey,
     private readonly market?: Pick<MarketClient, "query">,
     private readonly clock: () => Date = () => new Date(),
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     this.trust = new FederationTrustRegistry(db);
   }
@@ -364,6 +367,14 @@ export class FederationCommercialExecutionService {
         await automatic?.guard?.complete(tx, existing);
         return { existing, reserve: null };
       }
+      if (payload.kind === "commercial-reservation")
+        await assertReservationCapacity(
+          tx,
+          this.signingKey.siteId,
+          actor.orgId,
+          payload,
+          this.storageGuard,
+        );
       return { existing: null, reserve: await this.validate(tx, actor, revisionId, payload) };
     });
     if (snapshot.existing) return snapshot.existing;
@@ -387,6 +398,14 @@ export class FederationCommercialExecutionService {
       this.clock(),
     );
     return this.db.transaction(async (tx) => {
+      if (payload.kind === "commercial-reservation")
+        await assertReservationCapacity(
+          tx,
+          this.signingKey.siteId,
+          actor.orgId,
+          payload,
+          this.storageGuard,
+        );
       const policy = await authorize(tx);
       await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
       const currentKey = await this.trust.resolveKey(key.siteId, key.keyId, this.clock(), tx);

@@ -34,6 +34,10 @@ export function createFederationOutboundRoutes(service: FederationOutboundServic
         { error: { code: error.code } },
         error.code === "DELIVERY_UNAVAILABLE" ? 503 : 502,
       );
+    if (error instanceof FederationError && error.code === "STORAGE_PRESSURE") {
+      c.header("cache-control", "no-store");
+      return c.json({ error: { code: error.code } }, 503);
+    }
     if (error instanceof FederationError)
       return c.json(
         { error: { code: error.code } },

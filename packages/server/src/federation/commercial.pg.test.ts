@@ -62,6 +62,7 @@ import {
   FederationCancellationReceiptSchema,
   FederationCancellationSchema,
   FederationDelegationSchema,
+  FederationError,
   type FederationMode,
   FederationResultReceiptAckSchema,
   FederationResultReceiptSchema,
@@ -154,6 +155,7 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTerminalAutomation } from "./terminal-automation";
 import { FederationTerminalPolicyService, TerminalPolicyInputSchema } from "./terminal-policy";
 import { testAgreement, testKeys } from "./test-fixtures";
@@ -1443,8 +1445,13 @@ test("coordinated admission waits for VALID, preserves one chain reservation and
   expect(f.queryCount()).toBe(count);
 });
 
-test("coordinated source delivery and provider preparation share exact reservations and bounded dispatch authority", async () => {
+test("coordinated source delivery and provider preparation share exact reservations and bounded dispatch authority under storage pressure", async () => {
   const f = await confirmationFixture(true, true);
+  const guard = {
+    async assertAdmission() {
+      throw new FederationError("STORAGE_PRESSURE");
+    },
+  };
   const source = new FederationExecutionConfirmationService(db, f.a.signing.siteId, {
     query: async () => ({ operation: "get-demand", demand: f.state }),
   });
@@ -1455,6 +1462,7 @@ test("coordinated source delivery and provider preparation share exact reservati
     f.b.verification,
     undefined,
     f.confirmation,
+    guard,
   );
   let deliveries = 0;
   const outbound = new FederationOutboundService(
@@ -1473,6 +1481,8 @@ test("coordinated source delivery and provider preparation share exact reservati
     f.assets,
     undefined,
     source,
+    undefined,
+    guard,
   );
   const app = new Hono();
   app.use("*", async (c, next) => {
@@ -5758,6 +5768,10 @@ test("reservation preauthorization grants require dual coordinated consent and c
 
 async function reservationProposalFixture(
   execution: boolean | "activation" | "confirmation" = false,
+  guards?: {
+    source: Pick<FederationStorageGuard, "assertAdmission">;
+    target: Pick<FederationStorageGuard, "assertAdmission">;
+  },
 ) {
   const f = await reservationPolicyFixture(true);
   await new FederationPermissionService(db).set(
@@ -5807,14 +5821,26 @@ async function reservationProposalFixture(
       return { operation: "get-demand", demand: f.state };
     },
   };
-  const target = new FederationReservationProposalService(db, f.b.signing, undefined, market);
+  const target = new FederationReservationProposalService(
+    db,
+    f.b.signing,
+    undefined,
+    market,
+    guards?.target,
+  );
   let sendHook: ((response: string) => Promise<string>) | undefined;
   const send: FederationSend = async (_endpoint, jws, path) => {
     expect(path).toBe("/federation/v1/reservation-proposals");
     const result = await target.receive(jws, fingerprints[0] ?? "");
     return sendHook ? sendHook(result) : result;
   };
-  const source = new FederationReservationProposalService(db, f.a.signing, send, market);
+  const source = new FederationReservationProposalService(
+    db,
+    f.a.signing,
+    send,
+    market,
+    guards?.source,
+  );
   const view = async (provider = false) =>
     (
       await db
@@ -6815,7 +6841,15 @@ test("execution automation HTTP retry requires current human authority and prese
   expect(await f.view()).toMatchObject({ executionState: "complete" });
 });
 
-async function marketRequestFixture(enabled = true, limit = 2, workflow = false) {
+async function marketRequestFixture(
+  enabled = true,
+  limit = 2,
+  workflow = false,
+  guards?: {
+    source: Pick<FederationStorageGuard, "assertAdmission">;
+    target: Pick<FederationStorageGuard, "assertAdmission">;
+  },
+) {
   const f = await reservationPolicyFixture(true, undefined, workflow);
   await db
     .delete(marketSubmissions)
@@ -6887,14 +6921,20 @@ async function marketRequestFixture(enabled = true, limit = 2, workflow = false)
   const adapter = new ActivationAdapter();
   const sourceMarket = new FederationMarketService(db, f.a.signing.siteId, adapter),
     providerMarket = new FederationMarketService(db, f.b.signing.siteId, adapter);
-  const target = new FederationMarketRequestService(db, f.b.signing, undefined, query);
+  const target = new FederationMarketRequestService(
+    db,
+    f.b.signing,
+    undefined,
+    query,
+    guards?.target,
+  );
   let sendHook: ((jws: string, response: string) => Promise<string>) | undefined;
   const send: FederationSend = async (_endpoint, jws, path) => {
     expect(path).toBe("/federation/v1/market-requests");
     const result = await target.receive(jws, fingerprints[0] ?? "");
     return sendHook ? sendHook(jws, result) : result;
   };
-  const source = new FederationMarketRequestService(db, f.a.signing, send, query);
+  const source = new FederationMarketRequestService(db, f.a.signing, send, query, guards?.source);
   const view = async (provider = false) =>
     (
       await db
@@ -6968,6 +7008,7 @@ async function marketRequestFixture(enabled = true, limit = 2, workflow = false)
     f.b.signing,
     undefined,
     query,
+    guards?.target,
   );
   const proposalSend: FederationSend = async (_endpoint, jws, path) => {
     expect(path).toBe("/federation/v1/reservation-proposals");
@@ -6978,6 +7019,7 @@ async function marketRequestFixture(enabled = true, limit = 2, workflow = false)
     f.a.signing,
     proposalSend,
     query,
+    guards?.source,
   );
   return {
     ...f,
@@ -8319,5 +8361,189 @@ test("coordinated bill waits for the exact source terminal receipt without requi
           sql`${submissions.input}->>'operation' = 'record-execution-terminal'`,
         ),
       ),
+  ).toHaveLength(0);
+});
+
+test("commercial storage pressure gates fresh manual reservations but preserves original approvals", async () => {
+  const f = await executionFixture();
+  let blocked = true;
+  const service = new FederationCommercialExecutionService(
+    db,
+    f.a.signing,
+    {
+      query: async () => ({ operation: "get-demand", demand: f.state }),
+    },
+    undefined,
+    {
+      async assertAdmission(mode) {
+        expect(mode).toBe("ledger_coordinated");
+        if (blocked) throw new FederationError("STORAGE_PRESSURE");
+      },
+    },
+  );
+  await expect(service.approve(f.actor, f.revisionId, f.reservation)).rejects.toMatchObject({
+    code: "STORAGE_PRESSURE",
+  });
+  expect(
+    await db
+      .select()
+      .from(executionApprovals)
+      .where(eq(executionApprovals.recordId, f.reservation.reservationId)),
+  ).toHaveLength(0);
+  blocked = false;
+  const first = await service.approve(f.actor, f.revisionId, f.reservation);
+  blocked = true;
+  expect((await service.approve(f.actor, f.revisionId, f.reservation)).approvalJws).toBe(
+    first.approvalJws,
+  );
+  await expect(
+    service.approve(f.actor, f.revisionId, { ...f.reservation, salt: "1".repeat(64) }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+});
+
+test("proposal storage pressure pauses new source and receiver intents without consuming policy, then resumes original delivery", async () => {
+  let sourceBlocked = true,
+    targetBlocked = true;
+  const guards = {
+    source: {
+      async assertAdmission() {
+        if (sourceBlocked) throw new FederationError("STORAGE_PRESSURE");
+      },
+    },
+    target: {
+      async assertAdmission() {
+        if (targetBlocked) throw new FederationError("STORAGE_PRESSURE");
+      },
+    },
+  };
+  const f = await reservationProposalFixture(false, guards);
+  await expect(f.submit()).rejects.toMatchObject({ code: "STORAGE_PRESSURE" });
+  expect(await f.view()).toBeUndefined();
+  sourceBlocked = false;
+  await f.submit();
+  sourceBlocked = true;
+  await f.source.advanceNext();
+  expect((await f.view())?.state).toBe("sending");
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "sending", lastError: "STORAGE_PRESSURE" });
+  expect(await f.view(true)).toBeUndefined();
+  expect((await f.policies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(0);
+  targetBlocked = false;
+  await f.due();
+  await f.source.advanceNext();
+  expect((await f.view())?.state).toBe("delivered");
+  const original = await f.view();
+  if (!original?.sourceJws) throw new Error("Missing proposal signature");
+  targetBlocked = true;
+  await f.target.receive(original.sourceJws, f.fingerprints[0] ?? "");
+  await f.target.advanceNext();
+  expect((await f.view(true))?.state).toBe("approved");
+  expect((await f.policies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(1);
+});
+
+test("market request storage pressure gates new intents and preserves accepted claim to reservation handoff", async () => {
+  let sourceBlocked = true,
+    targetBlocked = true;
+  const guards = {
+    source: {
+      async assertAdmission() {
+        if (sourceBlocked) throw new FederationError("STORAGE_PRESSURE");
+      },
+    },
+    target: {
+      async assertAdmission() {
+        if (targetBlocked) throw new FederationError("STORAGE_PRESSURE");
+      },
+    },
+  };
+  const f = await marketRequestFixture(true, 2, false, guards);
+  await expect(f.submit()).rejects.toMatchObject({ code: "STORAGE_PRESSURE" });
+  expect(await f.view()).toBeUndefined();
+  sourceBlocked = false;
+  await f.submit();
+  sourceBlocked = true;
+  await f.source.advanceNext();
+  await f.commit();
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "pending", lastError: "STORAGE_PRESSURE" });
+  expect(await f.view(true)).toBeUndefined();
+  expect((await f.policies.list(f.actor, f.revisionId))[0]?.marketAuthorizedTasks).toBe(0);
+  const original = await f.view();
+  if (!original?.sourceJws) throw new Error("Missing market signature");
+  const ingress = createFederationIngress(
+    db,
+    f.b.signing,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    guards.target,
+  );
+  const response = await ingress.request("/federation/v1/market-requests", {
+    method: "POST",
+    headers: {
+      "content-type": "application/jose",
+      "x-kq-federation-cert": f.fingerprints[0] ?? "",
+    },
+    body: original.sourceJws,
+  });
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({ error: { code: "STORAGE_PRESSURE" } });
+  targetBlocked = false;
+  await f.due();
+  await f.source.advanceNext();
+  expect(await f.view(true)).toMatchObject({ state: "pending" });
+  targetBlocked = true;
+  await f.target.receive(original.sourceJws, f.fingerprints[0] ?? "");
+  await f.target.advanceNext();
+  await f.commit(true);
+  await f.target.advanceNext();
+  await expect(
+    f.sourceProposals.submit(f.actor, f.revisionId, f.sourcePolicy.id, {
+      ...f.request.proposal,
+      salt: "1".repeat(64),
+    }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await f.due();
+  await f.source.advanceNext();
+  expect((await f.view())?.state).toBe("complete");
+  await f.sourceProposals.advanceNext();
+  await f.sourceProposals.advanceNext();
+  await f.receiverProposals.advanceNext();
+  expect(
+    await db
+      .select()
+      .from(executionApprovals)
+      .where(eq(executionApprovals.recordId, f.request.proposal.reservationId)),
+  ).toHaveLength(2);
+});
+
+test("commercial storage pressure is rechecked after the market query before signing approval is persisted", async () => {
+  const f = await executionFixture();
+  let blocked = false;
+  const service = new FederationCommercialExecutionService(
+    db,
+    f.a.signing,
+    {
+      query: async () => {
+        blocked = true;
+        return { operation: "get-demand", demand: f.state };
+      },
+    },
+    undefined,
+    {
+      async assertAdmission() {
+        if (blocked) throw new FederationError("STORAGE_PRESSURE");
+      },
+    },
+  );
+  await expect(service.approve(f.actor, f.revisionId, f.reservation)).rejects.toMatchObject({
+    code: "STORAGE_PRESSURE",
+  });
+  expect(
+    await db
+      .select()
+      .from(executionApprovals)
+      .where(eq(executionApprovals.recordId, f.reservation.reservationId)),
   ).toHaveLength(0);
 });

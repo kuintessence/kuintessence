@@ -11,6 +11,7 @@ import type { FederationWorkflowMarket } from "@kuintessence/shared/federation/m
 import { and, eq } from "drizzle-orm";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import type { FederationStorageGuard } from "./storage-capacity";
 
 export type WorkflowDelegationPlan = Omit<
   FederationDelegation,
@@ -97,6 +98,44 @@ export async function assertWorkflowRequestActive(
   if (run.status !== "running") throw new FederationError("POLICY_DENIED");
 }
 
+/** Check before capturing files or deriving materials; exact intent is checked again when binding. */
+export async function assertWorkflowDelegationCapacity(
+  lease: LeasedWorkflowJournal,
+  actor: FederationActor,
+  nodeId: string,
+  invocation: NodeInvocation,
+  plan: WorkflowDelegationPlan,
+  guard?: Pick<FederationStorageGuard, "assertAdmission">,
+) {
+  if (!guard) return;
+  if (!invocation.path) throw new FederationError("INVALID_MESSAGE");
+  const path = invocation.path;
+  const pathHash = createHash("sha256").update(path).digest("hex");
+  await lease.transaction(async (tx) => {
+    await assertWorkflowDelegationOwner(tx, lease.runId, actor);
+    await requireFederationCapability(tx, actor, "delegation.submit");
+    const [existing] = await tx
+      .select()
+      .from(workflowExecutionDelegations)
+      .where(
+        and(
+          eq(workflowExecutionDelegations.runId, lease.runId),
+          eq(workflowExecutionDelegations.pathHash, pathHash),
+        ),
+      );
+    if (existing) {
+      if (
+        existing.path !== path ||
+        existing.nodeId !== nodeId ||
+        existing.localSiteId !== plan.senderSiteId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return;
+    }
+    await guard.assertAdmission(plan.mode);
+  });
+}
+
 export async function bindWorkflowDelegation(
   lease: LeasedWorkflowJournal,
   actor: FederationActor,
@@ -106,6 +145,7 @@ export async function bindWorkflowDelegation(
   admissionWindowSec: number,
   clock: () => Date,
   market?: FederationWorkflowMarket,
+  storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
 ) {
   const path = invocation.path;
   if (!path || Buffer.byteLength(path) > 16_384 || !nodeId || Buffer.byteLength(nodeId) > 1024)
@@ -147,6 +187,7 @@ export async function bindWorkflowDelegation(
         );
       return existing.request;
     }
+    await storageGuard?.assertAdmission(plan.mode);
     const now = clock();
     const request = FederationDelegationSchema.parse({
       ...snapshot.plan,

@@ -41,7 +41,8 @@ export type WorkflowWaitingReason =
   | "SOFTWARE_WAITING"
   | "REMOTE_WAITING"
   | "RESULT_WAITING"
-  | "LEDGER_WAITING";
+  | "LEDGER_WAITING"
+  | "STORAGE_WAITING";
 
 export interface WorkflowWaitingInvocation extends NodeInvocation {
   reason: WorkflowWaitingReason;

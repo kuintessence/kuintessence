@@ -36,6 +36,7 @@ import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { assertReservationCapacity } from "./reservation-capacity";
 import {
   assertReservationPolicyActive,
   FederationReservationPolicyService,
@@ -47,6 +48,7 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
 import { assertWorkflowDelegationBinding } from "./workflow-delegations";
 
@@ -78,10 +80,17 @@ export class FederationMarketRequestService {
     private readonly signing: FederationSigningKey,
     private readonly send?: FederationSend,
     private readonly market?: Pick<MarketClient, "query">,
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     this.trust = new FederationTrustRegistry(db);
     this.policies = new FederationReservationPolicyService(db, signing.siteId);
-    this.proposals = new FederationReservationProposalService(db, signing, send, market);
+    this.proposals = new FederationReservationProposalService(
+      db,
+      signing,
+      send,
+      market,
+      storageGuard,
+    );
   }
   private key(id: string) {
     return and(eq(requests.localSiteId, this.signing.siteId), eq(requests.reservationId, id));
@@ -183,6 +192,16 @@ export class FederationMarketRequestService {
     const policy = await this.policies.authorizeMarket(tx, policyId, actor.orgId, payload.proposal);
     const duplicate = await existing();
     if (duplicate) return progress(duplicate);
+    if (!workflow) {
+      await assertReservationCapacity(
+        tx,
+        this.signing.siteId,
+        actor.orgId,
+        payload.proposal,
+        this.storageGuard,
+      );
+      await this.policies.authorizeMarket(tx, policyId, actor.orgId, payload.proposal);
+    }
     if (Date.parse(payload.demand.createdAt) > Date.now() + 60000)
       throw new FederationError("INVALID_MESSAGE");
     await this.room(tx, policy, payload);
@@ -366,6 +385,21 @@ export class FederationMarketRequestService {
         );
         [row] = await tx.select().from(requests).where(this.key(payload.proposal.reservationId));
         if (!row) {
+          await assertReservationCapacity(
+            tx,
+            this.signing.siteId,
+            contract.localOrgId,
+            payload.proposal,
+            this.storageGuard,
+          );
+          await this.policies.authorizeMarket(
+            tx,
+            selected.id,
+            contract.localOrgId,
+            payload.proposal,
+          );
+          await this.trust.assertPeer(tx, fingerprint, peer.siteId, peer.keyId, new Date());
+          await verifyFederationMessage(MarketRequestSchema, jws, current, new Date());
           await this.room(tx, policy, payload);
           [row] = await tx
             .insert(requests)
@@ -749,7 +783,7 @@ export class FederationMarketRequestService {
         error.code === "LEDGER_PENDING" &&
         !error.needsReview;
       const review =
-        error instanceof FederationError ||
+        (error instanceof FederationError && error.code !== "STORAGE_PRESSURE") ||
         error instanceof z.ZodError ||
         (error instanceof FabricClientFailure && error.needsReview) ||
         (error instanceof FederationDeliveryError && error.code === "INVALID_RECEIPT_RESPONSE");

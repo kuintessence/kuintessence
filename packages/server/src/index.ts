@@ -1692,6 +1692,7 @@ const federationMarketRequests = federationSigningKey
       config.FEDERATION_MARKET_SOCKET_PATH
         ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
         : undefined,
+      federationStorageGuard,
     )
   : undefined;
 const federationOutbound =
@@ -1704,6 +1705,7 @@ const federationOutbound =
         undefined,
         federationConfirmations,
         federationMarketRequests,
+        federationStorageGuard,
       )
     : undefined;
 const federationStops = federationSigningKey
@@ -1745,6 +1747,7 @@ const federationMarket = federationSigningKey
       config.FEDERATION_MARKET_SOCKET_PATH
         ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
         : undefined,
+      federationStorageGuard,
     )
   : undefined;
 if (federationMarket) protectedApi.route("/", createFederationMarketRoutes(federationMarket));
@@ -1792,6 +1795,7 @@ const federationReservationProposals = federationSigningKey
       config.FEDERATION_MARKET_SOCKET_PATH
         ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
         : undefined,
+      federationStorageGuard,
     )
   : undefined;
 const federationApprovalExchange = federationSigningKey
@@ -1817,6 +1821,8 @@ if (federationSigningKey && federationCommercial)
         config.FEDERATION_MARKET_SOCKET_PATH
           ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
           : undefined,
+        undefined,
+        federationStorageGuard,
       ),
       federationConfirmations,
       federationStops,

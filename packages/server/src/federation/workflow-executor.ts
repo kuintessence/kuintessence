@@ -179,6 +179,7 @@ export class FederationWorkflowExecutor {
         };
       }
       if (error instanceof FederationError) {
+        if (error.code === "STORAGE_PRESSURE") throw new WorkflowNodeWaiting("STORAGE_WAITING");
         if (error.code === "DATA_WAITING") throw new WorkflowNodeWaiting(waitingReason);
         return {
           status: "Failed",

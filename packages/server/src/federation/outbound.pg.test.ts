@@ -126,6 +126,7 @@ import { FederationResultWorker } from "./result-worker";
 import { type FederationResultDownloadStorage, FederationResultResponder } from "./results";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationStatusResponder } from "./status";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
 import { lockFederationTransferSlot } from "./transfer-agent";
 import { FederationTrustRegistry } from "./trust-registry";
@@ -493,8 +494,11 @@ async function fixture(
     inputManifestDigest: inputs.digest,
     environmentLockDigest: environment.digest,
   };
-  const service = (send: FederationSend = receive) =>
-    new FederationOutboundService(db, a.signing, send, assets, clock);
+  const service = (
+    send: FederationSend = receive,
+    guard?: Pick<FederationStorageGuard, "assertAdmission">,
+  ) =>
+    new FederationOutboundService(db, a.signing, send, assets, clock, undefined, undefined, guard);
   return { terms, request, receive, sent, service, reference };
 }
 
@@ -539,6 +543,162 @@ async function workflowDelegationFixture(
   const invocation = { path: JSON.stringify(["node", "remote"]) };
   return { ...f, registry, runId, journal, lease, plan, invocation };
 }
+
+test("source storage pressure rejects new work with opaque 503 but preserves replay and delivery", async () => {
+  const f = await fixture();
+  let blocked = true;
+  const service = f.service(undefined, {
+    async assertAdmission(mode) {
+      expect(mode).toBe(f.request.mode);
+      if (blocked) throw new FederationError("STORAGE_PRESSURE");
+    },
+  });
+  const app = new Hono();
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    await next();
+  });
+  app.route("/api", createFederationOutboundRoutes(service));
+  const response = await app.request("/api/federation/outbound", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(f.request),
+  });
+  expect(response.status).toBe(503);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toEqual({ error: { code: "STORAGE_PRESSURE" } });
+  expect(
+    await db
+      .select()
+      .from(federationOutbound)
+      .where(eq(federationOutbound.operationId, f.request.operationId)),
+  ).toHaveLength(0);
+  expect(
+    await db.select().from(auditLog).where(eq(auditLog.target, f.request.operationId)),
+  ).toHaveLength(0);
+  blocked = false;
+  const accepted = await service.enqueue(actor, f.request);
+  blocked = true;
+  expect((await service.enqueue(actor, f.request)).operationId).toBe(accepted.operationId);
+  await expect(service.enqueue(actor, { ...f.request, maxAmount: "19" })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await service.deliverNext();
+  expect((await row(f.request.operationId)).state).toBe("accepted");
+});
+
+test("source storage observation cannot extend the admission authorization window", async () => {
+  const f = await fixture();
+  const service = f.service(undefined, {
+    async assertAdmission() {
+      time = new Date(Date.parse(f.request.expiresAt) + 1);
+    },
+  });
+  await expect(service.enqueue(actor, f.request)).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  expect(
+    await db
+      .select()
+      .from(federationOutbound)
+      .where(eq(federationOutbound.operationId, f.request.operationId)),
+  ).toHaveLength(0);
+});
+
+test("workflow storage pressure waits before material capture and resumes an exact durable binding", async () => {
+  const f = await workflowDelegationFixture();
+  const service = f.service(undefined, {
+    async assertAdmission() {
+      throw new FederationError("STORAGE_PRESSURE");
+    },
+  });
+  await expect(
+    service.enqueueForWorkflow(
+      actor,
+      f.lease,
+      "remote",
+      f.invocation,
+      f.plan,
+      600,
+      { value: "new" },
+      { invalid: true },
+    ),
+  ).rejects.toThrow("STORAGE_PRESSURE");
+  expect(
+    await db
+      .select()
+      .from(workflowExecutionDelegations)
+      .where(eq(workflowExecutionDelegations.runId, f.runId)),
+  ).toHaveLength(0);
+  expect(
+    await db
+      .select()
+      .from(federationWorkflowInputExports)
+      .where(eq(federationWorkflowInputExports.runId, f.runId)),
+  ).toHaveLength(0);
+  const node = workflowDsl.WorkflowNodeSchema.parse({
+    type: "Federation",
+    id: "remote",
+    name: "Remote",
+    agreementRevisionId: f.terms.agreementRevisionId,
+    template: f.reference,
+    inputManifestDigest: f.request.inputManifestDigest,
+    environmentLockDigest: f.request.environmentLockDigest,
+    resources: f.request.resources,
+    maxAmount: "1",
+  });
+  if (node.type !== "Federation") throw new Error("Missing federation node");
+  const executor = new FederationWorkflowExecutor(db, a.signing.siteId, service, clock);
+  await expect(executor.execute(actor, f.lease, node, f.invocation)).rejects.toMatchObject({
+    reason: "STORAGE_WAITING",
+  });
+  const request = await bindWorkflowDelegation(
+    f.lease,
+    actor,
+    "remote",
+    f.invocation,
+    f.plan,
+    600,
+    clock,
+  );
+  expect(
+    (await service.enqueueForWorkflow(actor, f.lease, "remote", f.invocation, f.plan, 600))
+      .operationId,
+  ).toBe(request.operationId);
+  await expect(
+    service.enqueueForWorkflow(
+      actor,
+      f.lease,
+      "remote",
+      f.invocation,
+      { ...f.plan, maxAmount: "19" },
+      600,
+    ),
+  ).rejects.toThrow("changed its delegation intent");
+  await expect(
+    service.enqueueForWorkflow(receiver, f.lease, "remote", f.invocation, f.plan, 600),
+  ).rejects.toThrow("POLICY_DENIED");
+  await f.lease.release();
+});
+
+test("workflow storage is rechecked before creating the durable binding", async () => {
+  const f = await workflowDelegationFixture();
+  let calls = 0;
+  const service = f.service(undefined, {
+    async assertAdmission() {
+      if (++calls === 2) throw new FederationError("STORAGE_PRESSURE");
+    },
+  });
+  await expect(
+    service.enqueueForWorkflow(actor, f.lease, "remote", f.invocation, f.plan, 600),
+  ).rejects.toThrow("STORAGE_PRESSURE");
+  expect(calls).toBe(2);
+  expect(
+    await db
+      .select()
+      .from(workflowExecutionDelegations)
+      .where(eq(workflowExecutionDelegations.runId, f.runId)),
+  ).toHaveLength(0);
+  await f.lease.release();
+});
 
 test("workflow delegation keeps one immutable operation across concurrent calls and recovery, with separate loop invocations", async () => {
   const f = await workflowDelegationFixture();

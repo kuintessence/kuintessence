@@ -276,7 +276,8 @@ export class FederationAdmission {
         throw new FederationError("BUDGET_EXHAUSTED");
       if (!coordinatedOrgId) assertDelegationPolicy(terms, request, this.clock());
       await assertAttestationCapacity(tx, terms, request.maxAmount, this.clock());
-      await this.storageGuard?.assertAdmission(terms.mode);
+      // Coordinated work was already admitted by the local commercial approval boundary.
+      if (terms.mode !== "ledger_coordinated") await this.storageGuard?.assertAdmission(terms.mode);
       // Recheck after blocking locks and storage observation I/O.
       await input.authorize?.(tx, this.clock());
       const confirmation = coordinatedOrgId

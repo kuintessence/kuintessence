@@ -9,6 +9,7 @@ import {
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
+import { FederationError } from "@kuintessence/shared/federation";
 import {
   type MarketAdapterProposalInput,
   type MarketAdvanceResult,
@@ -405,4 +406,72 @@ test("market directory HTTP bounds pages and distinguishes missing, unavailable 
     f.actor.userId,
   );
   expect((await app.request(base)).status).toBe(403);
+});
+
+test("market storage pressure blocks publish and claim, while replay, commit and cancellation remain available", async () => {
+  const f = await fixture();
+  let blocked = true;
+  const service = new FederationMarketService(db, f.siteId, f.adapter, {
+    async assertAdmission(mode) {
+      expect(mode).toBe("ledger_coordinated");
+      if (blocked) throw new FederationError("STORAGE_PRESSURE");
+    },
+  });
+  const app = new Hono();
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    await next();
+  });
+  app.route("/api", createFederationMarketRoutes(service));
+  const response = await app.request("/api/federation/market/operations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(f.input),
+  });
+  expect(response.status).toBe(503);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toEqual({ error: { code: "STORAGE_PRESSURE" } });
+  expect(await db.select().from(submissions).where(eq(submissions.id, f.id))).toHaveLength(0);
+  expect(await db.select().from(auditLog).where(eq(auditLog.target, f.id))).toHaveLength(0);
+  await f.permissions.set(
+    { ...f.actor, capability: "market.claim", enabled: true },
+    f.actor.userId,
+  );
+  const claim: MarketProposalInput = {
+    operation: "claim-demand",
+    claim: {
+      demandId: f.id,
+      claimId: randomUUID(),
+      providerSiteId: f.siteId,
+      expectedVersion: 1,
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+    },
+  };
+  await expect(service.enqueue(f.actor, claim)).rejects.toThrow("STORAGE_PRESSURE");
+  blocked = false;
+  await service.enqueue(f.actor, f.input);
+  blocked = true;
+  expect((await service.enqueue(f.actor, f.input)).id).toBe(f.id);
+  await expect(
+    service.enqueue(f.actor, { ...f.input, demand: { ...f.input.demand, title: "Changed" } }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await service.advanceNext();
+  await service.advanceNext();
+  await service.advanceNext();
+  expect((await f.view()).operation.state).toBe("committed");
+  const cancellation: MarketProposalInput = {
+    operation: "cancel-open-demand",
+    cancellation: {
+      demandId: f.id,
+      cancellationId: randomUUID(),
+      expectedVersion: 1,
+    },
+  };
+  await service.enqueue(f.actor, cancellation);
+  await service.advanceNext();
+  await service.advanceNext();
+  await service.advanceNext();
+  expect(
+    (await service.get(f.actor, cancellation.cancellation.cancellationId)).operation.state,
+  ).toBe("committed");
 });

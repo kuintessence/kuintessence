@@ -27,6 +27,8 @@ import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 
+import type { FederationStorageGuard } from "./storage-capacity";
+
 type Submission = typeof submissions.$inferSelect;
 type Lease = { id: string; token: string };
 class LeaseLost extends Error {}
@@ -36,6 +38,7 @@ export class FederationMarketService {
     private readonly db: PgDb,
     private readonly siteId: string,
     private readonly client?: MarketClient,
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {}
   private async claim(): Promise<Lease | null> {
     return this.db.transaction(async (tx) => {
@@ -296,6 +299,7 @@ export class FederationMarketService {
         if (published?.input.operation !== "publish-demand")
           throw new FederationError("ASSET_UNAVAILABLE");
       } else {
+        await this.storageGuard?.assertAdmission("ledger_coordinated");
         const [clock] = await tx
           .select({ now: sql<Date>`clock_timestamp()` })
           .from(users)

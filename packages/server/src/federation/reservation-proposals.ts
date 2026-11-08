@@ -24,6 +24,7 @@ import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { assertReservationCapacity } from "./reservation-capacity";
 import { FederationReservationPolicyService } from "./reservation-policy";
 import {
   type FederationSigningKey,
@@ -31,6 +32,7 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
 
 type Proposal = typeof proposals.$inferSelect;
@@ -66,10 +68,17 @@ export class FederationReservationProposalService {
     private readonly signing: FederationSigningKey,
     private readonly send?: FederationSend,
     market?: Pick<MarketClient, "query">,
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     this.trust = new FederationTrustRegistry(db);
     this.policies = new FederationReservationPolicyService(db, signing.siteId);
-    this.execution = new FederationCommercialExecutionService(db, signing, market);
+    this.execution = new FederationCommercialExecutionService(
+      db,
+      signing,
+      market,
+      undefined,
+      storageGuard,
+    );
   }
   private key(reservationId: string) {
     return and(
@@ -154,6 +163,13 @@ export class FederationReservationProposalService {
           throw new FederationError("OPERATION_CONFLICT");
         return progress(existing);
       }
+      await assertReservationCapacity(
+        tx,
+        this.signing.siteId,
+        actor.orgId,
+        payload,
+        this.storageGuard,
+      );
       await this.policies.authorize(tx, policyId, actor.orgId, payload);
       await this.execution.validatePreauthorizedIntent(tx, actor.orgId, payload);
       await this.room(tx, policyId);
@@ -236,6 +252,15 @@ export class FederationReservationProposalService {
             ),
           );
         if (!policy) throw new FederationError("POLICY_DENIED");
+        await assertReservationCapacity(
+          tx,
+          this.signing.siteId,
+          contract.localOrgId,
+          payload,
+          this.storageGuard,
+        );
+        await this.trust.assertPeer(tx, fingerprint, sender.siteId, sender.keyId, new Date());
+        await verifyFederationMessage(CommercialReservationSchema, jws, peer, new Date());
         await this.policies.authorize(tx, policy.id, contract.localOrgId, payload);
         await this.execution.validatePreauthorizedIntent(tx, contract.localOrgId, payload);
         await this.room(tx, policy.id);
@@ -497,7 +522,7 @@ export class FederationReservationProposalService {
     } catch (error) {
       if (error instanceof ProposalLeaseLost || !claim.leaseToken) return true;
       const review =
-        error instanceof FederationError ||
+        (error instanceof FederationError && error.code !== "STORAGE_PRESSURE") ||
         error instanceof z.ZodError ||
         (error instanceof FabricClientFailure && error.needsReview) ||
         (error instanceof FederationDeliveryError && error.code === "INVALID_RECEIPT_RESPONSE");

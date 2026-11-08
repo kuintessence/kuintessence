@@ -41,6 +41,7 @@ export function createFederationIngress(
   r.use("*", bodyLimit({ maxSize: 524288 }));
   r.onError((error, c) => {
     if (error instanceof FederationError) {
+      c.header("cache-control", "no-store");
       const status =
         error.code === "ATTESTATION_BACKLOG" || error.code === "STORAGE_PRESSURE"
           ? 503
@@ -141,10 +142,13 @@ export function createFederationIngress(
   r.post("/federation/v1/market-requests", async (c) => {
     if (c.req.header("content-type") !== "application/jose")
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
-    const response = await new FederationMarketRequestService(db, signingKey).receive(
-      await c.req.text(),
-      c.req.header("x-kq-federation-cert") ?? "",
-    );
+    const response = await new FederationMarketRequestService(
+      db,
+      signingKey,
+      undefined,
+      undefined,
+      storageGuard,
+    ).receive(await c.req.text(), c.req.header("x-kq-federation-cert") ?? "");
     return c.body(response, 200, {
       "content-type": "application/jose",
       "cache-control": "no-store",
@@ -153,10 +157,13 @@ export function createFederationIngress(
   r.post("/federation/v1/reservation-proposals", async (c) => {
     if (c.req.header("content-type") !== "application/jose")
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
-    const response = await new FederationReservationProposalService(db, signingKey).receive(
-      await c.req.text(),
-      c.req.header("x-kq-federation-cert") ?? "",
-    );
+    const response = await new FederationReservationProposalService(
+      db,
+      signingKey,
+      undefined,
+      undefined,
+      storageGuard,
+    ).receive(await c.req.text(), c.req.header("x-kq-federation-cert") ?? "");
     return c.body(response, 200, {
       "content-type": "application/jose",
       "cache-control": "no-store",
