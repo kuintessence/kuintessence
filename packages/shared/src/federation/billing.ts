@@ -8,6 +8,8 @@ import {
   CommercialBillSchema,
   type CommercialDiscount,
   CommercialDiscountSchema,
+  type CommercialRefund,
+  CommercialRefundSchema,
   type CommercialSettlement,
   CommercialSettlementSchema,
   type CommercialUsage,
@@ -16,6 +18,7 @@ import {
 import {
   assertDelegationTerms,
   FederationAmountSchema,
+  type FederationCancellationReceipt,
   type FederationDelegation,
   FederationDelegationSchema,
   FederationError,
@@ -223,4 +226,33 @@ export function assertCommercialAdjustment(
     throw new FederationError("OPERATION_CONFLICT");
   if (value.previousChargedAmount !== (previous?.chargedAmount ?? settlement.chargedAmount))
     throw new FederationError("OPERATION_CONFLICT");
+}
+
+/** The receipt is authenticated by the caller; stopped alone never authorizes a financial release. */
+export function assertCommercialRefund(
+  raw: CommercialRefund,
+  terms: CommercialAgreement,
+  agreementDigest: string,
+  receipt: FederationCancellationReceipt,
+) {
+  const value = CommercialRefundSchema.parse(raw),
+    request = value.request;
+  assertDelegationTerms(terms.agreement, request, new Date(request.issuedAt));
+  if (
+    value.domainId !== terms.domainId ||
+    value.agreementDigest !== agreementDigest ||
+    receipt.state !== "stopped" ||
+    receipt.workflow !== null ||
+    receipt.senderSiteId !== request.recipientSiteId ||
+    receipt.recipientSiteId !== request.senderSiteId ||
+    receipt.operationId !== request.operationId ||
+    receipt.agreementRevisionId !== request.agreementRevisionId ||
+    receipt.taskId !== request.taskId ||
+    receipt.attempt !== request.attempt ||
+    receipt.requestDigest !== value.requestDigest ||
+    Date.parse(receipt.recordedAt) < Date.parse(request.issuedAt) ||
+    Date.parse(receipt.observedAt) < Date.parse(receipt.recordedAt) ||
+    Date.parse(value.issuedAt) < Date.parse(receipt.observedAt)
+  )
+    throw new FederationError("POLICY_DENIED");
 }

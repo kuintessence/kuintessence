@@ -27,6 +27,7 @@ import type {
   CommercialBill,
   CommercialDiscount,
   CommercialExecutionApproval,
+  CommercialRefund,
   CommercialReservation,
   CommercialSettlement,
   CommercialTerminal,
@@ -114,6 +115,7 @@ export const federationSigningKeys = pgTable(
           | "commercial-bill"
           | "commercial-settlement"
           | "commercial-adjustment"
+          | "commercial-refund"
           | "terminal-query"
           | "terminal-chunk"
           | "terminal-delivery"
@@ -2370,6 +2372,53 @@ export const federationUnreservedClosures = pgTable(
       AND (${t.payload}->'demand'->>'sourceSiteId' = ${t.localSiteId}::text
         OR ${t.payload}->'claim'->>'providerSiteId' = ${t.localSiteId}::text)
     ) IS TRUE`,
+    ),
+  ],
+);
+
+/** Immutable bilateral refund consent; original task and cancellation records remain intact. */
+export const federationCommercialRefunds = pgTable(
+  "federation_commercial_refunds",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    refundId: uuid("refund_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    operationId: uuid("operation_id").notNull(),
+    payload: jsonb("payload").$type<CommercialRefund>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.refundId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    uniqueIndex("federation_refund_operation").on(t.localSiteId, t.operationId),
+    index("federation_refund_org").on(t.localSiteId, t.localOrgId, t.createdAt),
+    check(
+      "federation_refund_identity",
+      sql`(
+    ${t.digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.payload}->>'kind' = 'commercial-refund'
+    AND ${t.payload}->>'refundId' = ${t.refundId}::text
+    AND ${t.payload}->'request'->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+    AND ${t.payload}->'request'->>'operationId' = ${t.operationId}::text
+    AND ${t.payload}->'request'->>'mode' IN ('bilateral_direct','bilateral_attested')
+    AND ${t.payload}->>'releasedAmount' = ${t.payload}->'request'->>'maxAmount'
+    AND (${t.payload}->'request'->>'senderSiteId' = ${t.localSiteId}::text OR ${t.payload}->'request'->>'recipientSiteId' = ${t.localSiteId}::text)
+    AND (${t.appliedAt} IS NULL OR ${t.counterpartyJws} IS NOT NULL)) IS TRUE`,
     ),
   ],
 );

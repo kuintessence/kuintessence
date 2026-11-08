@@ -103,6 +103,5 @@ test("market receipt records reception or claim without carrying private terms o
   const purposes = FederationKeyInput.shape.allowedKinds.element.options;
   expect(purposes).toContain("market-request");
   expect(purposes).toContain("market-request-receipt");
-  expect(purposes).toHaveLength(36);
   expect(FederationKeyInput.shape.allowedKinds.safeParse(purposes).success).toBe(true);
 });

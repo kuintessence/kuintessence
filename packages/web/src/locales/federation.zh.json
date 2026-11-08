@@ -98,7 +98,8 @@
       "commercial-usage-page": "用量交换响应",
       "input-download-grant": "输入下载授权",
       "commercial-settlement": "商业额度结算",
-      "commercial-adjustment": "商业账务调整"
+      "commercial-adjustment": "商业账务调整",
+      "commercial-refund": "执行前额度退款"
     },
     "storage": {
       "title": "输入存储核对",

@@ -343,6 +343,7 @@ export class FederationCompletionCapacity {
       sql`SELECT payload->'request' AS body FROM federation_reservation_proposals WHERE local_site_id = ${this.siteId}`,
       sql`SELECT payload->'proposal'->'request' AS body FROM federation_market_requests WHERE local_site_id = ${this.siteId}`,
       sql`SELECT payload->'request' AS body FROM federation_commercial_execution_approvals WHERE local_site_id = ${this.siteId} AND payload->>'kind' = 'commercial-reservation'`,
+      sql`SELECT payload->'request' AS body FROM federation_commercial_refunds WHERE local_site_id = ${this.siteId}`,
       sql`SELECT r.request_jws AS body FROM federation_reservations r JOIN federation_agreements a ON a.revision_id = r.agreement_revision_id WHERE a.target_site_id = ${this.siteId}`,
     ];
     for (const query of tables) {

@@ -17,6 +17,7 @@ import {
   federationCertificates,
   federationCommercialApprovalSyncs,
   federationCommercialBills,
+  federationCommercialRefunds,
   federationEvidence,
   federationExecutionTerminals,
   federationMarketRequests,
@@ -146,6 +147,7 @@ import { FederationOutboundService } from "./outbound";
 import type { FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
+import { FederationRefundService } from "./refund";
 import {
   FederationReservationPolicyService,
   ReservationPolicyInputSchema,
@@ -159,7 +161,7 @@ import {
 import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTerminalAutomation } from "./terminal-automation";
 import { FederationTerminalPolicyService, TerminalPolicyInputSchema } from "./terminal-policy";
-import { testAgreement, testKeys } from "./test-fixtures";
+import { testAgreement, testDelegation, testKeys } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
 import { observeUnreservedClosure, retireUnreservedIntents } from "./unreserved-closure";
 import { FederationWorkflowExecutor } from "./workflow-executor";
@@ -441,6 +443,9 @@ afterAll(async () => {
     await db
       .delete(federationAgreementApprovals)
       .where(inArray(federationAgreementApprovals.localSiteId, siteIds));
+    await db
+      .delete(federationCommercialRefunds)
+      .where(inArray(federationCommercialRefunds.localSiteId, siteIds));
     await db.delete(contracts).where(inArray(contracts.localSiteId, siteIds));
     await db.delete(auditLog).where(eq(auditLog.orgId, f.actor.orgId));
     await db
@@ -9664,4 +9669,484 @@ test("unreserved capacity retains an active parent workflow and release auditing
   }
   expect((await f.sourceCapacity.inspect()).allocatedBytes).toBe("80");
   expect((await f.scan()).allocatedBytes).toBe("0");
+});
+
+async function refundFixture(admitted = true) {
+  const f = await fixture("bilateral_direct", true, true);
+  f.terms.agreement.budgetLimit = "90071992547409931";
+  f.terms.agreement.maxTaskAmount = "9007199254740993";
+  for (const key of [f.a, f.b]) {
+    const [row] = await db
+      .select()
+      .from(federationSigningKeys)
+      .where(eq(federationSigningKeys.keyId, key.signing.keyId));
+    if (!row) throw new Error("Missing fixture key");
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: [...row.allowedKinds, "commercial-refund"] })
+      .where(eq(federationSigningKeys.keyId, key.signing.keyId));
+  }
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "settlement.approve", enabled: true },
+    f.actor.userId,
+  );
+  const approved = await approveBoth(f);
+  const providerContract = new FederationCommercialAgreementService(db, f.b.signing);
+  await providerContract.approve(f.actor, f.terms);
+  await providerContract.attachCounterparty(f.actor, f.revisionId, approved.own.approvalJws);
+  const sourceAgreement = new FederationAgreementService(db, f.a.signing);
+  const own = await sourceAgreement.approve(f.actor, { terms: f.terms.agreement });
+  const other = await signFederationMessage(
+    FederationAgreementSchema,
+    f.terms.agreement,
+    f.b.signing,
+  );
+  await sourceAgreement.attachCounterparty(f.actor, f.revisionId, other);
+  const executionUserId = randomUUID();
+  await db.insert(users).values({
+    id: executionUserId,
+    orgId: f.actor.orgId,
+    email: `${executionUserId}@test.invalid`,
+    role: "user",
+    serviceAccount: true,
+  });
+  await db
+    .insert(userOrgMemberships)
+    .values({ userId: executionUserId, orgId: f.actor.orgId, role: "member" });
+  const aKey = await f.trust.resolveKey(f.a.signing.siteId, f.a.signing.keyId, new Date());
+  const bKey = await f.trust.resolveKey(f.b.signing.siteId, f.b.signing.keyId, new Date());
+  const admission = new FederationAdmission(db, f.b.signing, bKey);
+  await admission.installApprovedAgreement({
+    sourceApprovalJws: own.approvalJws,
+    targetApprovalJws: other,
+    sourceKey: aKey,
+    targetKey: bKey,
+    identity: { userId: executionUserId, orgId: f.actor.orgId },
+  });
+  const request = FederationDelegationSchema.parse({
+    ...testDelegation(f.terms.agreement),
+    maxAmount: f.terms.agreement.maxTaskAmount,
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 600000).toISOString(),
+  });
+  const requestJws = await signFederationMessage(FederationDelegationSchema, request, f.a.signing);
+  const verified = await verifyFederationMessage(
+    FederationDelegationSchema,
+    requestJws,
+    aKey,
+    new Date(),
+  );
+  const accepted = admitted
+    ? await admission.receive({
+        requestJws,
+        authenticatedPeerSiteId: f.a.signing.siteId,
+        senderKey: aKey,
+      })
+    : null;
+  const receipt = accepted
+    ? (
+        await verifyFederationMessage(
+          FederationAcceptanceSchema,
+          accepted.receiptJws,
+          bKey,
+          new Date(),
+        )
+      ).payload
+    : null;
+  const cancel = FederationCancellationSchema.parse({
+    protocolVersion: 1,
+    kind: "cancellation",
+    operationId: request.operationId,
+    senderSiteId: request.senderSiteId,
+    recipientSiteId: request.recipientSiteId,
+    agreementRevisionId: f.revisionId,
+    taskId: request.taskId,
+    attempt: request.attempt,
+    requestDigest: verified.digest,
+    issuedAt: new Date().toISOString(),
+  });
+  const cancelJws = await signFederationMessage(FederationCancellationSchema, cancel, f.a.signing);
+  const cancellation = await verifyFederationMessage(
+    FederationCancellationSchema,
+    cancelJws,
+    aKey,
+    new Date(),
+  );
+  const recordedAt = new Date();
+  const { issuedAt: _cancelIssuedAt, ...cancelIdentity } = cancel;
+  const cancelReceipt = FederationCancellationReceiptSchema.parse({
+    ...cancelIdentity,
+    kind: "cancellation-receipt",
+    senderSiteId: request.recipientSiteId,
+    recipientSiteId: request.senderSiteId,
+    cancellationDigest: cancellation.digest,
+    recordedAt: recordedAt.toISOString(),
+    observedAt: recordedAt.toISOString(),
+    reservationId: accepted?.reservationId ?? null,
+    state: "stopped",
+    workflow: null,
+  });
+  const cancelReceiptJws = await signFederationMessage(
+    FederationCancellationReceiptSchema,
+    cancelReceipt,
+    f.b.signing,
+  );
+  await db.insert(federationCancellations).values({
+    localSiteId: f.b.signing.siteId,
+    senderSiteId: f.a.signing.siteId,
+    operationId: request.operationId,
+    agreementRevisionId: f.revisionId,
+    requestDigest: verified.digest,
+    cancellationDigest: cancellation.digest,
+    request: cancel,
+    requestJws: cancelJws,
+    recordedAt,
+    confirmedAt: recordedAt,
+  });
+  await db.insert(federationOutbound).values({
+    localSiteId: f.a.signing.siteId,
+    operationId: request.operationId,
+    agreementRevisionId: f.revisionId,
+    localOrgId: f.actor.orgId,
+    submittedBy: f.actor.userId,
+    taskId: request.taskId,
+    attempt: request.attempt,
+    budgetDomainId: request.budgetDomainId,
+    epoch: request.epoch,
+    amount: request.maxAmount,
+    endpoint: "https://test.invalid",
+    request,
+    requestDigest: verified.digest,
+    requestJws,
+    receipt,
+    receiptJws: accepted?.receiptJws ?? null,
+    state: admitted ? "accepted" : "queued",
+    cancelRequest: cancel,
+    cancelJws,
+    cancelDigest: cancellation.digest,
+    cancelRequestedBy: f.actor.userId,
+    cancelState: "stopped",
+    cancelReceipt,
+    cancelReceiptJws,
+    cancelNextAttemptAt: recordedAt,
+  });
+  const source = new FederationRefundService(db, f.a.signing),
+    provider = new FederationRefundService(db, f.b.signing);
+  const value = await source.draft(
+    f.actor,
+    f.revisionId,
+    request.operationId,
+    randomUUID(),
+    "Cancelled before execution",
+  );
+  const budget = async () =>
+    (
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, request.budgetDomainId))
+    )[0];
+  return { ...f, source, provider, value, request, requestJws, accepted, admission, aKey, budget };
+}
+
+test.each([
+  true,
+  false,
+])("bilateral refund applies once after both financial signatures, preserves cancellation and original admission (admitted=%s)", async (admitted) => {
+  const f = await refundFixture(admitted);
+  const before = await f.budget();
+  const a = await f.source.approve(f.actor, f.revisionId, f.value);
+  const b = await f.provider.approve(f.actor, f.revisionId, f.value);
+  expect(await f.budget()).toEqual(before);
+  await Promise.all([
+    f.provider.attachCounterparty(f.actor, f.revisionId, f.value.refundId, a.approvalJws),
+    f.provider.attachCounterparty(f.actor, f.revisionId, f.value.refundId, a.approvalJws),
+  ]);
+  await f.source.attachCounterparty(f.actor, f.revisionId, f.value.refundId, b.approvalJws);
+  const restarted = new FederationRefundService(db, f.b.signing);
+  await restarted.attachCounterparty(f.actor, f.revisionId, f.value.refundId, a.approvalJws);
+  expect(await f.budget()).toMatchObject({
+    available: f.terms.agreement.budgetLimit,
+    reserved: "0",
+    spent: "0",
+  });
+  const [operation] = await db
+    .select()
+    .from(federationOutbound)
+    .where(eq(federationOutbound.operationId, f.request.operationId));
+  expect(operation).toMatchObject({
+    settledAmount: "0",
+    amount: f.request.maxAmount,
+    cancelState: "stopped",
+    state: admitted ? "accepted" : "queued",
+  });
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data[0]?.appliedAt).toBeInstanceOf(
+    Date,
+  );
+  expect(
+    await db
+      .select()
+      .from(submissions)
+      .where(inArray(submissions.localSiteId, [f.a.signing.siteId, f.b.signing.siteId])),
+  ).toHaveLength(0);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(eq(auditLog.orgId, f.actor.orgId), eq(auditLog.action, "federation.refund.apply")),
+      ),
+  ).toHaveLength(2);
+  await expect(
+    f.provider.approve(f.actor, f.revisionId, { ...f.value, refundId: randomUUID() }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  if (admitted) {
+    if (!f.accepted) throw new Error("Missing admission fixture");
+    expect(
+      (
+        await f.admission.receive({
+          requestJws: f.requestJws,
+          authenticatedPeerSiteId: f.a.signing.siteId,
+          senderKey: f.aKey,
+        })
+      ).reservationId,
+    ).toBe(f.accepted.reservationId);
+    const [reservation] = await db
+      .select()
+      .from(federationReservations)
+      .where(eq(federationReservations.id, f.accepted.reservationId));
+    expect(reservation).toMatchObject({ settledAmount: "0", amount: f.request.maxAmount });
+  } else
+    await expect(
+      f.admission.receive({
+        requestJws: f.requestJws,
+        authenticatedPeerSiteId: f.a.signing.siteId,
+        senderKey: f.aKey,
+      }),
+    ).rejects.toThrow("CANCELLATION_REQUESTED");
+  expect(await f.budget()).toMatchObject({
+    available: f.terms.agreement.budgetLimit,
+    reserved: "0",
+    spent: "0",
+  });
+});
+
+test("bilateral refund needs a distinct financial grant and explicit key purpose, not cancellation authority", async () => {
+  const f = await refundFixture();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "settlement.approve", enabled: false },
+    f.actor.userId,
+  );
+  await expect(f.source.approve(f.actor, f.revisionId, f.value)).rejects.toThrow("POLICY_DENIED");
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "settlement.approve", enabled: true },
+    f.actor.userId,
+  );
+  const [key] = await db
+    .select()
+    .from(federationSigningKeys)
+    .where(eq(federationSigningKeys.keyId, f.a.signing.keyId));
+  if (!key) throw new Error("Missing key");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: key.allowedKinds.filter((v) => v !== "commercial-refund") })
+    .where(eq(federationSigningKeys.keyId, f.a.signing.keyId));
+  await expect(f.source.approve(f.actor, f.revisionId, f.value)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+});
+
+test("bilateral refund refuses an executed workflow even when a stale signed cancellation receipt says no workflow", async () => {
+  const f = await refundFixture();
+  if (!f.accepted) throw new Error("Missing admission");
+  await db.insert(workflowRuns).values({
+    id: randomUUID(),
+    submittedBy: f.actor.userId,
+    name: "Cancelled refund fixture",
+    status: "cancelled",
+    input: {
+      federationReservationId: f.accepted.reservationId,
+      yaml: "",
+      role: "user",
+      orgId: f.actor.orgId,
+    },
+  });
+  await expect(f.provider.approve(f.actor, f.revisionId, f.value)).rejects.toThrow("DATA_WAITING");
+  expect((await f.budget())?.reserved).toBe(f.request.maxAmount);
+});
+
+test("bilateral refund rejects altered task, amount, signature and institution before changing any balance", async () => {
+  const f = await refundFixture();
+  const before = await f.budget();
+  await expect(
+    f.source.approve(f.actor, f.revisionId, { ...f.value, releasedAmount: "1" }),
+  ).rejects.toThrow();
+  await expect(
+    f.provider.approve(f.actor, f.revisionId, {
+      ...f.value,
+      request: { ...f.request, taskId: randomUUID() },
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.source.approve({ ...f.actor, orgId: randomUUID() }, f.revisionId, f.value),
+  ).rejects.toThrow();
+  const a = await f.source.approve(f.actor, f.revisionId, f.value);
+  await expect(
+    f.source.attachCounterparty(f.actor, f.revisionId, f.value.refundId, a.approvalJws),
+  ).rejects.toThrow();
+  expect(await f.budget()).toEqual(before);
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data[0]?.appliedAt).toBeNull();
+});
+
+test("bilateral refund rolls back signatures, budget and applied marker when the application audit fails", async () => {
+  const f = await refundFixture();
+  const a = await f.source.approve(f.actor, f.revisionId, f.value);
+  await f.provider.approve(f.actor, f.revisionId, f.value);
+  const before = await f.budget();
+  await db.execute(
+    sql`CREATE FUNCTION refund_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.refund.apply' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER refund_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION refund_audit_fail()`,
+  );
+  try {
+    await expect(
+      f.provider.attachCounterparty(f.actor, f.revisionId, f.value.refundId, a.approvalJws),
+    ).rejects.toThrow();
+  } finally {
+    await db.execute(sql`DROP TRIGGER refund_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION refund_audit_fail()`);
+  }
+  expect(await f.budget()).toEqual(before);
+  expect((await f.provider.list(f.actor, f.revisionId, 10, 0)).data[0]).toMatchObject({
+    appliedAt: null,
+    counterpartyJws: null,
+  });
+  await f.provider.attachCounterparty(f.actor, f.revisionId, f.value.refundId, a.approvalJws);
+  expect((await f.budget())?.reserved).toBe("0");
+});
+
+test("bilateral refund rejects pending cancellation and altered stored approval bytes", async () => {
+  const f = await refundFixture();
+  const original = await db
+    .select()
+    .from(federationCancellations)
+    .where(eq(federationCancellations.operationId, f.request.operationId));
+  await db
+    .update(federationCancellations)
+    .set({ confirmedAt: null })
+    .where(eq(federationCancellations.operationId, f.request.operationId));
+  await expect(f.provider.approve(f.actor, f.revisionId, f.value)).rejects.toThrow("DATA_WAITING");
+  await db
+    .update(federationCancellations)
+    .set({ confirmedAt: original[0]?.confirmedAt })
+    .where(eq(federationCancellations.operationId, f.request.operationId));
+  const a = await f.source.approve(f.actor, f.revisionId, f.value);
+  await f.provider.approve(f.actor, f.revisionId, f.value);
+  await db
+    .update(federationCommercialRefunds)
+    .set({ payload: { ...f.value, reason: "Changed after signature" } })
+    .where(
+      and(
+        eq(federationCommercialRefunds.localSiteId, f.b.signing.siteId),
+        eq(federationCommercialRefunds.refundId, f.value.refundId),
+      ),
+    );
+  await expect(
+    f.provider.attachCounterparty(f.actor, f.revisionId, f.value.refundId, a.approvalJws),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect((await f.budget())?.reserved).toBe(f.request.maxAmount);
+});
+
+test("bilateral refund HTTP requires a human financial approver and returns private no-store history", async () => {
+  const f = await refundFixture(false);
+  let human = true,
+    automation = false;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ level: "silent" })));
+  app.use("*", async (c, next) => {
+    if (human)
+      c.set("principal" as never, { userId: f.actor.userId, orgId: f.actor.orgId } as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route(
+    "/api",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      f.source,
+    ),
+  );
+  const path = `/api/federation/commercial-agreements/${f.revisionId}/refunds`;
+  const post = () =>
+    app.request(`${path}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(f.value),
+    });
+  human = false;
+  expect((await post()).status).toBe(403);
+  human = true;
+  automation = true;
+  expect((await post()).status).toBe(403);
+  automation = false;
+  const approved = await post();
+  expect(approved.status).toBe(201);
+  expect(approved.headers.get("cache-control")).toBe("no-store");
+  const record = await f.provider.approve(f.actor, f.revisionId, f.value);
+  const applied = await app.request(`${path}/${f.value.refundId}/counterparty`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ approvalJws: record.approvalJws }),
+  });
+  expect(applied.status).toBe(200);
+  const list = await app.request(path);
+  expect(list.status).toBe(200);
+  expect(list.headers.get("cache-control")).toBe("no-store");
+  expect(JSON.stringify(await list.json())).toContain(f.value.refundId);
+});
+
+test("bilateral refund does not silently enable asynchronous ledger mode before its outbox is supported", async () => {
+  const f = await fixture("bilateral_attested");
+  await approveBoth(f);
+  const refunds = new FederationRefundService(db, f.a.signing);
+  await expect(
+    refunds.draft(f.actor, f.revisionId, randomUUID(), randomUUID(), "Unsupported mode"),
+  ).rejects.toThrow("POLICY_DENIED");
+});
+
+test("bilateral refund historical unadmitted approval is counted when completion capacity is enabled later", async () => {
+  const f = await refundFixture(false);
+  await f.provider.approve(f.actor, f.revisionId, f.value);
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const storage = testCompletionStorage();
+  const capacity = new FederationCompletionCapacity(db, f.b.signing.siteId, storage.guard);
+  await capacity.configure(
+    { reserveId: storage.reserveId, capacityBytes: "100", taskBytes: "60", marketBytes: "20" },
+    f.actor.userId,
+  );
+  expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
+  await capacity.advanceNext();
+  expect((await capacity.inspect()).allocatedBytes).toBe("60");
 });

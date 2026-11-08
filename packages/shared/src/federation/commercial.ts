@@ -242,6 +242,28 @@ export const CommercialBillSchema = z
   );
 export type CommercialBill = z.infer<typeof CommercialBillSchema>;
 
+/** A separate financial approval for a permanently cancelled task that never created a workflow. */
+export const CommercialRefundSchema = z
+  .strictObject({
+    protocolVersion: z.literal(1),
+    kind: z.literal("commercial-refund"),
+    refundId: Id,
+    domainId: Id,
+    agreementDigest: FederationDigestSchema,
+    request: FederationDelegationSchema,
+    requestDigest: FederationDigestSchema,
+    cancellationReceiptJws: z.string().min(1).max(524288),
+    releasedAmount: FederationAmountSchema,
+    issuedAt: z.iso.datetime(),
+    salt: Salt,
+    reason: z.string().trim().min(1).max(4096),
+  })
+  .refine(
+    (v) => v.request.mode !== "ledger_coordinated" && v.releasedAmount === v.request.maxAmount,
+    "Only full bilateral pre-execution refunds are allowed",
+  );
+export type CommercialRefund = z.infer<typeof CommercialRefundSchema>;
+
 /** A separately approved allocation settlement, never proof of bank payment or a new credit issue. */
 export const CommercialSettlementSchema = z
   .strictObject({

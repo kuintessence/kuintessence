@@ -98,7 +98,8 @@
       "commercial-usage-page": "Usage exchange response",
       "input-download-grant": "Input download grant",
       "commercial-settlement": "Commercial allocation settlement",
-      "commercial-adjustment": "Commercial charge adjustment"
+      "commercial-adjustment": "Commercial charge adjustment",
+      "commercial-refund": "Pre-execution allocation refund"
     },
     "storage": {
       "title": "Input storage reconciliation",

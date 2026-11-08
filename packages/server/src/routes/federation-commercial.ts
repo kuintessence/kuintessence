@@ -7,6 +7,7 @@ import {
   CommercialBillSchema,
   CommercialDiscountSchema,
   CommercialExecutionApprovalSchema,
+  CommercialRefundSchema,
   CommercialReservationSchema,
   CommercialSettlementSchema,
   CommercialUsageCorrectionInputSchema,
@@ -36,6 +37,7 @@ import type { FederationTerminalExchange } from "../federation/execution-termina
 import { FabricClientFailure } from "../federation/fabric-client";
 import type { FederationMarketRequestService } from "../federation/market-requests";
 import type { FederationActor } from "../federation/permissions";
+import type { FederationRefundService } from "../federation/refund";
 import {
   type FederationReservationPolicyService,
   ReservationPolicyInputSchema,
@@ -72,6 +74,7 @@ export function createFederationCommercialRoutes(
   closingPolicies?: FederationClosingPolicyService,
   closing?: FederationClosingAutomation,
   adjustments?: FederationAdjustmentService,
+  refunds?: FederationRefundService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -170,6 +173,74 @@ export function createFederationCommercialRoutes(
             c.get("federationActor"),
             c.req.valid("param").revisionId,
             c.req.valid("param").adjustmentId,
+            c.req.valid("json").approvalJws,
+          ),
+        }),
+    );
+  }
+  if (refunds) {
+    const path = "/federation/commercial-agreements/:revisionId/refunds";
+    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) => {
+      const { limit, offset } = c.req.valid("query");
+      return c.json({
+        data: await refunds.list(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          limit,
+          offset,
+        ),
+      });
+    });
+    r.post(
+      `${path}/draft`,
+      kqValidator("param", id),
+      kqValidator(
+        "json",
+        z.strictObject({
+          operationId: z.uuid(),
+          refundId: z.uuid(),
+          reason: z.string().trim().min(1).max(4096),
+        }),
+      ),
+      async (c) => {
+        const input = c.req.valid("json");
+        return c.json({
+          data: await refunds.draft(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            input.operationId,
+            input.refundId,
+            input.reason,
+          ),
+        });
+      },
+    );
+    r.post(
+      `${path}/approve`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialRefundSchema),
+      async (c) =>
+        c.json(
+          {
+            data: await refunds.approve(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("json"),
+            ),
+          },
+          201,
+        ),
+    );
+    r.post(
+      `${path}/:refundId/counterparty`,
+      kqValidator("param", id.extend({ refundId: z.uuid() })),
+      kqValidator("json", z.strictObject({ approvalJws: z.string().min(1).max(524288) })),
+      async (c) =>
+        c.json({
+          data: await refunds.attachCounterparty(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").refundId,
             c.req.valid("json").approvalJws,
           ),
         }),
