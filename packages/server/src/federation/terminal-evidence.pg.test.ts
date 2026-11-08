@@ -20,6 +20,7 @@ import {
   federationCertificates,
   federationClosingPolicies,
   federationClosingTasks,
+  federationCommercialAdjustments,
   federationCommercialAgreements,
   federationCommercialApprovalSyncs,
   federationCommercialAttempts,
@@ -53,6 +54,7 @@ import {
   type FederationAgreement,
 } from "@kuintessence/shared/federation";
 import {
+  CommercialAdjustmentSchema,
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialDiscountSchema,
@@ -69,6 +71,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
+import type { z } from "zod";
 import { createErrorHandler } from "../middleware/error-handler";
 import { federationOrganizationContext } from "../middleware/federation-organization";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
@@ -76,6 +79,7 @@ import { revokeDataDeliveryJobs } from "../services/data-delivery";
 import { DataGrantRevocationCoordinator } from "../services/data-delivery-revocations";
 import { JobService } from "../services/job-service";
 import { FederationAccountingCollection } from "./accounting-collection";
+import { FederationAdjustmentService } from "./adjustment";
 import { federationMaterialDigest } from "./assets";
 import { FederationBillingService } from "./billing";
 import { FederationClosingAutomation } from "./closing-automation";
@@ -4635,3 +4639,589 @@ test("federation CLI real HTTP and PostgreSQL preserve organization and independ
     payload: { chargedAmount: f.draft.chargedAmount },
   });
 }, 30000);
+
+async function adjustmentServiceFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await settlementFixture(mode),
+    signed = await f.approve();
+  await f.providerSettlement.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.draft.settlementId,
+    signed.source.approvalJws,
+  );
+  await f.sourceSettlement.attachCounterparty(
+    f.sourceActor,
+    f.revisionId,
+    f.draft.settlementId,
+    signed.provider.approvalJws,
+  );
+  cleanup.push(async () => {
+    for (const siteId of [f.source.signing.siteId, f.provider.signing.siteId]) {
+      await db
+        .delete(federationCommercialAdjustments)
+        .where(eq(federationCommercialAdjustments.localSiteId, siteId));
+      await db.delete(auditLog).where(eq(auditLog.actor, `adjustment:${siteId}`));
+    }
+  });
+  for (const [keys, actor] of [
+    [f.source, f.sourceActor],
+    [f.provider, f.actor],
+  ] as const) {
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-adjustment"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, keys.signing.siteId));
+    await new FederationPermissionService(db).set(
+      { ...actor, capability: "adjustment.approve", enabled: true },
+      actor.userId,
+    );
+  }
+  const providerAdjustment = new FederationAdjustmentService(db, f.provider.signing),
+    sourceAdjustment = new FederationAdjustmentService(db, f.source.signing);
+  const make = (amount: string) =>
+    providerAdjustment.draft(f.actor, f.revisionId, {
+      settlementId: f.draft.settlementId,
+      adjustmentId: randomUUID(),
+      chargedAmount: amount,
+      reason: "Agreed correction",
+      supportingEvidenceDigest: null,
+    });
+  const approve = async (value: ReturnType<typeof CommercialAdjustmentSchema.parse>) => ({
+    provider: await providerAdjustment.approve(f.actor, f.revisionId, value),
+    source: await sourceAdjustment.approve(f.sourceActor, f.revisionId, value),
+  });
+  const attach = async (signed: Awaited<ReturnType<typeof approve>>) => {
+    await providerAdjustment.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      signed.provider.adjustmentId,
+      signed.source.approvalJws,
+    );
+    await sourceAdjustment.attachCounterparty(
+      f.sourceActor,
+      f.revisionId,
+      signed.source.adjustmentId,
+      signed.provider.approvalJws,
+    );
+  };
+  const sourceProjection = async () =>
+    (
+      await db
+        .select()
+        .from(federationOutbound)
+        .where(
+          and(
+            eq(federationOutbound.localSiteId, f.source.signing.siteId),
+            eq(federationOutbound.operationId, f.operationId),
+          ),
+        )
+    )[0];
+  return {
+    ...f,
+    providerAdjustment,
+    sourceAdjustment,
+    make,
+    approveAdjustment: approve,
+    attachAdjustment: attach,
+    sourceProjection,
+  };
+}
+
+test("adjustment direct credits only after dual approval then holds and applies a debit without rewriting originals", async () => {
+  const f = await adjustmentServiceFixture(),
+    value = await f.make("40");
+  const originalBill = (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill;
+  const originalSettlement = (await f.providerSettlement.list(f.actor, f.revisionId, 10, 0)).data[0]
+    ?.settlement;
+  const signed = await f.approveAdjustment(value);
+  expect(await f.budget()).toMatchObject({ available: "47", reserved: "0", spent: "53" });
+  expect(signed.provider).toMatchObject({ heldAmount: "0", appliedAt: null, number: 1 });
+  await f.attachAdjustment(signed);
+  expect(await f.budget()).toMatchObject({ available: "60", reserved: "0", spent: "40" });
+  const next = await f.make("55"),
+    debit = await f.approveAdjustment(next);
+  expect(next.previous).toEqual({
+    adjustmentId: value.adjustmentId,
+    digest: signed.provider.digest,
+  });
+  expect(await f.budget()).toMatchObject({ available: "45", reserved: "15", spent: "40" });
+  expect(await f.sourceProjection()).toMatchObject({
+    settledAmount: "40",
+    adjustmentHeldAmount: "15",
+  });
+  await expect(f.make("1")).rejects.toThrow("DATA_WAITING");
+  await f.attachAdjustment(debit);
+  expect(await f.budget()).toMatchObject({ available: "45", reserved: "0", spent: "55" });
+  expect(await f.sourceProjection()).toMatchObject({
+    settledAmount: "55",
+    adjustmentHeldAmount: "0",
+  });
+  await f.attachAdjustment(signed);
+  await f.attachAdjustment(debit);
+  await f.approveAdjustment(value);
+  expect(await f.budget()).toMatchObject({ available: "45", reserved: "0", spent: "55" });
+  expect((await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill).toEqual(
+    originalBill,
+  );
+  expect(
+    (await f.providerSettlement.list(f.actor, f.revisionId, 10, 0)).data[0]?.settlement,
+  ).toEqual(originalSettlement);
+  expect(
+    (await f.providerAdjustment.list(f.actor, f.revisionId, 10, 0)).data.every(
+      (v) => v.ledger === null,
+    ),
+  ).toBe(true);
+});
+test("adjustment concurrent approvals hold the debit once and reject a fork at the same predecessor", async () => {
+  const f = await adjustmentServiceFixture(),
+    value = await f.make("60");
+  const rows = await Promise.all(
+    Array.from({ length: 4 }, () => f.providerAdjustment.approve(f.actor, f.revisionId, value)),
+  );
+  expect(new Set(rows.map((r) => r.approvalJws)).size).toBe(1);
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "7", spent: "53" });
+  await expect(
+    f.providerAdjustment.approve(f.actor, f.revisionId, {
+      ...value,
+      adjustmentId: randomUUID(),
+      chargedAmount: "59",
+    }),
+  ).rejects.toThrow();
+  expect((await f.providerAdjustment.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(1);
+});
+test("adjustment debit requires available provider and source budget before granting a signature", async () => {
+  const f = await adjustmentServiceFixture(),
+    value = await f.make("60");
+  await db
+    .update(federationBudgets)
+    .set({ available: "0", reserved: "47" })
+    .where(eq(federationBudgets.domainId, f.terms.budgetDomainId));
+  await expect(f.providerAdjustment.approve(f.actor, f.revisionId, value)).rejects.toThrow(
+    "BUDGET_EXHAUSTED",
+  );
+  expect((await f.providerAdjustment.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  // Separate local source quota consumption is represented by another queued delegation.
+  const source = await f.sourceProjection();
+  if (!source) throw new Error("Missing source");
+  const operationId = randomUUID(),
+    taskId = randomUUID();
+  cleanup.push(async () => {
+    await db.delete(federationOutbound).where(eq(federationOutbound.operationId, operationId));
+  });
+  await db.insert(federationOutbound).values({
+    ...source,
+    operationId,
+    taskId,
+    amount: "47",
+    settledAmount: null,
+    request: { ...source.request, operationId, taskId, maxAmount: "47" },
+    state: "queued",
+    receipt: null,
+    receiptJws: null,
+    statusReport: null,
+    statusReportJws: null,
+    statusVerifiedAt: null,
+    statusClaim: null,
+    statusLastError: null,
+    requestDigest: `sha256:${"f".repeat(64)}`,
+  });
+  await expect(f.sourceAdjustment.approve(f.sourceActor, f.revisionId, value)).rejects.toThrow(
+    "BUDGET_EXHAUSTED",
+  );
+  expect((await f.sourceProjection())?.adjustmentHeldAmount).toBe("0");
+});
+test("adjustment independent authority, organization and original identity cannot be bypassed", async () => {
+  const f = await adjustmentServiceFixture(),
+    value = await f.make("40");
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "adjustment.approve", enabled: false },
+    f.userId,
+  );
+  await expect(f.providerAdjustment.approve(f.actor, f.revisionId, value)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "adjustment.approve", enabled: true },
+    f.userId,
+  );
+  await expect(f.providerAdjustment.approve(f.sourceActor, f.revisionId, value)).rejects.toThrow();
+  for (const patch of [
+    { billDigest: `sha256:${"f".repeat(64)}` },
+    { settlementDigest: `sha256:${"f".repeat(64)}` },
+    { previousChargedAmount: "52" },
+    { chargedAmount: "61" },
+    { unit: "other.micro" },
+    { sourceSiteId: randomUUID() },
+  ])
+    await expect(
+      f.providerAdjustment.approve(f.actor, f.revisionId, { ...value, ...patch }),
+    ).rejects.toThrow();
+  expect((await f.providerAdjustment.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  expect(await f.budget()).toMatchObject({ available: "47", reserved: "0", spent: "53" });
+});
+test("adjustment mismatched counterpart signature retains the original hold and does not apply", async () => {
+  const f = await adjustmentServiceFixture(),
+    value = await f.make("60"),
+    saved = await f.providerAdjustment.approve(f.actor, f.revisionId, value);
+  const changed = await signFederationMessage(
+    CommercialAdjustmentSchema,
+    { ...value, chargedAmount: "59" },
+    f.source.signing,
+  );
+  await expect(
+    f.providerAdjustment.attachCounterparty(f.actor, f.revisionId, value.adjustmentId, changed),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect(
+    (await f.providerAdjustment.list(f.actor, f.revisionId, 10, 0)).data[0]?.adjustment,
+  ).toMatchObject({ approvalJws: saved.approvalJws, counterpartyJws: null, appliedAt: null });
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "7", spent: "53" });
+});
+test("adjustment attested accounting proceeds without a ledger client and persists the original evidence obligation", async () => {
+  const f = await adjustmentServiceFixture("bilateral_attested"),
+    value = await f.make("40"),
+    signed = await f.approveAdjustment(value);
+  await f.attachAdjustment(signed);
+  const view = (await f.providerAdjustment.list(f.actor, f.revisionId, 10, 0)).data[0];
+  expect(view?.ledger).toMatchObject({ state: "pending" });
+  expect(view?.adjustment.appliedAt).toBeInstanceOf(Date);
+  expect(await f.budget()).toMatchObject({ available: "60", reserved: "0", spent: "40" });
+  expect(
+    (await f.sourceAdjustment.list(f.sourceActor, f.revisionId, 10, 0)).data[0]?.ledger,
+  ).toBeNull();
+});
+
+test("adjustment failed approval and application roll back financial holds, signatures and audit", async () => {
+  const f = await adjustmentServiceFixture(),
+    value = await f.make("60");
+  await db.execute(
+    sql`alter table audit_log add constraint test_adjustment_failure check (action <> 'federation.adjustment.approve')`,
+  );
+  try {
+    await expect(f.providerAdjustment.approve(f.actor, f.revisionId, value)).rejects.toThrow();
+    await expect(f.sourceAdjustment.approve(f.sourceActor, f.revisionId, value)).rejects.toThrow();
+    expect(await f.budget()).toMatchObject({ available: "47", reserved: "0", spent: "53" });
+    expect((await f.sourceProjection())?.adjustmentHeldAmount).toBe("0");
+    expect((await f.providerAdjustment.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_adjustment_failure`);
+  }
+  const signed = await f.approveAdjustment(value);
+  await db.execute(
+    sql`alter table audit_log add constraint test_adjustment_failure check (action <> 'federation.adjustment.apply')`,
+  );
+  try {
+    await expect(f.attachAdjustment(signed)).rejects.toThrow();
+    expect(await f.budget()).toMatchObject({ available: "40", reserved: "7", spent: "53" });
+    expect(
+      (await f.providerAdjustment.list(f.actor, f.revisionId, 10, 0)).data[0]?.adjustment,
+    ).toMatchObject({ counterpartyJws: null, appliedAt: null });
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_adjustment_failure`);
+  }
+  await f.attachAdjustment(signed);
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "0", spent: "60" });
+});
+test("adjustment HTTP enforces separate human capability, original scope and private response caching", async () => {
+  const f = await adjustmentServiceFixture();
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.provider.signing),
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  deps[19] = f.providerAdjustment;
+  const app = new Hono();
+  let automation = false,
+    actor = f.actor;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...deps));
+  const path = `/federation/commercial-agreements/${f.revisionId}/adjustments`;
+  const post = (suffix: string, value: unknown) =>
+    app.request(`${path}/${suffix}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(value),
+    });
+  const draft = await post("draft", {
+    settlementId: f.draft.settlementId,
+    adjustmentId: randomUUID(),
+    chargedAmount: "40",
+    reason: "Agreed adjustment",
+    supportingEvidenceDigest: null,
+  });
+  expect(draft.status).toBe(200);
+  const value = (
+    (await draft.json()) as { data: ReturnType<typeof CommercialAdjustmentSchema.parse> }
+  ).data;
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "adjustment.approve", enabled: false },
+    f.userId,
+  );
+  expect((await post("approve", value)).status).toBe(403);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "adjustment.approve", enabled: true },
+    f.userId,
+  );
+  automation = true;
+  expect((await post("approve", value)).status).toBe(403);
+  automation = false;
+  expect((await post("approve", value)).status).toBe(201);
+  expect((await post("approve", { ...value, chargedAmount: "1.5" })).status).toBe(400);
+  const response = await app.request(`${path}?recordId=${value.adjustmentId}`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toMatchObject({
+    data: { data: [{ adjustment: { adjustmentId: value.adjustmentId } }], hasMore: false },
+  });
+  actor = f.sourceActor;
+  expect((await app.request(path)).status).toBe(409);
+});
+test("adjustment worker waits for the original settlement receipt and attestation never reapplies a local debit", async () => {
+  const f = await adjustmentServiceFixture("bilateral_attested"),
+    value = await f.make("60"),
+    signed = await f.approveAdjustment(value);
+  await f.attachAdjustment(signed);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(
+      and(
+        eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId),
+        sql`${federationCommercialSubmissions.input}->>'operation' <> 'adjust-settlement'`,
+      ),
+    );
+  let ready = false,
+    prepared = false,
+    prepares = 0;
+  const txid = "a".repeat(64),
+    worker = new FederationCommercialSubmissionService(db, f.provider.signing.siteId, {
+      receipt: async (query) => {
+        expect(query.recordType).toBe("settlement");
+        return {
+          receipt: ready ? { recordId: value.settlementId, digest: value.settlementDigest } : null,
+        };
+      },
+      prepare: async (input) => {
+        expect(input.operation).toBe("adjust-settlement");
+        prepares++;
+        return { transactionId: txid, recovery: "proposal" };
+      },
+      advance: async () => {
+        if (!prepared) {
+          prepared = true;
+          return {
+            state: "prepared",
+            transactionId: txid,
+            recovery: Buffer.from("transaction").toString("base64"),
+          };
+        }
+        return { state: "committed", transactionId: txid, blockNumber: "100" };
+      },
+    });
+  await worker.advanceNext();
+  expect(prepares).toBe(0);
+  const view = async () => (await f.providerAdjustment.list(f.actor, f.revisionId, 10, 0)).data[0];
+  expect((await view())?.ledger).toMatchObject({ state: "pending", lastError: "LEDGER_PENDING" });
+  ready = true;
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ nextAttemptAt: sql`clock_timestamp()` })
+    .where(eq(federationCommercialSubmissions.id, (await view())?.ledger?.id ?? ""));
+  await worker.advanceNext();
+  await worker.advanceNext();
+  await worker.advanceNext();
+  expect((await view())?.ledger).toMatchObject({ state: "committed" });
+  expect(prepares).toBe(1);
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "0", spent: "60" });
+  expect(await worker.advanceNext()).toBe(false);
+});
+test("adjustment coordinated signatures do not change accounting until each local submission is VALID", async () => {
+  const f = await adjustmentServiceFixture("bilateral_attested");
+  // Seed authenticated coordinated originals to isolate local accounting from Fabric validation.
+  const pair = async (schema: z.ZodType<{ kind: string }>, value: { kind: string }) => {
+    const sourceJws = await signFederationMessage(schema, value, f.source.signing),
+      targetJws = await signFederationMessage(schema, value, f.provider.signing);
+    const digest = (
+      await verifyFederationMessage(
+        schema,
+        sourceJws,
+        {
+          ...f.source.verification,
+          allowedKinds: ["commercial-agreement", "commercial-bill", "commercial-settlement"],
+        },
+        new Date(),
+      )
+    ).digest;
+    return { sourceJws, targetJws, digest };
+  };
+  const terms = CommercialAgreementSchema.parse({
+      ...f.contract,
+      agreement: { ...f.contract.agreement, mode: "ledger_coordinated" },
+    }),
+    agreement = await pair(CommercialAgreementSchema, terms);
+  const bill = CommercialBillSchema.parse({
+      ...f.bill,
+      agreementDigest: agreement.digest,
+      request: { ...f.bill.request, mode: "ledger_coordinated" },
+      reservationId: f.reservationId,
+    }),
+    billPair = await pair(CommercialBillSchema, bill);
+  const settlement = CommercialSettlementSchema.parse({
+      ...f.draft,
+      billDigest: billPair.digest,
+      reservationId: f.reservationId,
+      terminal: { terminalId: randomUUID(), digest: `sha256:${"a".repeat(64)}` },
+    }),
+    settlementPair = await pair(CommercialSettlementSchema, settlement);
+  for (const [keys, provider] of [
+    [f.provider, true],
+    [f.source, false],
+  ] as const) {
+    const siteId = keys.signing.siteId;
+    const signatures = (signed: Awaited<ReturnType<typeof pair>>) => ({
+      digest: signed.digest,
+      approvalJws: provider ? signed.targetJws : signed.sourceJws,
+      counterpartyJws: provider ? signed.sourceJws : signed.targetJws,
+    });
+    await db
+      .update(federationCommercialAgreements)
+      .set({ terms, ...signatures(agreement) })
+      .where(
+        and(
+          eq(federationCommercialAgreements.localSiteId, siteId),
+          eq(federationCommercialAgreements.revisionId, f.revisionId),
+        ),
+      );
+    await db
+      .update(federationCommercialBills)
+      .set({ payload: bill, ...signatures(billPair) })
+      .where(
+        and(
+          eq(federationCommercialBills.localSiteId, siteId),
+          eq(federationCommercialBills.billId, bill.billId),
+        ),
+      );
+    await db
+      .update(federationCommercialSettlements)
+      .set({ payload: settlement, ...signatures(settlementPair) })
+      .where(
+        and(
+          eq(federationCommercialSettlements.localSiteId, siteId),
+          eq(federationCommercialSettlements.settlementId, settlement.settlementId),
+        ),
+      );
+  }
+  await db
+    .update(federationAgreements)
+    .set({ terms: terms.agreement, budgetDomainId: null, epoch: null })
+    .where(eq(federationAgreements.revisionId, f.revisionId));
+  await db.delete(federationBudgets).where(eq(federationBudgets.domainId, f.terms.budgetDomainId));
+  await db
+    .update(federationOutbound)
+    .set({ request: bill.request })
+    .where(eq(federationOutbound.operationId, f.operationId));
+  const value = await f.make("40"),
+    signed = await f.approveAdjustment(value);
+  await f.attachAdjustment(signed);
+  expect(signed.provider.heldAmount).toBe("0");
+  expect((await f.sourceProjection())?.settledAmount).toBe("53");
+  for (const [keys, actor, service] of [
+    [f.provider, f.actor, f.providerAdjustment],
+    [f.source, f.sourceActor, f.sourceAdjustment],
+  ] as const) {
+    const siteId = keys.signing.siteId;
+    await db
+      .update(federationCommercialSubmissions)
+      .set({ state: "committed" })
+      .where(
+        and(
+          eq(federationCommercialSubmissions.localSiteId, siteId),
+          sql`${federationCommercialSubmissions.input}->>'operation' <> 'adjust-settlement'`,
+        ),
+      );
+    let prepared = false,
+      confirmed = false;
+    const txid = (siteId === f.source.signing.siteId ? "b" : "c").repeat(64),
+      recovery = Buffer.from("transaction").toString("base64");
+    const worker = new FederationCommercialSubmissionService(db, siteId, {
+      receipt: async () => ({
+        receipt: { recordId: value.settlementId, digest: value.settlementDigest },
+      }),
+      prepare: async () => ({ transactionId: txid, recovery: "proposal" }),
+      advance: async () => {
+        if (!prepared) {
+          prepared = true;
+          return { state: "prepared", transactionId: txid, recovery };
+        }
+        return confirmed
+          ? { state: "committed", transactionId: txid, blockNumber: "101" }
+          : { state: "pending", transactionId: txid, recovery };
+      },
+    });
+    await worker.advanceNext();
+    await worker.advanceNext();
+    await worker.advanceNext();
+    const view = async () => (await service.list(actor, f.revisionId, 10, 0)).data[0];
+    expect((await view())?.adjustment.appliedAt).toBeNull();
+    confirmed = true;
+    await db
+      .update(federationCommercialSubmissions)
+      .set({ nextAttemptAt: sql`clock_timestamp()` })
+      .where(eq(federationCommercialSubmissions.id, (await view())?.ledger?.id ?? ""));
+    await worker.advanceNext();
+    expect((await view())?.adjustment.appliedAt).toBeInstanceOf(Date);
+    expect(await worker.advanceNext()).toBe(false);
+  }
+  expect(await f.budget()).toBeUndefined();
+  expect((await f.sourceProjection())?.settledAmount).toBe("40");
+  expect(
+    (
+      await db
+        .select()
+        .from(federationReservations)
+        .where(eq(federationReservations.id, f.reservationId))
+    )[0]?.settledAmount,
+  ).toBe("40");
+});
+
+test("adjustment absent signing purpose rolls back a prepared debit hold", async () => {
+  const f = await adjustmentServiceFixture(),
+    value = await f.make("60");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'commercial-adjustment'` })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await expect(f.providerAdjustment.approve(f.actor, f.revisionId, value)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  expect(await f.budget()).toMatchObject({ available: "47", reserved: "0", spent: "53" });
+  expect((await f.providerAdjustment.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+});
+test("adjustment concurrent counterpart attachment applies each institution exactly once", async () => {
+  const f = await adjustmentServiceFixture(),
+    value = await f.make("60"),
+    signed = await f.approveAdjustment(value);
+  await Promise.all(Array.from({ length: 4 }, () => f.attachAdjustment(signed)));
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "0", spent: "60" });
+  expect(await f.sourceProjection()).toMatchObject({
+    settledAmount: "60",
+    adjustmentHeldAmount: "0",
+  });
+  const audits = await db
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.target, value.adjustmentId),
+        eq(auditLog.action, "federation.adjustment.apply"),
+      ),
+    );
+  expect(audits).toHaveLength(2);
+});

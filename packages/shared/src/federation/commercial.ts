@@ -306,6 +306,14 @@ export const CommercialAdjustmentSchema = z
     "An adjustment must change the charge and reference a different original",
   );
 export type CommercialAdjustment = z.infer<typeof CommercialAdjustmentSchema>;
+export const CommercialAdjustmentDraftInputSchema = z.strictObject({
+  settlementId: Id,
+  adjustmentId: Id,
+  chargedAmount: FederationAmountSchema,
+  reason: CommercialAdjustmentSchema.shape.reason,
+  supportingEvidenceDigest: FederationDigestSchema.nullable(),
+});
+export type CommercialAdjustmentDraftInput = z.infer<typeof CommercialAdjustmentDraftInputSchema>;
 
 export const ClosingPolicyInputSchema = z
   .strictObject({

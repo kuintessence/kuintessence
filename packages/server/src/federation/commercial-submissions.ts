@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  federationCommercialAdjustments as adjustments,
   federationCommercialAgreements as agreements,
   federationCommercialExecutionApprovals as approvals,
   federationCommercialAttempts as attempts,
@@ -18,6 +19,7 @@ import { FederationError, federationCanonicalJson } from "@kuintessence/shared/f
 import {
   type CommercialAdapterProposalInput,
   CommercialAdapterProposalInputSchema,
+  CommercialAdjustmentSchema,
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialDiscountSchema,
@@ -31,6 +33,7 @@ import {
 import { FabricProposalCheckpointSchema } from "@kuintessence/shared/federation/ledger";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
+import { applyFederationAdjustment } from "./adjustment";
 import type { CommercialClient } from "./commercial-client";
 import { enqueueExecutionClosure } from "./execution-closure";
 import { FabricClientFailure } from "./fabric-client";
@@ -391,6 +394,23 @@ export class FederationCommercialSubmissionService {
                 updatedAt: sql`clock_timestamp()`,
               })
               .where(eq(submissions.id, submission.id));
+            if (
+              result.state === "committed" &&
+              submission.input.operation === "adjust-settlement"
+            ) {
+              const [row] = await tx
+                .select()
+                .from(adjustments)
+                .where(
+                  and(
+                    eq(adjustments.localSiteId, this.siteId),
+                    eq(adjustments.adjustmentId, submission.input.recordId),
+                  ),
+                );
+              if (!row || row.digest !== submission.input.digest)
+                throw new FederationError("OPERATION_CONFLICT");
+              await applyFederationAdjustment(tx, row);
+            }
             if (result.state === "committed" && submission.input.operation === "settle-bill") {
               const [settlement] = await tx
                 .select()
@@ -472,6 +492,52 @@ export class FederationCommercialSubmissionService {
 
   /** The source commits terminal evidence; the provider must query that original private receipt. */
   private async requireBillTerminal(input: CommercialAdapterProposalInput) {
+    if (input.operation === "adjust-settlement") {
+      const [row] = await this.db
+        .select()
+        .from(adjustments)
+        .where(
+          and(
+            eq(adjustments.localSiteId, this.siteId),
+            eq(adjustments.adjustmentId, input.recordId),
+          ),
+        );
+      if (!row?.counterpartyJws) throw new FederationError("POLICY_DENIED");
+      if (!this.client?.receipt)
+        throw new FabricClientFailure("ADJUSTMENT_RECEIPT_UNAVAILABLE", true);
+      const references = [
+        {
+          recordType: "settlement" as const,
+          recordId: row.settlementId,
+          digest: row.payload.settlementDigest,
+        },
+      ];
+      for (const ref of [
+        ...references,
+        ...(row.payload.previous
+          ? [
+              {
+                recordType: "adjustment" as const,
+                recordId: row.payload.previous.adjustmentId,
+                digest: row.payload.previous.digest,
+              },
+            ]
+          : []),
+      ]) {
+        const { receipt } = CommercialReceiptQueryResultSchema.parse(
+          await this.client.receipt({
+            operation: "get-commercial-receipt",
+            domainId: input.domainId,
+            recordType: ref.recordType,
+            recordId: ref.recordId,
+          }),
+        );
+        if (!receipt) throw new FabricClientFailure("LEDGER_PENDING", false);
+        if (receipt.recordId !== ref.recordId || receipt.digest !== ref.digest)
+          throw new FederationError("OPERATION_CONFLICT");
+      }
+      return true;
+    }
     if (input.operation === "settle-bill") {
       const [row] = await this.db
         .select()
@@ -532,8 +598,30 @@ export class FederationCommercialSubmissionService {
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
-    // Server adjustment approvals and local accounting are not connected yet.
-    if (input.operation === "adjust-settlement") throw new FederationError("POLICY_DENIED");
+    if (input.operation === "adjust-settlement") {
+      const [row] = await (tx ?? this.db)
+        .select()
+        .from(adjustments)
+        .where(
+          and(
+            eq(adjustments.localSiteId, this.siteId),
+            eq(adjustments.adjustmentId, input.recordId),
+          ),
+        );
+      if (
+        !row?.counterpartyJws ||
+        row.digest !== input.digest ||
+        row.payload.domainId !== input.domainId ||
+        row.payload.sourceSiteId !== input.envelope.sourceSiteId ||
+        row.payload.targetSiteId !== input.envelope.targetSiteId ||
+        (this.siteId === row.payload.sourceSiteId
+          ? row.approvalJws !== input.envelope.sourceJws ||
+            row.counterpartyJws !== input.envelope.targetJws
+          : row.approvalJws !== input.envelope.targetJws ||
+            row.counterpartyJws !== input.envelope.sourceJws)
+      )
+        throw new FederationError("POLICY_DENIED");
+    }
     if (input.operation === "settle-bill") {
       const [row] = await (tx ?? this.db)
         .select()
@@ -624,6 +712,7 @@ export class FederationCommercialSubmissionService {
         "record-execution-terminal": "commercial-terminal",
         "confirm-bill": "commercial-bill",
         "settle-bill": "commercial-settlement",
+        "adjust-settlement": "commercial-adjustment",
       } as const;
       for (const [siteId, jws] of [
         [input.envelope.sourceSiteId, input.envelope.sourceJws],
@@ -640,6 +729,7 @@ export class FederationCommercialSubmissionService {
             CommercialTerminalSchema,
             CommercialBillSchema,
             CommercialSettlementSchema,
+            CommercialAdjustmentSchema,
           ]),
           jws,
           key,
@@ -725,15 +815,16 @@ export class FederationCommercialSubmissionService {
         )
         .for("update");
       if (!row || row.state !== "needs_review") throw new FederationError("OPERATION_CONFLICT");
-      if (row.input.operation === "adjust-settlement") throw new FederationError("POLICY_DENIED");
       await requireFederationCapability(
         tx,
         actor,
-        row.input.operation === "settle-bill"
-          ? "settlement.approve"
-          : ["confirm-bill", "record-discount"].includes(row.input.operation)
-            ? "billing.approve"
-            : "agreement.approve",
+        row.input.operation === "adjust-settlement"
+          ? "adjustment.approve"
+          : row.input.operation === "settle-bill"
+            ? "settlement.approve"
+            : ["confirm-bill", "record-discount"].includes(row.input.operation)
+              ? "billing.approve"
+              : "agreement.approve",
       );
       const [attempt] = await this.latest(tx, id);
       if (attempt?.stage === "proposal")

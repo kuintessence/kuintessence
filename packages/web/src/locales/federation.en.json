@@ -185,6 +185,9 @@
         "settlement": {
           "approve": "Approve allocation settlements"
         },
+        "adjustment": {
+          "approve": "Approve charge adjustments"
+        },
         "billing": {
           "approve": "Approve bills and discounts"
         },
@@ -213,6 +216,9 @@
       "effects": {
         "settlement": {
           "approve": "Approve separate settlements, exchange signatures and retry ledger submission; no payment or credit issuance authority."
+        },
+        "adjustment": {
+          "approve": "Approve separate changes to settled charges, exchange signatures and retry evidence; no payment or credit issuance authority."
         },
         "billing": {
           "approve": "Approve bills and discounts, attach signatures and retry evidence submission; includes agreement reading, not payment or execution authority."

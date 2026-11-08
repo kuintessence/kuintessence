@@ -7936,3 +7936,23 @@ test("settlement projection frees source concurrency without restoring consumed 
   await expect(service.enqueue(actor, next("0"))).rejects.toThrow("BUDGET_EXHAUSTED");
   expect((await row(f.request.operationId)).amount).toBe("60");
 });
+
+test("adjustment debit holds are included in new source admission without consuming task slots", async () => {
+  const f = await fixture(undefined, {}, undefined, {}, 1),
+    service = f.service();
+  await service.enqueue(actor, f.request);
+  await service.deliverNext();
+  await db
+    .update(federationOutbound)
+    .set({ settledAmount: "40", adjustmentHeldAmount: "15" })
+    .where(eq(federationOutbound.operationId, f.request.operationId));
+  const next = (amount: string) => ({
+    ...f.request,
+    operationId: crypto.randomUUID(),
+    taskId: crypto.randomUUID(),
+    maxAmount: amount,
+  });
+  await expect(service.enqueue(actor, next("46"))).rejects.toThrow("BUDGET_EXHAUSTED");
+  await service.enqueue(actor, next("45"));
+  expect((await row(f.request.operationId)).settledAmount).toBe("40");
+});

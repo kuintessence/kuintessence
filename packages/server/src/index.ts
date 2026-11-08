@@ -48,6 +48,7 @@ import { AuthzService, type AuthzTuple } from "./authz/service";
 import { loadServerConfig } from "./config";
 import { EventBus } from "./events/event-bus";
 import { FederationAccountingCollection } from "./federation/accounting-collection";
+import { FederationAdjustmentService } from "./federation/adjustment";
 import { FederationAgreementExchange } from "./federation/agreement-exchange";
 import { FederationAgreementService } from "./federation/agreements";
 import { FederationAssetService } from "./federation/assets";
@@ -1822,6 +1823,7 @@ if (federationSigningKey && federationCommercial)
       new FederationSettlementService(db, federationSigningKey),
       new FederationClosingPolicyService(db, federationSigningKey.siteId),
       federationClosing,
+      new FederationAdjustmentService(db, federationSigningKey),
     ),
   );
 const federationPreparation = federationSigningKey

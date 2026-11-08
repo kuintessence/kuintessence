@@ -22,6 +22,7 @@ import type {
 } from "@kuintessence/shared/federation";
 import type {
   CommercialAdapterProposalInput,
+  CommercialAdjustment,
   CommercialAgreement,
   CommercialBill,
   CommercialDiscount,
@@ -182,7 +183,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -234,6 +235,9 @@ export const federationOutbound = pgTable(
     epoch: uuid("epoch").notNull(),
     amount: numeric("amount", { precision: 38, scale: 0 }).notNull(),
     settledAmount: numeric("settled_amount", { precision: 38, scale: 0 }),
+    adjustmentHeldAmount: numeric("adjustment_held_amount", { precision: 38, scale: 0 })
+      .notNull()
+      .default("0"),
     endpoint: text("endpoint").notNull(),
     request: jsonb("request").$type<FederationDelegation>().notNull(),
     requestDigest: varchar("request_digest", { length: 71 }).notNull(),
@@ -307,7 +311,7 @@ export const federationOutbound = pgTable(
     ),
     check(
       "federation_outbound_amount",
-      sql`(${t.settledAmount} IS NULL OR (${t.settledAmount} >= 0 AND ${t.settledAmount} <= ${t.amount})) AND ${t.amount}::text ~ '^(0|[1-9][0-9]{0,37})$' AND ${t.attempt} > 0`,
+      sql`${t.adjustmentHeldAmount} >= 0 AND ${t.adjustmentHeldAmount} <= ${t.amount} AND (${t.adjustmentHeldAmount} = 0 OR ${t.settledAmount} IS NOT NULL) AND (${t.settledAmount} IS NULL OR (${t.settledAmount} >= 0 AND ${t.settledAmount} + ${t.adjustmentHeldAmount} <= ${t.amount})) AND ${t.amount}::text ~ '^(0|[1-9][0-9]{0,37})$' AND ${t.attempt} > 0`,
     ),
     check(
       "federation_outbound_receipt",
@@ -1302,6 +1306,68 @@ export const federationCommercialSettlements = pgTable(
   ],
 );
 
+/** Append-only approvals; a positive local hold protects a pending debit from new admissions. */
+export const federationCommercialAdjustments = pgTable(
+  "federation_commercial_adjustments",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    adjustmentId: uuid("adjustment_id").notNull(),
+    settlementId: uuid("settlement_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    number: integer("number").notNull(),
+    payload: jsonb("payload").$type<CommercialAdjustment>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    heldAmount: numeric("held_amount", { precision: 38, scale: 0 }).notNull().default("0"),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.adjustmentId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.settlementId],
+      foreignColumns: [
+        federationCommercialSettlements.localSiteId,
+        federationCommercialSettlements.settlementId,
+      ],
+    }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    uniqueIndex("federation_adjustment_sequence").on(t.localSiteId, t.settlementId, t.number),
+    uniqueIndex("federation_adjustment_predecessor").on(
+      t.localSiteId,
+      t.settlementId,
+      sql`coalesce(${t.payload}->'previous'->>'adjustmentId', 'initial')`,
+    ),
+    index("federation_adjustment_org").on(t.localSiteId, t.localOrgId, t.createdAt),
+    check(
+      "federation_adjustment_identity",
+      sql`(
+      ${t.number} > 0 AND ${t.heldAmount} >= 0 AND ${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.payload}->>'kind' = 'commercial-adjustment'
+      AND ${t.payload}->>'adjustmentId' = ${t.adjustmentId}::text
+      AND ${t.payload}->>'settlementId' = ${t.settlementId}::text
+      AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text)
+      AND (${t.appliedAt} IS NULL OR ${t.counterpartyJws} IS NOT NULL)
+      AND ((${t.number} = 1) = (${t.payload}->'previous' = 'null'::jsonb))
+    ) IS TRUE`,
+    ),
+  ],
+);
+
 export const federationCommercialDiscounts = pgTable(
   "federation_commercial_discounts",
   {
@@ -1374,7 +1440,7 @@ export const federationCommercialSubmissions = pgTable(
     ),
     check(
       "federation_commercial_submission_input",
-      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
     check(
       "federation_commercial_submission_lease",

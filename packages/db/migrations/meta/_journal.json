@@ -1002,6 +1002,20 @@
       "when": 1794099812333,
       "tag": "0142_thin_zodiak",
       "breakpoints": true
+    },
+    {
+      "idx": 143,
+      "version": "7",
+      "when": 1794104391973,
+      "tag": "0143_solid_starjammers",
+      "breakpoints": true
+    },
+    {
+      "idx": 144,
+      "version": "7",
+      "when": 1794104868489,
+      "tag": "0144_cool_lilith",
+      "breakpoints": true
     }
   ]
 }
