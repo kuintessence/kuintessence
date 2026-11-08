@@ -33,6 +33,7 @@ import {
   federationTerminalEvidence,
   federationTerminalPolicies,
   federationTerminalSyncs,
+  federationUnreservedClosures,
   federationWorkflowBindings,
   jobCancellations,
   jobs,
@@ -160,6 +161,7 @@ import { FederationTerminalAutomation } from "./terminal-automation";
 import { FederationTerminalPolicyService, TerminalPolicyInputSchema } from "./terminal-policy";
 import { testAgreement, testKeys } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
+import { observeUnreservedClosure, retireUnreservedIntents } from "./unreserved-closure";
 import { FederationWorkflowExecutor } from "./workflow-executor";
 
 const url = process.env.DATABASE_URL;
@@ -376,6 +378,9 @@ afterAll(async () => {
           marketRows.map((row) => row.id),
         ),
       );
+    await db
+      .delete(federationUnreservedClosures)
+      .where(inArray(federationUnreservedClosures.localSiteId, siteIds));
     await db.delete(marketSubmissions).where(inArray(marketSubmissions.localSiteId, siteIds));
     await db
       .delete(federationExecutionTerminals)
@@ -9152,4 +9157,255 @@ test("execution automation discovery retires a stopped candidate without failing
   expect(await f.sourceAutomation.advanceNext()).toBe(false);
   await f.sourceAutomation.discover();
   expect(await f.sourceAutomation.advanceNext()).toBe(false);
+});
+
+function unreservedClosedState(state: z.infer<typeof MarketDemandStateSchema>) {
+  if (!state.claim) throw new Error("Missing original claim");
+  return MarketDemandStateSchema.parse({
+    ...state,
+    digest: federationMaterialDigest(state.demand),
+    status: "CLOSED",
+    version: state.claim.expectedVersion + 2,
+    unreservedClosure: {
+      demandId: state.demand.demandId,
+      closureId: randomUUID(),
+      claimId: state.claim.claimId,
+      commercialDomainId: state.claim.commercialDomainId,
+      issuerSiteId: state.claim.providerSiteId,
+      expectedVersion: state.claim.expectedVersion + 1,
+    },
+  });
+}
+async function observeTestClosure(siteId: string, state: z.infer<typeof MarketDemandStateSchema>) {
+  return observeUnreservedClosure(db, siteId, {
+    query: async () => ({ operation: "get-demand", demand: state }),
+  });
+}
+
+test("unreserved local closure retires signed proposals and rejects retry and late receiver admission", async () => {
+  const f = await reservationProposalFixture();
+  await f.submit();
+  await f.source.advanceNext();
+  const signed = (await f.view())?.sourceJws;
+  if (!signed) throw new Error("Missing source signature");
+  const closed = unreservedClosedState(f.state);
+  for (const site of [f.a.signing.siteId, f.b.signing.siteId]) {
+    await observeTestClosure(site, closed);
+    await retireUnreservedIntents(db, site);
+  }
+  expect(await f.view()).toMatchObject({
+    state: "closed",
+    executionState: "closed",
+    sourceJws: signed,
+  });
+  expect(await f.source.advanceNext()).toBe(false);
+  await expect(f.source.retry(f.actor, f.revisionId, f.reservation.reservationId)).rejects.toThrow(
+    "CANCELLATION_REQUESTED",
+  );
+  await expect(f.target.receive(signed, f.fingerprints[0] ?? "")).rejects.toThrow(
+    "CANCELLATION_REQUESTED",
+  );
+  expect(await f.view(true)).toBeUndefined();
+  await expect(f.execution.approve(f.actor, f.revisionId, f.reservation)).rejects.toThrow(
+    "CANCELLATION_REQUESTED",
+  );
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(1);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.actor.userId,
+  );
+  await expect(f.execution.approve(f.actor, f.revisionId, f.reservation)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+});
+
+test("unreserved local closure during claim preflight fences a stale success before signing and consuming authority", async () => {
+  const f = await reservationProposalFixture();
+  await f.submit();
+  f.beforeClaim(async () => {
+    await observeTestClosure(f.a.signing.siteId, unreservedClosedState(f.state));
+  });
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({
+    state: "needs_review",
+    lastError: "CANCELLATION_REQUESTED",
+    approvedAt: null,
+  });
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(0);
+  await retireUnreservedIntents(db, f.a.signing.siteId);
+  expect(await f.view()).toMatchObject({ state: "closed", leaseToken: null });
+});
+
+test("unreserved local closure prevents signature rediscovery attachment and manual exchange retry", async () => {
+  const f = await executionApprovalExchangeFixture();
+  await f.transport.a.discover();
+  const closed = unreservedClosedState(f.state);
+  for (const site of [f.a.signing.siteId, f.b.signing.siteId]) {
+    await observeTestClosure(site, closed);
+    await retireUnreservedIntents(db, site);
+  }
+  expect((await f.transport.a.list(f.actor, f.revisionId, 50, 0)).records[0]?.state).toBe("closed");
+  await f.transport.b.discover();
+  expect((await f.transport.b.list(f.actor, f.revisionId, 50, 0)).records).toHaveLength(0);
+  await expect(
+    f.transport.a.retry(f.actor, {
+      recordKind: "reservation",
+      recordId: f.reservation.reservationId,
+      agreementRevisionId: f.revisionId,
+    }),
+  ).rejects.toThrow("CANCELLATION_REQUESTED");
+  await expect(
+    f.execution.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      f.reservation.reservationId,
+      f.counterpart.approvalJws,
+    ),
+  ).rejects.toThrow("CANCELLATION_REQUESTED");
+  expect(
+    (await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId)).submission,
+  ).toBeNull();
+});
+
+test("unreserved local closure ends automatic market handoff but preserves completed requests and original policy use", async () => {
+  const f = await marketRequestFixture();
+  await f.claim();
+  const state = f.state();
+  if (!state) throw new Error("Missing market state");
+  const closed = unreservedClosedState(state);
+  for (const site of [f.a.signing.siteId, f.b.signing.siteId]) {
+    await observeTestClosure(site, closed);
+    await retireUnreservedIntents(db, site);
+  }
+  expect(await f.view()).toMatchObject({ state: "closed", completedAt: null });
+  expect(await f.view(true)).toMatchObject({ state: "complete" });
+  await expect(
+    f.source.retry(f.actor, f.revisionId, f.request.proposal.reservationId),
+  ).rejects.toThrow("CANCELLATION_REQUESTED");
+  expect(await f.source.advanceNext()).toBe(false);
+  expect((await f.submit()).state).toBe("closed");
+  expect(
+    await db
+      .select()
+      .from(federationReservationProposals)
+      .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId)),
+  ).toHaveLength(0);
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.marketAuthorizedTasks).toBe(1);
+});
+
+test("unreserved local closure preserves unknown private transactions for recovery but forbids a fresh retry", async () => {
+  const f = await executionFixture();
+  await approveReservation(f);
+  for (let i = 0; i < 5; i++) await f.service.advanceNext();
+  const before = await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId);
+  if (!before.submission) throw new Error("Missing reserve submission");
+  expect(before.submission.transaction?.stage).toBe("transaction");
+  await observeTestClosure(f.a.signing.siteId, unreservedClosedState(f.state));
+  await db
+    .update(submissions)
+    .set({ state: "needs_review" })
+    .where(eq(submissions.id, before.submission.id));
+  await f.service.retry(f.actor, f.revisionId, before.submission.id);
+  f.adapter.outcome = "invalid";
+  await f.service.advanceNext();
+  const after = await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId);
+  expect(after.submission?.transaction).toMatchObject({
+    stage: "invalid",
+    transactionId: before.submission.transaction?.transactionId,
+  });
+  await expect(f.service.retry(f.actor, f.revisionId, before.submission.id)).rejects.toThrow(
+    "CANCELLATION_REQUESTED",
+  );
+  expect(
+    f.adapter.prepares.filter((input) => input.operation === "reserve-execution"),
+  ).toHaveLength(1);
+});
+
+test("unreserved local closure waits for live leases and fences expired workers without deleting signed history", async () => {
+  const f = await reservationProposalFixture();
+  await f.submit();
+  const token = randomUUID();
+  await db
+    .update(federationReservationProposals)
+    .set({ leaseToken: token, leaseUntil: new Date(Date.now() + 60_000) })
+    .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId));
+  await observeTestClosure(f.a.signing.siteId, unreservedClosedState(f.state));
+  await retireUnreservedIntents(db, f.a.signing.siteId);
+  expect(await f.view()).toMatchObject({ state: "pending", leaseToken: token });
+  await db
+    .update(federationReservationProposals)
+    .set({ leaseUntil: new Date(0) })
+    .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId));
+  await retireUnreservedIntents(db, f.a.signing.siteId);
+  expect(await f.view()).toMatchObject({
+    state: "closed",
+    leaseToken: null,
+    executionState: "closed",
+  });
+  expect(await f.source.advanceNext()).toBe(false);
+});
+
+test("unreserved local closure drains an exact pending stop without an activation but refuses a different claim", async () => {
+  const f = await executionApprovalExchangeFixture();
+  let state = unreservedClosedState(f.state);
+  const stops = new FederationExecutionStopService(db, f.a.signing.siteId, {
+    query: async () => ({ operation: "get-demand", demand: state }),
+  });
+  await stops.request(f.actor, f.revisionId, f.reservation.reservationId);
+  const original = structuredClone(state);
+  if (!state.claim || !state.unreservedClosure) throw new Error("Missing claim");
+  state.claim.claimId = randomUUID();
+  state.unreservedClosure.claimId = state.claim.claimId;
+  await stops.advanceNext();
+  expect(
+    (await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId)).stopLastError,
+  ).toBe("OPERATION_CONFLICT");
+  await db
+    .update(executionApprovals)
+    .set({ stopNextAttemptAt: new Date(0) })
+    .where(
+      and(
+        eq(executionApprovals.localSiteId, f.a.signing.siteId),
+        eq(executionApprovals.recordId, f.reservation.reservationId),
+      ),
+    );
+  state = original;
+  await stops.advanceNext();
+  expect(await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId)).toMatchObject({
+    stopNextAttemptAt: null,
+    stopLastError: null,
+    stopSubmission: null,
+  });
+});
+
+test("unreserved local closure also retires preapproved releases without creating replacement ledger work", async () => {
+  const f = await executionApprovalExchangeFixture();
+  await f.execution.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.reservation.reservationId,
+    f.counterpart.approvalJws,
+  );
+  const release = await releasePayload(f);
+  const approved = await f.execution.approve(f.actor, f.revisionId, release);
+  await f.transport.a.discover();
+  await observeTestClosure(f.a.signing.siteId, unreservedClosedState(f.state));
+  await retireUnreservedIntents(db, f.a.signing.siteId);
+  const sync = (await f.transport.a.list(f.actor, f.revisionId, 50, 0)).records.find(
+    (row) => row.recordId === release.releaseId,
+  );
+  expect(sync?.state).toBe("closed");
+  await expect(
+    f.execution.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      release.releaseId,
+      await signFederationMessage(CommercialExecutionApprovalSchema, release, f.b.signing),
+    ),
+  ).rejects.toThrow("CANCELLATION_REQUESTED");
+  const view = await f.execution.get(f.actor, f.revisionId, release.releaseId);
+  expect(view.approvalJws).toBe(approved.approvalJws);
+  expect(view.submission).toBeNull();
+  await f.transport.a.discover();
+  expect(await f.transport.a.advanceNext()).toBe(false);
 });

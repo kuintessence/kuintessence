@@ -129,7 +129,7 @@ export class FederationMarketRequestService {
       .select({
         count: sql<number>`count(*)::int`,
         amount: sql<string>`coalesce(sum((${requests.payload}->'proposal'->'request'->>'maxAmount')::numeric),0)::text`,
-        pending: sql<number>`count(*) filter (where ${requests.state} <> 'complete')::int`,
+        pending: sql<number>`count(*) filter (where ${requests.state} NOT IN ('complete','closed'))::int`,
       })
       .from(requests)
       .where(eq(requests.policyId, policy.id));

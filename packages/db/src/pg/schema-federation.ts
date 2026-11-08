@@ -36,7 +36,10 @@ import type {
   CommercialUsageGap,
 } from "@kuintessence/shared/federation/commercial";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
-import type { MarketAdapterProposalInput } from "@kuintessence/shared/federation/market";
+import type {
+  MarketAdapterProposalInput,
+  MarketDemandState,
+} from "@kuintessence/shared/federation/market";
 import type { MarketRequest } from "@kuintessence/shared/federation/market-request";
 import type { FederationTerminalProposal } from "@kuintessence/shared/federation/terminal-proposal";
 import { sql } from "drizzle-orm";
@@ -1549,7 +1552,7 @@ export const federationReservationProposals = pgTable(
     ),
     check(
       "federation_execution_automation_state",
-      sql`(${t.executionState} IN ('idle','pending','complete','needs_review')
+      sql`(${t.executionState} IN ('idle','pending','complete','needs_review','closed')
       AND ((${t.executionLeaseToken} IS NULL) = (${t.executionLeaseUntil} IS NULL))) IS TRUE`,
     ),
 
@@ -1578,7 +1581,7 @@ export const federationReservationProposals = pgTable(
     check(
       "federation_reservation_proposal_state",
       sql`(
-      ${t.state} IN ('pending','sending','delivered','approved','needs_review')
+      ${t.state} IN ('pending','sending','delivered','approved','needs_review','closed')
       AND ((${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL))
       AND (${t.state} <> 'pending' OR ${t.approvedAt} IS NULL)
       AND (${t.state} NOT IN ('sending','delivered') OR (${t.direction} = 'outbound' AND ${t.approvedAt} IS NOT NULL AND ${t.sourceJws} IS NOT NULL))
@@ -1809,12 +1812,18 @@ export const federationMarketSubmissions = pgTable(
     leaseToken: uuid("lease_token"),
     leaseUntil: timestamp("lease_until", { withTimezone: true }),
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    closureCheckAt: timestamp("closure_check_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("federation_market_org").on(t.localSiteId, t.localOrgId, t.createdAt),
     index("federation_market_demand").on(t.localSiteId, t.demandId),
+    index("federation_market_closure_check")
+      .on(t.localSiteId, t.closureCheckAt)
+      .where(
+        sql`${t.state} = 'committed' AND ${t.input}->>'operation' IN ('publish-demand','claim-demand')`,
+      ),
     index("federation_market_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
     uniqueIndex("federation_market_activation")
       .on(t.localSiteId, sql`(${t.input}->'activation'->'gate'->>'reservationId')`)
@@ -2177,7 +2186,7 @@ export const federationCommercialApprovalSyncs = pgTable(
     ),
     check(
       "federation_approval_sync_state",
-      sql`${t.state} IN ('pending','complete','needs_review')`,
+      sql`${t.state} IN ('pending','complete','needs_review','closed')`,
     ),
     check(
       "federation_approval_sync_lease",
@@ -2276,7 +2285,7 @@ export const federationMarketRequests = pgTable(
     }),
     check(
       "federation_market_request_state",
-      sql`${t.state} IN ('pending','complete','needs_review') AND ((${t.state} = 'complete') = (${t.completedAt} IS NOT NULL))`,
+      sql`${t.state} IN ('pending','complete','needs_review','closed') AND ((${t.state} = 'complete') = (${t.completedAt} IS NOT NULL))`,
     ),
     check(
       "federation_market_request_direction",
@@ -2332,6 +2341,35 @@ export const federationCompletionClaims = pgTable(
     check(
       "federation_completion_claim_bytes",
       sql`${t.allocatedBytes} > 0 AND ${t.allocatedBytes} < 1e30`,
+    ),
+  ],
+);
+
+/** Final public closure observed through this site's trusted ledger adapter; never inferred from expiry. */
+export const federationUnreservedClosures = pgTable(
+  "federation_unreserved_closures",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    demandId: uuid("demand_id").notNull(),
+    originId: uuid("origin_id")
+      .notNull()
+      .references(() => federationMarketSubmissions.id),
+    payload: jsonb("payload").$type<MarketDemandState>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.demandId] }),
+    check(
+      "federation_unreserved_closure_identity",
+      sql`(
+      ${t.digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.payload}->>'status' = 'CLOSED'
+      AND ${t.payload}->'demand'->>'demandId' = ${t.demandId}::text
+      AND ${t.payload}->'unreservedClosure'->>'demandId' = ${t.demandId}::text
+      AND ${t.payload}->'unreservedClosure'->>'claimId' = ${t.payload}->'claim'->>'claimId'
+      AND (${t.payload}->'demand'->>'sourceSiteId' = ${t.localSiteId}::text
+        OR ${t.payload}->'claim'->>'providerSiteId' = ${t.localSiteId}::text)
+    ) IS TRUE`,
     ),
   ],
 );

@@ -42,6 +42,8 @@ import { applyFederationSettlement } from "./settlement";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
 
+import { unreservedExecutionClosed } from "./unreserved-closure";
+
 type Submission = typeof submissions.$inferSelect;
 type Lease = { id: string; token: string };
 class LeaseLost extends Error {}
@@ -296,6 +298,8 @@ export class FederationCommercialSubmissionService {
           await this.client.prepare(submission.input),
         );
         await this.fenced(claimed, async (tx, current) => {
+          if (["reserve-execution", "release-execution"].includes(current.input.operation))
+            await this.beforeDisclosure(current.input, tx);
           if (receipt) {
             const [latest] = await this.latest(tx, submission.id);
             if (
@@ -751,6 +755,15 @@ export class FederationCommercialSubmissionService {
         );
         if (verified.payload.kind !== kinds[input.operation] || verified.digest !== input.digest)
           throw new FederationError("OPERATION_CONFLICT");
+        if (["commercial-reservation", "commercial-release"].includes(verified.payload.kind)) {
+          const payload = CommercialExecutionApprovalSchema.parse(verified.payload);
+          const closed = tx
+            ? await unreservedExecutionClosed(tx, this.siteId, payload)
+            : await this.db.transaction((scope) =>
+                unreservedExecutionClosed(scope, this.siteId, payload),
+              );
+          if (closed) throw new FederationError("CANCELLATION_REQUESTED");
+        }
       }
     } else {
       const jws = input.envelope.providerJws;
@@ -841,6 +854,11 @@ export class FederationCommercialSubmissionService {
               : "agreement.approve",
       );
       const [attempt] = await this.latest(tx, id);
+      if (
+        ["reserve-execution", "release-execution"].includes(row.input.operation) &&
+        attempt?.stage !== "transaction"
+      )
+        await this.beforeDisclosure(row.input, tx);
       if (attempt?.stage === "proposal")
         await tx
           .update(attempts)

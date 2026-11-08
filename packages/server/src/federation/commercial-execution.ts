@@ -44,6 +44,7 @@ import {
 } from "./signatures";
 import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
+import { assertUnreservedDemandOpen } from "./unreserved-closure";
 import { assertWorkflowRequestActive } from "./workflow-delegations";
 
 export interface ReservationApprovalGuard {
@@ -216,6 +217,7 @@ export class FederationCommercialExecutionService {
     )
       throw new FederationError("POLICY_DENIED");
     if (payload.kind === "commercial-reservation") {
+      await assertUnreservedDemandOpen(tx, this.signingKey.siteId, payload.demandId);
       await assertWorkflowRequestActive(tx, this.signingKey.siteId, actor.orgId, payload.request);
       const source = parties.sourceSiteId === this.signingKey.siteId;
       const [intent] = await tx
@@ -251,6 +253,7 @@ export class FederationCommercialExecutionService {
       payload.expectedGateVersion !== 1
     )
       throw new FederationError("OPERATION_CONFLICT");
+    await assertUnreservedDemandOpen(tx, this.signingKey.siteId, reserve.demandId);
     const [otherRelease] = await tx
       .select({ id: approvals.recordId })
       .from(approvals)
@@ -349,6 +352,8 @@ export class FederationCommercialExecutionService {
     const authorize = async (tx: PgTransaction) => {
       if (!automatic) {
         await requireFederationCapability(tx, actor, "agreement.approve");
+        if (payload.kind === "commercial-reservation")
+          await assertUnreservedDemandOpen(tx, this.signingKey.siteId, payload.demandId);
         return null;
       }
       await automatic.guard?.authorize(tx);
@@ -655,6 +660,7 @@ export class FederationCommercialExecutionService {
         payload.request.senderSiteId !== this.signingKey.siteId
       )
         throw new FederationError("POLICY_DENIED");
+      await assertUnreservedDemandOpen(tx, this.signingKey.siteId, payload.demandId);
       if (!activationId) {
         const [existing] = await tx
           .select({ id: marketSubmissions.id })

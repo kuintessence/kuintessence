@@ -51,6 +51,15 @@ export class FederationCommercialWorker {
   tick() {
     if (this.running) return this.running;
     this.running = (async () => {
+      if (this.market) {
+        try {
+          await this.market.reconcileClosures();
+        } catch {
+          logger.error(
+            "Market closure observation failed; existing intents and allocations remain durable",
+          );
+        }
+      }
       if (this.agreements) {
         try {
           await this.agreements.discover();

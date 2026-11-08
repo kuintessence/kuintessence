@@ -41,6 +41,8 @@ import {
 } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
 
+import { unreservedExecutionClosed } from "./unreserved-closure";
+
 type Sync = typeof syncs.$inferSelect;
 type Identity = Pick<Sync, "agreementRevisionId" | "recordKind" | "recordId">;
 const businessSchema = z.union([
@@ -220,6 +222,8 @@ export class FederationCommercialApprovalExchange {
       .for("share");
     if (!record) return null;
     const payload = CommercialExecutionApprovalSchema.parse(record.payload);
+    if (await unreservedExecutionClosed(tx, this.signing.siteId, payload))
+      throw new FederationError("CANCELLATION_REQUESTED");
     if (
       payload.kind !== `commercial-${identity.recordKind}` ||
       payload.domainId !== terms.domainId ||
@@ -470,6 +474,7 @@ export class FederationCommercialApprovalExchange {
         .where(
           and(
             eq(approvals.localSiteId, this.signing.siteId),
+            sql`NOT EXISTS (SELECT 1 FROM federation_unreserved_closures c WHERE c.local_site_id = ${approvals.localSiteId} AND c.demand_id::text = coalesce(${approvals.payload}->>'demandId', (SELECT original.payload->>'demandId' FROM federation_commercial_execution_approvals original WHERE original.local_site_id = ${approvals.localSiteId} AND original.record_id::text = ${approvals.payload}->>'reservationId')))`,
             isNull(approvals.counterpartyJws),
             isNull(syncs.recordId),
           ),
@@ -477,19 +482,16 @@ export class FederationCommercialApprovalExchange {
         .orderBy(asc(approvals.recordId))
         .limit(8)
         .for("update", { of: approvals, skipLocked: true });
-      if (executions.length)
+      for (const { payload, ...record } of executions) {
+        if (await unreservedExecutionClosed(tx, this.signing.siteId, payload)) continue;
         await tx
           .insert(syncs)
-          .values(
-            executions.map(({ payload, ...v }) => ({
-              ...v,
-              recordKind:
-                payload.kind === "commercial-reservation"
-                  ? ("reservation" as const)
-                  : ("release" as const),
-            })),
-          )
+          .values({
+            ...record,
+            recordKind: payload.kind === "commercial-reservation" ? "reservation" : "release",
+          })
           .onConflictDoNothing();
+      }
     });
   }
 

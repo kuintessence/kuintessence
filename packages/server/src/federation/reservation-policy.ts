@@ -24,6 +24,7 @@ import { z } from "zod";
 import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { FederationTrustRegistry } from "./trust-registry";
+import { assertUnreservedDemandOpen } from "./unreserved-closure";
 import { assertWorkflowRequestActive } from "./workflow-delegations";
 
 export const ReservationPolicyInputSchema = z
@@ -207,6 +208,7 @@ export class FederationReservationPolicyService {
     orgId: string,
     payload: CommercialReservation,
   ) {
+    await assertUnreservedDemandOpen(tx, this.siteId, payload.demandId);
     await assertWorkflowRequestActive(tx, this.siteId, orgId, payload.request);
     const revisionId = payload.request.agreementRevisionId;
     const contract = await this.contract(tx, orgId, revisionId);

@@ -32,6 +32,12 @@ import { type FederationActor, requireFederationCapability } from "./permissions
 
 import type { FederationStorageGuard } from "./storage-capacity";
 
+import {
+  assertUnreservedDemandOpen,
+  observeUnreservedClosure,
+  retireUnreservedIntents,
+} from "./unreserved-closure";
+
 type Submission = typeof submissions.$inferSelect;
 type Lease = { id: string; token: string };
 class LeaseLost extends Error {}
@@ -43,6 +49,13 @@ export class FederationMarketService {
     private readonly client?: MarketClient,
     private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {}
+  async reconcileClosures() {
+    try {
+      if (this.client) await observeUnreservedClosure(this.db, this.siteId, this.client);
+    } finally {
+      await retireUnreservedIntents(this.db, this.siteId);
+    }
+  }
   private async claim(): Promise<Lease | null> {
     return this.db.transaction(async (tx) => {
       const [row] = await tx
@@ -225,10 +238,22 @@ export class FederationMarketService {
       .where(eq(submissions.id, id));
   }
 
-  private async validate(row: Submission) {
+  private async validate(row: Submission, tx?: PgTransaction, recovering = false) {
     const input = MarketAdapterProposalInputSchema.parse(row.input);
     if (federationMaterialDigest(input) !== row.digest)
       throw new FederationError("OPERATION_CONFLICT");
+    if (
+      !recovering &&
+      ["publish-demand", "claim-demand", "activate-demand", "authorize-execution"].includes(
+        input.operation,
+      )
+    ) {
+      if (tx) await assertUnreservedDemandOpen(tx, this.siteId, row.demandId);
+      else
+        await this.db.transaction((scope) =>
+          assertUnreservedDemandOpen(scope, this.siteId, row.demandId),
+        );
+    }
     if (input.operation === "close-demand") {
       const closure = await this.db.transaction((tx) =>
         input.closure.gate.state === "REVOKED"
@@ -341,6 +366,7 @@ export class FederationMarketService {
           .limit(1);
         if (other) throw new FederationError("OPERATION_CONFLICT");
       } else {
+        await assertUnreservedDemandOpen(tx, this.siteId, demandId);
         await allocateMarketCompletion(tx, this.siteId, input, this.storageGuard);
         await this.storageGuard?.assertAdmission("ledger_coordinated");
         const [clock] = await tx
@@ -536,8 +562,8 @@ export class FederationMarketService {
         (row.leaseUntil && row.leaseUntil > new Date(time?.now ?? NaN))
       )
         throw new FederationError("OPERATION_CONFLICT");
-      await this.validate(row);
       const [attempt] = await this.latest(tx, id);
+      await this.validate(row, tx, attempt?.stage === "transaction");
       if (attempt?.stage === "proposal")
         await tx
           .update(attempts)

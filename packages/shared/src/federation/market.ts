@@ -213,6 +213,7 @@ export const MarketDemandStateSchema = z
     )
       ctx.addIssue({ code: "custom", message: "Invalid execution closure binding" });
   });
+export type MarketDemandState = z.infer<typeof MarketDemandStateSchema>;
 export const MarketReceiptSchema = z.strictObject({
   recordId: Id,
   digest: FederationDigestSchema,

@@ -163,19 +163,24 @@ export class FederationExecutionStopService {
       const state = result.demand;
       if (!state || state.status === "OPEN" || state.status === "CLAIMED")
         throw new FabricClientFailure("ACTIVATION_PENDING");
-      if (state.status === "CLOSED" && state.closure?.gate.state === "REVOKED") {
-        const gate = state.closure.gate;
+      if (
+        state.status === "CLOSED" &&
+        (state.closure?.gate.state === "REVOKED" || state.unreservedClosure)
+      ) {
+        const gate = state.closure?.gate;
         if (
           state.demand.demandId !== reserve.demandId ||
           state.demand.sourceSiteId !== reserve.request.senderSiteId ||
           state.claim?.providerSiteId !== reserve.request.recipientSiteId ||
           state.claim.claimId !== reserve.reservationId ||
           state.claim.commercialDomainId !== reserve.domainId ||
-          gate.domainId !== reserve.domainId ||
-          gate.reservationId !== reserve.reservationId ||
-          gate.reservationDigest !== row.digest ||
-          gate.claimVersion !== reserve.claimVersion ||
-          gate.expiresAt !== reserve.request.expiresAt
+          state.claim.expectedVersion + 1 !== reserve.claimVersion ||
+          (gate &&
+            (gate.domainId !== reserve.domainId ||
+              gate.reservationId !== reserve.reservationId ||
+              gate.reservationDigest !== row.digest ||
+              gate.claimVersion !== reserve.claimVersion ||
+              gate.expiresAt !== reserve.request.expiresAt))
         )
           throw new FederationError("OPERATION_CONFLICT");
         await this.db

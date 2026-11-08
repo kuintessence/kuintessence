@@ -36,6 +36,8 @@ import {
 import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
 
+import { assertUnreservedDemandOpen } from "./unreserved-closure";
+
 type Proposal = typeof proposals.$inferSelect;
 class ProposalLeaseLost extends Error {}
 const wireDigest = (payload: CommercialReservation) =>
@@ -114,7 +116,13 @@ export class FederationReservationProposalService {
     const [count] = await tx
       .select({ count: sql<number>`count(*)::int` })
       .from(proposals)
-      .where(and(eq(proposals.policyId, policyId), isNull(proposals.approvedAt)));
+      .where(
+        and(
+          eq(proposals.policyId, policyId),
+          isNull(proposals.approvedAt),
+          sql`${proposals.state} <> 'closed'`,
+        ),
+      );
     if ((count?.count ?? 0) >= 128) throw new FederationError("POLICY_DENIED");
   }
   async submit(
@@ -232,6 +240,7 @@ export class FederationReservationProposalService {
       throw new FederationError("UNTRUSTED_IDENTITY");
     if (wireDigest(payload) !== verified.digest) throw new FederationError("OPERATION_CONFLICT");
     return this.db.transaction(async (tx) => {
+      await assertUnreservedDemandOpen(tx, this.signing.siteId, payload.demandId);
       for (const site of [sender.siteId, this.signing.siteId].sort()) {
         if (site === sender.siteId)
           await this.trust.assertPeer(tx, fingerprint, site, sender.keyId, new Date());
@@ -590,6 +599,7 @@ export class FederationReservationProposalService {
         )
         .for("update");
       if (!row) throw new FederationError("ASSET_UNAVAILABLE");
+      await assertUnreservedDemandOpen(tx, this.signing.siteId, row.payload.demandId);
       if (
         ["approved", "delivered"].includes(row.state) ||
         (row.leaseUntil && row.leaseUntil > new Date())

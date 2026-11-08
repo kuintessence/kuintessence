@@ -97,9 +97,9 @@ Market 链码调用同通道 Commercial 的 `GetExecutionGatePresence`，仅已�
 
 示例标识不能直接执行。`demandId`、`claimId`、商业域和版本取自原公开认领，`issuerSiteId` 必须为本站；只有首次创建 `closureId`，未知结果继续原 ID。源方要求本组织已 committed 的发布记录与 `market.publish`，提供方要求本组织已 committed 的原认领与 `market.claim`，重试保持相同权限；平台管理员身份本身不代替这些授权。无商业域的旧认领不通过此接口推测归属。
 
-入队仍返回 202/pending，只有原交易 VALID 才标 committed。同一原发布/认领的并发关闭串行去重；改用另一 closureId 拒绝。已有未认领撤回因认领竞争失败，不妨碍发起本关闭。新待办锁定原市场占额，已释放占额不能被新 ID 重新使用；精确重放返回原记录。此步骤尚不自动终止本地提案、签名交换或回收任务占额，不能把公共 CLOSED 当作所有本地义务已结束。
+入队仍返回 202/pending，只有原交易 VALID 才标 committed。同一原发布/认领的并发关闭串行去重；改用另一 closureId 拒绝。已有未认领撤回因认领竞争失败，不妨碍发起本关闭。新待办锁定原市场占额，已释放占额不能被新 ID 重新使用；精确重放返回原记录。本地提案与签名交换的停止方式见下文；公共 CLOSED 仍不等同于所有本地义务已结束，也不直接回收任务占额。
 
-升级须应用 Drizzle 生成的 [0150](../../packages/db/migrations/0150_ancient_oracle.sql)，同步部署共享 schema、Commercial/Market 链码、Adapter 和 Server，再启用该入口。先让 Commercial 支持存在性查询；旧 Market 客户端无法解析新增 CLOSED 记录，不应与新写入混用。Web 专用操作、自动取消编排及两端本地提案收尾仍需继续接线。
+升级须应用 Drizzle 生成的 [0150](../../packages/db/migrations/0150_ancient_oracle.sql)，同步部署共享 schema、Commercial/Market 链码、Adapter 和 Server，再启用该入口。先让 Commercial 支持存在性查询；旧 Market 客户端无法解析新增 CLOSED 记录，不应与新写入混用。Web 专用操作、自动取消编排及收尾占额回收仍需继续接线。
 
 真实并发专项：
 
@@ -109,3 +109,16 @@ bun scripts/fabric-evidence-network.ts --gate --unreserved-closure
 ```
 
 已验证提供方通过 A/C 公共背书关闭、关闭/锁额两种提交顺序的 MVCC 互斥、非参与机构拒绝、原关闭重放及迟到锁额拒绝。另有 71 项链码/Adapter 模块和 13 项隔离 PostgreSQL 检查通过。该专项不启动 k3s 或科学计算，不替代 Server/Agent 完整联合验收。
+
+
+### 关闭后的本地待办
+
+Server 商业 worker 每轮选择一笔到期的原发布或认领，通过本站受信任的 Market Adapter 查询最终状态；同一原意图至少间隔 60 秒，跨副本跳过已锁定记录。任意一方发起的 `unreservedClosure` 均可被双方各自确认。网络请求不持有数据库事务；缺失、超时、格式错误、错绑认领或摘要不符均不作为关闭事实。
+
+确认结果与原本地意图绑定，保存完整公开状态、摘要、观测时间和审计。写入前重验原意图，并与同一站点/需求的本地业务写入互斥。保存后不因网络故障或重启重新开放。已关闭需求不能再创建预留批准、附加另一方签名、申请激活/执行确认或恢复提案和签名交换重试；直接合作与异步存证不使用这项市场检查。
+
+无活动租约的提案、自动执行待办及尚未完成的市场请求/预留/释放签名交换按批转为 `closed`，保留原请求、签名、回执与累计授权使用量。已有完成的请求/签名交换保留原完成状态；未完成操作的 `MARKET_CLOSED` 表示关闭原因，不表示执行成功。仍有租约的操作先完成其原有校验，过期 worker 不能覆盖已关闭状态。原停止交付在核对相同需求、认领、双方及商业域后也可结束，不再等待一个不存在的激活。
+
+已经准备为交易、可能提交但结果未知的市场/商业检查点继续使用原交易 ID 恢复，不能用新提案取代。此项不删除检查点、不退款、不恢复累计预授权额度，也不释放数据库收尾占额；未决交易与占额回收仍单独处理。完整两站 Server/Agent 联合验收和 PR 预览尚未完成。
+
+应用 Drizzle 生成的 [0151](../../packages/db/migrations/0151_secret_ultimatum.sql) 后部署新版 Server。新增表仅保存公开市场状态，不复制价格、合同或用量私有字段。

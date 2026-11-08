@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import {
   federationMarketAttempts as attempts,
   auditLog,
+  federationUnreservedClosures as closures,
   createPgDb,
   orgs,
   federationMarketSubmissions as submissions,
@@ -14,6 +15,7 @@ import {
   type MarketAdapterProposalInput,
   type MarketAdvanceResult,
   MarketDemandSchema,
+  MarketDemandStateSchema,
   type MarketProposalInput,
   type MarketQueryInput,
   type MarketQueryResult,
@@ -24,10 +26,12 @@ import { Hono } from "hono";
 import pino from "pino";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationMarketRoutes } from "../routes/federation-market";
+import { federationMaterialDigest } from "./assets";
 import { FabricClientFailure } from "./fabric-client";
 import { FederationMarketService } from "./market";
 import type { MarketClient } from "./market-client";
 import { FederationPermissionService } from "./permissions";
+import { assertUnreservedDemandOpen, observeUnreservedClosure } from "./unreserved-closure";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -602,4 +606,183 @@ test("unreserved provider closure and retry use claim authority and preserve ori
   );
   await f.service.retry(f.actor, input.closure.closureId);
   expect((await f.service.get(f.actor, input.closure.closureId)).operation.state).toBe("pending");
+});
+
+function unreservedState(
+  demand: ReturnType<typeof MarketDemandSchema.parse>,
+  providerSiteId = randomUUID(),
+) {
+  const claim = {
+    demandId: demand.demandId,
+    claimId: randomUUID(),
+    providerSiteId,
+    commercialDomainId: randomUUID(),
+    expectedVersion: 1,
+    expiresAt: demand.expiresAt,
+  };
+  return MarketDemandStateSchema.parse({
+    demand,
+    digest: federationMaterialDigest(demand),
+    status: "CLOSED",
+    version: 3,
+    claim,
+    cancellation: null,
+    activation: null,
+    unreservedClosure: {
+      demandId: demand.demandId,
+      closureId: randomUUID(),
+      claimId: claim.claimId,
+      commercialDomainId: claim.commercialDomainId,
+      issuerSiteId: providerSiteId,
+      expectedVersion: 2,
+    },
+  });
+}
+
+test("unreserved observation survives restart and accepts either party only through the local adapter", async () => {
+  const f = await fixture();
+  await f.service.enqueue(f.actor, f.input);
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  const state = unreservedState(f.input.demand);
+  f.adapter.onQuery = async () => ({ operation: "get-demand", demand: state });
+  await f.service.reconcileClosures();
+  const [saved] = await db.select().from(closures).where(eq(closures.localSiteId, f.siteId));
+  expect(saved).toMatchObject({
+    originId: f.id,
+    payload: state,
+    digest: federationMaterialDigest(state),
+  });
+  await new FederationMarketService(db, f.siteId, f.adapter).reconcileClosures();
+  expect(f.adapter.queries).toBe(1);
+  await expect(
+    db.transaction((tx) => assertUnreservedDemandOpen(tx, f.siteId, f.id)),
+  ).rejects.toThrow("CANCELLATION_REQUESTED");
+  await db.transaction((tx) => assertUnreservedDemandOpen(tx, randomUUID(), f.id));
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(sql`action = 'federation.market.observe_unreserved_closure' AND target = ${f.id}`),
+  ).toHaveLength(1);
+});
+
+test("unreserved observation rejects mismatched provider claims and never treats outage or missing state as closure", async () => {
+  const f = await fixture(false);
+  await f.permissions.set(
+    { ...f.actor, capability: "market.claim", enabled: true },
+    f.actor.userId,
+  );
+  const state = unreservedState({ ...f.input.demand, sourceSiteId: randomUUID() }, f.siteId);
+  if (!state.claim || !state.unreservedClosure) throw new Error("Missing closure fixture");
+  state.unreservedClosure.issuerSiteId = state.demand.sourceSiteId;
+  await f.service.enqueue(f.actor, { operation: "claim-demand", claim: state.claim });
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  const due = () =>
+    db
+      .update(submissions)
+      .set({ closureCheckAt: new Date(0) })
+      .where(eq(submissions.id, state.claim?.claimId ?? ""));
+  await f.service.reconcileClosures();
+  f.adapter.offline = true;
+  await due();
+  await expect(f.service.reconcileClosures()).rejects.toThrow("LEDGER_UNAVAILABLE");
+  f.adapter.offline = false;
+  const altered = structuredClone(state);
+  if (!altered.claim || !altered.unreservedClosure) throw new Error("Missing claim");
+  altered.claim.claimId = randomUUID();
+  altered.unreservedClosure.claimId = altered.claim.claimId;
+  f.adapter.onQuery = async () => ({ operation: "get-demand", demand: altered });
+  await due();
+  await expect(f.service.reconcileClosures()).rejects.toThrow("OPERATION_CONFLICT");
+  expect(await db.select().from(closures).where(eq(closures.localSiteId, f.siteId))).toHaveLength(
+    0,
+  );
+  f.adapter.onQuery = async () => ({ operation: "get-demand", demand: state });
+  await due();
+  await f.service.reconcileClosures();
+  expect(await db.select().from(closures).where(eq(closures.localSiteId, f.siteId))).toHaveLength(
+    1,
+  );
+});
+
+test("unreserved observation serializes with already-authorized writers without holding a network transaction", async () => {
+  const f = await fixture();
+  await f.service.enqueue(f.actor, f.input);
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  f.adapter.onQuery = async () => ({
+    operation: "get-demand",
+    demand: unreservedState(f.input.demand),
+  });
+  let observed = false;
+  let queried!: () => void;
+  const queryStarted = new Promise<void>((resolve) => {
+    queried = resolve;
+  });
+  const onQuery = f.adapter.onQuery;
+  f.adapter.onQuery = async (input) => {
+    queried();
+    return onQuery(input);
+  };
+  let pending!: Promise<boolean>;
+  await db.transaction(async (tx) => {
+    await assertUnreservedDemandOpen(tx, f.siteId, f.id);
+    pending = observeUnreservedClosure(db, f.siteId, f.adapter).then((result) => {
+      observed = true;
+      return result;
+    });
+    await queryStarted;
+    let waiting = false;
+    for (let i = 0; i < 100 && !waiting; i++) {
+      const [lock] = await tx.execute<{ waiting: boolean }>(
+        sql`SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND mode = 'ExclusiveLock' AND NOT granted) AS waiting`,
+      );
+      waiting = Boolean(lock?.waiting);
+      if (!waiting) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(waiting).toBe(true);
+    expect(observed).toBe(false);
+    expect(await tx.select().from(closures).where(eq(closures.localSiteId, f.siteId))).toHaveLength(
+      0,
+    );
+  });
+  expect(await pending).toBe(true);
+  await expect(
+    db.transaction((tx) => assertUnreservedDemandOpen(tx, f.siteId, f.id)),
+  ).rejects.toThrow("CANCELLATION_REQUESTED");
+});
+
+test("unreserved observation audit failure and a late changed origin cannot persist a closure fence", async () => {
+  const f = await fixture();
+  await f.service.enqueue(f.actor, f.input);
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  const state = unreservedState(f.input.demand);
+  f.adapter.onQuery = async () => ({ operation: "get-demand", demand: state });
+  await db.execute(
+    sql`CREATE FUNCTION unreserved_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.market.observe_unreserved_closure' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER unreserved_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION unreserved_audit_fail()`,
+  );
+  try {
+    await expect(f.service.reconcileClosures()).rejects.toThrow();
+  } finally {
+    await db.execute(sql`DROP TRIGGER unreserved_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION unreserved_audit_fail()`);
+  }
+  expect(await db.select().from(closures).where(eq(closures.localSiteId, f.siteId))).toHaveLength(
+    0,
+  );
+  await db.transaction((tx) => assertUnreservedDemandOpen(tx, f.siteId, f.id));
+  await db
+    .update(submissions)
+    .set({ closureCheckAt: new Date(0) })
+    .where(eq(submissions.id, f.id));
+  f.adapter.onQuery = async () => {
+    await db.update(submissions).set({ state: "needs_review" }).where(eq(submissions.id, f.id));
+    return { operation: "get-demand", demand: state };
+  };
+  await expect(f.service.reconcileClosures()).rejects.toThrow("OPERATION_CONFLICT");
+  expect(await db.select().from(closures).where(eq(closures.localSiteId, f.siteId))).toHaveLength(
+    0,
+  );
 });

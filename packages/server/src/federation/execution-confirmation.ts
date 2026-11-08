@@ -45,6 +45,7 @@ import { type FederationActor, requireFederationCapability } from "./permissions
 import { FederationReservationPolicyService } from "./reservation-policy";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
+import { assertUnreservedDemandOpen } from "./unreserved-closure";
 import { assertWorkflowRequestActive } from "./workflow-delegations";
 
 type Phase = "admission" | "execution";
@@ -223,6 +224,7 @@ export class FederationExecutionConfirmationService {
       );
     if (terminal) throw new FederationError("POLICY_DENIED");
     const reserve = CommercialReservationSchema.parse(record.payload);
+    await assertUnreservedDemandOpen(tx, this.siteId, reserve.demandId);
     if (
       federationCanonicalJson(reserve.request) !== federationCanonicalJson(request) ||
       reserve.agreementDigest !== commercial.contract.digest ||
