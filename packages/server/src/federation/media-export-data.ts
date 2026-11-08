@@ -70,7 +70,7 @@ export async function readMediaExportDataset(
   const active = policies.filter((policy) => !policy.expiresAt || policy.expiresAt > now);
   const relevant = active.filter((policy) =>
     policy.capabilities.some((capability) =>
-      ["view", "use", "download", "manage"].includes(capability),
+      ["view", "use", "download", "manage", "export"].includes(capability),
     ),
   );
   if (
@@ -84,7 +84,11 @@ export async function readMediaExportDataset(
   )
     throw new FederationError("POLICY_DENIED");
   const permits = relevant.filter(
-    (policy) => policy.effect === "allow" && policy.capabilities.includes("download"),
+    (policy) =>
+      policy.effect === "allow" &&
+      policy.capabilities.some(
+        (capability) => capability === "download" || capability === "export",
+      ),
   );
   if (!permits.length) throw new FederationError("POLICY_DENIED");
   const [storage] = await tx

@@ -23,13 +23,23 @@ import {
   FederationMediaManifestSchema,
 } from "@kuintessence/shared/federation";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
 import { decryptSecret } from "../auth/secret-cipher";
 import { createErrorHandler } from "../middleware/error-handler";
+import { buildCpRouter } from "../routes/cp";
 import { createFederationMediaRoutes } from "../routes/federation-media";
+import type { CpConsoleService } from "../services/cp-console";
+import { evaluateActiveDataAccess } from "../services/data-access-decision";
+import { DataDisclosurePolicyService } from "../services/data-disclosure-policies";
+import {
+  type DataMarketActor,
+  DataMarketService,
+  type DataUploadPort,
+} from "../services/data-market";
+import { PgDataMarketRepository } from "../services/data-market-repository-drizzle";
 import { FederationAdmission } from "./admission";
 import { FederationMediaExportService, mediaIdentityDomain } from "./media-exports";
 import { FederationMediaPackageService } from "./media-packages";
@@ -200,6 +210,27 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
   beforeEach(async () => {
     now = testNow;
     await db
+      .delete(dataAccessPolicies)
+      .where(
+        and(
+          eq(dataAccessPolicies.dataAssetVersionId, versionId),
+          eq(dataAccessPolicies.subjectKind, "org"),
+        ),
+      );
+    await db
+      .update(dataAssets)
+      .set({
+        ownerKind: "user",
+        ownerUserId: actor.userId,
+        providerOrgId: null,
+        lifecycle: "published",
+      })
+      .where(eq(dataAssets.id, assetId));
+    await db
+      .update(userOrgMemberships)
+      .set({ role: "member" })
+      .where(eq(userOrgMemberships.userId, actor.userId));
+    await db
       .update(dataAccessPolicies)
       .set({
         status: "active",
@@ -247,6 +278,42 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
   };
   const authorize = (id: string) =>
     db.transaction((tx) => service.assertExportAuthorized(tx, actor.orgId, id));
+  const manager: DataMarketActor = {
+    ...actor,
+    role: "user",
+    orgIds: [actor.orgId],
+    providerManagerOrgIds: [actor.orgId],
+  };
+  const uploadPort: DataUploadPort = {
+    createUploadSession: async () => {
+      throw new Error("unused");
+    },
+    getUploadSessionAsset: async () => {
+      throw new Error("unused");
+    },
+    commitUploadSession: async () => {
+      throw new Error("unused");
+    },
+  };
+  const market = new DataMarketService({ repository: new PgDataMarketRepository(db), uploadPort });
+  const policies = new DataDisclosurePolicyService(
+    db,
+    (a, id) => market.requireManage(a, id),
+    () => now,
+  );
+  const consent = () => ({
+    expectedUpdatedAt: null,
+    enabled: true,
+    expiresAt: new Date(testNow.getTime() + 7200_000).toISOString(),
+    reason: "Approved institutional data exchange",
+  });
+  async function onlyOrgConsent() {
+    await db
+      .update(dataAccessPolicies)
+      .set({ status: "disabled" })
+      .where(eq(dataAccessPolicies.id, policyId));
+    return policies.write(manager, versionId, consent());
+  }
   function app() {
     const r = new Hono();
     r.onError(createErrorHandler(pino({ enabled: false })));
@@ -487,5 +554,219 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     expect((await restarted.details(actor, input.packageId)).revocationReason).toBe(
       "Source authorization withdrawn",
     );
+  });
+
+  test("disclosure HTTP approval enables source preparation; revocation blocks current export and stale replay", async () => {
+    await db
+      .update(dataAssets)
+      .set({ ownerKind: "provider", ownerUserId: null, providerOrgId: actor.orgId })
+      .where(eq(dataAssets.id, assetId));
+    await db
+      .update(userOrgMemberships)
+      .set({ role: "admin" })
+      .where(eq(userOrgMemberships.userId, actor.userId));
+    await db
+      .update(dataAccessPolicies)
+      .set({ status: "disabled" })
+      .where(eq(dataAccessPolicies.id, policyId));
+    const r = new Hono();
+    r.onError(createErrorHandler(pino({ enabled: false })));
+    r.use("*", async (c, next) => {
+      if (c.req.header("x-test-automation")) c.set("automation" as never, {} as never);
+      c.set(
+        "principal" as never,
+        {
+          sub: actor.userId,
+          ...manager,
+          memberships: [{ orgId: actor.orgId, role: "admin" }],
+        } as never,
+      );
+      await next();
+    });
+    r.route(
+      "/api/cp",
+      buildCpRouter({ consoleService: {} as CpConsoleService, dataPolicies: policies }),
+    );
+    const path = `/api/cp/data/versions/${versionId}/disclosure-policy`;
+    const post = (body: unknown) =>
+      r.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-kq-active-organization": actor.orgId },
+        body: JSON.stringify(body),
+      });
+    const input = request();
+    await expect(service.prepare(actor, input)).rejects.toThrow("POLICY_DENIED");
+    expect((await post({ ...consent(), subjectId: other.orgId })).status).toBe(400);
+    expect(
+      (
+        await r.request(path, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-kq-active-organization": other.orgId },
+          body: JSON.stringify(consent()),
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await r.request(path, {
+          headers: { "x-kq-active-organization": actor.orgId, "x-test-automation": "true" },
+        })
+      ).status,
+    ).toBe(403);
+    expect((await post(consent())).status).toBe(200);
+    const approved = (await policies.read(manager, versionId)).policy;
+    expect(approved?.subjectId).toBe(actor.orgId);
+    expect(approved?.dataAssetVersionId).toBe(versionId);
+    expect(approved?.capabilities).toEqual(["export"]);
+    expect(
+      (
+        await evaluateActiveDataAccess(db, {
+          assetId,
+          versionId,
+          actorUserId: actor.userId,
+          orgIds: [actor.orgId],
+          capability: "use",
+          now: testNow,
+        })
+      ).allowed,
+    ).toBe(false);
+    await service.prepare(actor, input);
+    expect(
+      (await r.request(path, { headers: { "x-kq-active-organization": actor.orgId } })).status,
+    ).toBe(200);
+    expect(
+      (
+        await post({
+          ...consent(),
+          expectedUpdatedAt: approved?.updatedAt.toISOString(),
+          enabled: false,
+          reason: "Data owner withdrew permission",
+        })
+      ).status,
+    ).toBe(200);
+    await expect(authorize(input.packageId)).rejects.toThrow("POLICY_DENIED");
+    expect((await post(consent())).status).toBe(409);
+    expect((await policies.read(manager, versionId)).policy?.status).toBe("revoked");
+  });
+
+  test("disclosure edits serialize, retain one audit per change and reject inherited restrictions bypass", async () => {
+    await db
+      .update(dataAccessPolicies)
+      .set({ status: "disabled" })
+      .where(eq(dataAccessPolicies.id, policyId));
+    const created = await Promise.all([
+      policies.write(manager, versionId, consent()),
+      policies.write(manager, versionId, consent()),
+    ]);
+    expect(created[0]?.id).toBe(created[1]?.id);
+    const first = created[0];
+    if (!first) throw new Error("Missing policy");
+    expect(await db.select().from(auditLog).where(eq(auditLog.target, first.id))).toHaveLength(1);
+    const base = { ...consent(), expectedUpdatedAt: first.updatedAt.toISOString() };
+    const edits = await Promise.allSettled([
+      policies.write(manager, versionId, { ...base, reason: "first update" }),
+      policies.write(manager, versionId, { ...base, reason: "second update" }),
+    ]);
+    expect(edits.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(edits.filter((r) => r.status === "rejected")).toHaveLength(1);
+    await db
+      .update(dataAccessPolicies)
+      .set({ status: "active", redistributionPolicy: "deny" })
+      .where(eq(dataAccessPolicies.id, policyId));
+    expect((await policies.read(manager, versionId)).otherPolicies).toHaveLength(1);
+    await expect(service.prepare(actor, request())).rejects.toThrow("POLICY_DENIED");
+  });
+
+  test("disclosure management rechecks ownership, organization membership and external authorization", async () => {
+    await expect(
+      policies.read(
+        { ...manager, userId: other.userId, orgId: other.orgId, orgIds: [other.orgId] },
+        versionId,
+      ),
+    ).rejects.toThrow();
+    const guarded = new DataDisclosurePolicyService(
+      db,
+      async (a, id) => {
+        await market.requireManage(a, id);
+        await db
+          .update(dataAssets)
+          .set({ ownerKind: "provider", ownerUserId: null, providerOrgId: other.orgId })
+          .where(eq(dataAssets.id, assetId));
+      },
+      () => now,
+    );
+    await expect(guarded.write(manager, versionId, consent())).rejects.toThrow(
+      "management authority",
+    );
+    await db
+      .update(dataAssets)
+      .set({ ownerKind: "provider", providerOrgId: actor.orgId })
+      .where(eq(dataAssets.id, assetId));
+    await expect(policies.write(manager, versionId, consent())).rejects.toThrow(
+      "management authority",
+    );
+    const enforcedMarket = new DataMarketService({
+      repository: new PgDataMarketRepository(db),
+      uploadPort,
+      authz: { check: async () => false },
+    });
+    const denied = new DataDisclosurePolicyService(db, (a, id) =>
+      enforcedMarket.requireManage(a, id),
+    );
+    await expect(denied.write(manager, versionId, consent())).rejects.toThrow("Not authorized");
+  });
+
+  test("disclosure does not overwrite mixed policies and revocation remains possible for withdrawn versions", async () => {
+    const created = await onlyOrgConsent();
+    await db
+      .update(dataAccessPolicies)
+      .set({ capabilities: ["download", "manage"] })
+      .where(eq(dataAccessPolicies.id, created.id));
+    expect((await policies.read(manager, versionId)).editable).toBe(false);
+    await expect(
+      policies.write(manager, versionId, {
+        ...consent(),
+        expectedUpdatedAt: created.updatedAt.toISOString(),
+        enabled: false,
+      }),
+    ).rejects.toThrow("DATA_POLICY_SCOPE_CONFLICT");
+    await db
+      .update(dataAccessPolicies)
+      .set({ capabilities: ["export"] })
+      .where(eq(dataAccessPolicies.id, created.id));
+    await db.update(dataAssets).set({ lifecycle: "revoked" }).where(eq(dataAssets.id, assetId));
+    const revoked = await policies.write(manager, versionId, {
+      ...consent(),
+      expectedUpdatedAt: created.updatedAt.toISOString(),
+      enabled: false,
+    });
+    expect(revoked.status).toBe("revoked");
+    await expect(
+      policies.write(manager, versionId, {
+        ...consent(),
+        expectedUpdatedAt: revoked.updatedAt.toISOString(),
+      }),
+    ).rejects.toThrow("DATA_VERSION_NOT_READY");
+  });
+
+  test("disclosure audit failure rolls back consent and cannot leave a usable export grant", async () => {
+    await db
+      .update(dataAccessPolicies)
+      .set({ status: "disabled" })
+      .where(eq(dataAccessPolicies.id, policyId));
+    await db.execute(
+      sql`CREATE FUNCTION disclosure_reject_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'data.disclosure_policy.update' THEN RAISE EXCEPTION 'test audit unavailable'; END IF; RETURN NEW; END $$`,
+    );
+    await db.execute(
+      sql`CREATE TRIGGER disclosure_reject_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION disclosure_reject_audit()`,
+    );
+    try {
+      await expect(policies.write(manager, versionId, consent())).rejects.toThrow();
+      expect((await policies.read(manager, versionId)).policy).toBeNull();
+      await expect(service.prepare(actor, request())).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      await db.execute(sql`DROP TRIGGER disclosure_reject_audit ON audit_log`);
+      await db.execute(sql`DROP FUNCTION disclosure_reject_audit()`);
+    }
   });
 });

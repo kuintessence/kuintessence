@@ -206,6 +206,7 @@ import {
   DataDeliveryRevocationOutbox,
   DataGrantRevocationCoordinator,
 } from "./services/data-delivery-revocations";
+import { DataDisclosurePolicyService } from "./services/data-disclosure-policies";
 import { PgDataImportCoordinator } from "./services/data-import-coordinator-drizzle";
 import { DataMarketService, type DataUploadPort } from "./services/data-market";
 import { PgDataMarketRepository } from "./services/data-market-repository-drizzle";
@@ -2327,6 +2328,9 @@ protectedApi.route(
     agentCerts: certService,
     authz: authzService,
     dataMarket: dataMarketService,
+    dataPolicies: new DataDisclosurePolicyService(db, (actor, assetId) =>
+      dataMarketService.requireManage(actor, assetId),
+    ),
   }),
 );
 // Metering REST surface. Routes themselves carry the

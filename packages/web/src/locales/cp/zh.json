@@ -814,7 +814,35 @@
       "importUnavailable": "导入后端当前不可用；已保留可查询的持久化上传或导入状态。",
       "failed": "数据管理操作失败",
       "selectAssetForVersions": "选择数据资产后查看版本和副本。",
-      "selectVersionForReplicas": "选择版本查看副本。"
+      "selectVersionForReplicas": "选择版本查看副本。",
+      "disclosure": {
+        "title": "跨机构数据授权",
+        "scope": "授权范围",
+        "scopeValue": "当前机构 · 所选版本",
+        "status": "本策略",
+        "allowed": "允许",
+        "notAllowed": "未授权或已到期",
+        "expiry": "有效期至",
+        "reason": "授权或撤销原因",
+        "permission": "授权本机构将此版本复制到其他机构。每次导出仍须单独批准，接收方的导入与使用权限另行授权。",
+        "allow": "允许跨机构复制",
+        "renew": "更新有效期",
+        "revoke": "撤销授权",
+        "loadFailed": "无法读取策略。请确认资产管理权限后刷新。",
+        "saveFailed": "提交结果需核对。请刷新策略后再操作。",
+        "scopeConflict": "已有策略包含其他权限，请由资产管理者处理，不能在此覆盖。",
+        "desktopOnly": "请在桌面端修改授权。",
+        "otherRules": "其他适用策略（{{count}}）",
+        "restricted": "限制复制",
+        "moreRules": "仅展示前 100 条策略，授权仍检查全部适用策略。",
+        "subject": {
+          "user": "当前用户",
+          "org": "当前机构",
+          "provider-org": "算力提供机构",
+          "platform": "平台策略"
+        },
+        "versionUnavailable": "此版本尚未发布或已撤回，不能新增或续期授权。"
+      }
     },
     "metering": {
       "title": "用量计量",

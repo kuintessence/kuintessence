@@ -379,6 +379,10 @@ export interface DataMarketServiceDeps {
 export class DataMarketService {
   constructor(private readonly deps: DataMarketServiceDeps) {}
 
+  async requireManage(actor: DataMarketActor, assetId: string): Promise<void> {
+    await this.assertAuthorized(actor, await this.requireAsset(assetId), "manage");
+  }
+
   async listCatalog(actor: DataMarketActor, query: DataAssetListQuery) {
     const candidates = await this.deps.repository.listCatalogCandidates(query);
     const visible = await filterAsync(candidates, async (asset) =>
