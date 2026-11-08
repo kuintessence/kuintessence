@@ -2371,6 +2371,8 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         time.sleep(1)
     else:
         raise RuntimeError("Agent did not become online")
+    if media_execution == "pbs-pro":
+        k(["exec", "-n", namespace, "scheduler", "--", "env", "KQ_MEDIA_CGROUP_LAB=1", "bash", "/workspace/scripts/federation-live/pbs-cgroup-setup.sh"])
     print("Real " + (media_execution or "Kubernetes") + " Agent online through direct mTLS", flush=True)
     if media_execution:
         media_queue = "workq" if media_execution == "pbs-pro" else "debug"

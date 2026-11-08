@@ -139,6 +139,8 @@ mkdir -p /opt/kq /etc/kuintessence /usr/libexec/kuintessence
 cp /lab-runtime/bash.sif /opt/kq/bash.sif
 cp /workspace/packages/agent/scripts/kq-sandbox-wrapper /usr/libexec/kuintessence/kq-sandbox-wrapper
 chmod 755 /usr/libexec/kuintessence/kq-sandbox-wrapper
+cp /workspace/packages/agent/scripts/kq-sandbox-cgroup-check /usr/libexec/kuintessence/kq-sandbox-cgroup-check
+chmod 755 /usr/libexec/kuintessence/kq-sandbox-cgroup-check
 useradd -u 24001 -m scientist
 """, timeout=180)
     (output / "setup.log").write_text(setup.stdout + setup.stderr)
@@ -166,6 +168,9 @@ useradd -u 24001 -m scientist
     if case == "cgroup":
         probe = run(["env", "KQ_MEDIA_CGROUP_LAB=1", "bash", "/workspace/scripts/pbs-cgroup-lab.sh"], timeout=180)
     else:
+        if pbs:
+            setup = run(["env", "KQ_MEDIA_CGROUP_LAB=1", "bash", "/workspace/scripts/federation-live/pbs-cgroup-setup.sh"], timeout=60)
+            (output / "cgroup-setup.log").write_text(setup.stdout + setup.stderr)
         probe = run(["env", "KQ_MEDIA_HPC_LAB=1", "KQ_MEDIA_AGE_TEST_BIN=/opt/kq/age",
                      "KQ_MEDIA_HPC_CASE=" + case, "KQ_MEDIA_SCHEDULER=" + scheduler,
                      "bun", "/workspace/scripts/federation-media-hpc-probe.ts"], timeout=150)

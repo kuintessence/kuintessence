@@ -16,6 +16,8 @@ apptainer verify --local /opt/kq/bash.sif
 useradd -m -u 24001 scientist
 cp /workspace/packages/agent/scripts/kq-sandbox-wrapper /usr/libexec/kuintessence/kq-sandbox-wrapper
 chmod 755 /usr/libexec/kuintessence/kq-sandbox-wrapper
+cp /workspace/packages/agent/scripts/kq-sandbox-cgroup-check /usr/libexec/kuintessence/kq-sandbox-cgroup-check
+chmod 755 /usr/libexec/kuintessence/kq-sandbox-cgroup-check
 cp /workspace/deploy/schedulers/k3s/seccomp-kubernetes-no-network.json /etc/kuintessence/restricted-seccomp.json
 chmod 644 /etc/kuintessence/restricted-seccomp.json
 python3 - <<'PY'
@@ -33,6 +35,9 @@ values={
     'KQ_WRAPPER_SHA256':digest('/usr/libexec/kuintessence/kq-sandbox-wrapper'),
     'KQ_SECCOMP_PATH':'/etc/kuintessence/restricted-seccomp.json',
     'KQ_SECCOMP_SHA256':digest('/etc/kuintessence/restricted-seccomp.json'),
+    'KQ_CGROUP_CHECK_PATH':'/usr/libexec/kuintessence/kq-sandbox-cgroup-check',
+    'KQ_CGROUP_CHECK_SHA256':digest('/usr/libexec/kuintessence/kq-sandbox-cgroup-check'),
+    'KQ_SCHEDULER':os.environ['LAB_MEDIA_EXECUTION'],
 }
 pathlib.Path('/etc/kuintessence/restricted-execution-profile.conf').write_text('\n'.join(k+'='+shlex.quote(v) for k,v in values.items())+'\n')
 pathlib.Path('/etc/apptainer/ecl.toml').write_text('activated = true\n[[execgroup]]\ntagname = "media-lab"\nmode = "whitestrict"\ndirpath = "/opt/kq"\nkeyfp = ["'+metadata['fingerprint']+'"]\n')

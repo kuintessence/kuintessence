@@ -19,6 +19,7 @@ async function fixture() {
   const executable = join(root, "apptainer");
   const sif = join(root, "runtime.sif");
   const seccomp = join(root, "seccomp.json");
+  const checker = join(root, "cgroup-check");
   const original = await readFile(
     new URL("../../scripts/kq-sandbox-wrapper", import.meta.url),
     "utf8",
@@ -30,6 +31,9 @@ async function fixture() {
   await writeFile(executable, capture, { mode: 0o755 });
   await writeFile(sif, "signed-runtime", { mode: 0o444 });
   await writeFile(seccomp, policy, { mode: 0o644 });
+  const check =
+    "import sys\nassert sys.flags.isolated == 1\nprint('CHECK=' + repr(sys.argv[1:]), file=sys.stderr)\n";
+  await writeFile(checker, check, { mode: 0o644 });
   const values = {
     KQ_PROFILE_ID: "test-profile",
     KQ_APPTAINER_PATH: executable,
@@ -40,6 +44,9 @@ async function fixture() {
     KQ_WRAPPER_SHA256: hash(script),
     KQ_SECCOMP_PATH: seccomp,
     KQ_SECCOMP_SHA256: hash(policy),
+    KQ_CGROUP_CHECK_PATH: checker,
+    KQ_CGROUP_CHECK_SHA256: hash(check),
+    KQ_SCHEDULER: "pbs-pro",
   };
   const writeConfig = () =>
     writeFile(
@@ -65,6 +72,10 @@ async function fixture() {
     values.KQ_SIF_SHA256,
     "--wrapper-sha256",
     values.KQ_WRAPPER_SHA256,
+    "--cpus",
+    "2",
+    "--memory-mb",
+    "512",
     "--",
     executable,
     "exec",
@@ -91,8 +102,9 @@ async function fixture() {
     "/bin/bash",
     "/kq/script/main.sh",
   ];
-  const run = (args: string[] = [...prefix, ...tail]) => realSpawner.run([wrapper, ...args]);
-  return { root, wrapper, config, seccomp, sif, values, prefix, tail, writeConfig, run };
+  const run = (args: string[] = [...prefix, ...tail], env = ["PBS_JOBID=42.scheduler"]) =>
+    realSpawner.run(["env", "-u", "SLURM_JOB_ID", "-u", "PBS_JOBID", ...env, wrapper, ...args]);
+  return { root, wrapper, config, seccomp, checker, sif, values, prefix, tail, writeConfig, run };
 }
 
 describe.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)(
@@ -103,10 +115,61 @@ describe.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)(
       expect((await f.run(["--check-profile"])).exitCode).toBe(0);
       const result = await f.run();
       expect(result.exitCode).toBe(0);
+      expect(result.stderr).toContain(
+        "CHECK=['--scheduler', 'pbs-pro', '--job-id', '42.scheduler', '--cpus', '2', '--memory-mb', '512']",
+      );
       const argv = result.stdout.trim().split("\n");
       expect(argv.filter((arg) => arg === "--security")).toHaveLength(1);
       expect(argv[argv.indexOf("--security") + 1]).toBe(`no-new-privs,seccomp:${f.seccomp}`);
       expect(argv.slice(-3)).toEqual([f.sif, "/bin/bash", "/kq/script/main.sh"]);
+    });
+
+    test("rejects missing native identity and checker failures before starting the runtime", async () => {
+      const f = await fixture();
+      expect((await f.run(undefined, [])).exitCode).toBe(126);
+      const checker = "import sys\nsys.exit(126)\n";
+      await writeFile(f.checker, checker);
+      f.values.KQ_CGROUP_CHECK_SHA256 = hash(checker);
+      await f.writeConfig();
+      expect((await f.run(["--check-profile"])).exitCode).toBe(0);
+      const failed = await f.run();
+      expect(failed.exitCode).toBe(126);
+      expect(failed.stdout).toBe("");
+      expect(failed.stderr).toContain("per-job CPU/memory isolation check failed");
+    });
+
+    test("requires the pinned protected checker and ignores inherited policy configuration", async () => {
+      const f = await fixture();
+      await chmod(f.checker, 0o666);
+      expect((await f.run()).exitCode).toBe(126);
+      await chmod(f.checker, 0o644);
+      await writeFile(f.checker, "raise SystemExit(0)");
+      expect((await f.run()).exitCode).toBe(126);
+      f.values.KQ_CGROUP_CHECK_SHA256 = hash("raise SystemExit(0)");
+      await f.writeConfig();
+      expect((await f.run(["--check-profile"])).exitCode).toBe(0);
+      await writeFile(
+        f.config,
+        (await readFile(f.config, "utf8")).replace(/^KQ_CGROUP_CHECK_PATH=.*\n/m, ""),
+      );
+      expect(
+        (await f.run(["--check-profile"], [`KQ_CGROUP_CHECK_PATH=${f.checker}`])).exitCode,
+      ).toBe(126);
+    });
+
+    test("a forged scheduler ID cannot make the real checker accept an unrelated process", async () => {
+      const f = await fixture();
+      const checker = await readFile(
+        new URL("../../scripts/kq-sandbox-cgroup-check", import.meta.url),
+        "utf8",
+      );
+      await writeFile(f.checker, checker);
+      f.values.KQ_CGROUP_CHECK_SHA256 = hash(checker);
+      await f.writeConfig();
+      expect((await f.run(["--check-profile"])).exitCode).toBe(0);
+      const failed = await f.run();
+      expect(failed.exitCode).toBe(126);
+      expect(failed.stdout).toBe("");
     });
 
     test("refuses missing, modified, writable or linked policy before invoking Apptainer", async () => {

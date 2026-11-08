@@ -316,6 +316,18 @@ describe("HPC Sandbox adapters", () => {
     };
     const restricted = { ...job(sandbox), restrictedNoEgress: true };
     const argv = buildTrustedSandboxArgv(sandbox, buildApptainerSandboxArgv(sandbox));
+    expect(argv.slice(argv.indexOf("--cpus"), argv.indexOf("--cpus") + 4)).toEqual([
+      "--cpus",
+      "2",
+      "--memory-mb",
+      "512",
+    ]);
+    expect(() =>
+      buildTrustedSandboxArgv(
+        { ...sandbox, resources: undefined },
+        buildApptainerSandboxArgv(sandbox),
+      ),
+    ).toThrow();
     expect(argv.slice(0, 12)).toEqual([
       "/usr/libexec/kuintessence/kq-sandbox-wrapper",
       "--profile-id",

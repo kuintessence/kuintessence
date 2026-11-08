@@ -160,6 +160,8 @@ bun run test:federation:direct
 
 ### 介质交付后的真实 Slurm 执行
 
+当前 trusted wrapper 已强制核对逐作业限额；旧 Slurm 19 缓存未启用 cgroup，必须完成现代 Slurm v2 配置后才可复验。以下历史结果不证明新入口已通过。
+
 在上述 `media` 场景增加 `KQ_MEDIA_EXECUTION=slurm` 和 `KQ_MEDIA_RUNTIME_DIR=/absolute/path/to/runtime`。
 运行目录需包含[组件实验](media-slurm-lab.md)相同的 Apptainer 1.4.3 主包、setuid 包及 Bash SIF。
 运行器核验安装包固定摘要，在自建目录生成临时密钥、签署 SIF、离线验证并删除私钥；
@@ -193,6 +195,8 @@ PBS 目录使用[组件实验](media-slurm-lab.md)产出的 `openpbs.tar.gz`、`
 启动前检查固定源码提交/摘要、23.06.06 版本、基础镜像及归档摘要，Pod 内恢复安装并校验真实 qsub 版本，不触发源码编译。
 缓存是本地验收构建，不声明为上游认证的二进制发布。
 
+PBS 变体现会在自有 Pod 的受限子树安装[原生 cgroup v2 hook](../schedulers/pbs/cgroup-v2.md)，仅作用于实验 `workq`。trusted wrapper 在用户脚本启动前强制核对原生 Job ID、签名 CPU/内存及实际内核限额；检查失败不会运行脚本。
+
 接收端通过实际注册接入 `pbs-pro`，等待 `workq` 清单可用，为映射账号显式授权该队列。
 使用相同的 DATA_WAITING、签名脚本/SIF、加密交付、独立授权和实际来源撤权步骤。
 运行探针读取生产 PBS Adapter 及原 qstat 历史记录；停止要求原 Job 为 F 且非零退出、映射进程消失，
@@ -204,3 +208,5 @@ Pod 总限额仍为 1 CPU/1 GiB；生产逐作业 cgroup、掉电、多主机、
 2026-11-09：此 PBS 联合场景完整命令一次通过并退出 0。实际读取/隔离检查后，来源政策 HTTP 撤销，
 原短期许可失效，同一原生 PBS Job 从 R 进入 F、退出码 265、映射进程消失、Agent 停止证明为 true。
 两端账本守恒，直接模式无链待办，所有隔离资源清理。没有重新编译 PBS 或科学软件，未注入停止决定。
+
+2026-11-09：强制资源检查接入后，PBS 联合流程再次通过。原作业进入用户脚本前经过 pinned checker，运行中额外内核快照为 1 CPU/128 MiB、swap=0；随后来源 HTTP 撤权、原许可到期、同一作业 F/Exit 265、Agent 停止证明为 true。该次验证未重复 Slurm 或内存压力实验，不代替其他 root 路径、SelfAccount、队列能力发布和掉电恢复验收。

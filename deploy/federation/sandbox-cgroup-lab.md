@@ -1,7 +1,7 @@
 # 计算节点逐作业资源检查
 
 新增 [`kq-sandbox-cgroup-check`](../../packages/agent/scripts/kq-sandbox-cgroup-check) 读取当前进程的内核 cgroup 及挂载信息，核对指定调度器作业的 CPU、内存边界。
-它不创建限额、不验证 Server 签名、不提交任务。目前尚未接入 trusted wrapper、SelfAccount 启动证明或 Agent 能力发布；现有 `AGENT_SANDBOX_CGROUPS` 配置不能据此视为已完成生产验收。
+它不创建限额、不验证 Server 签名、不提交任务。带签名 `executionProfile` 的受限 HPC 作业已通过 trusted wrapper 强制调用：Agent 传递已验证清单中的资源值，节点配置指定调度器，原生作业编号必须匹配当前内核分组。SelfAccount、其他 root 路径及启动/队列能力发布尚待接入；`AGENT_SANDBOX_CGROUPS` 配置不能据此视为已完成生产验收。
 
 ## 检查口径
 
@@ -19,6 +19,9 @@
 ```
 
 成功输出 JSON，检查失败退出 126。该命令的参数由操作者提供，仅作为诊断；产品接入时必须由已验证签名中的资源值及实际调度器 Job ID 构造参数，不能把任意 CLI 参数当成授权。
+trusted wrapper 使用固定 `/usr/bin/python3 -I`，忽略用户 Python 路径及 site hooks。节点 profile 须配置 `KQ_CGROUP_CHECK_PATH`、`KQ_CGROUP_CHECK_SHA256` 和 `KQ_SCHEDULER`（`slurm`、`pbs-pro` 或 `torque`）；路径、摘要、root 所有权与全部父目录权限均在执行前核对，环境变量不能补全遗漏的本地配置。
+`--check-profile` 只验证节点依赖；真正的逐作业核验在调度作业内部运行，失败退出 126，用户脚本不会启动。
+
 节点须具备 Python 3.8+ 和对应内核控制器；不同厂商调度器使用不同 cgroup 布局时会拒绝，不自行猜测其他作业路径。
 
 ## 可重复验证
@@ -46,5 +49,5 @@ KQ_TEST_CGROUP_LIMITS=1 PYTHONDONTWRITEBYTECODE=1 \
 ## 仍需完成的接入
 
 现有实验 Slurm 19 使用 `task/none`，缓存的 OpenPBS 23 官方 hook 使用 v1；当前主机采用统一 v2。不能仅设置一个能力开关而宣布具备限额。
-后续须配置实际支持的调度器 cgroup 路径，将检查器作为固定摘要、root 管理的节点执行依赖，并让执行入口在启动用户脚本前核对已签名资源；SelfAccount 的路径正则检查也须替换。
-这些接入和 Slurm/PBS 真实联合验证完成前，完整资源隔离验收保持未完成。完整联盟链蓝图及 PR 预览验收范围不变。
+PBS 已提供显式队列的[原生 v2 hook](../schedulers/pbs/cgroup-v2.md)。trusted wrapper 已接入固定摘要、root 管理的检查器，并在用户脚本前核对已签名资源。后续仍须配置 Slurm 实际 v2 路径、补齐 SelfAccount 和启动/队列能力证明；SelfAccount 的路径正则检查不能作为资源证明。
+PBS 受限 root profile 的双平台联合验证已通过；其余接入、Slurm 配置及真实联合验证完成前，完整资源隔离验收保持未完成。完整联盟链蓝图及 PR 预览验收范围不变。

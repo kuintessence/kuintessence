@@ -425,6 +425,7 @@ export function buildTrustedSandboxArgv(
 ): string[] {
   const profile = sandbox.executionProfile;
   if (!profile) return apptainerArgv;
+  const resources = SandboxComputeResourcesSchema.parse(sandbox.resources);
   if (
     apptainerArgv[0] !== profile.apptainerCanonicalPath ||
     sandbox.runtimePath !== profile.sifCanonicalPath
@@ -445,6 +446,10 @@ export function buildTrustedSandboxArgv(
     profile.sifSha256,
     "--wrapper-sha256",
     profile.trustedWrapperSha256,
+    "--cpus",
+    String(resources.cpus),
+    "--memory-mb",
+    String(resources.memoryMb),
     "--",
     ...apptainerArgv,
   ];

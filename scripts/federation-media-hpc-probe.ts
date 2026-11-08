@@ -76,6 +76,11 @@ await writeFile(
     KQ_WRAPPER_SHA256: profile.trustedWrapperSha256,
     KQ_SECCOMP_PATH: seccompPath,
     KQ_SECCOMP_SHA256: hash(seccomp),
+    KQ_CGROUP_CHECK_PATH: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+    KQ_CGROUP_CHECK_SHA256: hash(
+      await readFile("/usr/libexec/kuintessence/kq-sandbox-cgroup-check"),
+    ),
+    KQ_SCHEDULER: scheduler,
   })
     .map(([key, value]) => `${key}='${value}'`)
     .join("\n"),

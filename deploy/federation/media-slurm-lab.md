@@ -1,5 +1,7 @@
 # 导入数据的真实 Slurm / PBS / Apptainer 验证
 
+当前受限执行入口强制核对逐作业资源。PBS 变体在提交前安装显式队列的原生 cgroup v2 hook；Slurm 缓存仍为 `task/none`，新入口会拒绝执行，须更新为支持 v2 的实际配置后重验。下文旧 Slurm 结果是接入资源检查之前的历史证据。
+
 此实验验证 Agent 端的真实 age 导入、签名 Sandbox 准备、映射 Unix 账号执行和独立 watchdog 停机。使用 256 KiB 合成数据及 Bash，不安装科学计算软件。
 
 | 场景 | 判据 |

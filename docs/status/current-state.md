@@ -731,3 +731,9 @@ Agent 注册/心跳的受信执行配置现在提取并验证业务字段，避�
 此结果补齐了 Slurm/PBS 两条双平台数据集交付与撤权联合链路，不代表完整调度矩阵、生产逐作业 cgroup、
 真实科学软件、主机掉电、任务输入/结果介质、支付争议、治理归档及 PR 预览已验收。
 本地数据授权仍为显式初始化夹具；步骤见[真实 PBS 执行](../../deploy/federation/execution-lab.md#介质交付后的真实-pbs-执行)。
+
+### 受限 HPC 作业执行前核对资源
+
+带签名 `executionProfile` 的作业已将签名 CPU/内存值传给 trusted wrapper；节点按本地 root 配置的调度器及固定摘要检查器，在 Apptainer/用户脚本启动前检查原生 Job ID 对应的实际内核 cgroup。未设逐作业限额、依赖缺失/被替换或编号不匹配均拒绝。环境变量不能补全遗漏的本地策略，Python 使用隔离导入模式。`--check-profile` 仍仅验证文件配置。SelfAccount、其他 root 路径、启动/队列能力发布及 Slurm v2 配置仍待完成；完整蓝图与 PR 预览验收未完成。
+
+2026-11-09：新增强制检查后的 PBS 双平台介质联合流程通过。运行中原作业内核限额为 1 CPU/128 MiB、swap=0；完成实际导入数据读取及隔离检查后，来源撤权使原许可到期，同一 PBS Job 终止，Agent 持久停止证明为 true。该项只覆盖受限 root profile 的 PBS 路径。

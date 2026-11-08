@@ -322,7 +322,15 @@ JSON 的规范绝对路径和摘要。策略文件及其全部父目录必须由
 Agent 启动时调用 wrapper 的 `--check-profile`，本地检查失败则不发布可用的受限执行 profile。
 该检查验证文件配置，不替代每台计算节点上的真实调度执行、安全策略或 cgroup 验收。
 
-升级须暂停受限派发，在 Agent 和计算节点部署新 wrapper/策略、更新配置中的 wrapper
+同一 profile 还须设置 `KQ_CGROUP_CHECK_PATH`、`KQ_CGROUP_CHECK_SHA256` 和
+`KQ_SCHEDULER`（`slurm`、`pbs-pro` 或 `torque`）。检查器及其父目录须由 root 管理；
+wrapper 在执行前使用 `/usr/bin/python3 -I` 调用固定摘要的检查器，将 Agent 从签名清单
+传入的 CPU/内存值与本作业内核限额核对。原生 `SLURM_JOB_ID` 或 `PBS_JOBID` 必须
+匹配当前进程的 cgroup；父容器限额或伪造环境编号均不足以通过。检查失败退出 126，
+用户脚本不会启动；`--check-profile` 不运行这项逐作业核验。详见
+[节点资源检查](../deploy/federation/sandbox-cgroup-lab.md)。
+
+升级须暂停受限派发，在 Agent 和计算节点部署新 wrapper/策略/检查器、配置原生逐作业 cgroup、更新配置中的 wrapper
 摘要及 `AGENT_RESTRICTED_EXECUTION_WRAPPER_SHA256`，再重启 Agent；不得省略策略恢复执行。
 本约束适用于 signed `executionProfile` 的受限 HPC 任务；普通非受限 root 代运行路径
 尚未强制加载这份本地 seccomp 策略，整套运行时证明仍需补齐，

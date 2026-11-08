@@ -2751,3 +2751,17 @@ v1/v2 离线夹具共 9 项，含多组失败输入，已接入 Bun 测试入口
 其他蓝图目标、PR 预览及用户最终验收范围保持不变；未推送、合并或远程部署。
 
 本轮全仓 lint（原有 47 warnings/1 info）、全仓 typecheck（含 protobuf 生成及实验脚本）、888 个本地文档目标与 diff 检查通过。未改生成文件、依赖锁或数据库迁移。
+
+## trusted wrapper 强制逐作业资源检查
+
+Agent 从已验证清单传递 CPU/内存值，trusted wrapper 核对本地 root 配置的检查器摘要、调度器类型及原生作业编号，并在 Apptainer 前核对实际 cgroup。使用系统 Python 的隔离导入模式；遗漏配置不从环境变量继承。依赖漂移、缺少限额、伪造编号均拒绝，用户脚本不会运行。启动 `--check-profile` 只检查文件，不作为逐作业能力证明。
+
+PBS 实验复用一个受限 Pod 内的 hook 安装入口，组件与双平台介质运行器均在提交前安装。旧 Slurm 19 实验仍无逐作业 v2 配置，因此新执行入口会拒绝其作业，须完成现代 Slurm 配置后再验收；没有以关闭检查恢复旧实验。SelfAccount、其他 root 路径、启动/队列能力发布和完整蓝图其余项仍待完成。
+
+本轮 32 项相关 Bun 测试通过（其中两项执行检查器 9 项、PBS hook 6 项 Python 用例），覆盖实际 wrapper 的拒绝顺序、依赖篡改、配置缺失/环境继承、伪造原生 Job ID 及三类 HPC 参数绑定；配置继承测试修正夹具以排除先行摘要失败后单独复验通过。
+
+两套独立 Server/数据库及 mTLS Agent 的真实 PBS 联合流程通过：DATA_WAITING→加密导出/导入→来源使用批准/显式发布→版本映射→受限执行→来源 HTTP 撤权→原许可到期→同一 PBS Job 终止且持久停止证明为 true。执行入口已强制资源检查；运行中内核快照为 cpu.max=100000/100000、memory.max=134217728、swap=0，原分组 populated=1。最终 Job 为 F/Exit 265；实际数据读取、只读、seccomp、no-new-privs 与禁网检查通过。仅使用合成输入和轻量 Bash/SIF，没有科学编译，未重复旧 Slurm 验收。
+
+联合命令最终退出 0，隔离 namespace 已确认删除；未推送、合并或远程部署。原始证据保留于本地 temp，不纳入版本控制。
+
+全仓 typecheck（含 protobuf 生成和实验脚本）退出 0；全仓 lint 通过（原有 47 warnings/1 info），891 个本地文档目标、Python 3.8/Bash 语法及 diff 检查通过。生成文件、依赖锁和数据库迁移未改动。

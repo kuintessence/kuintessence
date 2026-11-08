@@ -44,7 +44,7 @@ set hook kq_sandbox_cgroup_v2 enabled=true
 - MOM/主机中断后的孤儿分组、控制器不可用与停止无法确认仍需要独立恢复流程。此 hook 不自动按一次失踪清单删除未知作业，也不证明掉电恢复已经完成。更新配置或撤去 hook 前先排空目标队列。
 
 此 hook 保证已配置队列中的实际分配有内核限额；[签名资源检查器](../../federation/sandbox-cgroup-lab.md)负责核对这些限额与已验证的 Server 资源声明。
-检查器尚未强制接入 trusted wrapper/SelfAccount，所以整条生产执行证明仍未完成，不能仅凭启用 hook 发布全面可用能力。
+带签名 `executionProfile` 的受限 HPC 作业已由 trusted wrapper 强制调用检查器；其他 root 路径、SelfAccount 和启动/队列能力证明仍待补齐，不能仅凭启用 hook 发布全面可用能力。
 
 ## 验证
 
