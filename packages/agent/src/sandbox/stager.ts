@@ -248,7 +248,7 @@ function jobMount(
   };
 }
 
-function selfAccountRuntimeFacts(verified: VerifiedSandboxManifest): {
+function hpcRuntimeFacts(verified: VerifiedSandboxManifest): {
   runtimeAttestationId: string;
   apptainerPath: string;
   seccompProfilePath: string;
@@ -267,7 +267,7 @@ function selfAccountRuntimeFacts(verified: VerifiedSandboxManifest): {
     !verified.attestedNodes?.length ||
     verified.attestedNodes.some((node) => !/^[A-Za-z0-9._-]{1,255}$/.test(node))
   ) {
-    throw new Error("SelfAccount Sandbox is missing locally attested runtime facts");
+    throw new Error("HPC Sandbox is missing locally attested runtime facts");
   }
   return {
     runtimeAttestationId: verified.runtimeAttestationId,
@@ -436,7 +436,7 @@ export class SandboxStager {
       verified.unsigned.executionMode === "SelfAccount"
         ? assertSelfAccountIdentity(identity, this.options.processIdentity)
         : undefined;
-    const selfAccountRuntime = selfAccount ? selfAccountRuntimeFacts(verified) : undefined;
+    const runtimeFacts = identity.backend === "Unix" ? hpcRuntimeFacts(verified) : undefined;
     await mkdir(this.options.root, { recursive: true, mode: 0o700 });
     const root = await realpath(this.options.root);
     if (identity.backend === "Unix" && !selfAccount) {
@@ -594,12 +594,8 @@ export class SandboxStager {
         ...(verified.unsigned.runtimeAttestationId
           ? { runtimeAttestationId: verified.unsigned.runtimeAttestationId }
           : {}),
-        ...(selfAccount && selfAccountRuntime
-          ? {
-              selfAccount,
-              ...selfAccountRuntime,
-            }
-          : {}),
+        ...(selfAccount ? { selfAccount } : {}),
+        ...runtimeFacts,
         ...(verified.unsigned.executionProfile
           ? {
               apptainerPath: verified.unsigned.executionProfile.apptainerCanonicalPath,

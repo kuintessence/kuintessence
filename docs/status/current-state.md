@@ -6,7 +6,7 @@
 
 Sandbox 的 CPU/内存需求现由 Server 按实际 Job 签名，Agent 在输入暂存前和调度器提交时核对，联邦续期核对 Job/outbox/签名的一致性；追加挂载与恢复保留原值。缺字段旧清单拒绝派发和续期，旧运行记录仍可监控或取消。升级先排空 Sandbox 并同步 Server/Agent；这项约束尚不能证明 HPC 逐作业 cgroup 生效。见[身份与受限执行](../software.md#身份与受限执行)。
 
-受限 HPC 执行已修复 seccomp 只声明而未加载的问题：计算节点 trusted wrapper 强制加载本地固定摘要的过滤策略，检查 root 所有权、完整父目录链和只读 SIF；启动检查失败不发布可用 profile，实际执行再次检查。真实 Slurm/PBS 映射作业读取导入数据，并验证 Seccomp=2、NoNewPrivs=1 和网络 socket 被 EPERM 拒绝。升级须同步节点策略与 wrapper 摘要；普通非受限 root 代运行的完整安全证明及生产 cgroup 限额仍未验收，同机两套平台已通过 DATA_WAITING→实际作业→来源撤权后租约到期停机，真实跨主机仍未验收。见[受限执行配置](../software.md#身份与受限执行)。
+受限 HPC 执行已修复 seccomp 只声明而未加载的问题：计算节点 trusted wrapper 强制加载本地固定摘要的过滤策略，检查 root 所有权、完整父目录链和只读 SIF；启动检查失败不发布可用 profile，实际执行再次检查。真实 Slurm/PBS 映射作业读取导入数据，并验证 Seccomp=2、NoNewPrivs=1 和网络 socket 被 EPERM 拒绝。升级须同步节点策略与 wrapper 摘要；普通 root 代运行现已接入实际证明及逐作业 cgroup 检查，Slurm 单节点签名任务已验证，完整调度器矩阵仍未验收，同机两套平台已通过 DATA_WAITING→实际作业→来源撤权后租约到期停机，真实跨主机仍未验收。见[受限执行配置](../software.md#身份与受限执行)。
 
 两个独立生产 Server/数据库、机构 mTLS 网关和分别注册的 Agent 已完成真实介质交付验收：来源导出加密包、接收解密校验、签名导入回执、独立使用审批与副本发布、来源撤权后原短期许可自然失效；SHA-256、许可证和 provenance 保留。真实联调发现并修复来源端错误依赖执行方协议表的问题；导出和使用政策改为本站双签审批及联合外键（生成迁移 0165），不创建来源端计算预算。导入不自动发布，发布不产生计算作业；文件与历史回执不会因撤权而删除。实验同机运行两套平台、人工复制密文，只使用 4 字节合成数据；后续 Slurm/PBS 联合实验已通过 DATA_WAITING→真实作业→来源撤权后原许可到期停机，物理物流和跨主机仍待验收。见[双平台介质实验](../../deploy/federation/execution-lab.md#双平台介质交付与来源撤权)。
 
@@ -753,3 +753,6 @@ SelfAccount 已替换仅匹配 cgroup 路径的探测，使用固定摘要、roo
 SelfAccount 启动探测现复用原生 adapter 提交/状态/取消入口，超时或查询失败取消原 Job，正向确认终止才删除文件。未知提交/停止保留原 UUID 和已知 scheduler ID；原子占用目录与遗留收据阻止重复探测。root 的探测脚本与可写日志目录分离，实际 Slurm 以非 root 账号执行及原 Job 超时取消/PID 消失已验证。生产 root 能力发布尚未接入，自动恢复探测收据及真实 PBS/Torque 启动探测仍待完成，不能以本轮入口验证宣称 root 安全能力已就绪。
 
 完整 root SIF/ECL 探测接口现已验证真实 Slurm：明确非 root 探测账户、最小调度 CLI 环境、固定 OpenPGP 指纹离线验证、实际 ECL 配置目录/摘要、未签名 SIF 反例、seccomp/网络及逐作业资源全部通过；原 Job 6 COMPLETED/0，临时 namespace 已清理。新增两项可选配置：`AGENT_SANDBOX_ATTESTATION_ACCOUNT` 和 `AGENT_SANDBOX_SIF_PGP_FINGERPRINT`；PEM 和 OpenPGP 信任配置不可混用，root ECL 探测要求 OpenPGP。主 Agent root 启动/能力发布仍未调用该接口，Server 签发/续租和其他 root 逐作业路径尚待绑定，因此平台整体 root 验收仍未完成。
+
+
+root HPC 主链路现接通实际启动证明、周期刷新、能力发布、验签/暂存、逐作业限制及 Server 签发/续租。配置开关不再替代实际证据；首次失败后可重新证明恢复，受限 profile 同步刷新。所有 HPC 新作业要求已证明队列/节点，Slurm/PBS Pro/Torque 分别使用原生节点约束和 Job ID，并在执行前核对 hostname。普通 root 作业也加载 seccomp；Kubernetes 路径保持独立。真实 Slurm root 签名 Job 7 COMPLETED/0，普通 UID 24001、只读输入/禁网/资源限制/JSON 输出通过；实验 namespace 已删除。PBS bootstrap 已补齐 PGP/ECL/反例/探测配置，并把 cgroup hook 提前到 Agent 启动之前；双平台复验已通过：两个 Server/数据库和独立 mTLS Agent 完成加密导出/导入、回执、来源批准与本地发布；DATA_WAITING 自动恢复后，PBS 原 Job 1 读取受限导入数据，来源撤权后原作业 F/265 且正向停止确认成立。实验退出 0，临时服务和 namespace 已清理。跨平台 SelfAccount、Torque 原生矩阵、跨主机及掉电恢复、完整蓝图和 PR 预览仍未完成。

@@ -41,7 +41,10 @@ import {
   enforceKubernetesSeccompStartupBinding,
 } from "./sandbox/kubernetes-seccomp-profile";
 import { LocalSandboxAccountVerifier } from "./sandbox/local-account-verifier";
-import { SandboxManifestVerifier } from "./sandbox/manifest-verifier";
+import {
+  SandboxManifestVerifier,
+  type SandboxManifestVerifierOptions,
+} from "./sandbox/manifest-verifier";
 import { SandboxReplayNonceStore } from "./sandbox/replay-nonce-store";
 import {
   buildRestrictedExecutionProfile,
@@ -240,8 +243,8 @@ async function main() {
   logger.info({ type: adapter.type, version: adapter.version }, "Scheduler detected");
 
   const sandboxProcessIdentity = currentSandboxProcessIdentity();
-  const selfAccountSandbox = config.AGENT_SANDBOX_EXECUTION_MODE === "self-account";
-  const sandboxRuntimeAttestation = selfAccountSandbox
+  const hpcSandbox = adapter.type !== "kubernetes";
+  const sandboxRuntimeAttestation = hpcSandbox
     ? await attestSandboxRuntimeEnvironment(config, adapter.type, spawner, sandboxProcessIdentity)
     : undefined;
   const sandboxRuntimeCache =
@@ -276,24 +279,25 @@ async function main() {
     },
     "Restricted execution profile evaluated",
   );
-  const sandboxProcessorEnabled =
-    sandboxCapability.executionMode === "SelfAccount"
-      ? sandboxCapability.enabled
-      : sandboxCapability.readiness === "ready";
+  const sandboxVerifierOptions: SandboxManifestVerifierOptions = {
+    publicKeys: config.AGENT_SANDBOX_PUBLIC_KEYS_JSON,
+    runtimeCache: sandboxRuntimeCache,
+    nonceConsumer: new SandboxReplayNonceStore(db),
+    accountVerifier: new LocalSandboxAccountVerifier(spawner),
+    adapterType: adapter.type as "slurm" | "pbs-pro" | "torque" | "kubernetes",
+    localExecutionMode: sandboxCapability.executionMode,
+    processIdentity: sandboxProcessIdentity,
+    rootImpersonationEnabled: config.AGENT_SANDBOX_ROOT_IMPERSONATION,
+    sharedServiceAllowed: config.AGENT_SANDBOX_SHARED_SERVICE_ALLOWED,
+    restrictedExecutionProfile: restrictedExecutionProfile.executionProfile,
+  };
+  // Keep the processor available for re-attestation recovery; verification gates every dispatch.
+  const sandboxProcessorEnabled = hpcSandbox
+    ? sandboxCapability.enabled && sandboxCapability.executionMode !== "Disabled"
+    : sandboxCapability.readiness === "ready";
   const sandboxProcessor = sandboxProcessorEnabled
     ? new SandboxDispatchProcessor(
-        new SandboxManifestVerifier({
-          publicKeys: config.AGENT_SANDBOX_PUBLIC_KEYS_JSON,
-          runtimeCache: sandboxRuntimeCache,
-          nonceConsumer: new SandboxReplayNonceStore(db),
-          accountVerifier: new LocalSandboxAccountVerifier(spawner),
-          adapterType: adapter.type as "slurm" | "pbs-pro" | "torque" | "kubernetes",
-          localExecutionMode: sandboxCapability.executionMode,
-          processIdentity: sandboxProcessIdentity,
-          rootImpersonationEnabled: config.AGENT_SANDBOX_ROOT_IMPERSONATION,
-          sharedServiceAllowed: config.AGENT_SANDBOX_SHARED_SERVICE_ALLOWED,
-          restrictedExecutionProfile: restrictedExecutionProfile.executionProfile,
-        }),
+        new SandboxManifestVerifier(sandboxVerifierOptions),
         new SandboxStager({
           root: config.AGENT_SANDBOX_ROOT,
           processIdentity: sandboxProcessIdentity,
@@ -375,6 +379,16 @@ async function main() {
           sandboxRuntimeAttestation,
         ),
       );
+      const nextProfile = await validateRestrictedExecutionProfile(
+        buildRestrictedExecutionProfile(config, sandboxCapability, adapter.type, runtimeCache),
+        realSpawner,
+      );
+      Object.assign(restrictedExecutionProfile, nextProfile, {
+        executionProfile: nextProfile.executionProfile,
+        apptainerIdentity: nextProfile.apptainerIdentity,
+        trustedWrapperIdentity: nextProfile.trustedWrapperIdentity,
+      });
+      sandboxVerifierOptions.restrictedExecutionProfile = nextProfile.executionProfile;
       logger.info(
         {
           readiness: sandboxCapability.readiness,
@@ -393,7 +407,7 @@ async function main() {
       : Math.max(60_000, (config.AGENT_SANDBOX_ATTESTATION_TTL_SEC * 1_000) / 2);
   const sandboxAttestationRefreshTimer =
     config.AGENT_SANDBOX_ENABLED &&
-    (sandboxCapability.executionMode === "SelfAccount" || adapter.type === "kubernetes")
+    (sandboxCapability.executionMode !== "Disabled" || adapter.type === "kubernetes")
       ? setInterval(() => {
           void sandboxAttestationRefresh().catch((err) => {
             logger.warn({ err }, "Sandbox runtime attestation refresh failed");
@@ -609,13 +623,11 @@ async function main() {
       config.AGENT_CONTAINER_FILE_TRANSFER_CONNECT_TO ?? config.AGENT_FILE_TRANSFER_CONNECT_TO,
     sandboxCapability,
     assertSandboxRuntimeAttestation: async (sandbox: SandboxJobSpec, runtimeDigest: string) => {
-      if (sandbox.executionMode === "RootImpersonation") {
-        if (adapter.type === "kubernetes") {
-          await assertKubernetesSeccompProfileCurrent(config, kubernetesSeccompProfile);
-        }
+      if (adapter.type === "kubernetes" && sandbox.executionMode === "RootImpersonation") {
+        await assertKubernetesSeccompProfileCurrent(config, kubernetesSeccompProfile);
         return;
       }
-      if (sandbox.executionMode !== "SelfAccount") {
+      if (sandbox.executionMode !== sandboxCapability.executionMode) {
         throw new Error("Sandbox scheduler submission has an unsupported execution mode");
       }
       const runtime = sandboxRuntimeAttestation?.runtimeCache[runtimeDigest];
@@ -633,9 +645,7 @@ async function main() {
         runtime.attestedNodes.length !== sandbox.attestedNodes?.length ||
         runtime.attestedNodes.some((node, index) => node !== sandbox.attestedNodes?.[index])
       ) {
-        throw new Error(
-          "SelfAccount Sandbox runtime attestation changed before scheduler submission",
-        );
+        throw new Error("HPC Sandbox runtime attestation changed before scheduler submission");
       }
     },
     restrictedExecutionProfile,

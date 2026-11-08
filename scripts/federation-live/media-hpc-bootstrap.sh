@@ -25,6 +25,9 @@ import hashlib,json,os,pathlib,shlex
 def digest(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 metadata=json.loads((pathlib.Path(os.environ['LAB_HPC_ROOT'])/'runtime.json').read_text())
+probe=json.loads(pathlib.Path('/etc/kuintessence/restricted-seccomp.json').read_text())
+probe['syscalls'].append({'names':['uname'],'action':'SCMP_ACT_ERRNO','errnoRet':1})
+pathlib.Path('/etc/kuintessence/seccomp-probe.json').write_text(json.dumps(probe))
 values={
     'KQ_PROFILE_ID':os.environ['AGENT_RESTRICTED_EXECUTION_PROFILE_ID'],
     'KQ_APPTAINER_PATH':'/usr/bin/apptainer',
@@ -63,7 +66,19 @@ if setpriv --reuid=24001 --regid=24001 --init-groups -- \
   echo "Unsigned runtime was not rejected by ECL" >&2
   exit 1
 fi
-rm /opt/kq/unsigned.sif
+export AGENT_SANDBOX_ECL_PATH=/etc/apptainer/ecl.toml
+export AGENT_SANDBOX_ECL_NEGATIVE_PROBE_SIF_PATH=/opt/kq/unsigned.sif
+export AGENT_SANDBOX_ECL_SHA256
+AGENT_SANDBOX_ECL_SHA256=$(sha256sum "$AGENT_SANDBOX_ECL_PATH" | cut -d' ' -f1)
+export AGENT_SANDBOX_SECCOMP_PROFILE_PATH=/etc/kuintessence/restricted-seccomp.json
+export AGENT_SANDBOX_SECCOMP_PROFILE_SHA256
+AGENT_SANDBOX_SECCOMP_PROFILE_SHA256=$(sha256sum "$AGENT_SANDBOX_SECCOMP_PROFILE_PATH" | cut -d' ' -f1)
+export AGENT_SANDBOX_SECCOMP_PROBE_PROFILE_PATH=/etc/kuintessence/seccomp-probe.json
+export AGENT_SANDBOX_SECCOMP_PROBE_PROFILE_SHA256
+AGENT_SANDBOX_SECCOMP_PROBE_PROFILE_SHA256=$(sha256sum "$AGENT_SANDBOX_SECCOMP_PROBE_PROFILE_PATH" | cut -d' ' -f1)
+export AGENT_SANDBOX_CGROUP_CHECK_PATH=/usr/libexec/kuintessence/kq-sandbox-cgroup-check
+export AGENT_SANDBOX_CGROUP_CHECK_SHA256
+AGENT_SANDBOX_CGROUP_CHECK_SHA256=$(sha256sum "$AGENT_SANDBOX_CGROUP_CHECK_PATH" | cut -d' ' -f1)
 export AGENT_RESTRICTED_EXECUTION_WRAPPER_SHA256
 AGENT_RESTRICTED_EXECUTION_WRAPPER_SHA256=$(sha256sum /usr/libexec/kuintessence/kq-sandbox-wrapper | cut -d' ' -f1)
 # Use the checked-out production supervisor, not the image's older copy.
@@ -76,6 +91,14 @@ case "$LAB_MEDIA_EXECUTION" in
     apt-get install -y --no-install-recommends postgresql postgresql-contrib libical3 libedit2 libpython3.8 libhwloc15 libtcl8.6 libtk8.6
     tar xzf /lab-pbs/pbs-install.tar.gz -C /opt
     [[ $(/opt/pbs/bin/qsub --version) == 'pbs_version = 23.06.06' ]]
+    # entrypoint invokes this only after PBS is ready; install the hook before Agent attestation.
+    cat >/usr/local/bin/kq-start-agent <<'START'
+#!/usr/bin/env bash
+set -euo pipefail
+KQ_MEDIA_CGROUP_LAB=1 bash /workspace/scripts/federation-live/pbs-cgroup-setup.sh
+exec bash /workspace/deploy/schedulers/common/start-agent.sh
+START
+    chmod 755 /usr/local/bin/kq-start-agent
     exec bash /workspace/deploy/schedulers/pbs/entrypoint.sh
     ;;
   *) echo "Unsupported media scheduler" >&2; exit 2 ;;

@@ -22,13 +22,25 @@ const ACCOUNT_ID = "44444444-4444-4444-8444-444444444444";
 const ASSET_ID = "66666666-6666-4666-8666-666666666666";
 const ASSET_REVISION_ID = "77777777-7777-4777-8777-777777777777";
 
+function runtimeEvidence() {
+  return {
+    kind: "SIF",
+    digest: `sha256:${"a".repeat(64)}`,
+    signatureVerified: true,
+    runtimeAttestationId: "8".repeat(64),
+    attestedNodes: ["node-1"],
+    attestedQueue: "normal",
+    expiresAtUnixMs: Date.now() + 60_000,
+  };
+}
+
 function fakeDb(
   agent: Record<string, unknown> = {
     siteId: "site-a",
     clusterId: "cluster-a",
     rootMode: true,
     sandboxCapabilities: { executionMode: "RootImpersonation" },
-    sandboxRuntimeCache: [],
+    sandboxRuntimeCache: [runtimeEvidence()],
   },
 ): PgDb {
   const chain = {
@@ -725,12 +737,13 @@ describe("SandboxNodeExecutor", () => {
     ).rejects.toThrow("currently limited to Slurm");
   });
 
-  test("preserves RootImpersonation selection for legacy PBS, Torque, and Kubernetes agents", async () => {
+  test("requires root HPC proof while keeping Kubernetes on its own verification path", async () => {
+    const evidence = runtimeEvidence();
     const rootExecutor = new SandboxNodeExecutor({
       db: fakeDb({
         rootMode: true,
         sandboxCapabilities: { executionMode: "RootImpersonation" },
-        sandboxRuntimeCache: [],
+        sandboxRuntimeCache: [evidence],
       }),
     } as unknown as ConstructorParameters<typeof SandboxNodeExecutor>[0]);
     const resolveRootExecutionMode = rootExecutor as unknown as {
@@ -772,6 +785,7 @@ describe("SandboxNodeExecutor", () => {
     const input = {
       agentId: "agent-a",
       schedulerType: "pbs-pro",
+      queueName: "normal",
       identity: {
         mode: "MappedAccount" as const,
         accountId: ACCOUNT_ID,
@@ -806,7 +820,26 @@ describe("SandboxNodeExecutor", () => {
     for (const schedulerType of ["pbs-pro", "torque"]) {
       await expect(
         resolveRootExecutionMode.executionModeForSelectedAgent({ ...input, schedulerType }),
-      ).resolves.toEqual({ executionMode: "RootImpersonation" });
+      ).resolves.toEqual({
+        executionMode: "RootImpersonation",
+        runtimeAttestationId: "8".repeat(64),
+      });
+    }
+
+    for (const queueName of [undefined, "other"]) {
+      await expect(
+        resolveRootExecutionMode.executionModeForSelectedAgent({ ...input, queueName }),
+      ).rejects.toThrow("fresh runtime attestation");
+    }
+    for (const change of ["expired", "unsigned", "missing-proof", "missing-nodes"] as const) {
+      Object.assign(evidence, runtimeEvidence());
+      if (change === "expired") evidence.expiresAtUnixMs = Date.now();
+      if (change === "unsigned") evidence.signatureVerified = false;
+      if (change === "missing-proof") evidence.runtimeAttestationId = "";
+      if (change === "missing-nodes") evidence.attestedNodes = [];
+      await expect(resolveRootExecutionMode.executionModeForSelectedAgent(input)).rejects.toThrow(
+        "fresh runtime attestation",
+      );
     }
 
     const kubernetesExecutor = new SandboxNodeExecutor({

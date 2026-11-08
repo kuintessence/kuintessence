@@ -58,7 +58,7 @@ function attestation(digest: string, runtimePath: string) {
         attestedQueue: "compute",
         attestedNodes: ["compute-1"],
         verifiedAtUnixMs: 1,
-        expiresAtUnixMs: 2,
+        expiresAtUnixMs: Date.now() + 60_000,
       },
     },
     networkIsolation: true,

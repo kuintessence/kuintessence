@@ -241,7 +241,9 @@ export class PbsProAdapter implements SchedulerAdapter {
     const select = `select=1:ncpus=${spec.cpus}:mem=${spec.memoryMb}mb${
       spec.gpus > 0 ? `:ngpus=${spec.gpus}` : ""
     }`;
-    lines.push(`#PBS -l ${select}`);
+    lines.push(
+      `#PBS -l ${select}${spec.sandbox ? `:host=${spec.sandbox.attestedNodes?.[0]}` : ""}`,
+    );
     if (spec.queueName) {
       lines.push(`#PBS -q ${spec.queueName}`);
     }
@@ -255,7 +257,7 @@ export class PbsProAdapter implements SchedulerAdapter {
       lines.push(`#PBS -l walltime=${this.formatWallTime(spec.wallTimeSec)}`);
     }
     lines.push(`cd -- ${shellQuote(executionRoot)} || exit 1`);
-    return appendEnvAndCommand(lines, spec);
+    return appendEnvAndCommand(lines, spec, "pbs-pro");
   }
 
   async submit(spec: JobSpec): Promise<JobResult> {

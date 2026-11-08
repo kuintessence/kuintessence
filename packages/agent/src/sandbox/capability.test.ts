@@ -55,7 +55,7 @@ describe("buildSandboxCapability", () => {
             attestedQueue: "compute",
             attestedNodes: ["slurm-2"],
             verifiedAtUnixMs: 1,
-            expiresAtUnixMs: 2,
+            expiresAtUnixMs: Date.now() + 60_000,
           },
         },
         networkIsolation: true,
@@ -73,7 +73,7 @@ describe("buildSandboxCapability", () => {
     expect(capability.runtimeCache[0]?.digest).toBe(digest);
   });
 
-  test("keeps the root impersonation capability on PBS Pro independent of SelfAccount attestation", () => {
+  test("refuses configured root flags without native runtime evidence on PBS Pro", () => {
     const digest = `sha256:${"2".repeat(64)}`;
     const capability = buildSandboxCapability(
       loadAgentConfig({
@@ -96,8 +96,9 @@ describe("buildSandboxCapability", () => {
     );
 
     expect(capability.executionMode).toBe("RootImpersonation");
-    expect(capability.readiness).toBe("ready");
-    expect(capability.runtimeCache).toEqual([{ digest, kind: "SIF", signatureVerified: true }]);
+    expect(capability.readiness).toBe("critical");
+    expect(capability.runtimeCache).toEqual([]);
+    expect(capability.missingRequirements).toContain("runtime-attestation");
   });
 
   test("requires a locally attested Kubernetes seccomp profile without a root process", () => {

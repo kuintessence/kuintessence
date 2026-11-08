@@ -159,6 +159,7 @@ interface SelfAccountExecutionFacts {
 
 interface RootImpersonationExecutionFacts {
   executionMode: "RootImpersonation";
+  runtimeAttestationId?: string;
 }
 
 interface SelfAccountManifestInput {
@@ -202,7 +203,10 @@ function hasFreshRuntimeAttestation(
     !queueName ||
     entry.attestedQueue !== queueName ||
     !Array.isArray(entry.attestedNodes) ||
-    !entry.attestedNodes.some((node) => typeof node === "string" && node.trim().length > 0) ||
+    !entry.attestedNodes.length ||
+    entry.attestedNodes.some(
+      (node) => typeof node !== "string" || !/^[A-Za-z0-9._-]{1,255}$/.test(node),
+    ) ||
     typeof entry.expiresAtUnixMs !== "number" ||
     !Number.isSafeInteger(entry.expiresAtUnixMs) ||
     entry.expiresAtUnixMs <= nowUnixMs
@@ -617,6 +621,7 @@ export class SandboxNodeExecutor {
               digest: selectedRuntimeDigest.digest,
             },
             executionMode: "RootImpersonation",
+            runtimeAttestationId: executionMode.runtimeAttestationId,
             ...(executionProfile ? { executionProfile } : {}),
             identity,
             mounts: [
@@ -795,11 +800,24 @@ export class SandboxNodeExecutor {
     const facts = agent as SelectedSandboxAgentFacts | undefined;
     if (!facts) throw new Error("Selected Sandbox Agent no longer exists");
     const executionMode = selectedExecutionMode(facts.sandboxCapabilities);
+    if (input.schedulerType === "kubernetes" && executionMode === "RootImpersonation") {
+      return { executionMode };
+    }
+    const runtimeAttestationId = Array.isArray(facts.sandboxRuntimeCache)
+      ? facts.sandboxRuntimeCache
+          .map((entry) =>
+            hasFreshRuntimeAttestation(entry, input.runtime, input.queueName, Date.now()),
+          )
+          .find((value): value is string => value !== undefined)
+      : undefined;
+    if (!runtimeAttestationId) {
+      throw new Error("Selected Agent lacks a fresh runtime attestation for HPC execution");
+    }
     if (executionMode === "RootImpersonation") {
       if (input.schedulerType !== "kubernetes" && !facts.rootMode) {
         throw new Error("Selected Agent does not advertise root Sandbox impersonation capability");
       }
-      return { executionMode };
+      return { executionMode, runtimeAttestationId };
     }
     if (input.restrictedNoEgress) {
       throw new Error("Restricted no-egress Sandbox dispatch cannot use SelfAccount execution");
@@ -827,16 +845,6 @@ export class SandboxNodeExecutor {
       throw new Error(
         "Sandbox mapped identity does not exactly match the selected Agent self account",
       );
-    }
-    const runtimeAttestationId = Array.isArray(facts.sandboxRuntimeCache)
-      ? facts.sandboxRuntimeCache
-          .map((entry) =>
-            hasFreshRuntimeAttestation(entry, input.runtime, input.queueName, Date.now()),
-          )
-          .find((value): value is string => value !== undefined)
-      : undefined;
-    if (!runtimeAttestationId) {
-      throw new Error("Selected Agent lacks a fresh runtime attestation for SelfAccount execution");
     }
     return { executionMode, runtimeAttestationId };
   }

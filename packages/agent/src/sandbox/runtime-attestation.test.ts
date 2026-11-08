@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmod, chown, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, chown, lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Spawner } from "../adapters/base";
@@ -167,6 +167,7 @@ describe("Sandbox runtime attestation", () => {
         await chown(f.config.AGENT_SANDBOX_ROOT, 0, 0);
         const config = {
           ...f.config,
+          AGENT_SANDBOX_ROOT: join(f.config.AGENT_SANDBOX_ROOT, "new-managed-root"),
           AGENT_SANDBOX_EXECUTION_MODE: "root-impersonation" as const,
           AGENT_SANDBOX_ROOT_IMPERSONATION: true,
           AGENT_SANDBOX_ATTESTATION_ACCOUNT: "scientist",
@@ -262,6 +263,9 @@ describe("Sandbox runtime attestation", () => {
           dependencies,
         );
         expect(evidence.missingRequirements).toEqual([]);
+        const managedRoot = await lstat(config.AGENT_SANDBOX_ROOT);
+        expect(managedRoot.uid).toBe(0);
+        expect(managedRoot.mode & 0o777).toBe(0o711);
         expect(evidence.ecl).toBe(true);
         expect(script).toContain("$(id -u) == 24001");
         expect(script).toContain(scheduler === "slurm" ? "SLURM_JOB_ID" : "PBS_JOBID");

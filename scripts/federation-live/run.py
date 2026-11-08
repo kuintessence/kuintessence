@@ -31,6 +31,8 @@ assert media_execution in ("", "slurm", "pbs-pro")
 assert not media_execution or media_scenario
 assert not media_scenario or mode == "bilateral_direct"
 media_age = pathlib.Path(os.environ["KQ_MEDIA_AGE_BIN"]).resolve(strict=True) if media_scenario else None
+if media_age:
+    assert media_age.is_dir() and all((media_age / name).is_file() for name in ("age", "age-keygen")), "KQ_MEDIA_AGE_BIN must be the directory containing age and age-keygen"
 media_source_root, media_target_root = str(uuid.uuid4()), str(uuid.uuid4())
 nodeinfo = json.loads(
     subprocess.check_output(["kubectl", "get", "nodes", "-o", "json"], timeout=15)
@@ -2371,8 +2373,6 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         time.sleep(1)
     else:
         raise RuntimeError("Agent did not become online")
-    if media_execution == "pbs-pro":
-        k(["exec", "-n", namespace, "scheduler", "--", "env", "KQ_MEDIA_CGROUP_LAB=1", "bash", "/workspace/scripts/federation-live/pbs-cgroup-setup.sh"])
     print("Real " + (media_execution or "Kubernetes") + " Agent online through direct mTLS", flush=True)
     if media_execution:
         media_queue = "workq" if media_execution == "pbs-pro" else "debug"

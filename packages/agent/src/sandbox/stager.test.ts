@@ -60,6 +60,7 @@ function verified(inputHash: string, jobId: string): VerifiedSandboxManifest {
       digest: `sha256:${"2".repeat(64)}`,
     },
     executionMode: "RootImpersonation",
+    runtimeAttestationId: "a".repeat(64),
     identity: {
       mode: "MappedAccount",
       accountId: "00000000-0000-0000-0000-000000000333",
@@ -114,6 +115,15 @@ function verified(inputHash: string, jobId: string): VerifiedSandboxManifest {
     unsigned,
     scriptContent: Buffer.from("print('ok')\n"),
     runtimePath: "/managed/python.sif",
+    runtimeAttestationId: "a".repeat(64),
+    apptainerPath: "/usr/bin/apptainer",
+    seccompProfilePath: "/etc/kuintessence/seccomp.json",
+    cgroupCheck: {
+      path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+      sha256: "c".repeat(64),
+    },
+    attestedQueue: "compute",
+    attestedNodes: ["node-1"],
   };
 }
 

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, lstat, readFile, realpath } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { dirname } from "node:path";
 import { canonicalJson, createLogger } from "@kuintessence/shared";
@@ -482,6 +482,7 @@ export async function attestSandboxRuntimeEnvironment(
     const probeAccount = eclRequired
       ? await resolveRootProbeAccount(spawner, config.AGENT_SANDBOX_ATTESTATION_ACCOUNT as string)
       : undefined;
+    await mkdir(config.AGENT_SANDBOX_ROOT, { recursive: true, mode: 0o700 });
     const managedRoot = await lstat(config.AGENT_SANDBOX_ROOT);
     const expectedRootUid =
       config.AGENT_SANDBOX_EXECUTION_MODE === "self-account" ? processIdentity?.uid : 0;

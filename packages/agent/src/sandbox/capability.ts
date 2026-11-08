@@ -59,16 +59,19 @@ export function buildSandboxCapability(
       ? "RootImpersonation"
       : "Disabled";
   const selfAccountMode = executionMode === "SelfAccount";
-  const runtimeCache = selfAccountMode
-    ? Object.entries(attestation?.runtimeCache ?? {}).map(([digest, runtime]) => ({
-        digest,
-        kind: runtime.kind,
-        signatureVerified: runtime.signatureVerified,
-        runtimeAttestationId: runtime.runtimeAttestationId,
-        attestedNodes: runtime.attestedNodes,
-        attestedQueue: runtime.attestedQueue,
-        expiresAtUnixMs: runtime.expiresAtUnixMs,
-      }))
+  const hpcMode = adapterType !== "kubernetes";
+  const runtimeCache = hpcMode
+    ? Object.entries(attestation?.runtimeCache ?? {})
+        .filter(([, runtime]) => runtime.expiresAtUnixMs > Date.now())
+        .map(([digest, runtime]) => ({
+          digest,
+          kind: runtime.kind,
+          signatureVerified: runtime.signatureVerified,
+          runtimeAttestationId: runtime.runtimeAttestationId,
+          attestedNodes: runtime.attestedNodes,
+          attestedQueue: runtime.attestedQueue,
+          expiresAtUnixMs: runtime.expiresAtUnixMs,
+        }))
     : Object.entries(config.AGENT_SANDBOX_RUNTIME_CACHE_JSON).map(([digest, runtime]) => ({
         digest,
         kind: runtime.kind,
@@ -76,18 +79,18 @@ export function buildSandboxCapability(
       }));
   runtimeCache.sort((left, right) => left.digest.localeCompare(right.digest));
   const kubernetesMode = adapterType === "kubernetes";
-  const networkIsolation = selfAccountMode
+  const networkIsolation = hpcMode
     ? (attestation?.networkIsolation ?? false)
     : config.AGENT_SANDBOX_NETWORK_ISOLATION &&
       (!kubernetesMode || kubernetesSeccompProfile?.ready === true);
-  const cgroups = selfAccountMode ? (attestation?.cgroups ?? false) : config.AGENT_SANDBOX_CGROUPS;
-  const seccomp = selfAccountMode
+  const cgroups = hpcMode ? (attestation?.cgroups ?? false) : config.AGENT_SANDBOX_CGROUPS;
+  const seccomp = hpcMode
     ? (attestation?.seccomp ?? false)
     : config.AGENT_SANDBOX_SECCOMP && (!kubernetesMode || kubernetesSeccompProfile?.ready === true);
-  const sifSignatureVerification = selfAccountMode
+  const sifSignatureVerification = hpcMode
     ? (attestation?.sifSignatureVerification ?? false)
     : config.AGENT_SANDBOX_SIF_SIGNATURE_VERIFICATION;
-  const ecl = selfAccountMode ? (attestation?.ecl ?? false) : config.AGENT_SANDBOX_ECL;
+  const ecl = hpcMode ? (attestation?.ecl ?? false) : config.AGENT_SANDBOX_ECL;
   const missingRequirements: string[] = [];
   if (!enabled) missingRequirements.push("sandbox-disabled");
   if (executionMode === "Disabled") missingRequirements.push("execution-mode");
@@ -104,7 +107,7 @@ export function buildSandboxCapability(
       ]),
     );
   }
-  if (selfAccountMode) {
+  if (hpcMode) {
     missingRequirements.push(...(attestation?.missingRequirements ?? ["runtime-attestation"]));
   }
   if (Object.keys(config.AGENT_SANDBOX_PUBLIC_KEYS_JSON).length === 0) {

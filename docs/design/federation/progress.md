@@ -2821,3 +2821,22 @@ root 使用该入口时保持脚本和父目录由 root 管理，仅日志目录
 完整 root 探测接口已具备证据，但主启动/能力发布仍未接通。下一项必须一起处理：root 能力不再采信布尔开关、启动及刷新调用真实证明、失败后恢复 processor/profile、所有 HPC 逐作业命令使用固定检查器/策略、明确队列和节点约束，以及 Server 首次签发与联邦续租绑定证明。PBS 启动脚本须先安装原生 cgroup hook，再获取证明；现有双平台脚本要补齐探测账户、PGP/ECL/反例和队列配置。不能只打开能力发布而保留未核验的 root 逐作业或默认队列路径。其他蓝图及 PR 预览目标保持不变。
 
 验证：启动证明/账户/配置/资源命令共 64 项相关用例通过（分两批，373 + 10 断言）；真实 Slurm 完整入口退出 0。全仓 lint 退出 0（原有 47 warnings/1 info），全仓 typecheck（含 protobuf 生成、所有产品包和实验脚本）退出 0。894 个本地文档目标、Python 3.8 AST、Bash 语法及 diff 检查通过；没有手工生成文件、迁移或依赖变更。
+
+
+## root HPC 派发主链路与逐作业约束
+
+已把 root 探测接口接入 Agent 主启动和周期刷新，HPC 能力从实际证明构建并排除过期缓存，不再相信手填安全开关或 signatureVerified。处理器在首次证明失败后仍可恢复，验签始终检查证明；restricted profile 随证明重新验证，清除失效身份。Server 首次签发绑定证明，联邦续租核对原 Job/原 outbox 队列并限制在证明期限内；Kubernetes 走独立验证路径。
+
+所有新 HPC 作业都复制本地证明事实，固定 Apptainer/策略/检查器、资源与队列，Slurm/PBS Pro/Torque 分别使用 nodelist/host/nodes 和原生 Job ID，执行前核对实际 hostname。普通 root 作业也加载 seccomp，受限 profile 保持 trusted wrapper。root 调度 CLI 使用最小环境，旧作业仍可监控/停止。当前只选择证明中首个节点，不推断其他队列节点或 PBS 别名已经验证。
+
+真实 Slurm 完整入口退出 0：SelfAccount Job 3、root 探测 Job 6 和 root 签名执行 Job 7 均完成；Job 7 以 UID 24001 验证只读输入、实际禁网/资源限制和 JSON 输出。原生资源探测及原 Job 超时取消也保持通过。首次新增样例因遗漏派发公钥而失败，补齐临时公钥后通过；两次 namespace 均确认删除。原始证据保留本机 temp，不纳入版本控制。
+
+PBS bootstrap 已保留 ECL 反例、固定 PGP 指纹与策略/检查器摘要，并在 Agent 启动前安装原生 hook。双平台介质实验正在复验。完整蓝图和 PR 预览仍保持原目标，不能将本轮 root 链路视为整体完成。
+
+PBS 联合实验定位并修复首次启动目录缺失：证明函数先以 0700 创建 managed root，再检查规范路径/所有权/权限，root 探测只开放目录穿越权限。三类原生适配器测试均覆盖新目录创建。真实 PBS 随后完成原生探测 Job 0（F/0），Agent 与 restricted profile 都为 ready；数据包导出、解密校验和授权发布通过。该次后续派发被平台 95% CPU 门槛拦截（实际报告 98%，同时有全仓类型检查），未算作联合运行通过。等待静态检查结束后单独复验，未调整产品负载门槛。较早一次挂载参数误传文件路径已终止清理，实验入口增加 age 工具目录检查；这些失败没有算作通过。
+
+最终 PBS 双平台复验在静态检查结束后单独运行，完整命令退出 0：真实 root 启动探测 Job 0 为 F/0，能力/profile 就绪；加密包导出、目标 Agent 解密/校验、签名回执、来源使用批准和目标显式发布通过。DATA_WAITING 自动恢复，原生 Job 1 以已签名资源在 workq/已证明节点运行，读取导入只读数据、seccomp/no-new-privs 与禁网断言通过。来源撤权后原 Job 为 F/265，正向停止确认成立且进程标记消失；数据副本和交付回执保留。临时 Server/数据库/凭据与 namespace 清理均确认。没有降低负载门槛、使用生产凭据、科学编译、推送或远程部署。
+
+检查结果：Agent sandbox/adapters 目录 427 项通过（两项需独立非 root/介质环境的用例按现有条件跳过）；新增和受影响用例另经定向运行通过，包含 root 丢失/过期证明、队列/节点/检查器约束、首次目录创建及 Server 首次签发拒绝。实际 Slurm 和 PBS 链路补充上述原生证据。隔离 PostgreSQL 54 项通过，覆盖 root/SelfAccount 原证明、原 Job/outbox 队列及期限绑定。最终全仓 lint 退出 0（既有 47 warnings/1 info），全仓 typecheck（含 protobuf 生成、产品包和实验脚本）退出 0；352 个相关本地文档目标、Python 3.8 AST、Bash 语法和 diff 检查通过。无生成文件、迁移或依赖锁变化。
+
+此处完成 root HPC 证明到实际派发/续租的一致接入，仍不将完整联盟链目标标为完成。后续保留：跨平台 SelfAccount、Torque 原生矩阵、探测收据自动恢复、跨主机/掉电与完整存储恢复、其余交付/治理/支付争议/归档及 Web/CLI，最后才是完整 PR 预览验收。

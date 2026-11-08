@@ -11,7 +11,7 @@ import {
   type SchedulerQueueInventory,
 } from "@kuintessence/shared";
 import {
-  buildSelfAccountCgroupCommand,
+  buildHpcCgroupCommand,
   type SandboxCgroupCheck,
   SandboxCgroupCheckSchema,
 } from "../sandbox/cgroup-command";
@@ -92,7 +92,7 @@ export interface SandboxJobSpec {
   executionMode: SandboxExecutionMode;
   runtimeAttestationId?: string;
   selfAccount?: SandboxSelfAccount;
-  /** Bound only during trusted restricted-profile materialization. */
+  /** Bound from locally attested runtime facts. */
   apptainerPath?: string;
   /** Bound only from a locally attested immutable seccomp profile. */
   seccompProfilePath?: string;
@@ -239,7 +239,11 @@ export function formatWallTime(seconds: number): string {
 
 /** Append the shared submit-script tail (env exports + the command) and
  *  return the joined script. Single-quote values are shell-escaped. */
-export function appendEnvAndCommand(lines: string[], spec: JobSpec): string {
+export function appendEnvAndCommand(
+  lines: string[],
+  spec: JobSpec,
+  scheduler: "slurm" | "pbs-pro" | "torque",
+): string {
   lines.push("");
   if (!spec.sandbox) {
     for (const [k, v] of Object.entries(spec.envVars)) {
@@ -249,7 +253,9 @@ export function appendEnvAndCommand(lines: string[], spec: JobSpec): string {
   }
   lines.push("");
   lines.push(
-    spec.sandbox ? buildApptainerSandboxCommand(spec.sandbox) : commandWithOptionalStdin(spec),
+    spec.sandbox
+      ? buildApptainerSandboxCommand(spec.sandbox, scheduler)
+      : commandWithOptionalStdin(spec),
   );
   return lines.join("\n");
 }
@@ -265,21 +271,44 @@ export function schedulerCommand(spec: JobSpec, command: string[]): string[] {
     throw new Error(`Sandbox execution account is not entitled to queue ${spec.queueName}`);
   }
   if (sandbox.executionMode === "SelfAccount") {
-    assertSelfAccountSubmission(sandbox);
+    assertHpcSubmission(sandbox);
     return command;
   }
+  assertHpcSubmission(sandbox);
   return [
     "setpriv",
     `--reuid=${identity.uid}`,
     `--regid=${identity.gid}`,
     "--init-groups",
     "--",
+    "env",
+    "-i",
+    "PATH=/usr/local/bin:/usr/bin:/bin:/opt/pbs/bin",
+    "HOME=/nonexistent",
+    `USER=${identity.username}`,
+    `LOGNAME=${identity.username}`,
+    "LC_ALL=C",
     ...command,
   ];
 }
 
 function isCanonicalAbsolutePath(value: string | undefined): value is string {
   return !!value && /^\/[^\0\r\n ]+$/.test(value) && !value.split("/").includes("..");
+}
+
+function assertHpcSubmission(sandbox: SandboxJobSpec): void {
+  if (
+    !/^[0-9a-f]{64}$/.test(sandbox.runtimeAttestationId ?? "") ||
+    !isCanonicalAbsolutePath(sandbox.apptainerPath) ||
+    !isCanonicalAbsolutePath(sandbox.seccompProfilePath) ||
+    !SandboxCgroupCheckSchema.safeParse(sandbox.cgroupCheck).success ||
+    !sandbox.attestedQueue ||
+    !isSchedulerQueueName(sandbox.attestedQueue) ||
+    !sandbox.attestedNodes?.length ||
+    sandbox.attestedNodes.some((node) => !/^[A-Za-z0-9._-]{1,255}$/.test(node))
+  )
+    throw new Error("HPC Sandbox submission does not match local execution facts");
+  if (sandbox.executionMode === "SelfAccount") assertSelfAccountSubmission(sandbox);
 }
 
 function assertSelfAccountSubmission(sandbox: SandboxJobSpec): void {
@@ -294,14 +323,6 @@ function assertSelfAccountSubmission(sandbox: SandboxJobSpec): void {
     identity.username !== selfAccount.username ||
     identity.uid !== selfAccount.uid ||
     identity.gid !== selfAccount.gid ||
-    !/^[0-9a-f]{64}$/.test(sandbox.runtimeAttestationId ?? "") ||
-    !isCanonicalAbsolutePath(sandbox.apptainerPath) ||
-    !isCanonicalAbsolutePath(sandbox.seccompProfilePath) ||
-    !SandboxCgroupCheckSchema.safeParse(sandbox.cgroupCheck).success ||
-    !sandbox.attestedQueue ||
-    !isSchedulerQueueName(sandbox.attestedQueue) ||
-    !sandbox.attestedNodes?.length ||
-    sandbox.attestedNodes.some((node) => !/^[A-Za-z0-9._-]{1,255}$/.test(node)) ||
     sandbox.executionProfile
   ) {
     throw new Error("SelfAccount Sandbox submission does not match local execution facts");
@@ -353,10 +374,10 @@ export function assertSandboxSchedulerMetadata(spec: JobSpec): void {
     }
   }
   if (!spec.sandbox) return;
-  if (spec.sandbox.executionMode === "SelfAccount") {
-    assertSelfAccountSubmission(spec.sandbox);
+  if (spec.sandbox.identity.backend === "Unix") {
+    assertHpcSubmission(spec.sandbox);
     if (spec.queueName !== spec.sandbox.attestedQueue) {
-      throw new Error("SelfAccount Sandbox queue has not passed local runtime attestation");
+      throw new Error("HPC Sandbox queue has not passed local runtime attestation");
     }
   }
   const token = /^[A-Za-z0-9._-]{1,128}$/;
@@ -383,8 +404,7 @@ export function sandboxInterpreter(language: SandboxJobSpec["language"]): string
 
 export function buildApptainerSandboxArgv(sandbox: SandboxJobSpec): string[] {
   if (sandbox.runtimeKind !== "SIF") throw new Error("HPC Sandbox requires a SIF runtime");
-  const selfAccount = sandbox.executionMode === "SelfAccount";
-  if (selfAccount) assertSelfAccountSubmission(sandbox);
+  assertHpcSubmission(sandbox);
   const hostPaths = [
     sandbox.scriptHostPath,
     sandbox.contextHostPath,
@@ -402,7 +422,7 @@ export function buildApptainerSandboxArgv(sandbox: SandboxJobSpec): string[] {
     ),
   ];
   return [
-    selfAccount ? (sandbox.apptainerPath as string) : (sandbox.apptainerPath ?? "apptainer"),
+    sandbox.apptainerPath as string,
     "exec",
     "--containall",
     "--cleanenv",
@@ -416,7 +436,9 @@ export function buildApptainerSandboxArgv(sandbox: SandboxJobSpec): string[] {
     "--drop-caps",
     "all",
     "--security",
-    selfAccount ? `no-new-privs,seccomp:${sandbox.seccompProfilePath}` : "no-new-privs",
+    sandbox.executionProfile
+      ? "no-new-privs"
+      : `no-new-privs,seccomp:${sandbox.seccompProfilePath}`,
     "--pwd",
     "/kq",
     ...binds.flatMap((bind) => ["--bind", bind]),
@@ -426,15 +448,16 @@ export function buildApptainerSandboxArgv(sandbox: SandboxJobSpec): string[] {
   ];
 }
 
-export function buildApptainerSandboxCommand(sandbox: SandboxJobSpec): string {
+export function buildApptainerSandboxCommand(
+  sandbox: SandboxJobSpec,
+  scheduler: "slurm" | "pbs-pro" | "torque",
+): string {
   const fileBlocks = Math.max(1, Math.ceil(sandbox.limits.outputBytes / 512));
   const apptainerArgv = buildApptainerSandboxArgv(sandbox);
   const argv = buildTrustedSandboxArgv(sandbox, apptainerArgv).map(shellQuote).join(" ");
-  const resourceCheck =
-    sandbox.executionMode === "SelfAccount"
-      ? `${buildSelfAccountCgroupCommand(sandbox.cgroupCheck, sandbox.resources)} >/dev/null || exit 126; `
-      : "";
-  return `set -o pipefail; (ulimit -u ${sandbox.limits.pids}; ulimit -f ${fileBlocks}; ${resourceCheck}exec ${argv}) 2>&1 | head -c ${sandbox.limits.logBytes}`;
+  const resourceCheck = `${buildHpcCgroupCommand(sandbox.cgroupCheck, sandbox.resources, scheduler)} >/dev/null || exit 126; `;
+  const nodeCheck = `[[ $(/usr/bin/hostname) == ${shellQuote(sandbox.attestedNodes?.[0] as string)} ]] || exit 126; `;
+  return `set -o pipefail; (ulimit -u ${sandbox.limits.pids}; ulimit -f ${fileBlocks}; ${nodeCheck}${resourceCheck}exec ${argv}) 2>&1 | head -c ${sandbox.limits.logBytes}`;
 }
 
 export function buildTrustedSandboxArgv(

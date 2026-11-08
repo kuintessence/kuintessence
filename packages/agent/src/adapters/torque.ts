@@ -272,7 +272,9 @@ export class TorqueAdapter implements SchedulerAdapter {
     lines.push(`#PBS -o ${join(logRoot, `kq-torque-${spec.jobId}.out`)}`);
     lines.push(`#PBS -e ${join(logRoot, `kq-torque-${spec.jobId}.err`)}`);
     // Torque uses nodes=N:ppn=N rather than select=
-    lines.push(`#PBS -l nodes=1:ppn=${spec.cpus}`);
+    lines.push(
+      `#PBS -l nodes=${spec.sandbox ? spec.sandbox.attestedNodes?.[0] : 1}:ppn=${spec.cpus}`,
+    );
     lines.push(`#PBS -l mem=${spec.memoryMb}mb`);
     if (spec.queueName) {
       lines.push(`#PBS -q ${spec.queueName}`);
@@ -290,7 +292,7 @@ export class TorqueAdapter implements SchedulerAdapter {
       lines.push(`#PBS -l gpus=${spec.gpus}`);
     }
     lines.push(`cd -- ${shellQuote(executionRoot)} || exit 1`);
-    return appendEnvAndCommand(lines, spec);
+    return appendEnvAndCommand(lines, spec, "torque");
   }
 
   async submit(spec: JobSpec): Promise<JobResult> {

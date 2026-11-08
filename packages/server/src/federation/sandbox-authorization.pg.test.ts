@@ -78,6 +78,19 @@ async function fixture(shared = false, kubernetes = false) {
     schedulerVersion: "test",
     rootMode: true,
     sandboxCapabilities: { executionMode: "RootImpersonation" },
+    sandboxRuntimeCache: kubernetes
+      ? []
+      : [
+          {
+            kind: "SIF",
+            digest,
+            signatureVerified: true,
+            runtimeAttestationId: "a".repeat(64),
+            attestedNodes: ["compute-1"],
+            attestedQueue: "compute",
+            expiresAtUnixMs: Date.now() + 60_000,
+          },
+        ],
   });
   await db.insert(sandboxRuntimeProfiles).values({
     id: runtimeId,
@@ -175,6 +188,7 @@ async function fixture(shared = false, kubernetes = false) {
     },
     runtime: { profileId: runtimeId, kind: kubernetes ? "OCI" : "SIF", digest },
     executionMode: "RootImpersonation",
+    ...(!kubernetes ? { runtimeAttestationId: "a".repeat(64) } : {}),
     identity: {
       mode: shared ? "SharedService" : "MappedAccount",
       accountId,
@@ -216,6 +230,7 @@ async function fixture(shared = false, kubernetes = false) {
     wallTimeSec: 30,
     status: "running",
     sandboxExecution: manifest,
+    ...(!kubernetes ? { schedulerQueueName: "compute" } : {}),
     agentId,
     submittedBy: userId,
     orgId,
@@ -229,6 +244,7 @@ async function fixture(shared = false, kubernetes = false) {
     dispatchEpoch: 1,
     sandboxExecution: manifest,
     federationExecution: true,
+    ...(!kubernetes ? { queueName: "compute" } : {}),
   });
   await db.insert(jobDispatchOutbox).values({
     jobId,
@@ -261,7 +277,7 @@ async function fixture(shared = false, kubernetes = false) {
       .update(jobs)
       .set({
         sandboxExecution: manifest,
-        ...(manifest.executionMode === "SelfAccount" ? { schedulerQueueName: "compute" } : {}),
+        ...(!kubernetes ? { schedulerQueueName: "compute" } : {}),
       })
       .where(eq(jobs.id, jobId));
     const message = new AgentDispatcher().buildDispatchJob(jobId, {
@@ -274,7 +290,7 @@ async function fixture(shared = false, kubernetes = false) {
       federationExecution: true,
       inputStaging: intent.inputStaging,
       restrictedNoEgress: Boolean(manifest.executionProfile),
-      ...(manifest.executionMode === "SelfAccount" ? { queueName: "compute" } : {}),
+      ...(!kubernetes ? { queueName: "compute" } : {}),
     });
     await db
       .update(jobDispatchOutbox)
@@ -478,80 +494,87 @@ test("an existing Sandbox policy writer causes a transient retry rather than a p
   }
 });
 
-test.each([
-  "expired",
-  "replacement",
-  "account",
-  "mode",
-  "queue",
-  "missing-queue",
-  "dispatch-queue",
-  "job-queue",
-] as const)("SelfAccount keeps its original runtime proof and rejects %s changes", async (change) => {
-  const f = await fixture();
-  try {
-    const expiry = Date.now() + 5_000;
-    const evidence = {
-      kind: "SIF",
-      digest: f.digest,
-      signatureVerified: true,
-      runtimeAttestationId: "a".repeat(64),
-      attestedNodes: ["compute-1"],
-      attestedQueue: "compute",
-      expiresAtUnixMs: expiry,
-    };
-    const capabilities = {
-      executionMode: "SelfAccount",
-      selfAccount: { username: "scientist", uid: 1001, gid: 1001 },
-    };
-    await db
-      .update(agents)
-      .set({
-        sandboxCapabilities: capabilities,
-        sandboxRuntimeCache: [{ kind: "OCI", digest: "unrelated-runtime" }, evidence],
-      })
-      .where(eq(agents.agentId, f.agentId));
-    f.manifest.executionMode = "SelfAccount";
-    f.manifest.runtimeAttestationId = evidence.runtimeAttestationId;
-    await f.persist();
-    expect(await db.transaction((tx) => f.check(tx))).toBe(expiry);
-    if (change === "expired") evidence.expiresAtUnixMs = 1;
-    if (change === "replacement") evidence.runtimeAttestationId = "b".repeat(64);
-    if (change === "account") capabilities.selfAccount.uid = 2001;
-    if (change === "mode") capabilities.executionMode = "RootImpersonation";
-    if (change === "queue") evidence.attestedQueue = "other";
-    if (change === "missing-queue") evidence.attestedQueue = "";
-    if (change === "job-queue") {
-      await db.update(jobs).set({ schedulerQueueName: "other" }).where(eq(jobs.id, f.jobId));
-    }
-    if (change === "dispatch-queue") {
-      const [saved] = await db
-        .select()
-        .from(jobDispatchOutbox)
-        .where(eq(jobDispatchOutbox.jobId, f.jobId));
-      if (!saved) throw new Error("Missing original outbox");
-      const message = fromBinary(ServerMessageSchema, Buffer.from(saved.payloadBase64, "base64"));
-      if (message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
-      message.payload.value.queueName = "other";
+for (const mode of ["SelfAccount", "RootImpersonation"] as const) {
+  test.each([
+    "expired",
+    "replacement",
+    "account",
+    "mode",
+    "queue",
+    "missing-queue",
+    "dispatch-queue",
+    "job-queue",
+  ] as const)(`${mode} keeps its original runtime proof and rejects %s changes`, async (change) => {
+    const f = await fixture();
+    try {
+      const expiry = Date.now() + 5_000;
+      const evidence = {
+        kind: "SIF",
+        digest: f.digest,
+        signatureVerified: true,
+        runtimeAttestationId: "a".repeat(64),
+        attestedNodes: ["compute-1"],
+        attestedQueue: "compute",
+        expiresAtUnixMs: expiry,
+      };
+      const capabilities = {
+        executionMode: mode as string,
+        selfAccount: { username: "scientist", uid: 1001, gid: 1001 },
+      };
       await db
-        .update(jobDispatchOutbox)
+        .update(agents)
         .set({
-          payloadBase64: Buffer.from(toBinary(ServerMessageSchema, message)).toString("base64"),
+          sandboxCapabilities: capabilities,
+          sandboxRuntimeCache: [{ kind: "OCI", digest: "unrelated-runtime" }, evidence],
         })
-        .where(eq(jobDispatchOutbox.jobId, f.jobId));
+        .where(eq(agents.agentId, f.agentId));
+      f.manifest.executionMode = mode;
+      f.manifest.runtimeAttestationId = evidence.runtimeAttestationId;
+      await f.persist();
+      expect(await db.transaction((tx) => f.check(tx))).toBe(expiry);
+      if (change === "expired") evidence.expiresAtUnixMs = 1;
+      if (change === "replacement") evidence.runtimeAttestationId = "b".repeat(64);
+      if (change === "account") {
+        capabilities.selfAccount.uid = 2001;
+        if (mode === "RootImpersonation")
+          await db.update(agents).set({ rootMode: false }).where(eq(agents.agentId, f.agentId));
+      }
+      if (change === "mode")
+        capabilities.executionMode = mode === "SelfAccount" ? "RootImpersonation" : "SelfAccount";
+      if (change === "queue") evidence.attestedQueue = "other";
+      if (change === "missing-queue") evidence.attestedQueue = "";
+      if (change === "job-queue") {
+        await db.update(jobs).set({ schedulerQueueName: "other" }).where(eq(jobs.id, f.jobId));
+      }
+      if (change === "dispatch-queue") {
+        const [saved] = await db
+          .select()
+          .from(jobDispatchOutbox)
+          .where(eq(jobDispatchOutbox.jobId, f.jobId));
+        if (!saved) throw new Error("Missing original outbox");
+        const message = fromBinary(ServerMessageSchema, Buffer.from(saved.payloadBase64, "base64"));
+        if (message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+        message.payload.value.queueName = "other";
+        await db
+          .update(jobDispatchOutbox)
+          .set({
+            payloadBase64: Buffer.from(toBinary(ServerMessageSchema, message)).toString("base64"),
+          })
+          .where(eq(jobDispatchOutbox.jobId, f.jobId));
+      }
+      await db
+        .update(agents)
+        .set({
+          sandboxCapabilities: capabilities,
+          sandboxRuntimeCache: [{ kind: "OCI", digest: "unrelated-runtime" }, evidence],
+        })
+        .where(eq(agents.agentId, f.agentId));
+      await expect(db.transaction((tx) => f.check(tx))).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      await f.cleanup();
     }
-    await db
-      .update(agents)
-      .set({
-        sandboxCapabilities: capabilities,
-        sandboxRuntimeCache: [{ kind: "OCI", digest: "unrelated-runtime" }, evidence],
-      })
-      .where(eq(agents.agentId, f.agentId));
-    await expect(db.transaction((tx) => f.check(tx))).rejects.toThrow("POLICY_DENIED");
-  } finally {
-    await f.cleanup();
-  }
-});
+  });
+}
 
 test("restricted Unix execution keeps its original trusted wrapper profile", async () => {
   const f = await fixture();

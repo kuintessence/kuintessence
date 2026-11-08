@@ -1,7 +1,7 @@
 # 计算节点逐作业资源检查
 
 新增 [`kq-sandbox-cgroup-check`](../../packages/agent/scripts/kq-sandbox-cgroup-check) 读取当前进程的内核 cgroup 及挂载信息，核对指定调度器作业的 CPU、内存边界。
-它不创建限额、不验证 Server 签名、不提交任务。带签名 `executionProfile` 的受限 HPC 作业已通过 trusted wrapper 强制调用：Agent 传递已验证清单中的资源值，节点配置指定调度器，原生作业编号必须匹配当前内核分组。SelfAccount 已接入启动探测、逐作业检查及明确队列绑定，单平台真实 Slurm 启动证明与签名任务已验收，跨平台联合验收仍待完成；其他 root 路径及其启动/队列能力发布尚待接入；`AGENT_SANDBOX_CGROUPS` 配置不能据此视为已完成生产验收。
+它不创建限额、不验证 Server 签名、不提交任务。带签名 `executionProfile` 的受限 HPC 作业已通过 trusted wrapper 强制调用：Agent 传递已验证清单中的资源值，节点配置指定调度器，原生作业编号必须匹配当前内核分组。SelfAccount 已接入启动探测、逐作业检查及明确队列绑定，单平台真实 Slurm 启动证明与签名任务已验收，跨平台联合验收仍待完成；root 启动/队列能力发布及普通逐作业路径也已接通实际证明，完整调度器矩阵待验收；`AGENT_SANDBOX_CGROUPS` 配置不能据此视为已完成生产验收。
 
 ## 检查口径
 
@@ -95,5 +95,16 @@ PBS Pro/Torque 入口的账户切换、资源检查器原生 ID 和状态处理�
 ## 仍需完成的接入
 
 现有实验 Slurm 19 使用 `task/none`，缓存的 OpenPBS 23 官方 hook 使用 v1；当前主机采用统一 v2。不能仅设置一个能力开关而宣布具备限额。
-PBS 已提供显式队列的[原生 v2 hook](../schedulers/pbs/cgroup-v2.md)。trusted wrapper 已接入固定摘要、root 管理的检查器，并在用户脚本前核对已签名资源。SelfAccount 已将路径正则替换为实际检查：配置固定检查器及明确队列，启动探测申请 1 CPU/128 MiB，读取真实内核限额；证明 ID 同时绑定队列与检查器身份。每次执行再次读取已核验的同一份检查器字节并检查签名资源。队列随能力上报，首次派发、Agent 提交和联邦续租均要求匹配。后续仍须完成 SelfAccount 跨平台联合调度验证和其他 root 路径的启动/队列能力证明。
+PBS 已提供显式队列的[原生 v2 hook](../schedulers/pbs/cgroup-v2.md)。trusted wrapper 已接入固定摘要、root 管理的检查器，并在用户脚本前核对已签名资源。SelfAccount 已将路径正则替换为实际检查：配置固定检查器及明确队列，启动探测申请 1 CPU/128 MiB，读取真实内核限额；证明 ID 同时绑定队列与检查器身份。每次执行再次读取已核验的同一份检查器字节并检查签名资源。队列随能力上报，首次派发、Agent 提交和联邦续租均要求匹配。后续仍须完成 SelfAccount 跨平台联合调度验证和 root 全部调度器的真实联合验证。
 PBS 受限 root profile 的双平台联合验证已通过；现代 Slurm v2 的原生资源检查和回收也已通过上述独立实验。其余接入和真实联合验证完成前，完整资源隔离验收保持未完成。完整联盟链蓝图及 PR 预览验收范围不变。
+
+
+## root 主链路接入与签名执行
+
+root HPC 现与 SelfAccount 共用真实运行证明、验签、固定执行事实及队列检查；普通 root 作业也强制 seccomp 和逐作业 cgroup 核验。Slurm/PBS Pro/Torque 分别限定 nodelist/host/nodes，并核对实际 hostname。证明只来自已探测节点；不能将单节点结果扩大为队列内所有节点。过期证明不会发布为有效缓存，Server 首次签发和续租绑定原证明及队列。
+
+上述 Slurm 完整入口已验证普通 root 签名执行：探测 Job 6 后，产品 verifier/stager/adapter 提交 Job 7，以 UID/GID 24001 执行只读输入、seccomp/no-new-privs、socket 拒绝和 JSON 输出。入口退出 0，出现 `REAL_ROOT_SIGNED_EXECUTION_OK`，namespace 已清理。首次失败源于新增实验遗漏派发公钥，未计为通过；补齐真实临时公钥后通过。未修改宿主信任配置或运行科学编译。
+
+PBS 双平台入口改为先安装原生 cgroup hook，再启动 Agent；保留只读 unsigned.sif 供周期 ECL 反例验证，并配置明确探测账户、队列、固定指纹和策略/检查器摘要。该入口现已实际通过：两套 Server/数据库及独立 mTLS Agent 完成加密介质交付，原生启动探测 Job 0 为 F/0，root 能力和 restricted profile 就绪。导入/来源授权/本地发布后 DATA_WAITING 自动恢复，签名作业 Job 1 在 workq、已证明节点执行只读输入与 seccomp 检查；来源撤权后 F/265，停止确认成立，副本与交付回执保留。完整命令退出 0，临时服务与 namespace 已清理。
+
+首次目录缺失已修复为创建受保护目录后再验证；另一次派发被同机类型检查期间的实际 CPU 98% 拦截，未调整平台 95% 阈值，待检查完成后单独复验通过。此验收是同机两平台、单 PBS 节点及轻量脚本，不能扩大为 Torque、跨主机或科学计算性能验收。

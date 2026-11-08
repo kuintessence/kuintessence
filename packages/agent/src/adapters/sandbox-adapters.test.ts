@@ -21,6 +21,15 @@ function unixSandbox(): SandboxJobSpec {
     runtimeKind: "SIF",
     runtimePath: "/managed/runtimes/python.sif",
     executionMode: "RootImpersonation",
+    runtimeAttestationId: "a".repeat(64),
+    apptainerPath: "/usr/bin/apptainer",
+    seccompProfilePath: "/etc/kuintessence/seccomp.json",
+    cgroupCheck: {
+      path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+      sha256: "c".repeat(64),
+    },
+    attestedQueue: "compute",
+    attestedNodes: ["node-1"],
     identity: {
       mode: "MappedAccount",
       backend: "Unix",
@@ -129,7 +138,44 @@ describe("HPC Sandbox adapters", () => {
     expect(argv).toContain("all");
     expect(argv.join(" ")).not.toContain("attacker.invalid");
     expect(argv.join(" ")).toContain("/kq/script/main.py");
-    expect(buildApptainerSandboxCommand(unixSandbox())).toContain("head -c 1000");
+    expect(buildApptainerSandboxCommand(unixSandbox(), "slurm")).toContain("head -c 1000");
+  });
+
+  test.each([
+    "runtimeAttestationId",
+    "apptainerPath",
+    "seccompProfilePath",
+    "cgroupCheck",
+    "attestedQueue",
+    "attestedNodes",
+  ] as const)("root HPC refuses a new submission without %s", (field) => {
+    const sandbox = unixSandbox();
+    delete sandbox[field];
+    for (const adapter of [
+      new SlurmAdapter("24"),
+      new PbsProAdapter("23"),
+      new TorqueAdapter("6"),
+    ]) {
+      expect(() => adapter.buildSubmitScript(job(sandbox))).toThrow("local execution facts");
+    }
+  });
+
+  test("root HPC binds native resource checks and eligible nodes on each scheduler", () => {
+    const slurm = new SlurmAdapter("24").buildSubmitScript(job());
+    const pbs = new PbsProAdapter("23").buildSubmitScript(job());
+    const torque = new TorqueAdapter("6").buildSubmitScript(job());
+    expect(slurm).toContain("#SBATCH --nodelist=node-1");
+    expect(pbs).toContain(":host=node-1");
+    expect(torque).toContain("nodes=node-1:ppn=2");
+    expect(slurm).toContain("${SLURM_JOB_ID:?");
+    for (const script of [pbs, torque]) {
+      expect(script).toContain("${PBS_JOBID:?");
+      expect(script).not.toContain("${SLURM_JOB_ID");
+    }
+    for (const script of [slurm, pbs, torque]) {
+      expect(script).toContain("no-new-privs,seccomp:/etc/kuintessence/seccomp.json");
+      expect(script).toContain("$(/usr/bin/hostname)");
+    }
   });
 
   test("uses the verified absolute binary instead of a malicious PATH entry", () => {
@@ -278,7 +324,7 @@ describe("HPC Sandbox adapters", () => {
       new SlurmAdapter("23", {
         spawner: { run: async () => ({ exitCode: 0, stdout: "1", stderr: "" }) },
       }).submit(value),
-    ).rejects.toThrow("not entitled");
+    ).rejects.toThrow("queue");
   });
 
   test("rejects scheduler directive and bind-path injection", () => {

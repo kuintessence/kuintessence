@@ -77,12 +77,16 @@ def configure_target(pod, root, runtime, metadata, scheduler, pbs):
         if key.startswith("AGENT_SANDBOX_K8S_"):
             del setting[key]
     setting.update(AGENT_SCHEDULER_TYPE=scheduler, LAB_MEDIA_EXECUTION=scheduler, AGENT_SANDBOX_ROOT="/scratch/media-sandbox",
-                   AGENT_SANDBOX_ROOT_IMPERSONATION="true", AGENT_SANDBOX_SIF_SIGNATURE_VERIFICATION="true",
+                   AGENT_SANDBOX_ROOT_IMPERSONATION="true", AGENT_SANDBOX_EXECUTION_MODE="root-impersonation",
+                   AGENT_SANDBOX_ATTESTATION_ACCOUNT="scientist",
+                   AGENT_SANDBOX_ATTESTATION_QUEUE="workq" if scheduler == "pbs-pro" else "debug",
+                   AGENT_SANDBOX_SIF_PGP_FINGERPRINT=metadata["fingerprint"],
+                   AGENT_SANDBOX_SIF_SIGNATURE_VERIFICATION="true",
                    AGENT_SANDBOX_ECL="true", AGENT_RESTRICTED_DATA_ISOLATION="true",
                    AGENT_RESTRICTED_EXECUTION_PROFILE_ID="ca12ed00-4f54-4000-8000-000000000001",
                    AGENT_RESTRICTED_EXECUTION_SIF_DIGEST=metadata["digest"],
                    AGENT_SANDBOX_RUNTIME_CACHE_JSON=json.dumps({metadata["digest"]: {
-                       "kind": "SIF", "localPath": "/opt/kq/bash.sif", "signatureVerified": True}}),
+                       "kind": "SIF", "localPath": "/opt/kq/bash.sif", "signatureVerified": False}}),
                    APPTAINER_KEYSDIR="/opt/kq/keys", LAB_HPC_ROOT=str(root / "hpc"))
     if pbs:
         pod["spec"]["volumes"].append({"name": "pbs", "hostPath": {"path": str(pbs), "type": "Directory"}})

@@ -316,8 +316,23 @@ Unix 账户，getent 返回的用户名、UID、GID 和 home 须合法。调度 
 结构合法的未签名反例 SIF。计算节点核对 Apptainer buildcfg 的实际配置目录、ECL 文件和
 反例 SIF 摘要；只有明确的 ECL 签名拒绝及预期退出码才通过，普通启动失败不能替代。
 证明 ID 绑定探测账户、PGP 指纹、ECL 和反例摘要。
-此 root 接口已在独立 Slurm 实验验收，Agent 主启动/能力发布与 Server 派发链路尚待接入；
-不能仅配置这些变量就宣称生产 root 模式已具备完整证明。SelfAccount 仍仅支持 Slurm。
+首次探测会创建受保护的沙箱目录，再核对规范路径、所有权及权限。
+Agent 的 HPC root 启动、周期刷新和能力发布现统一使用实际运行证明，不再以布尔开关或
+手填 `signatureVerified` 作为就绪依据。首次探测失败仍保留派发处理器，后续证明通过后可恢复；
+每次验签和提交仍独立检查有效性。受限执行 profile 随证明重新验证并同步更新。
+Server 首次签发、Agent 验签/提交及联邦续租均绑定相同证明；续租同时核对原 Job 与原派发消息
+中的队列，并把租约期限限制在证明到期前。已有旧作业可继续监控和停止，缺证明的新提交会拒绝。
+
+所有 HPC 作业均固定已验证 Apptainer、seccomp 与 cgroup 检查器；普通 root 作业直接加载策略，
+受限 profile 继续由可信 wrapper 加载本地固定策略。提交 CLI 清除继承环境，作业不传入用户环境变量。
+Slurm 使用 nodelist，PBS Pro 使用 host 资源，Torque 使用 nodes，选择证明中的首个节点；
+执行前再次核对 hostname。当前证明来自单节点探测，尚不表示整个队列或其他节点通过验证。
+PBS host/Torque 节点名须与实际 hostname 一致；别名不一致会拒绝执行，不能去掉节点约束绕过。
+SelfAccount 仍仅支持 Slurm；Kubernetes 保持其独立的 OCI/节点策略验证路径。
+
+真实 Slurm 已通过 root 普通账户签名任务执行及输入/输出校验；PBS 双平台链路已通过真实
+启动证明、加密介质交付、DATA_WAITING 自动恢复、受限作业读取数据及来源撤权后确认停机。
+Torque 原生运行、跨节点及掉电恢复仍待验收。
 
 原生探测通过实际调度器适配器提交 1 CPU/128 MiB、最长运行 120 秒的作业，
 逐次 CLI 调用最多 10 秒，完成观察窗口为 150 秒。只有原作业成功终止且输出合法节点标记，

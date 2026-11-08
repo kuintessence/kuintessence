@@ -346,8 +346,8 @@ export class SlurmAdapter implements SchedulerAdapter {
     if (spec.sandbox?.identity.backend === "Unix" && spec.sandbox.identity.schedulerAccount) {
       lines.push(`#SBATCH --account=${spec.sandbox.identity.schedulerAccount}`);
     }
-    if (spec.sandbox?.executionMode === "SelfAccount") {
-      lines.push(`#SBATCH --nodelist=${spec.sandbox.attestedNodes?.join(",")}`);
+    if (spec.sandbox) {
+      lines.push(`#SBATCH --nodelist=${spec.sandbox.attestedNodes?.[0]}`);
     }
     if (spec.wallTimeSec > 0) {
       lines.push(`#SBATCH --time=${this.formatWallTime(spec.wallTimeSec)}`);
@@ -356,7 +356,7 @@ export class SlurmAdapter implements SchedulerAdapter {
       lines.push(`#SBATCH --gpus=${spec.gpus}`);
     }
     lines.push(`#SBATCH --chdir=${executionRoot}`);
-    return appendEnvAndCommand(lines, spec);
+    return appendEnvAndCommand(lines, spec, "slurm");
   }
 
   async submit(spec: JobSpec): Promise<JobResult> {

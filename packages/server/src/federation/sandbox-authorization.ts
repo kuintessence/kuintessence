@@ -249,12 +249,14 @@ export async function checkFederationSandboxJob(
       self.data.gid !== currentIdentity.gid
     )
       throw new FederationError("POLICY_DENIED");
+  }
+  if (currentIdentity.backend === "Unix") {
     const cacheEntry = z.object({
       kind: z.enum(["OCI", "SIF"]),
       digest: z.string(),
       signatureVerified: z.boolean(),
-      runtimeAttestationId: z.string(),
-      attestedNodes: z.array(z.string()),
+      runtimeAttestationId: z.string().regex(/^[0-9a-f]{64}$/),
+      attestedNodes: z.array(z.string().regex(/^[A-Za-z0-9._-]{1,255}$/)).min(1),
       attestedQueue: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/),
       expiresAtUnixMs: z.number().int().safe(),
     });

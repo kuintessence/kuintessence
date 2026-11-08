@@ -189,7 +189,7 @@ function validateRuntimeAttestation(
   if (manifest.executionMode !== options.localExecutionMode) {
     throw new Error("Sandbox execution mode does not match the local Agent mode");
   }
-  if (manifest.executionMode !== "SelfAccount") {
+  if (options.adapterType === "kubernetes") {
     if (
       manifest.runtimeAttestationId &&
       manifest.runtimeAttestationId !== runtime.runtimeAttestationId
@@ -210,7 +210,7 @@ function validateRuntimeAttestation(
     runtime.expiresAtUnixMs === undefined ||
     runtime.expiresAtUnixMs <= now
   ) {
-    throw new Error("SelfAccount Sandbox runtime attestation is missing, expired, or invalid");
+    throw new Error("HPC Sandbox runtime attestation is missing, expired, or invalid");
   }
 }
 
