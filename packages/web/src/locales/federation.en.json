@@ -699,6 +699,37 @@
       },
       "difference": "Charge difference",
       "coordinatedBoundary": "Both institutions sign the same original. Local accounting waits for VALID. No bank payment or refund is made."
+    },
+    "refund": {
+      "title": "Refunds",
+      "refundId": "Refund ID",
+      "operationId": "Original delegation ID",
+      "taskId": "Original task ID",
+      "attempt": "Attempt",
+      "requestDigest": "Original delegation digest",
+      "releasedAmount": "Returned amount",
+      "reason": "Refund reason",
+      "back": "Back to refunds",
+      "newRefund": "Create refund",
+      "exportRefund": "Export refund original",
+      "draftFailed": "Draft unavailable. Check that cancellation is confirmed and no execution workflow was ever created.",
+      "importJson": "Refund JSON",
+      "invalidRefund": "Invalid refund or contract mismatch. Import the complete original for this contract.",
+      "confirmation": "Refund signatures",
+      "accounting": "Local accounting",
+      "applied": "Returned",
+      "notApplied": "Not returned",
+      "empty": "No approved refunds",
+      "approvalBoundary": "Both institutions must approve the same original. Countersigning returns the full cooperation reservation; asynchronous evidence does not delay the refund. This does not make a bank refund.",
+      "actionFailed": "Action not confirmed. Refresh and inspect the original refund, permissions and signing trust before retrying. Do not create another refund.",
+      "notQueued": "No local evidence record yet",
+      "coordinated": "Use the original reservation release or terminal settlement for coordinated tasks.",
+      "actions": {
+        "approve": "Approve refund",
+        "attach": "Verify and import counterparty signature",
+        "retry": "Retry refund evidence"
+      },
+      "retryBoundary": "Retry only the original refund evidence. No additional funds are returned."
     }
   }
 }

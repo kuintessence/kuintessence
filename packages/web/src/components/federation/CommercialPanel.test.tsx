@@ -134,6 +134,7 @@ beforeEach(async () => {
     if (
       path.includes("/bills?") ||
       path.includes("/settlements?") ||
+      path.includes("/refunds?") ||
       path.includes("/adjustments?")
     )
       return { data: { data: [], hasMore: false } };
@@ -777,5 +778,33 @@ test.each([
   });
   await screen.findByText("No approved adjustments");
   expect(!!screen.queryByRole("button", { name: "Create adjustment" })).toBe(canAdjust);
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test.each([
+  {
+    capabilities: ["agreement.read", "agreement.approve", "billing.approve"],
+    mobile: false,
+    canSettle: false,
+  },
+  { capabilities: ["agreement.read", "settlement.approve"], mobile: false, canSettle: true },
+  { capabilities: ["agreement.read", "settlement.approve"], mobile: true, canSettle: false },
+])("refund tab respects independent permission and mobile policy: %j", async ({
+  capabilities,
+  mobile,
+  canSettle,
+}) => {
+  listed = true;
+  row.counterpartyJws = "peer.signature";
+  grants = capabilities;
+  device.readOnly = mobile;
+  mount();
+  await openDetail();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Refunds" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  await screen.findByText("No approved refunds");
+  expect(!!screen.queryByRole("button", { name: "Create refund" })).toBe(canSettle);
   expect(api.post).not.toHaveBeenCalled();
 });

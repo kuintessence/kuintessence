@@ -699,6 +699,37 @@
       },
       "difference": "本次差额",
       "coordinatedBoundary": "双方签署同一原文后，待本站交易 VALID 才更新净额。不执行银行付款或退款。"
+    },
+    "refund": {
+      "title": "退款",
+      "refundId": "退款编号",
+      "operationId": "原委派编号",
+      "taskId": "原任务编号",
+      "attempt": "执行次数",
+      "requestDigest": "原委派摘要",
+      "releasedAmount": "归还额度",
+      "reason": "退款原因",
+      "back": "返回退款列表",
+      "newRefund": "新增退款",
+      "exportRefund": "导出退款原文",
+      "draftFailed": "无法生成草稿。请检查原委派是否已确认取消，且未创建过执行工作流。",
+      "importJson": "退款 JSON",
+      "invalidRefund": "退款格式或所属合同不符，请导入当前合同的完整原文。",
+      "confirmation": "退款签署",
+      "accounting": "本站额度处理",
+      "applied": "已归还",
+      "notApplied": "尚未归还",
+      "empty": "暂无已批准退款",
+      "approvalBoundary": "双方须批准同一原文。收到对签后归还全部合作预留额度，异步存证不阻塞退款。本操作不执行银行退款。",
+      "actionFailed": "操作结果未确认。请刷新并核对原退款记录、权限和签名信任，不要生成另一笔退款。",
+      "notQueued": "尚无本站存证记录",
+      "coordinated": "链协调任务请通过原预留释放或终态结算处理。",
+      "actions": {
+        "approve": "批准退款",
+        "attach": "验证并导入对方签名",
+        "retry": "重试退款存证"
+      },
+      "retryBoundary": "仅重试原退款存证，不再次归还额度。"
     }
   }
 }

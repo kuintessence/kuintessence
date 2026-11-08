@@ -6,6 +6,7 @@ import {
   CommercialAdjustmentSchema,
   CommercialAgreementApprovalSchema,
   CommercialBillSchema,
+  CommercialRefundSchema,
   CommercialSettlementSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { Command } from "commander";
@@ -718,4 +719,111 @@ test("CLI adjustment validates amounts and contract scope before requesting appr
     "Invalid federation",
   );
   expect(requests.every((r) => r.method === "GET")).toBe(true);
+});
+
+const refund = CommercialRefundSchema.parse({
+  protocolVersion: 1,
+  kind: "commercial-refund",
+  refundId: reportId,
+  domainId: bill.domainId,
+  agreementDigest: approval.digest,
+  request: bill.request,
+  requestDigest: digest,
+  cancellationReceiptJws: "provider.cancellation.signature",
+  releasedAmount: bill.request.maxAmount,
+  issuedAt: bill.issuedAt,
+  salt: "f".repeat(64),
+  reason: "Cancelled before execution",
+});
+const savedRefund = {
+  ...saved,
+  operationId: refund.request.operationId,
+  refundId: refund.refundId,
+  payload: refund,
+  appliedAt: null,
+};
+test("CLI refund draft keeps fixed identity and reason and saves a private file without approving", async () => {
+  respond = (request) =>
+    Response.json({ data: new URL(request.url).pathname === base ? approval : refund });
+  const file = join(directory, "refund.json");
+  await run([
+    "refunds",
+    "draft",
+    revisionId,
+    refund.request.operationId,
+    file,
+    "--id",
+    refund.refundId,
+    "--reason",
+    refund.reason,
+  ]);
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual(refund);
+  expect((await stat(file)).mode & 0o777).toBe(0o600);
+  expect(requests.filter((r) => r.method === "POST").map((r) => r.body)).toEqual([
+    { operationId: refund.request.operationId, refundId: refund.refundId, reason: refund.reason },
+  ]);
+});
+test("CLI refund list preserves integer precision, selection and independent evidence", async () => {
+  respond = (request) =>
+    Response.json({
+      data:
+        new URL(request.url).pathname === base
+          ? approval
+          : {
+              data: [
+                {
+                  ...savedRefund,
+                  counterpartyJws: "peer.signature",
+                  appliedAt: refund.issuedAt,
+                  ledger: { id: reportId, state: "pending", lastError: null },
+                },
+              ],
+              hasMore: false,
+            },
+    });
+  const text = await run(["refunds", "list", revisionId, "--record", refund.refundId]);
+  expect(text).toContain("9007199254740993");
+  expect(text).toContain("Local accounting: Applied");
+  expect(text).toContain("Local evidence: Pending");
+  expect(requests[1]?.path).toBe(`${base}/refunds?limit=20&offset=0&recordId=${refund.refundId}`);
+});
+test("CLI refund approval and attachment preserve the exact original and counterpart signature", async () => {
+  respond = (request, body) =>
+    Response.json({
+      data:
+        new URL(request.url).pathname === base
+          ? approval
+          : request.url.endsWith("/counterparty")
+            ? { ...savedRefund, counterpartyJws: (body as { approvalJws: string }).approvalJws }
+            : savedRefund,
+    });
+  await run(["refunds", "approve", revisionId, await inputFile(refund)]);
+  const file = join(directory, "peer.jws");
+  await writeFile(file, "peer.original.signature", { mode: 0o600 });
+  await run(["refunds", "attach", revisionId, refund.refundId, file]);
+  expect(requests.filter((r) => r.method === "POST").map((r) => r.body)).toEqual([
+    refund,
+    { approvalJws: "peer.original.signature" },
+  ]);
+});
+test("CLI rejects a refund from another contract before any write", async () => {
+  await expect(
+    run([
+      "refunds",
+      "approve",
+      revisionId,
+      await inputFile({ ...refund, agreementDigest: `sha256:${"0".repeat(64)}` }),
+    ]),
+  ).rejects.toThrow("does not match contract");
+  expect(requests.filter((r) => r.method === "POST")).toHaveLength(0);
+});
+test("CLI refund treats changed response identity as unconfirmed", async () => {
+  respond = (request) =>
+    Response.json({
+      data:
+        new URL(request.url).pathname === base ? approval : { ...savedRefund, operationId: source },
+    });
+  await expect(run(["refunds", "approve", revisionId, await inputFile(refund)])).rejects.toThrow(
+    "identity mismatch",
+  );
 });

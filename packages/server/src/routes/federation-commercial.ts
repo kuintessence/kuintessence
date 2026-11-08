@@ -7,6 +7,7 @@ import {
   CommercialBillSchema,
   CommercialDiscountSchema,
   CommercialExecutionApprovalSchema,
+  CommercialRefundDraftInputSchema,
   CommercialRefundSchema,
   CommercialReservationSchema,
   CommercialSettlementSchema,
@@ -180,28 +181,27 @@ export function createFederationCommercialRoutes(
   }
   if (refunds) {
     const path = "/federation/commercial-agreements/:revisionId/refunds";
-    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) => {
-      const { limit, offset } = c.req.valid("query");
-      return c.json({
-        data: await refunds.list(
-          c.get("federationActor"),
-          c.req.valid("param").revisionId,
-          limit,
-          offset,
-        ),
-      });
-    });
+    r.get(
+      path,
+      kqValidator("param", id),
+      kqValidator("query", page.extend({ recordId: z.uuid().optional() })),
+      async (c) => {
+        const { limit, offset, recordId } = c.req.valid("query");
+        return c.json({
+          data: await refunds.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+            recordId,
+          ),
+        });
+      },
+    );
     r.post(
       `${path}/draft`,
       kqValidator("param", id),
-      kqValidator(
-        "json",
-        z.strictObject({
-          operationId: z.uuid(),
-          refundId: z.uuid(),
-          reason: z.string().trim().min(1).max(4096),
-        }),
-      ),
+      kqValidator("json", CommercialRefundDraftInputSchema),
       async (c) => {
         const input = c.req.valid("json");
         return c.json({

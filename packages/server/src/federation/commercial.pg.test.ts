@@ -10594,3 +10594,124 @@ test.each([
   expect(await worker.refreshStatusNext()).toBe(false);
   expect(await f.scan()).toMatchObject({ allocatedBytes: "0" });
 });
+
+test("refund CLI real HTTP and PostgreSQL preserve original signatures, filters and organization scope", async () => {
+  const { mkdtemp, rm, readFile, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const { CommercialRefundSchema, CommercialRefundApprovalSchema, CommercialRefundListSchema } =
+    await import("@kuintessence/shared/federation/commercial");
+  const { federationOrganizationContext } = await import("../middleware/federation-organization");
+  const f = await refundFixture();
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [f.approvals, f.service];
+  deps[20] = f.source;
+  const app = new Hono();
+  const token = randomUUID();
+  let actor = f.actor;
+  app.onError(createErrorHandler(pino({ level: "silent" })));
+  app.use("*", async (c, next) => {
+    if (c.req.header("authorization") !== `Bearer ${token}`) return c.json({}, 401);
+    c.set("principal" as never, actor as never);
+    await next();
+  });
+  app.use("/api/federation/*", federationOrganizationContext);
+  app.route("/api", createFederationCommercialRoutes(...deps));
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: app.fetch });
+  const dir = await mkdtemp(join(tmpdir(), "kq-refund-cli-"));
+  try {
+    const config = join(dir, "config.json"),
+      file = join(dir, "refund.json"),
+      peer = join(dir, "peer.jws");
+    await writeFile(
+      config,
+      JSON.stringify({ serverUrl: `http://127.0.0.1:${server.port}`, token }),
+      { mode: 0o600 },
+    );
+    const run = async (...args: string[]) => {
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          "--no-env-file",
+          fileURLToPath(new URL("../../../cli/src/index.ts", import.meta.url)),
+          "federation",
+          "--org",
+          f.actor.orgId,
+          "--lang",
+          "en",
+          "--json",
+          ...args,
+        ],
+        { env: { ...process.env, KQ_CONFIG_FILE: config }, stdout: "pipe", stderr: "pipe" },
+      );
+      const [code, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      return { code, stdout, stderr };
+    };
+    const draft = await run(
+      "refunds",
+      "draft",
+      f.revisionId,
+      f.request.operationId,
+      file,
+      "--id",
+      f.value.refundId,
+      "--reason",
+      f.value.reason,
+    );
+    expect(draft.code).toBe(0);
+    const original = CommercialRefundSchema.parse(JSON.parse(await readFile(file, "utf8")));
+    expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+    const approved = await run("refunds", "approve", f.revisionId, file);
+    expect(approved.code).toBe(0);
+    const local = CommercialRefundApprovalSchema.parse(JSON.parse(approved.stdout));
+    expect(local.payload).toEqual(original);
+    expect(local.appliedAt).toBeNull();
+    const other = await f.provider.approve(f.actor, f.revisionId, original);
+    await writeFile(peer, other.approvalJws, { mode: 0o600 });
+    const attached = await run("refunds", "attach", f.revisionId, original.refundId, peer);
+    expect(attached.code).toBe(0);
+    const applied = CommercialRefundApprovalSchema.parse(JSON.parse(attached.stdout));
+    expect(applied.approvalJws).toBe(local.approvalJws);
+    expect(applied.appliedAt).not.toBeNull();
+    await f.provider.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      original.refundId,
+      local.approvalJws,
+    );
+    expect((await f.budget())?.available).toBe(f.terms.agreement.budgetLimit);
+    const listed = await run("refunds", "list", f.revisionId, "--record", original.refundId);
+    expect(listed.code).toBe(0);
+    const page = CommercialRefundListSchema.parse(JSON.parse(listed.stdout));
+    expect(page.data).toHaveLength(1);
+    expect(page.data[0]?.payload.releasedAmount).toBe(f.request.maxAmount);
+    expect(page.data[0]?.ledger).toBeNull();
+    const absent = await run("refunds", "list", f.revisionId, "--record", randomUUID());
+    expect(absent.code).toBe(0);
+    expect(CommercialRefundListSchema.parse(JSON.parse(absent.stdout)).data).toHaveLength(0);
+    const repeated = await run("refunds", "attach", f.revisionId, original.refundId, peer);
+    expect(repeated.code).toBe(0);
+    expect(CommercialRefundApprovalSchema.parse(JSON.parse(repeated.stdout)).appliedAt).toBe(
+      applied.appliedAt,
+    );
+    actor = { ...f.actor, orgId: randomUUID() };
+    const changed = await run("refunds", "list", f.revisionId);
+    expect(changed.code).toBe(1);
+    expect(changed.stderr).toContain("ORGANIZATION_CONTEXT_CHANGED");
+    actor = f.actor;
+    await new FederationPermissionService(db).set(
+      { ...f.actor, capability: "settlement.approve", enabled: false },
+      f.actor.userId,
+    );
+    const denied = await run("refunds", "approve", f.revisionId, file);
+    expect(denied.code).toBe(1);
+    expect(denied.stderr).toContain("HTTP 403");
+  } finally {
+    server.stop(true);
+    await rm(dir, { recursive: true, force: true });
+  }
+});

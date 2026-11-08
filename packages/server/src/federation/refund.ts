@@ -496,7 +496,13 @@ export class FederationRefundService {
       return saved;
     });
   }
-  async list(actor: FederationActor, revisionId: string, limit: number, offset: number) {
+  async list(
+    actor: FederationActor,
+    revisionId: string,
+    limit: number,
+    offset: number,
+    recordId?: string,
+  ) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
       await this.contract(tx, actor, revisionId);
@@ -523,6 +529,7 @@ export class FederationRefundService {
             eq(refunds.localSiteId, this.signing.siteId),
             eq(refunds.localOrgId, actor.orgId),
             eq(refunds.agreementRevisionId, revisionId),
+            recordId ? eq(refunds.refundId, recordId) : undefined,
           ),
         )
         .orderBy(desc(refunds.createdAt), desc(refunds.refundId))

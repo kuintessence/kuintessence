@@ -30,6 +30,7 @@ import { CommercialBillingPanel } from "./CommercialBillingPanel";
 import { CommercialClosingPanel } from "./CommercialClosingPanel";
 import { CommercialDetail } from "./CommercialDetail";
 import { CommercialEditor } from "./CommercialEditor";
+import { CommercialRefundPanel } from "./CommercialRefundPanel";
 import { CommercialSettlementPanel } from "./CommercialSettlementPanel";
 import { CommercialTerms } from "./CommercialTerms";
 import { CommercialUsagePanel } from "./CommercialUsagePanel";
@@ -264,6 +265,9 @@ export function CommercialPanel({
                 <TabsTrigger value="usage">{t("federation.usage.title")}</TabsTrigger>
                 <TabsTrigger value="bills">{t("federation.billing.title")}</TabsTrigger>
                 <TabsTrigger value="settlements">{t("federation.settlement.title")}</TabsTrigger>
+                {detail.data.terms.agreement.mode !== "ledger_coordinated" ? (
+                  <TabsTrigger value="refunds">{t("federation.refund.title")}</TabsTrigger>
+                ) : null}
                 <TabsTrigger value="adjustments">{t("federation.adjustment.title")}</TabsTrigger>
                 <TabsTrigger value="closing">{t("federation.closing.title")}</TabsTrigger>
               </TabsList>
@@ -332,6 +336,14 @@ export function CommercialPanel({
                     setAdjustmentSettlement(settlementId);
                     setSection("adjustments");
                   }}
+                />
+              </TabsContent>
+              <TabsContent value="refunds">
+                <CommercialRefundPanel
+                  approval={detail.data}
+                  scope={scope}
+                  writable={canSettle}
+                  busy={busy || detail.isFetching}
                 />
               </TabsContent>
               <TabsContent value="adjustments">

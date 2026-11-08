@@ -17,6 +17,10 @@ import {
   CommercialBillApprovalSchema,
   CommercialBillListSchema,
   CommercialBillSchema,
+  CommercialRefundApprovalSchema,
+  CommercialRefundDraftInputSchema,
+  CommercialRefundListSchema,
+  CommercialRefundSchema,
   CommercialSettlementApprovalSchema,
   CommercialSettlementListSchema,
   CommercialSettlementSchema,
@@ -30,11 +34,13 @@ const businessSchemas = {
   bill: CommercialBillSchema,
   settlement: CommercialSettlementSchema,
   adjustment: CommercialAdjustmentSchema,
+  refund: CommercialRefundSchema,
 };
 const approvalSchemas = {
   bill: CommercialBillApprovalSchema,
   settlement: CommercialSettlementApprovalSchema,
   adjustment: CommercialAdjustmentApprovalSchema,
+  refund: CommercialRefundApprovalSchema,
 };
 type Kind = keyof typeof businessSchemas;
 function recordId(value: z.infer<(typeof businessSchemas)[Kind]>) {
@@ -42,7 +48,9 @@ function recordId(value: z.infer<(typeof businessSchemas)[Kind]>) {
     ? value.billId
     : value.kind === "commercial-settlement"
       ? value.settlementId
-      : value.adjustmentId;
+      : value.kind === "commercial-refund"
+        ? value.refundId
+        : value.adjustmentId;
 }
 const labels = {
   zh: {
@@ -177,7 +185,7 @@ function checkScope(
 function checkBusiness(kind: Kind, raw: unknown, contract: CommercialAgreementApproval) {
   const value = businessSchemas[kind].parse(raw);
   const parties =
-    value.kind === "commercial-bill"
+    value.kind === "commercial-bill" || value.kind === "commercial-refund"
       ? {
           source: value.request.senderSiteId,
           target: value.request.recipientSiteId,
@@ -196,7 +204,13 @@ function checkBusiness(kind: Kind, raw: unknown, contract: CommercialAgreementAp
     parties.target !== contract.terms.agreement.targetSiteId ||
     parties.revision !== contract.revisionId ||
     parties.unit !== contract.terms.agreement.unit ||
-    (value.kind === "commercial-bill" && value.agreementDigest !== contract.digest)
+    (["commercial-bill", "commercial-refund"].includes(value.kind) &&
+      "agreementDigest" in value &&
+      value.agreementDigest !== contract.digest) ||
+    (value.kind === "commercial-refund" &&
+      (value.request.mode !== contract.terms.agreement.mode ||
+        value.request.budgetDomainId !== contract.terms.agreement.budgetDomainId ||
+        value.request.epoch !== contract.terms.agreement.epoch))
   )
     throw new Error("Federation original does not match contract");
   return value;
@@ -206,7 +220,8 @@ function checkRecordIdentity(
   row:
     | z.infer<typeof CommercialBillApprovalSchema>
     | z.infer<typeof CommercialSettlementApprovalSchema>
-    | z.infer<typeof CommercialAdjustmentApprovalSchema>,
+    | z.infer<typeof CommercialAdjustmentApprovalSchema>
+    | z.infer<typeof CommercialRefundApprovalSchema>,
 ) {
   if (
     ("billId" in row && row.billId !== row.payload.billId) ||
@@ -214,6 +229,10 @@ function checkRecordIdentity(
       (!("adjustmentId" in row) ||
         row.adjustmentId !== row.payload.adjustmentId ||
         row.settlementId !== row.payload.settlementId)) ||
+    (row.payload.kind === "commercial-refund" &&
+      (!("refundId" in row) ||
+        row.refundId !== row.payload.refundId ||
+        row.operationId !== row.payload.request.operationId)) ||
     (row.payload.kind === "commercial-settlement" &&
       (!("settlementId" in row) || row.settlementId !== row.payload.settlementId))
   )
@@ -511,7 +530,7 @@ export function registerFederationCommand(
       output(s, { kind, referenceId: id }, [s.t("retry")]);
     },
   );
-  for (const kind of ["bill", "settlement", "adjustment"] as const) {
+  for (const kind of ["bill", "settlement", "adjustment", "refund"] as const) {
     const group = root.command(`${kind}s`);
     const list = page(
       group.command("list <revision>").option("--record <uuid>", "Filter the original record"),
@@ -557,6 +576,24 @@ export function registerFederationCommand(
               )
             : [s.t("empty")],
         );
+      } else if (kind === "refund") {
+        const view = await get(s, path, CommercialRefundListSchema);
+        for (const row of view.data) {
+          checkScope(row, c);
+          checkRecordIdentity(row);
+          checkBusiness(kind, row.payload, c);
+          if (record && record !== row.refundId) throw new Error(s.t("scope"));
+        }
+        output(
+          s,
+          view,
+          view.data.length
+            ? view.data.map(
+                (row) =>
+                  `${row.refundId}\t${s.t("released")}: ${row.payload.releasedAmount} ${row.payload.request.unit}\n  ${s.t("signatures")}: ${row.counterpartyJws ? s.t("both") : s.t("local")}\t${s.t("accounting")}: ${row.appliedAt ? s.t("applied") : s.t("unapplied")}\t${s.t("ledger")}: ${c.terms.agreement.mode === "bilateral_direct" ? s.t("notRequired") : row.ledger ? s.t(row.ledger.state) : s.t(c.localSiteId === c.terms.agreement.targetSiteId ? "noRecord" : "unknownLedger")}`,
+              )
+            : [s.t("empty")],
+        );
       } else {
         const view = await get(s, path, CommercialAdjustmentListSchema);
         for (const { adjustment } of view.data) {
@@ -580,7 +617,7 @@ export function registerFederationCommand(
     const draft = group
       .command("draft <revision> <reference> <file>")
       .description(
-        `Generate a ${kind} draft from ${kind === "bill" ? "report ID" : kind === "settlement" ? "bill ID" : "settlement ID"}; never approves`,
+        `Generate a ${kind} draft from ${kind === "bill" ? "report ID" : kind === "settlement" ? "bill ID" : kind === "refund" ? "operation ID" : "settlement ID"}; never approves`,
       )
       .option("--id <uuid>", "Original draft ID");
     if (kind === "adjustment")
@@ -591,6 +628,8 @@ export function registerFederationCommand(
         )
         .requiredOption("--reason <text>", "Reason reviewed by both institutions")
         .option("--evidence <digest>", "SHA-256 digest of supporting evidence");
+    if (kind === "refund")
+      draft.requiredOption("--reason <text>", "Reason reviewed by both institutions");
     action(draft, async (revision, reference, file) => {
       const s = scoped(),
         ref = z.uuid().parse(reference),
@@ -601,13 +640,19 @@ export function registerFederationCommand(
           ? { reportId: ref, billId: id }
           : kind === "settlement"
             ? { billId: ref, settlementId: id }
-            : CommercialAdjustmentDraftInputSchema.parse({
-                settlementId: ref,
-                adjustmentId: id,
-                chargedAmount: draft.opts().amount,
-                reason: draft.opts().reason,
-                supportingEvidenceDigest: draft.opts().evidence ?? null,
-              });
+            : kind === "refund"
+              ? CommercialRefundDraftInputSchema.parse({
+                  operationId: ref,
+                  refundId: id,
+                  reason: draft.opts().reason,
+                })
+              : CommercialAdjustmentDraftInputSchema.parse({
+                  settlementId: ref,
+                  adjustmentId: id,
+                  chargedAmount: draft.opts().amount,
+                  reason: draft.opts().reason,
+                  supportingEvidenceDigest: draft.opts().evidence ?? null,
+                });
       const value = checkBusiness(
         kind,
         await post(s, `${base(c)}/${kind}s/draft`, input, businessSchemas[kind]),
@@ -618,15 +663,19 @@ export function registerFederationCommand(
           ? value.billId !== id || value.reportId !== ref
           : value.kind === "commercial-settlement"
             ? value.settlementId !== id || value.billId !== ref
-            : value.adjustmentId !== id ||
-              value.settlementId !== ref ||
-              federationCanonicalJson({
-                settlementId: value.settlementId,
-                adjustmentId: value.adjustmentId,
-                chargedAmount: value.chargedAmount,
-                reason: value.reason,
-                supportingEvidenceDigest: value.supportingEvidenceDigest,
-              }) !== federationCanonicalJson(input)
+            : value.kind === "commercial-refund"
+              ? value.refundId !== id ||
+                value.request.operationId !== ref ||
+                value.reason !== CommercialRefundDraftInputSchema.parse(input).reason
+              : value.adjustmentId !== id ||
+                value.settlementId !== ref ||
+                federationCanonicalJson({
+                  settlementId: value.settlementId,
+                  adjustmentId: value.adjustmentId,
+                  chargedAmount: value.chargedAmount,
+                  reason: value.reason,
+                  supportingEvidenceDigest: value.supportingEvidenceDigest,
+                }) !== federationCanonicalJson(input)
       )
         throw new Error(s.t("scope"));
       await save(file, value);

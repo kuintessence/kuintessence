@@ -265,6 +265,11 @@ export const CommercialRefundSchema = z
     "Only full bilateral pre-execution refunds are allowed",
   );
 export type CommercialRefund = z.infer<typeof CommercialRefundSchema>;
+export const CommercialRefundDraftInputSchema = z.strictObject({
+  operationId: Id,
+  refundId: Id,
+  reason: z.string().trim().min(1).max(4096),
+});
 
 /** A separately approved allocation settlement, never proof of bank payment or a new credit issue. */
 export const CommercialSettlementSchema = z
@@ -429,6 +434,29 @@ export const CommercialBillListSchema = z.object({
           lastError: z.string().nullable(),
         })
         .nullable(),
+    }),
+  ),
+  hasMore: z.boolean(),
+});
+
+export const CommercialRefundApprovalSchema = z.object({
+  localSiteId: Id,
+  localOrgId: Id,
+  agreementRevisionId: Id,
+  operationId: Id,
+  refundId: Id,
+  payload: CommercialRefundSchema,
+  digest: FederationDigestSchema,
+  approvalJws: z.string().min(1).max(524288),
+  counterpartyJws: z.string().min(1).max(524288).nullable(),
+  approvedBy: Id,
+  appliedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export const CommercialRefundListSchema = z.object({
+  data: z.array(
+    CommercialRefundApprovalSchema.extend({
+      ledger: CommercialBillListSchema.shape.data.element.shape.ledger,
     }),
   ),
   hasMore: z.boolean(),
