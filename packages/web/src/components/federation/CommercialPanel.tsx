@@ -54,7 +54,7 @@ export function CommercialPanel({
   const readOnly = useMobileMutationBlocked(path);
   const [section, setSection] = useState("terms");
   const [closingRecord, setClosingRecord] = useState<{
-    kind: "bill" | "settlement";
+    kind: "bill" | "settlement" | "refund";
     recordId: string;
   } | null>(null);
   const [adjustmentSettlement, setAdjustmentSettlement] = useState<string | undefined>();
@@ -344,6 +344,7 @@ export function CommercialPanel({
                   scope={scope}
                   writable={canSettle}
                   busy={busy || detail.isFetching}
+                  recordId={closingRecord?.kind === "refund" ? closingRecord.recordId : undefined}
                 />
               </TabsContent>
               <TabsContent value="adjustments">
@@ -372,7 +373,9 @@ export function CommercialPanel({
                     setBillingReport(undefined);
                     setSettlementBill(undefined);
                     setAdjustmentSettlement(undefined);
-                    setSection(kind === "bill" ? "bills" : "settlements");
+                    setSection(
+                      kind === "bill" ? "bills" : kind === "refund" ? "refunds" : "settlements",
+                    );
                   }}
                 />
               </TabsContent>

@@ -346,7 +346,7 @@ export type CommercialAdjustmentDraftInput = z.infer<typeof CommercialAdjustment
 
 export const ClosingPolicyInputSchema = z
   .strictObject({
-    kind: z.enum(["bill", "settlement"]),
+    kind: z.enum(["bill", "settlement", "refund"]),
     outcomes: z
       .array(z.enum(["completed", "failed", "cancelled"]))
       .min(1)
@@ -362,6 +362,10 @@ export const ClosingPolicyInputSchema = z
       [v.maxAmount, v.maxTotalAmount].every((a) => FederationAmountSchema.safeParse(a).success) &&
       BigInt(v.maxAmount) <= BigInt(v.maxTotalAmount),
     "Invalid approval limits",
+  )
+  .refine(
+    (v) => v.kind !== "refund" || (v.outcomes.length === 1 && v.outcomes[0] === "cancelled"),
+    "Refund policies only authorize pre-execution cancellation",
   );
 export const ClosingPolicySchema = ClosingPolicyInputSchema.safeExtend({
   id: Id,
@@ -393,7 +397,7 @@ export const ClosingTaskSchema = z
     localSiteId: Id,
     localOrgId: Id,
     agreementRevisionId: Id,
-    kind: z.enum(["bill", "settlement"]),
+    kind: z.enum(["bill", "settlement", "refund"]),
     referenceId: Id,
     policyId: Id,
     recordId: Id.nullable(),
@@ -450,6 +454,7 @@ export const CommercialRefundApprovalSchema = z.object({
   approvalJws: z.string().min(1).max(524288),
   counterpartyJws: z.string().min(1).max(524288).nullable(),
   approvedBy: Id,
+  authorizationPolicyId: Id.nullable(),
   appliedAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
 });

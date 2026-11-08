@@ -182,7 +182,8 @@ export async function completionBlocker(tx: PgTransaction, claim: Claim): Promis
         AND s.agreement_revision_id = ${revision}::uuid AND s.record_id IN (SELECT id FROM records)
         AND (s.state <> 'complete' OR s.lease_token IS NOT NULL)) THEN 'signature-exchange'
       WHEN EXISTS (SELECT 1 FROM federation_closing_tasks t WHERE t.local_site_id = ${site}
-        AND (t.reference_id IN (SELECT id FROM reservations) OR t.reference_id = ${bill?.billId ?? null}::uuid)
+        AND (t.reference_id IN (SELECT id FROM reservations) OR t.reference_id = ${bill?.billId ?? null}::uuid
+          OR (t.kind = 'refund' AND t.reference_id = ${request.operationId}::uuid))
         AND (t.state <> 'complete' OR t.lease_token IS NOT NULL)) THEN 'closing'
       WHEN EXISTS (SELECT 1 FROM federation_usage_tasks WHERE local_site_id = ${site}
         AND reservation_id IN (SELECT id FROM reservations) AND state <> 'reported') THEN 'usage'

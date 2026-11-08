@@ -1118,7 +1118,7 @@ export const federationClosingPolicies = pgTable(
       .references(() => orgs.id),
     agreementRevisionId: uuid("agreement_revision_id").notNull(),
     agreementDigest: varchar("agreement_digest", { length: 71 }).notNull(),
-    kind: varchar("kind", { length: 16 }).$type<"bill" | "settlement">().notNull(),
+    kind: varchar("kind", { length: 16 }).$type<"bill" | "settlement" | "refund">().notNull(),
     outcomes: jsonb("outcomes").$type<Array<"completed" | "failed" | "cancelled">>().notNull(),
     maxAmount: numeric("max_amount", { precision: 38, scale: 0 }).notNull(),
     maxTotalAmount: numeric("max_total_amount", { precision: 38, scale: 0 }).notNull(),
@@ -1144,7 +1144,7 @@ export const federationClosingPolicies = pgTable(
     uniqueIndex("federation_closing_policy_active")
       .on(t.localSiteId, t.agreementRevisionId, t.kind)
       .where(sql`${t.revokedAt} IS NULL`),
-    check("federation_closing_policy_kind", sql`${t.kind} IN ('bill','settlement')`),
+    check("federation_closing_policy_kind", sql`${t.kind} IN ('bill','settlement','refund')`),
     check(
       "federation_closing_policy_limits",
       sql`${t.maxAmount} >= 0 AND ${t.maxTotalAmount} >= ${t.maxAmount} AND ${t.maxRecords} BETWEEN 1 AND 100000 AND ${t.approvedAmount} BETWEEN 0 AND ${t.maxTotalAmount} AND ${t.approvedRecords} BETWEEN 0 AND ${t.maxRecords}`,
@@ -1155,12 +1155,12 @@ export const federationClosingPolicies = pgTable(
     ),
     check(
       "federation_closing_policy_outcomes",
-      sql`jsonb_typeof(${t.outcomes}) = 'array' AND jsonb_array_length(${t.outcomes}) BETWEEN 1 AND 3 AND ${t.outcomes} <@ '["completed","failed","cancelled"]'::jsonb`,
+      sql`jsonb_typeof(${t.outcomes}) = 'array' AND jsonb_array_length(${t.outcomes}) BETWEEN 1 AND 3 AND ${t.outcomes} <@ '["completed","failed","cancelled"]'::jsonb AND (${t.kind} <> 'refund' OR ${t.outcomes} = '["cancelled"]'::jsonb)`,
     ),
   ],
 );
 
-/** Provider-owned closing progress; signatures and ledger checkpoints remain in their original tables. */
+/** Initiator-owned closing progress; signatures and ledger checkpoints remain in their original tables. */
 export const federationClosingTasks = pgTable(
   "federation_closing_tasks",
   {
@@ -1169,7 +1169,7 @@ export const federationClosingTasks = pgTable(
       .notNull()
       .references(() => orgs.id),
     agreementRevisionId: uuid("agreement_revision_id").notNull(),
-    kind: varchar("kind", { length: 16 }).$type<"bill" | "settlement">().notNull(),
+    kind: varchar("kind", { length: 16 }).$type<"bill" | "settlement" | "refund">().notNull(),
     referenceId: uuid("reference_id").notNull(),
     policyId: uuid("policy_id")
       .notNull()
@@ -1195,7 +1195,7 @@ export const federationClosingTasks = pgTable(
       ],
     }),
     index("federation_closing_task_due").on(t.localSiteId, t.state, t.nextAttemptAt),
-    check("federation_closing_task_kind", sql`${t.kind} IN ('bill','settlement')`),
+    check("federation_closing_task_kind", sql`${t.kind} IN ('bill','settlement','refund')`),
     check(
       "federation_closing_task_state",
       sql`${t.state} IN ('pending','complete','needs_review') AND (${t.state} <> 'complete' OR (${t.recordId} IS NOT NULL AND ${t.completedAt} IS NOT NULL))`,
@@ -2396,6 +2396,9 @@ export const federationCommercialRefunds = pgTable(
     approvedBy: uuid("approved_by")
       .notNull()
       .references(() => users.id),
+    authorizationPolicyId: uuid("authorization_policy_id").references(
+      () => federationClosingPolicies.id,
+    ),
     appliedAt: timestamp("applied_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

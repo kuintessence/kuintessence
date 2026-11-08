@@ -4,9 +4,11 @@ import {
   federationCommercialBills as bills,
   federationWorkflowBindings as bindings,
   federationCommercialAgreements as contracts,
+  federationOutbound as outbound,
   type PgDb,
   type PgTransaction,
   federationClosingPolicies as policies,
+  federationCommercialRefunds as refunds,
   federationCommercialSettlements as settlements,
   federationSites as sites,
   federationClosingTasks as tasks,
@@ -19,6 +21,7 @@ import {
 } from "@kuintessence/shared/federation";
 import {
   CommercialBillSchema,
+  CommercialRefundSchema,
   CommercialSettlementSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { and, asc, eq, gt, isNotNull, isNull, lte, sql } from "drizzle-orm";
@@ -27,6 +30,7 @@ import { FederationBillingService } from "./billing";
 import { renewTaskCompletion } from "./completion-capacity";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { FederationRefundService } from "./refund";
 import { FederationSettlementService } from "./settlement";
 import {
   type FederationSigningKey,
@@ -36,10 +40,22 @@ import {
 import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
 
-const business = z.union([CommercialBillSchema, CommercialSettlementSchema]);
+const business = z.union([
+  CommercialBillSchema,
+  CommercialSettlementSchema,
+  CommercialRefundSchema,
+]);
 type Task = typeof tasks.$inferSelect;
 type Kind = Task["kind"];
 function identity(payload: z.infer<typeof business>) {
+  if (payload.kind === "commercial-refund")
+    return {
+      kind: "refund" as const,
+      recordId: payload.refundId,
+      revisionId: payload.request.agreementRevisionId,
+      source: payload.request.senderSiteId,
+      target: payload.request.recipientSiteId,
+    };
   return payload.kind === "commercial-bill"
     ? {
         kind: "bill" as const,
@@ -58,11 +74,12 @@ function identity(payload: z.infer<typeof business>) {
 }
 class ClosingLeaseLost extends Error {}
 
-/** Provider proposes an existing business signature; the recipient independently authorizes the same original. */
+/** The initiator proposes an existing business signature; the recipient independently authorizes the same original. */
 export class FederationClosingAutomation {
   private readonly trust: FederationTrustRegistry;
   private readonly billing: FederationBillingService;
   private readonly settlement: FederationSettlementService;
+  private readonly refund: FederationRefundService;
   constructor(
     private readonly db: PgDb,
     private readonly signing: FederationSigningKey,
@@ -72,6 +89,7 @@ export class FederationClosingAutomation {
     this.trust = new FederationTrustRegistry(db);
     this.billing = new FederationBillingService(db, signing, storageGuard);
     this.settlement = new FederationSettlementService(db, signing);
+    this.refund = new FederationRefundService(db, signing, storageGuard);
   }
   private key(row: Pick<Task, "kind" | "referenceId">) {
     return and(
@@ -103,6 +121,20 @@ export class FederationClosingAutomation {
     orgId: string,
     revisionId: string,
   ) {
+    if (kind === "refund") {
+      const [row] = await tx
+        .select()
+        .from(refunds)
+        .where(
+          and(
+            eq(refunds.localSiteId, this.signing.siteId),
+            eq(refunds.localOrgId, orgId),
+            eq(refunds.agreementRevisionId, revisionId),
+            eq(refunds.refundId, recordId),
+          ),
+        );
+      return row;
+    }
     if (kind === "bill") {
       const [row] = await tx
         .select()
@@ -153,7 +185,10 @@ export class FederationClosingAutomation {
     );
     const signed = await verifyFederationMessage(business, jws, sender, new Date());
     const id = identity(signed.payload);
-    if (id.target !== sender.siteId || id.source !== this.signing.siteId)
+    if (
+      (id.kind === "refund" ? id.source : id.target) !== sender.siteId ||
+      (id.kind === "refund" ? id.target : id.source) !== this.signing.siteId
+    )
       throw new FederationError("UNTRUSTED_IDENTITY");
     const context = await this.db.transaction(async (tx) => {
       const contract = await this.contract(tx, id.revisionId);
@@ -221,17 +256,21 @@ export class FederationClosingAutomation {
       saved =
         signed.payload.kind === "commercial-bill"
           ? await this.billing.automate(context.policy.id, signed.payload, authorize)
-          : await this.settlement.automate(context.policy.id, signed.payload, authorize);
+          : signed.payload.kind === "commercial-refund"
+            ? await this.refund.automate(context.policy.id, signed.payload, authorize)
+            : await this.settlement.automate(context.policy.id, signed.payload, authorize);
     }
     // If the response is lost after this transaction, the same offer returns the same local signature.
     if (id.kind === "bill")
       await this.billing.attachExchanged(id.revisionId, id.recordId, jws, authorize);
+    else if (id.kind === "refund")
+      await this.refund.attachExchanged(id.revisionId, id.recordId, jws, authorize);
     else await this.settlement.attachExchanged(id.revisionId, id.recordId, jws, authorize);
     return saved.approvalJws;
   }
   async discover() {
     if (!this.send) return;
-    for (const kind of ["bill", "settlement"] as const) {
+    for (const kind of ["bill", "settlement", "refund"] as const) {
       const now = new Date();
       const candidates =
         kind === "bill"
@@ -275,45 +314,88 @@ export class FederationClosingAutomation {
               )
               .orderBy(asc(usage.reservationId))
               .limit(8)
-          : await this.db
-              .select({
-                localOrgId: bills.localOrgId,
-                agreementRevisionId: bills.agreementRevisionId,
-                referenceId: bills.billId,
-                request: sql<unknown>`${bills.payload}->'request'`,
-                policyId: policies.id,
-              })
-              .from(bills)
-              .innerJoin(
-                policies,
-                and(
-                  eq(policies.localSiteId, bills.localSiteId),
-                  eq(policies.localOrgId, bills.localOrgId),
-                  eq(policies.agreementRevisionId, bills.agreementRevisionId),
-                  eq(policies.kind, kind),
-                ),
-              )
-              .leftJoin(
-                tasks,
-                and(
-                  eq(tasks.localSiteId, bills.localSiteId),
-                  eq(tasks.kind, kind),
-                  eq(tasks.referenceId, bills.billId),
-                ),
-              )
-              .where(
-                and(
-                  eq(bills.localSiteId, this.signing.siteId),
-                  isNotNull(bills.counterpartyJws),
-                  sql`${bills.payload}->'request'->>'recipientSiteId' = ${this.signing.siteId}`,
-                  isNull(policies.revokedAt),
-                  lte(policies.validFrom, now),
-                  gt(policies.validUntil, now),
-                  isNull(tasks.referenceId),
-                ),
-              )
-              .orderBy(asc(bills.billId))
-              .limit(8);
+          : kind === "refund"
+            ? await this.db
+                .select({
+                  localOrgId: outbound.localOrgId,
+                  agreementRevisionId: outbound.agreementRevisionId,
+                  referenceId: outbound.operationId,
+                  request: outbound.request,
+                  policyId: policies.id,
+                })
+                .from(outbound)
+                .innerJoin(
+                  policies,
+                  and(
+                    eq(policies.localSiteId, outbound.localSiteId),
+                    eq(policies.localOrgId, outbound.localOrgId),
+                    eq(policies.agreementRevisionId, outbound.agreementRevisionId),
+                    eq(policies.kind, kind),
+                  ),
+                )
+                .leftJoin(
+                  tasks,
+                  and(
+                    eq(tasks.localSiteId, outbound.localSiteId),
+                    eq(tasks.kind, kind),
+                    eq(tasks.referenceId, outbound.operationId),
+                  ),
+                )
+                .where(
+                  and(
+                    eq(outbound.localSiteId, this.signing.siteId),
+                    eq(outbound.cancelState, "stopped"),
+                    isNotNull(outbound.cancelReceiptJws),
+                    isNull(outbound.settledAmount),
+                    sql`${outbound.request}->>'mode' IN ('bilateral_direct','bilateral_attested')`,
+                    sql`${outbound.cancelReceipt}->'workflow' = 'null'::jsonb`,
+                    isNull(policies.revokedAt),
+                    lte(policies.validFrom, now),
+                    gt(policies.validUntil, now),
+                    isNull(tasks.referenceId),
+                  ),
+                )
+                .orderBy(asc(outbound.operationId))
+                .limit(8)
+            : await this.db
+                .select({
+                  localOrgId: bills.localOrgId,
+                  agreementRevisionId: bills.agreementRevisionId,
+                  referenceId: bills.billId,
+                  request: sql<unknown>`${bills.payload}->'request'`,
+                  policyId: policies.id,
+                })
+                .from(bills)
+                .innerJoin(
+                  policies,
+                  and(
+                    eq(policies.localSiteId, bills.localSiteId),
+                    eq(policies.localOrgId, bills.localOrgId),
+                    eq(policies.agreementRevisionId, bills.agreementRevisionId),
+                    eq(policies.kind, kind),
+                  ),
+                )
+                .leftJoin(
+                  tasks,
+                  and(
+                    eq(tasks.localSiteId, bills.localSiteId),
+                    eq(tasks.kind, kind),
+                    eq(tasks.referenceId, bills.billId),
+                  ),
+                )
+                .where(
+                  and(
+                    eq(bills.localSiteId, this.signing.siteId),
+                    isNotNull(bills.counterpartyJws),
+                    sql`${bills.payload}->'request'->>'recipientSiteId' = ${this.signing.siteId}`,
+                    isNull(policies.revokedAt),
+                    lte(policies.validFrom, now),
+                    gt(policies.validUntil, now),
+                    isNull(tasks.referenceId),
+                  ),
+                )
+                .orderBy(asc(bills.billId))
+                .limit(8);
       for (const { request, ...candidate } of candidates) {
         try {
           await this.db.transaction(async (tx) => {
@@ -363,10 +445,12 @@ export class FederationClosingAutomation {
     if (!row) throw new FederationError("ASSET_UNAVAILABLE");
     const id = identity(row.payload),
       keyId = federationMessageKeyId(row.approvalJws);
-    if (id.target !== this.signing.siteId || id.kind !== task.kind || id.recordId !== task.recordId)
+    const initiator = id.kind === "refund" ? id.source : id.target,
+      other = id.kind === "refund" ? id.target : id.source;
+    if (initiator !== this.signing.siteId || id.kind !== task.kind || id.recordId !== task.recordId)
       throw new FederationError("OPERATION_CONFLICT");
     await this.contract(tx, task.agreementRevisionId, task.localOrgId);
-    const [peer] = await tx.select().from(sites).where(eq(sites.id, id.source)).for("share");
+    const [peer] = await tx.select().from(sites).where(eq(sites.id, other)).for("share");
     if (peer?.state !== "active" || (endpoint && peer.endpoint !== endpoint))
       throw new FederationError("UNTRUSTED_IDENTITY");
     await this.trust.assertKey(tx, this.signing.siteId, keyId, new Date());
@@ -381,7 +465,7 @@ export class FederationClosingAutomation {
       federationCanonicalJson(signed.payload) !== federationCanonicalJson(row.payload)
     )
       throw new FederationError("OPERATION_CONFLICT");
-    return { row, endpoint: peer.endpoint, other: id.source };
+    return { row, endpoint: peer.endpoint, other };
   }
   private async advance(claim: Task) {
     if (!this.send) return;
@@ -402,6 +486,8 @@ export class FederationClosingAutomation {
       };
       if (claim.kind === "bill")
         await this.billing.automateDraft(claim.policyId, claim.referenceId, finish);
+      else if (claim.kind === "refund")
+        await this.refund.automateDraft(claim.policyId, claim.referenceId, finish);
       else await this.settlement.automateDraft(claim.policyId, claim.referenceId, finish);
     }
     const before = await this.db.transaction((tx) => this.source(tx, claim));
@@ -454,6 +540,13 @@ export class FederationClosingAutomation {
     const id = identity(before.row.payload);
     if (claim.kind === "bill")
       await this.billing.attachExchanged(
+        claim.agreementRevisionId,
+        id.recordId,
+        response,
+        authorize,
+      );
+    else if (claim.kind === "refund")
+      await this.refund.attachExchanged(
         claim.agreementRevisionId,
         id.recordId,
         response,

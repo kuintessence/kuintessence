@@ -106,3 +106,12 @@ bun run test:fabric:execution
 异步模式从 Server 启动前停 Orderer，本地退款完成时原存证待办仍为 pending。合同及接单存证保存已背书检查点后，强制结束并重启两端自建 Server 与商业 Adapter，沿用原数据库和密钥。恢复 Orderer 后核对双方原合同及提供方原退款共三条商业提交取得 VALID，两条接单证据按原序列上链；恢复不得改变退款签名、已应用时间或本地额度。独立 Gateway 读取真实 A/B/C 区块，检查私有退款原文及两个唯一索引，A/B 可见、C 不可见，公共区块不含原文，链上没有预算、预留或执行许可写入。
 
 证据保存在上述 direct/attested 私有目录，新增 `refund-waiting.json`、`refund-evidence.json` 及双方 `refund-reserved`、`refund-applied` 快照。异步场景继续生成 `attested-offline`、`attested-recovered` 和 `attested-private-ledger.json`，另有 `refund-crash-recovery.json` 保存本轮自建进程退出码和新旧 PID。只有命令退出 0 且全部断言通过才算完成；本项不运行计算作业，不证明科研软件、满盘容量回收、自动退款批准政策、跨主机机构信任或正式 PR 登录验收。
+
+
+## 机构自动退款验收
+
+在本页既有隔离工具环境中选择 `KQ_FEDERATION_LAB_SCENARIO=refund-auto`，分别运行 `bun run test:federation:direct`，以及带 `KQ_FEDERATION_LAB_MODE=bilateral_attested` 的 `bun run test:fabric:execution`。
+
+此变体保留原 `refund` 手工批准场景，复用真实材料等待、HTTP 取消和永久停止回执。提交委派前，两站通过 HTTP 分别配置有限退款政策；此后不调用退款草稿、批准或附签接口。生产后台自动发现取消、生成原件并双签归还，检查各政策只批准一次、记录保留正确授权编号、源方处理任务指向原 operationId/refundId。完成后撤销政策并检查已完成任务拒绝重试、金额与原件不变。新增私有证据 `refund-automatic-policies.json`，不上传 CI artifact。
+
+异步变体继续验证 Orderer 停机期间本地完成，强制中断两站 Server 与商业 Adapter 后以原数据库/密钥恢复，并通过独立 Gateway 核对原交易/PDC 和非成员隔离。此场景不执行科研软件，不证明真实银行退款或正式 PR 预览；整条命令和完整断言通过后才可登记验收结果。

@@ -52,8 +52,9 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
   const id = useId();
   const base = `/federation/commercial-agreements/${approval.revisionId}`;
   const key = ["federation", "commercial", scope.organizationId, scope.authRevision];
-  const provider = approval.localSiteId === approval.terms.agreement.targetSiteId;
-  const allowed = (kind: Kind) => (kind === "bill" ? canBill : canSettle);
+  const allowed = (kind: Kind) =>
+    (kind !== "refund" || approval.terms.agreement.mode !== "ledger_coordinated") &&
+    (kind === "bill" ? canBill : canSettle);
   const [policyPage, setPolicyPage] = useState(0);
   const [taskPage, setTaskPage] = useState(0);
   const [editing, setEditing] = useState<Kind | null>(null);
@@ -115,7 +116,7 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
   });
   const tasks = useQuery({
     queryKey: [...key, "closing-tasks", approval.revisionId, taskPage],
-    enabled: !!approval.counterpartyJws && provider,
+    enabled: !!approval.counterpartyJws,
     queryFn: async () => {
       const value = ClosingTasksViewSchema.parse(
         (
@@ -196,7 +197,7 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
       setUncertain(false);
       mutation.reset();
     }
-    if (provider) await tasks.refetch();
+    await tasks.refetch();
   };
   const status = (policy: ClosingPolicy) =>
     policy.revokedAt
@@ -220,7 +221,9 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
       <div>
         <dt className="text-muted-foreground">{t("federation.closing.outcomes")}</dt>
         <dd className="mt-1">
-          {policy.outcomes.map((o) => t(`federation.closing.outcome.${o}`)).join(" · ")}
+          {policy.kind === "refund"
+            ? t("federation.closing.preExecutionCancellation")
+            : policy.outcomes.map((o) => t(`federation.closing.outcome.${o}`)).join(" · ")}
         </dd>
       </div>
       <div>
@@ -272,7 +275,7 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
             >
               {t("federation.refresh")}
             </Button>
-            {(["bill", "settlement"] as const).filter(allowed).map((kind) => (
+            {(["bill", "settlement", "refund"] as const).filter(allowed).map((kind) => (
               <Button
                 key={kind}
                 variant="outline"
@@ -295,7 +298,7 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
                     maxTotalAmount: "",
                     maxRecords: "1",
                     validUntil: "",
-                    outcomes: ["completed"],
+                    outcomes: kind === "refund" ? ["cancelled"] : ["completed"],
                   });
                 }}
               >
@@ -365,29 +368,33 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
                 ),
               )}
             </fieldset>
-            <fieldset disabled={blocked} className="flex flex-wrap gap-4">
-              <legend className="mb-2 text-sm font-medium">
-                {t("federation.closing.outcomes")}
-              </legend>
-              {(["completed", "failed", "cancelled"] as const).map((outcome) => (
-                <label key={outcome} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    className="size-4 accent-primary"
-                    checked={input.outcomes.includes(outcome)}
-                    onChange={(event) =>
-                      setInput({
-                        ...input,
-                        outcomes: event.target.checked
-                          ? [...input.outcomes, outcome]
-                          : input.outcomes.filter((o) => o !== outcome),
-                      })
-                    }
-                  />
-                  {t(`federation.closing.outcome.${outcome}`)}
-                </label>
-              ))}
-            </fieldset>
+            {editing === "refund" ? (
+              <p className="text-sm">{t("federation.closing.preExecutionCancellation")}</p>
+            ) : (
+              <fieldset disabled={blocked} className="flex flex-wrap gap-4">
+                <legend className="mb-2 text-sm font-medium">
+                  {t("federation.closing.outcomes")}
+                </legend>
+                {(["completed", "failed", "cancelled"] as const).map((outcome) => (
+                  <label key={outcome} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-primary"
+                      checked={input.outcomes.includes(outcome)}
+                      onChange={(event) =>
+                        setInput({
+                          ...input,
+                          outcomes: event.target.checked
+                            ? [...input.outcomes, outcome]
+                            : input.outcomes.filter((o) => o !== outcome),
+                        })
+                      }
+                    />
+                    {t(`federation.closing.outcome.${outcome}`)}
+                  </label>
+                ))}
+              </fieldset>
+            )}
             {invalid ? (
               <p role="alert" className="text-sm text-status-failed">
                 {t("federation.closing.invalid")}
@@ -476,9 +483,7 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
         aria-label={t("federation.closing.tasks")}
       >
         <h3 className="text-base font-semibold">{t("federation.closing.tasks")}</h3>
-        {!provider ? (
-          <p className="text-sm text-muted-foreground">{t("federation.closing.sourceTasks")}</p>
-        ) : tasks.isError ? (
+        {tasks.isError ? (
           <p role="alert">{t("federation.loadFailed")}</p>
         ) : tasks.isPending ? (
           <p role="status">{t("federation.loading")}</p>
@@ -529,7 +534,9 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
                       {t(
                         task.kind === "bill"
                           ? "federation.billing.reservationId"
-                          : "federation.billing.billId",
+                          : task.kind === "refund"
+                            ? "federation.refund.operationId"
+                            : "federation.billing.billId",
                       )}
                       : {task.referenceId}
                     </p>

@@ -102,6 +102,7 @@ const labels = {
     kind: "类型",
     bill: "账单",
     settlement: "结算",
+    refund: "退款",
     empty: "无记录",
   },
   en: {
@@ -154,6 +155,7 @@ const labels = {
     kind: "Kind",
     bill: "Bill",
     settlement: "Settlement",
+    refund: "Refund",
     empty: "No records",
   },
 };
@@ -516,7 +518,7 @@ export function registerFederationCommand(
     tasks.command("retry <revision> <kind> <reference>"),
     async (revision, rawKind, reference) => {
       const s = scoped(),
-        kind = z.enum(["bill", "settlement"]).parse(rawKind),
+        kind = z.enum(["bill", "settlement", "refund"]).parse(rawKind),
         id = z.uuid().parse(reference),
         c = await contract(s, revision);
       try {

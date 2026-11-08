@@ -456,6 +456,12 @@ function RefundPanel({ approval, scope, writable, busy, recordId }: RefundProps)
               </dd>
             </div>
           </dl>
+          {current.authorizationPolicyId ? (
+            <dl className="text-sm">
+              <dt className="text-muted-foreground">{t("federation.closing.reference")}</dt>
+              <dd className="mt-1 break-all font-mono">{current.authorizationPolicyId}</dd>
+            </dl>
+          ) : null}
           {current.ledger?.lastError ? (
             <p role="status" className="break-words text-sm">
               {t("federation.commercial.checkConfiguration")}{" "}

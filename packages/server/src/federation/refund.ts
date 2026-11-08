@@ -28,6 +28,7 @@ import {
 import { and, desc, eq, getTableColumns, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { readFederationCancellationState } from "./cancellation-state";
+import { assertClosingPolicyActive, FederationClosingPolicyService } from "./closing-policy";
 import { renewTaskCompletion } from "./completion-capacity";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
@@ -258,36 +259,46 @@ export class FederationRefundService {
   ) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
-      const contract = await this.contract(tx, actor, revisionId);
-      const [operation] = await tx
-        .select()
-        .from(outbound)
-        .where(
-          and(
-            eq(outbound.localSiteId, this.signing.siteId),
-            eq(outbound.operationId, operationId),
-            eq(outbound.localOrgId, actor.orgId),
-            eq(outbound.agreementRevisionId, revisionId),
-          ),
-        );
-      if (!operation?.cancelReceiptJws) throw new FederationError("DATA_WAITING");
-      const value = CommercialRefundSchema.parse({
-        protocolVersion: 1,
-        kind: "commercial-refund",
-        refundId,
-        domainId: contract.terms.domainId,
-        agreementDigest: contract.digest,
-        request: operation.request,
-        requestDigest: operation.requestDigest,
-        cancellationReceiptJws: operation.cancelReceiptJws,
-        releasedAmount: operation.amount,
-        issuedAt: new Date().toISOString(),
-        salt: randomBytes(32).toString("hex"),
-        reason,
-      });
-      await this.originals(tx, actor, value);
-      return value;
+      return this.draftInTransaction(tx, actor, revisionId, operationId, refundId, reason);
     });
+  }
+  private async draftInTransaction(
+    tx: PgTransaction,
+    actor: FederationActor,
+    revisionId: string,
+    operationId: string,
+    refundId: string,
+    reason: string,
+  ) {
+    const contract = await this.contract(tx, actor, revisionId);
+    const [operation] = await tx
+      .select()
+      .from(outbound)
+      .where(
+        and(
+          eq(outbound.localSiteId, this.signing.siteId),
+          eq(outbound.operationId, operationId),
+          eq(outbound.localOrgId, actor.orgId),
+          eq(outbound.agreementRevisionId, revisionId),
+        ),
+      );
+    if (!operation?.cancelReceiptJws) throw new FederationError("DATA_WAITING");
+    const value = CommercialRefundSchema.parse({
+      protocolVersion: 1,
+      kind: "commercial-refund",
+      refundId,
+      domainId: contract.terms.domainId,
+      agreementDigest: contract.digest,
+      request: operation.request,
+      requestDigest: operation.requestDigest,
+      cancellationReceiptJws: operation.cancelReceiptJws,
+      releasedAmount: operation.amount,
+      issuedAt: new Date().toISOString(),
+      salt: randomBytes(32).toString("hex"),
+      reason,
+    });
+    await this.originals(tx, actor, value);
+    return value;
   }
   async approve(actor: FederationActor, revisionId: string, raw: CommercialRefund) {
     const value = CommercialRefundSchema.parse(raw);
@@ -295,67 +306,153 @@ export class FederationRefundService {
       throw new FederationError("OPERATION_CONFLICT");
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "settlement.approve");
-      await this.originals(tx, actor, value);
+      return this.approveInTransaction(tx, actor, revisionId, value);
+    });
+  }
+  async automate(
+    policyId: string,
+    raw: CommercialRefund,
+    authorize?: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const value = CommercialRefundSchema.parse(raw);
+    return this.db.transaction(async (tx) => {
+      const policy = await new FederationClosingPolicyService(
+        this.db,
+        this.signing.siteId,
+      ).authority(tx, policyId, "refund");
+      await authorize?.(tx);
+      const saved = await this.approveInTransaction(
+        tx,
+        { orgId: policy.localOrgId, userId: policy.grantedBy },
+        policy.agreementRevisionId,
+        value,
+        policy,
+      );
+      await authorize?.(tx);
+      assertClosingPolicyActive(policy);
+      return saved;
+    });
+  }
+  async automateDraft(
+    policyId: string,
+    operationId: string,
+    finish: (tx: PgTransaction, row: typeof refunds.$inferSelect) => Promise<void>,
+  ) {
+    return this.db.transaction(async (tx) => {
+      const policy = await new FederationClosingPolicyService(
+        this.db,
+        this.signing.siteId,
+      ).authority(tx, policyId, "refund");
+      const actor = { orgId: policy.localOrgId, userId: policy.grantedBy };
       const [prior] = await tx
         .select()
         .from(refunds)
         .where(
-          and(
-            eq(refunds.localSiteId, this.signing.siteId),
-            eq(refunds.operationId, value.request.operationId),
-          ),
+          and(eq(refunds.localSiteId, this.signing.siteId), eq(refunds.operationId, operationId)),
         );
-      if (prior) {
-        if (
-          prior.refundId !== value.refundId ||
-          prior.localOrgId !== actor.orgId ||
-          federationCanonicalJson(prior.payload) !== federationCanonicalJson(value)
-        )
-          throw new FederationError("OPERATION_CONFLICT");
-        const signed = await this.verify(
+      const value =
+        prior?.payload ??
+        (await this.draftInTransaction(
           tx,
-          CommercialRefundSchema,
-          prior.approvalJws,
-          this.signing.siteId,
-        );
-        if (
-          signed.digest !== prior.digest ||
-          federationCanonicalJson(signed.payload) !== federationCanonicalJson(prior.payload)
-        )
-          throw new FederationError("OPERATION_CONFLICT");
-        return prior;
-      }
-      await renewTaskCompletion(tx, this.signing.siteId, value.request, this.storageGuard);
+          actor,
+          policy.agreementRevisionId,
+          operationId,
+          randomUUID(),
+          "Cancelled before execution",
+        ));
+      if (value.request.senderSiteId !== this.signing.siteId)
+        throw new FederationError("POLICY_DENIED");
+      const saved = await this.approveInTransaction(
+        tx,
+        actor,
+        policy.agreementRevisionId,
+        value,
+        policy,
+      );
+      await finish(tx, saved);
+      assertClosingPolicyActive(policy);
+      return saved;
+    });
+  }
+  private async approveInTransaction(
+    tx: PgTransaction,
+    actor: FederationActor,
+    revisionId: string,
+    value: CommercialRefund,
+    policy?: Awaited<ReturnType<FederationClosingPolicyService["authority"]>>,
+  ) {
+    if (value.request.agreementRevisionId !== revisionId)
+      throw new FederationError("OPERATION_CONFLICT");
+    await this.originals(tx, actor, value);
+    const [prior] = await tx
+      .select()
+      .from(refunds)
+      .where(
+        and(
+          eq(refunds.localSiteId, this.signing.siteId),
+          eq(refunds.operationId, value.request.operationId),
+        ),
+      );
+    if (prior) {
+      if (
+        prior.refundId !== value.refundId ||
+        prior.localOrgId !== actor.orgId ||
+        federationCanonicalJson(prior.payload) !== federationCanonicalJson(value)
+      )
+        throw new FederationError("OPERATION_CONFLICT");
       const signed = await this.verify(
         tx,
         CommercialRefundSchema,
-        await signFederationMessage(CommercialRefundSchema, value, this.signing),
+        prior.approvalJws,
         this.signing.siteId,
       );
-      const [row] = await tx
-        .insert(refunds)
-        .values({
-          localSiteId: this.signing.siteId,
-          refundId: value.refundId,
-          agreementRevisionId: revisionId,
-          localOrgId: actor.orgId,
-          operationId: value.request.operationId,
-          payload: value,
-          digest: signed.digest,
-          approvalJws: signed.jws,
-          approvedBy: actor.userId,
-        })
-        .returning();
-      if (!row) throw new Error("Refund approval was not saved");
-      await tx.insert(auditLog).values({
-        actor: actor.userId,
-        orgId: actor.orgId,
-        action: "federation.refund.approve",
-        target: row.refundId,
-        diff: { after: { digest: row.digest } },
-      });
-      return row;
+      if (
+        signed.digest !== prior.digest ||
+        federationCanonicalJson(signed.payload) !== federationCanonicalJson(prior.payload)
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return prior;
+    }
+    await renewTaskCompletion(tx, this.signing.siteId, value.request, this.storageGuard);
+    const signed = await this.verify(
+      tx,
+      CommercialRefundSchema,
+      await signFederationMessage(CommercialRefundSchema, value, this.signing),
+      this.signing.siteId,
+    );
+    const [row] = await tx
+      .insert(refunds)
+      .values({
+        localSiteId: this.signing.siteId,
+        refundId: value.refundId,
+        agreementRevisionId: revisionId,
+        localOrgId: actor.orgId,
+        operationId: value.request.operationId,
+        payload: value,
+        digest: signed.digest,
+        approvalJws: signed.jws,
+        approvedBy: actor.userId,
+        authorizationPolicyId: policy?.id,
+      })
+      .returning();
+    if (!row) throw new Error("Refund approval was not saved");
+    if (policy) {
+      await new FederationClosingPolicyService(this.db, this.signing.siteId).consume(
+        tx,
+        policy,
+        value.releasedAmount,
+        value.request,
+      );
+      assertClosingPolicyActive(policy);
+    }
+    await tx.insert(auditLog).values({
+      actor: policy ? `closing-policy:${policy.id}` : actor.userId,
+      orgId: actor.orgId,
+      action: "federation.refund.approve",
+      target: row.refundId,
+      diff: { after: { digest: row.digest } },
     });
+    return row;
   }
   async attachExchanged(
     revisionId: string,

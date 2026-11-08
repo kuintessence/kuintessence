@@ -24,9 +24,9 @@ const evidenceTrust = FabricEvidenceTrustSchema.parse(
   JSON.parse(await readFile(join(root, "execution-evidence-trust.json"), "utf8")),
 );
 const proof = z
-  .object({ evidenceDirectory: z.string(), scenario: z.enum(["success", "refund"]) })
+  .object({ evidenceDirectory: z.string(), scenario: z.enum(["success", "refund", "refund-auto"]) })
   .parse(JSON.parse(await readFile(join(root, "live-attested-proof.json"), "utf8")));
-const refund = proof.scenario === "refund";
+const refund = ["refund", "refund-auto"].includes(proof.scenario);
 const attempt = z.object({
   transactionId: z.string(),
   stage: z.string(),

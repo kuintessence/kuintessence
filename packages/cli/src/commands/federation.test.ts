@@ -737,6 +737,7 @@ const refund = CommercialRefundSchema.parse({
 });
 const savedRefund = {
   ...saved,
+  authorizationPolicyId: null,
   operationId: refund.request.operationId,
   refundId: refund.refundId,
   payload: refund,
@@ -826,4 +827,70 @@ test("CLI refund treats changed response identity as unconfirmed", async () => {
   await expect(run(["refunds", "approve", revisionId, await inputFile(refund)])).rejects.toThrow(
     "identity mismatch",
   );
+});
+
+test("CLI refund authority and retry preserve exact scope and delegation identity", async () => {
+  const input = { ...policyInput, kind: "refund", outcomes: ["cancelled"] };
+  respond = (request) =>
+    Response.json({
+      data: new URL(request.url).pathname === base ? approval : { ...policy, ...input },
+    });
+  await run(["closing", "policies", "grant", revisionId, await inputFile(input)]);
+  expect(requests.at(-1)?.body).toEqual(input);
+  respond = (request) =>
+    Response.json(new URL(request.url).pathname === base ? { data: approval } : { success: true });
+  await run(["closing", "tasks", "retry", revisionId, "refund", refund.request.operationId]);
+  expect(requests.at(-1)?.path).toBe(
+    `${base}/closing-tasks/refund/${refund.request.operationId}/retry`,
+  );
+});
+
+test("CLI rejects refund authority for executed outcomes before sending a grant", async () => {
+  await expect(
+    run([
+      "closing",
+      "policies",
+      "grant",
+      revisionId,
+      await inputFile({ ...policyInput, kind: "refund" }),
+    ]),
+  ).rejects.toThrow();
+  expect(requests.some((request) => request.method === "POST")).toBe(false);
+});
+
+test.each(["en", "zh"])("CLI refund policy and task lists name the kind in %s", async (lang) => {
+  respond = (request) => {
+    const path = new URL(request.url).pathname;
+    return Response.json({
+      data:
+        path === base
+          ? approval
+          : path.endsWith("/closing-policies")
+            ? [{ ...policy, kind: "refund", outcomes: ["cancelled"] }]
+            : {
+                enabled: true,
+                records: [
+                  {
+                    localSiteId: target,
+                    localOrgId: orgId,
+                    agreementRevisionId: revisionId,
+                    kind: "refund",
+                    referenceId: refund.request.operationId,
+                    policyId: policy.id,
+                    recordId: refund.refundId,
+                    state: "complete",
+                    nextAttemptAt: refund.issuedAt,
+                    completedAt: refund.issuedAt,
+                    lastError: null,
+                  },
+                ],
+              },
+    });
+  };
+  const label = lang === "zh" ? "退款" : "Refund";
+  expect(await run(["closing", "policies", "list", revisionId], orgId, lang)).toContain(label);
+  output.mockClear();
+  const text = await run(["closing", "tasks", "list", revisionId], orgId, lang);
+  expect(text).toContain(label);
+  expect(text).toContain(refund.refundId);
 });

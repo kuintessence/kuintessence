@@ -635,7 +635,7 @@ export function createFederationCommercialRoutes(
       `${path}/:kind/:referenceId/retry`,
       kqValidator(
         "param",
-        id.extend({ kind: z.enum(["bill", "settlement"]), referenceId: z.uuid() }),
+        id.extend({ kind: z.enum(["bill", "settlement", "refund"]), referenceId: z.uuid() }),
       ),
       kqValidator("json", z.strictObject({})),
       async (c) => {

@@ -140,6 +140,7 @@ beforeEach(async () => {
       return { data: { data: [], hasMore: false } };
     if (path.includes("/submissions?")) return { data: status };
     if (path.includes("/closing-policies?")) return { data: [] };
+    if (path.includes("/closing-tasks?")) return { data: { enabled: true, records: [] } };
     if (path.includes("?limit="))
       return {
         data: listed
@@ -751,6 +752,9 @@ test.each([
   await screen.findByText("No automatic approval authority granted");
   expect(!!screen.queryByRole("button", { name: "Authorize bills" })).toBe(bill);
   expect(!!screen.queryByRole("button", { name: "Authorize settlements" })).toBe(settlement);
+  expect(!!screen.queryByRole("button", { name: "Authorize cancellation refunds" })).toBe(
+    settlement,
+  );
 });
 
 test.each([
@@ -807,4 +811,50 @@ test.each([
   await screen.findByText("No approved refunds");
   expect(!!screen.queryByRole("button", { name: "Create refund" })).toBe(canSettle);
   expect(api.post).not.toHaveBeenCalled();
+});
+
+test("source closing history navigates to the original refund with its filter", async () => {
+  listed = true;
+  row.counterpartyJws = "peer.signature";
+  const refundId = "33333333-3333-4333-8333-333333333333";
+  const originalGet = vi.mocked(api.get).getMockImplementation();
+  if (!originalGet) throw new Error("Missing API fixture");
+  vi.mocked(api.get).mockImplementation(async (path, scope) =>
+    path.includes("/closing-tasks?")
+      ? {
+          data: {
+            enabled: true,
+            records: [
+              {
+                localSiteId: row.localSiteId,
+                localOrgId: orgId,
+                agreementRevisionId: revisionId,
+                kind: "refund",
+                referenceId: userId,
+                policyId: userId,
+                recordId: refundId,
+                state: "complete",
+                nextAttemptAt: terms.createdAt,
+                completedAt: terms.createdAt,
+                lastError: null,
+              },
+            ],
+          },
+        }
+      : originalGet(path, scope),
+  );
+  mount();
+  await openDetail();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Automatic approvals" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "View refund" }));
+  await waitFor(() =>
+    expect(api.get).toHaveBeenCalledWith(
+      `/federation/commercial-agreements/${revisionId}/refunds?limit=20&offset=0&recordId=${refundId}`,
+      scope,
+    ),
+  );
+  expect(screen.getByRole("tab", { name: "Refunds" }).getAttribute("aria-selected")).toBe("true");
 });

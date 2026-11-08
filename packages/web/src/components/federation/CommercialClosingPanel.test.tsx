@@ -284,15 +284,75 @@ test("review retries keep the original reference and independent kind authority"
   expect(screen.queryByRole("button", { name: "Retry processing" })).toBeNull();
 });
 
-test("unconfigured transport still shows history and source-side views do not claim ownership of tasks", async () => {
+test("unconfigured transport still shows original task history", async () => {
   enabled = false;
   tasks = [task];
-  const mounted = mount();
+  mount();
   await screen.findByText(/No sending transport/);
   expect(screen.getByRole("button", { name: "View bill" })).toBeTruthy();
-  mounted.rerender(mounted.view({ approval: { ...approval, localSiteId: source } }));
-  await screen.findByText(/The provider initiates approval/);
-  expect(screen.queryByRole("button", { name: "View bill" })).toBeNull();
+});
+
+test("source refund tasks open the original refund and retry the delegation reference", async () => {
+  tasks = [
+    {
+      ...task,
+      localSiteId: source,
+      kind: "refund",
+      state: "needs_review",
+      completedAt: null,
+      lastError: "POLICY_DENIED",
+    },
+  ];
+  mount({ approval: { ...approval, localSiteId: source } });
+  fireEvent.click(await screen.findByRole("button", { name: "View refund" }));
+  expect(onOpenRecord).toHaveBeenCalledWith("refund", settlementId);
+  fireEvent.click(screen.getByRole("button", { name: "Retry processing" }));
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" }));
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      `${base}/closing-tasks/refund/${billId}/retry`,
+      {},
+      scope,
+    ),
+  );
+});
+
+test("refund authority fixes preexecution cancellation and preserves exact limits after review", async () => {
+  mount();
+  const dialog = await draft("cancellation refunds");
+  expect(api.post).not.toHaveBeenCalled();
+  expect(screen.queryByLabelText("Completed")).toBeNull();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+  await screen.findByText("Active");
+  expect(api.post).toHaveBeenCalledWith(
+    `${base}/closing-policies`,
+    expect.objectContaining({
+      kind: "refund",
+      outcomes: ["cancelled"],
+      maxAmount: "9007199254740993",
+      maxTotalAmount: "9007199254740999",
+      maxRecords: 1,
+    }),
+    scope,
+  );
+});
+
+test("refund authority requires financial permission and is unavailable in coordinated mode", async () => {
+  const mounted = mount({ canSettle: false });
+  expect(screen.queryByRole("button", { name: "Authorize cancellation refunds" })).toBeNull();
+  mounted.rerender(
+    mounted.view({
+      canSettle: true,
+      approval: {
+        ...approval,
+        terms: {
+          ...approval.terms,
+          agreement: { ...approval.terms.agreement, mode: "ledger_coordinated" },
+        },
+      },
+    }),
+  );
+  expect(screen.queryByRole("button", { name: "Authorize cancellation refunds" })).toBeNull();
 });
 
 test("expired authority cannot silently renew; zero-value authority is not exhausted by amount alone", async () => {

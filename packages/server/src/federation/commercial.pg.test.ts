@@ -16,6 +16,8 @@ import {
   federationCancellations,
   federationCapabilities,
   federationCertificates,
+  federationClosingPolicies,
+  federationClosingTasks,
   federationCommercialApprovalSyncs,
   federationCommercialBills,
   federationCommercialRefunds,
@@ -125,6 +127,8 @@ import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
+import { FederationClosingAutomation } from "./closing-automation";
+import { FederationClosingPolicyService } from "./closing-policy";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { CommercialClient } from "./commercial-client";
@@ -145,7 +149,7 @@ import { FederationMarketService } from "./market";
 import type { MarketClient } from "./market-client";
 import { FederationMarketRequestService } from "./market-requests";
 import { FederationOutboundService } from "./outbound";
-import type { FederationSend } from "./outbound-client";
+import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
 import { FederationRefundService } from "./refund";
@@ -458,6 +462,12 @@ afterAll(async () => {
     await db
       .delete(federationCommercialRefunds)
       .where(inArray(federationCommercialRefunds.localSiteId, siteIds));
+    await db
+      .delete(federationClosingTasks)
+      .where(inArray(federationClosingTasks.localSiteId, siteIds));
+    await db
+      .delete(federationClosingPolicies)
+      .where(inArray(federationClosingPolicies.localSiteId, siteIds));
     await db.delete(contracts).where(inArray(contracts.localSiteId, siteIds));
     await db.delete(auditLog).where(eq(auditLog.orgId, f.actor.orgId));
     await db
@@ -10737,4 +10747,348 @@ test("terminal exchange builds its minute window from one observation", async ()
   } finally {
     clock.mockRestore();
   }
+});
+
+async function automaticRefundFixture(mode: FederationMode = "bilateral_direct", admitted = true) {
+  const f = await refundFixture(admitted, mode);
+  const sourcePolicies = new FederationClosingPolicyService(db, f.a.signing.siteId);
+  const providerPolicies = new FederationClosingPolicyService(db, f.b.signing.siteId);
+  const input = {
+    kind: "refund" as const,
+    outcomes: ["cancelled" as const],
+    maxAmount: f.request.maxAmount,
+    maxTotalAmount: f.request.maxAmount,
+    maxRecords: 1,
+    validUntil: new Date(Date.now() + 3600000).toISOString(),
+  };
+  const policy = await sourcePolicies.grant(f.actor, f.revisionId, input);
+  const fingerprint = randomBytes(32).toString("hex");
+  await db.insert(federationCertificates).values({
+    fingerprint,
+    siteId: f.a.signing.siteId,
+    certificatePem: "TLS registry fixture",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2099-01-01"),
+  });
+  const receiver = new FederationClosingAutomation(db, f.b.signing);
+  const transport: { loseReply: boolean; afterResponse?: () => Promise<void> } = {
+    loseReply: false,
+  };
+  const sender: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/commercial-closing");
+    const response = await receiver.receive(jws, fingerprint);
+    await transport.afterResponse?.();
+    if (transport.loseReply) throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+    return response;
+  };
+  const automation = new FederationClosingAutomation(db, f.a.signing, sender);
+  const task = async () => (await automation.list(f.actor, f.revisionId)).records[0];
+  const grants = () =>
+    Promise.all([
+      sourcePolicies.list(f.actor, f.revisionId),
+      providerPolicies.list(f.actor, f.revisionId),
+    ]);
+  return {
+    ...f,
+    sourcePolicies,
+    providerPolicies,
+    policy,
+    input,
+    automation,
+    receiver,
+    fingerprint,
+    transport,
+    sender,
+    task,
+    grants,
+    grantProvider: () => providerPolicies.grant(f.actor, f.revisionId, input),
+  };
+}
+
+test.each([
+  "bilateral_direct",
+  "bilateral_attested",
+] as const)("automatic refund %s requires independent authority and reuses exact signatures on retry", async (mode) => {
+  const f = await automaticRefundFixture(mode);
+  await f.automation.discover();
+  await f.automation.advanceNext();
+  const waiting = await f.task();
+  expect(waiting).toMatchObject({
+    kind: "refund",
+    referenceId: f.request.operationId,
+    state: "needs_review",
+    lastError: "POLICY_DENIED",
+  });
+  const first = (await f.source.list(f.actor, f.revisionId, 10, 0)).data[0];
+  expect(first?.authorizationPolicyId).toBe(f.policy.id);
+  expect(first?.appliedAt).toBeNull();
+  expect((await f.provider.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  const providerPolicy = await f.grantProvider();
+  f.transport.loseReply = true;
+  await f.automation.retry(f.actor, f.revisionId, "refund", f.request.operationId);
+  await f.automation.advanceNext();
+  expect(await f.task()).toMatchObject({ state: "pending", recordId: first?.refundId });
+  const peer = (await f.provider.list(f.actor, f.revisionId, 10, 0)).data[0];
+  expect(peer?.authorizationPolicyId).toBe(providerPolicy.id);
+  expect(peer?.appliedAt).toBeInstanceOf(Date);
+  const budget = await f.budget();
+  await f.providerPolicies.revoke(f.actor, f.revisionId, providerPolicy.id);
+  f.transport.loseReply = false;
+  await f.automation.retry(f.actor, f.revisionId, "refund", f.request.operationId);
+  await new FederationClosingAutomation(db, f.a.signing, f.sender).advanceNext();
+  expect(await f.task()).toMatchObject({ state: "complete", recordId: first?.refundId });
+  const final = (await f.source.list(f.actor, f.revisionId, 10, 0)).data[0];
+  expect(final?.payload).toEqual(first?.payload);
+  expect(final?.approvalJws).toBe(first?.approvalJws);
+  expect(final?.counterpartyJws).toBe(peer?.approvalJws);
+  expect(final?.appliedAt).toBeInstanceOf(Date);
+  expect(await f.budget()).toEqual(budget);
+  for (const rows of await f.grants())
+    expect(rows[0]).toMatchObject({ approvedRecords: 1, approvedAmount: f.request.maxAmount });
+  const ledgerRows = await db
+    .select()
+    .from(submissions)
+    .where(
+      and(
+        eq(submissions.localSiteId, f.b.signing.siteId),
+        sql`${submissions.input}->>'operation' = 'record-refund'`,
+      ),
+    );
+  expect(ledgerRows).toHaveLength(mode === "bilateral_attested" ? 1 : 0);
+  if (mode === "bilateral_attested") expect(ledgerRows[0]?.state).toBe("pending");
+});
+
+test("automatic refund allows cancellation before admission without crediting the provider", async () => {
+  const f = await automaticRefundFixture("bilateral_direct", false);
+  await f.grantProvider();
+  const budget = await f.budget();
+  await f.automation.discover();
+  await Promise.all([f.automation.advanceNext(), f.automation.advanceNext()]);
+  expect(await f.task()).toMatchObject({ state: "complete" });
+  expect(await f.budget()).toEqual(budget);
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data[0]?.appliedAt).toBeInstanceOf(
+    Date,
+  );
+  for (const rows of await f.grants()) expect(rows[0]?.approvedRecords).toBe(1);
+});
+
+test("automatic refund grant enforces financial permission, mode and preexecution outcome", async () => {
+  const f = await automaticRefundFixture();
+  await expect(
+    f.providerPolicies.grant(f.actor, f.revisionId, { ...f.input, outcomes: ["completed"] }),
+  ).rejects.toThrow();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "settlement.approve", enabled: false },
+    f.actor.userId,
+  );
+  await expect(f.grantProvider()).rejects.toThrow("POLICY_DENIED");
+  const coordinated = await fixture("ledger_coordinated", true, true);
+  await approveBoth(coordinated);
+  await new FederationPermissionService(db).set(
+    { ...coordinated.actor, capability: "settlement.approve", enabled: true },
+    coordinated.actor.userId,
+  );
+  await expect(
+    new FederationClosingPolicyService(db, coordinated.a.signing.siteId).grant(
+      coordinated.actor,
+      coordinated.revisionId,
+      {
+        ...f.input,
+        maxAmount: "1",
+        maxTotalAmount: "1",
+      },
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+});
+
+test("automatic refund institution authority survives personal role changes but needs current trust", async () => {
+  const f = await automaticRefundFixture();
+  await f.grantProvider();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "settlement.approve", enabled: false },
+    f.actor.userId,
+  );
+  await f.automation.discover();
+  await f.automation.advanceNext();
+  expect(await f.task()).toMatchObject({ state: "complete" });
+  const g = await automaticRefundFixture();
+  const [key] = await db
+    .select()
+    .from(federationSigningKeys)
+    .where(eq(federationSigningKeys.siteId, g.a.signing.siteId));
+  if (!key) throw new Error("Missing signing key");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: key.allowedKinds.filter((k) => k !== "commercial-refund") })
+    .where(eq(federationSigningKeys.siteId, g.a.signing.siteId));
+  await g.automation.discover();
+  await g.automation.advanceNext();
+  expect(await g.task()).toMatchObject({
+    state: "needs_review",
+    lastError: "UNTRUSTED_IDENTITY",
+    recordId: null,
+  });
+  expect((await g.grants())[0][0]?.approvedRecords).toBe(0);
+});
+
+test.each([
+  "amount",
+  "total",
+  "count",
+] as const)("automatic refund %s quota failure rolls back the signature and task original", async (limit) => {
+  const f = await automaticRefundFixture();
+  await db
+    .update(federationClosingPolicies)
+    .set(
+      limit === "amount"
+        ? { maxAmount: "0" }
+        : limit === "total"
+          ? { approvedAmount: f.input.maxTotalAmount }
+          : { approvedRecords: 1 },
+    )
+    .where(eq(federationClosingPolicies.id, f.policy.id));
+  const before = await f.grants();
+  await f.automation.discover();
+  await f.automation.advanceNext();
+  expect(await f.task()).toMatchObject({
+    state: "needs_review",
+    lastError: "BUDGET_EXHAUSTED",
+    recordId: null,
+  });
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  expect(await f.grants()).toEqual(before);
+});
+
+test("automatic refund rechecks cancellation and policy expiry before committing authority", async () => {
+  const f = await automaticRefundFixture();
+  await db
+    .update(federationOutbound)
+    .set({ cancelState: "pending" })
+    .where(eq(federationOutbound.operationId, f.request.operationId));
+  await expect(
+    f.source.automateDraft(f.policy.id, f.request.operationId, async () => {}),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationOutbound)
+    .set({ cancelState: "stopped" })
+    .where(eq(federationOutbound.operationId, f.request.operationId));
+  try {
+    await expect(
+      f.source.automateDraft(f.policy.id, f.request.operationId, async () => {
+        setSystemTime(new Date(f.policy.validUntil.getTime() + 1));
+      }),
+    ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  } finally {
+    setSystemTime();
+  }
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  expect((await f.grants())[0][0]).toMatchObject({ approvedAmount: "0", approvedRecords: 0 });
+});
+
+test("automatic refund preserves an existing human approval without consuming institution authority twice", async () => {
+  const f = await automaticRefundFixture();
+  const original = await f.source.approve(f.actor, f.revisionId, f.value);
+  await f.grantProvider();
+  await f.automation.discover();
+  await f.automation.advanceNext();
+  const saved = (await f.source.list(f.actor, f.revisionId, 10, 0)).data[0];
+  expect(saved?.approvalJws).toBe(original.approvalJws);
+  expect(saved?.authorizationPolicyId).toBeNull();
+  expect((await f.grants())[0][0]?.approvedRecords).toBe(0);
+  expect((await f.grants())[1][0]?.approvedRecords).toBe(1);
+});
+
+test("automatic refund fences a late response after the closing lease expires", async () => {
+  const f = await automaticRefundFixture();
+  await f.grantProvider();
+  f.transport.afterResponse = async () => {
+    await db
+      .update(federationClosingTasks)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(federationClosingTasks.localSiteId, f.a.signing.siteId));
+  };
+  await f.automation.discover();
+  await f.automation.advanceNext();
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data[0]?.appliedAt).toBeNull();
+  expect((await f.provider.list(f.actor, f.revisionId, 10, 0)).data[0]?.appliedAt).toBeInstanceOf(
+    Date,
+  );
+  f.transport.afterResponse = undefined;
+  await f.automation.retry(f.actor, f.revisionId, "refund", f.request.operationId);
+  await f.automation.advanceNext();
+  expect(await f.task()).toMatchObject({ state: "complete" });
+  for (const rows of await f.grants()) expect(rows[0]?.approvedRecords).toBe(1);
+});
+
+test("automatic refund task retains completion capacity until its original delivery drains", async () => {
+  const f = await refundCapacityFixture();
+  const policy = await new FederationClosingPolicyService(db, f.a.signing.siteId).grant(
+    f.actor,
+    f.revisionId,
+    {
+      kind: "refund",
+      outcomes: ["cancelled"],
+      maxAmount: f.request.maxAmount,
+      maxTotalAmount: f.request.maxAmount,
+      maxRecords: 1,
+      validUntil: new Date(Date.now() + 3600000).toISOString(),
+    },
+  );
+  await db.insert(federationClosingTasks).values({
+    localSiteId: f.a.signing.siteId,
+    localOrgId: f.actor.orgId,
+    agreementRevisionId: f.revisionId,
+    kind: "refund",
+    referenceId: f.request.operationId,
+    policyId: policy.id,
+    recordId: f.value.refundId,
+  });
+  await f.apply();
+  expect(await f.scan()).toMatchObject({
+    allocatedBytes: "60",
+    claim: { releaseBlocker: "closing" },
+  });
+  await db
+    .update(federationClosingTasks)
+    .set({ state: "complete", completedAt: new Date() })
+    .where(eq(federationClosingTasks.localSiteId, f.a.signing.siteId));
+  expect(await f.scan()).toMatchObject({ allocatedBytes: "0" });
+});
+
+test("automatic refund audit failure rolls back the original and policy consumption", async () => {
+  const f = await automaticRefundFixture();
+  await db.execute(
+    sql`alter table audit_log add constraint test_refund_policy_audit check (actor <> ${sql.raw(`'closing-policy:${f.policy.id}'`)})`,
+  );
+  try {
+    await expect(
+      f.source.automateDraft(f.policy.id, f.request.operationId, async () => {}),
+    ).rejects.toThrow();
+    expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+    expect((await f.grants())[0][0]).toMatchObject({ approvedRecords: 0, approvedAmount: "0" });
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_refund_policy_audit`);
+  }
+  await f.source.automateDraft(f.policy.id, f.request.operationId, async () => {});
+  expect((await f.grants())[0][0]).toMatchObject({
+    approvedRecords: 1,
+    approvedAmount: f.request.maxAmount,
+  });
+});
+
+test("automatic refund revoked authority cannot sign but explicit replacement can resume the task", async () => {
+  const f = await automaticRefundFixture();
+  await f.grantProvider();
+  await f.automation.discover();
+  await f.sourcePolicies.revoke(f.actor, f.revisionId, f.policy.id);
+  await f.automation.advanceNext();
+  expect(await f.task()).toMatchObject({ state: "needs_review", recordId: null });
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  const replacement = await f.sourcePolicies.grant(f.actor, f.revisionId, f.input);
+  await f.automation.retry(f.actor, f.revisionId, "refund", f.request.operationId);
+  await f.automation.advanceNext();
+  expect(await f.task()).toMatchObject({ state: "complete", policyId: replacement.id });
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data[0]?.authorizationPolicyId).toBe(
+    replacement.id,
+  );
 });

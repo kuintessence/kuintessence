@@ -118,3 +118,23 @@ kq federation --org "$ORG_ID" refunds list "$REVISION_ID" --record "$REFUND_ID"
 调整扩展新增 8 项 CLI 场景，原附签测试同步覆盖调整；整个 CLI 命令测试文件 27 项通过，覆盖精确净额、三模式状态、草稿字段变化、机构/原文身份和原签名附加。新增实际 CLI 子进程 → loopback HTTP → 生产调整路由 → 隔离 PostgreSQL 验证：草稿 53 → 60，独立权限/机构与机器身份拒绝、单方批准占额 7、双签后 spent 60、重复附签不重扣。测试身份仍由夹具注入，不等同正式登录或 PR 预览验收。
 
 退款扩展的 CLI 命令文件共 32 项通过，另有实际 CLI 子进程 → loopback HTTP → 生产路由 → 隔离 PostgreSQL 验证：生成不批准、原文/签名字节保留、全额归还、筛选缺失编号、重复附签不记账，以及机构切换/撤销权限拒绝。对端批准调用生产服务，取消事实来自签名数据库夹具；不等同真实多站点取消验收。
+
+
+## 机构退款预授权
+
+双方分别使用具有本机构 `settlement.approve` 的会话，复用 `federation closing policies grant <revision> <file>`。文件示例（到期时间须按实际授权填写）：
+
+```json
+{
+  "kind": "refund",
+  "outcomes": ["cancelled"],
+  "maxAmount": "100",
+  "maxTotalAmount": "1000",
+  "maxRecords": 10,
+  "validUntil": "2027-01-01T00:00:00Z"
+}
+```
+
+本政策仅允许直接/异步合作中“永久取消且从未创建执行工作流”的完整额度归还；原账单/结算授权不包含退款。Server 自动生成和交换原退款，无须调用 `refunds draft/approve/attach`。双方必须各自授予；旧版本须先应用迁移 0155 并升级，见[机构预授权](../deploy/federation/fabric-commercial.md#执行前退款的机构预授权)。
+
+`federation closing tasks list <revision>` 查看源方退款处理记录；修正权限或信任后，通过 `federation closing tasks retry <revision> refund <operationId>` 重试未完成原任务。列表中的 recordId 是 refundId，可交给 `federation refunds list <revision> --record <refundId>` 查询。撤销通过原 `closing policies revoke`；撤销不使已签原件失效，也不再次退额。`--json` 保留授权编号和精确金额。

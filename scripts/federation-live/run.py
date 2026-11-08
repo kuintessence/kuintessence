@@ -16,8 +16,10 @@ assert mode in ("bilateral_direct", "bilateral_attested", "ledger_coordinated")
 coordinated = mode == "ledger_coordinated"
 attested = mode == "bilateral_attested"
 scenario = os.environ.get("LAB_SCENARIO", "success")
-assert scenario != "refund" if coordinated else scenario in ("success", "refund")
-assert scenario in ("success", "outage", "stop", "workflow", "refund")
+refund_scenario = scenario in ("refund", "refund-auto")
+automatic_refund = scenario == "refund-auto"
+assert not refund_scenario if coordinated else scenario in ("success", "refund", "refund-auto")
+assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto")
 nodeinfo = json.loads(
     subprocess.check_output(["kubectl", "get", "nodes", "-o", "json"], timeout=15)
 )["items"]
@@ -1023,6 +1025,15 @@ def verify_refund():
     operation = request["operationId"]
     path = "federation/commercial-agreements/" + request["agreementRevisionId"] + "/refunds"
     parties = (("provider", api, token), ("source", sourceapi, sourcetoken))
+    grants = {}
+    closing_path = "federation/commercial-agreements/" + request["agreementRevisionId"]
+    if automatic_refund:
+        for name, read, auth in parties:
+            grants[name] = read(closing_path + "/closing-policies", {
+                "kind": "refund", "outcomes": ["cancelled"],
+                "maxAmount": request["maxAmount"], "maxTotalAmount": request["maxAmount"],
+                "maxRecords": 1, "validUntil": (datetime.now().astimezone() + timedelta(hours=1)).isoformat(),
+            }, auth)["data"]
     # Withhold the source material endpoint, not source admission prerequisites.
     assert sourcegateway.poll() is None
     sourcegateway.terminate()
@@ -1061,38 +1072,79 @@ def verify_refund():
     sourcegateway = subprocess.Popen(
         ["node", str(root / "gateway.mjs")], cwd=repo, env=sourcegatewayenv, stdout=sourcelog, stderr=sourcelog,
     )
-    draft = sourceapi(path + "/draft", {"operationId": operation, "refundId": str(uuid.uuid4()), "reason": "Cancelled while waiting for input"}, sourcetoken)["data"]
-    assert draft["request"] == request and draft["releasedAmount"] == request["maxAmount"]
-    assert draft["cancellationReceiptJws"]
-    approvals = {"source": sourceapi(path + "/approve", draft, sourcetoken)["data"]}
-    assert approvals["source"]["appliedAt"] is None
-    assert not api(path, token=token)["data"]["data"], "Exchange must not invent provider approval"
-    approvals["provider"] = api(path + "/approve", draft, token)["data"]
-    records = {}
-    for _ in range(90):
+    if automatic_refund:
+        records = {}
+        for _ in range(90):
+            for name, read, auth in parties:
+                rows = read(path, token=auth)["data"]["data"]
+                assert len(rows) <= 1
+                if rows:
+                    records[name] = rows[0]
+            if len(records) == 2 and all(row["appliedAt"] for row in records.values()):
+                break
+            time.sleep(2)
+        else:
+            raise AssertionError("Independent refund policies did not complete automatically")
+        draft = records["source"]["payload"]
+        for _ in range(30):
+            tasks = sourceapi(closing_path + "/closing-tasks", token=sourcetoken)["data"]["records"]
+            if len(tasks) == 1 and tasks[0]["state"] == "complete":
+                break
+            time.sleep(2)
+        else:
+            raise AssertionError("Automatic refund task did not drain")
+        assert tasks[0]["referenceId"] == operation and tasks[0]["recordId"] == draft["refundId"]
         for name, read, auth in parties:
-            rows = read(path + "?recordId=" + draft["refundId"], token=auth)["data"]["data"]
-            assert len(rows) == 1
-            records[name] = rows[0]
-            assert rows[0]["payload"] == draft and rows[0]["approvalJws"] == approvals[name]["approvalJws"]
-        if all(row["appliedAt"] for row in records.values()):
-            break
-        time.sleep(2)
-    else:
-        raise AssertionError("Refund original signatures did not exchange automatically")
-    for name, read, auth in parties:
-        record = records[name]
-        assert record["counterpartyJws"] == approvals["source" if name == "provider" else "provider"]["approvalJws"]
-        assert record["ledger"]["state"] == "pending" if attested and name == "provider" else record["ledger"] is None
-        replay = read(path + "/approve", draft, auth)["data"]
-        assert replay == {key: value for key, value in record.items() if key != "ledger"}
-        assert read(path + "/" + draft["refundId"] + "/counterparty", {"approvalJws": record["counterpartyJws"]}, auth)["data"] == replay
+            assert records[name]["authorizationPolicyId"] == grants[name]["id"]
+            policies = read(closing_path + "/closing-policies", token=auth)["data"]
+            assert len(policies) == 1 and policies[0]["approvedRecords"] == 1
+            assert policies[0]["approvedAmount"] == request["maxAmount"]
+            read(closing_path + "/closing-policies/" + grants[name]["id"] + "/revoke", {}, auth)
+        # Retrying an already completed task cannot issue another refund, even after revocation.
         try:
-            read(path + "/approve", {**draft, "refundId": str(uuid.uuid4())}, auth)
+            sourceapi(closing_path + "/closing-tasks/refund/" + operation + "/retry", {}, sourcetoken)
         except urllib.error.HTTPError as error:
             assert error.code == 409 and json.load(error)["error"]["code"] == "OPERATION_CONFLICT"
         else:
-            raise AssertionError("Replacement refund ID returned the same reservation twice")
+            raise AssertionError("Completed refund task accepted a retry")
+        for name, read, auth in parties:
+            assert read(path, token=auth)["data"]["data"] == [records[name]]
+        (logs / "refund-automatic-policies.json").write_text(json.dumps({"policies": grants, "tasks": tasks}, indent=2) + "\n")
+    else:
+        draft = sourceapi(path + "/draft", {"operationId": operation, "refundId": str(uuid.uuid4()), "reason": "Cancelled while waiting for input"}, sourcetoken)["data"]
+        approvals = {"source": sourceapi(path + "/approve", draft, sourcetoken)["data"]}
+        assert approvals["source"]["appliedAt"] is None
+        assert not api(path, token=token)["data"]["data"], "Exchange must not invent provider approval"
+        approvals["provider"] = api(path + "/approve", draft, token)["data"]
+        records = {}
+        for _ in range(90):
+            for name, read, auth in parties:
+                rows = read(path + "?recordId=" + draft["refundId"], token=auth)["data"]["data"]
+                assert len(rows) == 1
+                records[name] = rows[0]
+                assert rows[0]["payload"] == draft and rows[0]["approvalJws"] == approvals[name]["approvalJws"]
+            if all(row["appliedAt"] for row in records.values()):
+                break
+            time.sleep(2)
+        else:
+            raise AssertionError("Refund original signatures did not exchange automatically")
+    assert draft["request"] == request and draft["releasedAmount"] == request["maxAmount"]
+    assert draft["cancellationReceiptJws"]
+    for name, read, auth in parties:
+        record = records[name]
+        assert record["payload"] == draft
+        assert record["counterpartyJws"] == records["source" if name == "provider" else "provider"]["approvalJws"]
+        assert record["ledger"]["state"] == "pending" if attested and name == "provider" else record["ledger"] is None
+        if not automatic_refund:
+            replay = read(path + "/approve", draft, auth)["data"]
+            assert replay == {key: value for key, value in record.items() if key != "ledger"}
+            assert read(path + "/" + draft["refundId"] + "/counterparty", {"approvalJws": record["counterpartyJws"]}, auth)["data"] == replay
+            try:
+                read(path + "/approve", {**draft, "refundId": str(uuid.uuid4())}, auth)
+            except urllib.error.HTTPError as error:
+                assert error.code == 409 and json.load(error)["error"]["code"] == "OPERATION_CONFLICT"
+            else:
+                raise AssertionError("Replacement refund ID returned the same reservation twice")
     inspect_ledgers("refund-applied")
     for name, _, _ in parties:
         local = json.loads((logs / (name + "-refund-applied.json")).read_text())
@@ -1108,7 +1160,7 @@ def verify_refund():
         else:
             assert not local["budgets"] and tasks[0]["adjustmentHeldAmount"] == "0"
     (logs / "refund-evidence.json").write_text(json.dumps({"draft": draft, "cancellation": cancelled["cancellation"], "records": records}, indent=2) + "\n")
-    print("REAL BILATERAL REFUND PASSED: material waiting -> permanent cancellation over mTLS -> independent approvals -> automatic original signatures; reservation returned exactly once; replay safe; no Workflow or Jobs; " + ("Orderer remains stopped" if attested else "no ledger configured"), flush=True)
+    print(("REAL AUTOMATIC REFUND PASSED: " if automatic_refund else "REAL BILATERAL REFUND PASSED: ") + " material waiting -> permanent cancellation over mTLS -> independent approvals -> automatic original signatures; reservation returned exactly once; replay safe; no Workflow or Jobs; " + ("Orderer remains stopped" if attested else "no ledger configured"), flush=True)
 
 
 def verify_attested_recovery():
@@ -1118,7 +1170,7 @@ def verify_attested_recovery():
         offline = {name: json.loads((logs / (name + "-attested-offline.json")).read_text()) for name in ("source", "provider")}
         provider = offline["provider"]
         assert len(provider["attestationOutbox"]) == 2
-        assert len(provider["commercial"]) == (2 if scenario == "refund" else 6) and len(offline["source"]["commercial"]) == 1
+        assert len(provider["commercial"]) == (2 if refund_scenario else 6) and len(offline["source"]["commercial"]) == 1
         for state in offline.values():
             assert all(row["state"] == "pending" for row in state["commercial"])
             assert all(row["state"] == "pending" for row in state["evidenceBatches"])
@@ -1134,7 +1186,7 @@ def verify_attested_recovery():
     assert view["enabled"] and view["batches"] and all(row["state"] == "pending" for row in view["batches"])
     (logs / "attested-offline-api.json").write_text(json.dumps(view, indent=2) + "\n")
     print("REAL ATTESTED OFFLINE PASSED: " + scenario + " finished locally while Orderer stopped; original commercial and admission evidence remains pending", flush=True)
-    if scenario == "refund":
+    if refund_scenario:
         recovery = restart_commercial_servers()
         (logs / "refund-crash-recovery.json").write_text(json.dumps(recovery, indent=2) + "\n")
     orderer("start")
@@ -2371,7 +2423,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
 
     inspect_ledgers("before")
 
-    if scenario == "refund":
+    if refund_scenario:
         verify_refund()
         if attested:
             verify_attested_recovery()

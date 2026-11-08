@@ -90,6 +90,8 @@ export class FederationClosingPolicyService {
       );
       const contract = await this.contract(tx, actor.orgId, revisionId);
       const terms = CommercialAgreementSchema.parse(contract.terms);
+      if (input.kind === "refund" && terms.agreement.mode === "ledger_coordinated")
+        throw new FederationError("POLICY_DENIED");
       const now = new Date(),
         validUntil = new Date(input.validUntil);
       if (validUntil <= now) throw new FederationError("AUTHORIZATION_EXPIRED");
@@ -198,7 +200,11 @@ export class FederationClosingPolicyService {
   async consume(tx: PgTransaction, policy: Policy, amount: string, request: FederationDelegation) {
     assertClosingPolicyActive(policy);
     let outcome: string | undefined;
-    if (request.recipientSiteId === this.siteId) {
+    if (policy.kind === "refund") {
+      // RefundService proves permanent pre-execution cancellation under the same transaction locks.
+      if (request.mode === "ledger_coordinated") throw new FederationError("POLICY_DENIED");
+      outcome = "cancelled";
+    } else if (request.recipientSiteId === this.siteId) {
       const [row] = await tx
         .select({ request: bindings.snapshot, status: workflowRuns.status })
         .from(reservations)

@@ -600,11 +600,13 @@
       "tasks": "Processing history",
       "kind": {
         "bill": "Bill",
-        "settlement": "Settlement"
+        "settlement": "Settlement",
+        "refund": "Refund"
       },
       "grant": {
         "bill": "Authorize bills",
-        "settlement": "Authorize settlements"
+        "settlement": "Authorize settlements",
+        "refund": "Authorize cancellation refunds"
       },
       "maxAmount": "Per-record limit",
       "maxTotalAmount": "Cumulative limit",
@@ -636,11 +638,11 @@
       },
       "open": {
         "bill": "View bill",
-        "settlement": "View settlement"
+        "settlement": "View settlement",
+        "refund": "View refund"
       },
       "noPolicies": "No automatic approval authority granted",
       "noTasks": "No processing records",
-      "sourceTasks": "The provider initiates approval. View signatures and accounting in Bills and Settlements.",
       "transportOff": "No sending transport is configured on this site. Automatic processing is disabled.",
       "contractLimits": "Unit: {{unit}} · Contract per-task limit: {{task}} · Contract budget: {{total}}",
       "invalid": "Enter nonnegative integer amounts, 1–100000 approvals, a future expiry and at least one outcome. The cumulative limit must cover the per-record limit and stay within the contract budget.",
@@ -650,19 +652,20 @@
       "nextAttempt": "Next attempt: {{time}}",
       "effect": {
         "grant": "Authority belongs to this institution and survives staff permission changes. Each party must authorize independently. Coordinated settlement waits for VALID before accounting; it does not make a bank payment.",
-        "revoke": "Stops new approvals under this authority. Existing signatures and original settlements remain. Revoke the old authority before granting a replacement.",
-        "retry": "Retries the original task without replacing existing bills, settlements or signatures. Resolve missing evidence or authority first."
+        "revoke": "Stops new approvals under this authority. Existing signatures and signed originals remain. Revoke the old authority before granting a replacement.",
+        "retry": "Retry the original task. Existing bills, settlements, refunds and signatures remain unchanged. Resolve evidence or authorization issues first."
       },
       "errors": {
-        "DATA_WAITING": "Waiting for remote usage or terminal evidence",
+        "DATA_WAITING": "Waiting for usage, terminal or cancellation evidence",
         "POLICY_DENIED": "Check both parties’ authority and limits before retrying",
         "AUTHORIZATION_EXPIRED": "Authority expired; review or replace it",
         "DELIVERY_UNAVAILABLE": "Peer unavailable; processing will retry",
         "DELIVERY_REJECTED": "Peer rejected processing; check its authority and evidence",
         "DATABASE_BUSY": "Database busy; processing will retry",
-        "OPERATION_CONFLICT": "Original records conflict or a discount exists; review the bill",
+        "OPERATION_CONFLICT": "Original records conflict or a discount exists; review the original record",
         "UNTRUSTED_IDENTITY": "Institution, certificate or signing trust unavailable"
-      }
+      },
+      "preExecutionCancellation": "Only permanently cancelled tasks that never started execution"
     },
     "adjustment": {
       "title": "Adjustments",

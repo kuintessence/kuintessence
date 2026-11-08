@@ -1086,6 +1086,13 @@
       "when": 1794130487909,
       "tag": "0154_rainy_masked_marvel",
       "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1794135569438,
+      "tag": "0155_blue_hitman",
+      "breakpoints": true
     }
   ]
 }

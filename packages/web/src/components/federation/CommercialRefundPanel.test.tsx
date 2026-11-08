@@ -115,6 +115,7 @@ const saved = {
   approvalJws: "refund.local.signature",
   counterpartyJws: null,
   approvedBy: userId,
+  authorizationPolicyId: null,
   appliedAt: null,
   createdAt: refund.issuedAt,
 };
@@ -338,4 +339,12 @@ test("retrying evidence only targets the original submission and does not approv
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(api.post).toHaveBeenCalledTimes(1);
   expect(api.post).toHaveBeenCalledWith(`${base}/submissions/${refundId}/retry`, {}, scope);
+});
+
+test("automatic refund shows its original institution authority", async () => {
+  first().authorizationPolicyId = "33333333-3333-4333-8333-333333333333";
+  mount({ recordId: refundId });
+  expect(
+    await screen.findByText("33333333-3333-4333-8333-333333333333", { exact: true }),
+  ).toBeTruthy();
 });
