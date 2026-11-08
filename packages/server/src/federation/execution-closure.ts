@@ -166,7 +166,11 @@ export async function enqueueExecutionClosure(
 }
 
 /** A VALID bilateral release proves the private gate can never authorize activation. */
-export async function releaseClosure(tx: PgTransaction, siteId: string, releaseId: string) {
+export async function committedExecutionRelease(
+  tx: PgTransaction,
+  siteId: string,
+  releaseId: string,
+) {
   const [row] = await tx
     .select()
     .from(submissions)
@@ -207,21 +211,23 @@ export async function releaseClosure(tx: PgTransaction, siteId: string, releaseI
     `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
   if (
     input.operation !== "release-execution" ||
-    payload.sourceSiteId !== siteId ||
+    ![payload.sourceSiteId, payload.targetSiteId].includes(siteId) ||
     payload.releaseId !== releaseId ||
     input.domainId !== payload.domainId ||
     input.digest !== release.digest ||
     wireDigest(payload) !== release.digest ||
-    input.envelope.sourceSiteId !== siteId ||
+    input.envelope.sourceSiteId !== payload.sourceSiteId ||
     input.envelope.targetSiteId !== payload.targetSiteId ||
-    input.envelope.sourceJws !== release.approvalJws ||
-    input.envelope.targetJws !== release.counterpartyJws ||
+    input.envelope.sourceJws !==
+      (payload.sourceSiteId === siteId ? release.approvalJws : release.counterpartyJws) ||
+    input.envelope.targetJws !==
+      (payload.sourceSiteId === siteId ? release.counterpartyJws : release.approvalJws) ||
     payload.reservationId !== reserve.reservationId ||
     payload.reservationDigest !== original.digest ||
     wireDigest(reserve) !== original.digest ||
     reserve.domainId !== payload.domainId ||
     reserve.request.mode !== "ledger_coordinated" ||
-    reserve.request.senderSiteId !== siteId ||
+    reserve.request.senderSiteId !== payload.sourceSiteId ||
     reserve.request.recipientSiteId !== payload.targetSiteId ||
     reserve.request.agreementRevisionId !== row.agreementRevisionId ||
     release.agreementRevisionId !== row.agreementRevisionId ||
@@ -230,6 +236,12 @@ export async function releaseClosure(tx: PgTransaction, siteId: string, releaseI
     payload.expectedGateVersion !== 1
   )
     throw new FederationError("OPERATION_CONFLICT");
+  return { original, release, reserve };
+}
+
+export async function releaseClosure(tx: PgTransaction, siteId: string, releaseId: string) {
+  const { original, release, reserve } = await committedExecutionRelease(tx, siteId, releaseId);
+  if (reserve.request.senderSiteId !== siteId) throw new FederationError("POLICY_DENIED");
   return {
     localOrgId: original.localOrgId,
     requestedBy: release.approvedBy,

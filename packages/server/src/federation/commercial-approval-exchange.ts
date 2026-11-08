@@ -329,160 +329,168 @@ export class FederationCommercialApprovalExchange {
 
   async discover() {
     if (!this.send) return;
-    const agreements = await this.db
-      .select({
-        localSiteId: contracts.localSiteId,
-        agreementRevisionId: contracts.revisionId,
-        recordId: contracts.revisionId,
-      })
-      .from(contracts)
-      .leftJoin(
-        syncs,
-        and(
-          eq(syncs.localSiteId, contracts.localSiteId),
-          eq(syncs.recordKind, "agreement"),
-          eq(syncs.recordId, contracts.revisionId),
-        ),
-      )
-      .where(
-        and(
-          eq(contracts.localSiteId, this.signing.siteId),
-          isNull(contracts.counterpartyJws),
-          isNull(syncs.recordId),
-        ),
-      )
-      .orderBy(asc(contracts.revisionId))
-      .limit(8);
-    if (agreements.length)
-      await this.db
-        .insert(syncs)
-        .values(agreements.map((v) => ({ ...v, recordKind: "agreement" as const })))
-        .onConflictDoNothing();
-    const billing = await this.db
-      .select({
-        localSiteId: bills.localSiteId,
-        agreementRevisionId: bills.agreementRevisionId,
-        recordId: bills.billId,
-      })
-      .from(bills)
-      .leftJoin(
-        syncs,
-        and(
-          eq(syncs.localSiteId, bills.localSiteId),
-          eq(syncs.recordKind, "bill"),
-          eq(syncs.recordId, bills.billId),
-        ),
-      )
-      .where(
-        and(
-          eq(bills.localSiteId, this.signing.siteId),
-          isNull(bills.counterpartyJws),
-          isNull(syncs.recordId),
-        ),
-      )
-      .orderBy(asc(bills.billId))
-      .limit(8);
-    if (billing.length)
-      await this.db
-        .insert(syncs)
-        .values(billing.map((v) => ({ ...v, recordKind: "bill" as const })))
-        .onConflictDoNothing();
-    const pendingSettlements = await this.db
-      .select({
-        localSiteId: settlements.localSiteId,
-        agreementRevisionId: settlements.agreementRevisionId,
-        recordId: settlements.settlementId,
-      })
-      .from(settlements)
-      .leftJoin(
-        syncs,
-        and(
-          eq(syncs.localSiteId, settlements.localSiteId),
-          eq(syncs.recordKind, "settlement"),
-          eq(syncs.recordId, settlements.settlementId),
-        ),
-      )
-      .where(
-        and(
-          eq(settlements.localSiteId, this.signing.siteId),
-          isNull(settlements.counterpartyJws),
-          isNull(syncs.recordId),
-        ),
-      )
-      .orderBy(asc(settlements.settlementId))
-      .limit(8);
-    if (pendingSettlements.length)
-      await this.db
-        .insert(syncs)
-        .values(pendingSettlements.map((v) => ({ ...v, recordKind: "settlement" as const })))
-        .onConflictDoNothing();
-    const pendingAdjustments = await this.db
-      .select({
-        localSiteId: adjustments.localSiteId,
-        agreementRevisionId: adjustments.agreementRevisionId,
-        recordId: adjustments.adjustmentId,
-      })
-      .from(adjustments)
-      .leftJoin(
-        syncs,
-        and(
-          eq(syncs.localSiteId, adjustments.localSiteId),
-          eq(syncs.recordKind, "adjustment"),
-          eq(syncs.recordId, adjustments.adjustmentId),
-        ),
-      )
-      .where(
-        and(
-          eq(adjustments.localSiteId, this.signing.siteId),
-          isNull(adjustments.counterpartyJws),
-          isNull(syncs.recordId),
-        ),
-      )
-      .orderBy(asc(adjustments.adjustmentId))
-      .limit(8);
-    if (pendingAdjustments.length)
-      await this.db
-        .insert(syncs)
-        .values(pendingAdjustments.map((v) => ({ ...v, recordKind: "adjustment" as const })))
-        .onConflictDoNothing();
-    const executions = await this.db
-      .select({
-        localSiteId: approvals.localSiteId,
-        agreementRevisionId: approvals.agreementRevisionId,
-        recordId: approvals.recordId,
-        payload: approvals.payload,
-      })
-      .from(approvals)
-      .leftJoin(
-        syncs,
-        and(
-          eq(syncs.localSiteId, approvals.localSiteId),
-          eq(syncs.recordId, approvals.recordId),
-          sql`'commercial-' || ${syncs.recordKind} = ${approvals.payload}->>'kind'`,
-        ),
-      )
-      .where(
-        and(
-          eq(approvals.localSiteId, this.signing.siteId),
-          isNull(approvals.counterpartyJws),
-          isNull(syncs.recordId),
-        ),
-      )
-      .orderBy(asc(approvals.recordId))
-      .limit(8);
-    if (executions.length)
-      await this.db
-        .insert(syncs)
-        .values(
-          executions.map(({ payload, ...v }) => ({
-            ...v,
-            recordKind:
-              payload.kind === "commercial-reservation"
-                ? ("reservation" as const)
-                : ("release" as const),
-          })),
+    // Serialize discovery with countersignature attachment so no stale queue appears after closure.
+    await this.db.transaction(async (tx) => {
+      const agreements = await tx
+        .select({
+          localSiteId: contracts.localSiteId,
+          agreementRevisionId: contracts.revisionId,
+          recordId: contracts.revisionId,
+        })
+        .from(contracts)
+        .leftJoin(
+          syncs,
+          and(
+            eq(syncs.localSiteId, contracts.localSiteId),
+            eq(syncs.recordKind, "agreement"),
+            eq(syncs.recordId, contracts.revisionId),
+          ),
         )
-        .onConflictDoNothing();
+        .where(
+          and(
+            eq(contracts.localSiteId, this.signing.siteId),
+            isNull(contracts.counterpartyJws),
+            isNull(syncs.recordId),
+          ),
+        )
+        .orderBy(asc(contracts.revisionId))
+        .limit(8)
+        .for("update", { of: contracts, skipLocked: true });
+      if (agreements.length)
+        await tx
+          .insert(syncs)
+          .values(agreements.map((v) => ({ ...v, recordKind: "agreement" as const })))
+          .onConflictDoNothing();
+      const billing = await tx
+        .select({
+          localSiteId: bills.localSiteId,
+          agreementRevisionId: bills.agreementRevisionId,
+          recordId: bills.billId,
+        })
+        .from(bills)
+        .leftJoin(
+          syncs,
+          and(
+            eq(syncs.localSiteId, bills.localSiteId),
+            eq(syncs.recordKind, "bill"),
+            eq(syncs.recordId, bills.billId),
+          ),
+        )
+        .where(
+          and(
+            eq(bills.localSiteId, this.signing.siteId),
+            isNull(bills.counterpartyJws),
+            isNull(syncs.recordId),
+          ),
+        )
+        .orderBy(asc(bills.billId))
+        .limit(8)
+        .for("update", { of: bills, skipLocked: true });
+      if (billing.length)
+        await tx
+          .insert(syncs)
+          .values(billing.map((v) => ({ ...v, recordKind: "bill" as const })))
+          .onConflictDoNothing();
+      const pendingSettlements = await tx
+        .select({
+          localSiteId: settlements.localSiteId,
+          agreementRevisionId: settlements.agreementRevisionId,
+          recordId: settlements.settlementId,
+        })
+        .from(settlements)
+        .leftJoin(
+          syncs,
+          and(
+            eq(syncs.localSiteId, settlements.localSiteId),
+            eq(syncs.recordKind, "settlement"),
+            eq(syncs.recordId, settlements.settlementId),
+          ),
+        )
+        .where(
+          and(
+            eq(settlements.localSiteId, this.signing.siteId),
+            isNull(settlements.counterpartyJws),
+            isNull(syncs.recordId),
+          ),
+        )
+        .orderBy(asc(settlements.settlementId))
+        .limit(8)
+        .for("update", { of: settlements, skipLocked: true });
+      if (pendingSettlements.length)
+        await tx
+          .insert(syncs)
+          .values(pendingSettlements.map((v) => ({ ...v, recordKind: "settlement" as const })))
+          .onConflictDoNothing();
+      const pendingAdjustments = await tx
+        .select({
+          localSiteId: adjustments.localSiteId,
+          agreementRevisionId: adjustments.agreementRevisionId,
+          recordId: adjustments.adjustmentId,
+        })
+        .from(adjustments)
+        .leftJoin(
+          syncs,
+          and(
+            eq(syncs.localSiteId, adjustments.localSiteId),
+            eq(syncs.recordKind, "adjustment"),
+            eq(syncs.recordId, adjustments.adjustmentId),
+          ),
+        )
+        .where(
+          and(
+            eq(adjustments.localSiteId, this.signing.siteId),
+            isNull(adjustments.counterpartyJws),
+            isNull(syncs.recordId),
+          ),
+        )
+        .orderBy(asc(adjustments.adjustmentId))
+        .limit(8)
+        .for("update", { of: adjustments, skipLocked: true });
+      if (pendingAdjustments.length)
+        await tx
+          .insert(syncs)
+          .values(pendingAdjustments.map((v) => ({ ...v, recordKind: "adjustment" as const })))
+          .onConflictDoNothing();
+      const executions = await tx
+        .select({
+          localSiteId: approvals.localSiteId,
+          agreementRevisionId: approvals.agreementRevisionId,
+          recordId: approvals.recordId,
+          payload: approvals.payload,
+        })
+        .from(approvals)
+        .leftJoin(
+          syncs,
+          and(
+            eq(syncs.localSiteId, approvals.localSiteId),
+            eq(syncs.recordId, approvals.recordId),
+            sql`'commercial-' || ${syncs.recordKind} = ${approvals.payload}->>'kind'`,
+          ),
+        )
+        .where(
+          and(
+            eq(approvals.localSiteId, this.signing.siteId),
+            isNull(approvals.counterpartyJws),
+            isNull(syncs.recordId),
+          ),
+        )
+        .orderBy(asc(approvals.recordId))
+        .limit(8)
+        .for("update", { of: approvals, skipLocked: true });
+      if (executions.length)
+        await tx
+          .insert(syncs)
+          .values(
+            executions.map(({ payload, ...v }) => ({
+              ...v,
+              recordKind:
+                payload.kind === "commercial-reservation"
+                  ? ("reservation" as const)
+                  : ("release" as const),
+            })),
+          )
+          .onConflictDoNothing();
+    });
   }
 
   private async lock(tx: PgTransaction, claim: Sync) {

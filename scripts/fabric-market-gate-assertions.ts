@@ -31,6 +31,7 @@ export async function verifyExecutionGateNetwork(
       join(root, "network.json"),
       result,
       ...(preexecution ? ["--preexecution-closure"] : []),
+      ...(process.argv.includes("--database") ? ["--database"] : []),
     ],
     {
       stdout: "pipe",
@@ -57,10 +58,12 @@ export async function verifyExecutionGateNetwork(
         controls,
         (message) => report.passed.push(message),
       );
-      await verifyAdapterRecovery(root, controls, ["authorize", "stop", "terminal", "close"]);
-      report.passed.push(
-        "production execution confirmation, stop, private terminal and public closure recover their original VALID transactions after Orderer outage and process exit",
-      );
+      if (!preexecution) {
+        await verifyAdapterRecovery(root, controls, ["authorize", "stop", "terminal", "close"]);
+        report.passed.push(
+          "production execution confirmation, stop, private terminal and public closure recover their original VALID transactions after Orderer outage and process exit",
+        );
+      }
     } else if (!preexecution) {
       await verifyAdapterRecovery(root, controls);
       report.passed.push(

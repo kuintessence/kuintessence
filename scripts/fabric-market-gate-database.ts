@@ -5,6 +5,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
   federationCommercialSubmissions as commercialSubmissions,
+  federationCompletionClaims as completionClaims,
   createPgDb,
   federationMarketAttempts as marketAttempts,
   federationMarketSubmissions as marketSubmissions,
@@ -35,12 +36,14 @@ import { FederationCommercialAgreementService } from "../packages/server/src/fed
 import { UnixCommercialClient } from "../packages/server/src/federation/commercial-client";
 import { FederationCommercialExecutionService } from "../packages/server/src/federation/commercial-execution";
 import { FederationCommercialSubmissionService } from "../packages/server/src/federation/commercial-submissions";
+import { FederationCompletionCapacity } from "../packages/server/src/federation/completion-capacity";
 import { FederationExecutionConfirmationService } from "../packages/server/src/federation/execution-confirmation";
 import { FabricClientFailure } from "../packages/server/src/federation/fabric-client";
 import { FederationMarketService } from "../packages/server/src/federation/market";
 import { UnixMarketClient } from "../packages/server/src/federation/market-client";
 import { FederationPermissionService } from "../packages/server/src/federation/permissions";
 import { signFederationMessage } from "../packages/server/src/federation/signatures";
+import { testCompletionStorage } from "../packages/server/src/federation/test-fixtures";
 import { FederationTrustRegistry } from "../packages/server/src/federation/trust-registry";
 import { Site } from "./fabric-evidence-fixture";
 import { databaseUrlWithName, unitDatabaseName } from "./test-unit";
@@ -120,19 +123,24 @@ export async function verifyGateDatabase(
     const entry = join(root, "gate-db-adapter.mjs");
     await writeFile(entry, await build.outputs[0].text(), { mode: 0o600 });
     await writeFile(join(root, "gate-db-recovery.key"), randomBytes(32), { mode: 0o600 });
-    for (const kind of ["commercial", "market"] as const) {
+    for (const [kind, site, suffix] of [
+      ["commercial", siteA, "commercial"],
+      ["market", siteA, "market"],
+      ["commercial", siteB, "provider-commercial"],
+    ] as const) {
       const user = kind === "market" ? "User2" : "User1";
-      const msp = join(dirname(dirname(siteA.userMsp)), `${user}@a.kq.test`, "msp");
+      const userDomain = `${user}@${site.name.toLowerCase()}.kq.test`;
+      const msp = join(dirname(dirname(site.userMsp)), userDomain, "msp");
       const keys = await readdir(join(msp, "keystore"));
       assert(keys.length === 1 && keys[0]);
-      const runDirectory = join(root, `gate-db-${kind}`);
+      const runDirectory = join(root, `gate-db-${suffix}`);
       await mkdir(runDirectory, { recursive: true, mode: 0o700 });
-      const config = join(root, `gate-db-${kind}.json`);
+      const config = join(root, `gate-db-${suffix}.json`);
       await writeFile(
         config,
         JSON.stringify({
           adapter: {
-            siteId: siteA.siteId,
+            siteId: site.siteId,
             channel: network.channel,
             chaincode: `kq-${kind}`,
             trust:
@@ -142,18 +150,18 @@ export async function verifyGateDatabase(
                     JSON.parse(await readFile(join(root, "gate-market-trust.json"), "utf8")),
                   ),
           },
-          peerEndpoint: `127.0.0.1:${siteA.peerPort}`,
-          peerTlsCaFile: join(siteA.tls, "ca.crt"),
-          tlsCertificateFile: join(siteA.tls, "server.crt"),
-          tlsPrivateKeyFile: join(siteA.tls, "server.key"),
-          identityCertificateFile: join(msp, "signcerts", `${user}@a.kq.test-cert.pem`),
+          peerEndpoint: `127.0.0.1:${site.peerPort}`,
+          peerTlsCaFile: join(site.tls, "ca.crt"),
+          tlsCertificateFile: join(site.tls, "server.crt"),
+          tlsPrivateKeyFile: join(site.tls, "server.key"),
+          identityCertificateFile: join(msp, "signcerts", `${userDomain}-cert.pem`),
           identityPrivateKeyFile: join(msp, "keystore", keys[0]),
           recoveryKeyFile: join(root, "gate-db-recovery.key"),
           runDirectory,
         }),
         { mode: 0o600 },
       );
-      const fd = openSync(join(root, `gate-db-${kind}.log`), "a", 0o600);
+      const fd = openSync(join(root, `gate-db-${suffix}.log`), "a", 0o600);
       let child: Bun.Subprocess;
       try {
         child = Bun.spawn(["node", entry], {
@@ -248,6 +256,11 @@ export async function verifyGateDatabase(
     const commercialClient = new UnixCommercialClient(
       join(root, "gate-db-commercial", "commercial.sock"),
     );
+    const providerCommercialClient = new UnixCommercialClient(
+      join(root, "gate-db-provider-commercial", "commercial.sock"),
+    );
+    const sourceStorage = testCompletionStorage(),
+      providerStorage = testCompletionStorage();
     const aAgreements = new FederationCommercialAgreementService(db, a.key);
     const bAgreements = new FederationCommercialAgreementService(db, b.key);
     const revision = fixture.agreement.agreement.agreementRevisionId;
@@ -255,8 +268,20 @@ export async function verifyGateDatabase(
     const bContract = await bAgreements.approve(b.actor, fixture.agreement);
     await aAgreements.attachCounterparty(a.actor, revision, bContract.approvalJws);
     await bAgreements.attachCounterparty(b.actor, revision, aContract.approvalJws);
-    const aExecution = new FederationCommercialExecutionService(db, a.key, marketClient);
-    const bExecution = new FederationCommercialExecutionService(db, b.key, marketClient);
+    const aExecution = new FederationCommercialExecutionService(
+      db,
+      a.key,
+      marketClient,
+      undefined,
+      sourceStorage.guard,
+    );
+    const bExecution = new FederationCommercialExecutionService(
+      db,
+      b.key,
+      marketClient,
+      undefined,
+      providerStorage.guard,
+    );
     const approve = async (
       payload:
         | z.infer<typeof CommercialReservationSchema>
@@ -267,7 +292,8 @@ export async function verifyGateDatabase(
       await aExecution.attachCounterparty(a.actor, revision, first.recordId, second.approvalJws);
       await bExecution.attachCounterparty(b.actor, revision, second.recordId, first.approvalJws);
     };
-    const drain = async (recordId: string, operation: string) => {
+    const drain = async (recordId: string, operation: string, provider = false) => {
+      const institution = provider ? b : a;
       const deadline = Date.now() + 120000;
       for (;;) {
         const [row] = await db
@@ -275,7 +301,7 @@ export async function verifyGateDatabase(
           .from(commercialSubmissions)
           .where(
             and(
-              eq(commercialSubmissions.localSiteId, a.key.siteId),
+              eq(commercialSubmissions.localSiteId, institution.key.siteId),
               sql`${commercialSubmissions.input}->>'recordId' = ${recordId}`,
               sql`${commercialSubmissions.input}->>'operation' = ${operation}`,
             ),
@@ -288,16 +314,34 @@ export async function verifyGateDatabase(
         assert(Date.now() < deadline, "Commercial gate submission committed");
         await new FederationCommercialSubmissionService(
           db,
-          a.key.siteId,
-          commercialClient,
+          institution.key.siteId,
+          provider ? providerCommercialClient : commercialClient,
         ).advanceNext();
         await Bun.sleep(200);
       }
     };
     await approve(fixture.fundedReservation);
     await drain(fixture.fundedReservation.reservationId, "reserve-execution");
+    await drain(fixture.fundedReservation.reservationId, "reserve-execution", true);
+    const sourceCapacity = new FederationCompletionCapacity(db, a.key.siteId, sourceStorage.guard);
+    const providerCapacity = new FederationCompletionCapacity(
+      db,
+      b.key.siteId,
+      providerStorage.guard,
+    );
+    for (const [capacity, storage, actor] of [
+      [sourceCapacity, sourceStorage, a.actor],
+      [providerCapacity, providerStorage, b.actor],
+    ] as const) {
+      await capacity.configure(
+        { reserveId: storage.reserveId, capacityBytes: "200", taskBytes: "60", marketBytes: "20" },
+        actor.userId,
+      );
+      assert.equal((await capacity.inspect()).allocatedBytes, "100");
+    }
     await approve(fixture.releasePayload);
     await drain(fixture.releasePayload.releaseId, "release-execution");
+    await drain(fixture.releasePayload.releaseId, "release-execution", true);
     const released = await commercialClient.query({
       operation: "get-execution-gate-hash",
       domainId: fixture.releasedGate.domainId,
@@ -307,6 +351,68 @@ export async function verifyGateDatabase(
       released.hash,
       createHash("sha256").update(JSON.stringify(fixture.releasedGate)).digest("hex"),
     );
+    const scan = async (provider = false) => {
+      const capacity = provider ? providerCapacity : sourceCapacity;
+      await db
+        .update(completionClaims)
+        .set({ nextCheckAt: new Date(0) })
+        .where(eq(completionClaims.localSiteId, provider ? b.key.siteId : a.key.siteId));
+      for (let i = 0; i < 4; i++) if (!(await capacity.advanceNext())) break;
+      return (await capacity.inspect()).allocatedBytes;
+    };
+    assert.equal(await scan(true), "20");
+    assert.equal(await scan(), "100");
+    const closureId = fixture.releasePayload.releaseId;
+    let lostClosureResponse = false;
+    const closureWorker = new FederationMarketService(db, a.key.siteId, {
+      prepare: (input) => marketClient.prepare(input),
+      query: (input) => marketClient.query(input),
+      advance: async (token) => {
+        const result = await marketClient.advance(token);
+        if (result.state === "committed" && !lostClosureResponse) {
+          lostClosureResponse = true;
+          throw new Error("Simulated lost closure commit response");
+        }
+        return result;
+      },
+    });
+    const closureDeadline = Date.now() + 120000;
+    while (!lostClosureResponse) {
+      assert(Date.now() < closureDeadline, "Public closure reached VALID");
+      await closureWorker.advanceNext();
+      await Bun.sleep(200);
+    }
+    const closureStatus = await closureWorker.get(a.actor, closureId);
+    assert.equal(closureStatus.operation.state, "pending");
+    assert.equal(closureStatus.transactions.length, 1);
+    assert.equal(await scan(), "100");
+    const resumedClosure = new FederationMarketService(db, a.key.siteId, marketClient);
+    while ((await resumedClosure.get(a.actor, closureId)).operation.state !== "committed") {
+      assert(Date.now() < closureDeadline, "Public closure resumes original transaction");
+      await resumedClosure.advanceNext();
+      await Bun.sleep(200);
+    }
+    const confirmedClosure = await resumedClosure.get(a.actor, closureId);
+    assert.equal(confirmedClosure.transactions.length, 1);
+    assert.equal(
+      confirmedClosure.transactions[0]?.transactionId,
+      closureStatus.transactions[0]?.transactionId,
+    );
+    assert.equal(await scan(), "20");
+    const publicState = await marketClient.query({
+      operation: "get-demand",
+      demandId: fixture.fundedReservation.demandId,
+    });
+    assert(publicState.operation === "get-demand" && publicState.demand?.status === "CLOSED");
+    assert.equal(publicState.demand.activation, null);
+    await assert.rejects(
+      aExecution.activate(a.actor, revision, fixture.fundedReservation.reservationId, randomUUID()),
+      (error: unknown) => error instanceof FederationError && error.code === "OPERATION_CONFLICT",
+    );
+    pass(
+      "real Fabric private release reclaims provider capacity; source waits for its original public VALID closure, including lost-response recovery, without reopening execution",
+    );
+    if (process.argv.includes("--preexecution-closure")) return;
     await approve(fixture.freshReservation);
     await drain(fixture.freshReservation.reservationId, "reserve-execution");
     pass(

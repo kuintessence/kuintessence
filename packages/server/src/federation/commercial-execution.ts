@@ -251,6 +251,20 @@ export class FederationCommercialExecutionService {
       payload.expectedGateVersion !== 1
     )
       throw new FederationError("OPERATION_CONFLICT");
+    const [otherRelease] = await tx
+      .select({ id: approvals.recordId })
+      .from(approvals)
+      .where(
+        and(
+          this.scope(actor, revisionId),
+          sql`${approvals.payload}->>'kind' = 'commercial-release'`,
+          sql`${approvals.payload}->>'reservationId' = ${payload.reservationId}`,
+          sql`${approvals.recordId} <> ${payload.releaseId}::uuid`,
+          sql`${approvals.counterpartyJws} IS NOT NULL`,
+        ),
+      )
+      .limit(1);
+    if (otherRelease) throw new FederationError("OPERATION_CONFLICT");
     return reserve;
   }
   private async currentClaim(

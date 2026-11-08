@@ -396,6 +396,8 @@ market:
 
 升级须同步更新 Market 链码、共享 schema、Adapter/Server，并先应用迁移 [0149](../../packages/db/migrations/0149_youthful_abomination.sql)。原有 TERMINAL 闭合保持兼容；不让尚不理解 REVOKED 闭合的旧副本消费新记录。普通市场 HTTP 提交仍不接受 `close-demand`，后台仅从已确认的私有记录生成。
 
-专项真实网络入口：`KQ_FABRIC_TOOLS=<Fabric 3.1.5目录> bun scripts/fabric-evidence-network.ts --gate --preexecution-closure`。它使用隔离的本机 Peer/Orderer，检查缺少 B 背书、释放/激活两种提交顺序、A/C 对公开关闭背书、关闭重放及旧激活拒绝；不启用 k3s、不运行科学计算，也不代替完整数据库/Agent 联合验收。完整 `--gate` 仍包含原 Adapter 故障恢复矩阵。 本次专项已实际通过上述 4 项，临时进程、密钥和账本已清理；尚未将这次新增关闭路径与生产 Server worker 作真实链联合验收。
+专项真实网络入口：`KQ_FABRIC_TOOLS=<Fabric 3.1.5目录> bun scripts/fabric-evidence-network.ts --gate --preexecution-closure`。它使用隔离的本机 Peer/Orderer，检查缺少 B 背书、释放/激活两种提交顺序、A/C 对公开关闭背书、关闭重放及旧激活拒绝；不启用 k3s、不运行科学计算，也不代替完整 Agent 联合验收。完整 `--gate` 仍包含原 Adapter 故障恢复矩阵。
 
-尚未据此释放无账单早期任务的本地收尾容量；待补齐提案/自动执行队列的终止证据与各方本地回收条件。未获双签的提案、未完成认领、直接合作的未执行退款及机构预授权自动释放，仍需各自独立的关闭协议。
+增加 `--database` 并设置 `KQ_FABRIC_DATABASE_URL` 可同时验证 Server 生产服务与真实链的回收路径。入口创建独立的 `kuintessence_unit_*` 临时库，启动 A/B 各自商业身份的 Node Adapter 和 A 的市场 Adapter；双方批准、私有预留与释放、公共关闭均实际提交。提供方先回收；源方在公共关闭 VALID 响应被故意丢弃时保留占额，重建服务后按原 txId 确认，再回收并拒绝旧激活。5 项专项已通过，临时进程、数据库、密钥和账本清理。此验证使用同一隔离数据库内的站点隔离记录，物理容量观测为受控测试报告；不等于独立部署双 Server、磁盘满载或实际 Agent 作业验收。设置 `KQ_FABRIC_REPORT` 可将不含私有正文的检查结果保存到指定文件。
+
+已接入无账单执行前任务的本地收尾容量回收：提供方要求本站私有释放 VALID，源方另要求原释放对应的公共关闭 VALID；双方均须完成关联待办，且没有正式接单、出站或账单。双签释放阻止自动发现和人工执行重试，签名交换发现与签名附加互斥，避免回收后重新排队。具体条件见[容量回收](storage-capacity.md#自动回收条件与边界)。未获双签的提案、未完成认领、直接合作的未执行退款及机构预授权自动释放，仍需各自独立的关闭协议。

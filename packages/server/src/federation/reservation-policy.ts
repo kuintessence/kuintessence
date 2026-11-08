@@ -282,10 +282,25 @@ export class FederationReservationPolicyService {
           eq(approvals.recordId, recordId),
           eq(approvals.authorizationPolicyId, policyId),
         ),
-      );
+      )
+      .for("update");
     if (!approval?.counterpartyJws || approval.payload.kind !== "commercial-reservation")
       throw new FederationError("POLICY_DENIED");
     if (approval.stopId) throw new FederationError("CANCELLATION_REQUESTED");
+    const [released] = await tx
+      .select({ id: approvals.recordId })
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.localSiteId, this.siteId),
+          eq(approvals.agreementRevisionId, approval.agreementRevisionId),
+          sql`${approvals.payload}->>'kind' = 'commercial-release'`,
+          sql`${approvals.payload}->>'reservationId' = ${recordId}`,
+          sql`${approvals.counterpartyJws} IS NOT NULL`,
+        ),
+      )
+      .limit(1);
+    if (released) throw new FederationError("POLICY_DENIED");
     const payload = CommercialReservationSchema.parse(approval.payload);
     const policy = await this.authorize(tx, policyId, approval.localOrgId, payload);
     if (

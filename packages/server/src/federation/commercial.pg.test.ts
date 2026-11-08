@@ -8920,3 +8920,236 @@ test("pre-execution closure for a different reservation cannot retire a local st
   expect(row.stopLastError).toBe("OPERATION_CONFLICT");
   expect(row.stopNextAttemptAt).not.toBeNull();
 });
+
+async function preexecutionCapacityFixture() {
+  const f = await executionAutomationFixture();
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const { federationCompletionClaims: claims } = await import("@kuintessence/db");
+  const sourceStorage = testCompletionStorage(),
+    providerStorage = testCompletionStorage();
+  const sourceCapacity = new FederationCompletionCapacity(
+    db,
+    f.a.signing.siteId,
+    sourceStorage.guard,
+  );
+  const providerCapacity = new FederationCompletionCapacity(
+    db,
+    f.b.signing.siteId,
+    providerStorage.guard,
+  );
+  for (const [capacity, storage] of [
+    [sourceCapacity, sourceStorage],
+    [providerCapacity, providerStorage],
+  ] as const)
+    await capacity.configure(
+      { reserveId: storage.reserveId, capacityBytes: "100", taskBytes: "60", marketBytes: "20" },
+      f.actor.userId,
+    );
+  const release = await releasePayload(f);
+  const target = new FederationCommercialExecutionService(db, f.b.signing, f.market);
+  const commitRelease = async () => {
+    const own = await f.sourceExecution.approve(f.actor, f.revisionId, release);
+    const other = await target.approve(f.actor, f.revisionId, release);
+    await f.sourceExecution.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      release.releaseId,
+      other.approvalJws,
+    );
+    await target.attachCounterparty(f.actor, f.revisionId, release.releaseId, own.approvalJws);
+    const provider = new FederationCommercialSubmissionService(db, f.b.signing.siteId, f.adapter);
+    for (let i = 0; i < 3; i++) {
+      await f.service.advanceNext();
+      await provider.advanceNext();
+    }
+  };
+  const close = async () => {
+    for (let i = 0; i < 3; i++) await f.marketSource.advanceNext();
+    const [closed] = await db
+      .select()
+      .from(marketSubmissions)
+      .where(eq(marketSubmissions.id, release.releaseId));
+    if (closed?.input.operation !== "close-demand" || closed.state !== "committed")
+      throw new Error("Closure not committed");
+    f.state.status = "CLOSED";
+    f.state.version = 3;
+    f.state.closure = closed.input.closure;
+  };
+  const scan = async (provider = false) => {
+    const site = provider ? f.b.signing.siteId : f.a.signing.siteId;
+    await db
+      .update(claims)
+      .set({ nextCheckAt: new Date(0) })
+      .where(eq(claims.localSiteId, site));
+    const capacity = provider ? providerCapacity : sourceCapacity;
+    for (let i = 0; i < 4; i++) if (!(await capacity.advanceNext())) break;
+    return capacity.inspect();
+  };
+  const taskClaim = async (provider = false) =>
+    (
+      await db
+        .select()
+        .from(claims)
+        .where(
+          and(
+            eq(claims.localSiteId, provider ? f.b.signing.siteId : f.a.signing.siteId),
+            eq(claims.kind, "task"),
+          ),
+        )
+    )[0];
+  return {
+    ...f,
+    sourceCapacity,
+    providerCapacity,
+    sourceStorage,
+    providerStorage,
+    release,
+    target,
+    commitRelease,
+    close,
+    scan,
+    taskClaim,
+  };
+}
+
+test("pre-execution capacity releases both local tasks and manual market allocations without a fictitious bill", async () => {
+  const f = await preexecutionCapacityFixture();
+  for (const provider of [false, true])
+    expect(await f.scan(provider)).toMatchObject({ allocatedBytes: "80" });
+  await f.commitRelease();
+  expect(await f.scan(true)).toMatchObject({ allocatedBytes: "0", releasedObligations: 2 });
+  await f.providerAutomation.discover();
+  expect(await f.providerAutomation.advanceNext()).toBe(false);
+  expect((await f.view(true))?.executionState).toBe("idle");
+  await expect(
+    f.providerAutomation.retry(f.actor, f.revisionId, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  expect(await f.scan()).toMatchObject({ allocatedBytes: "80" });
+  expect((await f.taskClaim())?.releaseBlocker).toBe("market-closure");
+  await f.close();
+  expect(await f.scan()).toMatchObject({ allocatedBytes: "0", releasedObligations: 2 });
+  expect(
+    await db
+      .select()
+      .from(federationCommercialBills)
+      .where(eq(federationCommercialBills.agreementRevisionId, f.revisionId)),
+  ).toHaveLength(0);
+});
+
+test("pre-execution capacity keeps an outstanding stop until the exact public closure is observed", async () => {
+  const f = await preexecutionCapacityFixture();
+  await f.commitRelease();
+  const stops = new FederationExecutionStopService(
+    db,
+    f.b.signing.siteId,
+    f.market,
+    f.providerStorage.guard,
+  );
+  const original = await stops.request(f.actor, f.revisionId, f.reservation.reservationId);
+  expect(await f.scan(true)).toMatchObject({ allocatedBytes: "80" });
+  expect((await f.taskClaim(true))?.releaseBlocker).toBe("execution-stop");
+  await f.close();
+  await stops.advanceNext();
+  expect(await f.scan(true)).toMatchObject({ allocatedBytes: "0" });
+  f.providerStorage.pressure();
+  expect(await stops.request(f.actor, f.revisionId, f.reservation.reservationId)).toEqual(original);
+  expect(await f.providerCapacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+});
+
+test("pre-execution capacity rejects invalid private evidence and changed task identity", async () => {
+  const f = await preexecutionCapacityFixture();
+  await f.commitRelease();
+  const submitted = (await f.target.get(f.actor, f.revisionId, f.release.releaseId)).submission;
+  if (!submitted) throw new Error("Missing private release");
+  await db
+    .update(attempts)
+    .set({ stage: "invalid", validationCode: 11 })
+    .where(eq(attempts.submissionId, submitted.id));
+  expect(await f.scan(true)).toMatchObject({ allocatedBytes: "80" });
+  expect((await f.taskClaim(true))?.releaseBlocker).toBe("release-evidence");
+  await db
+    .update(attempts)
+    .set({ stage: "committed", validationCode: 0 })
+    .where(eq(attempts.submissionId, submitted.id));
+  const { federationCompletionClaims: claims } = await import("@kuintessence/db");
+  await db
+    .update(claims)
+    .set({ digest: `sha256:${"f".repeat(64)}` })
+    .where(and(eq(claims.localSiteId, f.b.signing.siteId), eq(claims.kind, "task")));
+  expect(await f.scan(true)).toMatchObject({ allocatedBytes: "60" });
+  expect((await f.taskClaim(true))?.releaseBlocker).toBe("identity");
+});
+
+test("pre-execution capacity waits for execution automation and fences subsequent discovery retry and conflicting releases", async () => {
+  const f = await preexecutionCapacityFixture();
+  await f.sourceAutomation.discover();
+  await f.commitRelease();
+  await f.close();
+  expect(await f.scan()).toMatchObject({ allocatedBytes: "60" });
+  expect((await f.taskClaim())?.releaseBlocker).toBe("proposal");
+  await f.sourceAutomation.advanceNext();
+  expect(await f.scan()).toMatchObject({ allocatedBytes: "0" });
+  await f.sourceAutomation.discover();
+  expect(await f.sourceAutomation.advanceNext()).toBe(false);
+  await expect(
+    f.sourceAutomation.retry(f.actor, f.revisionId, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  expect(f.marketAdapter.inputs.some((input) => input.operation === "activate-demand")).toBe(false);
+  await expect(
+    f.sourceExecution.approve(f.actor, f.revisionId, { ...f.release, releaseId: randomUUID() }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  const original = await f.sourceExecution.get(f.actor, f.revisionId, f.release.releaseId);
+  expect((await f.sourceExecution.approve(f.actor, f.revisionId, f.release)).approvalJws).toBe(
+    original.approvalJws,
+  );
+  expect(await f.sourceCapacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+});
+
+test("pre-execution capacity discovery skips signatures being attached and cannot enqueue a stale exchange after them", async () => {
+  const f = await executionApprovalExchangeFixture();
+  await db.transaction(async (tx) => {
+    await tx
+      .select()
+      .from(executionApprovals)
+      .where(
+        and(
+          eq(executionApprovals.localSiteId, f.a.signing.siteId),
+          eq(executionApprovals.recordId, f.reservation.reservationId),
+        ),
+      )
+      .for("update");
+    await f.transport.a.discover();
+    expect((await f.transport.a.list(f.actor, f.revisionId, 50, 0)).records).toHaveLength(0);
+  });
+  await f.execution.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.reservation.reservationId,
+    f.counterpart.approvalJws,
+  );
+  await f.transport.a.discover();
+  expect((await f.transport.a.list(f.actor, f.revisionId, 50, 0)).records).toHaveLength(0);
+});
+
+test("execution automation discovery retires a stopped candidate without failing the worker pass", async () => {
+  const f = await executionAutomationFixture();
+  await db
+    .update(executionApprovals)
+    .set({
+      stopId: randomUUID(),
+      stopRequestedBy: f.actor.userId,
+      stopRequestedAt: new Date(),
+      stopNextAttemptAt: new Date(),
+    })
+    .where(eq(executionApprovals.localSiteId, f.a.signing.siteId));
+  await f.sourceAutomation.discover();
+  expect(await f.view()).toMatchObject({
+    executionState: "needs_review",
+    executionError: "CANCELLATION_REQUESTED",
+    activationId: null,
+  });
+  expect(await f.sourceAutomation.advanceNext()).toBe(false);
+  await f.sourceAutomation.discover();
+  expect(await f.sourceAutomation.advanceNext()).toBe(false);
+});

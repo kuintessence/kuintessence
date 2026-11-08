@@ -47,7 +47,7 @@ export class FederationExecutionAutomation {
   async discover() {
     await this.db.transaction(async (tx) => {
       const rows = await tx
-        .select({ id: proposals.reservationId })
+        .select({ proposal: proposals })
         .from(proposals)
         .innerJoin(
           policies,
@@ -77,16 +77,32 @@ export class FederationExecutionAutomation {
             eq(proposals.executionState, "idle"),
             sql`${proposals.state} IN ('delivered','approved')`,
             sql`NOT EXISTS (SELECT 1 FROM ${terminals} WHERE ${terminals.localSiteId} = ${proposals.localSiteId} AND ${terminals.reservationId} = ${proposals.reservationId})`,
+            sql`NOT EXISTS (SELECT 1 FROM ${approvals} released WHERE released.local_site_id = ${proposals.localSiteId}
+              AND released.agreement_revision_id = ${proposals.agreementRevisionId}
+              AND released.payload->>'kind' = 'commercial-release'
+              AND released.payload->>'reservationId' = ${proposals.reservationId}::text AND released.counterparty_jws IS NOT NULL)`,
           ),
         )
         .orderBy(asc(proposals.createdAt), asc(proposals.reservationId))
         .limit(8)
         .for("update", { of: proposals, skipLocked: true });
-      for (const row of rows)
+      for (const { proposal } of rows) {
+        let executionError: string | null = null;
+        try {
+          await this.scope(tx, proposal);
+        } catch (error) {
+          if (!(error instanceof FederationError)) throw error;
+          if (error.code !== "LEDGER_REQUIRED") executionError = error.code;
+        }
         await tx
           .update(proposals)
-          .set({ executionState: "pending", executionNextAt: new Date() })
-          .where(this.key(row.id));
+          .set({
+            executionState: executionError ? "needs_review" : "pending",
+            executionError,
+            executionNextAt: new Date(),
+          })
+          .where(this.key(proposal.reservationId));
+      }
     });
   }
   private async lock(tx: PgTransaction, claim: Proposal) {

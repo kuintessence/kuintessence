@@ -3,6 +3,7 @@ import { FederationDelegationSchema } from "@kuintessence/shared/federation";
 import { sql } from "drizzle-orm";
 import { federationMaterialDigest } from "./assets";
 import { readFederationCancellationState } from "./cancellation-state";
+import { preexecutionBlocker } from "./completion-preexecution";
 
 type Claim = typeof federationCompletionClaims.$inferSelect;
 
@@ -21,7 +22,7 @@ export async function completionBlocker(tx: PgTransaction, claim: Claim): Promis
           AND (p.state <> 'committed' OR p.lease_token IS NOT NULL)) AS closed
       FROM federation_market_submissions m WHERE m.local_site_id = ${site} AND m.id::text = ${claim.intentId}
     `);
-    return row?.closed ? null : "market";
+    return row?.closed ? null : preexecutionBlocker(tx, claim);
   }
   const [revision, taskId, attempt] = claim.intentId.split(":");
   const [bill] = await tx.execute<{ request: unknown; billId: string; settlementId: string }>(sql`
@@ -32,8 +33,8 @@ export async function completionBlocker(tx: PgTransaction, claim: Claim): Promis
       AND b.task_id = ${taskId}::uuid AND b.attempt = ${attempt}::integer
       AND b.counterparty_jws IS NOT NULL AND s.counterparty_jws IS NOT NULL AND s.applied_at IS NOT NULL
   `);
-  // shortcut: early intents stay charged until cooperative pre-execution closure is implemented.
-  if (!bill) return "settlement";
+  // Unknown or unsigned early intents retain their allocation.
+  if (!bill) return preexecutionBlocker(tx, claim);
   const parsed = FederationDelegationSchema.safeParse(bill.request);
   if (!parsed.success) return "identity";
   const request = parsed.data;

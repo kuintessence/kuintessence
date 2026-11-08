@@ -563,6 +563,24 @@ async function run() {
     rejected("OPERATION_CONFLICT"),
   );
   if (process.argv.includes("--preexecution-closure")) {
+    if (process.argv.includes("--database")) {
+      const funded = await lock(await claimed());
+      const fresh = await claimed();
+      const pendingRelease = await release(funded);
+      await writeFile(
+        join(dirname(z.string().parse(process.argv[2])), "gate-adapter-fixture.json"),
+        JSON.stringify({
+          agreement: terms,
+          fundedReservation: funded.reservation,
+          fundedDemand: await current(funded.demand.demandId),
+          freshReservation: fresh.reservation,
+          freshDemand: await current(fresh.demand.demandId),
+          releasePayload: pendingRelease.value,
+          releasedGate: { ...funded.gate, state: "REVOKED", version: 2 },
+        }),
+        { mode: 0o600 },
+      );
+    }
     await writeFile(
       z.string().parse(process.argv[3]),
       JSON.stringify({ passed, probes }, null, 2),

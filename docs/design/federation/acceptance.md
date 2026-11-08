@@ -74,6 +74,8 @@
 
 通知功能不在本次范围。已执行验证见 [实现进展](progress.md)；模块测试通过不代表本清单对应的端到端场景已经完成。
 
+O01 执行前释放补充：真实 Fabric 3.1.5、双方各自身份的 Node Adapter 和 Server 生产服务已联合验证私有释放 VALID、源方公共关闭及本地占额回收，关闭响应丢失后按原 txId 恢复，旧激活仍拒绝。入口为 `--gate --preexecution-closure --database`，见[操作说明](../../../deploy/federation/fabric-execution-gate.md#执行前释放后的公共关闭)。这组检查在同一隔离 PostgreSQL 内保存不同站点记录，物理容量观测为受控报告，不替代 A/B/C 独立部署或完整 O01 满盘验收。
+
 
 ## 执行 gate 的当前验证覆盖
 
