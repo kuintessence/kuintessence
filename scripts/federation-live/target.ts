@@ -237,10 +237,13 @@ if (process.argv[2] === "inspect") {
   const runtimeImage = process.env.LAB_RUNTIME_IMAGE;
   if (!runtimeImage) throw Error("Pinned runtime required");
   const outage = ["outage", "stop"].includes(process.env.LAB_SCENARIO ?? "");
-  const mediaWork =
-    process.env.LAB_MEDIA_EXECUTION === "slurm"
-      ? await mediaExecutionFixture(db, root, actor.userId, source.siteId)
-      : undefined;
+  const mediaScheduler = z
+    .enum(["slurm", "pbs-pro"])
+    .optional()
+    .parse(process.env.LAB_MEDIA_EXECUTION);
+  const mediaWork = mediaScheduler
+    ? await mediaExecutionFixture(db, root, actor.userId, source.siteId)
+    : undefined;
   const producer = `set -euo pipefail
 ${outage ? "printf 'federation-sleep-started\\n'; sleep 600" : "sleep 1"}
 [ "$(id -u)" -gt 0 ]
@@ -311,7 +314,7 @@ printf 'federation-file-consumed:42\\n'
       languageVersion: "5",
       ...(mediaWork ? { sifDigest: runtimeDigest } : { ociDigest: runtimeDigest }),
       signature: await Bun.file(`${root}/runtime-signature.txt`).text(),
-      adapters: [mediaWork ? "slurm" : "kubernetes"],
+      adapters: [mediaScheduler ?? "kubernetes"],
       securityRequirements: {},
       lifecycle: "active",
     });
@@ -330,7 +333,7 @@ printf 'federation-file-consumed:42\\n'
       id: accountId,
       providerOrgId: actor.orgId,
       agentId: agent.agentId,
-      displayName: mediaWork ? "Mapped Slurm scientist" : "Isolated Kubernetes worker",
+      displayName: mediaWork ? `Mapped ${mediaScheduler} scientist` : "Isolated Kubernetes worker",
       backendType: mediaWork ? "unix" : "kubernetes",
       ...(mediaWork
         ? {

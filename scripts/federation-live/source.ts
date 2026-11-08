@@ -161,7 +161,7 @@ if (process.argv[2] === "inspect") {
     .insert(softwareAssetRevisions)
     .values({ id: revisionId, assetId, revision: 1, payload: config.payload });
   await assets.register(actor, { reference: config.reference, localRevisionId: revisionId });
-  if (process.env.LAB_MEDIA_EXECUTION === "slurm") {
+  if (process.env.LAB_MEDIA_EXECUTION) {
     const script = await importMediaScript(db, root, actor.userId, config.scriptBundle);
     await assets.register(actor, {
       reference: config.scriptReference,

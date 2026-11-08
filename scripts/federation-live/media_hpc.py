@@ -1,4 +1,4 @@
-"""Disposable Slurm target for the dual-platform media experiment."""
+"""Disposable Slurm/PBS target for the dual-platform media experiment."""
 import hashlib
 import json
 import os
@@ -51,7 +51,20 @@ def prepare_runtime(root, runtime_dir, log):
     return runtime, metadata
 
 
-def configure_target(pod, root, runtime, metadata):
+def validate_pbs_cache(directory, image):
+    pbs = Path(directory).resolve(strict=True)
+    metadata = json.loads((pbs / "pbs-install.json").read_text())
+    assert metadata["sourceCommit"] == "be361a18ef37652bece0811ec709f0fe4fc52710"
+    assert metadata["sourceSha256"] == "297ea4d5933e867b51366b213184a5251a41261f16079ffde86511e0bbc6606c"
+    assert metadata["image"] == image and metadata["version"] == "23.06.06"
+    assert hashlib.sha256((pbs / "openpbs.tar.gz").read_bytes()).hexdigest() == metadata["sourceSha256"]
+    assert hashlib.sha256((pbs / "pbs-install.tar.gz").read_bytes()).hexdigest() == metadata["archiveSha256"]
+    return pbs
+
+
+def configure_target(pod, root, runtime, metadata, scheduler, pbs):
+    assert scheduler in ("slurm", "pbs-pro")
+    assert (pbs is not None) == (scheduler == "pbs-pro")
     container = pod["spec"]["containers"][0]
     pod["spec"]["automountServiceAccountToken"] = False
     pod["spec"]["activeDeadlineSeconds"] = 1200
@@ -63,7 +76,7 @@ def configure_target(pod, root, runtime, metadata):
     for key in list(setting):
         if key.startswith("AGENT_SANDBOX_K8S_"):
             del setting[key]
-    setting.update(AGENT_SCHEDULER="slurm", AGENT_SANDBOX_ROOT="/scratch/media-sandbox",
+    setting.update(AGENT_SCHEDULER_TYPE=scheduler, LAB_MEDIA_EXECUTION=scheduler, AGENT_SANDBOX_ROOT="/scratch/media-sandbox",
                    AGENT_SANDBOX_ROOT_IMPERSONATION="true", AGENT_SANDBOX_SIF_SIGNATURE_VERIFICATION="true",
                    AGENT_SANDBOX_ECL="true", AGENT_RESTRICTED_DATA_ISOLATION="true",
                    AGENT_RESTRICTED_EXECUTION_PROFILE_ID="ca12ed00-4f54-4000-8000-000000000001",
@@ -71,5 +84,10 @@ def configure_target(pod, root, runtime, metadata):
                    AGENT_SANDBOX_RUNTIME_CACHE_JSON=json.dumps({metadata["digest"]: {
                        "kind": "SIF", "localPath": "/opt/kq/bash.sif", "signatureVerified": True}}),
                    APPTAINER_KEYSDIR="/opt/kq/keys", LAB_HPC_ROOT=str(root / "hpc"))
+    if pbs:
+        pod["spec"]["volumes"].append({"name": "pbs", "hostPath": {"path": str(pbs), "type": "Directory"}})
+        container["volumeMounts"].append({"name": "pbs", "mountPath": "/lab-pbs", "readOnly": True})
+        setting["AGENT_SCHEDULER_VERSION"] = "23.06.06"
+        setting["PATH"] = "/opt/pbs/bin:/opt/pbs/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     container["env"] = [{"name": key, "value": value} for key, value in setting.items()]
     container["command"] = ["bash", "/workspace/scripts/federation-live/media-hpc-bootstrap.sh"]

@@ -711,3 +711,17 @@ Agent 注册/心跳的受信执行配置现在提取并验证业务字段，避�
 来源撤权仍表现为 RENEWAL_FAILED 后原许可到期，不是即时签名撤权。此项不代表 PBS 联合链路或完整蓝图已验收。
 运行器的本地人员/服务身份数据授权为显式夹具，Pod 总资源限制不能替代生产逐作业 cgroup 证明。
 操作步骤见[双平台执行实验](../../deploy/federation/execution-lab.md#介质交付后的真实-slurm-执行)。
+
+
+### PBS 双平台介质执行联合验收
+
+2026-11-09，同一联合运行器新增 `KQ_MEDIA_EXECUTION=pbs-pro`，实际完整验收通过。
+复用固定来源和摘要的 OpenPBS 23.06.06 缓存，无源码重编译；Pod 总限额 1 CPU/1 GiB。
+真实注册的 PBS Agent 从 `workq` 自动执行 DATA_WAITING 恢复后的作业，读取 age 解密导入的数据，
+完成只读、seccomp、no-new-privs 和 socket 禁止检查。来源政策 HTTP 撤销后，续租失败，原短期许可到期，
+同一原生 PBS 作业从 R 进入 F、非零退出，映射进程消失，原 Job/epoch 的 Agent 停止证明为 true。
+没有注入停止决定或伪造调度终态，所有自建服务与 namespace 已清理。
+
+此结果补齐了 Slurm/PBS 两条双平台数据集交付与撤权联合链路，不代表完整调度矩阵、生产逐作业 cgroup、
+真实科学软件、主机掉电、任务输入/结果介质、支付争议、治理归档及 PR 预览已验收。
+本地数据授权仍为显式初始化夹具；步骤见[真实 PBS 执行](../../deploy/federation/execution-lab.md#介质交付后的真实-pbs-执行)。

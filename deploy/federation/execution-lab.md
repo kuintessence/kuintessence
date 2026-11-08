@@ -183,3 +183,24 @@ bun run test:federation:direct
 接收方记录 RENEWAL_FAILED，原许可到期后同一 Slurm Job 为 CANCELLED、映射进程退出、Agent 持久停止证明为 true。
 观测遇到 55P03 行锁冲突仅返回未知，继续限时重读，未知不视为撤权成功；其他观测错误仍使验收失败。
 完整命令退出 0，独立两端账本守恒且无链待办，所有隔离资源清理；未用本轮结果替代 PBS 或完整生产隔离验收。
+
+
+### 介质交付后的真实 PBS 执行
+
+同一 media 联合实验支持 `KQ_MEDIA_EXECUTION=pbs-pro`，另提供 `KQ_MEDIA_PBS_DIR=/absolute/path/to/pbs-cache`。
+其余 PostgreSQL、age、SIF 配置和显式隔离 opt-in 与 Slurm 变体一致。
+PBS 目录使用[组件实验](media-slurm-lab.md)产出的 `openpbs.tar.gz`、`pbs-install.tar.gz` 和 `pbs-install.json`；
+启动前检查固定源码提交/摘要、23.06.06 版本、基础镜像及归档摘要，Pod 内恢复安装并校验真实 qsub 版本，不触发源码编译。
+缓存是本地验收构建，不声明为上游认证的二进制发布。
+
+接收端通过实际注册接入 `pbs-pro`，等待 `workq` 清单可用，为映射账号显式授权该队列。
+使用相同的 DATA_WAITING、签名脚本/SIF、加密交付、独立授权和实际来源撤权步骤。
+运行探针读取生产 PBS Adapter 及原 qstat 历史记录；停止要求原 Job 为 F 且非零退出、映射进程消失，
+同时存在该 jobId/dispatchEpoch/schedulerJobId 的持久正向停止证明。
+不能把发出 qdel、进程暂未出现、普通完成或历史记录缺失视为通过。
+Pod 总限额仍为 1 CPU/1 GiB；生产逐作业 cgroup、掉电、多主机、真实科学软件及完整调度矩阵另行验收。
+
+
+2026-11-09：此 PBS 联合场景完整命令一次通过并退出 0。实际读取/隔离检查后，来源政策 HTTP 撤销，
+原短期许可失效，同一原生 PBS Job 从 R 进入 F、退出码 265、映射进程消失、Agent 停止证明为 true。
+两端账本守恒，直接模式无链待办，所有隔离资源清理。没有重新编译 PBS 或科学软件，未注入停止决定。

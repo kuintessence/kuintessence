@@ -1,4 +1,4 @@
-"""Real dual-platform media transport, optionally followed by restricted Slurm execution."""
+"""Real dual-platform media transport, optionally followed by restricted HPC execution."""
 import hashlib
 import json
 import subprocess
@@ -19,7 +19,8 @@ def verify_media_accounting(logs):
 
 def verify_media(root, logs, namespace, target_env, source_env, target_api, source_api):
     config = json.loads((root / "source-init.json").read_text())
-    execution = target_env.get("LAB_MEDIA_EXECUTION") == "slurm"
+    scheduler = target_env.get("LAB_MEDIA_EXECUTION", "")
+    execution = scheduler in ("slurm", "pbs-pro")
 
     def fixture(setting, command):
         with (logs / "media-fixture.log").open("a") as output:
@@ -130,7 +131,7 @@ def verify_media(root, logs, namespace, target_env, source_env, target_api, sour
         target_api("federation/assets/mappings", {"reference": config["media"]["reference"], "localRevisionId": published["versionId"]})
         scheduled = wait(execution_state,
                          lambda row: len(row["jobs"]) == 1 and row["jobs"][0]["schedulerJobId"] is not None,
-                         "Imported dataset did not automatically dispatch a Slurm task", timeout=180)
+                         "Imported dataset did not automatically dispatch an HPC task", timeout=180)
         job = scheduled["jobs"][0]
 
         def runtime_state():
@@ -139,10 +140,10 @@ def verify_media(root, logs, namespace, target_env, source_env, target_api, sour
             return json.loads(raw.decode().strip().splitlines()[-1])
 
         running = wait(runtime_state, lambda row: row["status"]["status"] == "running" and row["readChecksPassed"],
-                       "Real mapped Slurm process did not pass readonly input/seccomp checks")
+                       "Real mapped HPC process did not pass readonly input/seccomp checks")
         assert not running["stopConfirmed"]
         (logs / "media-running.json").write_text(json.dumps({"server": scheduled, "agent": running}, indent=2) + "\n")
-        print("REAL MEDIA RUNNING: DATA_WAITING resumed after import, source approval and explicit local mapping; Slurm read checks passed", flush=True)
+        print("REAL MEDIA RUNNING: DATA_WAITING resumed after import, source approval and explicit local mapping; HPC read checks passed", flush=True)
     source_api("federation/media/dataset-use-policies/" + policy_id + "/revoke", {"reason": "Source withdrew use permission"})
 
     revoked = wait(authority, lambda row: row["allowed"] is False and row["lastError"] is not None,
@@ -152,7 +153,11 @@ def verify_media(root, logs, namespace, target_env, source_env, target_api, sour
     if execution:
         stopped = wait(runtime_state, lambda row: row["stopConfirmed"] and not row["readChecksPassed"],
                        "Source revocation did not produce positive scheduler stop proof")
-        assert stopped["status"]["status"] == "failed" and "CANCELLED" in stopped["status"].get("message", "")
+        assert stopped["status"]["status"] == "failed"
+        if scheduler == "slurm":
+            assert "CANCELLED" in stopped["status"].get("message", "")
+        else:
+            assert stopped["schedulerState"] == "F" and stopped["status"]["exitCode"] != 0
         (logs / "media-stopped.json").write_text(json.dumps({"server": execution_state(), "agent": stopped}, indent=2) + "\n")
     assert command("scheduler", ["cat", private_path]) == b"data", "Use revocation erased imported evidence"
     assert target_api(import_route + "/receipt")["data"]["state"] == "recorded"
@@ -161,7 +166,7 @@ def verify_media(root, logs, namespace, target_env, source_env, target_api, sour
         "fileSha256": dataset["sha256"], "exportState": exported["state"],
         "importState": imported["state"], "receiptState": receipt["state"],
         "beforeRevocation": before, "afterRevocation": revoked, "replicaId": published["replicaId"],
-        "running": running, "stopped": stopped,
+        "scheduler": scheduler or None, "running": running, "stopped": stopped,
     }, indent=2) + "\n")
     print("REAL MEDIA PASSED: two Server databases and mTLS Agents; encrypted export/import, signed receipt, separate publication, source revocation; " +
-          ("real Slurm DATA_WAITING/execution/confirmed stop" if execution else "no compute claim"), flush=True)
+          (scheduler + " DATA_WAITING/execution/confirmed stop" if execution else "no compute claim"), flush=True)

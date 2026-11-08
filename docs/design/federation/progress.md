@@ -2659,3 +2659,29 @@ PBS 联合链路、掉电/跨主机、介质交接/副本生命周期、任务�
 
 最终观测重试修正后，实验脚本类型检查再次通过；最终全仓 lint 保持原 47 warnings/1 info。
 875 个本地文档目标离线检查、Python AST、Bash 语法和 diff 检查通过。未新增依赖或迁移，生成文件未变更。
+
+
+## 双平台加密数据集的真实 PBS 执行与撤权
+
+扩展既有 media 联合运行器，支持实际 `pbs-pro` 注册、workq 清单等待、账号队列权限、PBS SIF runtime binding 和生产 entrypoint。
+使用组件实验留下的 OpenPBS 23.06.06 安装缓存；启动前验证源码提交/摘要、归档摘要与固定基础镜像，Pod 内验证 qsub 实际版本。
+没有新增源码编译，仅恢复缓存并安装小型运行库。原 Slurm 分支保留，两种配置的调度器类型、只读挂载与 1 CPU/1 GiB 上限通过断言自检。
+
+实际两个 Server/数据库、机构 mTLS、独立注册 Agent 的完整命令一次通过并退出 0。
+先确认 DATA_WAITING 且无作业；实际 age 加密导出/解密导入、签名回执、来源使用批准、显式发布、本地授权和映射后，
+生产后台在 PBS 上自动启动受限账号作业，实际读取 4 字节合成数据并通过只读、seccomp、no-new-privs 和 socket EPERM 检查。
+源方 HTTP 撤销政策后，原许可到期；PBS 历史记录 R→F、退出码 265、原映射 sleep 进程消失，Agent 原 Job/dispatchEpoch/schedulerJobId 的正向停止证明为 true。
+探针只读取生产 Adapter、qstat 历史和 SQLite 原收据，不注入许可/停止决定或终态。续租拒绝仍记录 RENEWAL_FAILED，不冒充即时签名撤权。
+
+双方最终账本显示：来源站无计算预算或作业，只有一份委派；提供方只有一份预留、一个工作流绑定与一个作业，预算守恒，直接模式无链待办，未产生账单/结算。
+文件 SHA-256、CC0-1.0 许可证和 provenance 保留，撤权不删除原导入文件或回执。完整命令结束后全部自建服务、数据库、凭据、namespace 和 RBAC 清理。
+本轮没有产品执行代码修订，不重复已通过的独立 Slurm 运行或此前单元测试矩阵；新增 PBS 联合场景实际覆盖扩展分支。
+
+生产逐作业 cgroup、普通 root Sandbox 的完整证明、掉电/跨主机、介质交接与副本生命周期、任务输入/结果介质、真实科学软件、支付争议、治理归档/Peer 恢复以及剩余 UI/CLI/PR 预览继续按完整蓝图推进。
+未推送、合并或远程部署，整体目标未缩减。
+
+
+本轮完整 lint 通过（原有 47 warnings/1 info），全仓 typecheck 含 protobuf 生成及 Fabric/实验脚本通过；
+877 个本地文档目标离线检查、Python AST、Bash 语法、Slurm/PBS 配置自检和 diff 检查通过。
+没有依赖或数据库迁移，生成文件未变更。后续资源约束需补齐签名清单中的 CPU/内存上限及计算节点实际逐作业限额校验；
+现有 SelfAccount 启动证明中的 cgroup 路径匹配、root 能力开关和 Pod 总限额均不能替代该证明。

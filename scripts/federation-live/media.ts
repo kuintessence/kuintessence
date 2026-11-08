@@ -32,7 +32,7 @@ assert(
 );
 try {
   if (command === "authorize") {
-    assert.equal(process.env.LAB_MEDIA_EXECUTION, "slurm");
+    z.enum(["slurm", "pbs-pro"]).parse(process.env.LAB_MEDIA_EXECUTION);
     const actor = z
       .object({ orgId: z.uuid(), userId: z.uuid() })
       .parse(await Bun.file(`${root}/registration.json`).json());

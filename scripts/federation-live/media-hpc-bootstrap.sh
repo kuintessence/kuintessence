@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Only used inside the disposable privileged Slurm lab Pod.
+# Only used inside the disposable privileged Slurm/PBS lab Pod.
 set -euo pipefail
 [[ "${LAB_HPC_ROOT:-}" = /tmp/kq-federation-live-*/hpc ]]
 export DEBIAN_FRONTEND=noninteractive
@@ -65,4 +65,13 @@ AGENT_RESTRICTED_EXECUTION_WRAPPER_SHA256=$(sha256sum /usr/libexec/kuintessence/
 cp /workspace/deploy/schedulers/common/start-agent.sh /usr/local/bin/kq-start-agent
 cp /workspace/deploy/schedulers/common/supervise-agent.py /usr/local/bin/kq-supervise-agent.py
 chmod 755 /usr/local/bin/kq-start-agent /usr/local/bin/kq-supervise-agent.py
-exec bash /workspace/deploy/schedulers/slurm/entrypoint.sh
+case "$LAB_MEDIA_EXECUTION" in
+  slurm) exec bash /workspace/deploy/schedulers/slurm/entrypoint.sh ;;
+  pbs-pro)
+    apt-get install -y --no-install-recommends postgresql postgresql-contrib libical3 libedit2 libpython3.8 libhwloc15 libtcl8.6 libtk8.6
+    tar xzf /lab-pbs/pbs-install.tar.gz -C /opt
+    [[ $(/opt/pbs/bin/qsub --version) == 'pbs_version = 23.06.06' ]]
+    exec bash /workspace/deploy/schedulers/pbs/entrypoint.sh
+    ;;
+  *) echo "Unsupported media scheduler" >&2; exit 2 ;;
+esac

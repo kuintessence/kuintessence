@@ -27,7 +27,7 @@ assert not refund_scenario if coordinated else scenario in ("success", "refund",
 assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto", "media")
 media_scenario = scenario == "media"
 media_execution = os.environ.get("KQ_MEDIA_EXECUTION", "")
-assert media_execution in ("", "slurm")
+assert media_execution in ("", "slurm", "pbs-pro")
 assert not media_execution or media_scenario
 assert not media_scenario or mode == "bilateral_direct"
 media_age = pathlib.Path(os.environ["KQ_MEDIA_AGE_BIN"]).resolve(strict=True) if media_scenario else None
@@ -1877,7 +1877,10 @@ try:
         SANDBOX_SIGNING_PRIVATE_KEY_PEM=(root / "sandbox.key").read_text(),
     )
     if media_execution:
-        from media_hpc import prepare_runtime, configure_target
+        from media_hpc import prepare_runtime, configure_target, validate_pbs_cache
+        hpc_pbs = validate_pbs_cache(os.environ["KQ_MEDIA_PBS_DIR"], image) if media_execution == "pbs-pro" else None
+        if hpc_pbs:
+            shutil.copyfile(hpc_pbs / "pbs-install.json", logs / "pbs-runtime.json")
         hpc_runtime, hpc_metadata = prepare_runtime(root, os.environ["KQ_MEDIA_RUNTIME_DIR"], log)
         import base64
         public_der = subprocess.check_output(["openssl", "pkey", "-pubin", "-in", str(root / "sandbox.pub"), "-outform", "DER"])
@@ -2050,7 +2053,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             "--output-dir",
             str(root / "agent"),
             "--scheduler",
-            "slurm" if media_execution else "kubernetes",
+            media_execution or "kubernetes",
         ]
     )
     (root / "agent/agent.env").open("a").write(
@@ -2344,7 +2347,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         pod["spec"]["containers"][0]["volumeMounts"].append({"name": "age", "mountPath": "/opt/kq/age", "readOnly": True})
     source_pod_template = copy.deepcopy(pod)
     if media_execution:
-        configure_target(pod, root, hpc_runtime, hpc_metadata)
+        configure_target(pod, root, hpc_runtime, hpc_metadata, media_execution, hpc_pbs)
     k(["apply", "-f", "-"], json.dumps(pod))
     token = api(
         "auth/login",
@@ -2353,7 +2356,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     for _ in range(180 if media_execution else 60):
         if media_execution:
             phase = json.loads(k(["get", "pod", "scheduler", "-n", namespace, "-o", "json"]).stdout)["status"].get("phase")
-            assert phase not in ("Failed", "Succeeded"), "Slurm Agent bootstrap exited; inspect agent.log"
+            assert phase not in ("Failed", "Succeeded"), "HPC Agent bootstrap exited; inspect agent.log"
         status = api("agents", token=token)
         rows = (
             status
@@ -2368,26 +2371,27 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         time.sleep(1)
     else:
         raise RuntimeError("Agent did not become online")
-    print("Real " + ("Slurm" if media_execution else "Kubernetes") + " Agent online through direct mTLS", flush=True)
+    print("Real " + (media_execution or "Kubernetes") + " Agent online through direct mTLS", flush=True)
     if media_execution:
+        media_queue = "workq" if media_execution == "pbs-pro" else "debug"
         for _ in range(90):
             inventory = api("admin/agents/" + env["LAB_AGENT"] + "/queue-inventory", token=token)
-            if inventory["status"] == "available" and any(q["queueName"] == "debug" for q in inventory["queues"]):
+            if inventory["status"] == "available" and any(q["queueName"] == media_queue for q in inventory["queues"]):
                 break
             time.sleep(1)
         else:
             (logs / "media-queue-inventory.json").write_text(json.dumps(inventory, indent=2))
-            raise RuntimeError("Actual Slurm queue inventory is unavailable")
+            raise RuntimeError("Actual HPC queue inventory is unavailable")
     api(
         "admin/queues",
         {
             "queueId": "federation-lab-debug",
-            "name": "Isolated Slurm" if media_execution else "Isolated Kubernetes",
+            "name": "Isolated " + media_execution if media_execution else "Isolated Kubernetes",
             "providerOrgId": registration["orgId"],
             "visibleOrgIds": [registration["orgId"]],
             "agentId": env["LAB_AGENT"],
-            "schedulerType": "slurm" if media_execution else "kubernetes",
-            "queueName": "debug" if media_execution else namespace,
+            "schedulerType": media_execution or "kubernetes",
+            "queueName": media_queue if media_execution else namespace,
         },
         token,
     )
