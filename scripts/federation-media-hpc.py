@@ -12,9 +12,10 @@ import uuid
 
 assert os.environ.get("KQ_MEDIA_HPC_LAB") == "1", "Set KQ_MEDIA_HPC_LAB=1"
 case = os.environ.get("KQ_MEDIA_HPC_CASE", "")
-assert case in ("", "complete", "stop", "agent-crash"), "Unknown lab case"
+assert case in ("", "complete", "stop", "agent-crash", "cgroup"), "Unknown lab case"
 scheduler = os.environ.get("KQ_MEDIA_SCHEDULER", "slurm")
 assert scheduler in ("slurm", "pbs-pro"), "Unsupported scheduler"
+assert case != "cgroup" or scheduler == "pbs-pro", "The cgroup hook lab requires PBS"
 repo = Path(__file__).resolve().parent.parent
 runtime = Path(os.environ["KQ_MEDIA_RUNTIME_DIR"]).resolve(strict=True)
 age = Path(os.environ["KQ_MEDIA_AGE_BIN"]).resolve(strict=True)
@@ -162,9 +163,12 @@ useradd -u 24001 -m scientist
             assert attempt < 89, "PBS/Agent readiness timeout"
             time.sleep(1)
     print(f"Real {scheduler} ready; testing imported data and scheduler stopping", flush=True)
-    probe = run(["env", "KQ_MEDIA_HPC_LAB=1", "KQ_MEDIA_AGE_TEST_BIN=/opt/kq/age",
-                 "KQ_MEDIA_HPC_CASE=" + case, "KQ_MEDIA_SCHEDULER=" + scheduler,
-                 "bun", "/workspace/scripts/federation-media-hpc-probe.ts"], timeout=150)
+    if case == "cgroup":
+        probe = run(["env", "KQ_MEDIA_CGROUP_LAB=1", "bash", "/workspace/scripts/pbs-cgroup-lab.sh"], timeout=180)
+    else:
+        probe = run(["env", "KQ_MEDIA_HPC_LAB=1", "KQ_MEDIA_AGE_TEST_BIN=/opt/kq/age",
+                     "KQ_MEDIA_HPC_CASE=" + case, "KQ_MEDIA_SCHEDULER=" + scheduler,
+                     "bun", "/workspace/scripts/federation-media-hpc-probe.ts"], timeout=150)
     (output / "observations.jsonl").write_text(probe.stdout)
     (output / "probe.log").write_text(probe.stderr)
     (output / "checkout.json").write_text(json.dumps({

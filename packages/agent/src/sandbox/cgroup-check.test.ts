@@ -1,22 +1,13 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
-test("per-job cgroup checker passes offline Python boundary fixtures", async () => {
+test.each([
+  { directory: "../../scripts/", pattern: "test_sandbox_cgroup_check.py" },
+  { directory: "../../../../deploy/schedulers/pbs/", pattern: "test_kq_cgroup_v2.py" },
+])("Sandbox cgroup boundary fixtures: $pattern", async ({ directory, pattern }) => {
   const child = Bun.spawn({
-    cmd: [
-      "python3",
-      "-I",
-      "-B",
-      "-m",
-      "unittest",
-      "discover",
-      "-s",
-      ".",
-      "-p",
-      "test_sandbox_cgroup_check.py",
-      "-v",
-    ],
-    cwd: fileURLToPath(new URL("../../scripts/", import.meta.url)),
+    cmd: ["python3", "-I", "-B", "-m", "unittest", "discover", "-s", ".", "-p", pattern, "-v"],
+    cwd: fileURLToPath(new URL(directory, import.meta.url)),
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",

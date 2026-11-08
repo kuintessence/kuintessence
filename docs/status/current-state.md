@@ -1,5 +1,7 @@
 # 当前功能与使用边界
 
+新增显式队列启用的 PBS cgroup v2 hook；真实 OpenPBS 23 单 vnode CPU 作业已验证 1 CPU/64 MiB 分组、实际限流/作业内存超限终止、迁出拒绝与结束清理。尚未接通 trusted wrapper 的签名资源强制检查、自动能力发布、Slurm 配置和完整联合验收。见[PBS v2 配置与边界](../../deploy/schedulers/pbs/cgroup-v2.md)。
+
 新增逐作业 cgroup 检查器，已通过边界夹具及真实内核 CPU 限流、作业内存超限终止实验；拒绝仅有父 Pod 限额、错误作业归属或可写控制入口。它尚未接入生产执行入口及能力发布，不等于 Slurm/PBS 资源隔离已完成。见[计算节点资源检查](../../deploy/federation/sandbox-cgroup-lab.md)。
 
 Sandbox 的 CPU/内存需求现由 Server 按实际 Job 签名，Agent 在输入暂存前和调度器提交时核对，联邦续期核对 Job/outbox/签名的一致性；追加挂载与恢复保留原值。缺字段旧清单拒绝派发和续期，旧运行记录仍可监控或取消。升级先排空 Sandbox 并同步 Server/Agent；这项约束尚不能证明 HPC 逐作业 cgroup 生效。见[身份与受限执行](../software.md#身份与受限执行)。

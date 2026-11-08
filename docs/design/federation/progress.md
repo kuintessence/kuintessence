@@ -2731,3 +2731,23 @@ v1/v2 离线夹具共 9 项，含多组失败输入，已接入 Bun 测试入口
 其余蓝图、远程预览与最终验收保持原范围，未推送、合并或部署。
 
 本轮全仓 lint 通过（原有 47 warnings/1 info），全仓 typecheck 含 protobuf 生成与实验脚本通过；882 个文档目标及 diff 检查通过。未改生成文件、依赖锁或数据库迁移。
+
+
+## PBS cgroup v2 的真实调度作业
+
+核对缓存 OpenPBS 23 与上游官方 hook，均未提供 v2 控制文件支持。新增可由 CP 在明确队列上部署的原生 MOM hook，
+读取单 vnode 的实际分配建立 cgroup；launch/attach 再核对后迁入 PBS 指定进程，结束时确认整个原分组停止再删除。
+未选队列不迁移；拒绝多节点、未知 vnode 资源、漂移限额、旧进程未停止的 Job ID 复用。hook 使用 PBS 的 builtins 加载入口。
+配置与父路径须 root 管理，锁序列化原作业组操作；不自动删除无法核实的中断孤儿任务。
+
+6 项离线测试已进入常规 Bun 边界测试入口。独立 PBS Pod 的真实作业退出 0：
+非 root 检查器读到 1 CPU/64 MiB 的本作业限额，CPU 限流计数增加 19，128 MiB 分配触发 oom_kill=1；
+尝试迁出分组被拒绝，PBS end hook 删除原 cgroup，临时 namespace 已确认不存在。
+初次失败后补充 stdout/stderr/MOM 诊断，修正原生 hook 入口，未放宽检查。
+实验分支已整理进既有一次性运行器的 cgroup case，公开入口静态检查通过，未重复部署。
+
+配置及复现见[PBS cgroup v2](../../../deploy/schedulers/pbs/cgroup-v2.md)。检查器与 trusted wrapper/SelfAccount 的强制集成、
+启动/队列能力发布、Slurm 配置、MOM/主机中断恢复以及带签名资源的完整联合验收仍待完成。
+其他蓝图目标、PR 预览及用户最终验收范围保持不变；未推送、合并或远程部署。
+
+本轮全仓 lint（原有 47 warnings/1 info）、全仓 typecheck（含 protobuf 生成及实验脚本）、888 个本地文档目标与 diff 检查通过。未改生成文件、依赖锁或数据库迁移。
