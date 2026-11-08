@@ -99,7 +99,7 @@ Market 链码调用同通道 Commercial 的 `GetExecutionGatePresence`，仅已�
 
 入队仍返回 202/pending，只有原交易 VALID 才标 committed。同一原发布/认领的并发关闭串行去重；改用另一 closureId 拒绝。已有未认领撤回因认领竞争失败，不妨碍发起本关闭。新待办锁定原市场占额，已释放占额不能被新 ID 重新使用；精确重放返回原记录。本地提案与签名交换的停止方式见下文；公共 CLOSED 仍不等同于所有本地义务已结束，也不直接回收任务占额。
 
-升级须应用 Drizzle 生成的 [0150](../../packages/db/migrations/0150_ancient_oracle.sql)，同步部署共享 schema、Commercial/Market 链码、Adapter 和 Server，再启用该入口。先让 Commercial 支持存在性查询；旧 Market 客户端无法解析新增 CLOSED 记录，不应与新写入混用。Web 专用操作、自动取消编排及收尾占额回收仍需继续接线。
+升级须应用 Drizzle 生成的 [0150](../../packages/db/migrations/0150_ancient_oracle.sql)，同步部署共享 schema、Commercial/Market 链码、Adapter 和 Server，再启用该入口。先让 Commercial 支持存在性查询；旧 Market 客户端无法解析新增 CLOSED 记录，不应与新写入混用。Web 专用操作及自动取消编排仍需继续接线。
 
 真实并发专项：
 
@@ -119,6 +119,8 @@ Server 商业 worker 每轮选择一笔到期的原发布或认领，通过本�
 
 无活动租约的提案、自动执行待办及尚未完成的市场请求/预留/释放签名交换按批转为 `closed`，保留原请求、签名、回执与累计授权使用量。已有完成的请求/签名交换保留原完成状态；未完成操作的 `MARKET_CLOSED` 表示关闭原因，不表示执行成功。仍有租约的操作先完成其原有校验，过期 worker 不能覆盖已关闭状态。原停止交付在核对相同需求、认领、双方及商业域后也可结束，不再等待一个不存在的激活。
 
-已经准备为交易、可能提交但结果未知的市场/商业检查点继续使用原交易 ID 恢复，不能用新提案取代。此项不删除检查点、不退款、不恢复累计预授权额度，也不释放数据库收尾占额；未决交易与占额回收仍单独处理。完整两站 Server/Agent 联合验收和 PR 预览尚未完成。
+已经准备为交易、可能提交但结果未知的市场/商业检查点继续使用原交易 ID 恢复，不能用新提案取代。尚未广播的 proposal 在无活动租约时标为 abandoned，未提交或已 INVALID 的意图转为 closed 并记录审计，保留原检查点；不能把 closed 当成 committed。原交易结果未知时仍占额，确认收尾后按[存储回收条件](storage-capacity.md#自动回收条件与边界)释放本地收尾占额，不退款、不恢复累计预授权额度。完整两站 Server/Agent 联合验收和 PR 预览尚未完成。
 
 应用 Drizzle 生成的 [0151](../../packages/db/migrations/0151_secret_ultimatum.sql) 后部署新版 Server。新增表仅保存公开市场状态，不复制价格、合同或用量私有字段。
+
+迁移 [0152](../../packages/db/migrations/0152_next_quasimodo.sql) 为市场/商业提交增加 closed 状态。保存关闭事实后拒绝新建撤回/关闭意图；精确重放仍返回原记录，恢复未知交易仍沿原检查点。

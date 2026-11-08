@@ -13,6 +13,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { federationMaterialDigest } from "./assets";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
+import { retireUnreservedLedger } from "./unreserved-ledger";
 
 function lockKey(siteId: string, demandId: string) {
   return `federation-unreserved-closure:${siteId}:${demandId}`;
@@ -192,5 +193,6 @@ export async function retireUnreservedIntents(db: PgDb, siteId: string) {
       ORDER BY s.record_id LIMIT 8 FOR UPDATE OF s SKIP LOCKED
     ) UPDATE federation_commercial_approval_syncs s SET state = 'closed', lease_token = NULL, lease_until = NULL, last_error = 'MARKET_CLOSED'
       FROM candidates c WHERE s.local_site_id = c.local_site_id AND s.record_id = c.record_id AND s.record_kind = c.record_kind`);
+    await retireUnreservedLedger(tx, siteId);
   });
 }

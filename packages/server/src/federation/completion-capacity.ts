@@ -96,7 +96,8 @@ async function hasClaim(tx: PgTransaction, siteId: string, intent: Intent, admis
         eq(claims.kind, intent.kind),
         eq(claims.intentId, intent.intentId),
       ),
-    );
+    )
+    .for("share");
   if (prior && (prior.digest !== intent.digest || (admission && prior.releasedAt)))
     throw new FederationError("OPERATION_CONFLICT");
   return !!prior;

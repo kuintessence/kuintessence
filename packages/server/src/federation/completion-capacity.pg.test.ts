@@ -397,3 +397,25 @@ test("completion release does not expire unknown accepted work and backs off blo
   expect(await f.service.advanceNext()).toBe(false);
   expect(await f.service.inspect()).toMatchObject({ allocatedBytes: "60" });
 });
+
+test("completion admission reuses a shared claim fence so release cannot pass an accepted new obligation", async () => {
+  const f = await fixture();
+  await db.transaction((tx) => allocateTaskCompletion(tx, f.siteId, f.request, f.storage.guard));
+  await db.transaction(async (tx) => {
+    await allocateTaskCompletion(tx, f.siteId, f.request, f.storage.guard);
+    await replica.transaction(async (other) => {
+      await allocateTaskCompletion(other, f.siteId, f.request, f.storage.guard);
+      expect(
+        await other
+          .select()
+          .from(claims)
+          .where(eq(claims.localSiteId, f.siteId))
+          .for("update", { skipLocked: true }),
+      ).toHaveLength(0);
+    });
+  });
+  await db.update(claims).set({ releasedAt: new Date() }).where(eq(claims.localSiteId, f.siteId));
+  await expect(
+    replica.transaction((tx) => allocateTaskCompletion(tx, f.siteId, f.request, f.storage.guard)),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+});

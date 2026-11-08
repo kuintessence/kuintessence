@@ -1,0 +1,4 @@
+ALTER TABLE "federation_commercial_submissions" DROP CONSTRAINT "federation_commercial_submission_state";--> statement-breakpoint
+ALTER TABLE "federation_market_submissions" DROP CONSTRAINT "federation_market_submission_state";--> statement-breakpoint
+ALTER TABLE "federation_commercial_submissions" ADD CONSTRAINT "federation_commercial_submission_state" CHECK ("federation_commercial_submissions"."state" IN ('pending','committed','needs_review','closed'));--> statement-breakpoint
+ALTER TABLE "federation_market_submissions" ADD CONSTRAINT "federation_market_submission_state" CHECK ("federation_market_submissions"."state" IN ('pending','committed','needs_review','closed'));

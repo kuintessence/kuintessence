@@ -9409,3 +9409,259 @@ test("unreserved local closure also retires preapproved releases without creatin
   await f.transport.a.discover();
   expect(await f.transport.a.advanceNext()).toBe(false);
 });
+
+async function unreservedCapacityFixture(signed = false) {
+  const f = await reservationProposalFixture();
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const { federationCompletionClaims: claims } = await import("@kuintessence/db");
+  await f.submit();
+  if (signed) {
+    await f.source.advanceNext();
+    await f.source.advanceNext();
+    await f.target.advanceNext();
+  }
+  const providerLedger = new FederationCommercialSubmissionService(
+    db,
+    f.b.signing.siteId,
+    f.adapter,
+  );
+  for (let i = 0; i < 3; i++) {
+    await f.service.advanceNext();
+    await providerLedger.advanceNext();
+  }
+  const capacities = [];
+  for (const site of [f.a.signing.siteId, f.b.signing.siteId]) {
+    const storage = testCompletionStorage();
+    const capacity = new FederationCompletionCapacity(db, site, storage.guard);
+    await capacity.configure(
+      { reserveId: storage.reserveId, capacityBytes: "200", taskBytes: "60", marketBytes: "20" },
+      f.actor.userId,
+    );
+    capacities.push(capacity);
+  }
+  const sourceCapacity = capacities[0],
+    providerCapacity = capacities[1];
+  if (!sourceCapacity || !providerCapacity) throw new Error("Missing capacity fixture");
+  const sourceExecution = new FederationCommercialExecutionService(db, f.a.signing, f.market);
+  const close = async () => {
+    const state = unreservedClosedState(f.state);
+    for (const site of [f.a.signing.siteId, f.b.signing.siteId])
+      await observeTestClosure(site, state);
+  };
+  const retire = async () => {
+    for (const site of [f.a.signing.siteId, f.b.signing.siteId])
+      await retireUnreservedIntents(db, site);
+  };
+  const scan = async (provider = false) => {
+    const site = provider ? f.b.signing.siteId : f.a.signing.siteId;
+    await db
+      .update(claims)
+      .set({ nextCheckAt: new Date(0) })
+      .where(eq(claims.localSiteId, site));
+    const capacity = provider ? providerCapacity : sourceCapacity;
+    for (let i = 0; i < 4; i++) if (!(await capacity.advanceNext())) break;
+    return capacity.inspect();
+  };
+  const reserve = async () => {
+    const other = await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId);
+    await sourceExecution.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      f.reservation.reservationId,
+      other.approvalJws,
+    );
+  };
+  const record = () => sourceExecution.get(f.actor, f.revisionId, f.reservation.reservationId);
+  return {
+    ...f,
+    sourceCapacity,
+    providerCapacity,
+    sourceExecution,
+    close,
+    retire,
+    scan,
+    reserve,
+    record,
+    claims,
+  };
+}
+
+test("unreserved capacity releases an unsigned closed task and both manual market allocations after local queues drain", async () => {
+  const f = await unreservedCapacityFixture();
+  expect((await f.scan()).allocatedBytes).toBe("80");
+  await f.close();
+  expect((await f.scan()).allocatedBytes).toBe("80");
+  await f.retire();
+  expect(await f.scan()).toMatchObject({ allocatedBytes: "0", releasedObligations: 2 });
+  expect(await f.scan(true)).toMatchObject({ allocatedBytes: "0", releasedObligations: 1 });
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(0);
+  await expect(f.source.retry(f.actor, f.revisionId, f.reservation.reservationId)).rejects.toThrow(
+    "CANCELLATION_REQUESTED",
+  );
+});
+
+test("unreserved capacity abandons only unbroadcast proposals and exposes closed ledger status without a success receipt", async () => {
+  const f = await unreservedCapacityFixture(true);
+  await f.reserve();
+  await f.service.advanceNext();
+  const before = await f.record();
+  expect(before.submission?.transaction?.stage).toBe("proposal");
+  await f.close();
+  await f.retire();
+  const after = await f.record();
+  expect(after.submission).toMatchObject({
+    state: "closed",
+    transaction: {
+      stage: "abandoned",
+      transactionId: before.submission?.transaction?.transactionId,
+    },
+  });
+  expect((await f.scan()).allocatedBytes).toBe("0");
+  expect((await f.scan(true)).allocatedBytes).toBe("0");
+  await expect(f.service.retry(f.actor, f.revisionId, before.submission?.id ?? "")).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+});
+
+test("unreserved capacity retains an unknown private transaction until its original INVALID is recovered", async () => {
+  const f = await unreservedCapacityFixture(true);
+  await f.reserve();
+  for (let i = 0; i < 2; i++) await f.service.advanceNext();
+  const before = await f.record();
+  expect(before.submission?.transaction?.stage).toBe("transaction");
+  await f.close();
+  await f.retire();
+  expect((await f.scan()).allocatedBytes).toBe("80");
+  expect((await f.scan(true)).allocatedBytes).toBe("0");
+  f.adapter.outcome = "invalid";
+  await new FederationCommercialSubmissionService(db, f.a.signing.siteId, f.adapter).advanceNext();
+  await f.retire();
+  expect((await f.record()).submission).toMatchObject({
+    state: "closed",
+    transaction: { stage: "invalid", transactionId: before.submission?.transaction?.transactionId },
+  });
+  expect((await f.scan()).allocatedBytes).toBe("0");
+  expect(
+    f.adapter.prepares.filter((input) => input.operation === "reserve-execution"),
+  ).toHaveLength(1);
+});
+
+test("unreserved capacity keeps a live lease and rejects changed evidence or task bytes before release", async () => {
+  const f = await unreservedCapacityFixture();
+  await db
+    .update(federationReservationProposals)
+    .set({ leaseToken: randomUUID(), leaseUntil: new Date(Date.now() + 60_000) })
+    .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId));
+  await f.close();
+  await f.retire();
+  expect((await f.scan()).allocatedBytes).toBe("80");
+  await db
+    .update(federationReservationProposals)
+    .set({ leaseUntil: new Date(0) })
+    .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId));
+  await f.retire();
+  const [evidence] = await db
+    .select()
+    .from(federationUnreservedClosures)
+    .where(eq(federationUnreservedClosures.localSiteId, f.a.signing.siteId));
+  if (!evidence) throw new Error("Missing closure evidence");
+  await db
+    .update(federationUnreservedClosures)
+    .set({ digest: `sha256:${"0".repeat(64)}` })
+    .where(eq(federationUnreservedClosures.localSiteId, f.a.signing.siteId));
+  expect((await f.scan()).allocatedBytes).toBe("80");
+  await db
+    .update(federationUnreservedClosures)
+    .set({ digest: evidence.digest })
+    .where(eq(federationUnreservedClosures.localSiteId, f.a.signing.siteId));
+  const original = await f.view();
+  if (!original) throw new Error("Missing proposal");
+  await db
+    .update(federationReservationProposals)
+    .set({ digest: `sha256:${"0".repeat(64)}` })
+    .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId));
+  expect((await f.scan()).allocatedBytes).toBe("80");
+  await db
+    .update(federationReservationProposals)
+    .set({ digest: original.digest })
+    .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId));
+  expect((await f.scan()).allocatedBytes).toBe("0");
+});
+
+test("unreserved capacity rollback preserves proposal checkpoints and allocations when retirement audit fails", async () => {
+  const f = await unreservedCapacityFixture(true);
+  await f.reserve();
+  await f.service.advanceNext();
+  await f.close();
+  await db.execute(
+    sql`CREATE FUNCTION unreserved_retire_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.commercial.retire_unreserved' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER unreserved_retire_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION unreserved_retire_audit_fail()`,
+  );
+  try {
+    await expect(f.retire()).rejects.toThrow();
+  } finally {
+    await db.execute(sql`DROP TRIGGER unreserved_retire_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION unreserved_retire_audit_fail()`);
+  }
+  expect((await f.record()).submission).toMatchObject({
+    state: "pending",
+    transaction: { stage: "proposal" },
+  });
+  expect((await f.scan()).allocatedBytes).toBe("80");
+  await f.retire();
+  expect((await f.scan()).allocatedBytes).toBe("0");
+});
+
+test("unreserved capacity refuses inconsistent committed private evidence and does not infer a refund", async () => {
+  const f = await unreservedCapacityFixture(true);
+  await f.reserve();
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  await f.close();
+  await f.retire();
+  expect((await f.record()).submission?.state).toBe("committed");
+  expect((await f.scan()).allocatedBytes).toBe("80");
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(1);
+});
+
+test("unreserved capacity retains an active parent workflow and release auditing remains atomic", async () => {
+  const f = await unreservedCapacityFixture();
+  const runId = randomUUID();
+  await db.insert(workflowRuns).values({
+    id: runId,
+    name: "Unreserved parent workflow",
+    status: "running",
+    submittedBy: f.actor.userId,
+  });
+  await db.insert(workflowExecutionLeases).values({ runId });
+  await db.insert(workflowExecutionDelegations).values({
+    runId,
+    pathHash: "a".repeat(64),
+    path: "remote",
+    nodeId: "remote",
+    localSiteId: f.a.signing.siteId,
+    operationId: f.reservation.request.operationId,
+    intentDigest: "b".repeat(64),
+    request: f.reservation.request,
+  });
+  await f.close();
+  await f.retire();
+  expect((await f.scan()).allocatedBytes).toBe("80");
+  await db.update(workflowRuns).set({ status: "cancelled" }).where(eq(workflowRuns.id, runId));
+  await db.execute(
+    sql`CREATE FUNCTION unreserved_release_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.storage.completion.release' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER unreserved_release_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION unreserved_release_audit_fail()`,
+  );
+  try {
+    await expect(f.scan()).rejects.toThrow();
+  } finally {
+    await db.execute(sql`DROP TRIGGER unreserved_release_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION unreserved_release_audit_fail()`);
+  }
+  expect((await f.sourceCapacity.inspect()).allocatedBytes).toBe("80");
+  expect((await f.scan()).allocatedBytes).toBe("0");
+});

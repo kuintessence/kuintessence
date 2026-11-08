@@ -4,11 +4,14 @@ import { sql } from "drizzle-orm";
 import { federationMaterialDigest } from "./assets";
 import { readFederationCancellationState } from "./cancellation-state";
 import { preexecutionBlocker } from "./completion-preexecution";
+import { unreservedCompletionBlocker } from "./completion-unreserved";
 
 type Claim = typeof federationCompletionClaims.$inferSelect;
 
 /** Called with the claim locked: new post-completion obligations cannot commit during this read. */
 export async function completionBlocker(tx: PgTransaction, claim: Claim): Promise<string | null> {
+  const unreserved = await unreservedCompletionBlocker(tx, claim);
+  if (unreserved !== undefined) return unreserved;
   const site = claim.localSiteId;
   if (claim.kind === "market") {
     const [row] = await tx.execute<{ closed: boolean }>(sql`

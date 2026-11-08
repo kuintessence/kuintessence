@@ -127,6 +127,7 @@ export async function verifyGateDatabase(
       ["commercial", siteA, "commercial"],
       ["market", siteA, "market"],
       ["commercial", siteB, "provider-commercial"],
+      ["market", siteB, "provider-market"],
     ] as const) {
       const user = kind === "market" ? "User2" : "User1";
       const userDomain = `${user}@${site.name.toLowerCase()}.kq.test`;
@@ -253,6 +254,9 @@ export async function verifyGateDatabase(
         });
     }
     const marketClient = new UnixMarketClient(join(root, "gate-db-market", "market.sock"));
+    const providerMarketClient = new UnixMarketClient(
+      join(root, "gate-db-provider-market", "market.sock"),
+    );
     const commercialClient = new UnixCommercialClient(
       join(root, "gate-db-commercial", "commercial.sock"),
     );
@@ -278,7 +282,7 @@ export async function verifyGateDatabase(
     const bExecution = new FederationCommercialExecutionService(
       db,
       b.key,
-      marketClient,
+      providerMarketClient,
       undefined,
       providerStorage.guard,
     );
@@ -412,7 +416,84 @@ export async function verifyGateDatabase(
     pass(
       "real Fabric private release reclaims provider capacity; source waits for its original public VALID closure, including lost-response recovery, without reopening execution",
     );
-    if (process.argv.includes("--preexecution-closure")) return;
+    if (process.argv.includes("--preexecution-closure")) {
+      await approve(fixture.freshReservation);
+      const sourceLedger = new FederationCommercialSubmissionService(
+        db,
+        a.key.siteId,
+        commercialClient,
+      );
+      assert(await sourceLedger.advanceNext());
+      assert(await sourceLedger.advanceNext());
+      const original = await aExecution.get(
+        a.actor,
+        revision,
+        fixture.freshReservation.reservationId,
+      );
+      assert(original.submission?.transaction?.stage === "transaction");
+      assert.equal(await scan(), "80");
+      assert.equal(await scan(true), "80");
+      const providerMarket = new FederationMarketService(db, b.key.siteId, providerMarketClient);
+      const unreservedId = randomUUID();
+      await providerMarket.enqueue(b.actor, {
+        operation: "close-unreserved-demand",
+        closure: {
+          demandId: fixture.freshReservation.demandId,
+          closureId: unreservedId,
+          claimId: fixture.freshReservation.reservationId,
+          commercialDomainId: fixture.freshReservation.domainId,
+          issuerSiteId: b.key.siteId,
+          expectedVersion: fixture.freshReservation.claimVersion,
+        },
+      });
+      const deadline = Date.now() + 120000;
+      while ((await providerMarket.get(b.actor, unreservedId)).operation.state !== "committed") {
+        assert(Date.now() < deadline, "Unreserved public closure reaches VALID");
+        await providerMarket.advanceNext();
+        const status = await providerMarket.get(b.actor, unreservedId);
+        assert.notEqual(
+          status.operation.state,
+          "needs_review",
+          status.operation.lastError ?? "Closure refused",
+        );
+        await Bun.sleep(200);
+      }
+      // Each institution observes through its own TLS identity and adapter. The old released demand is also eligible for a first read.
+      for (let i = 0; i < 2; i++) {
+        await providerMarket.reconcileClosures();
+        await resumedClosure.reconcileClosures();
+      }
+      assert.equal(await scan(true), "0");
+      assert.equal(await scan(), "80");
+      let settled = await aExecution.get(a.actor, revision, fixture.freshReservation.reservationId);
+      while (settled.submission?.transaction?.stage !== "invalid") {
+        assert(Date.now() < deadline, "Original private transaction resolves after public closure");
+        await sourceLedger.advanceNext();
+        settled = await aExecution.get(a.actor, revision, fixture.freshReservation.reservationId);
+        await Bun.sleep(200);
+      }
+      assert.equal(
+        settled.submission.transaction.transactionId,
+        original.submission.transaction.transactionId,
+      );
+      assert.equal(settled.submission.transaction.validationCode, 11);
+      await resumedClosure.reconcileClosures();
+      assert.equal(
+        (await aExecution.get(a.actor, revision, fixture.freshReservation.reservationId)).submission
+          ?.state,
+        "closed",
+      );
+      assert.equal(await scan(), "0");
+      await assert.rejects(
+        aExecution.approve(a.actor, revision, fixture.freshReservation),
+        (error: unknown) =>
+          error instanceof FederationError && error.code === "CANCELLATION_REQUESTED",
+      );
+      pass(
+        "real Fabric unreserved closure drains both institutions through their own adapters; provider reclaims first, source retains capacity until original private MVCC INVALID is recovered and retired",
+      );
+      return;
+    }
     await approve(fixture.freshReservation);
     await drain(fixture.freshReservation.reservationId, "reserve-execution");
     pass(

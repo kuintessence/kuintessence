@@ -786,3 +786,101 @@ test("unreserved observation audit failure and a late changed origin cannot pers
     0,
   );
 });
+
+test.each([
+  1, 2,
+])("unreserved market retirement preserves transaction uncertainty and releases only drained allocation (checkpoints=%s)", async (checkpoints) => {
+  const f = await fixture();
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { federationCompletionClaims: claims } = await import("@kuintessence/db");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  await f.service.enqueue(f.actor, f.input);
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  const state = unreservedState(f.input.demand);
+  if (!state.unreservedClosure) throw new Error("Missing closure fixture");
+  const input = {
+    operation: "close-unreserved-demand" as const,
+    closure: { ...state.unreservedClosure, issuerSiteId: f.siteId },
+  };
+  await f.service.enqueue(f.actor, input);
+  for (let i = 0; i < checkpoints; i++) await f.service.advanceNext();
+  const before = await f.service.get(f.actor, input.closure.closureId);
+  const storage = testCompletionStorage();
+  const capacity = new FederationCompletionCapacity(db, f.siteId, storage.guard);
+  await capacity.configure(
+    { reserveId: storage.reserveId, capacityBytes: "100", taskBytes: "60", marketBytes: "20" },
+    f.actor.userId,
+  );
+  f.adapter.onQuery = async () => ({ operation: "get-demand", demand: state });
+  await f.service.reconcileClosures();
+  await capacity.advanceNext();
+  if (checkpoints === 2) {
+    expect((await capacity.inspect()).allocatedBytes).toBe("20");
+    expect((await f.service.get(f.actor, input.closure.closureId)).operation.state).toBe("pending");
+    f.adapter.outcome = "invalid";
+    await new FederationMarketService(db, f.siteId, f.adapter).advanceNext();
+    await f.service.reconcileClosures();
+    await db
+      .update(claims)
+      .set({ nextCheckAt: new Date(0) })
+      .where(eq(claims.localSiteId, f.siteId));
+    await capacity.advanceNext();
+  }
+  expect((await capacity.inspect()).allocatedBytes).toBe("0");
+  const after = await f.service.get(f.actor, input.closure.closureId);
+  expect(after.operation.state).toBe("closed");
+  expect(after.transactions[0]).toMatchObject({
+    transactionId: before.transactions[0]?.transactionId,
+    stage: checkpoints === 1 ? "abandoned" : "invalid",
+  });
+  await expect(f.service.retry(f.actor, input.closure.closureId)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(
+    f.service.enqueue(f.actor, {
+      ...input,
+      closure: { ...input.closure, closureId: randomUUID() },
+    }),
+  ).rejects.toThrow("CANCELLATION_REQUESTED");
+  expect((await f.service.enqueue(f.actor, input)).state).toBe("closed");
+});
+
+test("unreserved market retirement clears only expired committed leases after a worker dies before finally", async () => {
+  const f = await fixture();
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { federationCompletionClaims: claims } = await import("@kuintessence/db");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  await f.service.enqueue(f.actor, f.input);
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  const storage = testCompletionStorage();
+  const capacity = new FederationCompletionCapacity(db, f.siteId, storage.guard);
+  await capacity.configure(
+    { reserveId: storage.reserveId, capacityBytes: "100", taskBytes: "60", marketBytes: "20" },
+    f.actor.userId,
+  );
+  const state = unreservedState(f.input.demand);
+  f.adapter.onQuery = async () => ({ operation: "get-demand", demand: state });
+  const token = randomUUID();
+  await db
+    .update(submissions)
+    .set({ leaseToken: token, leaseUntil: new Date(Date.now() + 60_000) })
+    .where(eq(submissions.id, f.id));
+  await f.service.reconcileClosures();
+  await capacity.advanceNext();
+  expect((await capacity.inspect()).allocatedBytes).toBe("20");
+  expect((await db.select().from(submissions).where(eq(submissions.id, f.id)))[0]?.leaseToken).toBe(
+    token,
+  );
+  await db
+    .update(submissions)
+    .set({ leaseUntil: new Date(0) })
+    .where(eq(submissions.id, f.id));
+  await new FederationMarketService(db, f.siteId, f.adapter).reconcileClosures();
+  await db
+    .update(claims)
+    .set({ nextCheckAt: new Date(0) })
+    .where(eq(claims.localSiteId, f.siteId));
+  await capacity.advanceNext();
+  expect((await capacity.inspect()).allocatedBytes).toBe("0");
+  expect((await f.view()).transactions[0]?.stage).toBe("committed");
+});

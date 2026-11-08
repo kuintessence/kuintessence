@@ -242,12 +242,7 @@ export class FederationMarketService {
     const input = MarketAdapterProposalInputSchema.parse(row.input);
     if (federationMaterialDigest(input) !== row.digest)
       throw new FederationError("OPERATION_CONFLICT");
-    if (
-      !recovering &&
-      ["publish-demand", "claim-demand", "activate-demand", "authorize-execution"].includes(
-        input.operation,
-      )
-    ) {
+    if (!recovering) {
       if (tx) await assertUnreservedDemandOpen(tx, this.siteId, row.demandId);
       else
         await this.db.transaction((scope) =>
@@ -318,6 +313,7 @@ export class FederationMarketService {
         if (prior.digest !== digest) throw new FederationError("OPERATION_CONFLICT");
         return { id: prior.id, state: prior.state, demandId: prior.demandId };
       }
+      await assertUnreservedDemandOpen(tx, this.siteId, demandId);
       if (
         (input.operation === "publish-demand" && input.demand.sourceSiteId !== this.siteId) ||
         (input.operation === "claim-demand" && input.claim.providerSiteId !== this.siteId)
@@ -366,7 +362,6 @@ export class FederationMarketService {
           .limit(1);
         if (other) throw new FederationError("OPERATION_CONFLICT");
       } else {
-        await assertUnreservedDemandOpen(tx, this.siteId, demandId);
         await allocateMarketCompletion(tx, this.siteId, input, this.storageGuard);
         await this.storageGuard?.assertAdmission("ledger_coordinated");
         const [clock] = await tx

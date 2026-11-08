@@ -1439,7 +1439,7 @@ export const federationCommercialSubmissions = pgTable(
     index("federation_commercial_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
     check(
       "federation_commercial_submission_state",
-      sql`${t.state} IN ('pending','committed','needs_review')`,
+      sql`${t.state} IN ('pending','committed','needs_review','closed')`,
     ),
     check(
       "federation_commercial_submission_input",
@@ -1844,7 +1844,7 @@ export const federationMarketSubmissions = pgTable(
       .where(sql`${t.input}->>'operation' = 'close-demand'`),
     check(
       "federation_market_submission_state",
-      sql`${t.state} IN ('pending','committed','needs_review')`,
+      sql`${t.state} IN ('pending','committed','needs_review','closed')`,
     ),
     check(
       "federation_market_submission_input",
