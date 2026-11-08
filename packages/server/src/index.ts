@@ -1655,15 +1655,16 @@ protectedApi.route(
 
 protectedApi.route("/", createAdminAgentRoutes(certService, { authz: authzService }));
 const federationStorageGuard = await loadFederationStorageGuard(config);
+const federationCompletion = config.FEDERATION_SITE_ID
+  ? new FederationCompletionCapacity(db, config.FEDERATION_SITE_ID, federationStorageGuard)
+  : undefined;
 protectedApi.route(
   "/",
   createAdminFederationRoutes(
     new FederationTrustRegistry(db),
     authzService,
     federationStorageGuard,
-    config.FEDERATION_SITE_ID
-      ? new FederationCompletionCapacity(db, config.FEDERATION_SITE_ID, federationStorageGuard)
-      : undefined,
+    federationCompletion,
   ),
 );
 protectedApi.route(
@@ -1719,6 +1720,7 @@ const federationStops = federationSigningKey
       config.FEDERATION_MARKET_SOCKET_PATH
         ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
         : undefined,
+      federationStorageGuard,
     )
   : undefined;
 const federationWorkflowExecutor =
@@ -1773,7 +1775,12 @@ const federationTerminals = federationSigningKey
     )
   : undefined;
 const federationClosing = federationSigningKey
-  ? new FederationClosingAutomation(db, federationSigningKey, federationSender)
+  ? new FederationClosingAutomation(
+      db,
+      federationSigningKey,
+      federationSender,
+      federationStorageGuard,
+    )
   : undefined;
 const federationTerminalPolicies = federationSigningKey
   ? new FederationTerminalPolicyService(db, federationSigningKey.siteId)
@@ -2593,6 +2600,7 @@ const federationCommercialWorker = federationCommercial
       federationAgreementExchange,
       federationMarketRequests,
       federationClosing,
+      federationCompletion,
     )
   : undefined;
 federationCommercialWorker?.start();

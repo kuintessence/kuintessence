@@ -19,16 +19,23 @@ import {
 import { and, asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import { renewTaskCompletion } from "./completion-capacity";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import type { FederationStorageGuard } from "./storage-capacity";
 
 type Approval = typeof approvals.$inferSelect;
 const key = (siteId: string, recordId: string) =>
   and(eq(approvals.localSiteId, siteId), eq(approvals.recordId, recordId));
 
 /** Caller holds the approval for update and has independently authorized the stop. */
-async function recordStop(tx: PgTransaction, row: Approval, actor: FederationActor) {
+async function recordStop(
+  tx: PgTransaction,
+  row: Approval,
+  actor: FederationActor,
+  storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
+) {
   if (row.localOrgId !== actor.orgId) throw new FederationError("POLICY_DENIED");
   const reserve = CommercialReservationSchema.parse(row.payload);
   if (
@@ -39,6 +46,7 @@ async function recordStop(tx: PgTransaction, row: Approval, actor: FederationAct
   )
     throw new FederationError("OPERATION_CONFLICT");
   if (row.stopId) return { id: row.stopId, requestedAt: row.stopRequestedAt };
+  await renewTaskCompletion(tx, row.localSiteId, reserve.request, storageGuard);
   const id = randomUUID();
   const [saved] = await tx
     .update(approvals)
@@ -67,6 +75,7 @@ export async function stopCancelledExecution(
   siteId: string,
   actor: FederationActor,
   request: FederationDelegation,
+  storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
 ) {
   if (request.mode !== "ledger_coordinated") return;
   const rows = await tx
@@ -86,7 +95,7 @@ export async function stopCancelledExecution(
     const reserve = CommercialReservationSchema.parse(row.payload);
     if (federationCanonicalJson(reserve.request) !== federationCanonicalJson(request))
       throw new FederationError("OPERATION_CONFLICT");
-    await recordStop(tx, row, actor);
+    await recordStop(tx, row, actor, storageGuard);
   }
 }
 
@@ -96,6 +105,7 @@ export class FederationExecutionStopService {
     private readonly db: PgDb,
     private readonly siteId: string,
     private readonly market?: Pick<MarketClient, "query">,
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {}
 
   async request(actor: FederationActor, revisionId: string, recordId: string) {
@@ -114,7 +124,7 @@ export class FederationExecutionStopService {
         .for("update");
       if (!row) throw new FederationError("ASSET_UNAVAILABLE");
       if (row.payload.kind !== "commercial-reservation") throw new FederationError("POLICY_DENIED");
-      return recordStop(tx, row, actor);
+      return recordStop(tx, row, actor, this.storageGuard);
     });
   }
 

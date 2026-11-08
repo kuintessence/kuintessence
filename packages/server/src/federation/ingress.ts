@@ -185,10 +185,12 @@ export function createFederationIngress(
     if (c.req.header("content-type") !== "application/jose")
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
     try {
-      const response = await new FederationClosingAutomation(db, signingKey).receive(
-        await c.req.text(),
-        c.req.header("x-kq-federation-cert") ?? "",
-      );
+      const response = await new FederationClosingAutomation(
+        db,
+        signingKey,
+        undefined,
+        storageGuard,
+      ).receive(await c.req.text(), c.req.header("x-kq-federation-cert") ?? "");
       return c.body(response, 200, {
         "content-type": "application/jose",
         "cache-control": "no-store",

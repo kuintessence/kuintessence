@@ -12,9 +12,10 @@ import {
   FederationError,
 } from "@kuintessence/shared/federation";
 import type { MarketProposalInput } from "@kuintessence/shared/federation/market";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import { completionBlocker } from "./completion-readiness";
 import type { FederationStorageGuard } from "./storage-capacity";
 
 type Guard = Pick<FederationStorageGuard, "assertAdmission"> &
@@ -170,7 +171,10 @@ export async function renewTaskCompletion(
   const held = await usage(tx, siteId);
   if (BigInt(held.allocatedBytes) + BigInt(prior.allocatedBytes) > BigInt(pool.capacityBytes))
     throw new FederationError("STORAGE_PRESSURE");
-  await tx.update(claims).set({ releasedAt: null }).where(condition);
+  await tx
+    .update(claims)
+    .set({ releasedAt: null, releaseBlocker: null, nextCheckAt: sql`clock_timestamp()` })
+    .where(condition);
   await tx.insert(auditLog).values({
     actor: `completion:${siteId}`,
     action: "federation.storage.completion.renew",
@@ -287,9 +291,51 @@ export class FederationCompletionCapacity {
     });
   }
 
+  /** Releasing only subtracts from usage; claim-row exclusion is sufficient and does not block other admissions. */
+  async advanceNext() {
+    return this.db.transaction(async (tx) => {
+      const [claim] = await tx
+        .select()
+        .from(claims)
+        .where(
+          and(
+            eq(claims.localSiteId, this.siteId),
+            isNull(claims.releasedAt),
+            sql`${claims.nextCheckAt} <= clock_timestamp()`,
+          ),
+        )
+        .orderBy(asc(claims.nextCheckAt), asc(claims.kind), asc(claims.intentId))
+        .limit(1)
+        .for("update", { skipLocked: true });
+      if (!claim) return false;
+      const blocker = await completionBlocker(tx, claim);
+      await tx
+        .update(claims)
+        .set({
+          releaseBlocker: blocker,
+          nextCheckAt: sql`clock_timestamp() + interval '60 seconds'`,
+          ...(blocker === null ? { releasedAt: sql`clock_timestamp()` } : {}),
+        })
+        .where(
+          and(
+            eq(claims.localSiteId, this.siteId),
+            eq(claims.kind, claim.kind),
+            eq(claims.intentId, claim.intentId),
+          ),
+        );
+      if (blocker === null)
+        await tx.insert(auditLog).values({
+          actor: `completion:${this.siteId}`,
+          action: "federation.storage.completion.release",
+          target: claim.intentId,
+          diff: { after: { allocatedBytes: claim.allocatedBytes, digest: claim.digest } },
+        });
+      return true;
+    });
+  }
+
   private async bootstrap(tx: PgTransaction, pool: Pool) {
     // Existing accepted obligations are conservatively retained, including settled historical work.
-    // shortcut: no automatic release until settlement, evidence and transfer cleanup have one proven terminal predicate.
     const tables = [
       sql`SELECT request AS body FROM federation_outbound WHERE local_site_id = ${this.siteId}`,
       sql`SELECT request AS body FROM workflow_execution_delegations WHERE local_site_id = ${this.siteId}`,

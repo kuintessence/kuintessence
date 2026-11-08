@@ -382,3 +382,18 @@ test("completion renewal fences release by task without blocking unrelated admis
   });
   expect(await f.service.inspect()).toMatchObject({ allocatedBytes: "120", obligations: 2 });
 });
+
+test("completion release does not expire unknown accepted work and backs off blocked claims", async () => {
+  const f = await fixture();
+  await db.transaction((tx) => allocateTaskCompletion(tx, f.siteId, f.request, f.storage.guard));
+  await db
+    .update(claims)
+    .set({ createdAt: new Date("2000-01-01T00:00:00Z") })
+    .where(eq(claims.localSiteId, f.siteId));
+  expect(await f.service.advanceNext()).toBe(true);
+  const [claim] = await db.select().from(claims).where(eq(claims.localSiteId, f.siteId));
+  expect(claim?.releaseBlocker).toBe("settlement");
+  expect(claim?.releasedAt).toBeNull();
+  expect(await f.service.advanceNext()).toBe(false);
+  expect(await f.service.inspect()).toMatchObject({ allocatedBytes: "60" });
+});

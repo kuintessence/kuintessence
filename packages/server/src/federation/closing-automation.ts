@@ -12,7 +12,11 @@ import {
   federationClosingTasks as tasks,
   federationUsageTasks as usage,
 } from "@kuintessence/db";
-import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
+import {
+  FederationDelegationSchema,
+  FederationError,
+  federationCanonicalJson,
+} from "@kuintessence/shared/federation";
 import {
   CommercialBillSchema,
   CommercialSettlementSchema,
@@ -20,6 +24,7 @@ import {
 import { and, asc, eq, gt, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { FederationBillingService } from "./billing";
+import { renewTaskCompletion } from "./completion-capacity";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { FederationSettlementService } from "./settlement";
@@ -28,6 +33,7 @@ import {
   federationMessageKeyId,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
 
 const business = z.union([CommercialBillSchema, CommercialSettlementSchema]);
@@ -61,9 +67,10 @@ export class FederationClosingAutomation {
     private readonly db: PgDb,
     private readonly signing: FederationSigningKey,
     private readonly send?: FederationSend,
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     this.trust = new FederationTrustRegistry(db);
-    this.billing = new FederationBillingService(db, signing);
+    this.billing = new FederationBillingService(db, signing, storageGuard);
     this.settlement = new FederationSettlementService(db, signing);
   }
   private key(row: Pick<Task, "kind" | "referenceId">) {
@@ -233,6 +240,7 @@ export class FederationClosingAutomation {
                 localOrgId: usage.localOrgId,
                 agreementRevisionId: usage.agreementRevisionId,
                 referenceId: usage.reservationId,
+                request: sql<unknown>`${bindings.snapshot}->'request'`,
                 policyId: policies.id,
               })
               .from(usage)
@@ -272,6 +280,7 @@ export class FederationClosingAutomation {
                 localOrgId: bills.localOrgId,
                 agreementRevisionId: bills.agreementRevisionId,
                 referenceId: bills.billId,
+                request: sql<unknown>`${bills.payload}->'request'`,
                 policyId: policies.id,
               })
               .from(bills)
@@ -305,11 +314,40 @@ export class FederationClosingAutomation {
               )
               .orderBy(asc(bills.billId))
               .limit(8);
-      if (candidates.length)
-        await this.db
-          .insert(tasks)
-          .values(candidates.map((v) => ({ ...v, kind, localSiteId: this.signing.siteId })))
-          .onConflictDoNothing();
+      for (const { request, ...candidate } of candidates) {
+        try {
+          await this.db.transaction(async (tx) => {
+            const [policy] = await tx
+              .select()
+              .from(policies)
+              .where(
+                and(
+                  eq(policies.id, candidate.policyId),
+                  isNull(policies.revokedAt),
+                  sql`${policies.validFrom} <= clock_timestamp()`,
+                  sql`${policies.validUntil} > clock_timestamp()`,
+                ),
+              )
+              .for("share");
+            if (!policy) return;
+            const [created] = await tx
+              .insert(tasks)
+              .values({ ...candidate, kind, localSiteId: this.signing.siteId })
+              .onConflictDoNothing()
+              .returning();
+            if (created)
+              await renewTaskCompletion(
+                tx,
+                this.signing.siteId,
+                FederationDelegationSchema.parse(request),
+                this.storageGuard,
+              );
+          });
+        } catch (error) {
+          // Existing closing tasks must progress even when a newly discovered task cannot fit.
+          if (!(error instanceof FederationError && error.code === "STORAGE_PRESSURE")) throw error;
+        }
+      }
     }
   }
   private async source(tx: PgTransaction, claim: Task, endpoint?: string) {
@@ -470,7 +508,8 @@ export class FederationClosingAutomation {
       const retryable =
         temporaryPg ||
         (error instanceof FederationDeliveryError && error.code === "DELIVERY_UNAVAILABLE") ||
-        (error instanceof FederationError && error.code === "DATA_WAITING");
+        (error instanceof FederationError &&
+          ["DATA_WAITING", "STORAGE_PRESSURE"].includes(error.code));
       const code = temporaryPg
         ? "DATABASE_BUSY"
         : error instanceof FederationError || error instanceof FederationDeliveryError

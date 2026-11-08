@@ -1037,6 +1037,13 @@
       "when": 1794120531775,
       "tag": "0147_icy_penance",
       "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "7",
+      "when": 1794121879264,
+      "tag": "0148_yielding_raider",
+      "breakpoints": true
     }
   ]
 }

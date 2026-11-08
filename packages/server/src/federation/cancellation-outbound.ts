@@ -183,7 +183,13 @@ export class FederationCancellationSender {
         .where(this.key(operationId))
         .returning();
       if (!updated) throw new Error("Cancellation intent was not saved");
-      await stopCancelledExecution(tx, this.signingKey.siteId, actor, current.request);
+      await stopCancelledExecution(
+        tx,
+        this.signingKey.siteId,
+        actor,
+        current.request,
+        this.storageGuard,
+      );
       await tx.insert(auditLog).values({
         actor: actor.userId,
         orgId: actor.orgId,

@@ -4,6 +4,7 @@ import type { FederationAgreementExchange } from "./agreement-exchange";
 import type { FederationClosingAutomation } from "./closing-automation";
 import type { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
+import type { FederationCompletionCapacity } from "./completion-capacity";
 import type { FederationExecutionAutomation } from "./execution-automation";
 import type { FederationExecutionStopService } from "./execution-stop";
 import type { FederationTerminalExchange } from "./execution-terminal-exchange";
@@ -34,6 +35,7 @@ export class FederationCommercialWorker {
     private readonly agreements?: FederationAgreementExchange,
     private readonly marketRequests?: FederationMarketRequestService,
     private readonly closing?: FederationClosingAutomation,
+    private readonly completion?: FederationCompletionCapacity,
   ) {}
 
   start() {
@@ -175,6 +177,14 @@ export class FederationCommercialWorker {
           logger.error(
             "Market submission failed; original intent and checkpoints remain in PostgreSQL",
           );
+        }
+      }
+      if (this.completion) {
+        try {
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.completion.advanceNext())) break;
+        } catch {
+          logger.error("Completion capacity reconciliation failed; allocations remain reserved");
         }
       }
       for (let i = 0; i < 8 && !this.stopped; i++) if (!(await this.service.advanceNext())) break;

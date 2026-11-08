@@ -8629,3 +8629,96 @@ test("completion pool manual approval preflight cannot leave a claim when remote
   await recovery.approve(f.actor, f.revisionId, f.reservation);
   expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "80", obligations: 2 });
 });
+
+test("completion release late execution stop renews before writing and keeps duplicate requests free", async () => {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const { federationCompletionClaims: claims } = await import("@kuintessence/db");
+  const f = await executionFixture();
+  await approveReservation(f);
+  const siteId = f.a.signing.siteId,
+    storage = testCompletionStorage();
+  const capacity = new FederationCompletionCapacity(db, siteId, storage.guard);
+  const policy = {
+    reserveId: storage.reserveId,
+    capacityBytes: "80",
+    taskBytes: "60",
+    marketBytes: "20",
+  };
+  await capacity.configure(policy, f.actor.userId);
+  // Controlled released state isolates the stop writer; it does not prove coordinated closure.
+  await db
+    .update(claims)
+    .set({ releasedAt: new Date() })
+    .where(and(eq(claims.localSiteId, siteId), eq(claims.kind, "task")));
+  await capacity.configure({ ...policy, capacityBytes: "50", taskBytes: "10" }, f.actor.userId);
+  const service = new FederationExecutionStopService(db, siteId, undefined, storage.guard);
+  await expect(
+    service.request(f.actor, f.revisionId, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "STORAGE_PRESSURE" });
+  const read = async () =>
+    (
+      await db
+        .select()
+        .from(executionApprovals)
+        .where(
+          and(
+            eq(executionApprovals.localSiteId, siteId),
+            eq(executionApprovals.recordId, f.reservation.reservationId),
+          ),
+        )
+    )[0];
+  expect((await read())?.stopId).toBeNull();
+  expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "20" });
+  await capacity.configure(policy, f.actor.userId);
+  const first = await service.request(f.actor, f.revisionId, f.reservation.reservationId);
+  expect((await read())?.stopNextAttemptAt).not.toBeNull();
+  expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "80" });
+  storage.pressure();
+  expect(await service.request(f.actor, f.revisionId, f.reservation.reservationId)).toEqual(first);
+  expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "80" });
+});
+
+test("completion release retains public market claims until cancellation is committed", async () => {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const { federationCompletionClaims: claims } = await import("@kuintessence/db");
+  const f = await executionFixture(),
+    storage = testCompletionStorage();
+  const siteId = f.a.signing.siteId;
+  const capacity = new FederationCompletionCapacity(db, siteId, storage.guard);
+  await capacity.configure(
+    { reserveId: storage.reserveId, capacityBytes: "100", taskBytes: "60", marketBytes: "20" },
+    f.actor.userId,
+  );
+  await capacity.advanceNext();
+  expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "20" });
+  const input = {
+    operation: "cancel-open-demand" as const,
+    cancellation: {
+      cancellationId: randomUUID(),
+      demandId: f.reservation.demandId,
+      expectedVersion: 1,
+    },
+  };
+  await db.insert(marketSubmissions).values({
+    id: input.cancellation.cancellationId,
+    demandId: f.reservation.demandId,
+    localSiteId: siteId,
+    localOrgId: f.actor.orgId,
+    requestedBy: f.actor.userId,
+    input,
+    digest: federationMaterialDigest(input),
+    state: "needs_review",
+  });
+  await db.update(claims).set({ nextCheckAt: new Date() }).where(eq(claims.localSiteId, siteId));
+  await capacity.advanceNext();
+  expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "20" });
+  await db
+    .update(marketSubmissions)
+    .set({ state: "committed" })
+    .where(eq(marketSubmissions.id, input.cancellation.cancellationId));
+  await db.update(claims).set({ nextCheckAt: new Date() }).where(eq(claims.localSiteId, siteId));
+  await capacity.advanceNext();
+  expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "0", releasedObligations: 1 });
+});

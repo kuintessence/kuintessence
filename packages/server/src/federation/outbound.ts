@@ -551,6 +551,7 @@ export class FederationOutboundService {
           this.signingKey.siteId,
           { userId: run.submittedBy, orgId: run.input.orgId },
           binding.request,
+          this.storageGuard,
         );
       }
       return tx

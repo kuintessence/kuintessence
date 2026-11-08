@@ -5897,3 +5897,291 @@ test("completion renewal gates a newly signed bill before persisting its approva
   expect(approved.billId).toBe(f.draft.billId);
   expect(await cap.capacity.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
 });
+
+async function completionReleaseFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await adjustmentServiceFixture(mode);
+  const { FederationDelegationSchema } = await import("@kuintessence/shared/federation");
+  const { federationCompletionClaims: claims } = await import("@kuintessence/db");
+  const [binding] = await db
+    .select()
+    .from(federationWorkflowBindings)
+    .where(eq(federationWorkflowBindings.reservationId, f.reservationId));
+  if (!binding) throw new Error("Missing execution binding");
+  await db
+    .update(federationReservations)
+    .set({
+      requestJws: await signFederationMessage(
+        FederationDelegationSchema,
+        binding.snapshot.request,
+        f.source.signing,
+      ),
+    })
+    .where(eq(federationReservations.id, f.reservationId));
+  await db
+    .update(federationOutbound)
+    .set({ statusNextAttemptAt: null })
+    .where(eq(federationOutbound.localSiteId, f.source.signing.siteId));
+  const sourceCapacity = await completionRenewalFixture(
+    f.source.signing.siteId,
+    f.sourceActor.userId,
+  );
+  const providerCapacity = await completionRenewalFixture(
+    f.provider.signing.siteId,
+    f.actor.userId,
+  );
+  const due = (siteId: string) =>
+    db
+      .update(claims)
+      .set({ nextCheckAt: sql`clock_timestamp()` })
+      .where(eq(claims.localSiteId, siteId));
+  const claim = async (siteId: string) =>
+    (await db.select().from(claims).where(eq(claims.localSiteId, siteId)))[0];
+  return { ...f, sourceCapacity, providerCapacity, due, claim };
+}
+
+test("completion release closes settled direct obligations at both sites and later adjustment reacquires the same allocation", async () => {
+  const f = await completionReleaseFixture();
+  for (const cap of [f.sourceCapacity, f.providerCapacity]) {
+    expect(await cap.capacity.advanceNext()).toBe(true);
+    expect(await cap.capacity.inspect()).toMatchObject({
+      allocatedBytes: "0",
+      releasedObligations: 1,
+    });
+    expect(await cap.capacity.advanceNext()).toBe(false);
+  }
+  const value = await f.make("40");
+  const service = new FederationAdjustmentService(db, f.source.signing, f.sourceCapacity.guard);
+  await service.approve(f.sourceActor, f.revisionId, value);
+  expect(await f.sourceCapacity.capacity.inspect()).toMatchObject({
+    allocatedBytes: "60",
+    releasedObligations: 0,
+  });
+  await f.sourceCapacity.capacity.advanceNext();
+  expect((await f.claim(f.source.signing.siteId))?.releaseBlocker).toBe("adjustment");
+  expect(await f.sourceCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "60" });
+});
+
+test("completion release keeps storage for active execution and an unapplied settlement without waiting on unrelated claims", async () => {
+  const f = await completionReleaseFixture();
+  await db.update(workflowRuns).set({ status: "running" }).where(eq(workflowRuns.id, f.runId));
+  await f.providerCapacity.capacity.advanceNext();
+  expect((await f.claim(f.provider.signing.siteId))?.releaseBlocker).toBe(
+    "execution-or-input-cleanup",
+  );
+  await db.update(workflowRuns).set({ status: "completed" }).where(eq(workflowRuns.id, f.runId));
+  await db
+    .update(federationCommercialSettlements)
+    .set({ appliedAt: null })
+    .where(
+      and(
+        eq(federationCommercialSettlements.localSiteId, f.provider.signing.siteId),
+        eq(federationCommercialSettlements.settlementId, f.draft.settlementId),
+      ),
+    );
+  await f.due(f.provider.signing.siteId);
+  await f.providerCapacity.capacity.advanceNext();
+  expect((await f.claim(f.provider.signing.siteId))?.releaseBlocker).toBe("settlement");
+  await f.sourceCapacity.capacity.advanceNext();
+  expect(await f.sourceCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+  expect(await f.providerCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "60" });
+});
+
+test("completion release waits for attested commercial submissions and preserves the original allocation on review", async () => {
+  const f = await completionReleaseFixture("bilateral_attested");
+  await f.providerCapacity.capacity.advanceNext();
+  expect((await f.claim(f.provider.signing.siteId))?.releaseBlocker).toBe("commercial-ledger");
+  expect(await f.providerCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "60" });
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "needs_review" })
+    .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+  await f.due(f.provider.signing.siteId);
+  await f.providerCapacity.capacity.advanceNext();
+  expect((await f.claim(f.provider.signing.siteId))?.releasedAt).toBeNull();
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+  await f.due(f.provider.signing.siteId);
+  await f.providerCapacity.capacity.advanceNext();
+  expect(await f.providerCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+});
+
+test("completion release waits for the final source status write and its lease", async () => {
+  const f = await completionReleaseFixture();
+  const siteId = f.source.signing.siteId;
+  for (const update of [
+    { statusNextAttemptAt: new Date(), statusClaim: null, statusLastError: null },
+    { statusNextAttemptAt: null, statusClaim: randomUUID(), statusLastError: null },
+    { statusNextAttemptAt: null, statusClaim: null, statusLastError: "STATUS_RETRY" },
+  ]) {
+    await db
+      .update(federationOutbound)
+      .set(update)
+      .where(eq(federationOutbound.localSiteId, siteId));
+    await f.due(siteId);
+    await f.sourceCapacity.capacity.advanceNext();
+    expect((await f.claim(siteId))?.releaseBlocker).toBe("outbound");
+  }
+  await db
+    .update(federationOutbound)
+    .set({ statusLastError: null })
+    .where(eq(federationOutbound.localSiteId, siteId));
+  await f.due(siteId);
+  await f.sourceCapacity.capacity.advanceNext();
+  expect(await f.sourceCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+});
+
+test("completion release late closing discovery reacquires atomically and does not charge duplicate discovery", async () => {
+  const f = await completionReleaseFixture();
+  const cap = f.providerCapacity;
+  await cap.capacity.advanceNext();
+  await grantClosing(f, "bill");
+  await grantClosing(f, "settlement");
+  const closing = new FederationClosingAutomation(
+    db,
+    f.provider.signing,
+    async () => {
+      throw new Error("Discovery must not make network calls");
+    },
+    cap.guard,
+  );
+  await cap.constrain();
+  await closing.discover();
+  expect((await closing.list(f.actor, f.revisionId)).records).toHaveLength(0);
+  expect(await cap.capacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+  await cap.restore();
+  await closing.discover();
+  const tasks = await closing.list(f.actor, f.revisionId);
+  expect(tasks.records).toHaveLength(2);
+  expect(await cap.capacity.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
+  await cap.capacity.advanceNext();
+  expect((await f.claim(f.provider.signing.siteId))?.releaseBlocker).toBe("closing");
+  cap.pressure();
+  await closing.discover();
+  expect((await closing.list(f.actor, f.revisionId)).records).toHaveLength(2);
+  expect(await cap.capacity.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
+});
+
+test("completion release skips locked claims and serializes with a later adjustment", async () => {
+  const f = await completionReleaseFixture();
+  const { federationCompletionClaims: claims } = await import("@kuintessence/db");
+  let acquired!: () => void, resume!: () => void;
+  const locked = new Promise<void>((resolve) => {
+    acquired = resolve;
+  });
+  const resumed = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  const held = db.transaction(async (tx) => {
+    await tx
+      .select()
+      .from(claims)
+      .where(eq(claims.localSiteId, f.source.signing.siteId))
+      .for("update");
+    acquired();
+    await resumed;
+  });
+  await locked;
+  try {
+    expect(await f.sourceCapacity.capacity.advanceNext()).toBe(false);
+    expect(await f.providerCapacity.capacity.advanceNext()).toBe(true);
+  } finally {
+    resume();
+    await held;
+  }
+  const value = await f.make("40");
+  const service = new FederationAdjustmentService(db, f.source.signing, f.sourceCapacity.guard);
+  await Promise.all([
+    f.sourceCapacity.capacity.advanceNext(),
+    service.approve(f.sourceActor, f.revisionId, value),
+  ]);
+  expect(await f.sourceCapacity.capacity.inspect()).toMatchObject({
+    allocatedBytes: "60",
+    obligations: 1,
+  });
+});
+
+test("completion release retains capacity until result acknowledgment and input cleanup finish", async () => {
+  const f = await completionReleaseFixture();
+  const { federationResultImports: results, federationInputImports: inputs } = await import(
+    "@kuintessence/db"
+  );
+  const resultId = randomUUID(),
+    inputId = randomUUID();
+  cleanup.push(async () => {
+    await db.delete(results).where(eq(results.id, resultId));
+    await db.delete(inputs).where(eq(inputs.id, inputId));
+  });
+  // Only lifecycle columns are under test; transport verification is covered by the import suites.
+  await db.execute(sql`INSERT INTO federation_result_imports
+    (id, local_site_id, local_org_id, operation_id, requested_by, report, report_jws, manifest_digest, state)
+    VALUES (${resultId}, ${f.source.signing.siteId}, ${f.sourceActor.orgId}, ${f.operationId},
+      ${f.sourceActor.userId}, '{}'::jsonb, 'verified-fixture', ${`sha256:${"a".repeat(64)}`}, 'available')`);
+  await f.sourceCapacity.capacity.advanceNext();
+  expect((await f.claim(f.source.signing.siteId))?.releaseBlocker).toBe("result-receipt");
+  await db.execute(sql`UPDATE federation_result_imports SET receipt = '{}'::jsonb,
+    receipt_jws = 'verified-fixture', receipt_ack = '{}'::jsonb, receipt_ack_jws = 'verified-fixture'
+    WHERE id = ${resultId}`);
+  await f.due(f.source.signing.siteId);
+  await f.sourceCapacity.capacity.advanceNext();
+  expect(await f.sourceCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+  await db.execute(sql`INSERT INTO federation_input_imports
+    (id, reservation_id, local_site_id, local_org_id, owner_id, manifest_digest, manifest, state,
+      reserved_bytes, expires_at, published_at)
+    VALUES (${inputId}, ${f.reservationId}, ${f.provider.signing.siteId}, ${f.actor.orgId}, ${f.actor.userId},
+      ${`sha256:${"b".repeat(64)}`}, '{}'::jsonb, 'available', 0, clock_timestamp(), clock_timestamp())`);
+  await f.providerCapacity.capacity.advanceNext();
+  expect((await f.claim(f.provider.signing.siteId))?.releaseBlocker).toBe(
+    "execution-or-input-cleanup",
+  );
+  await db.update(inputs).set({ state: "cancelled" }).where(eq(inputs.id, inputId));
+  await f.due(f.provider.signing.siteId);
+  await f.providerCapacity.capacity.advanceNext();
+  expect(await f.providerCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+});
+
+test("completion release retains an attestation outbox even after all commercial records commit", async () => {
+  const f = await completionReleaseFixture("bilateral_attested");
+  const { federationEvidence: evidence, federationAttestationOutbox: outbox } = await import(
+    "@kuintessence/db"
+  );
+  const id = randomUUID();
+  cleanup.push(async () => {
+    await db.delete(outbox).where(eq(outbox.evidenceId, id));
+    await db.delete(evidence).where(eq(evidence.id, id));
+  });
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+  await db.insert(evidence).values({
+    id,
+    reservationId: f.reservationId,
+    kind: "acceptance",
+    jws: "verified-fixture",
+    digest: `sha256:${"a".repeat(64)}`,
+  });
+  await db.insert(outbox).values({ evidenceId: id });
+  await f.providerCapacity.capacity.advanceNext();
+  expect((await f.claim(f.provider.signing.siteId))?.releaseBlocker).toBe("attestation");
+  expect(await f.providerCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "60" });
+});
+
+test("completion release rolls back the capacity change when its audit cannot be saved", async () => {
+  const f = await completionReleaseFixture();
+  const constraint = sql.identifier(`test_release_audit_${randomUUID().replaceAll("-", "")}`);
+  await db.execute(sql`ALTER TABLE audit_log ADD CONSTRAINT ${constraint}
+    CHECK (action <> 'federation.storage.completion.release') NOT VALID`);
+  try {
+    await expect(f.sourceCapacity.capacity.advanceNext()).rejects.toThrow();
+    expect((await f.claim(f.source.signing.siteId))?.releasedAt).toBeNull();
+    expect(await f.sourceCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "60" });
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT ${constraint}`);
+  }
+  await f.sourceCapacity.capacity.advanceNext();
+  expect(await f.sourceCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+});
