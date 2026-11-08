@@ -102,7 +102,12 @@ async function main() {
     datasetRoot: config.AGENT_DATASET_ROOT,
     managedRoots: config.AGENT_DATASET_ROOTS_JSON,
     jobWorkRoot: config.AGENT_JOB_WORK_ROOT,
-    restrictedRoots: [config.AGENT_LICENSED_MATERIAL_ROOT],
+    restrictedRoots: [
+      config.AGENT_LICENSED_MATERIAL_ROOT,
+      ...(config.AGENT_FEDERATION_MEDIA_EXPORT
+        ? [config.AGENT_FEDERATION_MEDIA_EXPORT.mediaDirectory]
+        : []),
+    ],
   });
   await dataRoots.initialize();
   logger.info(
@@ -560,6 +565,9 @@ async function main() {
   const stream = new AgentStream({
     federationResultCopy: config.AGENT_FEDERATION_RESULT_COPY ?? undefined,
     federationInputCopy: config.AGENT_FEDERATION_INPUT_COPY ?? undefined,
+    federationMediaExport: config.AGENT_FEDERATION_MEDIA_EXPORT
+      ? { ...config.AGENT_FEDERATION_MEDIA_EXPORT, agentId: config.AGENT_ID, roots: dataRoots }
+      : undefined,
     client,
     clientFactory: () => createServerClient(config.SERVER_GRPC_URL, mtls, serverTransportLiveness),
     adapter,

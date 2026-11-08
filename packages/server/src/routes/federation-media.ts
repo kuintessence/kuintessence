@@ -9,6 +9,7 @@ import {
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import type { FederationMediaExportOperations } from "../federation/media-export-operations";
 import type { FederationMediaExportService } from "../federation/media-exports";
 import type { FederationMediaPackageService } from "../federation/media-packages";
 import type { FederationActor } from "../federation/permissions";
@@ -18,6 +19,7 @@ import { kqValidator } from "../middleware/validator";
 export function createFederationMediaRoutes(
   service: FederationMediaPackageService,
   exports?: FederationMediaExportService,
+  exportOperations?: FederationMediaExportOperations,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/media/*", async (c, next) => {
@@ -45,6 +47,32 @@ export function createFederationMediaRoutes(
     if (!exports) throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_EXPORT_UNAVAILABLE", 503);
     return exports;
   };
+  const operations = () => {
+    if (!exportOperations)
+      throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_EXPORT_UNAVAILABLE", 503);
+    return exportOperations;
+  };
+  r.post(
+    "/federation/media/exports/:id/run",
+    kqValidator("param", z.object({ id: z.uuid() })),
+    async (c) =>
+      c.json(
+        {
+          success: true,
+          data: await operations().start(c.get("federationActor"), c.req.valid("param").id),
+        },
+        202,
+      ),
+  );
+  r.get(
+    "/federation/media/exports/:id/operation",
+    kqValidator("param", z.object({ id: z.uuid() })),
+    async (c) =>
+      c.json({
+        success: true,
+        data: await operations().status(c.get("federationActor"), c.req.valid("param").id),
+      }),
+  );
   r.post(
     "/federation/media/exports",
     kqValidator("json", FederationMediaExportApprovalSchema),

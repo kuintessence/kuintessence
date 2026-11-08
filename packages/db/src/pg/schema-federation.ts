@@ -2605,3 +2605,36 @@ export const federationMediaKeyGrants = pgTable(
     check("federation_media_key_grant_digest", sql`${t.queryDigest} ~ '^sha256:[a-f0-9]{64}$'`),
   ],
 );
+
+/** One current source export attempt per approved package; ciphertext stays on its Agent. */
+export const federationMediaExportOperations = pgTable(
+  "federation_media_export_operations",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    packageId: uuid("package_id").notNull(),
+    generation: uuid("generation").notNull().unique(),
+    requestedBy: uuid("requested_by")
+      .notNull()
+      .references(() => users.id),
+    state: varchar("state", { length: 16 }).$type<"queued" | "exported" | "failed">().notNull(),
+    sha256: varchar("sha256", { length: 64 }),
+    sizeBytes: bigint("size_bytes", { mode: "number" }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.packageId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.packageId],
+      foreignColumns: [federationMediaExports.localSiteId, federationMediaExports.packageId],
+    }),
+    index("federation_media_export_pending").on(t.localSiteId, t.state, t.updatedAt),
+    check(
+      "federation_media_export_operation_result",
+      sql`(
+      ${t.state} IN ('queued', 'exported', 'failed') AND
+      (CASE WHEN ${t.state} = 'exported' THEN ${t.sha256} ~ '^[a-f0-9]{64}$' AND ${t.sizeBytes} BETWEEN 1 AND 6597069766656
+       ELSE ${t.sha256} IS NULL AND ${t.sizeBytes} IS NULL END)
+    ) IS TRUE`,
+    ),
+  ],
+);

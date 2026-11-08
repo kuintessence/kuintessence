@@ -116,6 +116,8 @@ message AgentMessage {
     FederationInputGrantRequest federation_input_grant_request = 23;
     FederationInputCopyReport federation_input_copy_report = 24;
     FederationAccountingResponse federation_accounting_response = 25;
+    FederationMediaExportLeaseRequest federation_media_export_lease_request = 26;
+    FederationMediaExportReport federation_media_export_report = 27;
   }
   reserved 15;
 }
@@ -160,6 +162,8 @@ message ServerMessage {
     FederationInputGrantResponse federation_input_grant_response = 28;
     FederationInputVerify federation_input_verify = 29;
     FederationAccountingRequest federation_accounting_request = 30;
+    FederationMediaExport federation_media_export = 31;
+    FederationMediaExportLeaseResponse federation_media_export_lease_response = 32;
   }
 }
 
@@ -246,6 +250,7 @@ message RegisterRequest {
   bool federation_input_copy_v1 = 33;
   bool federation_input_verify_v1 = 34;
   bool federation_accounting_v1 = 35;
+  bool federation_media_export_v1 = 36;
 }
 
 message RegisterResponse {
@@ -267,6 +272,7 @@ message RegisterResponse {
   bool federation_installation_v1_supported = 9;
   bool federation_result_copy_v1_supported = 10;
   bool federation_input_copy_v1_supported = 11;
+  bool federation_media_export_v1_supported = 12;
 }
 
 // tags 7–10 carry extended monitoring + installed-software
@@ -1110,3 +1116,21 @@ message FederationInputVerify {
 // Read-only, challenge-bound query; durable retry and observation storage belong to Server.
 message FederationAccountingRequest { string request_json = 1; }
 message FederationAccountingResponse { string response_json = 1; }
+
+// Dedicated encrypted media export. No raw keys or arbitrary output paths.
+message FederationMediaExport {
+  string task_json = 1; // Shared FederationMediaExportTask, at most 512 KiB.
+  int64 lease_expires_at_unix_ms = 2;
+}
+message FederationMediaExportLeaseRequest {
+  string request_id = 1;
+  string binding_json = 2; // Shared binding, at most 8 KiB.
+}
+message FederationMediaExportLeaseResponse {
+  string request_id = 1;
+  string grant_json = 2; // Empty denies further work.
+  int64 lease_expires_at_unix_ms = 3;
+}
+message FederationMediaExportReport {
+  string report_json = 1; // Encrypted file metadata or failure, at most 8 KiB.
+}

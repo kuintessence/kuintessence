@@ -35,6 +35,16 @@
       "bun": "./src/staging/index.ts",
       "types": "./src/staging/index.ts",
       "default": "./src/staging/index.ts"
+    },
+    "./data-market/roots": {
+      "bun": "./src/data-market/local-data-security.ts",
+      "types": "./src/data-market/local-data-security.ts",
+      "default": "./src/data-market/local-data-security.ts"
+    },
+    "./federation/media-export": {
+      "bun": "./src/federation/media-export-client.ts",
+      "types": "./src/federation/media-export-client.ts",
+      "default": "./src/federation/media-export-client.ts"
     }
   },
   "scripts": {

@@ -1,8 +1,11 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { create } from "@bufbuild/protobuf";
+import { AgentDataRoots } from "@kuintessence/agent/data-market/roots";
+import { FederationMediaExportClient } from "@kuintessence/agent/federation/media-export";
 import {
   agents,
   auditLog,
@@ -21,6 +24,7 @@ import {
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
+import { FederationMediaExportLeaseResponseSchema } from "@kuintessence/proto";
 import {
   FederationAgreementSchema,
   FederationMediaKeyGrantSchema,
@@ -35,6 +39,7 @@ import { Hono } from "hono";
 import { exportJWK, exportSPKI, generateKeyPair } from "jose";
 import pino from "pino";
 import { decryptSecret } from "../auth/secret-cipher";
+import { AgentDispatcher } from "../grpc/dispatcher";
 import { createErrorHandler } from "../middleware/error-handler";
 import { buildCpRouter } from "../routes/cp";
 import { createFederationMediaRoutes } from "../routes/federation-media";
@@ -49,6 +54,8 @@ import {
 import { PgDataMarketRepository } from "../services/data-market-repository-drizzle";
 import { FederationAdmission } from "./admission";
 import { createFederationIngress } from "./ingress";
+import { FederationMediaExportOperations } from "./media-export-operations";
+import { FederationMediaExportTransport } from "./media-export-transport";
 import { FederationMediaExportService, mediaIdentityDomain } from "./media-exports";
 import { FederationMediaKeyRequester, FederationMediaKeyResponder } from "./media-key-exchange";
 import { FederationMediaPackageService } from "./media-packages";
@@ -331,7 +338,7 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       .where(eq(dataAccessPolicies.id, policyId));
     return policies.write(manager, versionId, consent());
   }
-  function app() {
+  function app(operations?: FederationMediaExportOperations) {
     const r = new Hono();
     r.onError(createErrorHandler(pino({ enabled: false })));
     r.use("*", async (c, next) => {
@@ -343,6 +350,7 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       createFederationMediaRoutes(
         new FederationMediaPackageService(db, source.signing.siteId),
         service,
+        operations,
       ),
     );
     return r;
@@ -1022,6 +1030,170 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     } finally {
       await setKinds(source.signing.siteId);
       await setKinds(target.signing.siteId);
+    }
+  });
+  test("media export operation dispatches real encrypted files through Agent lease and report transport", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "kq-media-operation-"));
+    let client: FederationMediaExportClient | undefined;
+    setSystemTime(testNow);
+    try {
+      const input = request();
+      await service.prepare(actor, input);
+      const operations = new FederationMediaExportOperations(
+        db,
+        source.signing.siteId,
+        service,
+        () => now,
+      );
+      const response = await app(operations).request(
+        `/api/federation/media/exports/${input.packageId}/run`,
+        { method: "POST" },
+      );
+      expect(response.status).toBe(202);
+      const [first, same] = await Promise.all([
+        operations.start(actor, input.packageId),
+        operations.start(actor, input.packageId),
+      ]);
+      expect(first?.generation).toBe(same?.generation);
+      await mkdir(join(directory, "source", "v1"), { recursive: true, mode: 0o700 });
+      await writeFile(join(directory, "source", "v1", "input.dat"), "data");
+      const roots = new AgentDataRoots({
+        datasetRoot: join(directory, "source"),
+        jobWorkRoot: join(directory, "jobs"),
+        managedRoots: { [rootId]: "." },
+      });
+      await roots.initialize();
+      const dispatcher = new AgentDispatcher();
+      const transport = new FederationMediaExportTransport(operations, dispatcher);
+      const finished = Promise.withResolvers<void>();
+      client = new FederationMediaExportClient(
+        { agentId, roots, mediaDirectory: join(directory, "media"), ageDirectory: binary ?? "" },
+        (request) => {
+          void transport.grant(agentId, request).then(
+            (reply) => client?.receive(reply),
+            (error) => {
+              finished.reject(error);
+              client?.receive(
+                create(FederationMediaExportLeaseResponseSchema, { requestId: request.requestId }),
+              );
+            },
+          );
+          return true;
+        },
+        (report) => {
+          void transport.report(agentId, report).then(finished.resolve, finished.reject);
+        },
+      );
+      dispatcher.register(agentId, {
+        federationMediaExportV1: true,
+        verifiedCertFingerprint: "isolated-channel-fixture",
+        push: (message) => {
+          if (message.payload.case === "federationMediaExport")
+            client?.start(message.payload.value);
+        },
+        close: () => {},
+      });
+      await transport.tick();
+      await finished.promise;
+      await permissions.set({ ...actor, capability: "asset.read", enabled: true }, actor.userId);
+      const status = await operations.status(actor, input.packageId);
+      expect(status?.state).toBe("exported");
+      const cipher = await readFile(
+        join(directory, "media", "outbox", input.packageId, "bundle.age"),
+      );
+      expect(status?.sha256).toBe(createHash("sha256").update(cipher).digest("hex"));
+      expect(status?.sizeBytes).toBe(cipher.length);
+      expect((await operations.start(actor, input.packageId))?.generation).toBe(first?.generation);
+      expect(JSON.stringify(status)).not.toContain("AGE-SECRET-KEY");
+    } finally {
+      await client?.disconnect();
+      setSystemTime();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("media export operation fences retries, wrong Agents, revoked consent and duplicate reports", async () => {
+    const prepared = await service.prepare(actor, request());
+    const operations = new FederationMediaExportOperations(
+      db,
+      source.signing.siteId,
+      service,
+      () => now,
+    );
+    await operations.start(actor, prepared.packageId);
+    const first = await operations.task(agentId, prepared.packageId);
+    const binding = {
+      generation: first.task.generation,
+      packageId: prepared.packageId,
+      manifestDigest: first.task.manifestDigest,
+    };
+    expect((await operations.lease(agentId, binding)).expiresAt).toBe(
+      new Date(testNow.getTime() + 30_000).toISOString(),
+    );
+    await expect(operations.lease("wrong-agent", binding)).rejects.toThrow("POLICY_DENIED");
+    await operations.report(agentId, { ...binding, state: "failed" });
+    const retry = await operations.start(actor, prepared.packageId);
+    expect(retry?.generation).not.toBe(binding.generation);
+    const [retryAudit] = await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, prepared.packageId),
+          eq(auditLog.action, "federation.media.export_retry"),
+        ),
+      );
+    expect(retryAudit?.diff).toEqual({
+      after: { generation: retry?.generation, previousGeneration: binding.generation },
+    });
+    await expect(
+      operations.report(agentId, {
+        ...binding,
+        state: "exported",
+        sha256: "a".repeat(64),
+        sizeBytes: 100,
+      }),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    const current = { ...binding, generation: retry?.generation };
+    await db
+      .update(dataAccessPolicies)
+      .set({ redistributionPolicy: "deny" })
+      .where(eq(dataAccessPolicies.id, policyId));
+    await expect(operations.lease(agentId, current)).rejects.toThrow("POLICY_DENIED");
+    await db
+      .update(dataAccessPolicies)
+      .set({ redistributionPolicy: "allow" })
+      .where(eq(dataAccessPolicies.id, policyId));
+    const report = { ...current, state: "exported", sha256: "a".repeat(64), sizeBytes: 100 };
+    await operations.report(agentId, report);
+    await operations.report(agentId, report);
+    await expect(operations.report(agentId, { ...report, sha256: "b".repeat(64) })).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await expect(operations.lease(agentId, current)).rejects.toThrow("OPERATION_CONFLICT");
+    await expect(operations.start(other, prepared.packageId)).rejects.toThrow("POLICY_DENIED");
+  });
+
+  test("media export operation start rolls back when the audit cannot be stored", async () => {
+    const prepared = await service.prepare(actor, request());
+    const operations = new FederationMediaExportOperations(
+      db,
+      source.signing.siteId,
+      service,
+      () => now,
+    );
+    await db.execute(
+      sql`CREATE FUNCTION media_export_reject_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.media.export_start' THEN RAISE EXCEPTION 'test audit unavailable'; END IF; RETURN NEW; END $$`,
+    );
+    await db.execute(
+      sql`CREATE TRIGGER media_export_reject_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION media_export_reject_audit()`,
+    );
+    try {
+      await expect(operations.start(actor, prepared.packageId)).rejects.toThrow();
+      await expect(operations.task(agentId, prepared.packageId)).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      await db.execute(sql`DROP TRIGGER media_export_reject_audit ON audit_log`);
+      await db.execute(sql`DROP FUNCTION media_export_reject_audit()`);
     }
   });
 });

@@ -82,6 +82,15 @@ function jsonConfig<T extends z.ZodType>(schema: T, fallback: string) {
 
 const AgentConfigSchema = z
   .object({
+    AGENT_FEDERATION_MEDIA_EXPORT: jsonConfig(
+      z
+        .strictObject({
+          mediaDirectory: dedicatedAbsolutePath("media directory"),
+          ageDirectory: dedicatedAbsolutePath("age tools directory"),
+        })
+        .nullable(),
+      "null",
+    ),
     AGENT_FEDERATION_RESULT_COPY: jsonConfig(
       z
         .strictObject({

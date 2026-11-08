@@ -95,6 +95,8 @@ import { FederationMarketService } from "./federation/market";
 import { UnixMarketClient } from "./federation/market-client";
 import { FederationMarketRequestService } from "./federation/market-requests";
 import { FederationMaterialExchange } from "./federation/material-exchange";
+import { FederationMediaExportOperations } from "./federation/media-export-operations";
+import { FederationMediaExportTransport } from "./federation/media-export-transport";
 import { FederationMediaExportService } from "./federation/media-exports";
 import { FederationMediaKeyResponder } from "./federation/media-key-exchange";
 import { FederationMediaPackageService } from "./federation/media-packages";
@@ -1892,6 +1894,13 @@ const federationMediaExports =
         config.FEDERATION_MEDIA_WRAPPING_KEY,
       )
     : undefined;
+const federationMediaExportOperations =
+  federationSigningKey && federationMediaExports
+    ? new FederationMediaExportOperations(db, federationSigningKey.siteId, federationMediaExports)
+    : undefined;
+const federationMediaExportTransport = federationMediaExportOperations
+  ? new FederationMediaExportTransport(federationMediaExportOperations, dispatcher)
+  : undefined;
 const federationMediaKeys =
   federationSigningKey && federationMediaExports
     ? new FederationMediaKeyResponder(db, federationSigningKey, federationMediaExports)
@@ -1902,6 +1911,7 @@ if (config.FEDERATION_SITE_ID)
     createFederationMediaRoutes(
       new FederationMediaPackageService(db, config.FEDERATION_SITE_ID),
       federationMediaExports,
+      federationMediaExportOperations,
     ),
   );
 
@@ -2467,6 +2477,7 @@ const grpcDeps = {
   jobCompletionRegistry,
   federationResults,
   federationInputs,
+  federationMediaExports: federationMediaExportTransport,
   partUrlMinter: transferRunner,
   sandboxArtifactRelease: sandboxArtifactReleaseService,
   dataScanCoordinator,
@@ -2596,6 +2607,7 @@ const federationOutboundWorker = federationOutbound
 federationOutboundWorker?.start();
 federationResultWorker?.start();
 federationInputWorker?.start();
+federationMediaExportTransport?.start();
 const federationExecutionMonitor = new FederationExecutionMonitor(
   db,
   federationDispatchAuthorization,
@@ -2683,6 +2695,7 @@ async function shutdown(signal: string): Promise<void> {
     await federationIngress?.stop(true);
     await federationPreparationWorker?.stop();
     await federationOutboundWorker?.stop();
+    await federationMediaExportTransport?.stop();
     await federationInputWorker?.stop();
     await federationResultWorker?.stop();
     await federationAttestationWorker?.stop();

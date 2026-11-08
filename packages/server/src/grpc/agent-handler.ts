@@ -9,6 +9,7 @@ import {
   type FederationExecutionResponse,
   FederationExecutionResponseSchema,
   FederationInputGrantResponseSchema,
+  FederationMediaExportLeaseResponseSchema,
   FederationResultGrantResponseSchema,
   HeartbeatAckSchema,
   JobStatusAckSchema,
@@ -39,6 +40,7 @@ import { mtlsContext } from "../auth/mtls-context";
 import { AuthorizationUnavailableError } from "../authz/service";
 import type { FederationAccountingCollection } from "../federation/accounting-collection";
 import type { FederationInputTransport } from "../federation/input-transport";
+import type { FederationMediaExportTransport } from "../federation/media-export-transport";
 import type { FederationResultTransport } from "../federation/result-transport";
 import type { AgentManager, ComputeHealthReport } from "../services/agent-manager";
 import type { DataDeliveryRevocationOutbox } from "../services/data-delivery-revocations";
@@ -265,6 +267,7 @@ export interface AgentMetricsRecorder {
 }
 
 export interface AgentHandlerDeps {
+  federationMediaExports?: Pick<FederationMediaExportTransport, "grant" | "report">;
   federationResults?: Pick<FederationResultTransport, "grant" | "report">;
   federationInputs?: Pick<FederationInputTransport, "grant" | "report">;
   agentManager: AgentManager;
@@ -409,6 +412,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         spackPinnedExecutionV1: false,
         softwareOperationReplayV1: false,
         federationAccountingV1: false,
+        federationMediaExportV1: false,
         federationInputCopyV1: false,
         federationInputVerifyV1: false,
         federationResultCopyV1: false,
@@ -536,6 +540,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.spackPinnedExecutionV1 = reg.spackPinnedExecutionV1;
               channel.softwareOperationReplayV1 = reg.softwareOperationReplayV1;
               channel.federationAccountingV1 = reg.federationAccountingV1;
+              channel.federationMediaExportV1 = reg.federationMediaExportV1;
               channel.federationInputCopyV1 = reg.federationInputCopyV1;
               channel.federationInputVerifyV1 = reg.federationInputVerifyV1;
               channel.federationResultCopyV1 = reg.federationResultCopyV1;
@@ -569,6 +574,10 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       computeHealthV1Supported: true,
                       queueInventoryV1Supported: queueInventory !== undefined,
                       queueValidationShadowRejectionAckSupported: queueObservability !== undefined,
+                      federationMediaExportV1Supported:
+                        !!deps.federationMediaExports &&
+                        reg.federationMediaExportV1 &&
+                        !!channel.verifiedCertFingerprint,
                       federationResultCopyV1Supported:
                         !!deps.federationResults &&
                         reg.federationResultCopyV1 &&
@@ -1167,6 +1176,64 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             } else {
               logger.debug({ requestId: p.requestId }, "fileTransferProgress with no registry");
             }
+            continue;
+          }
+
+          if (
+            payload.case === "federationMediaExportLeaseRequest" ||
+            payload.case === "federationMediaExportReport"
+          ) {
+            if (
+              !registeredAgentId ||
+              !active ||
+              !channel.federationMediaExportV1 ||
+              !channel.verifiedCertFingerprint ||
+              !deps.federationMediaExports ||
+              !dispatcher.isCurrentChannel(registeredAgentId, channel)
+            )
+              continue;
+            const agentId = registeredAgentId;
+            const transport = deps.federationMediaExports;
+            const request = payload;
+            const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
+            const key =
+              request.case === "federationMediaExportLeaseRequest"
+                ? request.value.requestId
+                : "media-export-report";
+            if (
+              key.length > 128 ||
+              pendingTransferRequests.has(key) ||
+              pendingTransferRequests.size >= 2
+            )
+              continue;
+            pendingTransferRequests.add(key);
+            void (async () => {
+              try {
+                if (request.case === "federationMediaExportLeaseRequest") {
+                  const response = await transport.grant(agentId, request.value);
+                  if (current())
+                    channel.push(
+                      create(ServerMessageSchema, {
+                        payload: { case: "federationMediaExportLeaseResponse", value: response },
+                      }),
+                    );
+                } else await transport.report(agentId, request.value);
+              } catch {
+                if (request.case === "federationMediaExportLeaseRequest" && current())
+                  channel.push(
+                    create(ServerMessageSchema, {
+                      payload: {
+                        case: "federationMediaExportLeaseResponse",
+                        value: create(FederationMediaExportLeaseResponseSchema, {
+                          requestId: request.value.requestId,
+                        }),
+                      },
+                    }),
+                  );
+              }
+            })()
+              .catch(() => logger.warn({ agentId }, "Media export response unavailable"))
+              .finally(() => pendingTransferRequests.delete(key));
             continue;
           }
 
