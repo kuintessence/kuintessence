@@ -751,3 +751,5 @@ SelfAccount 已替换仅匹配 cgroup 路径的探测，使用固定摘要、roo
 随后完成单平台真实 SelfAccount 启动证明和签名任务执行：Slurm 24.11、UID/GID 24001、实际 RSA 签名 SIF/Apptainer，调用产品 verifier/stager/adapter 完成临时 Ed25519 签名任务，原生作业 COMPLETED/0。只读输入、seccomp/no-new-privs、socket 拒绝和 JSON 输出校验通过；重复 nonce、错误队列和资源漂移拒绝。修复启动探测将任意命令失败误认作策略拒绝的问题，改用成功对照、预期 errno/退出码与回环接口检查，正式策略无需禁止 uname。专用 probe 摘要纳入证明 ID。该实验没有两套平台和联邦交付，完整跨平台 SelfAccount、其他 root 路径能力证明及完整蓝图仍待完成。
 
 SelfAccount 启动探测现复用原生 adapter 提交/状态/取消入口，超时或查询失败取消原 Job，正向确认终止才删除文件。未知提交/停止保留原 UUID 和已知 scheduler ID；原子占用目录与遗留收据阻止重复探测。root 的探测脚本与可写日志目录分离，实际 Slurm 以非 root 账号执行及原 Job 超时取消/PID 消失已验证。生产 root 能力发布尚未接入，自动恢复探测收据及真实 PBS/Torque 启动探测仍待完成，不能以本轮入口验证宣称 root 安全能力已就绪。
+
+完整 root SIF/ECL 探测接口现已验证真实 Slurm：明确非 root 探测账户、最小调度 CLI 环境、固定 OpenPGP 指纹离线验证、实际 ECL 配置目录/摘要、未签名 SIF 反例、seccomp/网络及逐作业资源全部通过；原 Job 6 COMPLETED/0，临时 namespace 已清理。新增两项可选配置：`AGENT_SANDBOX_ATTESTATION_ACCOUNT` 和 `AGENT_SANDBOX_SIF_PGP_FINGERPRINT`；PEM 和 OpenPGP 信任配置不可混用，root ECL 探测要求 OpenPGP。主 Agent root 启动/能力发布仍未调用该接口，Server 签发/续租和其他 root 逐作业路径尚待绑定，因此平台整体 root 验收仍未完成。

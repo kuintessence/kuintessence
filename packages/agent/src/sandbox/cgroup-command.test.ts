@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { realSpawner } from "../adapters/base";
-import { buildSelfAccountCgroupCommand } from "./cgroup-command";
+import { buildHpcCgroupCommand, buildSelfAccountCgroupCommand } from "./cgroup-command";
 
 const roots: string[] = [];
 const digest = (source: string) => createHash("sha256").update(source).digest("hex");
@@ -46,6 +46,37 @@ test("requires pinned checker identity and valid signed resources before renderi
 describe.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)(
   "pinned SelfAccount checker execution",
   () => {
+    test("PBS and Torque checks bind PBS_JOBID rather than an unrelated Slurm environment value", async () => {
+      const f = await fixture();
+      for (const scheduler of ["pbs-pro", "torque"] as const) {
+        const script = `${buildHpcCgroupCommand(f.checker, { cpus: 1, memoryMb: 128 }, scheduler)} || exit 126; printf USER_CODE`;
+        const result = await realSpawner.run([
+          "env",
+          "PBS_JOBID=43.pbs",
+          "SLURM_JOB_ID=forged",
+          "/bin/bash",
+          "-c",
+          script,
+        ]);
+        expect(result.exitCode).toBe(0);
+        expect(result.stderr).toContain(`'--scheduler', '${scheduler}'`);
+        expect(result.stderr).toContain("'--job-id', '43.pbs'");
+        expect(result.stderr).not.toContain("forged");
+        expect(
+          (
+            await realSpawner.run([
+              "env",
+              "PBS_JOBID=",
+              "SLURM_JOB_ID=43",
+              "/bin/bash",
+              "-c",
+              script,
+            ])
+          ).exitCode,
+        ).not.toBe(0);
+      }
+    });
+
     test("passes signed resources and native job ID in isolated Python before user code", async () => {
       const f = await fixture();
       const result = await f.run();

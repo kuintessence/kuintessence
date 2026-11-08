@@ -39,6 +39,16 @@ export function buildSelfAccountCgroupCommand(
   checker: SandboxCgroupCheck | undefined,
   resources: SandboxComputeResources | undefined,
 ): string {
+  return buildHpcCgroupCommand(checker, resources, "slurm");
+}
+
+export function buildHpcCgroupCommand(
+  checker: SandboxCgroupCheck | undefined,
+  resources: SandboxComputeResources | undefined,
+  scheduler: "slurm" | "pbs-pro" | "torque",
+): string {
+  if (!["slurm", "pbs-pro", "torque"].includes(scheduler))
+    throw new Error("Unsupported cgroup scheduler");
   const checked = SandboxCgroupCheckSchema.parse(checker);
   const { cpus, memoryMb } = SandboxComputeResourcesSchema.parse(resources);
   const argv = [
@@ -49,11 +59,12 @@ export function buildSelfAccountCgroupCommand(
     checked.path,
     checked.sha256,
     "--scheduler",
-    "slurm",
+    scheduler,
     "--cpus",
     String(cpus),
     "--memory-mb",
     String(memoryMb),
   ];
-  return `${argv.map(shellQuote).join(" ")} --job-id "\${SLURM_JOB_ID:?native Slurm job ID required}"`;
+  const jobId = scheduler === "slurm" ? "SLURM_JOB_ID" : "PBS_JOBID";
+  return `${argv.map(shellQuote).join(" ")} --job-id "\${${jobId}:?native ${scheduler === "slurm" ? "Slurm" : "PBS"} job ID required}"`;
 }

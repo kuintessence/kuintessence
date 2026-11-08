@@ -86,6 +86,12 @@ UID/GID 24001 调用真实 `attestSandboxRuntimeEnvironment`：检查 root 管�
 
 这只验证 root 使用原生探测入口的账户/资源与失败收尾。生产 root 能力发布尚未切换到这份证据，PBS/Torque 的适配器工厂与文件/失败规则只有单测；完整 root SIF/ECL 启动证明、跨调度器真实探测、Server 签发与续租仍需接通后验收。
 
+该入口现追加[完整 root SIF/ECL 探测](../../scripts/federation-live/slurm-root-attestation.ts)。在同一临时 Pod 内生成 OpenPGP 密钥、签名轻量 SIF、导入全局公钥后删除临时私钥目录。生产探测函数按固定指纹离线验证全部 SIF 对象，再以明确的非 root 账户提交原生作业，验证 ECL 实际文件路径/摘要、已签名镜像成功执行、未签名镜像被 ECL 拒绝，以及原有 seccomp、网络和 cgroup 对照。主机 keyring、凭据和服务均不改动。
+
+2026-11-09 最终入口退出 0，原 Job 6 COMPLETED/0，报告 `REAL_ROOT_SIF_ECL_ATTESTATION_OK`；返回 root 证明的 networkIsolation/cgroups/seccomp/sifSignatureVerification/ecl 均为 true，绑定 `sandbox` 队列与 `slurm` 节点，namespace 已确认删除。两次先前失败分别发现 PEM/PGP 混合验证契约不适用于 ECL，以及上游 JSON 的 KeyLocal 只表示个人 keyring、不包含全局 keyring。现使用单一 OpenPGP 签名和固定指纹，核对真实上游报告语义后通过；没有以普通失败冒充 ECL 拒绝。
+
+PBS Pro/Torque 入口的账户切换、资源检查器原生 ID 和状态处理已有单测；本轮没有再次部署 PBS/Torque。生产 root 能力发布、全部逐作业路径、Server 队列/证明签发与续租、双平台联合验收仍未完成。
+
 ## 仍需完成的接入
 
 现有实验 Slurm 19 使用 `task/none`，缓存的 OpenPBS 23 官方 hook 使用 v1；当前主机采用统一 v2。不能仅设置一个能力开关而宣布具备限额。

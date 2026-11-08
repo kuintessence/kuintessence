@@ -92,4 +92,5 @@ echo 'REAL SLURM V2 SELFACCOUNT CHECKER PASSED'
 if [[ ${KQ_SLURM_SELFACCOUNT:-} == 1 ]]; then
   runuser -u scientist -- env KQ_SLURM_SELFACCOUNT=1 /usr/local/bin/bun /opt/kq/self-account.js
   env KQ_SLURM_ROOT_PROBE=1 /usr/local/bin/bun /opt/kq/root-probe.js
+  env KQ_SLURM_ROOT_ATTESTATION=1 /usr/local/bin/bun /opt/kq/root-attestation.js
 fi

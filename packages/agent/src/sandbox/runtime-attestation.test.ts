@@ -7,8 +7,11 @@ import type { Spawner } from "../adapters/base";
 import { shellQuote } from "../adapters/base";
 import { loadAgentConfig } from "../config";
 import {
+  assertPinnedPgpVerification,
   attestSandboxRuntimeEnvironment,
+  buildEclRejectionProbeCommand,
   buildRuntimeIsolationProbeCommands,
+  resolveRootProbeAccount,
 } from "./runtime-attestation";
 
 const roots: string[] = [];
@@ -88,6 +91,218 @@ async function fixture() {
 }
 
 describe("Sandbox runtime attestation", () => {
+  test("offline PGP verification pins all verified objects including the filesystem to the configured signer", () => {
+    const signer = {
+      Partition: "FS",
+      Fingerprint: "a".repeat(40),
+      KeyLocal: false,
+      KeyCheck: true,
+      DataCheck: true,
+    };
+    const report = (value: unknown) =>
+      JSON.stringify({ Signatures: 1, SignerKeys: [{ Signer: value }] });
+    expect(() => assertPinnedPgpVerification(report(signer), "A".repeat(40))).not.toThrow();
+    for (const invalid of [
+      { ...signer, Fingerprint: "b".repeat(40) },
+      { ...signer, DataCheck: false },
+      { ...signer, KeyCheck: false },
+      { ...signer, Partition: "Def.FILE" },
+    ])
+      expect(() => assertPinnedPgpVerification(report(invalid), "a".repeat(40))).toThrow();
+    expect(() =>
+      assertPinnedPgpVerification('{"Signatures":1,"SignerKeys":[]}', "a".repeat(40)),
+    ).toThrow();
+  });
+  test("root probe account resolution rejects root, ambiguous and malformed passwd records", async () => {
+    const valid = "scientist:x:24001:24002:Probe:/home/scientist:/bin/bash\n";
+    const spawner = (stdout: string, exitCode = 0): Spawner => ({
+      run: async () => ({ stdout, exitCode, stderr: "" }),
+    });
+    expect(await resolveRootProbeAccount(spawner(valid), "scientist")).toEqual({
+      username: "scientist",
+      uid: 24001,
+      gid: 24002,
+      home: "/home/scientist",
+    });
+    for (const invalid of [
+      valid.replace(":24001:", ":0:"),
+      valid.replace(":24002:", ":0:"),
+      valid.replace(":24001:", ":1.5:"),
+      valid + valid,
+      valid.replace("scientist:x", "other:x"),
+      valid.replace("/home/scientist", "/home/../root"),
+    ]) {
+      await expect(resolveRootProbeAccount(spawner(invalid), "scientist")).rejects.toThrow();
+    }
+    await expect(resolveRootProbeAccount(spawner(valid, 2), "scientist")).rejects.toThrow();
+    await expect(resolveRootProbeAccount(spawner(valid), "--help")).rejects.toThrow();
+  });
+
+  test("ECL evidence requires a specific policy rejection, not any command failure", async () => {
+    for (const [status, error, accepted] of [
+      [
+        255,
+        "FATAL: while checking container image with ECL: image signature not valid: integrity: signature not found for object group 1",
+        true,
+      ],
+      [255, "FATAL: missing library", false],
+      [127, "while checking container image with ECL: image signature not valid:", false],
+      [0, "while checking container image with ECL: image signature not valid:", false],
+    ] as const) {
+      const script = buildEclRejectionProbeCommand([
+        "/bin/bash",
+        "-c",
+        `printf '%s' ${shellQuote(error)} >&2; exit ${status}`,
+      ]);
+      const child = Bun.spawn(["/bin/bash", "-c", script], { stdout: "pipe", stderr: "pipe" });
+      expect((await child.exited) === 0).toBe(accepted);
+    }
+  });
+
+  for (const scheduler of ["slurm", "pbs-pro", "torque"] as const) {
+    test.skipIf(process.getuid?.() !== 0)(
+      `root attestation uses the configured non-root identity and ${scheduler} native job`,
+      async () => {
+        const f = await fixture();
+        await chown(f.config.AGENT_SANDBOX_ROOT, 0, 0);
+        const config = {
+          ...f.config,
+          AGENT_SANDBOX_EXECUTION_MODE: "root-impersonation" as const,
+          AGENT_SANDBOX_ROOT_IMPERSONATION: true,
+          AGENT_SANDBOX_ATTESTATION_ACCOUNT: "scientist",
+          AGENT_SANDBOX_SIF_PUBLIC_KEY_PATH: undefined,
+          AGENT_SANDBOX_SIF_PUBLIC_KEY_SHA256: undefined,
+          AGENT_SANDBOX_SIF_PGP_FINGERPRINT: "c".repeat(40),
+        };
+        let script = "";
+        const spawner: Spawner = {
+          run: async (args, options) => {
+            if (args[1] === "verify") {
+              expect(args).toContain("--all");
+              expect(args).toContain("--local");
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify({
+                  Signatures: 1,
+                  SignerKeys: [
+                    {
+                      Signer: {
+                        Partition: "FS",
+                        Fingerprint: "c".repeat(40),
+                        KeyLocal: false,
+                        KeyCheck: true,
+                        DataCheck: true,
+                      },
+                    },
+                  ],
+                }),
+              };
+            }
+            if (args[0] === "getent")
+              return {
+                exitCode: 0,
+                stdout: `${args[2]}:x:24001:24001:Probe:/home/scientist:/bin/bash\n`,
+                stderr: "",
+              };
+            if (args[0] !== "setpriv") return { exitCode: 0, stdout: "verified", stderr: "" };
+            expect(args.slice(0, 8)).toEqual([
+              "setpriv",
+              "--reuid=24001",
+              "--regid=24001",
+              "--init-groups",
+              "--",
+              "env",
+              "-i",
+              "PATH=/usr/local/bin:/usr/bin:/bin:/opt/pbs/bin",
+            ]);
+            expect(options?.timeoutMs).toBeLessThanOrEqual(10000);
+            if (args.includes("sbatch") || args.includes("qsub")) {
+              const path = /\/bin\/bash '([^']+)'/.exec(options?.stdin ?? "")?.[1];
+              const output = /^(?:#SBATCH --output=|#PBS -o )(.+)$/m.exec(
+                options?.stdin ?? "",
+              )?.[1];
+              if (!path || !output) throw new Error("Missing native probe paths");
+              script = await readFile(path, "utf8");
+              await writeFile(output, "KQ_ATTESTED_NODE=compute-1\n");
+              return {
+                exitCode: 0,
+                stdout: scheduler === "slurm" ? "42\n" : "42.pbs\n",
+                stderr: "",
+              };
+            }
+            if (scheduler === "slurm")
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  jobs: [{ job_id: 42, job_state: "COMPLETED", exit_code: { return_code: 0 } }],
+                }),
+                stderr: "",
+              };
+            return {
+              exitCode: 0,
+              stdout:
+                scheduler === "pbs-pro"
+                  ? JSON.stringify({ Jobs: { "42.pbs": { job_state: "F", Exit_status: 0 } } })
+                  : "job_state = C\nexit_status = 0\n",
+              stderr: "",
+            };
+          },
+        };
+        const rootIdentity = { username: "root", uid: 0, gid: 0 };
+        const dependencies = {
+          inspectFile: f.inspectFile,
+          validateAncestors: async () => undefined,
+        };
+        const evidence = await attestSandboxRuntimeEnvironment(
+          config,
+          scheduler,
+          spawner,
+          rootIdentity,
+          dependencies,
+        );
+        expect(evidence.missingRequirements).toEqual([]);
+        expect(evidence.ecl).toBe(true);
+        expect(script).toContain("$(id -u) == 24001");
+        expect(script).toContain(scheduler === "slurm" ? "SLURM_JOB_ID" : "PBS_JOBID");
+        expect(script).toContain("APPTAINER_CONFDIR");
+        expect(script).toContain(
+          "while checking container image with ECL: image signature not valid:",
+        );
+        const otherAccount = await attestSandboxRuntimeEnvironment(
+          { ...config, AGENT_SANDBOX_ATTESTATION_ACCOUNT: "other" },
+          scheduler,
+          spawner,
+          rootIdentity,
+          dependencies,
+        );
+        expect(otherAccount.missingRequirements).toEqual([]);
+        expect(otherAccount.runtimeCache[f.digest]?.runtimeAttestationId).not.toBe(
+          evidence.runtimeCache[f.digest]?.runtimeAttestationId,
+        );
+        for (const incomplete of [
+          { ...config, AGENT_SANDBOX_ATTESTATION_ACCOUNT: undefined },
+          { ...config, AGENT_SANDBOX_ROOT_IMPERSONATION: false },
+          { ...config, AGENT_SANDBOX_SIF_PGP_FINGERPRINT: undefined },
+        ]) {
+          const missing = await attestSandboxRuntimeEnvironment(
+            incomplete,
+            scheduler,
+            {
+              run: async () => {
+                throw new Error("Must reject before executing commands");
+              },
+            },
+            rootIdentity,
+            dependencies,
+          );
+          expect(missing.runtimeCache).toEqual({});
+          expect(missing.missingRequirements.length).toBeGreaterThan(0);
+        }
+      },
+    );
+  }
+
   test("probe shells reject missing tools, timeouts, ignored filters and extra network interfaces", async () => {
     const root = await mkdtemp(join(tmpdir(), "kq-probe-shell-"));
     roots.push(root);

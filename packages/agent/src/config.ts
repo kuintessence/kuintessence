@@ -290,6 +290,11 @@ const AgentConfigSchema = z
       .string()
       .regex(/^[0-9a-f]{64}$/)
       .optional(),
+    AGENT_SANDBOX_SIF_PGP_FINGERPRINT: z
+      .string()
+      .regex(/^[A-Fa-f0-9]{40}$/)
+      .transform((value) => value.toLowerCase())
+      .optional(),
     AGENT_SANDBOX_SECCOMP_PROFILE_PATH: dedicatedAbsolutePath(
       "AGENT_SANDBOX_SECCOMP_PROFILE_PATH",
     ).optional(),
@@ -317,6 +322,10 @@ const AgentConfigSchema = z
     AGENT_SANDBOX_ATTESTATION_QUEUE: z
       .string()
       .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/)
+      .optional(),
+    AGENT_SANDBOX_ATTESTATION_ACCOUNT: z
+      .string()
+      .regex(/^[A-Za-z_][A-Za-z0-9_-]{0,31}$/)
       .optional(),
     AGENT_LICENSED_MATERIAL_ROOT: dedicatedAbsolutePath("AGENT_LICENSED_MATERIAL_ROOT").default(
       "/var/lib/kuintessence/licensed-materials",

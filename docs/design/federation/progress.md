@@ -2809,3 +2809,15 @@ root 使用该入口时保持脚本和父目录由 root 管理，仅日志目录
 本轮是 root 启动证明的共享执行入口与 SelfAccount 失败收尾修复。生产 root 仍未从配置开关切换为真实证明；root 探测账户配置、完整 SIF/ECL 证明、PBS/Torque 实际调度与 Server 签发/续租绑定仍须接通。完整蓝图、跨平台联合验收和 PR 预览保持原目标。没有推送、合并或部署。
 
 验证：相关 14 项单测/90 断言通过，新增并发用例 1 项/5 断言通过；真实 Slurm 入口退出 0。全仓 lint 通过（原有 47 warnings/1 info）。全仓各产品包类型检查及 protobuf 生成通过；实验脚本首次检查发现可变 PID 在回调中的类型收窄丢失，改用已校验常量后实验脚本重验退出 0。新增遗留/并发保护后 Agent 定向类型检查通过，最终改动文件 Biome 通过。893 个本地文档目标、Python 3.8 AST、Bash 语法及 diff 检查通过；无生成文件、数据库迁移或依赖锁变更。
+
+## 完整 root 原生启动证明与 OpenPGP
+
+扩展实际探测函数支持明确的 root 探测账户：拒绝 root/无效/歧义 passwd 记录，CLI 通过 setpriv 与最小环境切换身份，节点脚本核对实际 UID/GID。复用 Slurm/PBS Pro/Torque adapter 及已完成的原生探测收尾；资源检查器分别绑定 SLURM_JOB_ID/PBS_JOBID。SelfAccount 仍只支持 Slurm。
+
+修复 root 签名契约：ECL 使用 OpenPGP，新增固定 PGP 指纹配置，与 PEM 路径/摘要配置互斥。验证全部 SIF 对象、文件系统存在及每项记录的指纹/签名/数据校验，强制 --local 不访问 keyserver。实际实验发现 KeyLocal 只描述个人 keyring，源码确认全局受信 keyring 可以为 false；验证仍要求明确固定指纹与全部完整性结果。ECL 负例必须返回明确签名拒绝和退出码 255，不能接受任意错误。节点还校验 buildcfg 实际配置目录及 ECL/反例 SIF 摘要；账户、指纹和反例摘要纳入证明 ID。探测失败原因现在记录到 Agent 日志，公开 readiness 仍保持固定错误类别。
+
+真实 Slurm 最终入口退出 0：原 Job 6 由 root 发起、实际 UID 24001，完成签名 SIF、ECL 负例、seccomp、禁网和逐作业 1 核/128 MiB；返回完整 root 证明，namespace 清理已确认。前两次失败定位了混合 PEM/PGP 契约和 KeyLocal 语义，不计为通过。私钥只在临时 Pod 中生成并删除，另一个用于确认 JSON 格式的本机临时 keyring/SIF 也已删除；没有改动宿主 keyring、科学编译或远程部署。
+
+完整 root 探测接口已具备证据，但主启动/能力发布仍未接通。下一项必须一起处理：root 能力不再采信布尔开关、启动及刷新调用真实证明、失败后恢复 processor/profile、所有 HPC 逐作业命令使用固定检查器/策略、明确队列和节点约束，以及 Server 首次签发与联邦续租绑定证明。PBS 启动脚本须先安装原生 cgroup hook，再获取证明；现有双平台脚本要补齐探测账户、PGP/ECL/反例和队列配置。不能只打开能力发布而保留未核验的 root 逐作业或默认队列路径。其他蓝图及 PR 预览目标保持不变。
+
+验证：启动证明/账户/配置/资源命令共 64 项相关用例通过（分两批，373 + 10 断言）；真实 Slurm 完整入口退出 0。全仓 lint 退出 0（原有 47 warnings/1 info），全仓 typecheck（含 protobuf 生成、所有产品包和实验脚本）退出 0。894 个本地文档目标、Python 3.8 AST、Bash 语法及 diff 检查通过；没有手工生成文件、迁移或依赖变更。

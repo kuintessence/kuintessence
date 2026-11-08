@@ -303,6 +303,22 @@ PBS/Torque 不可用，restrictedNoEgress 也不可用。
 同时检查容器 `/proc/net/dev` 只能包含回环接口；探测不访问公网。
 证明 ID 也绑定 probe 策略摘要。切换策略或升级探测实现后须重新获取证明。
 
+SIF 签名验证支持两种互斥的信任配置：PEM 使用现有
+`AGENT_SANDBOX_SIF_PUBLIC_KEY_PATH`/`AGENT_SANDBOX_SIF_PUBLIC_KEY_SHA256`；
+OpenPGP 使用 `AGENT_SANDBOX_SIF_PGP_FINGERPRINT`（40 位指纹，大小写归一化）。
+OpenPGP 通过 `apptainer verify --all --local --json` 离线验证全部对象，要求文件系统对象
+及所有验证记录均匹配固定指纹，签名和数据校验全部成功。全局受信 keyring 中的密钥
+可能报告 `KeyLocal=false`，该字段不代表验证失败；禁止依赖在线 keyserver 临时获取信任。
+
+root 原生探测接口已支持 `AGENT_SANDBOX_ATTESTATION_ACCOUNT`：明确指定已存在的非 root
+Unix 账户，getent 返回的用户名、UID、GID 和 home 须合法。调度 CLI 通过 setpriv 和最小环境
+以该身份执行，脚本再核对实际 UID/GID。root 探测要求 OpenPGP 指纹及固定 ECL 文件摘要、
+结构合法的未签名反例 SIF。计算节点核对 Apptainer buildcfg 的实际配置目录、ECL 文件和
+反例 SIF 摘要；只有明确的 ECL 签名拒绝及预期退出码才通过，普通启动失败不能替代。
+证明 ID 绑定探测账户、PGP 指纹、ECL 和反例摘要。
+此 root 接口已在独立 Slurm 实验验收，Agent 主启动/能力发布与 Server 派发链路尚待接入；
+不能仅配置这些变量就宣称生产 root 模式已具备完整证明。SelfAccount 仍仅支持 Slurm。
+
 原生探测通过实际调度器适配器提交 1 CPU/128 MiB、最长运行 120 秒的作业，
 逐次 CLI 调用最多 10 秒，完成观察窗口为 150 秒。只有原作业成功终止且输出合法节点标记，
 才生成证明。等待超时或状态查询异常时取消原 Job，并要求正向停止确认后才删除文件；
