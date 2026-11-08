@@ -756,3 +756,10 @@ SelfAccount 启动探测现复用原生 adapter 提交/状态/取消入口，超
 
 
 root HPC 主链路现接通实际启动证明、周期刷新、能力发布、验签/暂存、逐作业限制及 Server 签发/续租。配置开关不再替代实际证据；首次失败后可重新证明恢复，受限 profile 同步刷新。所有 HPC 新作业要求已证明队列/节点，Slurm/PBS Pro/Torque 分别使用原生节点约束和 Job ID，并在执行前核对 hostname。普通 root 作业也加载 seccomp；Kubernetes 路径保持独立。真实 Slurm root 签名 Job 7 COMPLETED/0，普通 UID 24001、只读输入/禁网/资源限制/JSON 输出通过；实验 namespace 已删除。PBS bootstrap 已补齐 PGP/ECL/反例/探测配置，并把 cgroup hook 提前到 Agent 启动之前；双平台复验已通过：两个 Server/数据库和独立 mTLS Agent 完成加密导出/导入、回执、来源批准与本地发布；DATA_WAITING 自动恢复后，PBS 原 Job 1 读取受限导入数据，来源撤权后原作业 F/265 且正向停止确认成立。实验退出 0，临时服务和 namespace 已清理。跨平台 SelfAccount、Torque 原生矩阵、跨主机及掉电恢复、完整蓝图和 PR 预览仍未完成。
+
+
+### 原生探测收据恢复
+
+原生 Sandbox 探测增加持久阶段收据和 Linux flock，进程退出自动释放锁。恢复按原 UUID、执行身份和调度器查询，确认原任务停止后才启动新探测；不复用旧输出。提交响应丢失也可查找原任务，查无结果或停止不明继续保留，禁止盲目重投。旧格式、损坏/不安全文件及账号/队列/调度器变化需人工核对。准备和清理中断可继续回收，文件及目录更新显式 fsync。说明见[软件沙箱](../software.md)与[真实 Slurm 实验](../../deploy/federation/sandbox-cgroup-lab.md#原生探测进程中断恢复)。
+
+新增及受影响的测试通过，含真实子进程 SIGKILL、并发锁、阶段一致性、异常原生编号及符号/硬链接拒绝。真实 Slurm 24.11 两种中断恢复均通过：原 Job 6/8 在探测进程退出后继续运行，恢复查找并取消原 Job，确认 PID 消失后分别提交全新 Job 7/9；仍保留有效 SIF/root 签名执行回归。入口退出 0，namespace 已确认删除。不宣称掉电或跨主机恢复已验收。

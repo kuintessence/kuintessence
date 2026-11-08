@@ -108,3 +108,16 @@ root HPC 现与 SelfAccount 共用真实运行证明、验签、固定执行事�
 PBS 双平台入口改为先安装原生 cgroup hook，再启动 Agent；保留只读 unsigned.sif 供周期 ECL 反例验证，并配置明确探测账户、队列、固定指纹和策略/检查器摘要。该入口现已实际通过：两套 Server/数据库及独立 mTLS Agent 完成加密介质交付，原生启动探测 Job 0 为 F/0，root 能力和 restricted profile 就绪。导入/来源授权/本地发布后 DATA_WAITING 自动恢复，签名作业 Job 1 在 workq、已证明节点执行只读输入与 seccomp 检查；来源撤权后 F/265，停止确认成立，副本与交付回执保留。完整命令退出 0，临时服务与 namespace 已清理。
 
 首次目录缺失已修复为创建受保护目录后再验证；另一次派发被同机类型检查期间的实际 CPU 98% 拦截，未调整平台 95% 阈值，待检查完成后单独复验通过。此验收是同机两平台、单 PBS 节点及轻量脚本，不能扩大为 Torque、跨主机或科学计算性能验收。
+
+
+## 原生探测进程中断恢复
+
+同一 Slurm 运行时入口增加两种 SIGKILL 场景：实际 `sbatch` 已接受但提交调用尚未返回；原生作业号已持久记录、正在轮询。
+两种场景均先等待轻量 sleep 作业实际运行，再确认第二探测进程无法取得锁；强制结束原探测进程后，原 Slurm 作业仍在运行。
+重启调用产品恢复入口，按原 KQ UUID 查找，取消原 Job 并确认其停止和 PID 消失，之后只提交一次全新探测。
+成功标记为 `REAL_NATIVE_PROBE_CRASH_RECOVERY_OK=response-lost` 和 `REAL_NATIVE_PROBE_CRASH_RECOVERY_OK=submitted`。
+
+此机制依赖 util-linux `flock` 与可靠本地文件系统。持久 `.attestation.lock` 不应删除；恢复收据损坏、身份/调度器/队列改变或原作业不确定时不会自动重投。
+准备、阶段切换和回收使用文件/目录 fsync 与原子 rename；SIGKILL 验证不等于整机掉电、共享存储或跨主机接管验收。
+
+2026-11-09 实际完整入口退出 0，两种恢复标记均出现。响应丢失场景原 Job 6 被恢复停止后新 Job 7 成功；已持久编号场景原 Job 8 被停止后新 Job 9 成功。每个场景都确认旧 PID 消失、新提交只有一次、活动目录清理后仅保留持久锁。SelfAccount 签名 Job 3、完整 root 证明 Job 10 和签名 Job 11 同时通过，实验 namespace 已确认删除。后续只追加拒绝异常原生编号的解析边界测试，没有据此重复同一原生正常路径。

@@ -41,6 +41,7 @@ command=subprocess.check_output(['bun','--no-env-file','-e',source],cwd=repo,tex
         *sorted((repo/'scripts/federation-live').glob('slurm-*')),
         repo/'packages/agent/scripts/kq-sandbox-cgroup-check',
         repo/'packages/agent/src/sandbox/runtime-attestation.ts',
+        repo/'packages/agent/src/sandbox/native-runtime-probe.ts',
     ]},
     'commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip()}))
 def terminate(_signum, _frame):

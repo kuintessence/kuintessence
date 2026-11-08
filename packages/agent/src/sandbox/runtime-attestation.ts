@@ -371,7 +371,9 @@ async function runHpcProbe(
     root: config.AGENT_SANDBOX_ROOT,
     queue: config.AGENT_SANDBOX_ATTESTATION_QUEUE as string,
     script,
-    ...(account ? { account: { uid: account.uid, gid: account.gid } } : {}),
+    ...(account
+      ? { account: { username: account.username, uid: account.uid, gid: account.gid } }
+      : {}),
     adapter: (logDir) => {
       const deps = { spawner: boundedSpawner, logDir };
       if (scheduler === "slurm")
