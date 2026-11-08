@@ -89,3 +89,6 @@ assert not path.exists(), 'Slurm did not remove the original job cgroup'
 print('SLURM ORIGINAL JOB CGROUP REMOVED')
 PY
 echo 'REAL SLURM V2 SELFACCOUNT CHECKER PASSED'
+if [[ ${KQ_SLURM_SELFACCOUNT:-} == 1 ]]; then
+  runuser -u scientist -- env KQ_SLURM_SELFACCOUNT=1 /usr/local/bin/bun /opt/kq/self-account.js
+fi

@@ -126,7 +126,7 @@ async function assertSecureAncestorDirectories(path: string): Promise<void> {
 
 function apptainerBaseArgv(
   apptainerPath: string,
-  seccompProfilePath: string,
+  seccompProfilePath: string | undefined,
   runtimePath: string,
 ): string[] {
   return [
@@ -144,7 +144,7 @@ function apptainerBaseArgv(
     "--drop-caps",
     "all",
     "--security",
-    `no-new-privs,seccomp:${seccompProfilePath}`,
+    seccompProfilePath ? `no-new-privs,seccomp:${seccompProfilePath}` : "no-new-privs",
     "--pwd",
     "/",
     runtimePath,
@@ -157,6 +157,60 @@ function shellCommand(argv: string[]): string {
 
 function sha256Check(path: string, expectedSha256: string): string {
   return `printf '%s  %s\\n' ${shellQuote(expectedSha256)} ${shellQuote(path)} | sha256sum -c -`;
+}
+
+export function buildRuntimeIsolationProbeCommands(
+  unfiltered: string[],
+  production: string[],
+  seccompProbe: string[],
+): string[] {
+  const socket = "exec 3<>/dev/tcp/127.0.0.1/1";
+  const expectErrno = (command: string[], messages: string[]) =>
+    [
+      "export LC_ALL=C",
+      "rc=0",
+      `output=$(${shellCommand(command)} 2>&1) || rc=$?`,
+      `[[ $rc == 1 && ( ${messages.map((message) => `$output == *${shellQuote(message)}*`).join(" || ")} ) ]]`,
+    ].join("; ");
+  const socketCommand = ["/usr/bin/timeout", "3", "/bin/bash", "-c", socket];
+  return [
+    // The same image must execute the probes before a policy denial can count as evidence.
+    shellCommand([...unfiltered, "/bin/uname"]),
+    shellCommand([
+      ...unfiltered,
+      "/bin/bash",
+      "-c",
+      expectErrno(socketCommand, ["Connection refused", "Network is unreachable"]),
+    ]),
+    shellCommand([...production, "/bin/true"]),
+    shellCommand([
+      ...production,
+      "/bin/bash",
+      "-c",
+      expectErrno(socketCommand, ["Operation not permitted"]),
+    ]),
+    shellCommand([
+      ...seccompProbe,
+      "/bin/bash",
+      "-c",
+      expectErrno(["/bin/uname"], ["Operation not permitted"]),
+    ]),
+    shellCommand([
+      ...production,
+      "/bin/bash",
+      "-c",
+      [
+        "set -eu",
+        "loopback=0",
+        "while IFS=: read -r iface counters; do",
+        "  [[ -n $counters ]] || continue",
+        `  [[ \${iface//[[:space:]]/} == lo ]] || exit 43`,
+        "  loopback=$((loopback + 1))",
+        "done </proc/net/dev",
+        "[[ $loopback == 1 ]]",
+      ].join("\n"),
+    ]),
+  ];
 }
 
 async function runSlurmProbe(
@@ -180,19 +234,11 @@ async function runSlurmProbe(
   const stderrPath = join(probeRoot, "stderr.log");
   const apptainerPath = config.AGENT_SANDBOX_APPTAINER_PATH;
   const positive = apptainerBaseArgv(apptainerPath, seccompProfilePath, runtimePath);
+  const unfiltered = apptainerBaseArgv(apptainerPath, undefined, runtimePath);
   const unauthorized = negativeRuntimePath
     ? apptainerBaseArgv(apptainerPath, seccompProfilePath, negativeRuntimePath)
     : undefined;
-  const productionSeccompNegative = [...positive, "/bin/uname"];
   const seccompNegative = apptainerBaseArgv(apptainerPath, seccompProbeProfilePath, runtimePath);
-  const networkNegative = [
-    ...positive,
-    "/usr/bin/timeout",
-    "3",
-    "/bin/bash",
-    "-c",
-    "exec 3<>/dev/tcp/1.1.1.1/53",
-  ];
   const script = [
     "#!/bin/bash",
     "set -euo pipefail",
@@ -201,13 +247,10 @@ async function runSlurmProbe(
     sha256Check(runtimePath, expectedSha256.runtime),
     sha256Check(seccompProfilePath, expectedSha256.seccomp),
     sha256Check(seccompProbeProfilePath, expectedSha256.seccompProbe),
-    shellCommand([...positive, "/bin/true"]),
+    ...buildRuntimeIsolationProbeCommands(unfiltered, positive, seccompNegative),
     ...(unauthorized
       ? [`if ${shellCommand([...unauthorized, "/bin/true"])}; then exit 41; fi`]
       : []),
-    `if ${shellCommand(productionSeccompNegative)}; then exit 42; fi`,
-    `if ${shellCommand([...seccompNegative, "/bin/uname"])}; then exit 44; fi`,
-    `if ${shellCommand(networkNegative)}; then exit 43; fi`,
     "printf 'KQ_ATTESTED_NODE=%s\\n' \"$(hostname)\"",
   ].join("\n");
   try {
@@ -427,6 +470,7 @@ export async function attestSandboxRuntimeEnvironment(
             publicKeySha256: publicKey.sha256,
             runtimePath: runtime.localPath,
             seccompSha256: seccomp.sha256,
+            seccompProbeSha256: seccompProbe.sha256,
           }),
         )
         .digest("hex");

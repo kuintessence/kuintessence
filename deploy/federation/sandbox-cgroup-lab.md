@@ -1,7 +1,7 @@
 # 计算节点逐作业资源检查
 
 新增 [`kq-sandbox-cgroup-check`](../../packages/agent/scripts/kq-sandbox-cgroup-check) 读取当前进程的内核 cgroup 及挂载信息，核对指定调度器作业的 CPU、内存边界。
-它不创建限额、不验证 Server 签名、不提交任务。带签名 `executionProfile` 的受限 HPC 作业已通过 trusted wrapper 强制调用：Agent 传递已验证清单中的资源值，节点配置指定调度器，原生作业编号必须匹配当前内核分组。SelfAccount 已接入启动探测、逐作业检查及明确队列绑定，真实 Slurm 验收仍待完成；其他 root 路径及其启动/队列能力发布尚待接入；`AGENT_SANDBOX_CGROUPS` 配置不能据此视为已完成生产验收。
+它不创建限额、不验证 Server 签名、不提交任务。带签名 `executionProfile` 的受限 HPC 作业已通过 trusted wrapper 强制调用：Agent 传递已验证清单中的资源值，节点配置指定调度器，原生作业编号必须匹配当前内核分组。SelfAccount 已接入启动探测、逐作业检查及明确队列绑定，单平台真实 Slurm 启动证明与签名任务已验收，跨平台联合验收仍待完成；其他 root 路径及其启动/队列能力发布尚待接入；`AGENT_SANDBOX_CGROUPS` 配置不能据此视为已完成生产验收。
 
 ## 检查口径
 
@@ -63,8 +63,25 @@ KQ_SLURM_CGROUP_LAB=1 PYTHONDONTWRITEBYTECODE=1 \
 
 此项只证明真实 Slurm 内的产品资源检查与调度器分组回收。尚未覆盖完整 SelfAccount 启动证明、签名 SIF/Apptainer 执行、跨平台派发或 Slurm OOM/限流负载，不应据此宣称这些验收完成。
 
+## SelfAccount 启动证明与签名任务执行
+
+同一入口增加真实运行时模式；先备齐本机 `temp/federation-runtime/` 下的 Apptainer/SUID 固定摘要包与轻量 `bash.sif`，然后执行：
+
+```bash
+KQ_SLURM_CGROUP_LAB=1 KQ_SLURM_SELFACCOUNT=1 PYTHONDONTWRITEBYTECODE=1 \
+  python3 scripts/slurm-cgroup-lab.py
+```
+
+运行器校验缓存安装包摘要，Bun 打包当前产品入口，在一次性 Pod 内生成 RSA 密钥签名 SIF，导出公钥后删除私钥。Debian 13 使用配套的 `squashfuse=0.5.2-0.2+b2` 及 FUSE ABI，替换缓存 Apptainer 自带的旧挂载 helper；包版本与 helper 摘要写入实验日志。所有安装和配置仅发生在临时 Pod，源码和宿主 Bun 只读挂载。
+
+UID/GID 24001 调用真实 `attestSandboxRuntimeEnvironment`：检查 root 管理路径、SIF 签名、原生队列资源、seccomp 对照命令及网络接口，随后使用本地临时 Ed25519 密钥签名轻量任务。产品 verifier、stager 和 Slurm adapter 负责验签、一次性 nonce、输入暂存及实际提交。任务读取只读输入，核对 seccomp/no-new-privs/socket 拒绝，写入受限输出；产品输出校验读取 JSON。实验同时断言重复 nonce、错误队列和资源篡改被拒绝。该模式是 SelfAccount 普通沙箱，不启用只允许受控 root profile 的 `restrictedNoEgress`。
+
+2026-11-09 实际入口退出 0，原生 Job 3 为 COMPLETED/0，出现 `REAL_SELFACCOUNT_SIGNED_EXECUTION_OK`；证明绑定 `sandbox` 队列和实际 `slurm` 节点，实验 namespace 已删除。此前两次环境准备/运行失败分别发现 Debian 13 的 FUSE 包名变化和旧 helper ABI 不兼容，均被拒绝，未算作通过；修正实验依赖后完成验收。
+
+此处签名方为本地临时夹具，不包含两套 Server、联邦传输或介质交付；也未验证跨节点共享存储、主机掉电或 Slurm OOM 负载。这些仍须在对应联合实验中验收。
+
 ## 仍需完成的接入
 
 现有实验 Slurm 19 使用 `task/none`，缓存的 OpenPBS 23 官方 hook 使用 v1；当前主机采用统一 v2。不能仅设置一个能力开关而宣布具备限额。
-PBS 已提供显式队列的[原生 v2 hook](../schedulers/pbs/cgroup-v2.md)。trusted wrapper 已接入固定摘要、root 管理的检查器，并在用户脚本前核对已签名资源。SelfAccount 已将路径正则替换为实际检查：配置固定检查器及明确队列，启动探测申请 1 CPU/128 MiB，读取真实内核限额；证明 ID 同时绑定队列与检查器身份。每次执行再次读取已核验的同一份检查器字节并检查签名资源。队列随能力上报，首次派发、Agent 提交和联邦续租均要求匹配。后续仍须配置 Slurm 实际 v2 路径，完成 SelfAccount 真实调度验证和其他 root 路径的启动/队列能力证明。
+PBS 已提供显式队列的[原生 v2 hook](../schedulers/pbs/cgroup-v2.md)。trusted wrapper 已接入固定摘要、root 管理的检查器，并在用户脚本前核对已签名资源。SelfAccount 已将路径正则替换为实际检查：配置固定检查器及明确队列，启动探测申请 1 CPU/128 MiB，读取真实内核限额；证明 ID 同时绑定队列与检查器身份。每次执行再次读取已核验的同一份检查器字节并检查签名资源。队列随能力上报，首次派发、Agent 提交和联邦续租均要求匹配。后续仍须完成 SelfAccount 跨平台联合调度验证和其他 root 路径的启动/队列能力证明。
 PBS 受限 root profile 的双平台联合验证已通过；现代 Slurm v2 的原生资源检查和回收也已通过上述独立实验。其余接入和真实联合验证完成前，完整资源隔离验收保持未完成。完整联盟链蓝图及 PR 预览验收范围不变。

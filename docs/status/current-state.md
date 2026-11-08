@@ -744,6 +744,8 @@ SelfAccount 已替换仅匹配 cgroup 路径的探测，使用固定摘要、roo
 
 证明 ID 绑定检查器与队列，`attested_queue` 随 protobuf 能力上报；Server 首次签发、Agent 提交与联邦续期均核对队列，续期要求原 Job、outbox 与证明一致。SelfAccount 当前要求显式队列选择。旧持久记录保留轮询/收尾/停止能力，不补默认检查器或队列用于重新提交；升级须 drain 后协调 Server/Agent 并重新取得证明。
 
-边界测试和隔离 PostgreSQL 验证已通过，实际非 root 账号的暂存/序列化恢复已验证。现代 Slurm v2 的真实作业及 SelfAccount 联合运行仍未验收；其他 root 路径的能力证明、完整联邦蓝图和 PR 预览仍待完成。
+边界测试和隔离 PostgreSQL 验证已通过，实际非 root 账号的暂存/序列化恢复已验证。SelfAccount 的跨平台联合运行、其他 root 路径的能力证明、完整联邦蓝图和 PR 预览仍待完成。
 
-后续 Slurm 24.11 原生实验已通过：UID 24001 的实际 sbatch 作业执行产品 SelfAccount 资源检查命令，内核独立 cpuset=1、内存=128 MiB；原作业 cgroup 与随机实验 namespace 均清理完成。可复现入口见[资源检查实验](../../deploy/federation/sandbox-cgroup-lab.md)。此结果不包含完整 SelfAccount 启动证明、Apptainer/SIF 或签名联邦派发，相关验收仍待完成。
+后续 Slurm 24.11 原生实验已通过：UID 24001 的实际 sbatch 作业执行产品 SelfAccount 资源检查命令，内核独立 cpuset=1、内存=128 MiB；原作业 cgroup 与随机实验 namespace 均清理完成。可复现入口见[资源检查实验](../../deploy/federation/sandbox-cgroup-lab.md)。该原生资源检查实验本身不包含启动证明或签名派发，运行时验证见下一段。
+
+随后完成单平台真实 SelfAccount 启动证明和签名任务执行：Slurm 24.11、UID/GID 24001、实际 RSA 签名 SIF/Apptainer，调用产品 verifier/stager/adapter 完成临时 Ed25519 签名任务，原生作业 COMPLETED/0。只读输入、seccomp/no-new-privs、socket 拒绝和 JSON 输出校验通过；重复 nonce、错误队列和资源漂移拒绝。修复启动探测将任意命令失败误认作策略拒绝的问题，改用成功对照、预期 errno/退出码与回环接口检查，正式策略无需禁止 uname。专用 probe 摘要纳入证明 ID。该实验没有两套平台和联邦交付，完整跨平台 SelfAccount、其他 root 路径能力证明及完整蓝图仍待完成。

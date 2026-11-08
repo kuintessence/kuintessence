@@ -4,8 +4,12 @@ import { chmod, chown, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Spawner } from "../adapters/base";
+import { shellQuote } from "../adapters/base";
 import { loadAgentConfig } from "../config";
-import { attestSandboxRuntimeEnvironment } from "./runtime-attestation";
+import {
+  attestSandboxRuntimeEnvironment,
+  buildRuntimeIsolationProbeCommands,
+} from "./runtime-attestation";
 
 const roots: string[] = [];
 const identity = {
@@ -84,6 +88,90 @@ async function fixture() {
 }
 
 describe("Sandbox runtime attestation", () => {
+  test("probe shells reject missing tools, timeouts, ignored filters and extra network interfaces", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kq-probe-shell-"));
+    roots.push(root);
+    const helper = join(root, "tool");
+    const runtime = join(root, "runtime");
+    const interfaces = join(root, "net-dev");
+    await writeFile(
+      helper,
+      `#!/bin/bash
+set -eu
+case "$KQ_PROBE_MODE:$1:$KQ_PROBE_CASE" in
+  baseline:uname:missing-uname) exit 127 ;;
+  baseline:socket:missing-timeout) exit 127 ;;
+  production:socket:timeout) echo 'Operation not permitted' >&2; exit 124 ;;
+  probe:uname:missing-probe-uname) echo 'Operation not permitted' >&2; exit 127 ;;
+  probe:uname:ignored-probe) exit 0 ;;
+  production:socket:ignored-production) echo 'Connection refused' >&2; exit 1 ;;
+esac
+case "$KQ_PROBE_MODE:$1" in
+  baseline:uname) echo Linux ;;
+  baseline:socket) echo 'Connection refused' >&2; exit 1 ;;
+  production:socket|probe:uname) echo 'Operation not permitted' >&2; exit 1 ;;
+  *) exit 90 ;;
+esac
+`,
+      { mode: 0o700 },
+    );
+    await writeFile(
+      runtime,
+      `#!/usr/bin/python3
+import os, sys
+os.environ["KQ_PROBE_MODE"] = sys.argv[1]
+if sys.argv[1] == "production" and os.environ["KQ_PROBE_CASE"] == "launch-failed":
+    sys.exit(126)
+command = sys.argv[2:]
+if command[0] == "/bin/uname":
+    os.execl(${JSON.stringify(helper)}, "tool", "uname")
+if command[0] == "/bin/true":
+    sys.exit(0)
+assert command[:2] == ["/bin/bash", "-c"]
+script = command[2].replace("'/usr/bin/timeout'", ${JSON.stringify(`${shellQuote(helper)} socket`)})
+script = script.replace("'/bin/uname'", ${JSON.stringify(`${shellQuote(helper)} uname`)})
+script = script.replace("/proc/net/dev", ${JSON.stringify(interfaces)})
+os.execl("/bin/bash", "bash", "-c", script)
+`,
+      { mode: 0o700 },
+    );
+    const script = [
+      "set -e",
+      ...buildRuntimeIsolationProbeCommands(
+        [runtime, "baseline"],
+        [runtime, "production"],
+        [runtime, "probe"],
+      ),
+    ].join("\n");
+    for (const scenario of [
+      "ok",
+      "missing-uname",
+      "missing-timeout",
+      "timeout",
+      "missing-probe-uname",
+      "ignored-probe",
+      "ignored-production",
+      "launch-failed",
+      "extra-interface",
+    ]) {
+      await writeFile(
+        interfaces,
+        `Inter-| Receive\n lo: 0\n${scenario === "extra-interface" ? " eth0: 0\n" : ""}`,
+      );
+      const child = Bun.spawn(["/bin/bash", "-c", script], {
+        env: { ...process.env, KQ_PROBE_CASE: scenario },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+      expect({ scenario, code: code === 0, stderr }).toEqual({
+        scenario,
+        code: scenario === "ok",
+        stderr: "",
+      });
+    }
+  });
+
   test("derives readiness only after the signed runtime and Slurm probes succeed", async () => {
     const { config, digest, inspectFile } = await fixture();
     let submittedScript = "";
@@ -122,19 +210,12 @@ describe("Sandbox runtime attestation", () => {
     expect(submittedScript.indexOf("--job-id")).toBeLessThan(submittedScript.indexOf("/bin/true"));
     expect(result.runtimeCache[digest]?.runtimeAttestationId).toMatch(/^[0-9a-f]{64}$/);
     expect(submittedScript).toContain("seccomp:");
-    expect(submittedScript).toContain("/dev/tcp/1.1.1.1/53");
+    expect(submittedScript).toContain("/dev/tcp/127.0.0.1/1");
+    expect(submittedScript).toContain("Connection refused");
+    expect(submittedScript).toContain("Operation not permitted");
+    expect(submittedScript).toContain("/proc/net/dev");
     expect(submittedScript).toContain("exit 41");
-    expect(submittedScript).toContain("exit 42");
-    expect(
-      submittedScript
-        .split("\n")
-        .some(
-          (line) =>
-            line.startsWith("if ") &&
-            line.includes(config.AGENT_SANDBOX_SECCOMP_PROFILE_PATH ?? "") &&
-            line.includes("/bin/uname"),
-        ),
-    ).toBe(true);
+    expect(submittedScript).toContain("'no-new-privs'");
     const renewed = await attestSandboxRuntimeEnvironment(config, "slurm", spawner, identity, {
       now: () => 2_000,
       inspectFile,
@@ -154,6 +235,26 @@ describe("Sandbox runtime attestation", () => {
       { now: () => 2_000, inspectFile, validateAncestors: async () => undefined },
     );
     expect(otherQueue.runtimeCache[digest]?.runtimeAttestationId).not.toBe(
+      result.runtimeCache[digest]?.runtimeAttestationId,
+    );
+    const otherProbeHash = "b".repeat(64);
+    const otherProbe = await attestSandboxRuntimeEnvironment(
+      { ...config, AGENT_SANDBOX_SECCOMP_PROBE_PROFILE_SHA256: otherProbeHash },
+      "slurm",
+      spawner,
+      identity,
+      {
+        inspectFile: async (path) => ({
+          ...(await inspectFile(path)),
+          ...(path === config.AGENT_SANDBOX_SECCOMP_PROBE_PROFILE_PATH
+            ? { sha256: otherProbeHash }
+            : {}),
+        }),
+        validateAncestors: async () => undefined,
+      },
+    );
+    expect(otherProbe.missingRequirements).toEqual([]);
+    expect(otherProbe.runtimeCache[digest]?.runtimeAttestationId).not.toBe(
       result.runtimeCache[digest]?.runtimeAttestationId,
     );
   });

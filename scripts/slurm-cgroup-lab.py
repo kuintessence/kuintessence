@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Opt-in native Slurm v2 job/checker experiment in one owned k3s Pod."""
-import json, os, pathlib, signal, subprocess, uuid
+import hashlib, json, os, pathlib, shutil, signal, subprocess, uuid
 repo=pathlib.Path(__file__).resolve().parent.parent
 namespace='kq-slurm-cgroup-'+uuid.uuid4().hex[:8]
 output=repo/'temp'/namespace
@@ -8,6 +8,16 @@ output.mkdir(mode=0o700)
 image='docker.io/library/debian@sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392'
 slurm_version='24.11.5-4+deb13u1'
 assert os.environ.get('KQ_SLURM_CGROUP_LAB')=='1'
+self_account = os.environ.get('KQ_SLURM_SELFACCOUNT') == '1'
+runtime = repo / 'temp/federation-runtime'
+if self_account:
+    for name, digest in {
+        'apptainer.deb': 'c3c05120baab7ece2e81d40c1d1be63cc3fd1f5a25f379a4f2b2f99a0f6a1100',
+        'apptainer-suid.deb': '5b9308c9bc643d8c8bc62fe545e29a23f6b8deea8d11782e4000bc6d621a2480',
+    }.items():
+        assert hashlib.sha256((runtime / name).read_bytes()).hexdigest() == digest, name
+    subprocess.run(['bun', 'build', 'scripts/federation-live/slurm-self-account.ts', '--target=bun',
+                    '--outfile=' + str(output / 'self-account.js')], cwd=repo, check=True, timeout=60)
 def k(args, data=None, check=True, timeout=40):
     result=subprocess.run(['kubectl',*args],input=data,text=True,capture_output=True,timeout=timeout)
     if check and result.returncode:
@@ -25,6 +35,12 @@ console.log(buildSelfAccountCgroupCommand({
 command=subprocess.check_output(['bun','--no-env-file','-e',source],cwd=repo,text=True,timeout=30)
 (output/'job.sh').write_text('#!/bin/bash\nset -euo pipefail\n[[ $(id -u) == 24001 ]]\n'+command+'\ncat /proc/self/cgroup\nprintf "REAL_SLURM_CGROUP_OK\\n"\n')
 (output/'checkout.json').write_text(json.dumps({'image':image,'slurmVersion':slurm_version,'namespace':namespace,
+    'sourceSha256': {str(path.relative_to(repo)): hashlib.sha256(path.read_bytes()).hexdigest() for path in [
+        pathlib.Path(__file__).resolve(),
+        *sorted((repo/'scripts/federation-live').glob('slurm-*')),
+        repo/'packages/agent/scripts/kq-sandbox-cgroup-check',
+        repo/'packages/agent/src/sandbox/runtime-attestation.ts',
+    ]},
     'commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip()}))
 def terminate(_signum, _frame):
     raise KeyboardInterrupt("Slurm lab cancelled")
@@ -39,6 +55,11 @@ try:
             'resources':{'requests':{'cpu':'100m','memory':'256Mi'},'limits':{'cpu':'1','memory':'1Gi'}},
             'volumeMounts':[{'name':'source','mountPath':'/workspace','readOnly':True}]}],
         'volumes':[{'name':'source','hostPath':{'path':str(repo),'type':'Directory'}}]}}
+    if self_account:
+        for name, path in [('runtime', str(runtime)), ('bun', shutil.which('bun'))]:
+            assert path
+            pod['spec']['containers'][0]['volumeMounts'].append({'name': name, 'mountPath': '/lab-' + name, 'readOnly': True})
+            pod['spec']['volumes'].append({'name': name, 'hostPath': {'path': path}})
     k(['apply','-f','-'],json.dumps(pod))
     k(['wait','-n',namespace,'--for=condition=Ready','pod/slurm','--timeout=60s'],timeout=70)
     print('Owned lab '+namespace,flush=True)
@@ -53,8 +74,18 @@ dpkg-query -W slurmd slurmctld slurm-client slurm-wlm-basic-plugins
 sha256sum /usr/sbin/slurmd /usr/sbin/slurmctld /usr/lib/x86_64-linux-gnu/slurm-wlm/cgroup_v2.so
 """],timeout=200)
     (output/'setup.log').write_text(setup.stdout+setup.stderr)
-    result=run(['env','KQ_SLURM_CGROUP_LAB=1','KQ_SLURM_CGROUP_JOB=/workspace/temp/'+namespace+'/job.sh','bash','/workspace/scripts/federation-live/slurm-cgroup-outer.sh'],check=False,timeout=150)
+    if self_account:
+        setup = run(['env', 'KQ_SLURM_SELFACCOUNT=1', 'KQ_SLURM_LAB_OUTPUT=/workspace/temp/' + namespace,
+                     'bash', '/workspace/scripts/federation-live/slurm-self-account-setup.sh'], timeout=120)
+        (output/'runtime-setup.log').write_text(setup.stdout+setup.stderr)
+    result=run(['env','KQ_SLURM_CGROUP_LAB=1', 'KQ_SLURM_SELFACCOUNT=' + ('1' if self_account else '0'),
+                'KQ_SLURM_CGROUP_JOB=/workspace/temp/'+namespace+'/job.sh','bash','/workspace/scripts/federation-live/slurm-cgroup-outer.sh'],check=False,timeout=230 if self_account else 150)
     (output/'probe.log').write_text(result.stdout+result.stderr)
+    if self_account:
+        for name in ['attestation.json', 'self-account-output.log']:
+            evidence = run(['cat', '/scratch/job/' + name], check=False)
+            if evidence.returncode == 0:
+                (output/name).write_text(evidence.stdout)
     print(result.stdout[-3500:],flush=True)
     assert result.returncode==0, 'Probe failed: '+str(output/'probe.log')
     print('PASS '+str(output),flush=True)

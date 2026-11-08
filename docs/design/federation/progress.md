@@ -2787,3 +2787,15 @@ PBS 实验复用一个受限 Pod 内的 hook 安装入口，组件与双平台�
 原生 sbatch 作业以 UID 24001 执行实际产品 SelfAccount 检查命令，读取独立 cpuset=1、memory.max=134217728、swap=0，作业完成后原 cgroup 被 Slurm 删除；最终入口退出 0，namespace 已确认不存在。较早 Slurm 23.11 的 namespace 回收实验出现 EBUSY，未计作通过；24.11 原生回收已验证。
 
 本轮只覆盖资源检查与回收，未覆盖完整启动证明、签名 SIF/Apptainer、跨平台 SelfAccount 派发或 Slurm 的 OOM/限流负载。完整蓝图和 PR 预览范围保持不变。未修改 TypeScript、依赖或数据库；未推送、合并或远程部署。
+
+## SelfAccount 真实运行与启动探测修复
+
+发现原启动探测将命令任意失败当作 seccomp/禁网成功，且不必要地要求正式策略禁止 uname。改为同镜像、同隔离参数的固定对照：未加载待测策略时 uname 可执行、回环连接返回明确连接错误；正式策略下 socket 返回 EPERM；专用 probe 下 uname 返回 EPERM。固定 C locale，要求退出码 1，命令缺失、超时和启动失败均拒绝；同时检查仅存在回环接口，探测不再访问公网。专用 probe 策略摘要绑定证明 ID。真实 Bash 回归覆盖正常路径及八种拒绝情形。
+
+扩展现代 Slurm 入口，在原 1 CPU/1 GiB、600 秒上限内验证真实 SelfAccount：Pod 内签名 SIF，非 root 账号调用产品启动证明，然后使用临时机构密钥构造签名任务，执行产品验签/nonce/暂存/Slurm 提交。实际输入只读、seccomp/no-new-privs、socket EPERM、输出 JSON 与大小校验通过；原生 Job 3 COMPLETED/0，实验入口退出 0。额外断言重放 nonce、未验证队列和资源篡改拒绝。
+
+前两次失败揭示实验镜像与缓存 helper 的 FUSE ABI 不兼容，改用 Debian 13 配套 squashfuse 二进制，不放宽产品检查。临时签名私钥已删除，namespace 已清理。原始证据位于本机 temp；没有科学编译或常驻服务更改。
+
+此处由本地临时密钥代替 Server 签发，不包含双平台联邦派发/介质、跨节点或掉电恢复。SelfAccount 的 restrictedNoEgress 不在支持范围；受控 root profile 和其他能力证明仍需各自验收。完整联盟链蓝图与 PR 预览保持原范围，未推送、合并或远程部署。
+
+本轮相关 12 项单测通过；随后新增 probe 摘要绑定断言，定向重验启动证明 4 项/43 断言通过。全仓 lint 通过（原有 47 warnings/1 info），全仓 typecheck 含 protobuf 生成和实验脚本退出 0；893 个本地文档目标、Python 3.8 AST、Bash 语法及 diff 检查通过。生成文件、依赖锁和数据库迁移未改动。没有因观察超时而重启任何检查或实验。

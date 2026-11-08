@@ -295,6 +295,14 @@ PBS/Torque 不可用，restrictedNoEgress 也不可用。
 联邦续租还核对原 Job 与原 outbox 的队列。SelfAccount 需显式选择已探测队列，不能依赖
 可能变化的调度器默认队列；Agent 也会在提交前核对。
 
+运行时镜像须提供 `/bin/bash`、`/bin/true`、`/bin/uname`、`/usr/bin/timeout`。
+启动探测先在相同隔离参数、未加载待测 seccomp 文件的条件下执行固定对照命令：
+`uname` 成功，回环 TCP 连接因无监听或无路由返回明确错误。加载正式策略后，socket
+必须返回 EPERM；专用 probe 策略须令 `uname` 返回 EPERM。正式策略无需禁止 `uname`。
+两类错误检查均固定 C locale 并核对退出码，命令缺失、超时或容器启动失败不能当成通过。
+同时检查容器 `/proc/net/dev` 只能包含回环接口；探测不访问公网。
+证明 ID 也绑定 probe 策略摘要。切换策略或升级探测实现后须重新获取证明。
+
 每次 SelfAccount 作业执行均通过系统 Python 的 `-I` 模式读取 root 管理的检查器，
 核对权限与摘要后执行同一份已核验字节，使用已签名 CPU/内存和原生 Slurm Job ID。
 失败则在用户脚本启动前退出 126。新字段只在本地保存运行时事实，不改变 Sandbox manifest
