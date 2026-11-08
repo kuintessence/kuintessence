@@ -426,8 +426,8 @@ export class FederationOutboundService {
       const [held] = await tx
         .select({
           conflictingRevision: sql<boolean>`coalesce(bool_or(${federationOutbound.agreementRevisionId} <> ${request.agreementRevisionId}), false)`,
-          amount: sql<string>`coalesce(sum(${federationOutbound.amount}), 0)::text`,
-          count: sql<number>`count(*)::integer`,
+          amount: sql<string>`coalesce(sum(coalesce(${federationOutbound.settledAmount}, ${federationOutbound.amount})), 0)::text`,
+          count: sql<number>`count(*) FILTER (WHERE ${federationOutbound.settledAmount} IS NULL)::integer`,
         })
         .from(federationOutbound)
         .where(

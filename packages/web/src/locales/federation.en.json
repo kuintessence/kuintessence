@@ -181,6 +181,7 @@
       "desktopOnly": "Read-only on mobile. Change federation permissions on desktop.",
       "pagination": "Grant list pagination",
       "capabilities": {
+        "settlement": { "approve": "Approve allocation settlements" },
         "billing": {
           "approve": "Approve bills and discounts"
         },
@@ -207,6 +208,9 @@
         }
       },
       "effects": {
+        "settlement": {
+          "approve": "Approve separate settlements, exchange signatures and retry ledger submission; no payment or credit issuance authority."
+        },
         "billing": {
           "approve": "Approve bills and discounts, attach signatures and retry evidence submission; includes agreement reading, not payment or execution authority."
         },

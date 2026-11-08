@@ -4,6 +4,7 @@ export const FederationCapabilitySchema = z.enum([
   "agreement.read",
   "agreement.approve",
   "billing.approve",
+  "settlement.approve",
   "asset.read",
   "asset.map",
   "delegation.read",
@@ -23,7 +24,7 @@ export function federationCapabilitySources(
   return capability === "market.read"
     ? ["market.read", "market.publish", "market.claim"]
     : capability === "agreement.read"
-      ? ["agreement.read", "agreement.approve", "billing.approve"]
+      ? ["agreement.read", "agreement.approve", "billing.approve", "settlement.approve"]
       : capability === "delegation.read"
         ? ["delegation.read", "delegation.submit", "delegation.cancel"]
         : capability === "delegation.cancel"

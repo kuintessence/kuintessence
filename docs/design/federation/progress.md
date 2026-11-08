@@ -1918,3 +1918,16 @@ Federation 节点新增可选 market（policyId/title/description），协调协
 同入口共 11 项检查通过，包含既有预留/激活/停止/终态竞态及 Adapter 跨进程、断 Orderer 恢复。新结算的真实链路径通过 SDK 显式双签验证；本轮没有新增 Server 结算 API，也不把既有七类 Adapter 恢复算成新结算专用崩溃验收。账单与终态为链测试夹具，不冒称再次执行实际作业或完成两台平台结算。测试链进程已清理，私有原始证据留在忽略目录。
 
 新增签名用途的数据库 JSON TypeScript 联合类型和最大选择数量已同步，信任页面中英文目录与共享 schema 一致；补充的目录边界测试通过，共 60 个不同模块/组件场景。全仓 lint 保持原有 47 warning / 1 info；全仓类型检查中 Server 暴露用途类型遗漏，修正后 Server 和 Fabric 联调脚本定向检查退出 0，其余 package 已通过。新增目录测试最初使用未导出的 trust 子路径，改为现有 federation 导出后通过；只补查受影响项。
+
+
+## Server 独立额度结算与双边记账
+
+迁移 0140 保存按本机构/原账单唯一的结算批准、对签及本地处理时间，加入独立 settlement.approve。既有在线权限管理及中英文标签同步支持；合同读权限包含结算审批者，不隐式授予账单、付款或执行权限。草稿来自双签原账单并绑定协调终态，签署 commercial-settlement；本地批准不能改应付或释放另一任务的额度。
+
+提供方预算新增 spent，守恒 limit=available+reserved+spent。双方分别记账，预留/源方 outbound 保留原 amount、receipt 和执行状态，只增加 settledAmount；源方预算统计保留消费，只释放未用部分与任务名额。双边直接不创建链待办，异步存证本地处理与提供方待办同事务，不等待链。协调模式双方各自入队原结算，必须持久化 VALID 后才处理本地名额，没有本地可花费的链预算副本；私有链码仍是协调资金唯一权威。
+
+后台复用商业签名交换，新增 settlement 记录类型，按租约核验当前机构信任后附加原签名。商业 worker 披露前核对持久双签结算及用途，查询原账单 PDC 回执；缺失等待，不因签名齐全就推断上链。签名、账目、审计与待办事务失败全部回滚。原记录重试不重复消费，单独的账单批准不能进行结算。
+
+隔离 PostgreSQL 共 11 个不同专项通过：直接模式并发附签与精确退还、独立权限/组织/正文、事务失败回滚、异步交换不等链、交换租约失效、签名用途撤销、HTTP 私密与自动化拒绝、账单存证等待和同提交恢复、需求方与提供方接单余额/名额、协调 pending/INVALID 不释放而 VALID 仅处理本地名额。协调用例明确使用预批准记录和受控 Adapter 结果，只验证 worker 结果投影；不冒称完整协调审批或真实链联合验收。预留 60、消费 53、退回 7 后双方后续最多可预留 47，原回执重放保持一致；异步上链完成不再次扣账。首轮 worker 夹具误用非 base64 恢复令牌，被生产校验正确拒绝；修正夹具后仅重跑失败项及尚未执行的相关接单测试。
+
+日志 temp/settlement-service-pg.log、temp/settlement-service-extra-pg.log、temp/settlement-coordinated-pg.log；每次隔离数据库均已清理。既有在线权限组件 8 项通过，包含枚举标签检查。全仓类型检查（含 protobuf 与 Fabric 脚本）已通过；新增末批测试的 Server 定向检查也已通过。最终 lint 无错误，保留原有 47 warning / 1 info；733 个本地文档目标与差异格式检查通过。没有重跑已通过的真实 Fabric gate，也没有运行科学软件。真实双 Server/mTLS/Fabric 结算及断链恢复、专用结算 Web/CLI、自动审批、支付退款/争议、物理介质、归档与 PR 预览继续待完成，未合并或部署 main。API 与升级见[Server 额度结算](../../../deploy/federation/fabric-commercial.md#server-额度结算)。

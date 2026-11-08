@@ -414,9 +414,10 @@ async function fixture(
   parameters: Record<string, string | number> = {},
   inputPolicy?: FederationAgreement["inputPolicy"],
   scriptInputs: Record<string, workflowDsl.ScriptInputSpec> = {},
+  maxReservations = 100,
 ) {
   time = new Date(testNow);
-  const terms = testAgreement(a.signing.siteId, b.signing.siteId);
+  const terms = { ...testAgreement(a.signing.siteId, b.signing.siteId), maxReservations };
   if (resultPolicy) terms.resultPolicy = resultPolicy;
   if (inputPolicy) terms.inputPolicy = inputPolicy;
   agreements.push(terms);
@@ -7911,4 +7912,27 @@ test("input reconciliation refuses a live receiver workflow and enforces platfor
     if (runId) await db.delete(workflowRuns).where(eq(workflowRuns.id, runId));
     await f.lease.release();
   }
+});
+
+test("settlement projection frees source concurrency without restoring consumed credit", async () => {
+  const f = await fixture(undefined, {}, undefined, {}, 1),
+    service = f.service();
+  await service.enqueue(actor, f.request);
+  await service.deliverNext();
+  // Seed only the already-settled projection; settlement service tests own authorization and balance writes.
+  await db
+    .update(federationOutbound)
+    .set({ settledAmount: "53" })
+    .where(eq(federationOutbound.operationId, f.request.operationId));
+  await service.enqueue(actor, f.request);
+  const next = (amount: string) => ({
+    ...f.request,
+    operationId: crypto.randomUUID(),
+    taskId: crypto.randomUUID(),
+    maxAmount: amount,
+  });
+  await expect(service.enqueue(actor, next("48"))).rejects.toThrow("BUDGET_EXHAUSTED");
+  await service.enqueue(actor, next("47"));
+  await expect(service.enqueue(actor, next("0"))).rejects.toThrow("BUDGET_EXHAUSTED");
+  expect((await row(f.request.operationId)).amount).toBe("60");
 });

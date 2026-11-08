@@ -385,3 +385,29 @@ test("a signed long execution window cannot admit late work or rewrite an accept
   expect((await rows(terms)).reservations).toHaveLength(1);
   expect((await rows(terms)).budget?.reserved).toBe("60");
 });
+
+test("settlement projection frees receiver concurrency but preserves spent budget and original acceptance", async () => {
+  const terms = await install({ maxReservations: 1 });
+  const original = await requestInput(testDelegation(terms));
+  const accepted = await service.receive(original);
+  // Seed a previously committed settlement projection; service tests cover its dual approval transaction.
+  await db.transaction(async (tx) => {
+    await tx
+      .update(federationReservations)
+      .set({ settledAmount: "53" })
+      .where(eq(federationReservations.id, accepted.reservationId));
+    await tx
+      .update(federationBudgets)
+      .set({ available: "47", reserved: "0", spent: "53" })
+      .where(eq(federationBudgets.domainId, terms.budgetDomainId));
+  });
+  expect(await service.receive(original)).toEqual(accepted);
+  await expect(
+    service.receive(await requestInput({ ...testDelegation(terms), maxAmount: "48" })),
+  ).rejects.toThrow("BUDGET_EXHAUSTED");
+  await service.receive(await requestInput({ ...testDelegation(terms), maxAmount: "47" }));
+  expect((await rows(terms)).budget).toMatchObject({ available: "0", reserved: "47", spent: "53" });
+  await expect(
+    service.receive(await requestInput({ ...testDelegation(terms), maxAmount: "0" })),
+  ).rejects.toThrow("BUDGET_EXHAUSTED");
+});

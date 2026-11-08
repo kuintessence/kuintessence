@@ -6,6 +6,7 @@ import {
   CommercialDiscountSchema,
   CommercialExecutionApprovalSchema,
   CommercialReservationSchema,
+  CommercialSettlementSchema,
   CommercialUsageCorrectionInputSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { CommercialApprovalRecordKindSchema } from "@kuintessence/shared/federation/commercial-approval-exchange";
@@ -32,6 +33,7 @@ import {
   ReservationPolicyInputSchema,
 } from "../federation/reservation-policy";
 import type { FederationReservationProposalService } from "../federation/reservation-proposals";
+import type { FederationSettlementService } from "../federation/settlement";
 import {
   type FederationTerminalPolicyService,
   TerminalPolicyInputSchema,
@@ -58,6 +60,7 @@ export function createFederationCommercialRoutes(
   executionAutomation?: FederationExecutionAutomation,
   marketRequests?: FederationMarketRequestService,
   billing?: FederationBillingService,
+  settlements?: FederationSettlementService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -92,6 +95,66 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (settlements) {
+    const path = "/federation/commercial-agreements/:revisionId/settlements";
+    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) => {
+      const { limit, offset } = c.req.valid("query");
+      return c.json({
+        data: await settlements.list(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          limit,
+          offset,
+        ),
+      });
+    });
+    r.post(
+      `${path}/draft`,
+      kqValidator("param", id),
+      kqValidator("json", z.strictObject({ billId: z.uuid(), settlementId: z.uuid() })),
+      async (c) => {
+        const input = c.req.valid("json");
+        return c.json({
+          data: await settlements.draft(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            input.billId,
+            input.settlementId,
+          ),
+        });
+      },
+    );
+    r.post(
+      `${path}/approve`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialSettlementSchema),
+      async (c) =>
+        c.json(
+          {
+            data: await settlements.approve(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("json"),
+            ),
+          },
+          201,
+        ),
+    );
+    r.post(
+      `${path}/:settlementId/counterparty`,
+      kqValidator("param", id.extend({ settlementId: z.uuid() })),
+      kqValidator("json", z.strictObject({ approvalJws: z.string().min(1).max(524288) })),
+      async (c) =>
+        c.json({
+          data: await settlements.attachCounterparty(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").settlementId,
+            c.req.valid("json").approvalJws,
+          ),
+        }),
+    );
+  }
   if (billing) {
     const path = "/federation/commercial-agreements/:revisionId/bills";
     r.get(

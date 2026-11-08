@@ -981,6 +981,13 @@
       "when": 1794090475455,
       "tag": "0139_odd_rocket_raccoon",
       "breakpoints": true
+    },
+    {
+      "idx": 140,
+      "version": "7",
+      "when": 1794095803973,
+      "tag": "0140_jittery_captain_stacy",
+      "breakpoints": true
     }
   ]
 }

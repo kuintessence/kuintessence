@@ -181,6 +181,7 @@
       "desktopOnly": "手机端仅供查看，请在桌面端修改联邦权限。",
       "pagination": "授权列表分页",
       "capabilities": {
+        "settlement": { "approve": "审批额度结算" },
         "billing": {
           "approve": "确认账单与商务减免"
         },
@@ -207,6 +208,9 @@
         }
       },
       "effects": {
+        "settlement": {
+          "approve": "单独审批结算、交换签名和重试上链；不授予付款或增发额度的权限。"
+        },
         "billing": {
           "approve": "独立确认账单和减免、登记对签及重试存证；包含协议读取，不授予付款或执行权限。"
         },

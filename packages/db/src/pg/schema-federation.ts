@@ -27,6 +27,7 @@ import type {
   CommercialDiscount,
   CommercialExecutionApproval,
   CommercialReservation,
+  CommercialSettlement,
   CommercialTerminal,
   CommercialUsage,
   CommercialUsageCorrectionEvidence,
@@ -180,7 +181,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -231,6 +232,7 @@ export const federationOutbound = pgTable(
     budgetDomainId: uuid("budget_domain_id").notNull(),
     epoch: uuid("epoch").notNull(),
     amount: numeric("amount", { precision: 38, scale: 0 }).notNull(),
+    settledAmount: numeric("settled_amount", { precision: 38, scale: 0 }),
     endpoint: text("endpoint").notNull(),
     request: jsonb("request").$type<FederationDelegation>().notNull(),
     requestDigest: varchar("request_digest", { length: 71 }).notNull(),
@@ -304,7 +306,7 @@ export const federationOutbound = pgTable(
     ),
     check(
       "federation_outbound_amount",
-      sql`${t.amount}::text ~ '^(0|[1-9][0-9]{0,37})$' AND ${t.attempt} > 0`,
+      sql`(${t.settledAmount} IS NULL OR (${t.settledAmount} >= 0 AND ${t.settledAmount} <= ${t.amount})) AND ${t.amount}::text ~ '^(0|[1-9][0-9]{0,37})$' AND ${t.attempt} > 0`,
     ),
     check(
       "federation_outbound_receipt",
@@ -322,6 +324,7 @@ export const federationBudgets = pgTable(
     limit: numeric("limit", { precision: 38, scale: 0 }).notNull(),
     available: numeric("available", { precision: 38, scale: 0 }).notNull(),
     reserved: numeric("reserved", { precision: 38, scale: 0 }).notNull().default("0"),
+    spent: numeric("spent", { precision: 38, scale: 0 }).notNull().default("0"),
   },
   (t) => [
     primaryKey({ columns: [t.domainId, t.epoch] }),
@@ -330,7 +333,8 @@ export const federationBudgets = pgTable(
       sql`${t.limit}::text ~ '^(0|[1-9][0-9]{0,37})$'
         AND ${t.available}::text ~ '^(0|[1-9][0-9]{0,37})$'
         AND ${t.reserved}::text ~ '^(0|[1-9][0-9]{0,37})$'
-        AND ${t.limit} = ${t.available} + ${t.reserved}`,
+        AND ${t.spent}::text ~ '^(0|[1-9][0-9]{0,37})$'
+        AND ${t.limit} = ${t.available} + ${t.reserved} + ${t.spent}`,
     ),
   ],
 );
@@ -392,6 +396,7 @@ export const federationReservations = pgTable(
     requestDigest: varchar("request_digest", { length: 71 }).notNull(),
     requestJws: text("request_jws").notNull(),
     amount: numeric("amount", { precision: 38, scale: 0 }).notNull(),
+    settledAmount: numeric("settled_amount", { precision: 38, scale: 0 }),
     receipt: jsonb("receipt").$type<FederationAcceptance>().notNull(),
     receiptJws: text("receipt_jws"),
     state: varchar("state", { length: 24 }).notNull().default("pending_signature"),
@@ -403,7 +408,7 @@ export const federationReservations = pgTable(
     index("federation_reservation_recovery").on(t.state, t.createdAt),
     check(
       "federation_reservation_amount",
-      sql`${t.amount}::text ~ '^(0|[1-9][0-9]{0,37})$' AND ${t.attempt} > 0`,
+      sql`(${t.settledAmount} IS NULL OR (${t.settledAmount} >= 0 AND ${t.settledAmount} <= ${t.amount})) AND ${t.amount}::text ~ '^(0|[1-9][0-9]{0,37})$' AND ${t.attempt} > 0`,
     ),
     check(
       "federation_reservation_signature",
@@ -1140,6 +1145,56 @@ export const federationCommercialBills = pgTable(
   ],
 );
 
+/** Separate business consent; appliedAt is local accounting, not bank payment. */
+export const federationCommercialSettlements = pgTable(
+  "federation_commercial_settlements",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    settlementId: uuid("settlement_id").notNull(),
+    billId: uuid("bill_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    payload: jsonb("payload").$type<CommercialSettlement>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.settlementId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.billId],
+      foreignColumns: [federationCommercialBills.localSiteId, federationCommercialBills.billId],
+    }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    uniqueIndex("federation_settlement_bill").on(t.localSiteId, t.billId),
+    index("federation_settlement_org").on(t.localSiteId, t.localOrgId, t.createdAt),
+    check(
+      "federation_settlement_identity",
+      sql`(
+      ${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.payload}->>'kind' = 'commercial-settlement'
+      AND ${t.payload}->>'settlementId' = ${t.settlementId}::text
+      AND ${t.payload}->>'billId' = ${t.billId}::text
+      AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text)
+      AND (${t.appliedAt} IS NULL OR ${t.counterpartyJws} IS NOT NULL)) IS TRUE`,
+    ),
+  ],
+);
+
 export const federationCommercialDiscounts = pgTable(
   "federation_commercial_discounts",
   {
@@ -1212,7 +1267,7 @@ export const federationCommercialSubmissions = pgTable(
     ),
     check(
       "federation_commercial_submission_input",
-      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
     check(
       "federation_commercial_submission_lease",
@@ -1921,7 +1976,7 @@ export const federationCommercialApprovalSyncs = pgTable(
     localSiteId: uuid("local_site_id").notNull(),
     agreementRevisionId: uuid("agreement_revision_id").notNull(),
     recordKind: varchar("record_kind", { length: 16 })
-      .$type<"agreement" | "reservation" | "release" | "bill">()
+      .$type<"agreement" | "reservation" | "release" | "bill" | "settlement">()
       .notNull(),
     recordId: uuid("record_id").notNull(),
     state: varchar("state", { length: 24 }).notNull().default("pending"),
@@ -1944,7 +1999,7 @@ export const federationCommercialApprovalSyncs = pgTable(
     index("federation_approval_sync_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
     check(
       "federation_approval_sync_identity",
-      sql`(${t.recordKind} IN ('agreement','reservation','release','bill') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
+      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
     ),
     check(
       "federation_approval_sync_state",

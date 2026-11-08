@@ -105,6 +105,7 @@ import {
   loadFederationSigningKey,
   startFederationIngress,
 } from "./federation/runtime";
+import { FederationSettlementService } from "./federation/settlement";
 import { FederationTerminalAutomation } from "./federation/terminal-automation";
 import { FederationTerminalPolicyService } from "./federation/terminal-policy";
 import { FederationTrustRegistry } from "./federation/trust-registry";
@@ -1811,6 +1812,7 @@ if (federationSigningKey && federationCommercial)
       federationExecutionAutomation,
       federationMarketRequests,
       new FederationBillingService(db, federationSigningKey),
+      new FederationSettlementService(db, federationSigningKey),
     ),
   );
 const federationPreparation = federationSigningKey

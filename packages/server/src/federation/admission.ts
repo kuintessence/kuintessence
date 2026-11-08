@@ -247,7 +247,12 @@ export class FederationAdmission {
       const [open] = await tx
         .select({ total: count() })
         .from(federationReservations)
-        .where(eq(federationReservations.agreementRevisionId, agreement.revisionId));
+        .where(
+          and(
+            eq(federationReservations.agreementRevisionId, agreement.revisionId),
+            sql`${federationReservations.settledAmount} IS NULL`,
+          ),
+        );
       if (!open || open.total >= terms.maxReservations)
         throw new FederationError("BUDGET_EXHAUSTED");
       const [budget] = coordinatedOrgId

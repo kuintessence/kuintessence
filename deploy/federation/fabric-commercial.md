@@ -252,4 +252,26 @@ Kubernetes Agent 可报告 `kubernetes-pod` 来源的 `elapsedMilliseconds`，�
 
 异步存证模式只保存双方签署的链下结算事实，不创建链上预算、不第二次扣账；直接模式不得提交该链操作。账单/结算正文与金额仅在原 PDC，正常参数只有域与记录编号，响应只有回执摘要；既有成员限定 GetRecordReceipt 可读取 settlement 回执。结算仍不代表银行付款，也不向提供方发行可跨域流通积分。
 
-当前已实现共享验证、链码及生产 Adapter；Server 独立结算审批、本地双边账本、持久待办、自动签名交换及 Web/CLI 入口尚待接通。原商业 worker 显式拒绝未持久授权的 settle-bill，不能把现有账单审批冒充结算批准。协调链新状态 `settled` 需随链码读取方一起升级；不可在已结算数据上直接回滚旧的严格 reservation schema。
+共享验证、链码、生产 Adapter 和 Server 独立结算审批已接通，见下节。商业 worker 核对本地持久结算同意、原签名与当前信任后才披露 settle-bill，不能把账单审批冒充结算批准。协调链新状态 `settled` 需随链码读取方一起升级；不可在已结算数据上直接回滚旧的严格 reservation schema。
+
+
+## Server 额度结算
+
+迁移 0140 增加独立结算记录、本地预算 spent 及原委派/预留的 settledAmount。旧数据默认 spent=0、settledAmount=null，原金额与接单回执保持不变。提供方预算守恒改为 limit=available+reserved+spent；源方以未结算预留加已消费金额计算占用，只对未结算记录计任务名额。消费不是凭证删除，也不向提供方增发余额。
+
+| 方法与合同下路径 | 行为 |
+| --- | --- |
+| GET /settlements | 分页读取本组织的结算签名、本地记账时间和本站链待办 |
+| POST /settlements/draft | billId、settlementId 生成草稿，要求原账单双方已确认 |
+| POST /settlements/approve | 对同一份 commercial-settlement 正文独立批准 |
+| POST /settlements/:settlementId/counterparty | approvalJws 登记对方原结算签名 |
+
+完整前缀为 `/api/federation/commercial-agreements/:revisionId`。只读需要 agreement.read；批准、手工对签、结算待办/交换复核需要独立 settlement.approve，不能由 billing.approve 或平台管理员身份替代。该能力可在既有平台权限页面在线授予。机构签名密钥须显式允许 commercial-settlement；自动交换继续使用原 commercial-approval-query/waiting，用途不会自动扩大。
+
+双方先传递同一份草稿，各自批准，后台只交换已有原签名，不生成新的商务同意。按本机构、billId 唯一；并发重复对签只记账一次。信任撤销、签名不符、不同账单/单位/金额或本地账目不一致时拒绝；账目、对签、审计和链待办在同一数据库事务内提交。读取记录和生成草稿不会扣减额度。
+
+- 直接模式：双方分别收到对签后原子记账，不创建链待办。
+- 异步存证：按直接模式记账，提供方同事务创建待办；链停机不会延迟本地结算。
+- 链协调：对签只建立待办，不释放名额。双方分别持久化原结算 VALID 结果后才标记本地原任务已结算；不创建本地可支用余额。提交前查询原账单的 PDC 回执并匹配 billDigest；已有交易恢复原 checkpoint，不因断链重新签署。两端同文重放及原生 MVCC 核对沿用商业提交恢复机制。
+
+appliedAt 只表示本站额度账目处理完成，不代表对端同步、银行付款或结果验收。尚未提供专用结算 Web/CLI、自动审批政策、商务调整/退款/支付/争议协议。新增 Server 结算经过隔离数据库与受控 Adapter 测试，真实独立双平台结算及断链恢复仍需联合验收；前述真实链验收仅证明链码路径。先应用迁移、升级双方 Server 与商业链码/Adapter，再显式授予新权限和签名用途；旧版 Server 不兼容新结算数据，不直接回滚。

@@ -6,6 +6,7 @@ import {
   federationCommercialAgreements as contracts,
   type PgDb,
   type PgTransaction,
+  federationCommercialSettlements as settlements,
   federationSites as sites,
   federationCommercialApprovalSyncs as syncs,
 } from "@kuintessence/db";
@@ -14,6 +15,7 @@ import {
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialExecutionApprovalSchema,
+  CommercialSettlementSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
   CommercialApprovalQuerySchema,
@@ -27,6 +29,7 @@ import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { FederationSettlementService } from "./settlement";
 import {
   type FederationSigningKey,
   federationMessageKeyId,
@@ -41,6 +44,7 @@ const businessSchema = z.union([
   CommercialAgreementSchema,
   CommercialExecutionApprovalSchema,
   CommercialBillSchema,
+  CommercialSettlementSchema,
 ]);
 const responseSchema = z.union([businessSchema, CommercialApprovalWaitingSchema]);
 class ApprovalLeaseLost extends Error {}
@@ -97,6 +101,38 @@ export class FederationCommercialApprovalExchange {
         digest: contract.digest,
         approvalJws: contract.approvalJws,
         counterpartyJws: contract.counterpartyJws,
+      };
+    }
+    if (identity.recordKind === "settlement") {
+      const [record] = await tx
+        .select()
+        .from(settlements)
+        .where(
+          and(
+            eq(settlements.localSiteId, this.signing.siteId),
+            eq(settlements.settlementId, identity.recordId),
+            eq(settlements.agreementRevisionId, identity.agreementRevisionId),
+            eq(settlements.localOrgId, contract.localOrgId),
+          ),
+        );
+      if (!record) return null;
+      const payload = CommercialSettlementSchema.parse(record.payload);
+      if (
+        !contract.counterpartyJws ||
+        payload.settlementId !== identity.recordId ||
+        payload.domainId !== terms.domainId ||
+        payload.agreementRevisionId !== identity.agreementRevisionId ||
+        payload.sourceSiteId !== terms.agreement.sourceSiteId ||
+        payload.targetSiteId !== terms.agreement.targetSiteId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return {
+        contract,
+        other,
+        payload,
+        digest: record.digest,
+        approvalJws: record.approvalJws,
+        counterpartyJws: record.counterpartyJws,
       };
     }
     if (identity.recordKind === "bill") {
@@ -315,6 +351,35 @@ export class FederationCommercialApprovalExchange {
         .insert(syncs)
         .values(billing.map((v) => ({ ...v, recordKind: "bill" as const })))
         .onConflictDoNothing();
+    const pendingSettlements = await this.db
+      .select({
+        localSiteId: settlements.localSiteId,
+        agreementRevisionId: settlements.agreementRevisionId,
+        recordId: settlements.settlementId,
+      })
+      .from(settlements)
+      .leftJoin(
+        syncs,
+        and(
+          eq(syncs.localSiteId, settlements.localSiteId),
+          eq(syncs.recordKind, "settlement"),
+          eq(syncs.recordId, settlements.settlementId),
+        ),
+      )
+      .where(
+        and(
+          eq(settlements.localSiteId, this.signing.siteId),
+          isNull(settlements.counterpartyJws),
+          isNull(syncs.recordId),
+        ),
+      )
+      .orderBy(asc(settlements.settlementId))
+      .limit(8);
+    if (pendingSettlements.length)
+      await this.db
+        .insert(syncs)
+        .values(pendingSettlements.map((v) => ({ ...v, recordKind: "settlement" as const })))
+        .onConflictDoNothing();
     const executions = await this.db
       .select({
         localSiteId: approvals.localSiteId,
@@ -501,6 +566,13 @@ export class FederationCommercialApprovalExchange {
         response,
         (tx) => authorize(tx, true),
       );
+    else if (claim.recordKind === "settlement")
+      await new FederationSettlementService(this.db, this.signing).attachExchanged(
+        claim.agreementRevisionId,
+        claim.recordId,
+        response,
+        (tx) => authorize(tx, true),
+      );
     else if (claim.recordKind === "bill")
       await new FederationBillingService(this.db, this.signing).attachExchanged(
         claim.agreementRevisionId,
@@ -621,7 +693,11 @@ export class FederationCommercialApprovalExchange {
       await requireFederationCapability(
         tx,
         actor,
-        identity.recordKind === "bill" ? "billing.approve" : "agreement.approve",
+        identity.recordKind === "settlement"
+          ? "settlement.approve"
+          : identity.recordKind === "bill"
+            ? "billing.approve"
+            : "agreement.approve",
       );
       const [existing] = await tx
         .select()

@@ -10,6 +10,7 @@ import {
   type PgDb,
   type PgTransaction,
   federationUsageReports as reports,
+  federationCommercialSettlements as settlements,
   federationCommercialSubmissions as submissions,
   federationExecutionTerminals as terminals,
 } from "@kuintessence/db";
@@ -22,6 +23,7 @@ import {
   CommercialDiscountSchema,
   CommercialExecutionApprovalSchema,
   CommercialReceiptQueryResultSchema,
+  CommercialSettlementSchema,
   CommercialTerminalSchema,
   CommercialUsageSchema,
   FabricCommercialAdvanceResultSchema,
@@ -33,6 +35,7 @@ import type { CommercialClient } from "./commercial-client";
 import { enqueueExecutionClosure } from "./execution-closure";
 import { FabricClientFailure } from "./fabric-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { applyFederationSettlement } from "./settlement";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
 
@@ -387,6 +390,28 @@ export class FederationCommercialSubmissionService {
                 updatedAt: sql`clock_timestamp()`,
               })
               .where(eq(submissions.id, submission.id));
+            if (result.state === "committed" && submission.input.operation === "settle-bill") {
+              const [settlement] = await tx
+                .select()
+                .from(settlements)
+                .where(
+                  and(
+                    eq(settlements.localSiteId, this.siteId),
+                    eq(settlements.settlementId, submission.input.recordId),
+                  ),
+                )
+                .for("update");
+              if (!settlement || settlement.digest !== submission.input.digest)
+                throw new FederationError("OPERATION_CONFLICT");
+              const [bill] = await tx
+                .select()
+                .from(bills)
+                .where(
+                  and(eq(bills.localSiteId, this.siteId), eq(bills.billId, settlement.billId)),
+                );
+              if (!bill) throw new FederationError("ASSET_UNAVAILABLE");
+              await applyFederationSettlement(tx, settlement, bill);
+            }
             if (
               result.state === "committed" &&
               submission.input.operation === "record-execution-terminal"
@@ -446,6 +471,31 @@ export class FederationCommercialSubmissionService {
 
   /** The source commits terminal evidence; the provider must query that original private receipt. */
   private async requireBillTerminal(input: CommercialAdapterProposalInput) {
+    if (input.operation === "settle-bill") {
+      const [row] = await this.db
+        .select()
+        .from(settlements)
+        .where(
+          and(
+            eq(settlements.localSiteId, this.siteId),
+            eq(settlements.settlementId, input.recordId),
+          ),
+        );
+      if (!row?.counterpartyJws) throw new FederationError("POLICY_DENIED");
+      if (!this.client?.receipt) throw new FabricClientFailure("BILL_RECEIPT_UNAVAILABLE", true);
+      const { receipt } = CommercialReceiptQueryResultSchema.parse(
+        await this.client.receipt({
+          operation: "get-commercial-receipt",
+          domainId: input.domainId,
+          recordType: "bill",
+          recordId: row.billId,
+        }),
+      );
+      if (!receipt) throw new FabricClientFailure("LEDGER_PENDING", false);
+      if (receipt.recordId !== row.billId || receipt.digest !== row.payload.billDigest)
+        throw new FederationError("OPERATION_CONFLICT");
+      return true;
+    }
     if (input.operation !== "confirm-bill") return;
     const [bill] = await this.db
       .select()
@@ -481,8 +531,30 @@ export class FederationCommercialSubmissionService {
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
-    // Settlement needs its own durable local approval; a signed bill cannot grant it.
-    if (input.operation === "settle-bill") throw new FederationError("POLICY_DENIED");
+    if (input.operation === "settle-bill") {
+      const [row] = await (tx ?? this.db)
+        .select()
+        .from(settlements)
+        .where(
+          and(
+            eq(settlements.localSiteId, this.siteId),
+            eq(settlements.settlementId, input.recordId),
+          ),
+        );
+      if (
+        !row?.counterpartyJws ||
+        row.digest !== input.digest ||
+        row.payload.domainId !== input.domainId ||
+        row.payload.sourceSiteId !== input.envelope.sourceSiteId ||
+        row.payload.targetSiteId !== input.envelope.targetSiteId ||
+        (this.siteId === row.payload.sourceSiteId
+          ? row.approvalJws !== input.envelope.sourceJws ||
+            row.counterpartyJws !== input.envelope.targetJws
+          : row.approvalJws !== input.envelope.targetJws ||
+            row.counterpartyJws !== input.envelope.sourceJws)
+      )
+        throw new FederationError("POLICY_DENIED");
+    }
     if (input.operation === "confirm-bill") {
       const [bill] = await (tx ?? this.db)
         .select()
@@ -548,6 +620,7 @@ export class FederationCommercialSubmissionService {
         "release-execution": "commercial-release",
         "record-execution-terminal": "commercial-terminal",
         "confirm-bill": "commercial-bill",
+        "settle-bill": "commercial-settlement",
       } as const;
       for (const [siteId, jws] of [
         [input.envelope.sourceSiteId, input.envelope.sourceJws],
@@ -563,6 +636,7 @@ export class FederationCommercialSubmissionService {
             CommercialExecutionApprovalSchema,
             CommercialTerminalSchema,
             CommercialBillSchema,
+            CommercialSettlementSchema,
           ]),
           jws,
           key,
@@ -651,9 +725,11 @@ export class FederationCommercialSubmissionService {
       await requireFederationCapability(
         tx,
         actor,
-        ["confirm-bill", "record-discount"].includes(row.input.operation)
-          ? "billing.approve"
-          : "agreement.approve",
+        row.input.operation === "settle-bill"
+          ? "settlement.approve"
+          : ["confirm-bill", "record-discount"].includes(row.input.operation)
+            ? "billing.approve"
+            : "agreement.approve",
       );
       const [attempt] = await this.latest(tx, id);
       if (attempt?.stage === "proposal")
