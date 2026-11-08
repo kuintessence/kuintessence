@@ -23,6 +23,8 @@ import {
 import type { AgentDataRoots } from "./local-data-security";
 import { exportMediaArchive, privateMediaDirectory, quarantineMediaArchive } from "./media-archive";
 
+import { withMediaWorkspace } from "./media-workspace";
+
 const readOnly = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 /** Verifies and retains private imported files. This does not publish a Data Market location. */
 export async function importFederationMedia(options: {
@@ -185,81 +187,84 @@ export async function importFederationMedia(options: {
     await syncDirectory(parent);
     return true;
   }
-  if (await existing()) return report();
-  await privateMediaDirectory(options.mediaDirectory);
-  const inbox = join(options.mediaDirectory, "inbox", task.packageId);
-  await privateMediaDirectory(inbox);
-  const ciphertext = join(inbox, "bundle.age");
-  const before = await lstat(ciphertext);
-  if (
-    !before.isFile() ||
-    before.isSymbolicLink() ||
-    before.nlink !== 1 ||
-    before.size <= 0 ||
-    before.size > 6 * 1024 ** 4
-  )
-    throw new Error("MEDIA_CIPHERTEXT_INVALID");
-  const grant = await authorize(true);
-  const identity = await decryptFederationMediaIdentity(
-    grant.encryptedIdentity,
-    options.privateKey,
-    grant.queryDigest,
-  );
-  let temporary: string | undefined;
-  try {
-    async function* plaintext() {
-      for await (const chunk of options.age.decrypt(ciphertext, identity, signal)) {
-        await authorize();
-        yield chunk;
-      }
-    }
-    const imported = await quarantineMediaArchive({
-      stream: plaintext(),
-      quarantineRoot: parent,
-      maxBytes: task.maxBytes,
-      reserveBytes: 64 * 1024 * 1024,
-      verifyManifest,
-      signal,
-    });
-    temporary = imported.directory;
-    const after = await lstat(ciphertext);
+  return withMediaWorkspace(parent, async (workspace) => {
+    if (await existing()) return report();
+    await privateMediaDirectory(options.mediaDirectory);
+    const inbox = join(options.mediaDirectory, "inbox", task.packageId);
+    await privateMediaDirectory(inbox);
+    const ciphertext = join(inbox, "bundle.age");
+    const before = await lstat(ciphertext);
     if (
-      after.ino !== before.ino ||
-      after.dev !== before.dev ||
-      after.size !== before.size ||
-      after.mtimeMs !== before.mtimeMs ||
-      after.ctimeMs !== before.ctimeMs
+      !before.isFile() ||
+      before.isSymbolicLink() ||
+      before.nlink !== 1 ||
+      before.size <= 0 ||
+      before.size > 6 * 1024 ** 4
     )
-      throw new Error("MEDIA_CIPHERTEXT_CHANGED");
-    const metadata = await open(join(temporary, "manifest.jws"), "wx", 0o600);
-    try {
-      await metadata.writeFile(task.signedManifest);
-      await metadata.sync();
-    } finally {
-      await metadata.close();
-    }
-    await syncDirectories(
-      temporary,
-      manifest.files.map((file) => file.path),
+      throw new Error("MEDIA_CIPHERTEXT_INVALID");
+    const grant = await authorize(true);
+    const identity = await decryptFederationMediaIdentity(
+      grant.encryptedIdentity,
+      options.privateKey,
+      grant.queryDigest,
     );
-    await authorize(true);
+    let temporary: string | undefined;
     try {
-      await rename(temporary, target);
-    } catch (error) {
+      await mkdir(workspace, { mode: 0o700 });
+      async function* plaintext() {
+        for await (const chunk of options.age.decrypt(ciphertext, identity, signal)) {
+          await authorize();
+          yield chunk;
+        }
+      }
+      const imported = await quarantineMediaArchive({
+        stream: plaintext(),
+        quarantineRoot: workspace,
+        maxBytes: task.maxBytes,
+        reserveBytes: 64 * 1024 * 1024,
+        verifyManifest,
+        signal,
+      });
+      temporary = imported.directory;
+      const after = await lstat(ciphertext);
       if (
-        !(error instanceof Error) ||
-        !("code" in error) ||
-        !["EEXIST", "ENOTEMPTY"].includes(String(error.code))
+        after.ino !== before.ino ||
+        after.dev !== before.dev ||
+        after.size !== before.size ||
+        after.mtimeMs !== before.mtimeMs ||
+        after.ctimeMs !== before.ctimeMs
       )
-        throw error;
-      if (!(await existing())) throw error;
+        throw new Error("MEDIA_CIPHERTEXT_CHANGED");
+      const metadata = await open(join(temporary, "manifest.jws"), "wx", 0o600);
+      try {
+        await metadata.writeFile(task.signedManifest);
+        await metadata.sync();
+      } finally {
+        await metadata.close();
+      }
+      await syncDirectories(
+        temporary,
+        manifest.files.map((file) => file.path),
+      );
+      await authorize(true);
+      try {
+        await rename(temporary, target);
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !("code" in error) ||
+          !["EEXIST", "ENOTEMPTY"].includes(String(error.code))
+        )
+          throw error;
+        if (!(await existing())) throw error;
+      }
+      await syncDirectory(parent);
+      return report();
+    } finally {
+      identity.fill(0);
+      if (temporary) await rm(temporary, { recursive: true, force: true });
     }
-    await syncDirectory(parent);
-    return report();
-  } finally {
-    identity.fill(0);
-    if (temporary) await rm(temporary, { recursive: true, force: true });
-  }
+  });
 }
 
 async function inventory(root: string, files: string[], signal: AbortSignal) {

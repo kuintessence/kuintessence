@@ -41,7 +41,10 @@ live(
         task: { ...f.options.task, generation },
       });
       expect(replay).toEqual({ ...receipt, generation });
-      expect(await readdir(join(f.options.mediaDirectory, "outbox"))).toEqual([receipt.packageId]);
+      expect((await readdir(join(f.options.mediaDirectory, "outbox"))).sort()).toEqual([
+        ".media-work",
+        receipt.packageId,
+      ]);
       await writeFile(join(target, "bundle.age"), Buffer.alloc(cipher.length));
       await expect(exportFederationMedia(f.options)).rejects.toThrow("MEDIA_EXPORT_CHANGED");
     } finally {
@@ -65,7 +68,7 @@ live(
           },
         }),
       ).rejects.toThrow("revoked");
-      expect(await readdir(join(f.options.mediaDirectory, "outbox"))).toEqual([]);
+      expect(await readdir(join(f.options.mediaDirectory, "outbox"))).toEqual([".media-work"]);
       await expect(
         exportFederationMedia({
           ...f.options,
@@ -77,7 +80,7 @@ live(
           },
         }),
       ).rejects.toThrow("stream failed");
-      expect(await readdir(join(f.options.mediaDirectory, "outbox"))).toEqual([]);
+      expect(await readdir(join(f.options.mediaDirectory, "outbox"))).toEqual([".media-work"]);
       await expect(exportFederationMedia({ ...f.options, agentId: "wrong-agent" })).rejects.toThrow(
         "MEDIA_AGENT_MISMATCH",
       );

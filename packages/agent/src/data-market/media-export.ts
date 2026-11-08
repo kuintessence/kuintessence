@@ -18,6 +18,7 @@ import {
 import { z } from "zod";
 import type { AgentDataRoots } from "./local-data-security";
 import { exportMediaArchive } from "./media-archive";
+import { withMediaWorkspace } from "./media-workspace";
 
 const StoredReceipt = FederationMediaExportReceiptSchema.omit({ generation: true }).extend({
   sourceDigest: z.string().regex(/^[a-f0-9]{64}$/),
@@ -133,76 +134,79 @@ export async function exportFederationMedia(options: {
       sizeBytes: stored.sizeBytes,
     });
   }
-  const prior = await existing();
-  if (prior) return prior;
-  const total = manifest.files.reduce((sum, file) => sum + BigInt(file.sizeBytes), 0n);
-  const space = await statfs(outbox, { bigint: true });
-  if (space.bavail * space.bsize < total + total / 50n + 65n * 1024n ** 2n || space.ffree < 4n)
-    throw new Error("MEDIA_STORAGE_INSUFFICIENT");
-  const temporary = await mkdtemp(join(outbox, `.export-${task.packageId}-`));
-  try {
-    const file = await open(join(temporary, "bundle.age"), "wx", 0o600);
-    let sizeBytes = 0;
-    const hash = createHash("sha256");
+  return withMediaWorkspace(outbox, async (workspace) => {
+    const prior = await existing();
+    if (prior) return prior;
+    const total = manifest.files.reduce((sum, file) => sum + BigInt(file.sizeBytes), 0n);
+    const space = await statfs(outbox, { bigint: true });
+    if (space.bavail * space.bsize < total + total / 50n + 65n * 1024n ** 2n || space.ffree < 4n)
+      throw new Error("MEDIA_STORAGE_INSUFFICIENT");
+    await mkdir(workspace, { mode: 0o700 });
+    const temporary = await mkdtemp(join(workspace, `.export-${task.packageId}-`));
     try {
-      const archive = exportMediaArchive({
-        signedManifest: task.signedManifest,
-        verifyManifest: async (jws) => {
-          if (jws !== task.signedManifest) throw new Error("MEDIA_MANIFEST_MISMATCH");
-          return manifest;
-        },
-        roots: options.roots,
-        managedRootId: task.managedRootId,
-        relativePath: task.relativePath,
-        signal,
-      });
-      for await (const chunk of options.age.encrypt(archive, task.recipient, signal)) {
-        await authorize();
-        sizeBytes += chunk.byteLength;
-        if (sizeBytes > 6 * 1024 ** 4) throw new Error("MEDIA_EXPORT_TOO_LARGE");
-        await file.writeFile(chunk);
-        hash.update(chunk);
+      const file = await open(join(temporary, "bundle.age"), "wx", 0o600);
+      let sizeBytes = 0;
+      const hash = createHash("sha256");
+      try {
+        const archive = exportMediaArchive({
+          signedManifest: task.signedManifest,
+          verifyManifest: async (jws) => {
+            if (jws !== task.signedManifest) throw new Error("MEDIA_MANIFEST_MISMATCH");
+            return manifest;
+          },
+          roots: options.roots,
+          managedRootId: task.managedRootId,
+          relativePath: task.relativePath,
+          signal,
+        });
+        for await (const chunk of options.age.encrypt(archive, task.recipient, signal)) {
+          await authorize();
+          sizeBytes += chunk.byteLength;
+          if (sizeBytes > 6 * 1024 ** 4) throw new Error("MEDIA_EXPORT_TOO_LARGE");
+          await file.writeFile(chunk);
+          hash.update(chunk);
+        }
+        await file.sync();
+      } finally {
+        await file.close();
       }
-      await file.sync();
+      const receipt = FederationMediaExportReceiptSchema.parse({
+        generation: task.generation,
+        packageId: task.packageId,
+        manifestDigest: task.manifestDigest,
+        sha256: hash.digest("hex"),
+        sizeBytes,
+      });
+      const metadata = await open(join(temporary, "receipt.json"), "wx", 0o600);
+      try {
+        const { generation: _generation, ...contents } = receipt;
+        await metadata.writeFile(JSON.stringify({ ...contents, sourceDigest }));
+        await metadata.sync();
+      } finally {
+        await metadata.close();
+      }
+      await syncDirectory(temporary);
+      await authorize(true);
+      try {
+        // A completed target is nonempty: rename cannot replace another completed package.
+        await rename(temporary, target);
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !("code" in error) ||
+          !["EEXIST", "ENOTEMPTY"].includes(String(error.code))
+        )
+          throw error;
+        const winner = await existing();
+        if (!winner) throw error;
+        return winner;
+      }
+      await syncDirectory(outbox);
+      return receipt;
     } finally {
-      await file.close();
+      await rm(temporary, { recursive: true, force: true });
     }
-    const receipt = FederationMediaExportReceiptSchema.parse({
-      generation: task.generation,
-      packageId: task.packageId,
-      manifestDigest: task.manifestDigest,
-      sha256: hash.digest("hex"),
-      sizeBytes,
-    });
-    const metadata = await open(join(temporary, "receipt.json"), "wx", 0o600);
-    try {
-      const { generation: _generation, ...contents } = receipt;
-      await metadata.writeFile(JSON.stringify({ ...contents, sourceDigest }));
-      await metadata.sync();
-    } finally {
-      await metadata.close();
-    }
-    await syncDirectory(temporary);
-    await authorize(true);
-    try {
-      // A completed target is nonempty: rename cannot replace another completed package.
-      await rename(temporary, target);
-    } catch (error) {
-      if (
-        !(error instanceof Error) ||
-        !("code" in error) ||
-        !["EEXIST", "ENOTEMPTY"].includes(String(error.code))
-      )
-        throw error;
-      const winner = await existing();
-      if (!winner) throw error;
-      return winner;
-    }
-    await syncDirectory(outbox);
-    return receipt;
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
-  }
+  });
 }
 
 async function privateDirectory(path: string, create = true) {
