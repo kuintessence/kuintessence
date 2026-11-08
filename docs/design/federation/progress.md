@@ -2615,3 +2615,16 @@ verified 导入结果现在与 `verified-private` 回执事实同事务保存；
 本次只用 4 字节合成数据，没有计算提交。受限副本执行需要生态签名脚本和可信 SIF 配置，现有 Kubernetes 普通文件实验不能替代它；下一条完整验收仍是数据等待→导入/授权/映射→真实 Slurm/PBS 执行→来源撤权→正向停止证明。介质运输/副本删除、任务输入/结果介质、掉电/跨主机、完整科学软件工作流、支付争议、治理归档及其余 Web/CLI/PR 预览继续按原蓝图完成，未缩减范围。未推送、合并或部署。
 
 本轮最终全仓 lint 通过（仍为既有 47 warnings / 1 info），全仓 typecheck 含 protobuf 生成及 Fabric/双平台实验脚本通过；870 个文档目标离线检查、Python AST 和 diff 检查通过。迁移完全由 Drizzle 生成，并在隔离数据库与两套真实 Server 的新数据库中实际应用；没有手改生成文件或新增依赖。
+
+
+## 受限 HPC 节点的 seccomp 强制执行
+
+继续接通双平台真实 Slurm 前，发现 root 代运行的 Apptainer 参数只传 no-new-privs，未加载 seccomp；能力开关不能证明过滤器生效。本轮先修复 signed executionProfile 的受限路径：trusted wrapper 读取本地 root 配置的 KQ_SECCOMP_PATH/KQ_SECCOMP_SHA256，校验策略、wrapper、Apptainer、SIF 及完整父目录链，SIF 强制只读。wrapper 解析固定隔离参数，拒绝覆盖、可写挂载及附加命令，再强制加载 seccomp。Agent 启动时实际调用 wrapper --check-profile，失败不发布可用受限 profile；计算节点执行时重复校验，避免只相信 Agent 本机。没有改变签名协议、数据库或引入依赖。
+
+30 项不同相关测试通过：6 项真实 shell wrapper 测试，覆盖加载唯一策略、缺失/篡改/可写/软链接策略、不安全父目录、参数注入和 wrapper/SIF 篡改；6 项执行 profile 测试包含启动拒绝；18 项原调度渲染/隔离回归。shell 测试首次目录选在 noexec 的 /run，进程未能启动；改为 root 专用 /var/lib 随机目录后仅复跑这 6 项并通过，未放宽生产检查。测试自动清理目录；非 root/Linux 环境跳过这组 root 文件权限实验。
+
+真实 Slurm 19.05.5 和 OpenPBS 23.06.06 各执行一次正常场景，均通过。生产 wrapper 在映射账号的 Apptainer 任务中加载仓库现有 amd64 禁网策略，读取真实 age 导入的 256 KiB 合成数据，输入不可写，检查 /proc/self/status 的 Seccomp=2、NoNewPrivs=1，并要求 Bash 创建网络 socket 返回 Operation not permitted。仅无默认路由无法通过该断言。使用固定缓存和短任务，没有科学软件编译；自建 namespace 均请求清理。本机证据在 temp/federation-pbs/seccomp-{slurm,pbs}.log 及各实验目录，不提交私有日志。
+
+部署须暂停受限派发，在所有节点安装策略及新 wrapper、更新本地和 Agent 的 wrapper 摘要再重启。此修复只证明受限 wrapper 路径；普通非受限 root Sandbox 的完整运行时证明、生产 cgroup 强制限额以及真实跨站 DATA_WAITING→作业→来源撤权停机仍需补齐。介质交接/副本删除、任务输入/结果包、掉电与跨主机、支付争议、治理归档/Peer 恢复、其余 Web/CLI 和 PR 预览继续按原蓝图推进，没有缩减整体目标。未推送、合并或远程部署。
+
+全仓 lint 通过，保持原 47 warnings/1 info；完整 typecheck 含 protobuf 生成、所有包及 Fabric/实验脚本通过。873 个文档目标离线检查、shell 语法和 diff 检查通过；确认两次实验 namespace 已清理。没有重复已通过的停止/崩溃场景，也未把普通 root 路径或 cgroup 配置开关当成实际证明。

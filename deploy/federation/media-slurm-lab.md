@@ -4,11 +4,16 @@
 
 | 场景 | 判据 |
 | --- | --- |
-| 正常完成 | age 解密导入 → 签名清单校验 → 本地来源复制 → Slurm/PBS 提交 → Apptainer 读取全部输入，禁止改写，容器无默认网络路由 → 成功终态/0 |
+| 正常完成 | age 解密导入 → 签名清单校验 → 本地来源复制 → Slurm/PBS 提交 → Apptainer 读取全部输入，禁止改写，无默认网络路由，Seccomp=2 / NoNewPrivs=1，socket 返回 EPERM → 成功终态/0 |
 | 持久停止决定 | 脚本实际读取输入并进入 sleep；将原运行收据置为 stopping；独立 watchdog 按原 Job UUID、派发代次及映射账号定位作业；Slurm CANCELLED 或 PBS 非零退出终态，且持久停机证明存在 |
 | Agent 强制退出 | 脚本实际读取输入并进入 sleep；暂停 supervisor 自动重启、SIGKILL Agent 主进程，保留独立 watchdog；原 15 秒运行租约自然到期；Slurm CANCELLED 或 PBS 非零退出终态，且持久停机证明存在 |
 
 停止决定在本实验直接写入生产收据服务，**没有调用跨站来源撤权 API**。清单由临时平台密钥签署；SIF 用另一把临时密钥实际签署及验签，随后绑定文件 SHA-256 和生产 trusted wrapper。这个探针直接进入 Agent 生产组件，不经过完整 AgentStream、Server/Data Market 发布、DATA_WAITING 恢复或生产启动时的整套安全能力证明。它不是完整端到端联邦验收，也不验证实际跨主机传输、主机掉电、生产 cgroup 强制限额或离线科学软件安装。
+
+探针将 SIF 设为只读，安装固定摘要的本地 seccomp 策略并执行 wrapper 的启动检查。
+wrapper 对所有受限执行强制加载该策略；任务内核对实际 seccomp/NoNewPrivs 状态，
+并要求 Bash 创建网络 socket 返回 `Operation not permitted`，不能仅靠无默认路由通过。
+部署配置与升级要求见[受限执行](../../docs/software.md#身份与受限执行)。
 
 ## 运行条件
 
@@ -32,6 +37,11 @@ python3 scripts/federation-media-hpc.py
 [探针](../../scripts/federation-media-hpc-probe.ts)只输出场景、调度器 ID、输入字节数和结果。临时签名私钥在 Pod 内生成；SIF 签署后即删除私钥文件，其他密钥留在进程内存。正常结束、异常及终止信号均请求清理自有 namespace；Pod 另有 20 分钟运行上限（首次 PBS 编译为 60 分钟）。日志保留在 `temp/kq-media-{slurm,pbs-pro}-*/`，不纳入 Git。
 
 ## 实际结果
+
+2026-11-09：补齐节点侧 seccomp 强制加载后，Slurm 和 OpenPBS 各一次正常场景通过，
+除原输入只读与无默认路由检查外，实际任务中 Seccomp=2、NoNewPrivs=1，创建网络 socket
+返回 EPERM。只重跑受此修改影响的执行路径，未重复之前已通过的停止决定/崩溃矩阵；
+这些新增结果不补足 Server/AgentStream、跨站撤权或生产 cgroup 限额的证据。
 
 2026-11-09：上述三项通过，Slurm 19.05.5、Apptainer 1.4.3。首次真实执行暴露并修复两类产品问题：
 

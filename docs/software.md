@@ -300,6 +300,22 @@ compute node 仍须独立校验。
 [`kq-sandbox-wrapper`](../packages/agent/scripts/kq-sandbox-wrapper)：
 wrapper 为 `root:root/0755`，profile 不得被非特权用户写入。
 
+节点 profile 另须配置 `KQ_SECCOMP_PATH` 和 `KQ_SECCOMP_SHA256`，固定本地 seccomp
+JSON 的规范绝对路径和摘要。策略文件及其全部父目录必须由 root 所有且不可被组或其他用户
+写入；SIF 必须只读。可采用仓库的
+[`seccomp-kubernetes-no-network.json`](../deploy/schedulers/k3s/seccomp-kubernetes-no-network.json)
+作为 amd64 Apptainer 策略，禁止非 Unix socket、io_uring 和列出的特权系统调用；
+其他架构需提供对应策略并实际验证。wrapper 在执行前强制传入
+`--security no-new-privs,seccomp:<本地策略>`，拒绝重复安全参数、可写挂载和附加命令。
+Agent 启动时调用 wrapper 的 `--check-profile`，本地检查失败则不发布可用的受限执行 profile。
+该检查验证文件配置，不替代每台计算节点上的真实调度执行、安全策略或 cgroup 验收。
+
+升级须暂停受限派发，在 Agent 和计算节点部署新 wrapper/策略、更新配置中的 wrapper
+摘要及 `AGENT_RESTRICTED_EXECUTION_WRAPPER_SHA256`，再重启 Agent；不得省略策略恢复执行。
+本约束适用于 signed `executionProfile` 的受限 HPC 任务；普通非受限 root 代运行路径
+尚未强制加载这份本地 seccomp 策略，整套运行时证明仍需补齐，
+不能只凭 `AGENT_SANDBOX_SECCOMP=true` 宣称已验收。
+
 相关 Agent 配置为 `AGENT_RESTRICTED_EXECUTION_PROFILE_ID`、
 `AGENT_RESTRICTED_EXECUTION_APPTAINER_PATH`、`AGENT_RESTRICTED_EXECUTION_SIF_DIGEST`、
 `AGENT_RESTRICTED_EXECUTION_WRAPPER_PATH`、

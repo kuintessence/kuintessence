@@ -136,7 +136,23 @@ describe("restricted execution profile", () => {
 
     expect(profile.ready).toBe(true);
     expect(profile.apptainerIdentity).toEqual({ device: 12, inode: 34, sha256: "a".repeat(64) });
-    expect(argv).toEqual([["/opt/kq/bin/apptainer", "verify", canonicalRuntimePath]]);
+    expect(argv).toEqual([
+      ["/opt/kq/bin/apptainer", "verify", canonicalRuntimePath],
+      ["/opt/kq/libexec/kq-sandbox-wrapper", "--check-profile"],
+    ]);
+    const rejected = await validateRestrictedExecutionProfile(
+      buildRestrictedExecutionProfile(config, capability, "slurm", runtimeAttestation.runtimeCache),
+      {
+        run: async (command) => ({
+          exitCode: command[1] === "--check-profile" ? 126 : 0,
+          stdout: "",
+          stderr: "local seccomp policy unavailable",
+        }),
+      },
+      { inspectExecutable: async (path) => ({ ...trustedExecutable, canonicalPath: path }) },
+    );
+    expect(rejected.ready).toBe(false);
+    expect(rejected.missingRequirements).toContain("trusted-wrapper-local-policy");
   });
 
   test("fails closed when the local SIF no longer matches the pinned digest", async () => {

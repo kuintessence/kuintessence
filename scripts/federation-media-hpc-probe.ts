@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { create } from "@bufbuild/protobuf";
 import { createSqliteDb } from "@kuintessence/db";
 import { DispatchJobSchema } from "@kuintessence/proto";
@@ -49,6 +49,12 @@ try {
   await rm("/opt/kq/sif.key", { force: true });
 }
 await command(["apptainer", "verify", "--key", "/opt/kq/sif.pub", "/opt/kq/bash.sif"]);
+await chmod("/opt/kq/bash.sif", 0o444);
+const seccompPath = "/etc/kuintessence/restricted-seccomp.json";
+const seccomp = await readFile(
+  "/workspace/deploy/schedulers/k3s/seccomp-kubernetes-no-network.json",
+);
+await writeFile(seccompPath, seccomp, { mode: 0o644 });
 const profile = {
   profileId: crypto.randomUUID(),
   apptainerCanonicalPath: "/usr/bin/apptainer",
@@ -68,11 +74,14 @@ await writeFile(
     KQ_SIF_SHA256: profile.sifSha256,
     KQ_WRAPPER_PATH: profile.trustedWrapperCanonicalPath,
     KQ_WRAPPER_SHA256: profile.trustedWrapperSha256,
+    KQ_SECCOMP_PATH: seccompPath,
+    KQ_SECCOMP_SHA256: hash(seccomp),
   })
     .map(([key, value]) => `${key}='${value}'`)
     .join("\n"),
   { mode: 0o644 },
 );
+await command([profile.trustedWrapperCanonicalPath, "--check-profile"]);
 const adapter =
   scheduler === "slurm"
     ? new SlurmAdapter("real", { terminalStatusBackend: "scontrol" })
@@ -138,6 +147,12 @@ input=$(/usr/bin/cat /kq/inputs/input)
 if (printf changed > /kq/inputs/input) 2>/dev/null; then exit 31; fi
 routes=$(/usr/bin/cat /proc/net/route)
 [[ $routes != *$'\\t00000000\\t'* ]]
+status=$(/usr/bin/cat /proc/self/status)
+[[ $status == *$'Seccomp:\\t2'* ]]
+[[ $status == *$'NoNewPrivs:\\t1'* ]]
+# EPERM proves the socket syscall was filtered, beyond merely having no route.
+socket_error=$({ : >/dev/tcp/127.0.0.1/9; } 2>&1) && exit 32
+[[ $socket_error == *'Operation not permitted'* ]]
 printf 'IMPORTED_DATA_READ%4096s\\n' ''
 ${mode === "complete" ? "" : "/bin/sleep 120"}
 `;
