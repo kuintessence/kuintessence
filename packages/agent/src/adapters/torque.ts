@@ -266,7 +266,7 @@ export class TorqueAdapter implements SchedulerAdapter {
     assertSandboxSchedulerMetadata(spec);
     const lines: string[] = ["#!/bin/bash"];
     const executionRoot = spec.workingDir || this.logDir;
-    const logRoot = spec.sandbox ? executionRoot : this.logDir;
+    const logRoot = spec.sandbox ? join(executionRoot, ".scheduler-logs") : this.logDir;
     lines.push(`#PBS -N ${spec.schedulerName ?? spec.name}`);
     lines.push(`#PBS -v KQ_JOB_ID=${spec.jobId}`);
     lines.push(`#PBS -o ${join(logRoot, `kq-torque-${spec.jobId}.out`)}`);
@@ -382,7 +382,10 @@ export class TorqueAdapter implements SchedulerAdapter {
             (!lookup.schedulerName ||
               parseQstatAttribute(record, "Job_Name") === lookup.schedulerName) &&
             (!lookup.schedulerAccount ||
-              parseQstatAttribute(record, "Account_Name") === lookup.schedulerAccount),
+              parseQstatAttribute(record, "Account_Name") === lookup.schedulerAccount) &&
+            (!lookup.executionUser ||
+              parseQstatAttribute(record, "Job_Owner")?.split("@")[0] ===
+                lookup.executionUser.username),
         )
         .map((record) => /^Job Id:\s*(\S+)/m.exec(record)?.[1])
         .filter((schedulerJobId): schedulerJobId is string => !!schedulerJobId);

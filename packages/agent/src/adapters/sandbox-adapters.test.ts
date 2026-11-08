@@ -147,10 +147,10 @@ describe("HPC Sandbox adapters", () => {
     ]);
     expect(script).toContain("#SBATCH --account=science");
     expect(script).toContain(
-      "#SBATCH --output=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+      "#SBATCH --output=/managed/job/.scheduler-logs/kq-00000000-0000-0000-0000-000000000111.out",
     );
     expect(script).toContain(
-      "#SBATCH --error=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+      "#SBATCH --error=/managed/job/.scheduler-logs/kq-00000000-0000-0000-0000-000000000111.out",
     );
     expect(script).toContain("#SBATCH --chdir=/managed/job");
     expect(script).not.toContain("/private/agent/.scheduler-logs");
@@ -193,10 +193,10 @@ describe("HPC Sandbox adapters", () => {
 
     expect(commands[0]?.slice(0, 2)).toEqual(["sbatch", "--parsable"]);
     expect(script).toContain(
-      "#SBATCH --output=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+      "#SBATCH --output=/managed/job/.scheduler-logs/kq-00000000-0000-0000-0000-000000000111.out",
     );
     expect(script).toContain(
-      "#SBATCH --error=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+      "#SBATCH --error=/managed/job/.scheduler-logs/kq-00000000-0000-0000-0000-000000000111.out",
     );
     expect(script).toContain("#SBATCH --chdir=/managed/job");
     expect(script).not.toContain("/private/agent/.scheduler-logs");
@@ -221,8 +221,12 @@ describe("HPC Sandbox adapters", () => {
       [torque, "torque"],
     ] as const) {
       const script = adapter.buildSubmitScript(job());
-      expect(script).toContain(`#PBS -o /managed/job/kq-${prefix}-${job().jobId}.out`);
-      expect(script).toContain(`#PBS -e /managed/job/kq-${prefix}-${job().jobId}.err`);
+      expect(script).toContain(
+        `#PBS -o /managed/job/.scheduler-logs/kq-${prefix}-${job().jobId}.out`,
+      );
+      expect(script).toContain(
+        `#PBS -e /managed/job/.scheduler-logs/kq-${prefix}-${job().jobId}.err`,
+      );
       expect(script).not.toContain("/private/agent/.scheduler-logs");
     }
   });

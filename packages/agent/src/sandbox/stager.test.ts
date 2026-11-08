@@ -116,6 +116,84 @@ function verified(inputHash: string, jobId: string): VerifiedSandboxManifest {
 }
 
 describe("SandboxStager", () => {
+  test.skipIf(process.getuid?.() !== 0)(
+    "mapped account reads nested inputs and writes only its logs and outputs",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "kq-sandbox-permissions-"));
+      roots.push(root);
+      const fixture = verified(hash("source"), crypto.randomUUID());
+      const input = fixture.unsigned.mounts[0];
+      if (!input) throw new Error("Missing input fixture");
+      input.relativePath = "inputs/nested/data.txt";
+      const staged = await new SandboxStager({
+        root,
+        downloadInput: async ({ targetPath }) => {
+          await writeFile(targetPath, "source");
+        },
+      }).prepare(fixture, [
+        { stagePath: input.relativePath, sourceUrl: "https://storage.example/input" },
+      ]);
+      const probe = Bun.spawn(
+        [
+          "setpriv",
+          "--reuid=1",
+          "--regid=1",
+          "--clear-groups",
+          "bash",
+          "-c",
+          `
+      set -eu
+      test "$(cat "$2/inputs/nested/data.txt")" = source
+      test -r "$2"
+      test -r "$2/context.json"
+      test ! -w "$2/script/main.py"
+      test ! -w "$2/inputs/nested/data.txt"
+      test ! -w "$2/inputs/nested"
+      test ! -w "$2"
+      test ! -r "$1"
+      printf log > "$2/.scheduler-logs/check.out"
+      printf '{"ok":true}' > "$2/outputs/result.json"
+    `,
+          "probe",
+          root,
+          staged.workingDir,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const stderr = await new Response(probe.stderr).text();
+      expect({ exitCode: await probe.exited, stderr }).toEqual({ exitCode: 0, stderr: "" });
+      const other = Bun.spawn([
+        "setpriv",
+        "--reuid=65534",
+        "--regid=65534",
+        "--clear-groups",
+        "test",
+        "-r",
+        join(staged.workingDir, "inputs/nested/data.txt"),
+      ]);
+      expect(await other.exited).toBe(1);
+      expect(await readFile(join(staged.workingDir, ".scheduler-logs/check.out"), "utf8")).toBe(
+        "log",
+      );
+    },
+  );
+
+  test.each([
+    ".scheduler-logs/input",
+    "script/main.py",
+    "inputs/../context.json",
+  ])("rejects input mount outside its dedicated directory: %s", async (path) => {
+    const root = await mkdtemp(join(tmpdir(), "kq-sandbox-reserved-"));
+    roots.push(root);
+    const fixture = verified(hash("source"), crypto.randomUUID());
+    const input = fixture.unsigned.mounts[0];
+    if (!input) throw new Error("Missing input fixture");
+    input.relativePath = path;
+    await expect(new SandboxStager({ root }).prepare(fixture)).rejects.toThrow(
+      "dedicated input or output",
+    );
+  });
+
   test("removes the complete private work root after restricted execution", async () => {
     const root = await mkdtemp(join(tmpdir(), "kq-sandbox-cleanup-"));
     roots.push(root);

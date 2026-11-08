@@ -196,6 +196,15 @@ async function protectReadOnlyPath(path: string, owner: SandboxFileOwner): Promi
   for (const entry of entries) await protectReadOnlyPath(join(path, entry), owner);
 }
 
+async function prepareMountParents(root: string, path: string, owner: SandboxFileOwner) {
+  const parent = dirname(path);
+  if (parent === root) return;
+  await prepareMountParents(root, parent, owner);
+  await mkdir(parent, { recursive: true, mode: 0o710 });
+  await assignSandboxOwner(parent, owner);
+  await chmod(parent, 0o710);
+}
+
 function createContext(manifest: SandboxUnsignedManifest): string {
   return JSON.stringify(
     {
@@ -422,6 +431,26 @@ export class SandboxStager {
     const selfAccountRuntime = selfAccount ? selfAccountRuntimeFacts(verified) : undefined;
     await mkdir(this.options.root, { recursive: true, mode: 0o700 });
     const root = await realpath(this.options.root);
+    if (identity.backend === "Unix" && !selfAccount) {
+      const facts = await lstat(root);
+      if (facts.uid !== (this.options.ownerUid ?? 0) || (facts.mode & 0o022) !== 0) {
+        throw new Error(
+          "Sandbox root must be owned by the Agent and not writable by other accounts",
+        );
+      }
+      // Accounts may traverse to their own job, but cannot list or change the shared root.
+      await chmod(root, 0o711);
+    }
+    for (const mount of verified.unsigned.mounts) {
+      const prefix = mount.mode === "ReadOnly" ? "inputs/" : "outputs/";
+      if (
+        !mount.relativePath.startsWith(prefix) ||
+        posix.normalize(mount.relativePath) !== mount.relativePath ||
+        mount.relativePath.split("/").includes("..")
+      ) {
+        throw new Error("Sandbox mount must stay in its dedicated input or output directory");
+      }
+    }
     const collectionDir = resolve(root, verified.unsigned.jobId);
     if (!pathInside(root, collectionDir)) {
       throw new Error("Sandbox collection directory escaped the managed root");
@@ -490,7 +519,7 @@ export class SandboxStager {
       ? { uid: selfAccount.uid, gid: selfAccount.gid, mayChown: false }
       : { uid: this.options.ownerUid ?? 0, gid: identity.gid, mayChown: true };
     const runDir = collectionDir;
-    await chmod(runDir, 0o710);
+    await chmod(runDir, 0o750);
     await assignSandboxOwner(runDir, owner);
     const scriptDir = join(runDir, "script");
     await mkdir(scriptDir, { mode: 0o710 });
@@ -500,11 +529,20 @@ export class SandboxStager {
     await writeManagedFile(scriptHostPath, verified.scriptContent, owner);
     await writeManagedFile(contextHostPath, createContext(verified.unsigned), owner);
 
+    const logDir = join(runDir, ".scheduler-logs");
+    await assertNoSymlink(runDir, logDir);
+    await mkdir(logDir, { mode: 0o700 });
+    await assignSandboxOwner(
+      logDir,
+      selfAccount ? owner : { uid: identity.uid, gid: identity.gid, mayChown: true },
+    );
+
     const mounts: SandboxJobMount[] = [];
     for (const mount of verified.unsigned.mounts) {
       const hostPath = resolve(runDir, mount.relativePath);
       if (!pathInside(runDir, hostPath)) throw new Error("Sandbox artifact path escaped run root");
       await assertNoSymlink(runDir, hostPath);
+      await prepareMountParents(runDir, hostPath, owner);
       if (mount.mode === "ReadOnly") {
         if (mount.inlineContentBase64) {
           await mkdir(dirname(hostPath), { recursive: true, mode: 0o710 });

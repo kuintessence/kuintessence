@@ -653,3 +653,21 @@ test("recovery lookup binds Torque Job UUID, dispatch epoch name and scheduler a
     }),
   ).toEqual({ status: "found", schedulerJobId: "101.server" });
 });
+
+test("mapped Torque recovery excludes another user's matching job metadata", async () => {
+  const stdout = ["scientist", "other"]
+    .map(
+      (owner, index) =>
+        `Job Id: ${index + 1}.server\n    Job_Name = kf1\n    Account_Name = science\n    Job_Owner = ${owner}@node\n    Variable_List = KQ_JOB_ID=original`,
+    )
+    .join("\n");
+  const { spawner } = mockSpawner([{ exitCode: 0, stdout }]);
+  expect(
+    await new TorqueAdapter("test", { spawner }).findByKuintessenceJobId({
+      jobId: "original",
+      schedulerName: "kf1",
+      schedulerAccount: "science",
+      executionUser: { uid: 24001, username: "scientist" },
+    }),
+  ).toEqual({ status: "found", schedulerJobId: "1.server" });
+});

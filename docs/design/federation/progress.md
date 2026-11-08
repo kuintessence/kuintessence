@@ -2572,3 +2572,18 @@ verified 导入结果现在与 `verified-private` 回执事实同事务保存；
 全仓 lint 通过，保持既有 47 warnings / 1 info；修正后全仓 typecheck（含 protobuf 生成与 Fabric 测试类型）通过，861 个文档目标离线检查和 diff 检查通过。全部自建 PostgreSQL 已停止删除。
 
 本轮未执行真实跨主机 AgentStream、Slurm/PBS Sandbox 或科学软件任务；DATA_WAITING 自动恢复、真实来源撤权停机、介质交接/副本生命周期、任务输入/结果包、支付争议、治理归档/Peer 恢复、其余 UI/CLI 和 PR 预览仍属完整交付。未推送、合并或远端部署，整体目标保持进行中。
+
+
+## 导入数据的真实 Slurm 执行与映射身份恢复
+
+真实调度验收发现两类组件测试未暴露的问题，现已修复。第一类是映射账号不能穿过 root 私有准备目录，也无法在只读作业根创建调度日志；现在专用 Sandbox 根只开放穿过权限，作业目录按映射组可读取/进入，嵌套输入父目录可穿过且不可写，脚本与输入保持只读；日志独立放在执行账号所有的 `.scheduler-logs`，Slurm/PBS/Torque 共用该布局。挂载限制在规范的 inputs/outputs 子树，避免侵占脚本、上下文或日志目录。程序不修改 Sandbox 根以外的目录权限，部署须提供可穿过的父目录。
+
+第二类是 Slurm 恢复默认查询 Agent 本身的 UID，遗漏映射账号提交的作业，导致独立 watchdog 无法确认并停止目标。Agent 恢复和 watchdog 现在从持久 Sandbox 意图提取已验证账号；Slurm 活动/历史/保留作业查询按执行 UID 核对，同时保留 Job UUID、代次名称和 account 条件；PBS/Torque 对应核对 Job_Owner。未增加可从用户输入任意指定取消账号的接口。
+
+新增[可复现的隔离实验](../../../deploy/federation/media-slurm-lab.md)：固定缓存的真实 Slurm 19.05.5、官方摘要校验的 Apptainer 1.4.3、实际签署和验签的最小 Bash SIF、真实 age 1.3.2。256 KiB 合成数据经导入和签名清单校验后，由非 root 映射账号执行，核对完整输入长度、只读限制及无默认网络路由。三个不同场景通过：正常 COMPLETED/0；写入原运行收据的 stopping 决定后实际 CANCELLED 并保存停机证明；Agent SIGKILL 后原 15 秒租约到期实际 CANCELLED 并保存证明。最后一项额外暂停 supervisor 的自动重启后单独复查，确认在没有新 Agent 参与时独立 watchdog 仍完成停止，随后恢复 supervisor。实验 Pod 上限为 1 CPU/1 GiB，所有自建 namespace 均清理。
+
+254 项不同相关测试通过：准备/适配器渲染 38 项（含真实降权文件读写及其他账号隔离），三个调度适配器/独立 watchdog/派发处理 203 项，Agent 断进程与 SQLite 重开恢复 13 项；另有上述 3 个真实 Slurm 场景。首次真实试验的清单 profileId、root 身份、租约上限及最小运行时缺少 sleep 均属于夹具问题，按现有生产约束修正；等待启动标记另补充足够的 stdout 字节以穿过已有 head 缓冲。没有放宽授权或改短生产租约来通过验收。真实执行另外证明必须允许 Apptainer 读取当前作业目录，作业根因此采用只读可进入的映射组权限。
+
+全仓 lint 通过，保持既有 47 warnings/1 info；全仓各包 typecheck 和 protobuf 生成通过；新增实验脚本最初缺少数据库环境变量判空，补齐后 Fabric/实验脚本类型检查通过。866 个本地文档目标离线检查和 diff 空白检查通过。没有数据库迁移、生产依赖变更或远端部署。实验使用一次性 privileged Pod 容纳嵌套 Apptainer；安装 setuid 包和小型动态库仅发生在该 Pod，没有更改宿主 sysctl。实验准备需要软件源，不能据此声明离线科学软件安装已通过。
+
+范围仍有明确边界：停止决定由探针调用生产收据服务注入，不是来源撤权 API；没有验证跨站 mTLS/AgentStream → 发布 → DATA_WAITING → 源方撤权的完整链路，也没有验证主机掉电、PBS 真机或生产完整安全能力证明。介质运输/副本生命周期、任务输入/结果包、支付争议、治理归档/Peer 恢复、其余 UI/CLI 与 PR 预览仍属完整目标，未推送、合并或部署，整体目标保持进行中。

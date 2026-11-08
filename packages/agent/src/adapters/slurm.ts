@@ -327,7 +327,10 @@ export class SlurmAdapter implements SchedulerAdapter {
     const lines: string[] = ["#!/bin/bash"];
     const executionRoot = spec.workingDir || this.logDir;
     // Mapped sandbox accounts may not be able to access the Agent's private log directory.
-    const logPath = join(spec.sandbox ? executionRoot : this.logDir, `kq-${spec.jobId}.out`);
+    const logPath = join(
+      spec.sandbox ? join(executionRoot, ".scheduler-logs") : this.logDir,
+      `kq-${spec.jobId}.out`,
+    );
     lines.push(`#SBATCH --job-name=${spec.schedulerName ?? spec.name}`);
     lines.push(`#SBATCH --comment=KQ_JOB_ID=${spec.jobId}`);
     lines.push(`#SBATCH --cpus-per-task=${spec.cpus}`);
@@ -449,13 +452,18 @@ export class SlurmAdapter implements SchedulerAdapter {
     lookup: KuintessenceJobLookup,
   ): Promise<KuintessenceJobLookupResult> {
     try {
+      const uid = lookup.executionUser
+        ? String(lookup.executionUser.uid)
+        : lookup.schedulerAccount
+          ? undefined
+          : await this.currentSchedulerUser();
+      if (uid !== undefined && !/^\d+$/.test(uid)) throw new Error("Invalid Slurm execution UID");
       const command = [
         "squeue",
         "--noheader",
         ...(lookup.schedulerName ? ["--name", lookup.schedulerName] : []),
-        ...(lookup.schedulerAccount
-          ? ["--account", lookup.schedulerAccount]
-          : ["--user", await this.currentSchedulerUser()]),
+        ...(lookup.schedulerAccount ? ["--account", lookup.schedulerAccount] : []),
+        ...(uid !== undefined ? ["--user", uid] : []),
         "--format=%i|%j|%k|%a",
       ];
       const { exitCode, stdout, stderr } = await this.spawner.run(command, { timeoutMs: 5_000 });
@@ -496,8 +504,13 @@ export class SlurmAdapter implements SchedulerAdapter {
             new Date(lookup.submittedAfterUnixMs - 86_400_000).toISOString().slice(0, 10),
             ...(lookup.schedulerName ? ["--name", lookup.schedulerName] : []),
             ...(lookup.schedulerAccount
-              ? ["--allusers", "--accounts", lookup.schedulerAccount]
+              ? [
+                  ...(lookup.executionUser ? [] : ["--allusers"]),
+                  "--accounts",
+                  lookup.schedulerAccount,
+                ]
               : []),
+            ...(lookup.executionUser ? ["--user", String(lookup.executionUser.uid)] : []),
             "--format=JobIDRaw,JobName%128,Comment%128,Account%128",
           ],
           { timeoutMs: 5_000 },
@@ -509,7 +522,6 @@ export class SlurmAdapter implements SchedulerAdapter {
             timeoutMs: 5_000,
           });
           if (retained.exitCode !== 0) throw new Error("Slurm retained job lookup is unavailable");
-          const uid = lookup.schedulerAccount ? undefined : await this.currentSchedulerUser();
           ids = [
             ...new Set(
               retained.stdout
@@ -519,9 +531,10 @@ export class SlurmAdapter implements SchedulerAdapter {
                     slurmField(line, "Comment") === `KQ_JOB_ID=${lookup.jobId}` &&
                     (!lookup.schedulerName ||
                       slurmField(line, "JobName") === lookup.schedulerName) &&
-                    (lookup.schedulerAccount
-                      ? slurmField(line, "Account") === lookup.schedulerAccount
-                      : /\((\d+)\)$/.exec(slurmField(line, "UserId") ?? "")?.[1] === uid),
+                    (!lookup.schedulerAccount ||
+                      slurmField(line, "Account") === lookup.schedulerAccount) &&
+                    (uid === undefined ||
+                      /\((\d+)\)$/.exec(slurmField(line, "UserId") ?? "")?.[1] === uid),
                 )
                 .map((line) => slurmField(line, "JobId"))
                 .filter((id): id is string => !!id),

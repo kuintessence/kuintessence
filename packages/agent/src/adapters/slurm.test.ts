@@ -1231,3 +1231,33 @@ test.each([
     allocatedCpus: "1",
   });
 });
+
+test.each([
+  false,
+  true,
+])("mapped Slurm recovery uses the execution UID with account=%s", async (account) => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: "" },
+    { exitCode: 1, stdout: "", stderr: "accounting disabled" },
+    {
+      exitCode: 0,
+      stdout: [
+        "JobId=41 JobName=kf5 UserId=root(0) Account=science Comment=KQ_JOB_ID=original",
+        "JobId=42 JobName=kf5 UserId=scientist(24001) Account=science Comment=KQ_JOB_ID=original",
+        "JobId=43 JobName=kf6 UserId=scientist(24001) Account=science Comment=KQ_JOB_ID=original",
+      ].join("\n"),
+    },
+  ]);
+  expect(
+    await new SlurmAdapter("19", { spawner }).findByKuintessenceJobId({
+      jobId: "original",
+      schedulerName: "kf5",
+      submittedAfterUnixMs: Date.now(),
+      executionUser: { uid: 24001, username: "scientist" },
+      ...(account ? { schedulerAccount: "science" } : {}),
+    }),
+  ).toEqual({ status: "found", schedulerJobId: "42" });
+  expect(calls[0]).toContain("24001");
+  expect(calls[1]).toContain("24001");
+  expect(calls.some((argv) => argv[0] === "id")).toBe(false);
+});

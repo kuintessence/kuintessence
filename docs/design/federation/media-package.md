@@ -242,3 +242,10 @@ Agent 仅接受配置过的受管根及规范相对路径，拒绝软/硬链接�
 本地 Data Market 解析与 Sandbox 输入绑定不再依赖 `NETDRIVE_ENABLED`；对象下载仍需要已配置的对象存储。没有改动原始文件 SHA-256、许可证、provenance 或接收回执。
 
 新增验证包括真实 age 导入后的 Sandbox 只读准备、文件篡改/越界/链接/取消拒绝、Agent 消息接收和能力协商；隔离 PostgreSQL 验证发布数据的准备、事务内复查、运行许可期限及单副本撤销；复用原运行拒绝/超时/接管/停机重试测试。这里尚未启动实际 Slurm/PBS 科研作业，不能代替跨主机 DATA_WAITING→执行→来源撤权→调度器停止的完整验收。
+
+
+### 映射账号的调度执行与停机验证
+
+Sandbox 根保持 Agent 所有且不可被其他账号写入，映射模式只开放根的穿过权限。每个作业的脚本、上下文和输入按映射组只读，嵌套输入目录可穿过；可写日志集中在账号所有的 `.scheduler-logs`，不把作业根或输入目录变为可写。挂载须分别位于规范的 `inputs/`、`outputs/` 路径，拒绝占用脚本、上下文和日志目录。部署负责使 Sandbox 根以外的父目录可穿过；程序不会放宽 Agent 其他目录权限。
+
+恢复及独立 watchdog 使用签名/持久意图中的映射账号查询 Slurm 作业，同时保留 UUID、派发代次和 scheduler account 约束；PBS/Torque 对应核对 Job_Owner，避免默认查询 Agent 本人导致遗漏。实际 age 导入、签名 SIF、Slurm 执行与两种停机场景已通过；完整跨站来源撤权仍待验收。范围、临时依赖和复现方式见[真实 Slurm 实验](../../../deploy/federation/media-slurm-lab.md)。

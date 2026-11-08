@@ -499,6 +499,8 @@ export interface KuintessenceJobLookup {
   schedulerName?: string;
   schedulerAccount?: string;
   namespace?: string;
+  /** Verified Unix identity used to submit a mapped Sandbox job. */
+  executionUser?: { uid: number; username: string };
 }
 
 /**

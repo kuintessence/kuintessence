@@ -233,7 +233,7 @@ export class PbsProAdapter implements SchedulerAdapter {
     assertSandboxSchedulerMetadata(spec);
     const lines: string[] = ["#!/bin/bash"];
     const executionRoot = spec.workingDir || this.logDir;
-    const logRoot = spec.sandbox ? executionRoot : this.logDir;
+    const logRoot = spec.sandbox ? join(executionRoot, ".scheduler-logs") : this.logDir;
     lines.push(`#PBS -N ${spec.schedulerName ?? spec.name}`);
     lines.push(`#PBS -v KQ_JOB_ID=${spec.jobId}`);
     lines.push(`#PBS -o ${join(logRoot, `kq-pbs-${spec.jobId}.out`)}`);
@@ -352,7 +352,12 @@ export class PbsProAdapter implements SchedulerAdapter {
         parsed as {
           Jobs?: Record<
             string,
-            { Variable_List?: unknown; Job_Name?: string; Account_Name?: string }
+            {
+              Variable_List?: unknown;
+              Job_Name?: string;
+              Account_Name?: string;
+              Job_Owner?: string;
+            }
           >;
         }
       ).Jobs;
@@ -361,7 +366,8 @@ export class PbsProAdapter implements SchedulerAdapter {
         ([, job]) =>
           hasKuintessenceJobId(job.Variable_List, lookup.jobId) &&
           (!lookup.schedulerName || job.Job_Name === lookup.schedulerName) &&
-          (!lookup.schedulerAccount || job.Account_Name === lookup.schedulerAccount),
+          (!lookup.schedulerAccount || job.Account_Name === lookup.schedulerAccount) &&
+          (!lookup.executionUser || job.Job_Owner?.split("@")[0] === lookup.executionUser.username),
       );
       if (matches.length === 0) return { status: "not_found" };
       if (matches.length !== 1) {

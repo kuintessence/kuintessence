@@ -804,3 +804,26 @@ test("PBS missing CPU accounting stays absent even with requested cores and wall
   expect(result.accounting?.cpuTimeMilliseconds).toBeUndefined();
   expect(result.accounting?.allocatedCpus).toBeUndefined();
 });
+
+test("mapped PBS recovery excludes another user's matching job metadata", async () => {
+  const jobs = Object.fromEntries(
+    ["scientist", "other"].map((owner, index) => [
+      `${index + 1}.server`,
+      {
+        Job_Name: "kf1",
+        Account_Name: "science",
+        Job_Owner: `${owner}@node`,
+        Variable_List: { KQ_JOB_ID: "original" },
+      },
+    ]),
+  );
+  const { spawner } = mockSpawner([{ exitCode: 0, stdout: JSON.stringify({ Jobs: jobs }) }]);
+  expect(
+    await new PbsProAdapter("test", { spawner }).findByKuintessenceJobId({
+      jobId: "original",
+      schedulerName: "kf1",
+      schedulerAccount: "science",
+      executionUser: { uid: 24001, username: "scientist" },
+    }),
+  ).toEqual({ status: "found", schedulerJobId: "1.server" });
+});

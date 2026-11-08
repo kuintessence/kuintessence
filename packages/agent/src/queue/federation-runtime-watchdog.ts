@@ -93,6 +93,10 @@ export class FederationRuntimeWatchdog {
           jobId: row.jobId,
           schedulerName: prepared.spec.schedulerName,
           schedulerAccount: identity?.backend === "Unix" ? identity.schedulerAccount : undefined,
+          executionUser:
+            identity?.backend === "Unix"
+              ? { uid: identity.uid, username: identity.username }
+              : undefined,
           namespace:
             identity?.backend === "Kubernetes" ? identity.namespace : prepared.spec.queueName,
           federationDispatchEpoch: prepared.spec.federationDispatchEpoch,

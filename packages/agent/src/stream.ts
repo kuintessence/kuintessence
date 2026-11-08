@@ -429,6 +429,9 @@ function schedulerLookupForSpec(spec: JobSpec): KuintessenceJobLookup & { schedu
     jobId: spec.jobId,
     federationDispatchEpoch: spec.federationDispatchEpoch,
     schedulerName: spec.schedulerName ?? schedulerSubmissionTag(spec.jobId),
+    ...(identity?.backend === "Unix"
+      ? { executionUser: { uid: identity.uid, username: identity.username } }
+      : {}),
     ...(identity?.backend === "Unix" && identity.schedulerAccount
       ? { schedulerAccount: identity.schedulerAccount }
       : {}),
