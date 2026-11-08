@@ -67,10 +67,11 @@ export const FederationKeyInput = z
           "material-chunk",
           "input-download-query",
           "input-download-grant",
+          "media-manifest",
         ]),
       )
       .min(1)
-      .max(41),
+      .max(42),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

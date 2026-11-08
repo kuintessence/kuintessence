@@ -136,6 +136,7 @@ export const federationSigningKeys = pgTable(
           | "material-chunk"
           | "input-download-query"
           | "input-download-grant"
+          | "media-manifest"
         )[]
       >()
       .notNull(),

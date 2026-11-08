@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { CompactSign, compactVerify, importSPKI } from "jose";
 import { z } from "zod";
 import { FederationError } from "./index";
+import { type FederationMediaManifest, FederationMediaManifestSchema } from "./media";
 
 const HeaderSchema = z.strictObject({
   alg: z.literal("RS256"),
@@ -86,6 +87,7 @@ export interface FederationVerificationKey {
     | "material-chunk"
     | "input-download-query"
     | "input-download-grant"
+    | "media-manifest"
   )[];
 }
 
@@ -168,4 +170,20 @@ export async function parseFederationPublicKey(pem: string): Promise<CryptoKey> 
   } catch {
     throw new FederationError("INVALID_MESSAGE");
   }
+}
+
+export async function verifyFederationMediaManifest(
+  jws: string,
+  key: FederationVerificationKey,
+  recipientSiteId: string,
+  now: Date,
+): Promise<FederationMediaManifest> {
+  const { payload } = await verifyFederationMessage(FederationMediaManifestSchema, jws, key, now);
+  if (
+    payload.senderSiteId !== key.siteId ||
+    payload.recipientSiteId !== recipientSiteId ||
+    Date.parse(payload.createdAt) > now.getTime()
+  )
+    throw new Error("MEDIA_MANIFEST_IDENTITY_INVALID");
+  return payload;
 }
