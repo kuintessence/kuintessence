@@ -405,7 +405,10 @@ export class FederationAssetService {
         row.version.status !== "ready"
       )
         throw new FederationError("DATA_WAITING");
-      if (row.version.manifestDigest !== reference.digest)
+      if (
+        row.version.manifestDigest !== reference.digest &&
+        `sha256:${row.version.manifestDigest}` !== reference.digest
+      )
         throw new FederationError("OPERATION_CONFLICT");
       return { kind: "dataset" as const, ...row };
     }

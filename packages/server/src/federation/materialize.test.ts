@@ -38,7 +38,7 @@ function fixture(nodes: unknown[], parameters: unknown[] = []) {
         ? {
             kind: "dataset",
             asset: { id: crypto.randomUUID() },
-            version: { id: crypto.randomUUID() },
+            version: { id: crypto.randomUUID(), manifestDigest: digest },
           }
         : {
             kind: "software",
@@ -144,7 +144,10 @@ function computing(extra: Record<string, unknown> = {}) {
   };
 }
 
-test("pins named and UUID references, parameters and dataset inputs without rewriting original payloads", async () => {
+test.each([
+  digest,
+  digest.slice(7),
+])("pins references and dataset inputs without rewriting original payloads (%s)", async (localDigest) => {
   const f = fixture(
     [
       computing({
@@ -160,6 +163,8 @@ test("pins named and UUID references, parameters and dataset inputs without rewr
     ],
     [{ name: "label", type: "string", required: true }],
   );
+  if (f.ds.local.kind !== "dataset") throw new Error("Expected dataset");
+  f.ds.local.version.manifestDigest = localDigest;
   f.input.inputs.parameters.label = sourceUsecase;
   f.input.inputs.datasets.push({
     descriptor: "reads",
@@ -168,6 +173,7 @@ test("pins named and UUID references, parameters and dataset inputs without rewr
     targetPath: "input",
   });
   const before = federationCanonicalJson([...f.entries]);
+  const originalInputs = federationCanonicalJson(f.input.inputs);
   const result = await materializeFederationWorkflow(f.input);
   const node = result.workflow.spec.nodeDrafts[0];
   expect(node).toMatchObject({
@@ -178,13 +184,14 @@ test("pins named and UUID references, parameters and dataset inputs without rewr
     contents: {
       source: "data-market",
       assetId: f.ds.local.asset.id,
-      manifestDigest: digest,
+      manifestDigest: localDigest,
       selectedEntries: ["reads.txt"],
       targetPath: "input",
     },
   });
   expect(result.workflow.parameters[0]?.default).toBe(sourceUsecase);
   expect(federationCanonicalJson([...f.entries])).toBe(before);
+  expect(federationCanonicalJson(f.input.inputs)).toBe(originalInputs);
 });
 
 test("visits loop/inline scopes and pins ByVersion subworkflows without querying latest", async () => {

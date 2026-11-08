@@ -26,7 +26,13 @@ interface LocalSoftware {
   payload: SoftwareAssetPayload;
 }
 type ResolvedAsset = {
-  local: LocalSoftware | { kind: "dataset"; asset: { id: string }; version: { id: string } };
+  local:
+    | LocalSoftware
+    | {
+        kind: "dataset";
+        asset: { id: string };
+        version: { id: string; manifestDigest: string | null };
+      };
 };
 type Node = workflowDsl.WorkflowNode;
 
@@ -134,7 +140,7 @@ export async function materializeFederationWorkflow(input: {
               source: "data-market",
               assetId: local.asset.id,
               versionId: local.version.id,
-              manifestDigest: selected.asset.digest,
+              manifestDigest: local.version.manifestDigest,
               selectedEntries: selected.selectedEntries,
               ...(selected.targetPath ? { targetPath: selected.targetPath } : {}),
             }),

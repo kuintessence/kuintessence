@@ -412,6 +412,35 @@ test("dataset mapping waits for a usable location and preserves data authorizati
   await db.delete(dataLocations).where(eq(dataLocations.id, locationId));
 });
 
+test("dataset mapping accepts scanned raw SHA-256 without changing signed references or data identity", async () => {
+  const reference = { ...datasetRef, id: crypto.randomUUID() };
+  await addLocation();
+  const setDigest = (manifestDigest: string | null) =>
+    db.update(dataAssetVersions).set({ manifestDigest }).where(eq(dataAssetVersions.id, versionId));
+  try {
+    const rawDigest = datasetRef.digest.slice(7);
+    await setDigest(rawDigest);
+    const mapping = await assets.register(actor, { reference, localRevisionId: versionId });
+    expect(mapping.digest).toBe(reference.digest);
+    const resolved = await assets.resolve(identity, reference);
+    expect(resolved.local.kind).toBe("dataset");
+    if (resolved.local.kind !== "dataset") throw new Error("Expected dataset");
+    expect(resolved.local.version.manifestDigest).toBe(rawDigest);
+    expect((await assets.register(actor, { reference, localRevisionId: versionId })).id).toBe(
+      mapping.id,
+    );
+    await setDigest(reference.digest);
+    expect((await assets.resolve(identity, reference)).mapping.id).toBe(mapping.id);
+    for (const invalid of ["c".repeat(64), null, `sha256:${reference.digest}`, "B".repeat(64)]) {
+      await setDigest(invalid);
+      await expect(assets.resolve(identity, reference)).rejects.toThrow("OPERATION_CONFLICT");
+    }
+  } finally {
+    await setDigest(datasetRef.digest);
+    await db.delete(dataLocations).where(eq(dataLocations.id, locationId));
+  }
+});
+
 function inputs(): FederationInputManifest {
   return {
     protocolVersion: 1,
