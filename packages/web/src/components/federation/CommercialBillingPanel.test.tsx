@@ -392,3 +392,13 @@ test("only a countersigned bill offers settlement and does not require billing a
   expect(create).toHaveBeenCalledWith(billId);
   expect(api.post).not.toHaveBeenCalled();
 });
+
+test("closing navigation loads the exact bill and back clears its query filter", async () => {
+  mount({ recordId: billId });
+  await screen.findByRole("button", { name: "Back to bills" });
+  expect(api.get).toHaveBeenCalledWith(`${base}/bills?limit=20&offset=0&recordId=${billId}`, scope);
+  fireEvent.click(screen.getByRole("button", { name: "Back to bills" }));
+  await waitFor(() =>
+    expect(api.get).toHaveBeenCalledWith(`${base}/bills?limit=20&offset=0`, scope),
+  );
+});

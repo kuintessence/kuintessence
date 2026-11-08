@@ -569,6 +569,76 @@
         "attach": "Verify and import counterparty signature",
         "retry": "Retry settlement evidence"
       }
+    },
+    "closing": {
+      "title": "Automatic approvals",
+      "policies": "Institution authority",
+      "tasks": "Processing history",
+      "kind": {
+        "bill": "Bill",
+        "settlement": "Settlement"
+      },
+      "grant": {
+        "bill": "Authorize bills",
+        "settlement": "Authorize settlements"
+      },
+      "maxAmount": "Per-record limit",
+      "maxTotalAmount": "Cumulative limit",
+      "maxRecords": "Maximum approvals",
+      "validUntil": "Expires at (local time)",
+      "outcomes": "Allowed task outcomes",
+      "outcome": {
+        "completed": "Completed",
+        "failed": "Failed",
+        "cancelled": "Cancelled"
+      },
+      "approvedAmount": "Approved amount / limit",
+      "approvedRecords": "Approvals / limit",
+      "revoke": "Revoke authority",
+      "retry": "Retry processing",
+      "review": "Review authority",
+      "reference": "Authority ID",
+      "revokedAt": "Revoked {{time}}",
+      "policyState": {
+        "active": "Active",
+        "expired": "Expired",
+        "exhausted": "Approval count exhausted",
+        "revoked": "Revoked"
+      },
+      "taskState": {
+        "pending": "Pending",
+        "complete": "Both signatures received",
+        "needs_review": "Needs review"
+      },
+      "open": {
+        "bill": "View bill",
+        "settlement": "View settlement"
+      },
+      "noPolicies": "No automatic approval authority granted",
+      "noTasks": "No processing records",
+      "sourceTasks": "The provider initiates approval. View signatures and accounting in Bills and Settlements.",
+      "transportOff": "No sending transport is configured on this site. Automatic processing is disabled.",
+      "contractLimits": "Unit: {{unit}} · Contract per-task limit: {{task}} · Contract budget: {{total}}",
+      "invalid": "Enter nonnegative integer amounts, 1–100000 approvals, a future expiry and at least one outcome. The cumulative limit must cover the per-record limit and stay within the contract budget.",
+      "unknownGrant": "The grant outcome is unknown. Refresh authority records before granting authority again.",
+      "actionFailed": "Action not confirmed. Check permissions and the original record, then retry.",
+      "completedAt": "Signatures completed {{time}}. See the original record for accounting and evidence.",
+      "nextAttempt": "Next attempt: {{time}}",
+      "effect": {
+        "grant": "Authority belongs to this institution and survives staff permission changes. Each party must authorize independently. Coordinated settlement waits for VALID before accounting; it does not make a bank payment.",
+        "revoke": "Stops new approvals under this authority. Existing signatures and original settlements remain. Revoke the old authority before granting a replacement.",
+        "retry": "Retries the original task without replacing existing bills, settlements or signatures. Resolve missing evidence or authority first."
+      },
+      "errors": {
+        "DATA_WAITING": "Waiting for remote usage or terminal evidence",
+        "POLICY_DENIED": "Check both parties’ authority and limits before retrying",
+        "AUTHORIZATION_EXPIRED": "Authority expired; review or replace it",
+        "DELIVERY_UNAVAILABLE": "Peer unavailable; processing will retry",
+        "DELIVERY_REJECTED": "Peer rejected processing; check its authority and evidence",
+        "DATABASE_BUSY": "Database busy; processing will retry",
+        "OPERATION_CONFLICT": "Original records conflict or a discount exists; review the bill",
+        "UNTRUSTED_IDENTITY": "Institution, certificate or signing trust unavailable"
+      }
     }
   }
 }

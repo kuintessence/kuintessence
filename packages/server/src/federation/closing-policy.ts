@@ -11,37 +11,23 @@ import {
   workflowRuns,
 } from "@kuintessence/db";
 import {
-  FederationAmountSchema,
   type FederationDelegation,
   FederationError,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
-import { CommercialAgreementSchema } from "@kuintessence/shared/federation/commercial";
+import {
+  ClosingPolicyInputSchema,
+  CommercialAgreementSchema,
+} from "@kuintessence/shared/federation/commercial";
+
+export { ClosingPolicyInputSchema } from "@kuintessence/shared/federation/commercial";
+
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { z } from "zod";
+import type { z } from "zod";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
 
-export const ClosingPolicyInputSchema = z
-  .strictObject({
-    kind: z.enum(["bill", "settlement"]),
-    outcomes: z
-      .array(z.enum(["completed", "failed", "cancelled"]))
-      .min(1)
-      .max(3)
-      .refine((v) => new Set(v).size === v.length),
-    maxAmount: FederationAmountSchema,
-    maxTotalAmount: FederationAmountSchema,
-    maxRecords: z.number().int().min(1).max(100000),
-    validUntil: z.iso.datetime({ offset: true }),
-  })
-  .refine(
-    (v) =>
-      [v.maxAmount, v.maxTotalAmount].every((a) => FederationAmountSchema.safeParse(a).success) &&
-      BigInt(v.maxAmount) <= BigInt(v.maxTotalAmount),
-    "Invalid approval limits",
-  );
 type Policy = typeof policies.$inferSelect;
 export function assertClosingPolicyActive(policy: Policy, now = new Date()) {
   if (policy.revokedAt || now < policy.validFrom || now >= policy.validUntil)

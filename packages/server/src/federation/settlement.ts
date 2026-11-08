@@ -544,7 +544,13 @@ export class FederationSettlementService {
       return result;
     });
   }
-  async list(actor: FederationActor, revisionId: string, limit: number, offset: number) {
+  async list(
+    actor: FederationActor,
+    revisionId: string,
+    limit: number,
+    offset: number,
+    recordId?: string,
+  ) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
       await this.contract(tx, actor, revisionId);
@@ -571,6 +577,7 @@ export class FederationSettlementService {
             eq(settlements.localSiteId, this.signing.siteId),
             eq(settlements.localOrgId, actor.orgId),
             eq(settlements.agreementRevisionId, revisionId),
+            recordId ? eq(settlements.settlementId, recordId) : undefined,
           ),
         )
         .orderBy(desc(settlements.createdAt), desc(settlements.settlementId))

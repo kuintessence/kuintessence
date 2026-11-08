@@ -33,19 +33,20 @@ type SettlementProps = {
   scope: ApiOrganizationScope;
   writable: boolean;
   busy: boolean;
+  recordId?: string;
   billId?: string;
 };
 
 export function CommercialSettlementPanel(props: SettlementProps) {
   return (
     <SettlementPanel
-      key={`${props.scope.organizationId}:${props.scope.authRevision}:${props.approval.revisionId}`}
+      key={`${props.scope.organizationId}:${props.scope.authRevision}:${props.approval.revisionId}:${props.recordId ?? ""}`}
       {...props}
     />
   );
 }
 
-function SettlementPanel({ approval, scope, writable, busy, billId }: SettlementProps) {
+function SettlementPanel({ approval, scope, writable, busy, billId, recordId }: SettlementProps) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
   const id = useId();
@@ -60,7 +61,8 @@ function SettlementPanel({ approval, scope, writable, busy, billId }: Settlement
   ];
   const provider = approval.localSiteId === approval.terms.agreement.targetSiteId;
   const [page, setPage] = useState(0);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(recordId ?? null);
+  const [filter, setFilter] = useState(recordId);
   const [creating, setCreating] = useState(!!billId);
   const [bill, setBill] = useState(billId ?? "");
   const [json, setJson] = useState("");
@@ -91,19 +93,20 @@ function SettlementPanel({ approval, scope, writable, busy, billId }: Settlement
     return settlement;
   };
   const list = useQuery({
-    queryKey: [...key, page],
+    queryKey: [...key, page, filter],
     enabled: !!approval.counterpartyJws,
     queryFn: async () => {
       const value = CommercialSettlementListSchema.parse(
         (
           await api.get<{ data: unknown }>(
-            `${base}/settlements?limit=20&offset=${page * 20}`,
+            `${base}/settlements?limit=20&offset=${page * 20}${filter ? `&recordId=${encodeURIComponent(filter)}` : ""}`,
             scope,
           )
         ).data,
       );
       for (const { settlement } of value.data) {
         if (
+          (filter !== undefined && settlement.settlementId !== filter) ||
           settlement.localOrgId !== scope.organizationId ||
           settlement.localSiteId !== approval.localSiteId ||
           settlement.agreementRevisionId !== approval.revisionId ||
@@ -176,6 +179,7 @@ function SettlementPanel({ approval, scope, writable, busy, billId }: Settlement
       setCreating(false);
       setPage(0);
       setSelected(null);
+      setFilter(undefined);
       await client.invalidateQueries({ queryKey: key });
     },
   });
@@ -234,6 +238,7 @@ function SettlementPanel({ approval, scope, writable, busy, billId }: Settlement
             onClick={() => {
               setCreating(true);
               setSelected(null);
+              setFilter(undefined);
               setMessage(null);
             }}
           >
@@ -247,6 +252,17 @@ function SettlementPanel({ approval, scope, writable, busy, billId }: Settlement
         </p>
       ) : null}
       {list.isError ? <p role="alert">{t("federation.loadFailed")}</p> : null}
+      {filter && !current ? (
+        <Button
+          variant="ghost"
+          onClick={() => {
+            setFilter(undefined);
+            setSelected(null);
+          }}
+        >
+          {t("federation.settlement.back")}
+        </Button>
+      ) : null}
       {creating && writable ? (
         <div className="space-y-5">
           <div className="flex flex-wrap justify-between gap-2">
@@ -348,6 +364,7 @@ function SettlementPanel({ approval, scope, writable, busy, billId }: Settlement
               disabled={mutation.isPending}
               onClick={() => {
                 setSelected(null);
+                setFilter(undefined);
                 setSignature("");
               }}
             >

@@ -793,7 +793,13 @@ export class FederationBillingService {
       return { data: rows.slice(0, limit), hasMore: rows.length > limit };
     });
   }
-  async list(actor: FederationActor, revisionId: string, limit: number, offset: number) {
+  async list(
+    actor: FederationActor,
+    revisionId: string,
+    limit: number,
+    offset: number,
+    recordId?: string,
+  ) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
       await this.contract(tx, actor, revisionId);
@@ -820,6 +826,7 @@ export class FederationBillingService {
             eq(bills.localSiteId, this.signing.siteId),
             eq(bills.localOrgId, actor.orgId),
             eq(bills.agreementRevisionId, revisionId),
+            recordId ? eq(bills.billId, recordId) : undefined,
           ),
         )
         .orderBy(desc(bills.createdAt), desc(bills.billId))

@@ -33,6 +33,7 @@ type BillingProps = {
   scope: ApiOrganizationScope;
   writable: boolean;
   busy: boolean;
+  recordId?: string;
   reportId?: string;
   onDraftSettlement?: (billId: string) => void;
 };
@@ -40,7 +41,7 @@ type BillingProps = {
 export function CommercialBillingPanel(props: BillingProps) {
   return (
     <BillingPanel
-      key={`${props.scope.organizationId}:${props.scope.authRevision}:${props.approval.revisionId}`}
+      key={`${props.scope.organizationId}:${props.scope.authRevision}:${props.approval.revisionId}:${props.recordId ?? ""}`}
       {...props}
     />
   );
@@ -51,6 +52,7 @@ function BillingPanel({
   scope,
   writable,
   busy,
+  recordId,
   reportId,
   onDraftSettlement,
 }: BillingProps) {
@@ -68,7 +70,8 @@ function BillingPanel({
   ];
   const provider = approval.localSiteId === approval.terms.agreement.targetSiteId;
   const [page, setPage] = useState(0);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(recordId ?? null);
+  const [filter, setFilter] = useState(recordId);
   const [creating, setCreating] = useState(!!reportId);
   const [report, setReport] = useState(reportId ?? "");
   const [json, setJson] = useState("");
@@ -105,15 +108,20 @@ function BillingPanel({
     return bill;
   };
   const list = useQuery({
-    queryKey: [...key, page],
+    queryKey: [...key, page, filter],
     enabled: !!approval.counterpartyJws,
     queryFn: async () => {
       const value = CommercialBillListSchema.parse(
-        (await api.get<{ data: unknown }>(`${base}/bills?limit=20&offset=${page * 20}`, scope))
-          .data,
+        (
+          await api.get<{ data: unknown }>(
+            `${base}/bills?limit=20&offset=${page * 20}${filter ? `&recordId=${encodeURIComponent(filter)}` : ""}`,
+            scope,
+          )
+        ).data,
       );
       for (const { bill } of value.data) {
         if (
+          (filter !== undefined && bill.billId !== filter) ||
           bill.localOrgId !== scope.organizationId ||
           bill.localSiteId !== approval.localSiteId ||
           bill.agreementRevisionId !== approval.revisionId ||
@@ -176,6 +184,7 @@ function BillingPanel({
       setCreating(false);
       setPage(0);
       setSelected(null);
+      setFilter(undefined);
       await client.invalidateQueries({ queryKey: key });
     },
   });
@@ -226,6 +235,7 @@ function BillingPanel({
             onClick={() => {
               setCreating(true);
               setSelected(null);
+              setFilter(undefined);
               setMessage(null);
             }}
           >
@@ -239,6 +249,17 @@ function BillingPanel({
         </p>
       ) : null}
       {list.isError ? <p role="alert">{t("federation.loadFailed")}</p> : null}
+      {filter && !current ? (
+        <Button
+          variant="ghost"
+          onClick={() => {
+            setFilter(undefined);
+            setSelected(null);
+          }}
+        >
+          {t("federation.billing.back")}
+        </Button>
+      ) : null}
       {creating && writable ? (
         <div className="space-y-5">
           <div className="flex flex-wrap justify-between gap-2">
@@ -339,6 +360,7 @@ function BillingPanel({
               disabled={mutation.isPending}
               onClick={() => {
                 setSelected(null);
+                setFilter(undefined);
                 setSignature("");
               }}
             >

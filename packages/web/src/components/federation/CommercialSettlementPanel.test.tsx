@@ -352,3 +352,16 @@ test("draft rejects a response for a different bill", async () => {
   await screen.findByRole("alert");
   expect(screen.queryByRole("button", { name: "Review and approve" })).toBeNull();
 });
+
+test("closing navigation loads the exact settlement and back clears its query filter", async () => {
+  mount({ recordId: settlementId });
+  await screen.findByText("Local accounting");
+  expect(api.get).toHaveBeenCalledWith(
+    `${base}/settlements?limit=20&offset=0&recordId=${settlementId}`,
+    scope,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Back to settlements" }));
+  await waitFor(() =>
+    expect(api.get).toHaveBeenCalledWith(`${base}/settlements?limit=20&offset=0`, scope),
+  );
+});

@@ -4459,3 +4459,41 @@ test("closing automation task HTTP scopes reads and requires the matching indepe
   actor = f.sourceActor;
   expect((await app.request(path)).status).toBe(409);
 });
+
+test("commercial closing record navigation filters the exact bill and settlement within current organization", async () => {
+  const f = await settlementFixture();
+  await f.approve();
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.provider.signing),
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  deps[15] = f.providerBilling;
+  deps[16] = f.providerSettlement;
+  const app = new Hono();
+  let actor = f.actor;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...deps));
+  for (const [kind, recordId] of [
+    ["bill", f.bill.billId],
+    ["settlement", f.draft.settlementId],
+  ] as const) {
+    const path = `/federation/commercial-agreements/${f.revisionId}/${kind}s`;
+    const response = await app.request(`${path}?recordId=${recordId}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toMatchObject({
+      data: { data: [{ [kind]: { [`${kind}Id`]: recordId } }], hasMore: false },
+    });
+    const missing = await app.request(`${path}?recordId=${randomUUID()}`);
+    expect(await missing.json()).toEqual({ data: { data: [], hasMore: false } });
+    expect((await app.request(`${path}?recordId=not-an-id`)).status).toBe(400);
+    actor = f.sourceActor;
+    const foreign = await app.request(`${path}?recordId=${recordId}`);
+    expect(foreign.status).not.toBe(200);
+    actor = f.actor;
+  }
+});

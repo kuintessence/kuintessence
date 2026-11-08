@@ -569,6 +569,76 @@
         "attach": "验证并导入对方签名",
         "retry": "重试结算存证"
       }
+    },
+    "closing": {
+      "title": "自动审批",
+      "policies": "本机构授权",
+      "tasks": "处理记录",
+      "kind": {
+        "bill": "账单",
+        "settlement": "结算"
+      },
+      "grant": {
+        "bill": "授权账单审批",
+        "settlement": "授权结算审批"
+      },
+      "maxAmount": "单笔上限",
+      "maxTotalAmount": "累计上限",
+      "maxRecords": "最多批准次数",
+      "validUntil": "到期时间（本地时间）",
+      "outcomes": "允许的任务结果",
+      "outcome": {
+        "completed": "已完成",
+        "failed": "失败",
+        "cancelled": "已取消"
+      },
+      "approvedAmount": "累计批准额 / 上限",
+      "approvedRecords": "已批准次数 / 上限",
+      "revoke": "撤销授权",
+      "retry": "重新处理",
+      "review": "核对授权",
+      "reference": "授权编号",
+      "revokedAt": "撤销于 {{time}}",
+      "policyState": {
+        "active": "有效",
+        "expired": "已到期",
+        "exhausted": "次数已用完",
+        "revoked": "已撤销"
+      },
+      "taskState": {
+        "pending": "待处理",
+        "complete": "双方已签署",
+        "needs_review": "需人工处理"
+      },
+      "open": {
+        "bill": "查看账单",
+        "settlement": "查看结算"
+      },
+      "noPolicies": "尚未授予自动审批权限",
+      "noTasks": "暂无处理记录",
+      "sourceTasks": "由提供方发起审批。签署与记账状态可在账单、结算页查看。",
+      "transportOff": "本站未配置发送通道，自动处理已停用。",
+      "contractLimits": "单位：{{unit}} · 合同单笔上限：{{task}} · 合同总额度：{{total}}",
+      "invalid": "请填写非负整数金额、1–100000 次、未来到期时间，并至少选择一种任务结果。累计上限不得小于单笔上限，也不得超过合同额度。",
+      "unknownGrant": "授权结果尚未确认。请先刷新授权记录，再授予新授权。",
+      "actionFailed": "操作未确认。请核对权限和原记录后重试。",
+      "completedAt": "签署完成于 {{time}}；记账及存证状态见原记录。",
+      "nextAttempt": "下次尝试：{{time}}",
+      "effect": {
+        "grant": "授权属于本机构，人员权限变化不会自动撤销。双方仍须各自授权；协调结算须等待链上 VALID 后记账，不代表银行付款。",
+        "revoke": "阻止该授权继续批准新记录。已有签名和待处理的原结算继续保留；续授权前须撤销旧授权。",
+        "retry": "重新处理原待办。已有账单、结算和签名保持不变；请先解决材料或授权问题。"
+      },
+      "errors": {
+        "DATA_WAITING": "等待对方用量或终态材料",
+        "POLICY_DENIED": "核对双方授权及限额后重试",
+        "AUTHORIZATION_EXPIRED": "授权已到期，请核对或更换授权",
+        "DELIVERY_UNAVAILABLE": "对方暂时不可用，后台将重试",
+        "DELIVERY_REJECTED": "对方拒绝处理，请核对其授权和材料",
+        "DATABASE_BUSY": "数据库繁忙，后台将重试",
+        "OPERATION_CONFLICT": "原记录不一致或存在减免，请核对原账单",
+        "UNTRUSTED_IDENTITY": "机构、证书或签名信任不可用"
+      }
     }
   }
 }

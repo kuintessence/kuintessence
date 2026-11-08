@@ -274,6 +274,73 @@ export const CommercialSettlementSchema = z
   );
 export type CommercialSettlement = z.infer<typeof CommercialSettlementSchema>;
 
+export const ClosingPolicyInputSchema = z
+  .strictObject({
+    kind: z.enum(["bill", "settlement"]),
+    outcomes: z
+      .array(z.enum(["completed", "failed", "cancelled"]))
+      .min(1)
+      .max(3)
+      .refine((v) => new Set(v).size === v.length),
+    maxAmount: FederationAmountSchema,
+    maxTotalAmount: FederationAmountSchema,
+    maxRecords: z.number().int().min(1).max(100000),
+    validUntil: z.iso.datetime({ offset: true }),
+  })
+  .refine(
+    (v) =>
+      [v.maxAmount, v.maxTotalAmount].every((a) => FederationAmountSchema.safeParse(a).success) &&
+      BigInt(v.maxAmount) <= BigInt(v.maxTotalAmount),
+    "Invalid approval limits",
+  );
+export const ClosingPolicySchema = ClosingPolicyInputSchema.safeExtend({
+  id: Id,
+  localSiteId: Id,
+  localOrgId: Id,
+  agreementRevisionId: Id,
+  agreementDigest: FederationDigestSchema,
+  approvedAmount: FederationAmountSchema,
+  approvedRecords: z.number().int().nonnegative(),
+  validFrom: z.iso.datetime(),
+  grantedBy: Id,
+  revokedAt: z.iso.datetime().nullable(),
+  revokedBy: Id.nullable(),
+}).refine(
+  (v) =>
+    [v.approvedAmount, v.maxTotalAmount].every(
+      (a) => FederationAmountSchema.safeParse(a).success,
+    ) &&
+    BigInt(v.approvedAmount) <= BigInt(v.maxTotalAmount) &&
+    v.approvedRecords <= v.maxRecords &&
+    Date.parse(v.validUntil) > Date.parse(v.validFrom) &&
+    (v.revokedAt === null) === (v.revokedBy === null),
+  "Invalid closing policy state",
+);
+export type ClosingPolicy = z.infer<typeof ClosingPolicySchema>;
+export type ClosingPolicyInput = z.infer<typeof ClosingPolicyInputSchema>;
+export const ClosingTaskSchema = z
+  .object({
+    localSiteId: Id,
+    localOrgId: Id,
+    agreementRevisionId: Id,
+    kind: z.enum(["bill", "settlement"]),
+    referenceId: Id,
+    policyId: Id,
+    recordId: Id.nullable(),
+    state: z.enum(["pending", "complete", "needs_review"]),
+    nextAttemptAt: z.iso.datetime(),
+    lastError: z.string().max(80).nullable(),
+    completedAt: z.iso.datetime().nullable(),
+  })
+  .refine(
+    (v) => v.state !== "complete" || (v.recordId !== null && v.completedAt !== null),
+    "Incomplete closing task",
+  );
+export const ClosingTasksViewSchema = z.object({
+  enabled: z.boolean(),
+  records: z.array(ClosingTaskSchema).max(100),
+});
+
 export const CommercialBillApprovalSchema = z.object({
   localSiteId: Id,
   localOrgId: Id,

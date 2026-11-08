@@ -134,6 +134,7 @@ beforeEach(async () => {
     if (path.includes("/bills?") || path.includes("/settlements?"))
       return { data: { data: [], hasMore: false } };
     if (path.includes("/submissions?")) return { data: status };
+    if (path.includes("/closing-policies?")) return { data: [] };
     if (path.includes("?limit="))
       return {
         data: listed
@@ -699,4 +700,50 @@ test.each([
   await screen.findByText("No approved settlements");
   expect(!!screen.queryByRole("button", { name: "Create settlement" })).toBe(canSettle);
   expect(api.post).not.toHaveBeenCalled();
+});
+
+test.each([
+  {
+    capabilities: ["agreement.read", "agreement.approve"],
+    mobile: false,
+    bill: false,
+    settlement: false,
+  },
+  {
+    capabilities: ["agreement.read", "billing.approve"],
+    mobile: false,
+    bill: true,
+    settlement: false,
+  },
+  {
+    capabilities: ["agreement.read", "settlement.approve"],
+    mobile: false,
+    bill: false,
+    settlement: true,
+  },
+  {
+    capabilities: ["agreement.read", "billing.approve", "settlement.approve"],
+    mobile: true,
+    bill: false,
+    settlement: false,
+  },
+])("closing tab separates financial permissions and keeps mobile read-only: %j", async ({
+  capabilities,
+  mobile,
+  bill,
+  settlement,
+}) => {
+  listed = true;
+  row.counterpartyJws = "peer.signature";
+  grants = capabilities;
+  device.readOnly = mobile;
+  mount();
+  await openDetail();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Automatic approvals" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  await screen.findByText("No automatic approval authority granted");
+  expect(!!screen.queryByRole("button", { name: "Authorize bills" })).toBe(bill);
+  expect(!!screen.queryByRole("button", { name: "Authorize settlements" })).toBe(settlement);
 });

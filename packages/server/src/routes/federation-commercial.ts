@@ -104,17 +104,23 @@ export function createFederationCommercialRoutes(
   });
   if (settlements) {
     const path = "/federation/commercial-agreements/:revisionId/settlements";
-    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) => {
-      const { limit, offset } = c.req.valid("query");
-      return c.json({
-        data: await settlements.list(
-          c.get("federationActor"),
-          c.req.valid("param").revisionId,
-          limit,
-          offset,
-        ),
-      });
-    });
+    r.get(
+      path,
+      kqValidator("param", id),
+      kqValidator("query", page.extend({ recordId: z.uuid().optional() })),
+      async (c) => {
+        const { limit, offset, recordId } = c.req.valid("query");
+        return c.json({
+          data: await settlements.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+            recordId,
+          ),
+        });
+      },
+    );
     r.post(
       `${path}/draft`,
       kqValidator("param", id),
@@ -180,17 +186,23 @@ export function createFederationCommercialRoutes(
         });
       },
     );
-    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) => {
-      const { limit, offset } = c.req.valid("query");
-      return c.json({
-        data: await billing.list(
-          c.get("federationActor"),
-          c.req.valid("param").revisionId,
-          limit,
-          offset,
-        ),
-      });
-    });
+    r.get(
+      path,
+      kqValidator("param", id),
+      kqValidator("query", page.extend({ recordId: z.uuid().optional() })),
+      async (c) => {
+        const { limit, offset, recordId } = c.req.valid("query");
+        return c.json({
+          data: await billing.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+            recordId,
+          ),
+        });
+      },
+    );
     r.post(
       `${path}/draft`,
       kqValidator("param", id),

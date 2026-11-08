@@ -26,6 +26,7 @@ import {
 } from "../ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { CommercialBillingPanel } from "./CommercialBillingPanel";
+import { CommercialClosingPanel } from "./CommercialClosingPanel";
 import { CommercialDetail } from "./CommercialDetail";
 import { CommercialEditor } from "./CommercialEditor";
 import { CommercialSettlementPanel } from "./CommercialSettlementPanel";
@@ -50,6 +51,10 @@ export function CommercialPanel({
   const key = ["federation", "commercial", scope.organizationId, scope.authRevision];
   const readOnly = useMobileMutationBlocked(path);
   const [section, setSection] = useState("terms");
+  const [closingRecord, setClosingRecord] = useState<{
+    kind: "bill" | "settlement";
+    recordId: string;
+  } | null>(null);
   const [settlementBill, setSettlementBill] = useState<string | undefined>();
   const [billingReport, setBillingReport] = useState<string | undefined>();
   const [page, setPage] = useState(0);
@@ -146,6 +151,7 @@ export function CommercialPanel({
       if (action.kind === "sign") {
         setSelected(action.terms.agreement.agreementRevisionId);
         setSection("terms");
+        setClosingRecord(null);
         setBillingReport(undefined);
         setSettlementBill(undefined);
       }
@@ -243,6 +249,7 @@ export function CommercialPanel({
               value={section}
               onValueChange={(value) => {
                 setSection(value);
+                setClosingRecord(null);
                 setBillingReport(undefined);
                 setSettlementBill(undefined);
               }}
@@ -252,6 +259,7 @@ export function CommercialPanel({
                 <TabsTrigger value="usage">{t("federation.usage.title")}</TabsTrigger>
                 <TabsTrigger value="bills">{t("federation.billing.title")}</TabsTrigger>
                 <TabsTrigger value="settlements">{t("federation.settlement.title")}</TabsTrigger>
+                <TabsTrigger value="closing">{t("federation.closing.title")}</TabsTrigger>
               </TabsList>
               <TabsContent value="terms">
                 <CommercialDetail
@@ -292,6 +300,7 @@ export function CommercialPanel({
                   scope={scope}
                   writable={canBill}
                   busy={busy || detail.isFetching}
+                  recordId={closingRecord?.kind === "bill" ? closingRecord.recordId : undefined}
                   reportId={billingReport}
                   onDraftSettlement={
                     canSettle
@@ -309,7 +318,25 @@ export function CommercialPanel({
                   scope={scope}
                   writable={canSettle}
                   busy={busy || detail.isFetching}
+                  recordId={
+                    closingRecord?.kind === "settlement" ? closingRecord.recordId : undefined
+                  }
                   billId={settlementBill}
+                />
+              </TabsContent>
+              <TabsContent value="closing">
+                <CommercialClosingPanel
+                  approval={detail.data}
+                  scope={scope}
+                  canBill={canBill}
+                  canSettle={canSettle}
+                  busy={busy || detail.isFetching}
+                  onOpenRecord={(kind, recordId) => {
+                    setClosingRecord({ kind, recordId });
+                    setBillingReport(undefined);
+                    setSettlementBill(undefined);
+                    setSection(kind === "bill" ? "bills" : "settlements");
+                  }}
                 />
               </TabsContent>
             </Tabs>
@@ -331,6 +358,7 @@ export function CommercialPanel({
                     onClick={() => {
                       setSelected(row.revisionId);
                       setSection("terms");
+                      setClosingRecord(null);
                       setBillingReport(undefined);
                       setSettlementBill(undefined);
                     }}
