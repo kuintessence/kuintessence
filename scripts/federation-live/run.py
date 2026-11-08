@@ -12,8 +12,9 @@ if os.geteuid() != 0:
     raise SystemExit("Run on a disposable local k3s node as root")
 os.umask(0o077)
 mode = os.environ.get("LAB_MODE", "ledger_coordinated")
-assert mode in ("bilateral_direct", "ledger_coordinated")
+assert mode in ("bilateral_direct", "bilateral_attested", "ledger_coordinated")
 coordinated = mode == "ledger_coordinated"
+attested = mode == "bilateral_attested"
 scenario = os.environ.get("LAB_SCENARIO", "success")
 assert coordinated or scenario == "success"
 assert scenario in ("success", "outage", "stop", "workflow")
@@ -56,7 +57,7 @@ if os.environ.get("KQ_FEDERATION_PG_LIB"):
 env["LAB_SCENARIO"] = scenario
 env["LAB_MODE"] = mode
 env["LAB_FIXTURE_ROOT"] = os.environ["LAB_FIXTURE_ROOT"]
-if coordinated:
+if coordinated or attested:
     env["LAB_FABRIC_ROOT"] = os.environ["LAB_FABRIC_ROOT"]
 
 
@@ -90,18 +91,19 @@ env.update(
     LAB_ROOT=str(root),
     LAB_AGENT="federation-live-agent",
 )
-networkroot = pathlib.Path(os.environ["LAB_FABRIC_ROOT"]) if coordinated else None
+networkroot = pathlib.Path(os.environ["LAB_FABRIC_ROOT"]) if coordinated or attested else None
 fixture = json.loads((pathlib.Path(env["LAB_FIXTURE_ROOT"]) / "execution-fixture.json").read_text())
 siteb = next(site for site in fixture["sites"] if site["name"] == "B")
 env.update(FEDERATION_SITE_ID=siteb["siteId"], FEDERATION_SIGNING_KEY_ID="batch-1")
+if coordinated or attested:
+    env["FEDERATION_COMMERCIAL_SOCKET_PATH"] = str(networkroot / "live-B-commercial/commercial.sock")
 if coordinated:
-    env.update(
-        FEDERATION_COMMERCIAL_SOCKET_PATH=str(networkroot / "live-B-commercial/commercial.sock"),
-        FEDERATION_MARKET_SOCKET_PATH=str(networkroot / "live-B-market/market.sock"),
-    )
+    env["FEDERATION_MARKET_SOCKET_PATH"] = str(networkroot / "live-B-market/market.sock")
+if attested:
+    env["FEDERATION_ATTESTATION_SOCKET_PATH"] = str(networkroot / "live-B-evidence/evidence.sock")
 
 logs = pathlib.Path(
-    tempfile.mkdtemp(prefix="federation-execution-" + (scenario if coordinated else "direct") + "-", dir=repo / "temp")
+    tempfile.mkdtemp(prefix="federation-execution-" + (scenario if coordinated else "attested" if attested else "direct") + "-", dir=repo / "temp")
 )
 print("Private execution evidence: " + str(logs), flush=True)
 log = open(logs / "setup.log", "w")
@@ -153,7 +155,7 @@ def api(path, body=None, token=None, headers=None):
 
 
 def orderer(action):
-    assert coordinated and networkroot is not None
+    assert networkroot is not None
     request_id = str(uuid.uuid4())
     acknowledgement = networkroot / ("execution-orderer-" + action + ".ack")
     (networkroot / ("execution-orderer-" + action)).write_text(request_id)
@@ -815,7 +817,7 @@ def verify_billing():
         received = sourceapi(receivedpath, token=sourcetoken)["data"]
         assert usage["task"]["state"] != "needs_review", json.dumps(usage["task"])
         assert not received["sync"] or received["sync"]["state"] != "needs_review", json.dumps(received["sync"])
-        if usage["reports"] and usage["reports"][0]["ledgerState"] == ("committed" if coordinated else None) and received["reports"]:
+        if usage["reports"] and usage["reports"][0]["ledgerState"] == ("committed" if coordinated else "pending" if attested else None) and received["reports"]:
             break
         time.sleep(3)
     else:
@@ -851,13 +853,13 @@ def verify_billing():
         assert draft["reportId"] == report["id"]
         assert int(draft["calculation"]["grossAmount"]) == expected_gross
         assert int(draft["calculation"]["dueAmount"]) == min(expected_gross, int(config["request"]["maxAmount"]))
-        if coordinated:
+        if coordinated or attested:
             assert statuses["provider"]["record"]["ledger"]["state"] == "pending"
         else:
             assert statuses["provider"]["record"]["ledger"] is None
         assert statuses["source"]["record"]["ledger"] is None
         (logs / "billing-offline-evidence.json").write_text(json.dumps({"usage": usage, "received": received, "pods": pods, "draft": draft, "statuses": statuses}, indent=2) + "\n")
-        print("REAL BILL EXCHANGE PASSED: measured Kubernetes runtime -> signed usage over mTLS -> independent institution policies -> automatic draft, approvals and original signatures; " + ("Orderer stopped" if coordinated else "no ledger configured"), flush=True)
+        print("REAL BILL EXCHANGE PASSED: measured Kubernetes runtime -> signed usage over mTLS -> independent institution policies -> automatic draft, approvals and original signatures; " + ("Orderer stopped" if coordinated or attested else "no ledger configured"), flush=True)
     finally:
         if coordinated:
             orderer("start")
@@ -936,7 +938,7 @@ def verify_settlement():
 
 
 def verify_bilateral_finance():
-    assert mode == "bilateral_direct"
+    assert not coordinated
     config = json.loads((root / "source-init.json").read_text())
     path = "federation/commercial-agreements/" + config["request"]["agreementRevisionId"]
     draft, statuses = automatic_closing(path, "settlement")
@@ -944,8 +946,9 @@ def verify_bilateral_finance():
     assert draft["billId"] == bill["billId"] and draft["chargedAmount"] == bill["calculation"]["dueAmount"]
     assert draft["reservationId"] is None and draft["terminal"] is None
     assert int(draft["chargedAmount"]) > 0
-    for value in statuses.values():
-        assert value["record"]["ledger"] is None and value["record"]["settlement"]["appliedAt"]
+    for name, value in statuses.items():
+        assert value["record"]["settlement"]["appliedAt"]
+        assert value["record"]["ledger"]["state"] == "pending" if attested and name == "provider" else value["record"]["ledger"] is None
     parties = (("provider", api, token), ("source", sourceapi, sourcetoken))
 
     def accounting(label, amount):
@@ -983,12 +986,18 @@ def verify_bilateral_finance():
                 rows = read(path + "/adjustments?recordId=" + adjustment["adjustmentId"] + "&settlementId=" + draft["settlementId"], token=auth)["data"]
                 assert len(rows["data"]) == 1
                 records[name] = rows["data"][0]
-                assert records[name]["ledger"] is None and records[name]["adjustment"]["payload"] == adjustment
+                assert records[name]["adjustment"]["payload"] == adjustment
+                if attested and name == "provider":
+                    assert records[name]["ledger"] is None or records[name]["ledger"]["state"] == "pending"
+                else:
+                    assert records[name]["ledger"] is None
             if all(v["adjustment"]["appliedAt"] for v in records.values()):
                 break
             time.sleep(2)
         else:
             raise AssertionError("Bilateral adjustment did not apply automatically")
+        if attested:
+            assert records["provider"]["ledger"]["state"] == "pending"
         for name, read, auth in parties:
             replay = read(path + "/adjustments/approve", adjustment, auth)["data"]
             assert replay == records[name]["adjustment"]
@@ -1002,7 +1011,66 @@ def verify_bilateral_finance():
         previous = {"adjustmentId": adjustment["adjustmentId"], "digest": records["provider"]["adjustment"]["digest"]}
         (logs / ("bilateral-adjustment-" + str(number) + ".json")).write_text(json.dumps({"draft": adjustment, "records": records}, indent=2) + "\n")
     (logs / "bilateral-settlement.json").write_text(json.dumps({"draft": draft, "statuses": statuses}, indent=2) + "\n")
-    print("REAL DIRECT ACCOUNTING PASSED: task-preauthorized bill and settlement; exact local budget; debit hold; original settlement and two adjustments replay safely; no ledger configuration, attempts or outbox", flush=True)
+    print("REAL BILATERAL ACCOUNTING PASSED: task-preauthorized bill and settlement; exact local budget; debit hold; original settlement and two adjustments replay safely; " + ("Orderer remains stopped" if attested else "no ledger configuration, attempts or outbox"), flush=True)
+
+
+def verify_attested_recovery():
+    config = json.loads((root / "source-init.json").read_text())
+    for _ in range(60):
+        inspect_ledgers("attested-offline")
+        offline = {name: json.loads((logs / (name + "-attested-offline.json")).read_text()) for name in ("source", "provider")}
+        provider = offline["provider"]
+        assert len(provider["attestationOutbox"]) == 2
+        assert len(provider["commercial"]) == 6 and len(offline["source"]["commercial"]) == 1
+        for state in offline.values():
+            assert all(row["state"] == "pending" for row in state["commercial"])
+            assert all(row["state"] == "pending" for row in state["evidenceBatches"])
+            assert all(row["stage"] in ("proposal", "transaction") for row in state["commercialTransactions"] + state["attestationAttempts"])
+        if provider["attestationAttempts"] and all(row["stage"] == "transaction" for row in provider["attestationAttempts"]) and all(state["commercialTransactions"] and all(row["stage"] == "transaction" for row in state["commercialTransactions"]) for state in offline.values()):
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError("Pending admission evidence did not persist an endorsed checkpoint")
+    assert not offline["source"]["attestationOutbox"] and not offline["source"]["evidenceBatches"]
+    query = "federation/agreements/" + config["request"]["agreementRevisionId"] + "/attestation"
+    view = api(query, token=token)["data"]
+    assert view["enabled"] and view["batches"] and all(row["state"] == "pending" for row in view["batches"])
+    (logs / "attested-offline-api.json").write_text(json.dumps(view, indent=2) + "\n")
+    print("REAL ATTESTED OFFLINE PASSED: execution, result return, bill, settlement and adjustments completed while Orderer stopped; original commercial and admission evidence remains pending", flush=True)
+    orderer("start")
+    for _ in range(160):
+        inspect_ledgers("attested-recovered")
+        recovered = {name: json.loads((logs / (name + "-attested-recovered.json")).read_text()) for name in ("source", "provider")}
+        for name, state in recovered.items():
+            assert all(row["state"] != "needs_review" for row in state["commercial"]), "Commercial recovery needs review: " + json.dumps([{ "id": row["id"], "operation": row["input"]["operation"], "state": row["state"], "lastError": row["lastError"] } for row in state["commercial"]])
+            assert all(row["state"] != "needs_review" for row in state["evidenceBatches"]), "Admission evidence needs review"
+            assert {(row["id"], json.dumps(row["input"], sort_keys=True)) for row in state["commercial"]} == {(row["id"], json.dumps(row["input"], sort_keys=True)) for row in offline[name]["commercial"]}
+            for key in ("budgets", "reservations", "outbound", "bills", "settlements", "adjustments", "execution"):
+                assert state[key] == offline[name][key], "Attestation changed local accounting or execution: " + key
+            assert {row["evidenceId"] for row in state["attestationOutbox"]} == {row["evidenceId"] for row in offline[name]["attestationOutbox"]}
+            for original in offline[name]["evidenceBatches"]:
+                same = next(row for row in state["evidenceBatches"] if row["id"] == original["id"])
+                for key in ("manifest", "digest", "issuerJws"):
+                    assert same[key] == original[key], "Recovery replaced original signed batch"
+            for key, identity in (("commercialTransactions", "submissionId"), ("attestationAttempts", "batchId")):
+                for original in offline[name][key]:
+                    same = next(row for row in state[key] if row["transactionId"] == original["transactionId"])
+                    assert same[identity] == original[identity] and same["recoveryDigest"] == original["recoveryDigest"]
+        if all(row["state"] == "committed" for state in recovered.values() for row in state["commercial"]) and all(row["state"] == "anchored" for row in recovered["provider"]["attestationOutbox"]):
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError("Original attested records did not recover to VALID")
+    provider = recovered["provider"]
+    assert len(provider["attestationOutbox"]) == 2
+    assert all(row["state"] == "anchored" for row in provider["evidenceBatches"])
+    assert sorted(record["sequence"] for row in provider["evidenceBatches"] for record in row["manifest"]["records"]) == ["1", "2"]
+    assert {record["kind"] for row in provider["evidenceBatches"] for record in row["manifest"]["records"]} == {"delegation", "acceptance"}
+    view = api(query, token=token)["data"]
+    assert view["unbatchedEvidenceCount"] == 0 and all(row["state"] == "anchored" for row in view["batches"])
+    (logs / "attested-recovered-api.json").write_text(json.dumps(view, indent=2) + "\n")
+    (networkroot / "live-attested-proof.json").write_text(json.dumps({"evidenceDirectory": str(logs), "config": config}, indent=2) + "\n")
+    print("REAL ATTESTED RECOVERY PASSED: original commercial submissions VALID and admission evidence anchored; exact local balances, original signatures, completed Jobs and recovery checkpoints unchanged", flush=True)
 
 
 def restart_commercial_servers():
@@ -1154,6 +1222,8 @@ def verify_adjustments():
 
 
 try:
+    if attested:
+        orderer("stop")
     # Executed only inside the disposable lab namespace.
     k(["create", "namespace", namespace])
     created = True
@@ -2049,11 +2119,12 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     sourcehttp, sourcegrpc = port(), port()
     env["LAB_SOURCE_HTTP"] = f"http://127.0.0.1:{sourcehttp}"
     sourceenv = env.copy()
+    if coordinated or attested:
+        sourceenv["FEDERATION_COMMERCIAL_SOCKET_PATH"] = str(networkroot / "live-A-commercial/commercial.sock")
     if coordinated:
-        sourceenv.update(
-            FEDERATION_COMMERCIAL_SOCKET_PATH=str(networkroot / "live-A-commercial/commercial.sock"),
-            FEDERATION_MARKET_SOCKET_PATH=str(networkroot / "live-A-market/market.sock"),
-        )
+        sourceenv["FEDERATION_MARKET_SOCKET_PATH"] = str(networkroot / "live-A-market/market.sock")
+    if attested:
+        sourceenv.pop("FEDERATION_ATTESTATION_SOCKET_PATH", None)
     configuration = json.loads((root / "source-init.json").read_text())
     env["SOURCE_DATABASE_URL"] = (
         f"postgres://kq@127.0.0.1:{pgport}/kuintessence_unit_federation_source"
@@ -2327,6 +2398,8 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             verify_adjustments()
         else:
             verify_bilateral_finance()
+            if attested:
+                verify_attested_recovery()
     inspect_ledgers("after")
     if coordinated and scenario in ("success", "workflow"):
         state = json.loads((logs / "provider-after.json").read_text())

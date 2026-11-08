@@ -49,6 +49,8 @@ try {
   const commercial = await db
     .select({
       id: federationCommercialSubmissions.id,
+      input: federationCommercialSubmissions.input,
+      lastError: federationCommercialSubmissions.lastError,
       state: federationCommercialSubmissions.state,
     })
     .from(federationCommercialSubmissions);
@@ -64,7 +66,16 @@ try {
     .from(federationCommercialAttempts);
   const budgets = await db.select().from(federationBudgets);
   const attestationOutbox = await db.select().from(federationAttestationOutbox);
-  const attestationAttempts = await db.select().from(federationAttestationAttempts);
+  const attestationAttempts = await db
+    .select({
+      batchId: federationAttestationAttempts.batchId,
+      transactionId: federationAttestationAttempts.transactionId,
+      stage: federationAttestationAttempts.stage,
+      validationCode: federationAttestationAttempts.validationCode,
+      blockNumber: federationAttestationAttempts.blockNumber,
+      recoveryDigest: sql<string>`md5(${federationAttestationAttempts.recovery})`,
+    })
+    .from(federationAttestationAttempts);
   const evidenceBatches = await db.select().from(federationEvidenceBatches);
   const reservations = await db
     .select({
@@ -97,23 +108,27 @@ try {
   const coordinated = process.env.LAB_MODE === "ledger_coordinated";
   if (coordinated) assert.equal(budgets.length, 0);
   else {
-    assert.equal(process.env.LAB_MODE, "bilateral_direct");
-    for (const name of [
-      "FEDERATION_COMMERCIAL_SOCKET_PATH",
-      "FEDERATION_MARKET_SOCKET_PATH",
-      "FEDERATION_ATTESTATION_SOCKET_PATH",
-    ])
-      assert.equal(process.env[name], undefined);
-    for (const rows of [
-      market,
-      marketTransactions,
-      commercial,
-      commercialTransactions,
-      attestationOutbox,
-      attestationAttempts,
-      evidenceBatches,
-    ])
-      assert.equal(rows.length, 0, "Direct cooperation created ledger work");
+    assert(["bilateral_direct", "bilateral_attested"].includes(process.env.LAB_MODE ?? ""));
+    assert.equal(market.length, 0);
+    assert.equal(marketTransactions.length, 0);
+    if (process.env.LAB_MODE === "bilateral_direct") {
+      for (const name of [
+        "FEDERATION_COMMERCIAL_SOCKET_PATH",
+        "FEDERATION_MARKET_SOCKET_PATH",
+        "FEDERATION_ATTESTATION_SOCKET_PATH",
+      ])
+        assert.equal(process.env[name], undefined);
+      for (const rows of [
+        market,
+        marketTransactions,
+        commercial,
+        commercialTransactions,
+        attestationOutbox,
+        attestationAttempts,
+        evidenceBatches,
+      ])
+        assert.equal(rows.length, 0, "Direct cooperation created ledger work");
+    }
     for (const budget of budgets) {
       assert.equal(BigInt(budget.available) + BigInt(budget.reserved) + BigInt(budget.spent), 100n);
       assert(
@@ -122,6 +137,17 @@ try {
           BigInt(budget.spent) >= 0n,
       );
     }
+  }
+  for (const batch of evidenceBatches.filter((row) => row.state === "anchored")) {
+    assert(
+      attestationAttempts.some(
+        (row) =>
+          row.batchId === batch.id &&
+          row.stage === "anchored" &&
+          row.validationCode === 0 &&
+          row.blockNumber !== null,
+      ),
+    );
   }
   for (const record of [...market, ...commercial].filter((r) => r.state === "committed")) {
     const attempts = [...marketTransactions, ...commercialTransactions].filter(

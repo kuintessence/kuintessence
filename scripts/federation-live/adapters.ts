@@ -4,17 +4,21 @@ import { closeSync, openSync } from "node:fs";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { FabricCommercialTrustSchema } from "@kuintessence/shared/federation/commercial";
+import { FabricEvidenceTrustSchema } from "@kuintessence/shared/federation/ledger";
 import { FabricMarketTrustSchema } from "@kuintessence/shared/federation/market";
 import { z } from "zod";
 import { Site } from "../fabric-evidence-fixture";
 
-export async function startAdapters(root: string) {
+export async function startAdapters(root: string, attested = false) {
   const network = z
     .object({ channel: z.string(), sites: z.array(Site), trust: FabricCommercialTrustSchema })
     .parse(await Bun.file(join(root, "network.json")).json());
-  const marketTrust = FabricMarketTrustSchema.parse(
-    await Bun.file(join(root, "gate-market-trust.json")).json(),
-  );
+  const secondaryKind = attested ? "evidence" : "market";
+  const secondaryTrust = attested
+    ? FabricEvidenceTrustSchema.parse(
+        await Bun.file(join(root, "execution-evidence-trust.json")).json(),
+      )
+    : FabricMarketTrustSchema.parse(await Bun.file(join(root, "gate-market-trust.json")).json());
   const build = await Bun.build({
     entrypoints: ["packages/fabric-adapter/src/main.ts"],
     target: "node",
@@ -46,8 +50,8 @@ export async function startAdapters(root: string) {
   };
   try {
     for (const site of network.sites.filter((s) => ["A", "B"].includes(s.name))) {
-      for (const kind of ["commercial", "market"]) {
-        const user = kind === "market" ? "User2" : "User1";
+      for (const kind of ["commercial", secondaryKind]) {
+        const user = kind === "commercial" ? "User1" : "User2";
         const msp = join(
           dirname(dirname(site.userMsp)),
           `${user}@${site.name.toLowerCase()}.kq.test`,
@@ -66,7 +70,7 @@ export async function startAdapters(root: string) {
               siteId: site.siteId,
               channel: network.channel,
               chaincode: `kq-${kind}`,
-              trust: kind === "market" ? marketTrust : network.trust,
+              trust: kind === "commercial" ? network.trust : secondaryTrust,
             },
             peerEndpoint: `127.0.0.1:${site.peerPort}`,
             peerTlsCaFile: join(site.tls, "ca.crt"),

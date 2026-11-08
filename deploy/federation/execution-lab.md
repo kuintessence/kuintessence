@@ -70,3 +70,21 @@ bun run test:federation:direct
 所有检查点要求市场/商业提交、链交易尝试、存证 outbox 和证据批次为空；提供方本地预算 `available + reserved + spent` 恒等于原限额，需求方不复制提供方可花费余额。结算后重复批准不再次改账；调减和调增不改写原账单/结算或重复执行作业。
 
 私有目录为 `temp/federation-execution-direct-*`，新增 `preauthorized-closing.json` 保存提交前政策，`bilateral-settlement.json`、`bilateral-adjustment-1/2.json` 保存同文账务记录，双方对应快照保存实际额度和空链待办。仍保留原文件工作流证据，脚本退出时清理自建服务、namespace、数据库和临时身份。只有命令退出 0 且完整断言通过才算本场景验收成功；它不证明异步存证恢复、跨 Slurm/PBS 全矩阵、真实软件离线安装或 PR 预览已完成。
+
+## 异步存证断链验收
+
+使用本页真实 Fabric/PostgreSQL 工具配置，通过以下模式运行：
+
+```bash
+KQ_FEDERATION_LAB_MODE=bilateral_attested \
+KQ_FEDERATION_LAB_SCENARIO=success \
+bun run test:fabric:execution
+```
+
+该场景部署商业与证据链码及相应 Adapter，不部署市场链码，不签发链协调执行许可。两种私有集合各自限制 A/B 成员访问并要求 A/B 原生背书，C 保留为非成员观测者。商业域与接单证据域在夹具中显式对齐；一般部署仍应按双方认可的域配置，不临时扩大集合。
+
+Orderer 在启动 Server 前停止。双方此时完成执行/商业协议交换、提交前账单和结算预授权，再运行真实轻量文件工作流、返回结果、交换用量、自动账单/结算及两笔人工调整。工作和本地额度不得等待链，商业待办和接单证据必须保持 pending，不能伪造 anchored。检查实际本地金额及原不可变签名，不调用复核重试 API、不清租约或改数据库时间。
+
+恢复 Orderer 后核对原七条商业提交（双方合同、提供方用量/账单/结算/两次调整）及两条接单凭证。待办编号、已保存的交易检查点、所有本地账务及已完成 Job 均保持；批次序号连续、重复记录不能入链两次。独立 Node Gateway 再检查 A/B/C 的实际区块与 PDC：原记录正文/签名对应、交易 VALID、C 无私有内容，商业链上没有预算、预留或执行 gate 写入，避免把异步存证变成第二套可花费余额。
+
+证据目录为 `temp/federation-execution-attested-*`。`attested-offline-api.json` 与双方 `attested-offline.json` 保存链停止期间状态；`attested-recovered-api.json` 与双方 `attested-recovered.json` 保存恢复结果；`attested-private-ledger.json` 保存独立区块检查摘要。签名和内部日志仍只放受限忽略目录，不能上传公共 CI artifact。只有整条命令退出 0 且所有断言通过才记为此场景完成；其他中断、容量、归档与正式预览仍按各自验收项检查。

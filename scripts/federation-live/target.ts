@@ -376,7 +376,8 @@ printf 'federation-file-consumed:42\\n'
     sourceSiteId: source.siteId,
     targetSiteId: target.siteId,
     mode: process.env.LAB_MODE ?? "ledger_coordinated",
-    budgetDomainId: crypto.randomUUID(),
+    budgetDomainId:
+      process.env.LAB_MODE === "bilateral_attested" ? fixture.domainId : crypto.randomUUID(),
     epoch: crypto.randomUUID(),
     unit: "credit.micro",
     budgetLimit: "100",

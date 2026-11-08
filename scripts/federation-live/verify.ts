@@ -26,9 +26,11 @@ export async function verifyLiveExecution(
       }),
     ),
   );
-  const adapters = await startAdapters(root);
+  const attested = process.env.KQ_FEDERATION_LAB_MODE === "bilateral_attested";
+  const adapters = await startAdapters(root, attested);
   controls.onCleanup(adapters.cleanup);
-  const selection = process.env.KQ_FEDERATION_LAB_SCENARIO ?? "both";
+  const selection = process.env.KQ_FEDERATION_LAB_SCENARIO ?? (attested ? "success" : "both");
+  assert(!attested || selection === "success", "Attested recovery uses the bilateral success flow");
   assert(["success", "outage", "stop", "workflow", "both"].includes(selection));
   for (const scenario of selection === "both" ? ["success", "outage"] : [selection]) {
     const child = Bun.spawn(["python3", join(import.meta.dir, "run.py")], {
@@ -36,7 +38,7 @@ export async function verifyLiveExecution(
         ...process.env,
         LAB_FABRIC_ROOT: root,
         LAB_FIXTURE_ROOT: root,
-        LAB_MODE: "ledger_coordinated",
+        LAB_MODE: attested ? "bilateral_attested" : "ledger_coordinated",
         LAB_SCENARIO: scenario,
       },
       stdout: "inherit",
@@ -87,10 +89,16 @@ export async function verifyLiveExecution(
         }
         await Bun.sleep(300);
       }
-      assert.equal(await child.exited, 0, `Real coordinated execution ${scenario} failed`);
+      assert.equal(
+        await child.exited,
+        0,
+        `Real ${attested ? "attested" : "coordinated"} execution ${scenario} failed`,
+      );
       if (["success", "workflow"].includes(scenario)) {
         const build = await Bun.build({
-          entrypoints: [join(import.meta.dir, "settlement-proof.ts")],
+          entrypoints: [
+            join(import.meta.dir, attested ? "attested-proof.ts" : "settlement-proof.ts"),
+          ],
           target: "node",
           format: "esm",
           external: ["@hyperledger/fabric-gateway", "@hyperledger/fabric-protos", "@grpc/grpc-js"],
@@ -98,7 +106,9 @@ export async function verifyLiveExecution(
         assert(build.success && build.outputs[0]);
         const entry = join(root, "live-settlement-proof.mjs");
         await Bun.write(entry, await build.outputs[0].text());
-        for (const record of ["settlement", "adjustment-1", "adjustment-2"]) {
+        for (const record of attested
+          ? ["attested"]
+          : ["settlement", "adjustment-1", "adjustment-2"]) {
           const probe = Bun.spawn(["node", entry, root, record], {
             stdout: "inherit",
             stderr: "inherit",

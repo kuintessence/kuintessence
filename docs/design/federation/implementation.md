@@ -414,7 +414,7 @@ Slurm 从 sacct 精确匹配 JobIDRaw 汇总行读取 ElapsedRaw、AllocCPUS 与
 
 独立 evidence 保留与 raw rollup 删除解耦；签名证据正文/引用及对象备份验证后才允许按协议清理源证据。执行存储失败与存证服务失败分开：前者可阻止新增任务，后者进入队列。
 
-存证 worker 只读取 `bilateral_attested` 的证据；direct 为 NOT_REQUIRED，无链探测。链上协调记录进入其对应状态投影，不让批次补交执行第二次财务扣减。
+存证 worker 只读取 `bilateral_attested` 的证据；direct 为 NOT_REQUIRED，无链探测。 真实联合验收已覆盖启动业务前停 Orderer，提交前预授权账单/结算，工作与本地账务继续，恢复后原商业待办和接单批次取得实际 VALID 且不改本地余额；见[异步实验](../../../deploy/federation/execution-lab.md#异步存证断链验收)。链上协调记录进入其对应状态投影，不让批次补交执行第二次财务扣减。
 
 批次限定同机构可见范围和协议/epoch，保存原记录 ID、序列清单、签名和摘要。双签只确认记录清单及其类型；单方报告仍标明单方。有效提交后写 ANCHORED，超时查原 txId/批次键，非法配置进入 NEEDS_REVIEW，禁止自动改用公共集合。
 
@@ -468,7 +468,7 @@ raw transaction args、chaincode response、events、trace 均不能携带私有
 
 direct 模式不要求 Fabric URL、镜像或证书；attested 模式任务 readiness 不绑定链连接，但单独展示存证 readiness；coordinated 的新增激活受链确认约束。服务的存活、业务可用性与链可用性分别检查。
 
-直接模式已有独立真实入口 `test:federation:direct`：只生成机构业务身份，复用现有 Server/Agent/存储执行脚本；双方商业与执行协议后台交换，提交前独立账单/结算政策自动收尾，本地余额与调整保持守恒且所有链待办为空。共享身份夹具也供协调测试读取原链身份，未改变协调许可门槛。范围见[无链验收](../../../deploy/federation/execution-lab.md#无链双边合作验收)；异步存证断链补交和真实页面仍待联合验证。
+直接模式已有独立真实入口 `test:federation:direct`：只生成机构业务身份，复用现有 Server/Agent/存储执行脚本；双方商业与执行协议后台交换，提交前独立账单/结算政策自动收尾，本地余额与调整保持守恒且所有链待办为空。共享身份夹具也供协调测试读取原链身份，未改变协调许可门槛。范围见[无链验收](../../../deploy/federation/execution-lab.md#无链双边合作验收)；异步存证已通过真实 Orderer 中断、完整文件任务/本地账务及恢复补交；全部链组件不可达与真实页面仍待联合验证。
 
 
 ## 11. 存储与运维交付
