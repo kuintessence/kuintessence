@@ -13,7 +13,7 @@ import { FederationAssetService } from "../../packages/server/src/federation/ass
 import { FederationPermissionService } from "../../packages/server/src/federation/permissions";
 import { FederationTrustRegistry } from "../../packages/server/src/federation/trust-registry";
 import { SoftwareAvailabilityService } from "../../packages/server/src/services/software-availability";
-import { approveContract } from "./business";
+import { approveContract } from "./fixture";
 
 const root = z.string().min(1).parse(process.env.LAB_ROOT);
 const url = z.string().min(1).parse(process.env.SOURCE_DATABASE_URL);

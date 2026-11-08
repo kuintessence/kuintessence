@@ -10,11 +10,7 @@ import {
   workflowExecutionDelegations,
   workflowRuns,
 } from "@kuintessence/db";
-import type { FederationAgreement } from "@kuintessence/shared/federation";
-import {
-  CommercialAgreementSchema,
-  CommercialReservationSchema,
-} from "@kuintessence/shared/federation/commercial";
+import { CommercialReservationSchema } from "@kuintessence/shared/federation/commercial";
 import { desc, eq } from "drizzle-orm";
 import { importPKCS8 } from "jose";
 import { z } from "zod";
@@ -29,40 +25,6 @@ import { createFederationSender } from "../../packages/server/src/federation/out
 import { FederationPermissionService } from "../../packages/server/src/federation/permissions";
 import { FederationReservationPolicyService } from "../../packages/server/src/federation/reservation-policy";
 import type { FederationSigningKey } from "../../packages/server/src/federation/signatures";
-
-export async function approveContract(
-  db: ReturnType<typeof createPgDb>,
-  actor: { userId: string; orgId: string },
-  own: FederationSigningKey,
-  terms: FederationAgreement,
-  existing?: unknown,
-) {
-  const network = await Bun.file(`${process.env.LAB_FABRIC_ROOT}/network.json`).json();
-  const contract = CommercialAgreementSchema.parse(
-    existing ?? {
-      protocolVersion: 1,
-      kind: "commercial-agreement",
-      domainId: network.trust.domains[0].domainId,
-      salt: randomBytes(32).toString("hex"),
-      createdAt: new Date().toISOString(),
-      agreement: terms,
-      consideration: "exchange",
-      priceVersionId: randomUUID(),
-      prices: [
-        {
-          metric: "job.elapsed",
-          quantityUnit: "job-millisecond",
-          perQuantity: "1000",
-          amount: "1",
-        },
-      ],
-      termsText: "Private isolated execution acceptance contract",
-    },
-  );
-  const service = new FederationCommercialAgreementService(db, own);
-  await service.approve(actor, contract);
-  return contract;
-}
 
 if (import.meta.main) {
   const root = z.string().min(1).parse(process.env.LAB_ROOT),

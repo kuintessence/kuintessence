@@ -11,7 +11,11 @@ if os.environ.get("KQ_FEDERATION_EXECUTION_LAB") != "1":
 if os.geteuid() != 0:
     raise SystemExit("Run on a disposable local k3s node as root")
 os.umask(0o077)
+mode = os.environ.get("LAB_MODE", "ledger_coordinated")
+assert mode in ("bilateral_direct", "ledger_coordinated")
+coordinated = mode == "ledger_coordinated"
 scenario = os.environ.get("LAB_SCENARIO", "success")
+assert coordinated or scenario == "success"
 assert scenario in ("success", "outage", "stop", "workflow")
 nodeinfo = json.loads(
     subprocess.check_output(["kubectl", "get", "nodes", "-o", "json"], timeout=15)
@@ -50,7 +54,10 @@ env = {
 if os.environ.get("KQ_FEDERATION_PG_LIB"):
     env["LD_LIBRARY_PATH"] = os.environ["KQ_FEDERATION_PG_LIB"]
 env["LAB_SCENARIO"] = scenario
-env["LAB_FABRIC_ROOT"] = os.environ["LAB_FABRIC_ROOT"]
+env["LAB_MODE"] = mode
+env["LAB_FIXTURE_ROOT"] = os.environ["LAB_FIXTURE_ROOT"]
+if coordinated:
+    env["LAB_FABRIC_ROOT"] = os.environ["LAB_FABRIC_ROOT"]
 
 
 def port():
@@ -83,19 +90,18 @@ env.update(
     LAB_ROOT=str(root),
     LAB_AGENT="federation-live-agent",
 )
-networkroot = pathlib.Path(os.environ["LAB_FABRIC_ROOT"])
-network = json.loads((networkroot / "network.json").read_text())
-siteb = next(site for site in network["sites"] if site["name"] == "B")
-env.update(
-    FEDERATION_SITE_ID=siteb["siteId"],
-    FEDERATION_SIGNING_KEY_ID="batch-1",
-    FEDERATION_COMMERCIAL_SOCKET_PATH=str(
-        networkroot / "live-B-commercial/commercial.sock"
-    ),
-    FEDERATION_MARKET_SOCKET_PATH=str(networkroot / "live-B-market/market.sock"),
-)
+networkroot = pathlib.Path(os.environ["LAB_FABRIC_ROOT"]) if coordinated else None
+fixture = json.loads((pathlib.Path(env["LAB_FIXTURE_ROOT"]) / "execution-fixture.json").read_text())
+siteb = next(site for site in fixture["sites"] if site["name"] == "B")
+env.update(FEDERATION_SITE_ID=siteb["siteId"], FEDERATION_SIGNING_KEY_ID="batch-1")
+if coordinated:
+    env.update(
+        FEDERATION_COMMERCIAL_SOCKET_PATH=str(networkroot / "live-B-commercial/commercial.sock"),
+        FEDERATION_MARKET_SOCKET_PATH=str(networkroot / "live-B-market/market.sock"),
+    )
+
 logs = pathlib.Path(
-    tempfile.mkdtemp(prefix="federation-execution-" + scenario + "-", dir=repo / "temp")
+    tempfile.mkdtemp(prefix="federation-execution-" + (scenario if coordinated else "direct") + "-", dir=repo / "temp")
 )
 print("Private execution evidence: " + str(logs), flush=True)
 log = open(logs / "setup.log", "w")
@@ -147,6 +153,7 @@ def api(path, body=None, token=None, headers=None):
 
 
 def orderer(action):
+    assert coordinated and networkroot is not None
     request_id = str(uuid.uuid4())
     acknowledgement = networkroot / ("execution-orderer-" + action + ".ack")
     (networkroot / ("execution-orderer-" + action)).write_text(request_id)
@@ -740,7 +747,10 @@ def verify_terminal():
     )
 
 
-def automatic_closing(path, kind):
+closing_grants = {}
+
+
+def grant_closing(path, kind):
     config = json.loads((root / "source-init.json").read_text())
     amount = config["request"]["maxAmount"]
     grants = {}
@@ -754,6 +764,12 @@ def automatic_closing(path, kind):
             "maxRecords": 1,
             "validUntil": (datetime.now().astimezone() + timedelta(minutes=15)).isoformat(),
         }, token=auth)["data"]
+    closing_grants[kind] = grants
+    return grants
+
+
+def automatic_closing(path, kind):
+    grants = closing_grants.get(kind) or grant_closing(path, kind)
     statuses = {}
     for _ in range(60):
         tasks = api(path + "/closing-tasks", token=token)["data"]["records"]
@@ -789,16 +805,17 @@ def automatic_closing(path, kind):
 
 def verify_billing():
     config = json.loads((root / "source-init.json").read_text())
-    proof = json.loads((root / "ledger-proof.json").read_text())
+    reservation_id = (json.loads((root / "ledger-proof.json").read_text())["reservationId"] if coordinated
+                      else json.loads((root / "source-state.json").read_text())[0]["receipt"]["reservationId"])
     path = "federation/commercial-agreements/" + config["request"]["agreementRevisionId"]
-    usagepath = path + "/usage/" + proof["reservationId"]
+    usagepath = path + "/usage/" + reservation_id
     receivedpath = path + "/received-usage/" + config["request"]["operationId"]
     for _ in range(60):
         usage = api(usagepath, token=token)["data"]
         received = sourceapi(receivedpath, token=sourcetoken)["data"]
         assert usage["task"]["state"] != "needs_review", json.dumps(usage["task"])
         assert not received["sync"] or received["sync"]["state"] != "needs_review", json.dumps(received["sync"])
-        if usage["reports"] and usage["reports"][0]["ledgerState"] == "committed" and received["reports"]:
+        if usage["reports"] and usage["reports"][0]["ledgerState"] == ("committed" if coordinated else None) and received["reports"]:
             break
         time.sleep(3)
     else:
@@ -826,19 +843,26 @@ def verify_billing():
     assert measured[0]["quantityUnit"] == "job-millisecond" and int(measured[0]["quantity"]) == total
     assert total >= 1000, "Positive billing requires actual measured container runtime"
     expected_gross = (total + 999) // 1000
-    orderer("stop")
+    if coordinated:
+        orderer("stop")
     try:
         draft, statuses = automatic_closing(path, "bill")
         bill_id = draft["billId"]
         assert draft["reportId"] == report["id"]
         assert int(draft["calculation"]["grossAmount"]) == expected_gross
         assert int(draft["calculation"]["dueAmount"]) == min(expected_gross, int(config["request"]["maxAmount"]))
-        assert statuses["provider"]["record"]["ledger"]["state"] == "pending"
+        if coordinated:
+            assert statuses["provider"]["record"]["ledger"]["state"] == "pending"
+        else:
+            assert statuses["provider"]["record"]["ledger"] is None
         assert statuses["source"]["record"]["ledger"] is None
         (logs / "billing-offline-evidence.json").write_text(json.dumps({"usage": usage, "received": received, "pods": pods, "draft": draft, "statuses": statuses}, indent=2) + "\n")
-        print("REAL BILL EXCHANGE PASSED: measured Kubernetes runtime -> signed usage over mTLS -> independent institution policies -> automatic draft, approvals and original signatures while Orderer is stopped", flush=True)
+        print("REAL BILL EXCHANGE PASSED: measured Kubernetes runtime -> signed usage over mTLS -> independent institution policies -> automatic draft, approvals and original signatures; " + ("Orderer stopped" if coordinated else "no ledger configured"), flush=True)
     finally:
-        orderer("start")
+        if coordinated:
+            orderer("start")
+    if not coordinated:
+        return None
     submission_id = statuses["provider"]["record"]["ledger"]["id"]
     for _ in range(60):
         rows = api(path + "/bills", token=token)["data"]["data"]
@@ -909,6 +933,76 @@ def verify_settlement():
     (logs / "settlement-committed-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     (networkroot / "live-settlement-proof.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print("REAL SETTLEMENT RECOVERY PASSED: original submissions VALID -> both local slots released; no local chain balance and terminal gate remains closed", flush=True)
+
+
+def verify_bilateral_finance():
+    assert mode == "bilateral_direct"
+    config = json.loads((root / "source-init.json").read_text())
+    path = "federation/commercial-agreements/" + config["request"]["agreementRevisionId"]
+    draft, statuses = automatic_closing(path, "settlement")
+    bill = json.loads((logs / "billing-offline-evidence.json").read_text())["draft"]
+    assert draft["billId"] == bill["billId"] and draft["chargedAmount"] == bill["calculation"]["dueAmount"]
+    assert draft["reservationId"] is None and draft["terminal"] is None
+    assert int(draft["chargedAmount"]) > 0
+    for value in statuses.values():
+        assert value["record"]["ledger"] is None and value["record"]["settlement"]["appliedAt"]
+    parties = (("provider", api, token), ("source", sourceapi, sourcetoken))
+
+    def accounting(label, amount):
+        inspect_ledgers(label)
+        result = {}
+        for name, _, _ in parties:
+            local = json.loads((logs / (name + "-" + label + ".json")).read_text())
+            tasks = local["reservations"] if name == "provider" else local["outbound"]
+            assert len(tasks) == 1 and tasks[0]["amount"] == config["request"]["maxAmount"] and tasks[0]["settledAmount"] == amount
+            if name == "provider":
+                assert len(local["budgets"]) == 1
+                budget = local["budgets"][0]
+                assert budget["spent"] == amount and budget["reserved"] == "0"
+                assert int(budget["available"]) == int(config["terms"]["budgetLimit"]) - int(amount)
+            else:
+                assert not local["budgets"] and tasks[0]["adjustmentHeldAmount"] == "0"
+            result[name] = local
+        return result
+
+    original = accounting("bilateral-settled", draft["chargedAmount"])
+    for name, read, auth in parties:
+        replay = read(path + "/settlements/approve", draft, auth)["data"]
+        assert replay == statuses[name]["record"]["settlement"]
+    previous = None
+    for number, amount in enumerate(("0", draft["chargedAmount"]), 1):
+        adjustment = api(path + "/adjustments/draft", {"settlementId": draft["settlementId"], "adjustmentId": str(uuid.uuid4()), "chargedAmount": amount, "reason": "Isolated bilateral accounting " + str(number), "supportingEvidenceDigest": None}, token)["data"]
+        assert adjustment["previous"] == previous
+        delta = int(amount) - int(adjustment["previousChargedAmount"])
+        source_approval = sourceapi(path + "/adjustments/approve", adjustment, sourcetoken)["data"]
+        assert int(source_approval["heldAmount"]) == max(delta, 0) and source_approval["appliedAt"] is None
+        api(path + "/adjustments/approve", adjustment, token)
+        records = {}
+        for _ in range(90):
+            for name, read, auth in parties:
+                rows = read(path + "/adjustments?recordId=" + adjustment["adjustmentId"] + "&settlementId=" + draft["settlementId"], token=auth)["data"]
+                assert len(rows["data"]) == 1
+                records[name] = rows["data"][0]
+                assert records[name]["ledger"] is None and records[name]["adjustment"]["payload"] == adjustment
+            if all(v["adjustment"]["appliedAt"] for v in records.values()):
+                break
+            time.sleep(2)
+        else:
+            raise AssertionError("Bilateral adjustment did not apply automatically")
+        for name, read, auth in parties:
+            replay = read(path + "/adjustments/approve", adjustment, auth)["data"]
+            assert replay == records[name]["adjustment"]
+            other = records["source" if name == "provider" else "provider"]["adjustment"]
+            assert replay["counterpartyJws"] == other["approvalJws"]
+        after = accounting("bilateral-adjustment-" + str(number), amount)
+        for name, local in after.items():
+            for key in ("bills", "settlements", "execution"):
+                assert local[key] == original[name][key], "Bilateral adjustment rewrote original " + key
+            assert len(local["adjustments"]) == number
+        previous = {"adjustmentId": adjustment["adjustmentId"], "digest": records["provider"]["adjustment"]["digest"]}
+        (logs / ("bilateral-adjustment-" + str(number) + ".json")).write_text(json.dumps({"draft": adjustment, "records": records}, indent=2) + "\n")
+    (logs / "bilateral-settlement.json").write_text(json.dumps({"draft": draft, "statuses": statuses}, indent=2) + "\n")
+    print("REAL DIRECT ACCOUNTING PASSED: task-preauthorized bill and settlement; exact local budget; debit hold; original settlement and two adjustments replay safely; no ledger configuration, attempts or outbox", flush=True)
 
 
 def restart_commercial_servers():
@@ -1955,12 +2049,11 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     sourcehttp, sourcegrpc = port(), port()
     env["LAB_SOURCE_HTTP"] = f"http://127.0.0.1:{sourcehttp}"
     sourceenv = env.copy()
-    sourceenv.update(
-        FEDERATION_COMMERCIAL_SOCKET_PATH=str(
-            networkroot / "live-A-commercial/commercial.sock"
-        ),
-        FEDERATION_MARKET_SOCKET_PATH=str(networkroot / "live-A-market/market.sock"),
-    )
+    if coordinated:
+        sourceenv.update(
+            FEDERATION_COMMERCIAL_SOCKET_PATH=str(networkroot / "live-A-commercial/commercial.sock"),
+            FEDERATION_MARKET_SOCKET_PATH=str(networkroot / "live-A-market/market.sock"),
+        )
     configuration = json.loads((root / "source-init.json").read_text())
     env["SOURCE_DATABASE_URL"] = (
         f"postgres://kq@127.0.0.1:{pgport}/kuintessence_unit_federation_source"
@@ -2075,16 +2168,20 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         time.sleep(2)
     else:
         raise RuntimeError("Lab node is busy; retry without concurrent builds")
-    run(["bun", "--no-env-file", "run", "scripts/federation-live/business.ts"], timeout=1200)
+    run(["bun", "--no-env-file", "run", "scripts/federation-live/" + ("business.ts" if coordinated else "bilateral.ts")], timeout=1200)
     configuration = json.loads((root / "source-init.json").read_text())
     if scenario == "workflow":
         (logs / "source-workflow.json").write_text((root / "source-workflow.json").read_text())
-    (logs / "ledger-proof.json").write_text((root / "ledger-proof.json").read_text())
+    if coordinated:
+        (logs / "ledger-proof.json").write_text((root / "ledger-proof.json").read_text())
     (logs / "agreement-exchange.json").write_text((root / "agreement-exchange.json").read_text())
     (logs / "approval-exchange.json").write_text((root / "approval-exchange.json").read_text())
-    (logs / "market-requests.json").write_text((root / "market-requests.json").read_text())
-    (logs / "reservation-proposals.json").write_text((root / "reservation-proposals.json").read_text())
-    (logs / "execution-automation.json").write_text((root / "execution-automation.json").read_text())
+    if coordinated:
+        (logs / "market-requests.json").write_text((root / "market-requests.json").read_text())
+    if coordinated:
+        (logs / "reservation-proposals.json").write_text((root / "reservation-proposals.json").read_text())
+    if coordinated:
+        (logs / "execution-automation.json").write_text((root / "execution-automation.json").read_text())
     def inspect_ledgers(suffix):
         for name, setting in [("source", sourceenv), ("provider", env)]:
             subprocess.run(
@@ -2104,12 +2201,17 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     inspect_ledgers("before")
 
     terminal_policies = {}
-    if scenario in ("success", "workflow"):
+    if coordinated and scenario in ("success", "workflow"):
         policy_path = "federation/commercial-agreements/" + configuration["request"]["agreementRevisionId"] + "/terminal-policies"
         policy_input = {"outcomes": ["completed"], "validUntil": configuration["request"].get("executionExpiresAt", configuration["request"]["expiresAt"])}
         terminal_policies["provider"] = api(policy_path, policy_input, token=token)["data"]
         terminal_policies["source"] = sourceapi(policy_path, policy_input, sourcetoken)["data"]
         (logs / "terminal-policies.json").write_text(json.dumps(terminal_policies, indent=2) + "\n")
+    if not coordinated:
+        path = "federation/commercial-agreements/" + configuration["request"]["agreementRevisionId"]
+        grant_closing(path, "bill")
+        grant_closing(path, "settlement")
+        (logs / "preauthorized-closing.json").write_text(json.dumps(closing_grants, indent=2) + "\n")
     if scenario == "workflow":
         print("Ordinary Workflow owns delegation; no manual outbound submission", flush=True)
     else:
@@ -2217,12 +2319,16 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         verify_interruption()
     else:
         verify_success()
-        verify_terminal()
+        if coordinated:
+            verify_terminal()
         bill_record = verify_billing()
-        verify_settlement()
-        verify_adjustments()
+        if coordinated:
+            verify_settlement()
+            verify_adjustments()
+        else:
+            verify_bilateral_finance()
     inspect_ledgers("after")
-    if scenario in ("success", "workflow"):
+    if coordinated and scenario in ("success", "workflow"):
         state = json.loads((logs / "provider-after.json").read_text())
         transactions = [r for r in state["commercialTransactions"] if r["submissionId"] == bill_record["id"]]
         valid = [r for r in transactions if r["stage"] == "committed" and r["validationCode"] == 0 and r["blockNumber"] is not None]

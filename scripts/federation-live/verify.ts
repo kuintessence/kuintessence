@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { startAdapters } from "./adapters";
+import { ExecutionFixtureSchema } from "./fixture";
 
 export async function verifyLiveExecution(
   root: string,
@@ -15,13 +16,29 @@ export async function verifyLiveExecution(
     "1",
     "Explicit disposable local k3s opt-in required",
   );
+  const network = await Bun.file(join(root, "network.json")).json();
+  await Bun.write(
+    join(root, "execution-fixture.json"),
+    JSON.stringify(
+      ExecutionFixtureSchema.parse({
+        domainId: network.trust.domains[0].domainId,
+        sites: network.sites.filter((site: { name: string }) => ["A", "B"].includes(site.name)),
+      }),
+    ),
+  );
   const adapters = await startAdapters(root);
   controls.onCleanup(adapters.cleanup);
   const selection = process.env.KQ_FEDERATION_LAB_SCENARIO ?? "both";
   assert(["success", "outage", "stop", "workflow", "both"].includes(selection));
   for (const scenario of selection === "both" ? ["success", "outage"] : [selection]) {
     const child = Bun.spawn(["python3", join(import.meta.dir, "run.py")], {
-      env: { ...process.env, LAB_FABRIC_ROOT: root, LAB_SCENARIO: scenario },
+      env: {
+        ...process.env,
+        LAB_FABRIC_ROOT: root,
+        LAB_FIXTURE_ROOT: root,
+        LAB_MODE: "ledger_coordinated",
+        LAB_SCENARIO: scenario,
+      },
       stdout: "inherit",
       stderr: "inherit",
     });

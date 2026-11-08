@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   createPgDb,
+  federationAttestationAttempts,
+  federationAttestationOutbox,
   federationBudgets,
   federationCommercialAdjustments,
   federationCommercialAttempts,
   federationCommercialBills,
   federationCommercialSettlements,
   federationCommercialSubmissions,
+  federationEvidenceBatches,
   federationMarketAttempts,
   federationMarketSubmissions,
   federationOutbound,
@@ -59,7 +62,10 @@ try {
       recoveryDigest: sql<string>`md5(${federationCommercialAttempts.recovery})`,
     })
     .from(federationCommercialAttempts);
-  const budgets = await db.select({ domainId: federationBudgets.domainId }).from(federationBudgets);
+  const budgets = await db.select().from(federationBudgets);
+  const attestationOutbox = await db.select().from(federationAttestationOutbox);
+  const attestationAttempts = await db.select().from(federationAttestationAttempts);
+  const evidenceBatches = await db.select().from(federationEvidenceBatches);
   const reservations = await db
     .select({
       id: federationReservations.id,
@@ -72,6 +78,7 @@ try {
     .select({
       operationId: federationOutbound.operationId,
       amount: federationOutbound.amount,
+      adjustmentHeldAmount: federationOutbound.adjustmentHeldAmount,
       settledAmount: federationOutbound.settledAmount,
     })
     .from(federationOutbound);
@@ -87,7 +94,35 @@ try {
   const execution = await db
     .select({ id: jobs.id, status: jobs.status, schedulerJobId: jobs.schedulerJobId })
     .from(jobs);
-  assert.equal(budgets.length, 0);
+  const coordinated = process.env.LAB_MODE === "ledger_coordinated";
+  if (coordinated) assert.equal(budgets.length, 0);
+  else {
+    assert.equal(process.env.LAB_MODE, "bilateral_direct");
+    for (const name of [
+      "FEDERATION_COMMERCIAL_SOCKET_PATH",
+      "FEDERATION_MARKET_SOCKET_PATH",
+      "FEDERATION_ATTESTATION_SOCKET_PATH",
+    ])
+      assert.equal(process.env[name], undefined);
+    for (const rows of [
+      market,
+      marketTransactions,
+      commercial,
+      commercialTransactions,
+      attestationOutbox,
+      attestationAttempts,
+      evidenceBatches,
+    ])
+      assert.equal(rows.length, 0, "Direct cooperation created ledger work");
+    for (const budget of budgets) {
+      assert.equal(BigInt(budget.available) + BigInt(budget.reserved) + BigInt(budget.spent), 100n);
+      assert(
+        BigInt(budget.available) >= 0n &&
+          BigInt(budget.reserved) >= 0n &&
+          BigInt(budget.spent) >= 0n,
+      );
+    }
+  }
   for (const record of [...market, ...commercial].filter((r) => r.state === "committed")) {
     const attempts = [...marketTransactions, ...commercialTransactions].filter(
       (a) => a.submissionId === record.id,
@@ -103,81 +138,85 @@ try {
     );
   }
   const root = z.string().min(1).parse(process.env.LAB_ROOT);
-  const proof = await Bun.file(`${root}/ledger-proof.json`).json();
-  const config = await Bun.file(`${root}/source-init.json`).json();
-  const demand = await new UnixMarketClient(
-    z.string().min(1).parse(process.env.FEDERATION_MARKET_SOCKET_PATH),
-  ).query({
-    operation: "get-demand",
-    demandId: proof.demandId,
-  });
-  const closed = process.argv.includes("--closed");
-  assert(demand.operation === "get-demand" && demand.demand);
-  assert(
-    closed
-      ? demand.demand.status === "CLOSED"
-      : demand.demand.status === "ACTIVE" ||
-          (process.env.LAB_SCENARIO === "stop" && demand.demand.status === "STOPPING"),
-  );
-  assert.equal(demand.demand.activation?.activationId, proof.activationId);
-  const gate = await new UnixCommercialClient(
-    z.string().min(1).parse(process.env.FEDERATION_COMMERCIAL_SOCKET_PATH),
-  ).query({
-    operation: "get-execution-gate-hash",
-    domainId: config.commercial.domainId,
-    reservationId: proof.reservationId,
-  });
-  assert(gate.hash, "Original reservation gate remains available");
-  if (closed) {
-    const closure = demand.demand.closure;
-    assert(closure);
-    assert.equal(closure.gate.terminal?.activationId, proof.activationId);
-    assert.equal(closure.gate.state, "TERMINAL");
-    assert.equal(closure.gate.version, 2);
-    assert.equal(closure.gate.reservationId, proof.reservationId);
-    assert.equal(
-      gate.hash,
-      createHash("sha256").update(JSON.stringify(closure.gate)).digest("hex"),
+  let demand: Awaited<ReturnType<UnixMarketClient["query"]>> | null = null;
+  let gate: Awaited<ReturnType<UnixCommercialClient["query"]>> | null = null;
+  if (coordinated) {
+    const proof = await Bun.file(`${root}/ledger-proof.json`).json();
+    const config = await Bun.file(`${root}/source-init.json`).json();
+    demand = await new UnixMarketClient(
+      z.string().min(1).parse(process.env.FEDERATION_MARKET_SOCKET_PATH),
+    ).query({
+      operation: "get-demand",
+      demandId: proof.demandId,
+    });
+    const closed = process.argv.includes("--closed");
+    assert(demand.operation === "get-demand" && demand.demand);
+    assert(
+      closed
+        ? demand.demand.status === "CLOSED"
+        : demand.demand.status === "ACTIVE" ||
+            (process.env.LAB_SCENARIO === "stop" && demand.demand.status === "STOPPING"),
     );
-    const actor = await Bun.file(
-      `${root}/${process.env.FEDERATION_SITE_ID === config.source.siteId ? "source-actor" : "registration"}.json`,
-    ).json();
-    const service = new FederationExecutionConfirmationService(
-      db,
-      z.string().min(1).parse(process.env.FEDERATION_SITE_ID),
-    );
-    await assert.rejects(
-      db.transaction((tx) =>
-        service.authorize(
-          tx,
-          actor.orgId,
-          FederationDelegationSchema.parse(config.request),
-          "execution",
+    assert.equal(demand.demand.activation?.activationId, proof.activationId);
+    gate = await new UnixCommercialClient(
+      z.string().min(1).parse(process.env.FEDERATION_COMMERCIAL_SOCKET_PATH),
+    ).query({
+      operation: "get-execution-gate-hash",
+      domainId: config.commercial.domainId,
+      reservationId: proof.reservationId,
+    });
+    assert(gate.hash, "Original reservation gate remains available");
+    if (closed) {
+      const closure = demand.demand.closure;
+      assert(closure);
+      assert.equal(closure.gate.terminal?.activationId, proof.activationId);
+      assert.equal(closure.gate.state, "TERMINAL");
+      assert.equal(closure.gate.version, 2);
+      assert.equal(closure.gate.reservationId, proof.reservationId);
+      assert.equal(
+        gate.hash,
+        createHash("sha256").update(JSON.stringify(closure.gate)).digest("hex"),
+      );
+      const actor = await Bun.file(
+        `${root}/${process.env.FEDERATION_SITE_ID === config.source.siteId ? "source-actor" : "registration"}.json`,
+      ).json();
+      const service = new FederationExecutionConfirmationService(
+        db,
+        z.string().min(1).parse(process.env.FEDERATION_SITE_ID),
+      );
+      await assert.rejects(
+        db.transaction((tx) =>
+          service.authorize(
+            tx,
+            actor.orgId,
+            FederationDelegationSchema.parse(config.request),
+            "execution",
+          ),
         ),
-      ),
-      (error: unknown) => error instanceof FederationError && error.code === "POLICY_DENIED",
-    );
-  }
-  if (process.argv.includes("--expired") || process.argv.includes("--stopped")) {
-    const actor = await Bun.file(`${root}/registration.json`).json();
-    const service = new FederationExecutionConfirmationService(
-      db,
-      z.string().min(1).parse(process.env.FEDERATION_SITE_ID),
-    );
-    await assert.rejects(
-      db.transaction((tx) =>
-        service.authorize(
-          tx,
-          actor.orgId,
-          FederationDelegationSchema.parse(config.request),
-          "execution",
+        (error: unknown) => error instanceof FederationError && error.code === "POLICY_DENIED",
+      );
+    }
+    if (process.argv.includes("--expired") || process.argv.includes("--stopped")) {
+      const actor = await Bun.file(`${root}/registration.json`).json();
+      const service = new FederationExecutionConfirmationService(
+        db,
+        z.string().min(1).parse(process.env.FEDERATION_SITE_ID),
+      );
+      await assert.rejects(
+        db.transaction((tx) =>
+          service.authorize(
+            tx,
+            actor.orgId,
+            FederationDelegationSchema.parse(config.request),
+            "execution",
+          ),
         ),
-      ),
-      (error: unknown) =>
-        process.argv.includes("--stopped")
-          ? error instanceof FederationError && error.code === "CANCELLATION_REQUESTED"
-          : error instanceof FabricClientFailure && error.code === "LEDGER_PENDING",
-    );
+        (error: unknown) =>
+          process.argv.includes("--stopped")
+            ? error instanceof FederationError && error.code === "CANCELLATION_REQUESTED"
+            : error instanceof FabricClientFailure && error.code === "LEDGER_PENDING",
+      );
+    }
   }
   await Bun.write(
     z.string().min(1).parse(process.env.LAB_EVIDENCE),
@@ -189,6 +228,9 @@ try {
         commercial,
         commercialTransactions,
         budgets,
+        attestationOutbox,
+        attestationAttempts,
+        evidenceBatches,
         reservations,
         outbound,
         bills,

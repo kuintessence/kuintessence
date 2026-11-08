@@ -54,3 +54,19 @@ bun run test:fabric:execution
 `adjustment-1/2-private-ledger.json` 与原结算的证明一样，直接读取 A/B/C 实际区块及私有写集，核验 Server 持久化的交易 ID、VALID 验证码和区块号。两站同时提交同文记录可能先出现 MVCC 冲突；生产 worker 只有核对原不可变回执后才继续，不由测试清租约、改时间或新建提交绕过。进程恢复使用原 `live-recovery.key`；密钥丢失不是本用例所覆盖的可恢复条件。
 
 此处的费用调整是账面净额变更，不是银行付款或退款。调整须经双方独立人员批准；本用例不将原签名自动交换称为自动商务批准。只有整条命令成功、上述证据均存在且断言通过，才能记为该场景通过；仍不代表长期无人值守、Slurm/PBS、旧链升级或完整 PR 预览已验收。
+
+## 无链双边合作验收
+
+设置本页的 `KQ_FEDERATION_EXECUTION_LAB` 与 PostgreSQL 工具路径后，运行：
+
+```bash
+bun run test:federation:direct
+```
+
+此入口生成两家机构的临时业务身份，启动独立 Server/数据库、真实 Kubernetes Agent 和对象存储，复用轻量文件工作流；不需要 Fabric 工具目录，不启动 Peer、Orderer 或 Adapter。启动子进程前移除继承的链配置，Server 仅获得普通联邦 mTLS 配置，没有商业、市场或存证 Adapter socket。运行前仍需确认本机 k3s 可用于隔离实验，且没有并行全仓编译。
+
+双方独立批准执行协议与商业合同，原签名由生产后台自动交换；账单和结算政策通过 HTTP 在提交任务前分别授予，固定合同、结果、单笔/累计上限和次数。重复委派仍只执行一份工作流，真实材料与结果传输沿用成功场景的 SHA-256/版本/回执检查。后台签署用量并自动生成、双签账单及结算，核对 Pod 实测时长、政策批准次数和本地额度守恒。随后两次独立人工调整验证减额、增额占额、同文交换和历史重放，不把调整称为自动商务批准。
+
+所有检查点要求市场/商业提交、链交易尝试、存证 outbox 和证据批次为空；提供方本地预算 `available + reserved + spent` 恒等于原限额，需求方不复制提供方可花费余额。结算后重复批准不再次改账；调减和调增不改写原账单/结算或重复执行作业。
+
+私有目录为 `temp/federation-execution-direct-*`，新增 `preauthorized-closing.json` 保存提交前政策，`bilateral-settlement.json`、`bilateral-adjustment-1/2.json` 保存同文账务记录，双方对应快照保存实际额度和空链待办。仍保留原文件工作流证据，脚本退出时清理自建服务、namespace、数据库和临时身份。只有命令退出 0 且完整断言通过才算本场景验收成功；它不证明异步存证恢复、跨 Slurm/PBS 全矩阵、真实软件离线安装或 PR 预览已完成。

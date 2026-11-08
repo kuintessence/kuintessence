@@ -38,7 +38,7 @@ import { FederationPermissionService } from "../../packages/server/src/federatio
 import { signFederationMessage } from "../../packages/server/src/federation/signatures";
 import { FederationTrustRegistry } from "../../packages/server/src/federation/trust-registry";
 import { SoftwareAvailabilityService } from "../../packages/server/src/services/software-availability";
-import { approveContract } from "./business";
+import { approveContract, executionFixture } from "./fixture";
 
 const root = z.string().min(1).parse(process.env.LAB_ROOT);
 if (
@@ -117,8 +117,9 @@ if (process.argv[2] === "inspect") {
       { ...actor, capability, enabled: true },
       actor.userId,
     );
-  const network = await Bun.file(`${process.env.LAB_FABRIC_ROOT}/network.json`).json();
-  const site = network.sites.find((s: { name: string }) => s.name === "A");
+  const fixture = await executionFixture();
+  const site = fixture.sites.find((s) => s.name === "A");
+  assert(site);
   const pem = await Bun.file(site.businessKeyFile).text();
   const sourcePair = {
     privateKey: await importPKCS8(pem, "RS256", { extractable: true }),
@@ -374,7 +375,7 @@ printf 'federation-file-consumed:42\\n'
     agreementRevisionId: crypto.randomUUID(),
     sourceSiteId: source.siteId,
     targetSiteId: target.siteId,
-    mode: "ledger_coordinated",
+    mode: process.env.LAB_MODE ?? "ledger_coordinated",
     budgetDomainId: crypto.randomUUID(),
     epoch: crypto.randomUUID(),
     unit: "credit.micro",

@@ -468,6 +468,9 @@ raw transaction args、chaincode response、events、trace 均不能携带私有
 
 direct 模式不要求 Fabric URL、镜像或证书；attested 模式任务 readiness 不绑定链连接，但单独展示存证 readiness；coordinated 的新增激活受链确认约束。服务的存活、业务可用性与链可用性分别检查。
 
+直接模式已有独立真实入口 `test:federation:direct`：只生成机构业务身份，复用现有 Server/Agent/存储执行脚本；双方商业与执行协议后台交换，提交前独立账单/结算政策自动收尾，本地余额与调整保持守恒且所有链待办为空。共享身份夹具也供协调测试读取原链身份，未改变协调许可门槛。范围见[无链验收](../../../deploy/federation/execution-lab.md#无链双边合作验收)；异步存证断链补交和真实页面仍待联合验证。
+
+
 ## 11. 存储与运维交付
 
 实现证据保留、归档 manifest、容量预测、存证积压和错误状态；提供经人工审查的 Peer 快照/替换操作契约及回执。不能编写定时脚本直接删除运行中的 blockfile，也不能把快照当作完整备份。
