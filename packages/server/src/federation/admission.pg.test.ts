@@ -642,3 +642,50 @@ test("storage observation I/O cannot extend a new task's signed admission lifeti
   expect(state.reservations).toHaveLength(0);
   expect(state.budget).toMatchObject({ available: "100", reserved: "0" });
 });
+
+test("completion pool backfills signed provider inboxes and rejects new revisions without blocking receipt recovery", async () => {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const { federationCompletionClaims: claims, federationCompletionPools: pools } = await import(
+    "@kuintessence/db"
+  );
+  const storage = testCompletionStorage(),
+    siteId = b.signing.siteId;
+  const request = testDelegation(await install());
+  const accepted = await service.receive(await requestInput(request));
+  const capacity = new FederationCompletionCapacity(db, siteId, storage.guard);
+  const config = {
+    reserveId: storage.reserveId,
+    capacityBytes: "10000",
+    taskBytes: "60",
+    marketBytes: "20",
+  };
+  try {
+    await capacity.configure(config, identity.userId);
+    const initial = await capacity.inspect();
+    expect(initial.obligations).toBeGreaterThan(0);
+    const [backfilled] = await db
+      .select()
+      .from(claims)
+      .where(eq(claims.intentId, `${request.agreementRevisionId}:${request.taskId}:1`));
+    expect(backfilled?.allocatedBytes).toBe("60");
+    await capacity.configure({ ...config, capacityBytes: initial.allocatedBytes }, identity.userId);
+    const replica = new FederationAdmission(
+      db,
+      b.signing,
+      b.verification,
+      () => testNow,
+      undefined,
+      storage.guard,
+    );
+    const secondTerms = await install();
+    const second = testDelegation(secondTerms);
+    await expect(replica.receive(await requestInput(second))).rejects.toThrow("STORAGE_PRESSURE");
+    expect((await rows(secondTerms)).reservations).toHaveLength(0);
+    expect(await replica.receive(await requestInput(request))).toEqual(accepted);
+    expect((await capacity.inspect()).obligations).toBe(initial.obligations);
+  } finally {
+    await db.delete(claims).where(eq(claims.localSiteId, siteId));
+    await db.delete(pools).where(eq(pools.localSiteId, siteId));
+  }
+});

@@ -5,6 +5,10 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import { requirePlatformPermission } from "../authz/platform-guard";
 import type { AuthzService } from "../authz/service";
+import {
+  CompletionPoolInput,
+  type FederationCompletionCapacity,
+} from "../federation/completion-capacity";
 import type { FederationStorageGuard } from "../federation/storage-capacity";
 import {
   FederationCertificateInput,
@@ -26,6 +30,7 @@ export function createAdminFederationRoutes(
   registry: FederationTrustRegistry,
   authz?: AuthzService,
   storageGuard?: FederationStorageGuard,
+  completionCapacity?: FederationCompletionCapacity,
 ) {
   const r = new Hono<{ Variables: { federationActor: string } }>();
   r.use("/admin/federation/*", async (c, next) => {
@@ -38,11 +43,13 @@ export function createAdminFederationRoutes(
   });
   r.use("/admin/federation/*", bodyLimit({ maxSize: 32768 }));
   r.onError((error, c) => {
-    if (error instanceof FederationError)
+    if (error instanceof FederationError) {
+      c.header("cache-control", "no-store");
       return c.json(
         { error: { code: error.code } },
-        error.code === "OPERATION_CONFLICT" ? 409 : 400,
+        error.code === "STORAGE_PRESSURE" ? 503 : error.code === "OPERATION_CONFLICT" ? 409 : 400,
       );
+    }
     throw error;
   });
   r.get("/admin/federation/storage", async (c) => {
@@ -51,10 +58,23 @@ export function createAdminFederationRoutes(
       success: true,
       data: {
         enabled: !!storageGuard,
+        completion: completionCapacity ? await completionCapacity.inspect() : null,
         volumes: storageGuard ? await storageGuard.inspect() : [],
       },
     });
   });
+  r.put(
+    "/admin/federation/storage/completion",
+    kqValidator("json", CompletionPoolInput),
+    async (c) => {
+      c.header("cache-control", "no-store");
+      if (!completionCapacity) throw new FederationError("POLICY_DENIED");
+      return c.json({
+        success: true,
+        data: await completionCapacity.configure(c.req.valid("json"), c.get("federationActor")),
+      });
+    },
+  );
   r.get("/admin/federation/sites", kqValidator("query", Paging), async (c) => {
     const { limit, offset } = c.req.valid("query");
     return c.json({ success: true, data: await registry.list(limit, offset) });

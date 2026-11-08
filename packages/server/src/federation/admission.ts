@@ -18,6 +18,7 @@ import { and, count, eq, sql } from "drizzle-orm";
 import { assertAttestationCapacity } from "./attestation-backlog";
 import { assertFederationNotCancelled } from "./cancellation-fence";
 import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
+import { allocateTaskCompletion } from "./completion-capacity";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { type ExecutionIdentity, requireExecutionIdentity } from "./execution-identity";
 import {
@@ -278,6 +279,7 @@ export class FederationAdmission {
       await assertAttestationCapacity(tx, terms, request.maxAmount, this.clock());
       // Coordinated work was already admitted by the local commercial approval boundary.
       if (terms.mode !== "ledger_coordinated") await this.storageGuard?.assertAdmission(terms.mode);
+      await allocateTaskCompletion(tx, request.recipientSiteId, request, this.storageGuard);
       // Recheck after blocking locks and storage observation I/O.
       await input.authorize?.(tx, this.clock());
       const confirmation = coordinatedOrgId

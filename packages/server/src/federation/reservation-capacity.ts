@@ -12,6 +12,7 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import { MarketRequestSchema } from "@kuintessence/shared/federation/market-request";
 import { and, eq } from "drizzle-orm";
+import { assertTaskCompletionRoom } from "./completion-capacity";
 import type { FederationStorageGuard } from "./storage-capacity";
 
 /** Accepted institutional intents keep their completion path even before an execution row exists. */
@@ -22,7 +23,6 @@ export async function assertReservationCapacity(
   payload: CommercialReservation,
   guard?: Pick<FederationStorageGuard, "assertAdmission">,
 ) {
-  if (!guard) return;
   const digest = (value: unknown) =>
     `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
   const expected = digest(payload);
@@ -73,5 +73,6 @@ export async function assertReservationCapacity(
       throw new FederationError("OPERATION_CONFLICT");
     return;
   }
-  await guard.assertAdmission(payload.request.mode);
+  await guard?.assertAdmission(payload.request.mode);
+  await assertTaskCompletionRoom(tx, siteId, guard);
 }

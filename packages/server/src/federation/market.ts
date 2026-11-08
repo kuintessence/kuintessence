@@ -22,6 +22,7 @@ import {
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import { allocateMarketCompletion } from "./completion-capacity";
 import { executionClosure } from "./execution-closure";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
@@ -299,6 +300,7 @@ export class FederationMarketService {
         if (published?.input.operation !== "publish-demand")
           throw new FederationError("ASSET_UNAVAILABLE");
       } else {
+        await allocateMarketCompletion(tx, this.siteId, input, this.storageGuard);
         await this.storageGuard?.assertAdmission("ledger_coordinated");
         const [clock] = await tx
           .select({ now: sql<Date>`clock_timestamp()` })

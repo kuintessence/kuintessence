@@ -8547,3 +8547,85 @@ test("commercial storage pressure is rechecked after the market query before sig
       .where(eq(executionApprovals.recordId, f.reservation.reservationId)),
   ).toHaveLength(0);
 });
+
+test("completion pool charges automatic market and reservation handoffs once per site through approval", async () => {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const sourceStorage = testCompletionStorage(),
+    targetStorage = testCompletionStorage();
+  const f = await marketRequestFixture(true, 2, false, {
+    source: sourceStorage.guard,
+    target: targetStorage.guard,
+  });
+  const sourcePool = new FederationCompletionCapacity(db, f.a.signing.siteId, sourceStorage.guard);
+  const targetPool = new FederationCompletionCapacity(db, f.b.signing.siteId, targetStorage.guard);
+  for (const [pool, storage] of [
+    [sourcePool, sourceStorage],
+    [targetPool, targetStorage],
+  ] as const)
+    await pool.configure(
+      { reserveId: storage.reserveId, capacityBytes: "60", taskBytes: "60", marketBytes: "20" },
+      f.actor.userId,
+    );
+  await f.submit();
+  expect(await sourcePool.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
+  await f.source.advanceNext();
+  await f.commit();
+  await f.source.advanceNext();
+  expect(await targetPool.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
+  sourceStorage.pressure();
+  targetStorage.pressure();
+  await f.target.advanceNext();
+  await f.commit(true);
+  await f.target.advanceNext();
+  await f.due();
+  await f.source.advanceNext();
+  expect((await f.view())?.state).toBe("complete");
+  await f.sourceProposals.advanceNext();
+  await f.sourceProposals.advanceNext();
+  await f.receiverProposals.advanceNext();
+  expect(
+    await db
+      .select()
+      .from(executionApprovals)
+      .where(eq(executionApprovals.recordId, f.request.proposal.reservationId)),
+  ).toHaveLength(2);
+  expect(await sourcePool.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
+  expect(await targetPool.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
+});
+
+test("completion pool manual approval preflight cannot leave a claim when remote validation fails", async () => {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const f = await executionFixture(),
+    storage = testCompletionStorage();
+  const capacity = new FederationCompletionCapacity(db, f.a.signing.siteId, storage.guard);
+  await capacity.configure(
+    { reserveId: storage.reserveId, capacityBytes: "80", taskBytes: "60", marketBytes: "20" },
+    f.actor.userId,
+  );
+  const service = new FederationCommercialExecutionService(
+    db,
+    f.a.signing,
+    {
+      query: async () => {
+        throw new Error("Remote market unavailable");
+      },
+    },
+    undefined,
+    storage.guard,
+  );
+  await expect(service.approve(f.actor, f.revisionId, f.reservation)).rejects.toThrow(
+    "Remote market unavailable",
+  );
+  expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "20", obligations: 1 });
+  const recovery = new FederationCommercialExecutionService(
+    db,
+    f.a.signing,
+    { query: async () => ({ operation: "get-demand", demand: f.state }) },
+    undefined,
+    storage.guard,
+  );
+  await recovery.approve(f.actor, f.revisionId, f.reservation);
+  expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "80", obligations: 2 });
+});

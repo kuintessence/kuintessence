@@ -20,6 +20,7 @@ import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { FederationCommercialExecutionService } from "./commercial-execution";
 import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
+import { allocateTaskCompletion } from "./completion-capacity";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -170,6 +171,7 @@ export class FederationReservationProposalService {
         payload,
         this.storageGuard,
       );
+      await allocateTaskCompletion(tx, this.signing.siteId, payload.request, this.storageGuard);
       await this.policies.authorize(tx, policyId, actor.orgId, payload);
       await this.execution.validatePreauthorizedIntent(tx, actor.orgId, payload);
       await this.room(tx, policyId);
@@ -259,6 +261,7 @@ export class FederationReservationProposalService {
           payload,
           this.storageGuard,
         );
+        await allocateTaskCompletion(tx, this.signing.siteId, payload.request, this.storageGuard);
         await this.trust.assertPeer(tx, fingerprint, sender.siteId, sender.keyId, new Date());
         await verifyFederationMessage(CommercialReservationSchema, jws, peer, new Date());
         await this.policies.authorize(tx, policy.id, contract.localOrgId, payload);

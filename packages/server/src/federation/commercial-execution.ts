@@ -27,6 +27,7 @@ import {
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import { allocateTaskCompletion } from "./completion-capacity";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -404,6 +405,13 @@ export class FederationCommercialExecutionService {
           this.signingKey.siteId,
           actor.orgId,
           payload,
+          this.storageGuard,
+        );
+      if (payload.kind === "commercial-reservation")
+        await allocateTaskCompletion(
+          tx,
+          this.signingKey.siteId,
+          payload.request,
           this.storageGuard,
         );
       const policy = await authorize(tx);

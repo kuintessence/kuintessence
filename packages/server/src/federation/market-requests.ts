@@ -32,6 +32,7 @@ import {
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import { allocateTaskCompletion } from "./completion-capacity";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -200,8 +201,14 @@ export class FederationMarketRequestService {
         payload.proposal,
         this.storageGuard,
       );
-      await this.policies.authorizeMarket(tx, policyId, actor.orgId, payload.proposal);
     }
+    await allocateTaskCompletion(
+      tx,
+      this.signing.siteId,
+      payload.proposal.request,
+      this.storageGuard,
+    );
+    await this.policies.authorizeMarket(tx, policyId, actor.orgId, payload.proposal);
     if (Date.parse(payload.demand.createdAt) > Date.now() + 60000)
       throw new FederationError("INVALID_MESSAGE");
     await this.room(tx, policy, payload);
@@ -390,6 +397,18 @@ export class FederationMarketRequestService {
             this.signing.siteId,
             contract.localOrgId,
             payload.proposal,
+            this.storageGuard,
+          );
+          await this.policies.authorizeMarket(
+            tx,
+            selected.id,
+            contract.localOrgId,
+            payload.proposal,
+          );
+          await allocateTaskCompletion(
+            tx,
+            this.signing.siteId,
+            payload.proposal.request,
             this.storageGuard,
           );
           await this.policies.authorizeMarket(

@@ -47,6 +47,7 @@ import { and, asc, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { FederationAssetService } from "./assets";
 import { cancellationSummary, FederationCancellationSender } from "./cancellation-outbound";
+import { allocateTaskCompletion } from "./completion-capacity";
 import { type FederationDownloadStorage, signedDownloadExpiry } from "./download-credential";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { stopCancelledExecution } from "./execution-stop";
@@ -472,6 +473,8 @@ export class FederationOutboundService {
       )
         throw new FederationError("BUDGET_EXHAUSTED");
       if (confirmation) await this.confirmations?.authorize(tx, actor.orgId, request, "admission");
+      await allocateTaskCompletion(tx, this.signingKey.siteId, request, this.storageGuard);
+      (confirmation ? assertDelegationTerms : assertDelegationPolicy)(terms, request, this.clock());
       const [created] = await tx
         .insert(federationOutbound)
         .values({

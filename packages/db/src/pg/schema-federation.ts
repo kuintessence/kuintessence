@@ -2287,3 +2287,44 @@ export const federationMarketRequests = pgTable(
     ),
   ],
 );
+
+/** Site-wide completion allocations survive Server restarts and agreement revision changes. */
+export const federationCompletionPools = pgTable(
+  "federation_completion_pools",
+  {
+    localSiteId: uuid("local_site_id").primaryKey(),
+    reserveId: uuid("reserve_id").notNull(),
+    capacityBytes: numeric("capacity_bytes", { precision: 30, scale: 0 }).notNull(),
+    taskBytes: numeric("task_bytes", { precision: 30, scale: 0 }).notNull(),
+    marketBytes: numeric("market_bytes", { precision: 30, scale: 0 }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "federation_completion_pool_bytes",
+      sql`${t.capacityBytes} > 0 AND ${t.capacityBytes} < 1e30 AND ${t.taskBytes} > 0 AND ${t.taskBytes} <= ${t.capacityBytes} AND ${t.marketBytes} > 0 AND ${t.marketBytes} <= ${t.capacityBytes}`,
+    ),
+  ],
+);
+
+export const federationCompletionClaims = pgTable(
+  "federation_completion_claims",
+  {
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationCompletionPools.localSiteId),
+    kind: varchar("kind", { length: 16 }).$type<"task" | "market">().notNull(),
+    intentId: varchar("intent_id", { length: 96 }).notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    allocatedBytes: numeric("allocated_bytes", { precision: 30, scale: 0 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.kind, t.intentId] }),
+    check("federation_completion_claim_kind", sql`${t.kind} IN ('task', 'market')`),
+    check(
+      "federation_completion_claim_bytes",
+      sql`${t.allocatedBytes} > 0 AND ${t.allocatedBytes} < 1e30`,
+    ),
+  ],
+);

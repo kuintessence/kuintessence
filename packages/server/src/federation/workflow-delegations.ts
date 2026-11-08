@@ -10,6 +10,7 @@ import {
 import type { FederationWorkflowMarket } from "@kuintessence/shared/federation/market";
 import { and, eq } from "drizzle-orm";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
+import { allocateTaskCompletion, assertTaskCompletionRoom } from "./completion-capacity";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import type { FederationStorageGuard } from "./storage-capacity";
 
@@ -107,7 +108,6 @@ export async function assertWorkflowDelegationCapacity(
   plan: WorkflowDelegationPlan,
   guard?: Pick<FederationStorageGuard, "assertAdmission">,
 ) {
-  if (!guard) return;
   if (!invocation.path) throw new FederationError("INVALID_MESSAGE");
   const path = invocation.path;
   const pathHash = createHash("sha256").update(path).digest("hex");
@@ -132,7 +132,8 @@ export async function assertWorkflowDelegationCapacity(
         throw new FederationError("OPERATION_CONFLICT");
       return;
     }
-    await guard.assertAdmission(plan.mode);
+    await guard?.assertAdmission(plan.mode);
+    await assertTaskCompletionRoom(tx, plan.senderSiteId, guard);
   });
 }
 
@@ -197,6 +198,9 @@ export async function bindWorkflowDelegation(
       issuedAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + admissionWindowSec * 1000).toISOString(),
     });
+    await allocateTaskCompletion(tx, request.senderSiteId, request, storageGuard);
+    if (clock().getTime() >= Date.parse(request.expiresAt))
+      throw new FederationError("AUTHORIZATION_EXPIRED");
     await tx.insert(workflowExecutionDelegations).values({
       runId: lease.runId,
       pathHash,

@@ -65,6 +65,7 @@ import { UnixCommercialClient } from "./federation/commercial-client";
 import { FederationCommercialExecutionService } from "./federation/commercial-execution";
 import { FederationCommercialSubmissionService } from "./federation/commercial-submissions";
 import { FederationCommercialWorker } from "./federation/commercial-worker";
+import { FederationCompletionCapacity } from "./federation/completion-capacity";
 import { FederationDataDispatch } from "./federation/data-dispatch";
 import { createFederationDatasetPreflight } from "./federation/dataset-preflight";
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
@@ -1660,6 +1661,9 @@ protectedApi.route(
     new FederationTrustRegistry(db),
     authzService,
     federationStorageGuard,
+    config.FEDERATION_SITE_ID
+      ? new FederationCompletionCapacity(db, config.FEDERATION_SITE_ID, federationStorageGuard)
+      : undefined,
   ),
 );
 protectedApi.route(

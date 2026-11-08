@@ -475,3 +475,23 @@ test("market storage pressure blocks publish and claim, while replay, commit and
     (await service.get(f.actor, cancellation.cancellation.cancellationId)).operation.state,
   ).toBe("committed");
 });
+
+test("completion pool backfills public market obligations and prevents new publish after its own shared limit", async () => {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const f = await fixture(),
+    storage = testCompletionStorage();
+  await f.service.enqueue(f.actor, f.input);
+  const capacity = new FederationCompletionCapacity(db, f.siteId, storage.guard);
+  await capacity.configure(
+    { reserveId: storage.reserveId, capacityBytes: "20", taskBytes: "20", marketBytes: "20" },
+    f.actor.userId,
+  );
+  expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "20", obligations: 1 });
+  const service = new FederationMarketService(db, f.siteId, f.adapter, storage.guard);
+  expect((await service.enqueue(f.actor, f.input)).id).toBe(f.id);
+  await expect(
+    service.enqueue(f.actor, { ...f.input, demand: { ...f.input.demand, demandId: randomUUID() } }),
+  ).rejects.toThrow("STORAGE_PRESSURE");
+  expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "20", obligations: 1 });
+});

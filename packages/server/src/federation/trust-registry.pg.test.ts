@@ -428,7 +428,10 @@ test("browser trust routes require bound administrator and never expose peer ing
   const storage = await app("platform_admin").request("/api/admin/federation/storage");
   expect(storage.status).toBe(200);
   expect(storage.headers.get("cache-control")).toBe("no-store");
-  expect(await storage.json()).toEqual({ success: true, data: { enabled: false, volumes: [] } });
+  expect(await storage.json()).toEqual({
+    success: true,
+    data: { enabled: false, volumes: [], completion: null },
+  });
   for (const role of ["operator", "user", "compute_provider", "guest"])
     expect((await app(role).request("/api/admin/federation/storage")).status).toBe(403);
   const invalid = await app("platform_admin").request("/api/admin/federation/sites", {

@@ -3,6 +3,7 @@ import type {
   FederationDelegation,
   FederationMode,
 } from "@kuintessence/shared/federation";
+import { FederationError } from "@kuintessence/shared/federation";
 import { generateKeyPair } from "jose";
 import type { FederationSigningKey, FederationVerificationKey } from "./signatures";
 
@@ -81,5 +82,44 @@ export function testDelegation(terms: FederationAgreement): FederationDelegation
     resources: terms.resourceLimit,
     maxAmount: "60",
     unit: terms.unit,
+  };
+}
+
+/** Capacity tests replace only physical telemetry; transactions and admission services remain real. */
+export function testCompletionStorage() {
+  const reserveId = crypto.randomUUID();
+  let healthy = true;
+  const guard: Pick<
+    import("./storage-capacity").FederationStorageGuard,
+    "inspect" | "assertAdmission"
+  > = {
+    async assertAdmission() {
+      if (!healthy) throw new FederationError("STORAGE_PRESSURE");
+    },
+    async inspect() {
+      return [
+        {
+          volumeId: reserveId,
+          name: "Isolated database",
+          component: "postgres-data",
+          modes: ["bilateral_direct", "bilateral_attested", "ledger_coordinated"],
+          state: healthy ? "healthy" : "pressure",
+          observedAt: new Date().toISOString(),
+          totalBytes: "100000",
+          availableBytes: "50000",
+          availableInodes: "1000",
+          requiredBytes: "100",
+          minAvailableInodes: "1",
+          completionReserve: { reserveId, state: "armed", allocatedBytes: "10000" },
+        },
+      ];
+    },
+  };
+  return {
+    reserveId,
+    guard,
+    pressure: () => {
+      healthy = false;
+    },
   };
 }

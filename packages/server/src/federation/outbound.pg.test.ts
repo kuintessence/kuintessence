@@ -8116,3 +8116,111 @@ test("adjustment debit holds are included in new source admission without consum
   await service.enqueue(actor, next("45"));
   expect((await row(f.request.operationId)).settledAmount).toBe("40");
 });
+
+test("completion pool bootstraps existing source work and deduplicates workflow binding through outbound handoff", async () => {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const { federationCompletionClaims: claims, federationCompletionPools: pools } = await import(
+    "@kuintessence/db"
+  );
+  const storage = testCompletionStorage(),
+    f = await workflowDelegationFixture();
+  const original = await fixture();
+  await original.service().enqueue(actor, original.request);
+  const siteId = a.signing.siteId,
+    capacity = new FederationCompletionCapacity(db, siteId, storage.guard);
+  const config = {
+    reserveId: storage.reserveId,
+    capacityBytes: "10000",
+    taskBytes: "60",
+    marketBytes: "20",
+  };
+  try {
+    await capacity.configure(config, actor.userId);
+    const initial = await capacity.inspect();
+    expect(initial.obligations).toBeGreaterThan(0);
+    expect(
+      await db
+        .select()
+        .from(claims)
+        .where(
+          eq(
+            claims.intentId,
+            `${original.request.agreementRevisionId}:${original.request.taskId}:1`,
+          ),
+        ),
+    ).toHaveLength(1);
+    await capacity.configure(
+      { ...config, capacityBytes: (BigInt(initial.allocatedBytes) + 60n).toString() },
+      actor.userId,
+    );
+    const bound = await bindWorkflowDelegation(
+      f.lease,
+      actor,
+      "remote",
+      f.invocation,
+      f.plan,
+      600,
+      clock,
+      undefined,
+      storage.guard,
+    );
+    expect((await capacity.inspect()).obligations).toBe(initial.obligations + 1);
+    storage.pressure();
+    const accepted = await f
+      .service(undefined, storage.guard)
+      .enqueueForWorkflow(actor, f.lease, "remote", f.invocation, f.plan, 600);
+    expect(accepted.operationId).toBe(bound.operationId);
+    expect((await capacity.inspect()).obligations).toBe(initial.obligations + 1);
+    expect((await original.service().enqueue(actor, original.request)).operationId).toBe(
+      original.request.operationId,
+    );
+    const fresh = await fixture();
+    await expect(fresh.service().enqueue(actor, fresh.request)).rejects.toThrow("STORAGE_PRESSURE");
+  } finally {
+    await db.delete(claims).where(eq(claims.localSiteId, siteId));
+    await db.delete(pools).where(eq(pools.localSiteId, siteId));
+  }
+});
+
+test("completion pool observation cannot extend source authorization and a failed recheck rolls back the charge", async () => {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const { federationCompletionClaims: claims, federationCompletionPools: pools } = await import(
+    "@kuintessence/db"
+  );
+  const storage = testCompletionStorage(),
+    f = await fixture();
+  let expire = false;
+  const guard = {
+    ...storage.guard,
+    async inspect() {
+      const value = await storage.guard.inspect();
+      if (expire) time = new Date(Date.parse(f.request.expiresAt) + 1);
+      return value;
+    },
+  };
+  const siteId = a.signing.siteId,
+    capacity = new FederationCompletionCapacity(db, siteId, guard);
+  try {
+    await capacity.configure(
+      { reserveId: storage.reserveId, capacityBytes: "10000", taskBytes: "60", marketBytes: "20" },
+      actor.userId,
+    );
+    const before = await capacity.inspect();
+    expire = true;
+    await expect(f.service(undefined, guard).enqueue(actor, f.request)).rejects.toThrow(
+      "AUTHORIZATION_EXPIRED",
+    );
+    expect((await capacity.inspect()).allocatedBytes).toBe(before.allocatedBytes);
+    expect(
+      await db
+        .select()
+        .from(federationOutbound)
+        .where(eq(federationOutbound.operationId, f.request.operationId)),
+    ).toHaveLength(0);
+  } finally {
+    await db.delete(claims).where(eq(claims.localSiteId, siteId));
+    await db.delete(pools).where(eq(pools.localSiteId, siteId));
+  }
+});
