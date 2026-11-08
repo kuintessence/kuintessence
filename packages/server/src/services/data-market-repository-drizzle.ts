@@ -25,6 +25,7 @@ import {
   normalizeDataGrantCapabilities,
 } from "../authz/projection";
 import type { AuthzTuple } from "../authz/service";
+import { isFederationDataset } from "../federation/dataset-authority";
 import { hasActiveDataAccess } from "./data-access-decision";
 import type {
   DataAccessGrant,
@@ -544,6 +545,10 @@ export class PgDataMarketRepository implements DataMarketRepository {
     });
   }
 
+  isFederationDataset(assetId: string) {
+    return isFederationDataset(this.db, assetId);
+  }
+
   async getAsset(assetId: string): Promise<DataAsset | null> {
     const [row] = await this.db
       .select()
@@ -626,7 +631,7 @@ export class PgDataMarketRepository implements DataMarketRepository {
       if (!row) {
         throw new AppError(ErrorCode.INTERNAL_ERROR, "Data asset insert returned no row", 500);
       }
-      await insertAuthzOutbox(tx, dataAssetCreationTuples(row));
+      await enqueueDataAssetCreation(tx, row);
       return toAsset(row);
     });
   }
@@ -1051,6 +1056,13 @@ function toGrant(row: typeof dataGrants.$inferSelect): DataAccessGrant {
     expiresAt: row.expiresAt,
     revokedAt: row.revokedAt,
   };
+}
+
+export async function enqueueDataAssetCreation(
+  tx: DbTransaction,
+  row: typeof dataAssets.$inferSelect,
+) {
+  await insertAuthzOutbox(tx, dataAssetCreationTuples(row));
 }
 
 function dataAssetCreationTuples(row: typeof dataAssets.$inferSelect): AuthzTuple[] {

@@ -69,8 +69,11 @@ import { FederationCommercialWorker } from "./federation/commercial-worker";
 import { FederationCompletionCapacity } from "./federation/completion-capacity";
 import { FederationDataDispatch } from "./federation/data-dispatch";
 import { createFederationDatasetPreflight } from "./federation/dataset-preflight";
+import { FederationDatasetPublicationService } from "./federation/dataset-publication";
+import { FederationDatasetUseClient } from "./federation/dataset-use-client";
 import { FederationDatasetUseResponder } from "./federation/dataset-use-exchange";
 import { FederationDatasetUsePolicies } from "./federation/dataset-use-policies";
+import { FederationDatasetUseWorker } from "./federation/dataset-use-worker";
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
 import { FederationExecutionAutomation } from "./federation/execution-automation";
 import {
@@ -2324,6 +2327,18 @@ const federationDatasetUse =
   federationSigningKey && federationDatasetUsePolicies
     ? new FederationDatasetUseResponder(db, federationSigningKey, federationDatasetUsePolicies)
     : undefined;
+const federationDatasetPublication =
+  federationSigningKey && federationSender && federationMediaInventory
+    ? new FederationDatasetPublicationService(
+        db,
+        federationSigningKey.siteId,
+        federationMediaInventory,
+        new FederationDatasetUseClient(db, federationSigningKey, federationSender),
+      )
+    : undefined;
+const federationDatasetUseWorker = federationDatasetPublication
+  ? new FederationDatasetUseWorker(federationDatasetPublication)
+  : undefined;
 if (federationMediaInventory)
   protectedApi.route(
     "/",
@@ -2333,6 +2348,7 @@ if (federationMediaInventory)
       federationMediaExportOperations,
       federationMediaImportOperations,
       federationDatasetUsePolicies,
+      federationDatasetPublication,
     ),
   );
 protectedApi.route("/", createDataMarketRoutes({ service: dataMarketService }));
@@ -2649,6 +2665,7 @@ federationResultWorker?.start();
 federationInputWorker?.start();
 federationMediaExportTransport?.start();
 federationMediaImportTransport?.start();
+federationDatasetUseWorker?.start();
 const federationExecutionMonitor = new FederationExecutionMonitor(
   db,
   federationDispatchAuthorization,
@@ -2738,6 +2755,7 @@ async function shutdown(signal: string): Promise<void> {
     await federationOutboundWorker?.stop();
     await federationMediaExportTransport?.stop();
     await federationMediaImportTransport?.stop();
+    await federationDatasetUseWorker?.stop();
     await federationInputWorker?.stop();
     await federationResultWorker?.stop();
     await federationAttestationWorker?.stop();

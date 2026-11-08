@@ -1,5 +1,6 @@
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import {
+  FederationDatasetPublicationSchema,
   FederationDatasetUseApprovalSchema,
   FederationError,
   FederationMediaExportApprovalSchema,
@@ -10,6 +11,7 @@ import {
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import type { FederationDatasetPublicationService } from "../federation/dataset-publication";
 import type { FederationDatasetUsePolicies } from "../federation/dataset-use-policies";
 import type { FederationMediaExportOperations } from "../federation/media-export-operations";
 import type { FederationMediaExportService } from "../federation/media-exports";
@@ -25,6 +27,7 @@ export function createFederationMediaRoutes(
   exportOperations?: FederationMediaExportOperations,
   importOperations?: FederationMediaImportOperations,
   datasetUse?: FederationDatasetUsePolicies,
+  publication?: FederationDatasetPublicationService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/media/*", async (c, next) => {
@@ -48,6 +51,60 @@ export function createFederationMediaRoutes(
       );
     throw error;
   });
+  const datasets = () => {
+    if (!publication)
+      throw new AppError(ErrorCode.INTERNAL_ERROR, "DATASET_PUBLICATION_UNAVAILABLE", 503);
+    return publication;
+  };
+  r.post(
+    "/federation/media/packages/:id/datasets",
+    kqValidator("param", z.object({ id: z.uuid() })),
+    kqValidator("json", FederationDatasetPublicationSchema),
+    async (c) =>
+      c.json(
+        {
+          success: true,
+          data: await datasets().publish(
+            c.get("federationActor"),
+            c.req.valid("param").id,
+            c.req.valid("json"),
+          ),
+        },
+        201,
+      ),
+  );
+  r.get(
+    "/federation/media/datasets",
+    kqValidator(
+      "query",
+      z.object({
+        limit: z.coerce.number().int().min(1).max(100).default(50),
+        offset: z.coerce.number().int().nonnegative().default(0),
+      }),
+    ),
+    async (c) =>
+      c.json({
+        success: true,
+        data: await datasets().list(
+          c.get("federationActor"),
+          c.req.valid("query").limit,
+          c.req.valid("query").offset,
+        ),
+      }),
+  );
+  r.post(
+    "/federation/media/datasets/:id/revoke",
+    kqValidator("param", z.object({ id: z.uuid() })),
+    kqValidator("json", FederationMediaRevocationSchema),
+    async (c) => {
+      await datasets().revoke(
+        c.get("federationActor"),
+        c.req.valid("param").id,
+        c.req.valid("json"),
+      );
+      return c.json({ success: true });
+    },
+  );
   const source = () => {
     if (!exports) throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_EXPORT_UNAVAILABLE", 503);
     return exports;

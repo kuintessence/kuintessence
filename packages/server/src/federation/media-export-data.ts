@@ -14,6 +14,7 @@ import {
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { and, asc, eq, isNull, or } from "drizzle-orm";
+import { isFederationDataset } from "./dataset-authority";
 import type { FederationActor } from "./permissions";
 
 /** Use/download grants alone carry no permission to redistribute a dataset to another institution. */
@@ -37,6 +38,7 @@ export async function readMediaExportDataset(
     !data.version.manifestDigest
   )
     throw new FederationError("POLICY_DENIED");
+  if (await isFederationDataset(tx, data.asset.id)) throw new FederationError("POLICY_DENIED");
   const policies = await tx
     .select()
     .from(dataAccessPolicies)

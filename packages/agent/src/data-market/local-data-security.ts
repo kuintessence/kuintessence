@@ -139,6 +139,7 @@ export class AgentDataRoots {
     if (!inside(root, canonical)) {
       throw new Error("Dataset path resolves outside the managed dataset root");
     }
+    assertOrdinaryDatasetPath(relative(this.requireDatasetRoot(), canonical));
     const files = await scanFiles(canonical, canonical);
     return {
       datasetPath,
@@ -287,6 +288,7 @@ async function scanFiles(root: string, directory: string): Promise<DatasetFileMa
   const entries = await readdir(directory, { withFileTypes: true });
   const files: DatasetFileManifest[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    assertOrdinaryDatasetPath(entry.name);
     const path = resolve(directory, entry.name);
     const stat = await lstat(path);
     if (stat.isSymbolicLink()) {
@@ -338,4 +340,11 @@ async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest("hex");
+}
+
+function assertOrdinaryDatasetPath(path: string): void {
+  if (path.split(/[\\/]/).includes(".federation-media"))
+    throw new Error(
+      "Federation media requires source-authorized publication, not ordinary scanning",
+    );
 }

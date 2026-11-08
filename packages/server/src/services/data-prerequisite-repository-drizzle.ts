@@ -6,12 +6,14 @@ import {
   dataGrants,
   dataLocations,
   dataReplicas,
+  federationDatasetAssets,
   type PgDb,
   type PgTransaction,
 } from "@kuintessence/db";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { dataAssetGrantTuples } from "../authz/projection";
 import type { AuthzTuple } from "../authz/service";
+import { datasetSourceAuthority, isFederationDataset } from "../federation/dataset-authority";
 import { type DataAccessAuthorization, evaluateActiveDataAccess } from "./data-access-decision";
 import type {
   DataCandidateLocation,
@@ -60,6 +62,7 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
     const rows = await this.db
       .select({
         locationId: dataLocations.id,
+        assetId: dataAssetVersions.dataAssetId,
         agentId: dataLocations.agentId,
         siteId: dataLocations.siteId,
         managedRootId: dataLocations.managedRootId,
@@ -77,7 +80,12 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
       .where(
         and(eq(dataLocations.dataAssetVersionId, versionId), eq(dataLocations.status, "available")),
       );
+    const first = rows[0];
+    const source = first
+      ? await datasetSourceAuthority(this.db, { assetId: first.assetId, versionId }, this.now())
+      : null;
     return rows.flatMap((row) => {
+      if (source && !source.locationIds.includes(row.locationId)) return [];
       if (
         row.replicaId !== null &&
         !isReplicaEligible(
@@ -113,6 +121,8 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
     const rows = await this.db
       .select({
         versionId: dataLocations.dataAssetVersionId,
+        assetId: dataAssetVersions.dataAssetId,
+        locationId: dataLocations.id,
         agentId: dataLocations.agentId,
         siteId: dataLocations.siteId,
         kind: dataLocations.kind,
@@ -132,8 +142,21 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
         ),
       );
     const now = this.now();
+    const sources = new Map<string, Awaited<ReturnType<typeof datasetSourceAuthority>>>();
+    for (const row of rows)
+      if (!sources.has(row.versionId))
+        sources.set(
+          row.versionId,
+          await datasetSourceAuthority(
+            this.db,
+            { assetId: row.assetId, versionId: row.versionId },
+            now,
+          ),
+        );
     return new Set(
       rows.flatMap((row) => {
+        const source = sources.get(row.versionId);
+        if (source && !source.locationIds.includes(row.locationId)) return [];
         if (
           row.replicaId !== null &&
           !isReplicaEligible(
@@ -162,6 +185,26 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
   }): Promise<Set<string>> {
     if (input.candidates.length === 0) return new Set();
     const assetIds = [...new Set(input.candidates.map((candidate) => candidate.assetId))];
+    const foreign = new Set(
+      (
+        await this.db
+          .select({ id: federationDatasetAssets.assetId })
+          .from(federationDatasetAssets)
+          .where(inArray(federationDatasetAssets.assetId, assetIds))
+      ).map((r) => r.id),
+    );
+    const foreignAllowed = new Set<string>();
+    for (const candidate of input.candidates)
+      if (
+        foreign.has(candidate.assetId) &&
+        (await this.verifyAccess({
+          assetId: candidate.assetId,
+          versionId: candidate.versionId,
+          actorUserId: input.actorUserId,
+          orgId: input.orgId,
+        }))
+      )
+        foreignAllowed.add(candidate.versionId);
     const subject = or(
       and(eq(dataGrants.subjectKind, "user"), eq(dataGrants.subjectId, input.actorUserId)),
       ...(input.orgId
@@ -224,6 +267,8 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
     const policiesByAssetId = groupByAssetId(policies);
     return new Set(
       input.candidates.flatMap((candidate) => {
+        if (foreign.has(candidate.assetId))
+          return foreignAllowed.has(candidate.versionId) ? [candidate.versionId] : [];
         if (!requiresActiveEntitlementUse(candidate.kind, candidate.accessMode)) {
           if (candidate.ownerUserId === input.actorUserId) return [candidate.versionId];
           if (
@@ -282,7 +327,10 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
       .where(eq(dataAssets.id, input.assetId))
       .limit(1);
     if (!asset) return { allowed: false, expiresAtUnixMs: 0 };
-    if (requiresActiveEntitlementUse(asset.kind, asset.accessMode)) {
+    if (
+      requiresActiveEntitlementUse(asset.kind, asset.accessMode) ||
+      (await isFederationDataset(this.db, asset.id))
+    ) {
       return this.evaluateAccess(this.db, {
         assetId: input.assetId,
         versionId: input.versionId,

@@ -6,6 +6,7 @@ import type {
   FederationAssetRef,
   FederationCancellation,
   FederationCancellationReceipt,
+  FederationDatasetUseLease,
   FederationDelegation,
   FederationEnvironmentLock,
   FederationExecutionTarget,
@@ -67,6 +68,7 @@ import {
 import {
   agents,
   clusterFileRoots,
+  dataAssets,
   dataAssetVersions,
   dataLocations,
   jobs,
@@ -2741,5 +2743,78 @@ export const federationDatasetUseGrants = pgTable(
       sql`${t.expiresAt} > ${t.issuedAt} AND ${t.expiresAt} <= ${t.issuedAt} + interval '60 seconds'`,
     ),
     check("federation_dataset_use_grant_digest", sql`${t.queryDigest} ~ '^sha256:[a-f0-9]{64}$'`),
+  ],
+);
+
+/** Structural provenance: editable asset metadata cannot remove the source's authority. */
+export const federationDatasetAssets = pgTable(
+  "federation_dataset_assets",
+  {
+    assetId: uuid("asset_id")
+      .primaryKey()
+      .references(() => dataAssets.id),
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    sourceSiteId: uuid("source_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    sourceAssetId: uuid("source_asset_id").notNull(),
+  },
+  (t) => [
+    uniqueIndex("federation_dataset_asset_origin").on(
+      t.localSiteId,
+      t.localOrgId,
+      t.sourceSiteId,
+      t.sourceAssetId,
+    ),
+    check("federation_dataset_asset_sites", sql`${t.localSiteId} <> ${t.sourceSiteId}`),
+  ],
+);
+export const federationDatasetReplicas = pgTable(
+  "federation_dataset_replicas",
+  {
+    replicaId: uuid("replica_id").primaryKey(),
+    assetId: uuid("asset_id")
+      .notNull()
+      .references(() => federationDatasetAssets.assetId),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => dataAssetVersions.id),
+    locationId: uuid("location_id")
+      .notNull()
+      .unique()
+      .references(() => dataLocations.id),
+    authorizationId: uuid("authorization_id")
+      .notNull()
+      .unique()
+      .references(() => federationMediaImportAuthorizations.authorizationId),
+    importGeneration: uuid("import_generation").notNull(),
+    sourcePolicyId: uuid("source_policy_id").notNull(),
+    publicationName: varchar("publication_name", { length: 255 }).notNull(),
+    agreementRevisionId: uuid("agreement_revision_id")
+      .notNull()
+      .references(() => federationAgreements.revisionId),
+    reference: jsonb("reference").$type<FederationAssetRef>().notNull(),
+    lease: jsonb("lease").$type<FederationDatasetUseLease>(),
+    renewAfter: timestamp("renew_after", { withTimezone: true }).notNull(),
+    renewToken: uuid("renew_token"),
+    lastError: varchar("last_error", { length: 32 }),
+    publishedBy: uuid("published_by")
+      .notNull()
+      .references(() => users.id),
+    publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReason: text("revocation_reason"),
+  },
+  (t) => [
+    index("federation_dataset_replica_renewal").on(t.renewAfter),
+    check(
+      "federation_dataset_replica_reference",
+      sql`(${t.reference}->>'kind' = 'dataset') IS TRUE`,
+    ),
   ],
 );

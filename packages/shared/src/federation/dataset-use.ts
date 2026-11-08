@@ -75,3 +75,17 @@ export function assertDatasetUseGrant(
   )
     throw new FederationError("INVALID_MESSAGE");
 }
+
+export const FederationDatasetUseLeaseSchema = z.strictObject({
+  query: FederationDatasetUseQuerySchema,
+  queryDigest: FederationDigestSchema,
+  queryKeyId: z.string().min(1).max(128),
+  signedGrant: z.string().min(1).max(16384),
+});
+export type FederationDatasetUseLease = z.infer<typeof FederationDatasetUseLeaseSchema>;
+export const FederationDatasetPublicationSchema = z.strictObject({
+  replicaId: z.uuid(),
+  authorizationId: z.uuid(),
+  sourcePolicyId: z.uuid(),
+  name: z.string().trim().min(1).max(255),
+});

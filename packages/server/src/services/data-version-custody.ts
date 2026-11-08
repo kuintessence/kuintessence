@@ -7,6 +7,7 @@ import {
 } from "@kuintessence/db";
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import { and, eq } from "drizzle-orm";
+import { isFederationDataset } from "../federation/dataset-authority";
 
 /** Custody is necessary for giving another institution rights; generic manage grants are insufficient. */
 export async function readDataVersionCustody(
@@ -31,7 +32,7 @@ export async function readDataVersionCustody(
     .innerJoin(dataAssets, eq(dataAssets.id, dataAssetVersions.dataAssetId))
     .where(eq(dataAssetVersions.id, versionId))
     .for(write ? "update" : "share", { of: [dataAssets, dataAssetVersions] });
-  if (!data) denied();
+  if (!data || (await isFederationDataset(tx, data.asset.id))) denied();
   const owns = data.asset.ownerKind === "user" && data.asset.ownerUserId === actor.userId;
   const managesOrg =
     ["owner", "admin"].includes(member.membership.role) ||

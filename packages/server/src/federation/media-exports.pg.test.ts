@@ -10,6 +10,7 @@ import { FederationMediaImportClient } from "@kuintessence/agent/federation/medi
 import {
   agents,
   auditLog,
+  authzOutbox,
   clusterFileRoots,
   createPgDb,
   dataAccessPolicies,
@@ -19,11 +20,16 @@ import {
   dataGrants,
   dataLocations,
   federationCertificates,
+  federationDatasetAssets,
+  federationDatasetReplicas,
   federationDatasetUseGrants,
   federationDatasetUsePolicies,
   federationMediaExports,
+  federationMediaImportAuthorizations,
   federationMediaKeyGrants,
   federationSigningKeys,
+  jobDataBindings,
+  jobs,
   orgs,
   userOrgMemberships,
   users,
@@ -56,6 +62,7 @@ import { buildCpRouter } from "../routes/cp";
 import { createFederationMediaRoutes } from "../routes/federation-media";
 import type { CpConsoleService } from "../services/cp-console";
 import { evaluateActiveDataAccess } from "../services/data-access-decision";
+import { DataDeliveryResolver } from "../services/data-delivery";
 import { DataDisclosurePolicyService } from "../services/data-disclosure-policies";
 import {
   type DataMarketActor,
@@ -63,7 +70,11 @@ import {
   type DataUploadPort,
 } from "../services/data-market";
 import { PgDataMarketRepository } from "../services/data-market-repository-drizzle";
+import { PgDataPrerequisiteRepository } from "../services/data-prerequisite-repository-drizzle";
 import { FederationAdmission } from "./admission";
+import { datasetSourceAuthority } from "./dataset-authority";
+import { FederationDatasetPublicationService } from "./dataset-publication";
+import { FederationDatasetUseClient } from "./dataset-use-client";
 import { FederationDatasetUseResponder } from "./dataset-use-exchange";
 import { FederationDatasetUsePolicies } from "./dataset-use-policies";
 import { createFederationIngress } from "./ingress";
@@ -185,6 +196,7 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       agentId,
       providerOrgId: actor.orgId,
       siteName: "Source",
+      siteId: "media-cluster",
       schedulerType: "slurm",
       schedulerVersion: "test",
     });
@@ -248,6 +260,11 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
   });
   beforeEach(async () => {
     now = testNow;
+    const foreign = await db.select().from(federationDatasetAssets);
+    await db.delete(federationDatasetReplicas);
+    await db.delete(federationDatasetAssets);
+    for (const asset of foreign)
+      await db.delete(dataAssets).where(eq(dataAssets.id, asset.assetId));
     await db
       .delete(dataAccessPolicies)
       .where(
@@ -1052,7 +1069,7 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       await setKinds(target.signing.siteId);
     }
   });
-  test("media import operation receives a real encrypted package through Agent transport without publishing use", async () => {
+  test("media import operation receives a real encrypted package before separate publication and local approval", async () => {
     const directory = await mkdtemp(join(tmpdir(), "kq-media-receive-"));
     let client: FederationMediaImportClient | undefined,
       sourceClient: FederationMediaExportClient | undefined;
@@ -1197,6 +1214,36 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       expect(
         (await operations.start(actor, f.input.packageId, f.input.authorizationId)).generation,
       ).toBe(first.generation);
+      const published = await publicationFixture(f);
+      const imported = await published.publish();
+      expect((await published.authority(imported)).allowed).toBe(true);
+      expect((await published.access(imported)).allowed).toBe(false);
+      const localRequest = await market.requestAccess(
+        manager,
+        imported.assetId,
+        "Local research",
+        crypto.randomUUID(),
+      );
+      await market.reviewProviderAccessRequest(manager, localRequest.id, { decision: "approve" });
+      expect((await published.access(imported)).allowed).toBe(true);
+      expect(
+        (await db.select().from(authzOutbox).where(eq(authzOutbox.resourceId, imported.assetId)))
+          .length,
+      ).toBeGreaterThan(0);
+      await expect(
+        market.requestAccess(
+          { ...manager, ...other, orgIds: [other.orgId] },
+          imported.assetId,
+          "Outside recipient",
+          crypto.randomUUID(),
+        ),
+      ).rejects.toThrow("receiving organization");
+      const [version] = await db
+        .select()
+        .from(dataAssetVersions)
+        .where(eq(dataAssetVersions.id, imported.versionId));
+      expect(version?.provenance).toEqual(provenance);
+      expect(version?.manifest.license).toBe("CC-BY-4.0");
     } finally {
       await client?.disconnect();
       await sourceClient?.disconnect();
@@ -1337,6 +1384,481 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
             eq(federationSigningKeys.keyId, source.signing.keyId),
           ),
         );
+    }
+  });
+
+  async function publicationFixture(existing?: Awaited<ReturnType<typeof keyFixture>>) {
+    const media = existing ?? (await keyFixture());
+    const use = await useFixture();
+    const makeClient = (after?: () => Promise<void>) =>
+      new FederationDatasetUseClient(
+        db,
+        target.signing,
+        async (_endpoint, jws, path) => {
+          expect(path).toBe("/federation/v1/dataset-use");
+          const response = await use.call(jws);
+          if (response.status !== 200) throw new Error(`Source denied: ${response.status}`);
+          const body = await response.text();
+          await after?.();
+          return body;
+        },
+        () => now,
+      );
+    const makeService = (after?: () => Promise<void>) =>
+      new FederationDatasetPublicationService(
+        db,
+        target.signing.siteId,
+        media.receiver,
+        makeClient(after),
+        () => now,
+      );
+    const publication = makeService();
+    const input = {
+      replicaId: crypto.randomUUID(),
+      authorizationId: media.input.authorizationId,
+      sourcePolicyId: use.input.policyId,
+      name: "Partner observations",
+    };
+    if (!existing) {
+      const operations = new FederationMediaImportOperations(
+        db,
+        target.signing.siteId,
+        media.receiver,
+        media.requester(),
+        () => now,
+      );
+      const op = await operations.start(actor, media.input.packageId, media.input.authorizationId);
+      const { task } = await operations.task(agentId, media.input.authorizationId);
+      const binding = {
+        generation: op.generation,
+        authorizationId: media.input.authorizationId,
+        packageId: media.input.packageId,
+        manifestDigest: task.manifestDigest,
+      };
+      const grant = await operations.grant(agentId, {
+        ...binding,
+        recipientKey: media.input.recipientKey,
+      });
+      // Other tests above exercise real Agent decrypt; this fixture exercises the Server report boundary.
+      await operations.report(agentId, {
+        ...binding,
+        state: "verified",
+        sizeBytes: 4,
+        queryDigest: grant.queryDigest,
+      });
+    }
+    const authority = async (r: { assetId: string; versionId: string; locationId: string }) => {
+      const a = await datasetSourceAuthority(db, r, now);
+      if (!a) throw new Error("Missing structural origin");
+      return a;
+    };
+    const access = (r: { assetId: string; versionId: string }) =>
+      evaluateActiveDataAccess(db, {
+        ...r,
+        actorUserId: actor.userId,
+        orgIds: [actor.orgId],
+        capability: "use",
+        now,
+      });
+    const allowLocal = async (r: { assetId: string; versionId: string }) => {
+      await db.insert(dataGrants).values({
+        dataAssetId: r.assetId,
+        dataAssetVersionId: r.versionId,
+        subjectKind: "org",
+        subjectId: actor.orgId,
+        capabilities: ["use"],
+        grantedBy: actor.userId,
+        startsAt: now,
+      });
+    };
+    return {
+      media,
+      use,
+      input,
+      publication,
+      makeService,
+      authority,
+      access,
+      allowLocal,
+      publish: () => publication.publish(actor, media.input.packageId, input),
+    };
+  }
+
+  test("dataset publication reuses signed versions and requires both source and explicit local use", async () => {
+    const f = await publicationFixture();
+    const [first, repeated] = await Promise.all([f.publish(), f.publish()]);
+    expect(repeated).toEqual(first);
+    expect((await f.authority(first)).allowed).toBe(true);
+    expect((await f.access(first)).allowed).toBe(false);
+    const repo = new PgDataPrerequisiteRepository(db, { now: () => now });
+    const accessInput = { ...first, actorUserId: actor.userId, orgId: actor.orgId };
+    expect(await repo.verifyAccess(accessInput)).toBe(false);
+    const candidate = {
+      assetId: first.assetId,
+      versionId: first.versionId,
+      kind: "scientific-dataset",
+      accessMode: "open",
+      visibility: "public",
+      lifecycle: "published",
+      ownerUserId: actor.userId,
+      ownerOrgId: actor.orgId,
+      providerOrgId: actor.orgId,
+    };
+    const batch = () =>
+      repo.verifyAccessBatch({
+        actorUserId: actor.userId,
+        orgId: actor.orgId,
+        candidates: [candidate],
+      });
+    expect((await batch()).size).toBe(0);
+    await f.allowLocal(first);
+    expect((await batch()).has(first.versionId)).toBe(true);
+    expect(await repo.verifyAccess(accessInput)).toBe(true);
+    expect((await repo.listLocations(first.versionId)).map((r) => r.locationId)).toEqual([
+      first.locationId,
+    ]);
+    expect((await repo.listAvailableVersionIds([first.versionId])).has(first.versionId)).toBe(true);
+    await expect(
+      f.publication.publish(actor, f.media.input.packageId, { ...f.input, name: "Changed intent" }),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    const second = await publicationFixture();
+    const copy = await second.publish();
+    expect(copy.assetId).toBe(first.assetId);
+    expect(copy.versionId).toBe(first.versionId);
+    expect(copy.locationId).not.toBe(first.locationId);
+    const [entry] = await db
+      .select()
+      .from(dataAssetManifestEntries)
+      .where(eq(dataAssetManifestEntries.dataAssetVersionId, first.versionId));
+    expect(entry?.metadata).toEqual(metadata);
+    await db
+      .update(dataAssets)
+      .set({ metadata: {}, accessMode: "open", visibility: "public" })
+      .where(eq(dataAssets.id, first.assetId));
+    now = new Date(now.getTime() + 60_001);
+    expect((await f.access(first)).allowed).toBe(false);
+    expect(await repo.verifyAccess(accessInput)).toBe(false);
+    expect((await batch()).size).toBe(0);
+    expect(await repo.listLocations(first.versionId)).toEqual([]);
+    expect((await repo.listAvailableVersionIds([first.versionId])).size).toBe(0);
+  });
+
+  test("dataset publication rejects third-party scope and audit failure atomically", async () => {
+    const f = await publicationFixture();
+    await expect(f.publication.publish(other, f.media.input.packageId, f.input)).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    await db.execute(
+      sql`CREATE FUNCTION publication_reject_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.dataset.publish' THEN RAISE EXCEPTION 'test audit unavailable'; END IF; RETURN NEW; END $$`,
+    );
+    await db.execute(
+      sql`CREATE TRIGGER publication_reject_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION publication_reject_audit()`,
+    );
+    try {
+      await expect(f.publish()).rejects.toThrow();
+      expect(await db.select().from(federationDatasetAssets)).toHaveLength(0);
+      expect(await db.select().from(federationDatasetReplicas)).toHaveLength(0);
+    } finally {
+      await db.execute(sql`DROP TRIGGER publication_reject_audit ON audit_log`);
+      await db.execute(sql`DROP FUNCTION publication_reject_audit()`);
+    }
+  });
+
+  test("dataset publication rejects approval revoked during source authorization", async () => {
+    const f = await publicationFixture();
+    const delayed = f.makeService(() =>
+      f.media.receiver.revoke(
+        actor,
+        f.media.input.packageId,
+        { reason: "Withdrawn during publication" },
+        f.input.authorizationId,
+      ),
+    );
+    await expect(delayed.publish(actor, f.media.input.packageId, f.input)).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    expect(await db.select().from(federationDatasetReplicas)).toHaveLength(0);
+  });
+
+  test("dataset renewal cannot revive revoked replicas or extend an unavailable source", async () => {
+    const f = await publicationFixture();
+    const r = await f.publish();
+    await f.allowLocal(r);
+    now = new Date(now.getTime() + 21_000);
+    expect(await f.publication.renewNext()).toBe(true);
+    expect((await f.access(r)).expiresAtUnixMs).toBe(now.getTime() + 60_000);
+    now = new Date(now.getTime() + 21_000);
+    const late = f.makeService(() =>
+      f.publication.revoke(actor, r.replicaId, { reason: "Stopped locally" }),
+    );
+    expect(await late.renewNext()).toBe(true);
+    expect((await f.authority(r)).allowed).toBe(false);
+    const [stored] = await db
+      .select()
+      .from(federationDatasetReplicas)
+      .where(eq(federationDatasetReplicas.replicaId, r.replicaId));
+    expect(stored?.lease).toBeNull();
+    await expect(f.publish()).rejects.toThrow("OPERATION_CONFLICT");
+  });
+
+  test("dataset authority bounds use after source revocation and checks local storage every time", async () => {
+    const f = await publicationFixture();
+    const r = await f.publish();
+    await f.allowLocal(r);
+    await db
+      .update(clusterFileRoots)
+      .set({ enabled: false })
+      .where(eq(clusterFileRoots.id, rootId));
+    expect((await f.access(r)).allowed).toBe(false);
+    await db.update(clusterFileRoots).set({ enabled: true }).where(eq(clusterFileRoots.id, rootId));
+    now = new Date(now.getTime() + 1_000);
+    await db
+      .update(federationMediaImportAuthorizations)
+      .set({ expiresAt: new Date(now.getTime() - 1) })
+      .where(eq(federationMediaImportAuthorizations.authorizationId, f.input.authorizationId));
+    expect((await f.access(r)).allowed).toBe(true);
+    await f.use.policyService.revoke(actor, f.use.input.policyId, { reason: "Source withdrawn" });
+    now = new Date(now.getTime() + 21_000);
+    await f.publication.renewNext();
+    now = new Date(testNow.getTime() + 60_001);
+    expect((await f.access(r)).allowed).toBe(false);
+  });
+
+  test("dataset delivery lease never outlives source authority and imported data cannot be delegated again", async () => {
+    const f = await publicationFixture();
+    const r = await f.publish();
+    await f.allowLocal(r);
+    const id = crypto.randomUUID();
+    await db.insert(jobs).values({
+      id,
+      name: "Foreign data dispatch",
+      command: "true",
+      cpus: 1,
+      memoryMb: 16,
+      submittedBy: actor.userId,
+      agentId,
+    });
+    await db.insert(jobDataBindings).values({
+      jobId: id,
+      inputDescriptor: "dataset",
+      source: "data-market",
+      assetId: r.assetId,
+      versionId: r.versionId,
+      manifestDigest: f.use.approval.asset.digest,
+      allowedLocationIds: [r.locationId],
+      selectedEntries: ["input.dat"],
+      stagePath: "inputs/dataset",
+      sensitivity: "restricted",
+      egressPolicy: "deny",
+    });
+    const repo = new PgDataPrerequisiteRepository(db, { now: () => now });
+    const resolver = new DataDeliveryResolver(
+      db,
+      {
+        dataMarketImmutableBucket: "unused",
+        presignImmutableDownload: async () => {
+          throw new Error("No download authorization");
+        },
+      },
+      { now: () => now, verifyAccess: (input) => repo.verifyAccess(input) },
+    );
+    try {
+      now = new Date(now.getTime() + 45_000);
+      const [delivery] = await resolver.resolveForDispatch({
+        jobId: id,
+        actorUserId: actor.userId,
+        orgId: actor.orgId,
+        agentId,
+      });
+      expect(delivery?.leaseExpiresAtUnixMs).toBe(testNow.getTime() + 60_000);
+      expect(delivery?.method).toBe("readonly-mount");
+      expect(delivery?.selectedEntries[0]?.sha256).toBe(
+        createHash("sha256").update("data").digest("hex"),
+      );
+      await db
+        .update(userOrgMemberships)
+        .set({ role: "admin" })
+        .where(eq(userOrgMemberships.userId, actor.userId));
+      await expect(
+        f.use.policyService.approve(actor, {
+          ...f.use.input,
+          policyId: crypto.randomUUID(),
+          versionId: r.versionId,
+        }),
+      ).rejects.toThrow();
+      await expect(
+        service.prepare(actor, { ...request(), versionId: r.versionId, locationId: r.locationId }),
+      ).rejects.toThrow();
+      await expect(policies.read({ ...manager, role: "org_admin" }, r.versionId)).rejects.toThrow();
+      now = new Date(testNow.getTime() + 60_001);
+      await expect(
+        resolver.resolveForDispatch({
+          jobId: id,
+          actorUserId: actor.userId,
+          orgId: actor.orgId,
+          agentId,
+        }),
+      ).rejects.toThrow("DATA_ACCESS_REVOKED");
+    } finally {
+      await db.delete(jobs).where(eq(jobs.id, id));
+    }
+  });
+
+  test("dataset authority rejects changed source key purposes and altered replica paths", async () => {
+    const f = await publicationFixture();
+    const r = await f.publish();
+    const path = `.federation-media/${f.media.input.packageId}/files`;
+    await db
+      .update(dataLocations)
+      .set({ relativePath: "other-data" })
+      .where(eq(dataLocations.id, r.locationId));
+    expect((await f.authority(r)).allowed).toBe(false);
+    await db
+      .update(dataLocations)
+      .set({ relativePath: path })
+      .where(eq(dataLocations.id, r.locationId));
+    const [key] = await db
+      .select()
+      .from(federationSigningKeys)
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, source.signing.siteId),
+          eq(federationSigningKeys.keyId, source.signing.keyId),
+        ),
+      );
+    if (!key) throw new Error("Missing key");
+    try {
+      await db
+        .update(federationSigningKeys)
+        .set({ allowedKinds: key.allowedKinds.filter((k) => k !== "dataset-use-grant") })
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, source.signing.siteId),
+            eq(federationSigningKeys.keyId, source.signing.keyId),
+          ),
+        );
+      expect((await f.authority(r)).allowed).toBe(false);
+    } finally {
+      await db
+        .update(federationSigningKeys)
+        .set({ allowedKinds: key.allowedKinds })
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, source.signing.siteId),
+            eq(federationSigningKeys.keyId, source.signing.keyId),
+          ),
+        );
+    }
+  });
+
+  test("dataset publication HTTP scopes operations to the active human organization and hides signed leases", async () => {
+    const f = await publicationFixture();
+    const app = new Hono();
+    app.onError(createErrorHandler(pino({ enabled: false })));
+    app.use("*", async (c, next) => {
+      c.set("principal" as never, actor as never);
+      await next();
+    });
+    app.route(
+      "/api",
+      createFederationMediaRoutes(
+        f.media.receiver,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        f.publication,
+      ),
+    );
+    const path = `/api/federation/media/packages/${f.media.input.packageId}/datasets`;
+    const post = (value: unknown) =>
+      app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(value),
+      });
+    expect((await post({ ...f.input, relativePath: "unapproved" })).status).toBe(400);
+    await permissions.set({ ...actor, capability: "asset.map", enabled: false }, actor.userId);
+    try {
+      expect((await post(f.input)).status).toBe(403);
+    } finally {
+      await permissions.set({ ...actor, capability: "asset.map", enabled: true }, actor.userId);
+    }
+    const response = await post(f.input);
+    expect(response.status).toBe(201);
+    const result = await response.text();
+    expect(result).not.toContain("signedGrant");
+    await permissions.set({ ...actor, capability: "asset.read", enabled: true }, actor.userId);
+    expect((await app.request("/api/federation/media/datasets?limit=1")).status).toBe(200);
+    expect(
+      (
+        await app.request(`/api/federation/media/datasets/${f.input.replicaId}/revoke`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reason: "No longer needed" }),
+        })
+      ).status,
+    ).toBe(200);
+    expect((await post(f.input)).status).toBe(409);
+  });
+
+  test("dataset renewal fences an old network reply after another worker takes over", async () => {
+    const f = await publicationFixture();
+    const r = await f.publish();
+    const arrived = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    now = new Date(now.getTime() + 21_000);
+    const slow = f.makeService(async () => {
+      arrived.resolve();
+      await release.promise;
+    });
+    const first = slow.renewNext();
+    await arrived.promise;
+    try {
+      now = new Date(now.getTime() + 31_000);
+      expect(await f.publication.renewNext()).toBe(true);
+      const freshExpiry = (await f.authority(r)).expiresAtUnixMs;
+      release.resolve();
+      await first;
+      expect((await f.authority(r)).expiresAtUnixMs).toBe(freshExpiry);
+      expect(freshExpiry).toBe(now.getTime() + 60_000);
+    } finally {
+      release.resolve();
+      await first;
+    }
+  });
+
+  test("dataset authorization fails promptly while a replica is being revoked", async () => {
+    const f = await publicationFixture();
+    const r = await f.publish();
+    const held = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const writer = db.transaction(async (tx) => {
+      await tx
+        .select()
+        .from(federationDatasetReplicas)
+        .where(eq(federationDatasetReplicas.replicaId, r.replicaId))
+        .for("update");
+      held.resolve();
+      await release.promise;
+    });
+    await held.promise;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        f.authority(r).then(
+          () => "allowed",
+          () => "rejected",
+        ),
+        new Promise<string>((resolve) => {
+          timer = setTimeout(() => resolve("waited on revocation"), 1000);
+        }),
+      ]);
+      expect(outcome).toBe("rejected");
+    } finally {
+      if (timer) clearTimeout(timer);
+      release.resolve();
+      await writer;
     }
   });
 

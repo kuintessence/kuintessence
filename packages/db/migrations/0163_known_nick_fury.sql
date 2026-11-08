@@ -1,0 +1,1 @@
+ALTER TABLE "federation_dataset_replicas" ADD COLUMN "publication_name" varchar(255) NOT NULL;

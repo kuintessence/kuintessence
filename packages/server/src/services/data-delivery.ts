@@ -19,6 +19,7 @@ import {
   type SandboxSignedManifest,
 } from "@kuintessence/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { datasetSourceAuthority } from "../federation/dataset-authority";
 import { persistFederationTerminalEvidence } from "../federation/terminal-evidence";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { MinioBackend } from "../storage/minio-client";
@@ -140,7 +141,11 @@ export class DataDeliveryResolver {
         versionId: binding.versionId,
       });
       if (!allowed) throw new AppError(ErrorCode.FORBIDDEN, "DATA_ACCESS_REVOKED", 403);
-      const locations = await this.loadValidLocations(binding.versionId, binding.manifestDigest);
+      const locations = await this.loadValidLocations(
+        binding.versionId,
+        binding.manifestDigest,
+        binding.assetId,
+      );
       const candidates = locations.filter((location) =>
         location.kind === "cp-local" ? location.agentId === input.agentId : true,
       );
@@ -152,7 +157,7 @@ export class DataDeliveryResolver {
           binding.allowedLocationIds.includes(location.id) &&
           (!options.locations || options.locations.get(binding.id) === location.id),
       );
-      const restricted = factsRequireRestrictedNoEgress({
+      let restricted = factsRequireRestrictedNoEgress({
         assetKind: binding.assetKind as "licensed-material" | null,
         sensitivity: binding.sensitivity as "restricted" | "regulated" | null,
         egressPolicy: binding.egressPolicy,
@@ -165,6 +170,19 @@ export class DataDeliveryResolver {
       if (!location) {
         throw new AppError(ErrorCode.VALIDATION_ERROR, "DATA_LOCATION_CONFLICT", 409);
       }
+      const source = await datasetSourceAuthority(
+        this.db,
+        {
+          assetId: binding.assetId,
+          versionId: binding.versionId,
+          locationId: location.id,
+          orgIds: input.orgId ? [input.orgId] : [],
+        },
+        this.now(),
+      );
+      if (source && !source.allowed)
+        throw new AppError(ErrorCode.FORBIDDEN, "DATA_SOURCE_AUTHORIZATION_UNAVAILABLE", 403);
+      if (source) restricted = true;
       const entries = await this.loadEntries(binding, location);
       if (entries.length === 0)
         throw new AppError(ErrorCode.VALIDATION_ERROR, "DATA_MANIFEST_EMPTY", 409);
@@ -186,7 +204,7 @@ export class DataDeliveryResolver {
           managedRootId: location.managedRootId,
           relativePath: location.relativePath,
           restricted,
-          ...this.createLease(),
+          ...this.createLease(source?.expiresAtUnixMs),
         });
         continue;
       }
@@ -216,17 +234,23 @@ export class DataDeliveryResolver {
         stagePath: binding.stagePath,
         method: "object-download",
         restricted,
-        ...this.createLease(),
+        ...this.createLease(source?.expiresAtUnixMs),
       });
     }
     assertDistinctDeliveryTargets(resolved);
     return resolved;
   }
 
-  private createLease(): { leaseId: string; leaseExpiresAtUnixMs: number } {
+  private createLease(sourceExpiry = Number.POSITIVE_INFINITY): {
+    leaseId: string;
+    leaseExpiresAtUnixMs: number;
+  } {
+    const now = this.now().getTime();
+    if (sourceExpiry <= now)
+      throw new AppError(ErrorCode.FORBIDDEN, "DATA_SOURCE_AUTHORIZATION_UNAVAILABLE", 403);
     return {
       leaseId: randomUUID(),
-      leaseExpiresAtUnixMs: this.now().getTime() + this.leaseTtlSec * 1000,
+      leaseExpiresAtUnixMs: Math.min(now + this.leaseTtlSec * 1000, sourceExpiry),
     };
   }
 
@@ -276,6 +300,7 @@ export class DataDeliveryResolver {
   private async loadValidLocations(
     versionId: string,
     manifestDigest: string,
+    assetId: string,
   ): Promise<LocationRow[]> {
     const rows = await this.db
       .select({
@@ -298,7 +323,9 @@ export class DataDeliveryResolver {
       .where(
         and(eq(dataLocations.dataAssetVersionId, versionId), eq(dataLocations.status, "available")),
       );
+    const source = await datasetSourceAuthority(this.db, { assetId, versionId }, this.now());
     return rows.flatMap((row) => {
+      if (source && !source.locationIds.includes(row.id)) return [];
       if (row.versionManifestDigest !== manifestDigest) return [];
       const replica = row.replicaStatus !== null;
       if (

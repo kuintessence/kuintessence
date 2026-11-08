@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { PgDb } from "@kuintessence/db";
+import { federationDatasetAssets, type PgDb } from "@kuintessence/db";
 import type { SandboxSignedManifest } from "@kuintessence/shared";
 import type { ResolvedDataDelivery } from "./data-delivery";
 import {
@@ -310,18 +310,23 @@ describe("Data Market delivery integrity", () => {
 function fakeResolverDb(results: readonly unknown[][]): PgDb {
   const pending = [...results];
   const query = () => {
+    let foreign = false;
     const chain = {
-      from: () => chain,
+      from: (table: unknown) => {
+        foreign = table === federationDatasetAssets;
+        return chain;
+      },
       innerJoin: () => chain,
       leftJoin: () => chain,
       where: () => {
-        const result = Promise.resolve(pending.shift() ?? []);
-        return Object.assign(result, { limit: () => result });
+        const result = Promise.resolve(foreign ? [] : (pending.shift() ?? []));
+        return Object.assign(result, { limit: () => result, for: () => result });
       },
     };
     return chain;
   };
-  return { select: () => query() } as unknown as PgDb;
+  const db = { select: () => query(), rollback: () => {} } as unknown as PgDb;
+  return db;
 }
 
 function bindingRows(

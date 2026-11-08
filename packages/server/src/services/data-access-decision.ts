@@ -8,6 +8,7 @@ import {
 import { and, eq, isNull, or } from "drizzle-orm";
 import { dataAssetGrantTuples } from "../authz/projection";
 import type { AuthzTuple } from "../authz/service";
+import { datasetSourceAuthority } from "../federation/dataset-authority";
 
 export interface ActiveDataAccessInput {
   assetId: string;
@@ -36,6 +37,8 @@ export async function evaluateActiveDataAccess(
 ): Promise<DataAccessAuthorization> {
   const now = input.now ?? new Date(Date.now());
   const check = async (tx: PgTransaction) => {
+    const source = input.capability === "use" ? await datasetSourceAuthority(tx, input, now) : null;
+    if (source && !source.allowed) return { allowed: false, expiresAtUnixMs: 0 };
     const subject = or(
       and(eq(dataGrants.subjectKind, "user"), eq(dataGrants.subjectId, input.actorUserId)),
       ...input.orgIds.map((orgId) =>
@@ -141,9 +144,12 @@ export async function evaluateActiveDataAccess(
     ];
     return {
       allowed: alternatives.length > 0,
-      expiresAtUnixMs: Math.max(
-        0,
-        ...alternatives.map((row) => row.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY),
+      expiresAtUnixMs: Math.min(
+        source?.expiresAtUnixMs ?? Number.POSITIVE_INFINITY,
+        Math.max(
+          0,
+          ...alternatives.map((row) => row.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY),
+        ),
       ),
     };
   };

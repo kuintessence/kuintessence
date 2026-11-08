@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { lstat, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -90,6 +90,41 @@ describe("AgentDataRoots", () => {
     await expect(roots.scanManagedDataset(MANAGED_ROOT_ID, "dataset")).rejects.toThrow(
       "symbolic link",
     );
+  });
+
+  test("ordinary scans reject federation media directly, through an ancestor, or through a configured root alias", async () => {
+    const { root, datasetRoot, jobWorkRoot } = await rootsFixture();
+    const privatePath = join(datasetRoot, "registered", ".federation-media", "package", "files");
+    await mkdir(privatePath, { recursive: true, mode: 0o700 });
+    await mkdir(join(datasetRoot, "registered", "ordinary"), { mode: 0o700 });
+    await writeFile(join(privatePath, "input.dat"), "private");
+    const alias = "22222222-2222-4222-8222-222222222222";
+    const roots = new AgentDataRoots({
+      datasetRoot,
+      jobWorkRoot,
+      managedRoots: {
+        [MANAGED_ROOT_ID]: "registered",
+        [alias]: "registered/.federation-media/package/files",
+      },
+    });
+    try {
+      await roots.initialize();
+      for (const [id, path] of [
+        [MANAGED_ROOT_ID, "."],
+        [MANAGED_ROOT_ID, ".federation-media/package/files"],
+        [alias, "."],
+      ] as const)
+        await expect(roots.scanManagedDataset(id, path)).rejects.toThrow(
+          "source-authorized publication",
+        );
+      expect((await roots.scanManagedDataset(MANAGED_ROOT_ID, "ordinary")).files).toEqual([]);
+      // Authorized delivery still resolves the private path through its separate binding.
+      expect(
+        await roots.resolveManagedDataPath(MANAGED_ROOT_ID, ".federation-media/package/files"),
+      ).toBe(privatePath);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("rejects a requested managed root that is not configured locally", async () => {
