@@ -56,6 +56,8 @@ jobs:
           node-version: "22"
       - name: Install locked dependencies
         run: bun install --frozen-lockfile --ignore-scripts
+      - name: Generate protobuf stubs
+        run: bun run --filter @kuintessence/proto generate
       - name: Verify isolated test types and local contracts
         run: |
           bun run typecheck:fabric-tests
