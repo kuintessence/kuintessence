@@ -3571,3 +3571,16 @@ a4320dc 的 bundle 重试也已 success，Fabric 重试随后被新提交的并�
 上一提交 ad7b5d1 的 CI、bundle、完整 Fabric workflow 均 success，草稿预览 skipped；本轮没有重复三站或科研软件矩阵。
 
 7 项隔离 PostgreSQL／生产接口检查通过（56 断言），包含实际政策行锁及时间推进；运行资源清理完成。全仓 lint 通过，保留既有 47 warnings／1 info；1061 个本地文档目标及 diff 检查通过。完整类型检查首次仅新测试的 HTTP unknown 取值报错，改为严格解析完整响应，Server 及未执行到的独立 Fabric 脚本定向补查均退出 0，其他 package 已在根命令通过。完整类型范围通过，未使用类型抑制。
+
+
+## R 当前双边仲裁上下文
+
+2026-11-10：抽取原接单核对供人员查询和机构响应共用，新增指定 R 的双边短期签名查询、独立人员能力／两项签名用途、生产 API／ingress／mTLS 白名单及中英文标签。Drizzle 生成 0195 仅扩展原能力约束，无新表、队列或依赖。R 使用独立本地案件归属，联网后复查权限与信任，两个结果必须一致；最终核对与撤销收件串行，拒绝精确撤销通知后的旧响应。政策原签名只在机构服务内验证，不向人员 API 返回；合同、账单、原作业和接单不传给 R。细节见[接口边界](disputes.md#r-获取当前双边仲裁上下文)。
+
+14 项隔离 PostgreSQL／生产 HTTP 检查通过（含原绑定 7 项回归，143 断言）；独立真实 TLS 网关／出站 8 项检查通过（39 断言）。共享权限与政策 8 项检查通过，时间约束复查补上机构时钟有限偏差，严格查询原文绑定保持。PG 检查注入登记指纹，账单使用签署夹具；没有把此项称为三 Server、真实科研或裁决验收。第一次检查发现新增 package export 嵌套位置和测试重复 import 错误，已修复；类型和 lint 以修复后的结果为准。
+
+完整目标仍 active；R 裁决、财务 head／冻结依据、必要证据、窄执行、合法解冻及其余蓝图继续必做。上一提交 edd3e91 的 CI、Server/Agent bundle 和完整 Fabric 原运行均 success，草稿预览 skipped；没有重跑远端任务或将更早 probe-14 的历史失败宣称已定位修复。
+
+权限与信任设置 UI 的 19 项回归通过，完整 lint 通过（保留既有 47 warnings／1 info），1063 个本地文档目标及 diff 检查通过。隔离 PostgreSQL 已停止删除，部署库没有迁移。
+
+完整类型范围现已通过：根命令完成 protobuf 及 Server／Agent／Registry／CLI／Proto／Docs；修正 export 后 Shared／DB／Fabric／Web 定向检查通过，最后 Server 与独立 Fabric 脚本复查退出 0。没有类型抑制或生成产物差异。

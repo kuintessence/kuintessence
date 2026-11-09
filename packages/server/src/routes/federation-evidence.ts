@@ -7,13 +7,17 @@ import {
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import type { FederationArbitrationContextService } from "../federation/arbitration-context";
 import type { FederationEvidenceService } from "../federation/disclosure-delivery";
 import { FederationDeliveryError } from "../federation/outbound-client";
 import type { FederationActor } from "../federation/permissions";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
 
-export function createFederationEvidenceRoutes(service: FederationEvidenceService) {
+export function createFederationEvidenceRoutes(
+  service: FederationEvidenceService,
+  arbitration?: FederationArbitrationContextService,
+) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   const path = "/federation/evidence-cases";
   r.use(`${path}/*`, bodyLimit({ maxSize: 600000 }));
@@ -100,5 +104,11 @@ export function createFederationEvidenceRoutes(service: FederationEvidenceServic
       return c.json({ disclosure: await service.read(c.get("federationActor"), caseId, grantId) });
     },
   );
+  r.get(`${path}/:caseId/arbitration-context`, kqValidator("param", id), async (c) => {
+    if (!arbitration) throw new FederationError("ASSET_UNAVAILABLE");
+    return c.json({
+      data: await arbitration.read(c.get("federationActor"), c.req.valid("param").caseId),
+    });
+  });
   return r;
 }

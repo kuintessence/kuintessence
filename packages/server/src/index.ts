@@ -52,6 +52,7 @@ import { FederationAccountingCollection } from "./federation/accounting-collecti
 import { FederationAdjustmentService } from "./federation/adjustment";
 import { FederationAgreementExchange } from "./federation/agreement-exchange";
 import { FederationAgreementService } from "./federation/agreements";
+import { FederationArbitrationContextService } from "./federation/arbitration-context";
 import { FederationArbitrationPolicyService } from "./federation/arbitration-policy";
 import { FederationArbitrationRevocationDelivery } from "./federation/arbitration-revocations";
 import { FederationAssetService } from "./federation/assets";
@@ -1934,6 +1935,7 @@ if (federationSigningKey)
     "/",
     createFederationEvidenceRoutes(
       new FederationEvidenceService(db, federationSigningKey, federationSender),
+      new FederationArbitrationContextService(db, federationSigningKey, federationSender),
     ),
   );
 if (federationCasePublications)

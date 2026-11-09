@@ -123,7 +123,9 @@
       "commercial-arbitration-policy": "Arbitration preauthorization policy",
       "commercial-arbitration-revocation": "Arbitration preauthorization withdrawal",
       "arbitration-revocation-notice": "Arbitration withdrawal notice",
-      "arbitration-revocation-receipt": "Arbitration withdrawal receipt"
+      "arbitration-revocation-receipt": "Arbitration withdrawal receipt",
+      "arbitration-context-query": "Arbitration context query",
+      "arbitration-context": "Arbitration context"
     },
     "storage": {
       "title": "Input storage reconciliation",
@@ -262,6 +264,7 @@
           "open": "Open disputes"
         },
         "arbitration": {
+          "read": "Read arbitration context",
           "approve": "Approve arbitration policies"
         }
       },
@@ -321,6 +324,7 @@
           "open": "Open cases on this institution’s original records and stop new financial approvals for the task. Includes case viewing, without award or accounting authority."
         },
         "arbitration": {
+          "read": "Read current bilateral authority for registered cases. Grants no contract, evidence, award or financial access.",
           "approve": "Approve or revoke arbitration policies, including contract viewing. Grants no award, admission, debit or payment authority."
         }
       }

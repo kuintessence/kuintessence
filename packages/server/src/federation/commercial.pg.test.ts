@@ -11,6 +11,8 @@ import {
   federationAgreementApprovals,
   federationAgreements,
   federationArbitrationPolicies,
+  federationArbitrationRevocationDeliveries,
+  federationArbitrationRevocationNotices,
   federationAssetMappings,
   federationAttestationOutbox,
   federationBudgets,
@@ -25,6 +27,7 @@ import {
   federationCompletionClaims,
   federationDisputes,
   federationEvidence,
+  federationEvidenceCases,
   federationExecutionTerminals,
   federationMarketRequests,
   federationMaterials,
@@ -78,7 +81,13 @@ import {
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
 } from "@kuintessence/shared/federation";
+import {
+  ArbitrationContextQuerySchema,
+  ArbitrationContextSchema,
+  ArbitrationContextViewSchema,
+} from "@kuintessence/shared/federation/arbitration-context";
 import { CommercialArbitrationTaskBindingSchema } from "@kuintessence/shared/federation/arbitration-policy";
+import { ArbitrationRevocationNoticeSchema } from "@kuintessence/shared/federation/arbitration-revocation-notice";
 import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
   type CommercialAdapterProposalInput,
@@ -123,6 +132,7 @@ import { z } from "zod";
 import { JobCancellationOutbox } from "../grpc/dispatcher";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
+import { createFederationEvidenceRoutes } from "../routes/federation-evidence";
 import { createFederationOutboundRoutes } from "../routes/federation-outbound";
 import { planSandboxPlacement } from "../scheduler/sandbox-planner";
 import { JobService } from "../services/job-service";
@@ -131,7 +141,12 @@ import { createWorkflowPlacementBuilder } from "../services/workflow-placement-b
 import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
+import {
+  FederationArbitrationContextResponder,
+  FederationArbitrationContextService,
+} from "./arbitration-context";
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
+import { FederationArbitrationRevocationDelivery } from "./arbitration-revocations";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationClosingAutomation } from "./closing-automation";
 import { FederationClosingPolicyService } from "./closing-policy";
@@ -141,6 +156,7 @@ import type { CommercialClient } from "./commercial-client";
 import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
+import { FederationEvidenceService } from "./disclosure-delivery";
 import { FederationDispatchAuthorization } from "./dispatch-authorization";
 import { lockFederationDisputeTask } from "./dispute-freeze";
 import { FederationDisputeService } from "./disputes";
@@ -344,6 +360,29 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
     .where(eq(submissions.id, row.id));
 }
 afterAll(async () => {
+  if (arbitrationSites.length) {
+    await db
+      .delete(federationEvidenceCases)
+      .where(inArray(federationEvidenceCases.localSiteId, arbitrationSites));
+    await db
+      .delete(federationArbitrationRevocationNotices)
+      .where(inArray(federationArbitrationRevocationNotices.localSiteId, arbitrationSites));
+    await db
+      .delete(federationArbitrationRevocationDeliveries)
+      .where(inArray(federationArbitrationRevocationDeliveries.localSiteId, arbitrationSites));
+    await db.delete(auditLog).where(
+      inArray(
+        auditLog.actor,
+        arbitrationSites.map((site) => `arbitration-revocation:${site}`),
+      ),
+    );
+    await db
+      .delete(federationCertificates)
+      .where(inArray(federationCertificates.siteId, arbitrationSites));
+    await db
+      .delete(federationSigningKeys)
+      .where(inArray(federationSigningKeys.siteId, arbitrationSites));
+  }
   for (const f of fixtures) {
     const siteIds = [f.a.signing.siteId, f.b.signing.siteId];
     await db
@@ -12262,4 +12301,405 @@ test("arbitration case binding checks the original contract budget and mode even
       .where(eq(federationOutbound.operationId, f.request.operationId));
     await expect(f.read()).rejects.toThrow("POLICY_DENIED");
   }
+});
+
+async function arbitrationContextFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await arbitrationCaseFixture(mode);
+  const owner = await fixture(); // R has its own local organization and user.
+  const r = await testKeys(f.arbitration.policy.arbitratorSiteId);
+  await f.trust.addKey(
+    r.signing.siteId,
+    {
+      keyId: r.signing.keyId,
+      publicKeyPem: await exportSPKI(r.verification.publicKey),
+      allowedKinds: ["arbitration-context-query"],
+      validFrom: "2020-01-01T00:00:00Z",
+      validUntil: "2099-01-01T00:00:00Z",
+    },
+    owner.actor.userId,
+  );
+  for (const key of [f.a, f.b]) {
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["arbitration-context"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, key.signing.siteId));
+    await db
+      .update(federationSites)
+      .set({ endpoint: `https://${key.signing.siteId}.test.invalid` })
+      .where(eq(federationSites.id, key.signing.siteId));
+  }
+  for (const capability of ["arbitration.read", "disclosure.receive"] as const)
+    await new FederationPermissionService(db).set(
+      { ...owner.actor, capability, enabled: true },
+      owner.actor.userId,
+    );
+  const evidence = new FederationEvidenceService(db, r.signing);
+  const scope = {
+    caseId: f.draft.caseId,
+    domainId: f.draft.domainId,
+    agreementRevisionId: f.revisionId,
+    agreementDigest: f.draft.agreementDigest,
+    sourceSiteId: f.a.signing.siteId,
+    targetSiteId: f.b.signing.siteId,
+    evidenceRecipientSiteId: r.signing.siteId,
+  };
+  await evidence.register(owner.actor, scope);
+  const fingerprint = randomBytes(32).toString("hex");
+  await db.insert(federationCertificates).values({
+    fingerprint,
+    siteId: r.signing.siteId,
+    certificatePem: "registered fixture fingerprint",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2099-01-01"),
+  });
+  const deliveries: { query: z.infer<typeof ArbitrationContextQuerySchema>; response: string }[] =
+    [];
+  let afterResponse: (() => Promise<void>) | undefined;
+  let changeResponse: ((jws: string, key: typeof f.a) => Promise<string>) | undefined;
+  let offline = false;
+  const send: FederationSend = async (endpoint, jws, path) => {
+    if (offline) throw new Error("offline fixture");
+    const key = endpoint === `https://${f.a.signing.siteId}.test.invalid` ? f.a : f.b;
+    if (path !== "/federation/v1/arbitration-contexts")
+      throw new Error("Unexpected context endpoint");
+    const ingress = createFederationIngress(db, key.signing);
+    const res = await ingress.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/jose", "x-kq-federation-cert": fingerprint },
+      body: jws,
+    });
+    if (res.status !== 200) {
+      const body = z.object({ error: z.object({ code: z.string() }) }).parse(await res.json());
+      throw new Error(body.error.code);
+    }
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    let response = await res.text();
+    const query = ArbitrationContextQuerySchema.parse(
+      JSON.parse(Buffer.from(jws.split(".")[1] ?? "", "base64url").toString()),
+    );
+    deliveries.push({ query, response });
+    if (changeResponse) response = await changeResponse(response, key);
+    if (deliveries.length % 2 === 0) await afterResponse?.();
+    return response;
+  };
+  const service = new FederationArbitrationContextService(db, r.signing, send);
+  return {
+    ...f,
+    owner,
+    r,
+    scope,
+    evidence,
+    service,
+    fingerprint,
+    deliveries,
+    read: () => service.read(owner.actor, scope.caseId),
+    after: (fn: () => Promise<void>) => {
+      afterResponse = fn;
+    },
+    change: (fn: (jws: string, key: typeof f.a) => Promise<string>) => {
+      changeResponse = fn;
+    },
+    offline: () => {
+      offline = true;
+    },
+  };
+}
+
+test("arbitration context reads both current original bindings through production ingress without private originals", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await arbitrationContextFixture(mode);
+    // Separate evidence permission is not required for reading the already registered context.
+    await new FederationPermissionService(db).set(
+      { ...f.owner.actor, capability: "disclosure.receive", enabled: false },
+      f.owner.actor.userId,
+    );
+    const budgets = await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.request.budgetDomainId));
+    const queued = await db
+      .select()
+      .from(submissions)
+      .where(eq(submissions.agreementRevisionId, f.revisionId));
+    const result = ArbitrationContextViewSchema.parse(await f.read());
+    expect(result.binding.policyId).toBe(f.arbitration.policy.policyId);
+    expect(result.policy).toEqual(f.arbitration.policy);
+    expect(result.observations.map((o) => o.siteId)).toEqual([
+      f.a.signing.siteId,
+      f.b.signing.siteId,
+    ]);
+    expect(f.deliveries).toHaveLength(2);
+    expect(Date.parse(result.expiresAt)).toBeGreaterThan(Date.now());
+    const outputs = JSON.stringify([
+      result,
+      ...f.deliveries.map((d) =>
+        JSON.parse(Buffer.from(d.response.split(".")[1] ?? "", "base64url").toString()),
+      ),
+    ]);
+    for (const secret of [
+      f.original.requestJws,
+      f.original.receiptJws,
+      f.terms.termsText,
+      f.draft.reason,
+      f.actor.userId,
+      f.actor.orgId,
+    ])
+      expect(outputs).not.toContain(secret ?? "missing");
+    expect(JSON.stringify(result)).not.toContain("Jws");
+    expect(
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.request.budgetDomainId)),
+    ).toEqual(budgets);
+    expect(
+      await db.select().from(submissions).where(eq(submissions.agreementRevisionId, f.revisionId)),
+    ).toEqual(queued);
+    f.offline();
+    await expect(f.read()).rejects.toThrow("offline fixture");
+  }
+});
+
+test("arbitration context HTTP isolates human permission, local organization, closed cases and unknown paths", async () => {
+  const f = await arbitrationContextFixture();
+  const app = new Hono();
+  let actor = f.owner.actor,
+    automation = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    c.set("automation" as never, automation as never);
+    await next();
+  });
+  app.route("/", createFederationEvidenceRoutes(f.evidence, f.service));
+  const path = `/federation/evidence-cases/${f.scope.caseId}/arbitration-context`;
+  const ok = await app.request(path);
+  expect(ok.status).toBe(200);
+  expect(ok.headers.get("cache-control")).toBe("no-store");
+  expect(z.object({ data: ArbitrationContextViewSchema }).safeParse(await ok.json()).success).toBe(
+    true,
+  );
+  automation = true;
+  expect((await app.request(path)).status).toBe(403);
+  automation = false;
+  await new FederationPermissionService(db).set(
+    { ...f.owner.actor, capability: "arbitration.read", enabled: false },
+    f.owner.actor.userId,
+  );
+  expect((await app.request(path)).status).toBe(403);
+  actor = f.actor;
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "arbitration.read", enabled: true },
+    actor.userId,
+  );
+  expect((await app.request(path)).status).toBe(403);
+  actor = f.owner.actor;
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "arbitration.read", enabled: true },
+    actor.userId,
+  );
+  expect((await app.request(path.replace(f.scope.caseId, randomUUID()))).status).toBe(403);
+  expect((await app.request(path.replace(f.scope.caseId, "invalid"))).status).toBe(400);
+  await f.evidence.close(actor, f.scope.caseId);
+  expect((await app.request(path)).status).toBe(403);
+});
+
+test("arbitration context checks caller and case again after network requests", async () => {
+  for (const change of ["grant", "case", "endpoint", "key", "expiry"] as const) {
+    const f = await arbitrationContextFixture();
+    f.after(async () => {
+      if (change === "grant")
+        await new FederationPermissionService(db).set(
+          { ...f.owner.actor, capability: "arbitration.read", enabled: false },
+          f.owner.actor.userId,
+        );
+      if (change === "case") await f.evidence.close(f.owner.actor, f.scope.caseId);
+      if (change === "endpoint")
+        await db
+          .update(federationSites)
+          .set({ endpoint: "https://changed.test.invalid" })
+          .where(eq(federationSites.id, f.a.signing.siteId));
+      if (change === "key")
+        await db
+          .update(federationSigningKeys)
+          .set({ revokedAt: new Date() })
+          .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+      if (change === "expiry") setSystemTime(new Date(Date.now() + 61000));
+    });
+    try {
+      await expect(f.read()).rejects.toThrow(
+        change === "expiry"
+          ? "AUTHORIZATION_EXPIRED"
+          : ["grant", "case"].includes(change)
+            ? "POLICY_DENIED"
+            : "UNTRUSTED_IDENTITY",
+      );
+    } finally {
+      setSystemTime();
+    }
+  }
+});
+
+test("arbitration context rejects replay, altered request binding, mismatched bilateral bindings and policy signatures", async () => {
+  const f = await arbitrationContextFixture();
+  await f.read();
+  const old = f.deliveries[0];
+  if (!old) throw new Error("Missing context response");
+  f.change(async () => old.response);
+  await expect(f.read()).rejects.toThrow();
+  for (const mutation of ["query", "binding", "policy"] as const) {
+    f.change(async (jws, key) => {
+      if (key.signing.siteId !== f.a.signing.siteId) return jws;
+      const payload = ArbitrationContextSchema.parse(
+        JSON.parse(Buffer.from(jws.split(".")[1] ?? "", "base64url").toString()),
+      );
+      if (mutation === "query") payload.queryDigest = `sha256:${"b".repeat(64)}`;
+      if (mutation === "binding") payload.binding.requestDigest = `sha256:${"c".repeat(64)}`;
+      if (mutation === "policy") payload.targetJws = payload.sourceJws;
+      return signFederationMessage(ArbitrationContextSchema, payload, key.signing);
+    });
+    await expect(f.read()).rejects.toThrow(
+      mutation === "binding"
+        ? "OPERATION_CONFLICT"
+        : mutation === "query"
+          ? "POLICY_DENIED"
+          : "UNTRUSTED_IDENTITY",
+    );
+  }
+});
+
+test("arbitration context responder rejects another registered institution and changed case scope", async () => {
+  const f = await arbitrationContextFixture();
+  const query = ArbitrationContextQuerySchema.parse({
+    protocolVersion: 1,
+    kind: "arbitration-context-query",
+    readId: randomUUID(),
+    queryId: randomUUID(),
+    senderSiteId: f.r.signing.siteId,
+    recipientSiteId: f.a.signing.siteId,
+    scope: { ...f.scope, agreementDigest: `sha256:${"c".repeat(64)}` },
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 30000).toISOString(),
+  });
+  const responder = new FederationArbitrationContextResponder(db, f.a.signing);
+  await expect(
+    responder.receive(
+      await signFederationMessage(ArbitrationContextQuerySchema, query, f.r.signing),
+      f.fingerprint,
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+  const rogue = f.owner.a;
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["arbitration-context-query"] })
+    .where(eq(federationSigningKeys.siteId, rogue.signing.siteId));
+  const fingerprint = randomBytes(32).toString("hex");
+  await db.insert(federationCertificates).values({
+    fingerprint,
+    siteId: rogue.signing.siteId,
+    certificatePem: "registered unrelated institution",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2099-01-01"),
+  });
+  const rogueQuery = {
+    ...query,
+    scope: { ...f.scope, evidenceRecipientSiteId: rogue.signing.siteId },
+    senderSiteId: rogue.signing.siteId,
+  };
+  await expect(
+    responder.receive(
+      await signFederationMessage(ArbitrationContextQuerySchema, rogueQuery, rogue.signing),
+      fingerprint,
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+  await f.arbitration.source.revoke(f.actor, f.revisionId, f.arbitration.policy.policyId);
+  await expect(f.read()).rejects.toThrow("AUTHORIZATION_EXPIRED");
+});
+
+test("arbitration context rejects an exact withdrawal received by R while responses are in flight", async () => {
+  const f = await arbitrationContextFixture();
+  for (const [key, kinds] of [
+    [f.a, ["commercial-arbitration-revocation", "arbitration-revocation-notice"]],
+    [f.r, ["arbitration-revocation-receipt"]],
+  ] as const)
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || ${JSON.stringify(kinds)}::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, key.signing.siteId));
+  const fingerprint = randomBytes(32).toString("hex");
+  await db.insert(federationCertificates).values({
+    fingerprint,
+    siteId: f.a.signing.siteId,
+    certificatePem: "registered source fingerprint",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2099-01-01"),
+  });
+  f.after(async () => {
+    await f.arbitration.source.revoke(f.actor, f.revisionId, f.arbitration.policy.policyId);
+    const withdrawal = await db.transaction((tx) =>
+      f.arbitration.source.withdrawalForDelivery(tx, f.arbitration.policy.policyId),
+    );
+    const notice = ArbitrationRevocationNoticeSchema.parse({
+      protocolVersion: 1,
+      kind: "arbitration-revocation-notice",
+      noticeId: randomUUID(),
+      issuerSiteId: f.a.signing.siteId,
+      receivingSiteId: f.r.signing.siteId,
+      policy: withdrawal.payload,
+      policyJws: withdrawal.approvalJws,
+      revocationJws: withdrawal.revocationJws,
+      issuedAt: new Date().toISOString(),
+    });
+    await new FederationArbitrationRevocationDelivery(
+      db,
+      f.r.signing,
+      new FederationArbitrationPolicyService(db, f.r.signing),
+    ).receive(
+      await signFederationMessage(ArbitrationRevocationNoticeSchema, notice, f.a.signing),
+      fingerprint,
+    );
+  });
+  await expect(f.read()).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  expect(
+    await db
+      .select()
+      .from(federationArbitrationRevocationNotices)
+      .where(eq(federationArbitrationRevocationNotices.localSiteId, f.r.signing.siteId)),
+  ).toHaveLength(1);
+});
+
+test("arbitration context requires explicit message purposes and registered caller certificate", async () => {
+  const f = await arbitrationContextFixture();
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-disclosure-read-query"] })
+    .where(eq(federationSigningKeys.siteId, f.r.signing.siteId));
+  await expect(f.read()).rejects.toThrow("UNTRUSTED_IDENTITY");
+  expect(f.deliveries).toHaveLength(0);
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["arbitration-context-query"] })
+    .where(eq(federationSigningKeys.siteId, f.r.signing.siteId));
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'arbitration-context'` })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  await expect(f.read()).rejects.toThrow("UNTRUSTED_IDENTITY");
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["arbitration-context"]'::jsonb`,
+    })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  await db
+    .update(federationCertificates)
+    .set({ revokedAt: new Date() })
+    .where(eq(federationCertificates.fingerprint, f.fingerprint));
+  await expect(f.read()).rejects.toThrow("UNTRUSTED_IDENTITY");
 });

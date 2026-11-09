@@ -123,7 +123,9 @@
       "commercial-arbitration-policy": "仲裁预授权政策",
       "commercial-arbitration-revocation": "撤销仲裁预授权",
       "arbitration-revocation-notice": "仲裁预授权撤销通知",
-      "arbitration-revocation-receipt": "仲裁预授权撤销回执"
+      "arbitration-revocation-receipt": "仲裁预授权撤销回执",
+      "arbitration-context-query": "仲裁上下文查询",
+      "arbitration-context": "仲裁上下文"
     },
     "storage": {
       "title": "输入存储核对",
@@ -262,6 +264,7 @@
           "open": "发起争议"
         },
         "arbitration": {
+          "read": "查询仲裁上下文",
           "approve": "批准仲裁预授权"
         }
       },
@@ -321,6 +324,7 @@
           "open": "针对本机构原记录开案并停止相关任务的新财务批准；包含案件查看，不授予裁决或改账权限。"
         },
         "arbitration": {
+          "read": "查询已登记案件的当前双边授权，不授予合同、材料、裁决或资金操作权限。",
           "approve": "批准或撤销本机构的仲裁预授权政策，包含合同查看；不授予裁决、任务接单、扣款或付款权限。"
         }
       }

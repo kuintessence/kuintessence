@@ -126,6 +126,11 @@
       "types": "./src/federation/arbitration-revocation.ts",
       "default": "./src/federation/arbitration-revocation.ts"
     },
+    "./federation/arbitration-context": {
+      "bun": "./src/federation/arbitration-context.ts",
+      "types": "./src/federation/arbitration-context.ts",
+      "default": "./src/federation/arbitration-context.ts"
+    },
     "./federation/arbitration-policy": {
       "bun": "./src/federation/arbitration-policy.ts",
       "types": "./src/federation/arbitration-policy.ts",
