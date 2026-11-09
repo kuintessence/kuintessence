@@ -10,6 +10,61 @@ import {
 import { FederationMediaReceiptAckSchema, FederationMediaReceiptSchema } from "./media-receipts";
 import { FederationDigestSchema } from "./references";
 
+export const MediaOptionsQuerySchema = z
+  .discriminatedUnion("kind", [
+    z.object({ kind: z.literal("agreements") }),
+    z.object({ kind: z.literal("agents") }),
+    z.object({ kind: z.literal("roots"), agentId: z.string().min(1).max(255) }),
+  ])
+  .and(
+    z.object({
+      limit: z.coerce.number().int().min(1).max(100).default(20),
+      offset: z.coerce.number().int().nonnegative().default(0),
+    }),
+  );
+const OptionsPage = {
+  localSiteId: z.uuid(),
+  localOrgId: z.uuid(),
+  hasMore: z.boolean(),
+};
+export const MediaOptionsSchema = z.discriminatedUnion("kind", [
+  z.object({
+    ...OptionsPage,
+    kind: z.literal("agreements"),
+    data: z
+      .array(
+        z.object({
+          revisionId: z.uuid(),
+          peerSiteId: z.uuid(),
+          peerName: z.string(),
+          validFrom: z.iso.datetime(),
+          validUntil: z.iso.datetime(),
+          resultAvailableUntil: z.iso.datetime().nullable(),
+        }),
+      )
+      .max(100),
+  }),
+  z.object({
+    ...OptionsPage,
+    kind: z.literal("agents"),
+    data: z
+      .array(
+        z.object({
+          agentId: z.string().min(1),
+          name: z.string(),
+          status: z.string(),
+        }),
+      )
+      .max(100),
+  }),
+  z.object({
+    ...OptionsPage,
+    kind: z.literal("roots"),
+    agentId: z.string().min(1),
+    data: z.array(z.object({ id: z.uuid(), label: z.string() })).max(100),
+  }),
+]);
+
 const Revocation = {
   revokedAt: z.iso.datetime().nullable(),
   revocationReason: z.string().nullable(),

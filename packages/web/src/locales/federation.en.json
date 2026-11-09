@@ -809,6 +809,71 @@
         "task-result": "Task result"
       },
       "reason": "Reason for change"
+    },
+    "delivery": {
+      "title": "Media delivery",
+      "outgoing": "Outgoing",
+      "incoming": "Incoming",
+      "denied": "Asset read permission is not granted in this organization.",
+      "empty": "No delivery packages",
+      "agreements": "Cooperation agreement",
+      "agents": "Execution Agent",
+      "roots": "Managed directory",
+      "choose": "Choose an option",
+      "noOptions": "No available options",
+      "subject": "Material purpose",
+      "versionId": "Dataset version ID",
+      "locationId": "Source replica ID",
+      "operationId": "Delegation ID",
+      "expiresAt": "Expires at",
+      "maxBytes": "Receive limit (bytes)",
+      "manifestFile": "Signed manifest file",
+      "reason": "Revocation reason",
+      "invalid": "Check required fields, IDs, expiry and the manifest file.",
+      "unconfirmed": "Submission outcome is unconfirmed. The form is preserved. Query the original record first; retry sends the same request.",
+      "sender": "Source site",
+      "recipient": "Receiving site",
+      "files": "Files",
+      "bytes": "Total bytes",
+      "createdAt": "Created at",
+      "manifest": "File manifest",
+      "downloadManifest": "Download signed manifest",
+      "missingLicense": "License not provided",
+      "missingProvenance": "Provenance not provided",
+      "authorizations": "Receive approvals",
+      "noAuthorizations": "No receive approvals yet",
+      "operation": "Execution status",
+      "receipts": "Signed receipts",
+      "noReceipts": "No receipts yet",
+      "privateVerified": "Files are verified in private quarantine. Task execution still requires publication and valid use authorization.",
+      "actions": {
+        "export": "Approve export",
+        "register": "Register received package",
+        "approve": "Approve receipt",
+        "run": "Run",
+        "revoke": "Revoke",
+        "retryReceipt": "Resend receipt",
+        "revokeApproval": "Revoke approval"
+      },
+      "kinds": {
+        "task-input": "Task input",
+        "task-result": "Task result",
+        "dataset": "Shared dataset"
+      },
+      "states": {
+        "revoked": "Revoked",
+        "expired": "Expired",
+        "approved": "Approved",
+        "registered": "Registered",
+        "notStarted": "Not started",
+        "queued": "Queued",
+        "exported": "Exported",
+        "failed": "Failed",
+        "verified": "Private files verified",
+        "awaiting-import": "Awaiting import",
+        "pending": "Receipt pending",
+        "recorded": "Receipt acknowledged"
+      }
     }
   }
 }

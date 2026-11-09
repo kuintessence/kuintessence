@@ -809,6 +809,71 @@
         "task-result": "作业结果"
       },
       "reason": "变更原因"
+    },
+    "delivery": {
+      "title": "介质交付",
+      "outgoing": "发出",
+      "incoming": "收到",
+      "denied": "当前机构未授予材料查看权限。",
+      "empty": "暂无交付包",
+      "agreements": "合作协议",
+      "agents": "执行 Agent",
+      "roots": "受管目录",
+      "choose": "请选择",
+      "noOptions": "暂无可选项",
+      "subject": "材料用途",
+      "versionId": "数据集版本编号",
+      "locationId": "来源副本编号",
+      "operationId": "任务委派编号",
+      "expiresAt": "有效期至",
+      "maxBytes": "接收上限（字节）",
+      "manifestFile": "签名清单文件",
+      "reason": "撤销原因",
+      "invalid": "请检查必填项、编号、有效期及清单文件。",
+      "unconfirmed": "提交结果尚未确认，表单已保留。请先查询原记录；重试会发送同一请求。",
+      "sender": "来源站点",
+      "recipient": "接收站点",
+      "files": "文件数",
+      "bytes": "总字节数",
+      "createdAt": "创建时间",
+      "manifest": "文件清单",
+      "downloadManifest": "下载签名清单",
+      "missingLicense": "未提供许可证",
+      "missingProvenance": "未提供来源记录",
+      "authorizations": "接收批准",
+      "noAuthorizations": "尚未批准接收",
+      "operation": "执行状态",
+      "receipts": "签名回执",
+      "noReceipts": "尚未收到回执",
+      "privateVerified": "文件已在私有隔离区校验；任务是否可运行仍取决于发布和使用授权。",
+      "actions": {
+        "export": "批准导出",
+        "register": "登记收到的包",
+        "approve": "批准接收",
+        "run": "运行",
+        "revoke": "撤销",
+        "retryReceipt": "重发回执",
+        "revokeApproval": "撤销批准"
+      },
+      "kinds": {
+        "task-input": "任务输入",
+        "task-result": "任务结果",
+        "dataset": "共享数据集"
+      },
+      "states": {
+        "revoked": "已撤销",
+        "expired": "已过期",
+        "approved": "已批准",
+        "registered": "已登记",
+        "notStarted": "尚未运行",
+        "queued": "待执行",
+        "exported": "已导出",
+        "failed": "失败",
+        "verified": "私有文件已校验",
+        "awaiting-import": "等待导入",
+        "pending": "回执待确认",
+        "recorded": "回执已确认"
+      }
     }
   }
 }

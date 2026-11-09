@@ -10,6 +10,7 @@ import {
   MediaDeviceRegistrationSchema,
   MediaDeviceUpdateSchema,
   MediaHandoffSchema,
+  MediaOptionsQuerySchema,
   MediaShipmentRegistrationSchema,
 } from "@kuintessence/shared/federation";
 import { Hono } from "hono";
@@ -77,6 +78,9 @@ export function createFederationMediaRoutes(
     offset: z.coerce.number().int().nonnegative().default(0),
   });
   const id = z.object({ id: z.uuid() });
+  r.get("/federation/media/options", kqValidator("query", MediaOptionsQuerySchema), async (c) =>
+    c.json(await service.options(c.get("federationActor"), c.req.valid("query"))),
+  );
   r.get("/federation/media/logistics-context", async (c) =>
     c.json({ data: await transport().context(c.get("federationActor")) }),
   );

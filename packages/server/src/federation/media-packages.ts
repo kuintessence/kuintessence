@@ -2,6 +2,7 @@ import {
   agents,
   auditLog,
   clusterFileRoots,
+  federationAgreementApprovals,
   federationAgreements,
   federationMediaImportAuthorizations,
   federationMediaPackages,
@@ -17,8 +18,10 @@ import {
   FederationMediaManifestSchema,
   FederationMediaRegistrationSchema,
   FederationMediaRevocationSchema,
+  MediaOptionsQuerySchema,
+  MediaOptionsSchema,
 } from "@kuintessence/shared/federation";
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -44,6 +47,87 @@ export class FederationMediaPackageService {
   ) {
     z.uuid().parse(localSiteId);
     this.trust = new FederationTrustRegistry(db);
+  }
+
+  async options(actor: FederationActor, raw: unknown) {
+    const query = MediaOptionsQuerySchema.parse(raw);
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "asset.read");
+      const scope = { localSiteId: this.localSiteId, localOrgId: actor.orgId };
+      if (query.kind === "agents") {
+        const rows = await tx
+          .select({ agentId: agents.agentId, name: agents.siteName, status: agents.status })
+          .from(agents)
+          .where(eq(agents.providerOrgId, actor.orgId))
+          .orderBy(asc(agents.siteName), asc(agents.agentId))
+          .limit(query.limit + 1)
+          .offset(query.offset);
+        return MediaOptionsSchema.parse({
+          ...scope,
+          kind: query.kind,
+          data: rows.slice(0, query.limit),
+          hasMore: rows.length > query.limit,
+        });
+      }
+      if (query.kind === "roots") {
+        const rows = await tx
+          .select({ id: clusterFileRoots.id, label: clusterFileRoots.label })
+          .from(clusterFileRoots)
+          .innerJoin(agents, eq(agents.agentId, clusterFileRoots.agentId))
+          .where(
+            and(
+              eq(agents.agentId, query.agentId),
+              eq(agents.providerOrgId, actor.orgId),
+              eq(clusterFileRoots.providerOrgId, actor.orgId),
+              eq(clusterFileRoots.enabled, true),
+            ),
+          )
+          .orderBy(asc(clusterFileRoots.label), asc(clusterFileRoots.id))
+          .limit(query.limit + 1)
+          .offset(query.offset);
+        return MediaOptionsSchema.parse({
+          ...scope,
+          kind: query.kind,
+          agentId: query.agentId,
+          data: rows.slice(0, query.limit),
+          hasMore: rows.length > query.limit,
+        });
+      }
+      const a = federationAgreementApprovals;
+      const peer = sql<string>`case when ${a.terms}->>'sourceSiteId' = ${this.localSiteId}
+        then ${a.terms}->>'targetSiteId' else ${a.terms}->>'sourceSiteId' end`;
+      const rows = await tx
+        .select({
+          revisionId: a.revisionId,
+          peerSiteId: federationSites.id,
+          peerName: federationSites.name,
+          validFrom: sql<string>`${a.terms}->>'validFrom'`,
+          validUntil: sql<string>`${a.terms}->>'validUntil'`,
+          resultAvailableUntil: sql<string | null>`${a.terms}->'resultPolicy'->>'availableUntil'`,
+        })
+        .from(a)
+        .innerJoin(federationSites, sql`${federationSites.id}::text = ${peer}`)
+        .where(
+          and(
+            eq(a.localSiteId, this.localSiteId),
+            eq(a.localOrgId, actor.orgId),
+            eq(a.state, "active"),
+            isNotNull(a.counterpartyApprovalJws),
+            eq(federationSites.state, "active"),
+            sql`(${a.terms}->>'sourceSiteId' = ${this.localSiteId} or ${a.terms}->>'targetSiteId' = ${this.localSiteId})`,
+          ),
+        )
+        // Result delivery can remain authorized after the execution agreement expires.
+        .orderBy(desc(a.createdAt), desc(a.revisionId))
+        .limit(query.limit + 1)
+        .offset(query.offset);
+      return MediaOptionsSchema.parse({
+        ...scope,
+        kind: query.kind,
+        data: rows.slice(0, query.limit),
+        hasMore: rows.length > query.limit,
+      });
+    });
   }
 
   async register(actor: FederationActor, raw: unknown) {

@@ -56,6 +56,7 @@ import {
   FederationMediaReceiptAckSchema,
   FederationMediaReceiptSchema,
   FederationMediaRecipientKeySchema,
+  MediaOptionsSchema,
 } from "@kuintessence/shared/federation";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
 import { decryptFederationMediaIdentity } from "@kuintessence/shared/federation/media-key-crypto";
@@ -458,6 +459,152 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     );
     return r;
   }
+
+  test("media options: HTTP picks are scoped summaries without logistics or secret fields", async () => {
+    const media = new FederationMediaPackageService(db, source.signing.siteId);
+    const response = await app().request("/api/federation/media/options?kind=agreements");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const agreements = MediaOptionsSchema.parse(await response.json());
+    expect(agreements).toEqual({
+      localSiteId: source.signing.siteId,
+      localOrgId: actor.orgId,
+      kind: "agreements",
+      data: [
+        {
+          revisionId: terms.agreementRevisionId,
+          peerSiteId: target.signing.siteId,
+          peerName: "Media test site",
+          validFrom: terms.validFrom,
+          validUntil: terms.validUntil,
+          resultAvailableUntil: terms.resultPolicy?.availableUntil ?? null,
+        },
+      ],
+      hasMore: false,
+    });
+    expect((await media.options(other, { kind: "agreements" })).data).toEqual([]);
+    expect((await media.options(other, { kind: "agents" })).data).toEqual([]);
+    const found = await media.options(actor, { kind: "agents" });
+    expect(found.data).toEqual([{ agentId, name: "Source", status: "offline" }]);
+    const roots = await media.options(actor, { kind: "roots", agentId });
+    expect(roots.data).toEqual([{ id: rootId, label: "Approved source storage" }]);
+    expect(JSON.stringify({ agreements, found, roots })).not.toContain("/managed/");
+    expect((await media.options(other, { kind: "roots", agentId })).data).toEqual([]);
+  });
+
+  test("media options: signed active agreement candidates retain independent result deadlines", async () => {
+    const media = new FederationMediaPackageService(db, source.signing.siteId);
+    const where = and(
+      eq(federationAgreementApprovals.localSiteId, source.signing.siteId),
+      eq(federationAgreementApprovals.revisionId, terms.agreementRevisionId),
+    );
+    const [original] = await db.select().from(federationAgreementApprovals).where(where);
+    if (!original) throw new Error("Missing agreement fixture");
+    try {
+      for (const patch of [
+        { state: "suspended" },
+        { state: "revoked" },
+        { counterpartyApprovalJws: null },
+        { localOrgId: other.orgId },
+        { localSiteId: target.signing.siteId },
+      ]) {
+        // Each exclusion starts from the same approved revision.
+        await db.update(federationAgreementApprovals).set(patch).where(where);
+        expect((await media.options(actor, { kind: "agreements" })).data).toEqual([]);
+        await db
+          .update(federationAgreementApprovals)
+          .set(original)
+          .where(
+            and(
+              eq(federationAgreementApprovals.revisionId, terms.agreementRevisionId),
+              eq(
+                federationAgreementApprovals.localSiteId,
+                patch.localSiteId ?? source.signing.siteId,
+              ),
+            ),
+          );
+      }
+      const late = new FederationMediaPackageService(
+        db,
+        source.signing.siteId,
+        () => new Date(Date.parse(terms.validUntil) + 1),
+      );
+      expect((await late.options(actor, { kind: "agreements" })).data).toHaveLength(1);
+    } finally {
+      await db
+        .update(federationAgreementApprovals)
+        .set(original)
+        .where(
+          and(
+            eq(federationAgreementApprovals.revisionId, terms.agreementRevisionId),
+            eq(federationAgreementApprovals.approvedBy, actor.userId),
+          ),
+        );
+    }
+  });
+
+  test("media options: roots require both owners and enabled state, with stable bounded pages", async () => {
+    const media = new FederationMediaPackageService(db, source.signing.siteId);
+    const second = crypto.randomUUID();
+    await db.insert(clusterFileRoots).values({
+      id: second,
+      agentId,
+      providerOrgId: actor.orgId,
+      label: "Second directory",
+      path: "/private/second",
+    });
+    try {
+      const first = await media.options(actor, { kind: "roots", agentId, limit: 1 });
+      const next = await media.options(actor, { kind: "roots", agentId, limit: 1, offset: 1 });
+      expect(first.data).toEqual([{ id: rootId, label: "Approved source storage" }]);
+      expect(first.hasMore).toBe(true);
+      expect(next.data).toEqual([{ id: second, label: "Second directory" }]);
+      expect(next.hasMore).toBe(false);
+      await db
+        .update(clusterFileRoots)
+        .set({ enabled: false })
+        .where(eq(clusterFileRoots.id, second));
+      await db
+        .update(clusterFileRoots)
+        .set({ providerOrgId: other.orgId })
+        .where(eq(clusterFileRoots.id, rootId));
+      expect((await media.options(actor, { kind: "roots", agentId })).data).toEqual([]);
+      await db
+        .update(clusterFileRoots)
+        .set({ providerOrgId: actor.orgId })
+        .where(eq(clusterFileRoots.id, rootId));
+      await db
+        .update(agents)
+        .set({ providerOrgId: other.orgId })
+        .where(eq(agents.agentId, agentId));
+      expect((await media.options(actor, { kind: "roots", agentId })).data).toEqual([]);
+      expect((await media.options(other, { kind: "roots", agentId })).data).toEqual([]);
+    } finally {
+      await db
+        .update(agents)
+        .set({ providerOrgId: actor.orgId })
+        .where(eq(agents.agentId, agentId));
+      await db.delete(clusterFileRoots).where(eq(clusterFileRoots.id, second));
+    }
+  });
+
+  test("media options: reject unbounded queries and nonhuman or revoked access", async () => {
+    const media = new FederationMediaPackageService(db, source.signing.siteId);
+    for (const query of [
+      "kind=roots",
+      "kind=agents&limit=101",
+      "kind=agents&offset=-1",
+      "kind=unknown",
+    ])
+      expect((await app().request(`/api/federation/media/options?${query}`)).status).toBe(400);
+    await expect(media.options(worker, { kind: "agents" })).rejects.toThrow();
+    await permissions.set({ ...actor, capability: "asset.map", enabled: false }, actor.userId);
+    try {
+      expect((await app().request("/api/federation/media/options?kind=agents")).status).toBe(403);
+    } finally {
+      await permissions.set({ ...actor, capability: "asset.map", enabled: true }, actor.userId);
+    }
+  });
 
   test("logistics source: signed exports share one batch without disclosing keys or changing data permissions", async () => {
     await permissions.set({ ...actor, capability: "media.logistics", enabled: true }, actor.userId);
