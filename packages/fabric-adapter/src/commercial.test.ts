@@ -10,6 +10,7 @@ import { Client, credentials, Metadata } from "@grpc/grpc-js";
 import { connect, GatewayError, signers } from "@hyperledger/fabric-gateway";
 import { peer, gateway as proto } from "@hyperledger/fabric-protos";
 import { FederationCancellationReceiptSchema } from "@kuintessence/shared/federation";
+import { CommercialArbitrationRevocationSchema } from "@kuintessence/shared/federation/arbitration-revocation";
 import {
   CommercialAdapterProposalInputSchema,
   CommercialAdjustmentSchema,
@@ -87,6 +88,7 @@ beforeAll(async () => {
         keyId: key.keyId,
         kinds: [
           "commercial-agreement",
+          "commercial-arbitration-revocation",
           "commercial-usage",
           "commercial-reservation",
           "commercial-release",
@@ -200,6 +202,75 @@ function decode(fixture: ReturnType<typeof setup>, token: string) {
       JSON.parse(Buffer.concat([cipher.update(bytes.subarray(28)), cipher.final()]).toString()),
     );
 }
+test("arbitration withdrawals keep signatures transient, require a current purpose and retain A/B endorsement", async () => {
+  const a = keys[0],
+    b = keys[1];
+  if (!a || !b) throw new Error("Missing fixture parties");
+  const payload = CommercialArbitrationRevocationSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-arbitration-revocation",
+    revocationId: randomUUID(),
+    policyId: randomUUID(),
+    policyDigest: `sha256:${"a".repeat(64)}`,
+    domainId: input.domainId,
+    agreementRevisionId: input.recordId,
+    agreementDigest: input.digest,
+    sourceSiteId: a.siteId,
+    targetSiteId: b.siteId,
+    issuerSiteId: b.siteId,
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const jws = await signFederationMessage(CommercialArbitrationRevocationSchema, payload, b);
+  const value = CommercialAdapterProposalInputSchema.parse({
+    operation: "revoke-arbitration-policy",
+    domainId: payload.domainId,
+    recordId: payload.revocationId,
+    policyId: payload.policyId,
+    digest: `sha256:${createHash("sha256")
+      .update(Buffer.from(jws.split(".")[1] ?? "", "base64url"))
+      .digest("hex")}`,
+    envelope: { issuerSiteId: b.siteId, revocationJws: jws },
+  });
+  if (value.operation !== "revoke-arbitration-policy") throw new Error("Missing withdrawal");
+  const f = setup(),
+    prepared = await f.adapter.prepare(value);
+  const stored = decode(f, prepared.recovery);
+  expect(Buffer.from(prepared.recovery, "base64").toString()).not.toContain(jws);
+  const proposed = proto.ProposedTransaction.deserializeBinary(
+    Buffer.from(stored.message.bytes, "base64"),
+  );
+  expect(proposed.getEndorsingOrganizationsList()).toEqual(["AMSP", "BMSP"]);
+  const signed = proposed.getProposal();
+  if (!signed) throw new Error("Missing SDK proposal");
+  const wire = peer.ChaincodeProposalPayload.deserializeBinary(
+    peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+  );
+  expect(Buffer.from(wire.getTransientmapMap().get("commercial") ?? []).toString()).toBe(
+    JSON.stringify(value.envelope),
+  );
+  expect(
+    peer.ChaincodeInvocationSpec.deserializeBinary(wire.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((bytes) => Buffer.from(bytes).toString()),
+  ).toEqual(["RevokeArbitrationPolicy", value.domainId, value.recordId]);
+  const denied = setup();
+  for (const patch of [
+    { policyId: randomUUID() },
+    { recordId: randomUUID() },
+    { digest: `sha256:${"0".repeat(64)}` },
+    { envelope: { ...value.envelope, issuerSiteId: a.siteId } },
+  ])
+    await expect(denied.adapter.prepare({ ...value, ...patch })).rejects.toThrow();
+  expect(denied.sdk).not.toHaveBeenCalled();
+  const trust = structuredClone(config.trust);
+  for (const key of trust.keyPurposes)
+    key.kinds = key.kinds.filter((kind) => kind !== "commercial-arbitration-revocation");
+  await expect(setup({ trust }).adapter.prepare(value)).rejects.toThrow("UNTRUSTED_IDENTITY");
+});
+
 test("commercial proposals encrypt exact signed terms and target only the two configured member MSPs", async () => {
   const fixture = setup(),
     prepared = await fixture.adapter.prepare(input);

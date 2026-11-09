@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
+  federationCommercialAttempts as attempts,
   auditLog,
   federationCommercialAgreements as contracts,
   createPgDb,
@@ -21,6 +22,7 @@ import {
   CommercialArbitrationPolicyListSchema,
   CommercialArbitrationPolicySchema,
 } from "@kuintessence/shared/federation/arbitration-policy";
+import { CommercialArbitrationRevocationSchema } from "@kuintessence/shared/federation/arbitration-revocation";
 import { CommercialAgreementSchema } from "@kuintessence/shared/federation/commercial";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -33,6 +35,7 @@ import { createFederationCommercialRoutes } from "../routes/federation-commercia
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
+import type { CommercialClient } from "./commercial-client";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { createFederationIngress } from "./ingress";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -164,6 +167,17 @@ async function fixture(mode: FederationMode = "bilateral_direct") {
 
 afterAll(async () => {
   for (const f of fixtures.reverse()) {
+    await db
+      .delete(attempts)
+      .where(
+        inArray(
+          attempts.submissionId,
+          db
+            .select({ id: submissions.id })
+            .from(submissions)
+            .where(inArray(submissions.localSiteId, f.sites)),
+        ),
+      );
     await db.delete(syncs).where(inArray(syncs.localSiteId, f.sites));
     await db.delete(federationCertificates).where(inArray(federationCertificates.siteId, f.sites));
     await db.delete(policies).where(inArray(policies.localSiteId, f.sites));
@@ -182,6 +196,180 @@ afterAll(async () => {
     }
   }
   await db.$client.end();
+});
+
+test("arbitration native withdrawal queues one signed intent and recovers its original transaction", async () => {
+  for (const mode of ["bilateral_attested", "ledger_coordinated"] as const) {
+    const f = await fixture(mode);
+    await f.approve();
+    const prepared: string[] = [];
+    const client: CommercialClient = {
+      async prepare(input) {
+        prepared.push(input.operation);
+        const transactionId = randomBytes(32).toString("hex");
+        return {
+          transactionId,
+          recovery: Buffer.from(`proposal:${transactionId}`).toString("base64"),
+        };
+      },
+      async advance(recovery) {
+        const [stage, transactionId] = Buffer.from(recovery, "base64").toString().split(":");
+        if (!transactionId) throw new Error("Missing fixture transaction");
+        return stage === "proposal"
+          ? {
+              state: "prepared",
+              transactionId,
+              recovery: Buffer.from(`transaction:${transactionId}`).toString("base64"),
+            }
+          : { state: "committed", transactionId, blockNumber: "9" };
+      },
+    };
+    let worker = new FederationCommercialSubmissionService(db, f.a.signing.siteId, client);
+    for (let step = 0; step < 3; step++) expect(await worker.advanceNext()).toBe(true);
+    await expect(f.service.submitRevocation(f.actor, f.revision, f.draft.policyId)).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    await f.service.revoke(f.actor, f.revision, f.draft.policyId);
+    await expect(f.service.submitRevocation(f.actor, f.revision, f.draft.policyId)).rejects.toThrow(
+      "UNTRUSTED_IDENTITY",
+    );
+    expect((await f.row())?.revokedAt).not.toBeNull();
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: ["commercial-arbitration-revocation"] })
+      .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+    const values = await Promise.all(
+      Array.from({ length: 3 }, () =>
+        f.service.submitRevocation(f.actor, f.revision, f.draft.policyId),
+      ),
+    );
+    expect(new Set(values.map((value) => value.id)).size).toBe(1);
+    const id = values[0]?.id;
+    if (!id) throw new Error("Missing withdrawal submission");
+    const [submission] = await db.select().from(submissions).where(eq(submissions.id, id));
+    if (submission?.input.operation !== "revoke-arbitration-policy")
+      throw new Error("Missing withdrawal input");
+    const payload = CommercialArbitrationRevocationSchema.parse(
+      JSON.parse(
+        Buffer.from(
+          submission.input.envelope.revocationJws.split(".")[1] ?? "",
+          "base64url",
+        ).toString(),
+      ),
+    );
+    const policy = await f.row();
+    if (!policy) throw new Error("Missing original policy");
+    expect(payload.policyDigest).toBe(policy.digest);
+    expect(payload.issuerSiteId).toBe(f.a.signing.siteId);
+    for (let step = 0; step < 2; step++) expect(await worker.advanceNext()).toBe(true);
+    const [before] = await db.select().from(attempts).where(eq(attempts.submissionId, id));
+    expect(before?.stage).toBe("transaction");
+    worker = new FederationCommercialSubmissionService(db, f.a.signing.siteId, client);
+    expect(await worker.advanceNext()).toBe(true);
+    const [after] = await db.select().from(attempts).where(eq(attempts.submissionId, id));
+    if (!before || !after) throw new Error("Missing persisted withdrawal attempts");
+    expect(after.transactionId).toBe(before.transactionId);
+    expect(after?.stage).toBe("committed");
+    expect(await f.service.submitRevocation(f.actor, f.revision, f.draft.policyId)).toEqual({
+      id,
+      state: "committed",
+    });
+    expect(prepared).toEqual(["register-agreement", "revoke-arbitration-policy"]);
+    expect(await f.audit("federation.arbitration_policy.ledger_revocation")).toHaveLength(1);
+  }
+});
+
+test("arbitration native withdrawal preserves local refusal and rejects direct mode, foreign scope and ungranted signing", async () => {
+  const direct = await fixture();
+  await direct.approve();
+  await direct.service.revoke(direct.actor, direct.revision, direct.draft.policyId);
+  await expect(
+    direct.service.submitRevocation(direct.actor, direct.revision, direct.draft.policyId),
+  ).rejects.toThrow("POLICY_DENIED");
+  const f = await fixture("ledger_coordinated");
+  await f.approve();
+  await f.service.revoke(f.actor, f.revision, f.draft.policyId);
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-arbitration-revocation"] })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  await expect(
+    f.service.submitRevocation(f.otherActor, f.revision, f.draft.policyId),
+  ).rejects.toThrow("AGREEMENT_UNAVAILABLE");
+  await db.execute(
+    sql`alter table audit_log add constraint test_arbitration_withdrawal_audit check (action <> 'federation.arbitration_policy.ledger_revocation') NOT VALID`,
+  );
+  const before = await f.ledger();
+  try {
+    await expect(
+      f.service.submitRevocation(f.actor, f.revision, f.draft.policyId),
+    ).rejects.toThrow();
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_arbitration_withdrawal_audit`);
+  }
+  expect(await f.ledger()).toEqual(before);
+  const queued = await f.service.submitRevocation(f.actor, f.revision, f.draft.policyId);
+  await db.update(submissions).set({ state: "needs_review" }).where(eq(submissions.id, queued.id));
+  const worker = new FederationCommercialSubmissionService(db, f.a.signing.siteId);
+  await permissions.set(
+    { ...f.actor, capability: "arbitration.approve", enabled: false },
+    f.actor.userId,
+  );
+  await expect(f.service.submitRevocation(f.actor, f.revision, f.draft.policyId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await expect(worker.retry(f.actor, f.revision, queued.id)).rejects.toThrow("POLICY_DENIED");
+  await permissions.set(
+    { ...f.actor, capability: "arbitration.approve", enabled: true },
+    f.actor.userId,
+  );
+  await worker.retry(f.actor, f.revision, queued.id);
+  expect((await db.select().from(submissions).where(eq(submissions.id, queued.id)))[0]?.state).toBe(
+    "pending",
+  );
+  expect((await f.row())?.revokedAt).not.toBeNull();
+});
+
+test("arbitration native withdrawal HTTP requires a human, exact scope and empty intent", async () => {
+  const f = await fixture("bilateral_attested");
+  await f.approve();
+  await f.service.revoke(f.actor, f.revision, f.draft.policyId);
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-arbitration-revocation"] })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  const dependencies: Parameters<typeof createFederationCommercialRoutes> = [
+    f.agreementsA,
+    new FederationCommercialSubmissionService(db, f.a.signing.siteId),
+  ];
+  dependencies[27] = f.service;
+  let automation = false;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, { ...f.actor, role: "platform_admin" } as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...dependencies));
+  const path = `/federation/commercial-agreements/${f.revision}/arbitration-policies/${f.draft.policyId}/ledger-revocation`;
+  const post = (body: unknown) =>
+    app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  automation = true;
+  expect((await post({})).status).toBe(403);
+  automation = false;
+  expect((await post({ amount: "1" })).status).toBe(400);
+  const response = await post({});
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const body = await response.text();
+  expect(body).not.toContain("revocationJws");
+  expect(body).not.toContain("recovery");
+  expect(await (await post({})).text()).toBe(body);
 });
 
 test("arbitration policies persist independent approvals in all modes without additional ledger work", async () => {

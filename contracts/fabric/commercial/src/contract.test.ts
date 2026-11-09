@@ -7,6 +7,10 @@ import {
 } from "@kuintessence/shared/federation";
 import { CommercialArbitrationPolicySchema } from "@kuintessence/shared/federation/arbitration-policy";
 import {
+  type CommercialArbitrationRevocation,
+  CommercialArbitrationRevocationSchema,
+} from "@kuintessence/shared/federation/arbitration-revocation";
+import {
   assertCommercialPayment,
   calculateCommercialBill,
 } from "@kuintessence/shared/federation/billing";
@@ -80,6 +84,7 @@ beforeAll(async () => {
       kinds: [
         "commercial-agreement",
         "commercial-arbitration-policy",
+        "commercial-arbitration-revocation",
         "commercial-usage",
         "commercial-reservation",
         "commercial-release",
@@ -613,7 +618,7 @@ async function reservationFixture(terms = agreement()) {
   };
   return { ...f, reservation, reserve, market, budget };
 }
-test("arbitration reservation keeps both original signatures private and immutable on replay", async () => {
+async function arbitrationReservationFixture() {
   const f = await reservationFixture();
   const policy = CommercialArbitrationPolicySchema.parse({
     protocolVersion: 1,
@@ -646,6 +651,55 @@ test("arbitration reservation keeps both original signatures private and immutab
   };
   const request = { ...f.reservation.request, arbitration: binding };
   const reservation = { ...f.reservation, request };
+  const withdrawal = (issuerSiteId = sites[0]) =>
+    CommercialArbitrationRevocationSchema.parse({
+      protocolVersion: 1,
+      kind: "commercial-arbitration-revocation",
+      revocationId: randomUUID(),
+      policyId: policy.policyId,
+      policyDigest: binding.policyDigest,
+      domainId,
+      agreementRevisionId: policy.agreementRevisionId,
+      agreementDigest: policy.agreementDigest,
+      sourceSiteId: sites[0],
+      targetSiteId: sites[1],
+      issuerSiteId,
+      issuedAt: now.toISOString(),
+      salt: randomBytes(32).toString("hex"),
+    });
+  const revoke = async (
+    value: CommercialArbitrationRevocation,
+    signer = keys.find((key) => key.siteId === value.issuerSiteId),
+    actor = identity(),
+  ) => {
+    if (!signer) throw new Error("Missing revocation signer");
+    return CommercialReceiptSchema.parse(
+      JSON.parse(
+        (
+          await f.call(
+            "RevokeArbitrationPolicy",
+            value.revocationId,
+            {
+              issuerSiteId: value.issuerSiteId,
+              revocationJws: await signFederationMessage(
+                CommercialArbitrationRevocationSchema,
+                value,
+                signer,
+              ),
+            },
+            actor,
+          )
+        ).toString(),
+      ),
+    );
+  };
+  return { ...f, policy, binding, request, reservation, withdrawal, revoke };
+}
+
+test("arbitration reservation keeps both original signatures private and immutable on replay", async () => {
+  const f = await arbitrationReservationFixture();
+  const { policy, binding, request, reservation } = f;
+  const signed = binding;
   const before = new Map(f.stub.privateState);
   for (const patch of [
     { sourceJws: signed.targetJws },
@@ -707,6 +761,100 @@ test("arbitration reservation keeps both original signatures private and immutab
   expect(await f.reserve(reservation)).toEqual(receipt);
   await expect(f.reserve()).rejects.toThrow("OPERATION_CONFLICT");
   expect(f.budget()).toEqual(budget);
+});
+
+test("arbitration withdrawal by either party fences new reservations without changing money or public state", async () => {
+  for (const issuer of [sites[0], sites[1]]) {
+    const f = await arbitrationReservationFixture();
+    const before = new Map(f.stub.privateState),
+      publicBefore = new Map(f.stub.state);
+    const value = f.withdrawal(issuer);
+    const receipt = await f.revoke(value);
+    const privateAfter = new Map(f.stub.privateState);
+    expect(receipt.recordId).toBe(value.revocationId);
+    expect(await f.revoke(value)).toEqual(receipt);
+    expect(f.stub.privateState).toEqual(privateAfter);
+    await expect(f.reserve(f.reservation)).rejects.toThrow("AUTHORIZATION_EXPIRED");
+    expect(
+      new Map([...f.stub.privateState].filter(([key]) => !key.includes("arbitration-"))),
+    ).toEqual(before);
+    expect(f.stub.state).toEqual(publicBefore);
+    expect(
+      [...f.stub.privateState.keys()].filter((key) =>
+        key.includes("arbitration-policy-withdrawal"),
+      ),
+    ).toHaveLength(1);
+    f.stub.fcn = "GetRecordReceipt";
+    f.stub.params = [domainId, "arbitration-revocation", value.revocationId];
+    f.stub.transient.clear();
+    expect(JSON.parse((await f.ledger.invoke(f.stub, identity(1))).toString())).toEqual({
+      receipt,
+    });
+    await expect(f.ledger.invoke(f.stub, identity(2))).rejects.toThrow("POLICY_DENIED");
+  }
+});
+
+test("arbitration withdrawal preserves earlier acceptance and both independent withdrawals", async () => {
+  const f = await arbitrationReservationFixture();
+  const accepted = await f.reserve(f.reservation);
+  const before = f.budget();
+  const a = f.withdrawal(),
+    b = f.withdrawal(sites[1]);
+  const first = await f.revoke(a);
+  const fence = [...f.stub.privateState].find(([key]) =>
+    key.includes("arbitration-policy-withdrawal"),
+  );
+  await f.revoke(b);
+  expect(
+    [...f.stub.privateState].find(([key]) => key.includes("arbitration-policy-withdrawal")),
+  ).toEqual(fence);
+  expect(await f.reserve(f.reservation)).toEqual(accepted);
+  expect(f.budget()).toEqual(before);
+  await expect(f.revoke({ ...a, policyDigest: `sha256:${"0".repeat(64)}` })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  expect(await f.revoke(a)).toEqual(first);
+});
+
+test("arbitration withdrawal is scoped to the original policy digest and current independent signer", async () => {
+  const f = await arbitrationReservationFixture();
+  const value = f.withdrawal(),
+    before = new Map(f.stub.privateState);
+  for (const patch of [
+    { agreementDigest: `sha256:${"0".repeat(64)}` },
+    { agreementRevisionId: randomUUID() },
+    { domainId: randomUUID() },
+    { sourceSiteId: sites[1], targetSiteId: sites[0] },
+    { issuedAt: new Date(+now + 60001).toISOString() },
+  ]) {
+    await expect(f.revoke({ ...value, ...patch })).rejects.toThrow();
+    expect(f.stub.privateState).toEqual(before);
+  }
+  await expect(f.revoke(value, keys[1])).rejects.toThrow("UNTRUSTED_IDENTITY");
+  await expect(f.revoke(value, undefined, identity(2))).rejects.toThrow("POLICY_DENIED");
+  const purpose = f.ledger.trust.keyPurposes[0];
+  if (!purpose) throw new Error("Missing key purposes");
+  const kinds = purpose.kinds;
+  purpose.kinds = kinds.filter((kind) => kind !== "commercial-arbitration-revocation");
+  await expect(f.revoke(value)).rejects.toThrow("UNTRUSTED_IDENTITY");
+  purpose.kinds = kinds.filter((kind) => kind !== "commercial-arbitration-policy");
+  await f.revoke({ ...value, policyDigest: `sha256:${"0".repeat(64)}` });
+  purpose.kinds = kinds;
+  expect((await f.reserve(f.reservation)).recordId).toBe(f.reservation.reservationId);
+  expect(f.budget().reservations).toBe(1);
+});
+
+test("arbitration withdrawal does not require the expired contract or original policy signing purpose to remain usable", async () => {
+  const f = await arbitrationReservationFixture();
+  f.stub.timestamp = new Date("2027-03-01T00:00:00Z");
+  for (const purpose of f.ledger.trust.keyPurposes)
+    purpose.kinds = ["commercial-arbitration-revocation"];
+  const before = new Map(f.stub.privateState);
+  const value = { ...f.withdrawal(), issuedAt: f.stub.timestamp.toISOString() };
+  expect((await f.revoke(value)).recordId).toBe(value.revocationId);
+  expect(
+    new Map([...f.stub.privateState].filter(([key]) => !key.includes("arbitration-"))),
+  ).toEqual(before);
 });
 
 test("commercial reservation and pre-activation release preserve exact private budget and immutable gate", async () => {

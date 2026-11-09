@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CommercialArbitrationRevocationEnvelopeSchema } from "./arbitration-revocation";
 import {
   FederationAgreementSchema,
   FederationAmountSchema,
@@ -25,6 +26,7 @@ export const commercialAutomaticMeters = [
 export const CommercialSigningKindSchema = z.enum([
   "commercial-agreement",
   "commercial-arbitration-policy",
+  "commercial-arbitration-revocation",
   "commercial-usage",
   "commercial-reservation",
   "commercial-release",
@@ -629,6 +631,7 @@ export const CommercialRecordTypeSchema = z.enum([
   "payment",
   "dispute-freeze",
   "native-dispute-freeze",
+  "arbitration-revocation",
 ]);
 export const CommercialReceiptQuerySchema = z.strictObject({
   operation: z.literal("get-commercial-receipt"),
@@ -733,6 +736,12 @@ export const CommercialDisputeAttestationEnvelopeSchema = CommercialAgreementEnv
   openingJws: z.string().min(1).max(524288),
 });
 export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operation", [
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("revoke-arbitration-policy"),
+    policyId: Id,
+    envelope: CommercialArbitrationRevocationEnvelopeSchema,
+  }),
   ...CommercialProposalInputSchema.options,
   ...CommercialExecutionProposalInputSchema.options,
   CommercialAdjustmentProposalInputSchema,

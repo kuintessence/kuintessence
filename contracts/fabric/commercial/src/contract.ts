@@ -11,6 +11,11 @@ import {
   CommercialArbitrationPolicySchema,
 } from "@kuintessence/shared/federation/arbitration-policy";
 import {
+  type CommercialArbitrationRevocation,
+  CommercialArbitrationRevocationEnvelopeSchema,
+  CommercialArbitrationRevocationSchema,
+} from "@kuintessence/shared/federation/arbitration-revocation";
+import {
   assertCommercialAdjustment,
   assertCommercialBill,
   assertCommercialDiscount,
@@ -64,6 +69,11 @@ const StoredAgreement = z.strictObject({
   receipt: CommercialReceiptSchema,
   envelope: CommercialAgreementEnvelopeSchema,
   terms: CommercialAgreementSchema,
+});
+const StoredArbitrationRevocation = z.strictObject({
+  receipt: CommercialReceiptSchema,
+  envelope: CommercialArbitrationRevocationEnvelopeSchema,
+  payload: CommercialArbitrationRevocationSchema,
 });
 const StoredUsage = z.strictObject({
   receipt: CommercialReceiptSchema,
@@ -251,6 +261,74 @@ export class CommercialLedger {
     if (response.status !== 200 || !response.payload) return fail("LEDGER_REQUIRED");
     return MarketDemandStateSchema.parse(JSON.parse(Buffer.from(response.payload).toString()));
   }
+  private arbitrationWithdrawalKey(
+    stub: Stub,
+    value: Pick<
+      CommercialArbitrationRevocation,
+      "domainId" | "agreementRevisionId" | "policyId" | "policyDigest"
+    >,
+  ) {
+    return stub.createCompositeKey("arbitration-policy-withdrawal", [
+      value.domainId,
+      value.agreementRevisionId,
+      value.policyId,
+      value.policyDigest,
+    ]);
+  }
+  private async revokeArbitration(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    recordId: string,
+  ) {
+    const envelope = this.input(stub, CommercialArbitrationRevocationEnvelopeSchema);
+    if (!domain.siteIds.includes(envelope.issuerSiteId)) return fail("POLICY_DENIED");
+    const now = stub.getDateTimestamp();
+    const signed = await this.verify(
+      stub,
+      CommercialArbitrationRevocationSchema,
+      envelope.revocationJws,
+      envelope.issuerSiteId,
+      now,
+    );
+    const value = signed.payload;
+    if (
+      value.domainId !== domain.domainId ||
+      value.revocationId !== recordId ||
+      value.issuerSiteId !== envelope.issuerSiteId ||
+      !domain.siteIds.includes(value.sourceSiteId) ||
+      !domain.siteIds.includes(value.targetSiteId) ||
+      Date.parse(value.issuedAt) > now.getTime() + 60000
+    )
+      return fail("POLICY_DENIED");
+    const key = stub.createCompositeKey("arbitration-revocation", [domain.domainId, recordId]);
+    const prior = await this.privateValue(stub, domain.collection, key);
+    if (prior.length) {
+      const stored = StoredArbitrationRevocation.parse(JSON.parse(Buffer.from(prior).toString()));
+      if (stored.receipt.digest !== signed.digest) return fail("OPERATION_CONFLICT");
+      return encode(stored.receipt);
+    }
+    const bytes = await this.privateValue(
+      stub,
+      domain.collection,
+      stub.createCompositeKey("agreement", [domain.domainId, value.agreementRevisionId]),
+    );
+    if (!bytes.length) return fail("AGREEMENT_UNAVAILABLE");
+    const agreement = StoredAgreement.parse(JSON.parse(Buffer.from(bytes).toString()));
+    if (
+      agreement.receipt.digest !== value.agreementDigest ||
+      agreement.terms.agreement.sourceSiteId !== value.sourceSiteId ||
+      agreement.terms.agreement.targetSiteId !== value.targetSiteId
+    )
+      return fail("POLICY_DENIED");
+    const receipt = { recordId, digest: signed.digest };
+    const stored = encode({ receipt, envelope, payload: value });
+    const withdrawalKey = this.arbitrationWithdrawalKey(stub, value);
+    const withdrawal = await this.privateValue(stub, domain.collection, withdrawalKey);
+    // A/B may withdraw independently. Keep the first permanent fence and both immutable receipts.
+    if (!withdrawal.length) await stub.putPrivateData(domain.collection, withdrawalKey, stored);
+    await stub.putPrivateData(domain.collection, key, stored);
+    return encode(receipt);
+  }
   private async reserve(
     stub: Stub,
     domain: FabricCommercialTrust["domains"][number],
@@ -338,6 +416,16 @@ export class CommercialLedger {
       )
         return fail("POLICY_DENIED");
       assertArbitrationRequest(sourcePolicy.payload, sourcePolicy.digest, request, now);
+      // Point-read even an absent fence so concurrent withdrawal participates in native MVCC.
+      const withdrawn = await this.privateValue(
+        stub,
+        domain.collection,
+        this.arbitrationWithdrawalKey(stub, {
+          ...sourcePolicy.payload,
+          policyDigest: sourcePolicy.digest,
+        }),
+      );
+      if (withdrawn.length) return fail("AUTHORIZATION_EXPIRED");
     }
     const market = await this.market(stub, reservation.demandId);
     if (
@@ -1697,6 +1785,7 @@ export class CommercialLedger {
         "RecordPayment",
         "RecordDisputeFreeze",
         "FreezeDisputedTask",
+        "RevokeArbitrationPolicy",
       ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
@@ -1704,6 +1793,7 @@ export class CommercialLedger {
     const [domainId, recordId] = Args.parse(params);
     const domain = this.trust.domains.find((domain) => domain.domainId === domainId);
     if (!domain?.siteIds.includes(org.siteId)) return fail("POLICY_DENIED");
+    if (fcn === "RevokeArbitrationPolicy") return this.revokeArbitration(stub, domain, recordId);
     if (fcn === "FreezeDisputedTask") return this.disputeAttestation(stub, domain, recordId, true);
     if (fcn === "RecordDisputeFreeze") return this.disputeAttestation(stub, domain, recordId);
     if (fcn === "RecordPayment") return this.payment(stub, domain, recordId);

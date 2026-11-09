@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   auditLog,
   federationCommercialAgreements as contracts,
@@ -6,6 +6,7 @@ import {
   type PgDb,
   type PgTransaction,
   federationArbitrationPolicies as policies,
+  federationCommercialSubmissions as submissions,
 } from "@kuintessence/db";
 import {
   type FederationDelegation,
@@ -19,7 +20,11 @@ import {
   CommercialArbitrationPolicyDraftSchema,
   CommercialArbitrationPolicySchema,
 } from "@kuintessence/shared/federation/arbitration-policy";
-import { CommercialAgreementSchema } from "@kuintessence/shared/federation/commercial";
+import { CommercialArbitrationRevocationSchema } from "@kuintessence/shared/federation/arbitration-revocation";
+import {
+  CommercialAdapterProposalInputSchema,
+  CommercialAgreementSchema,
+} from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -438,6 +443,100 @@ export class FederationArbitrationPolicyService {
         action: "federation.arbitration_policy.revoke",
         target: policyId,
         diff: { after: { digest: row.digest } },
+      });
+      return saved;
+    });
+  }
+  /** Local revocation is independent; requesting a ledger fence requires a current withdrawal signer. */
+  async submitRevocation(actor: FederationActor, revisionId: string, policyId: string) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "arbitration.approve");
+      const contract = await this.contract(tx, actor, revisionId);
+      if (contract.terms.agreement.mode === "bilateral_direct")
+        throw new FederationError("POLICY_DENIED");
+      const [row] = await tx
+        .select()
+        .from(policies)
+        .where(this.key(actor, revisionId, policyId))
+        .for("update");
+      if (
+        !row?.revokedAt ||
+        row.payload.agreementDigest !== contract.digest ||
+        row.payload.domainId !== contract.terms.domainId ||
+        row.payload.sourceSiteId !== contract.terms.agreement.sourceSiteId ||
+        row.payload.targetSiteId !== contract.terms.agreement.targetSiteId ||
+        ![row.payload.sourceSiteId, row.payload.targetSiteId].includes(this.signing.siteId)
+      )
+        throw new FederationError("POLICY_DENIED");
+      const [prior] = await tx
+        .select({ id: submissions.id, state: submissions.state })
+        .from(submissions)
+        .where(
+          and(
+            eq(submissions.localSiteId, this.signing.siteId),
+            eq(submissions.agreementRevisionId, revisionId),
+            sql`${submissions.input}->>'operation' = 'revoke-arbitration-policy'`,
+            sql`${submissions.input}->>'policyId' = ${policyId}`,
+          ),
+        );
+      if (prior) return prior;
+      const payload = CommercialArbitrationRevocationSchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-arbitration-revocation",
+        revocationId: randomUUID(),
+        policyId,
+        policyDigest: row.digest,
+        domainId: row.payload.domainId,
+        agreementRevisionId: revisionId,
+        agreementDigest: row.payload.agreementDigest,
+        sourceSiteId: row.payload.sourceSiteId,
+        targetSiteId: row.payload.targetSiteId,
+        issuerSiteId: this.signing.siteId,
+        issuedAt: new Date().toISOString(),
+        salt: randomBytes(32).toString("hex"),
+      });
+      const jws = await signFederationMessage(
+        CommercialArbitrationRevocationSchema,
+        payload,
+        this.signing,
+      );
+      const signed = await this.verify(
+        tx,
+        CommercialArbitrationRevocationSchema,
+        jws,
+        this.signing.siteId,
+      );
+      const input = CommercialAdapterProposalInputSchema.parse({
+        operation: "revoke-arbitration-policy",
+        domainId: payload.domainId,
+        recordId: payload.revocationId,
+        policyId,
+        digest: signed.digest,
+        envelope: { issuerSiteId: this.signing.siteId, revocationJws: jws },
+      });
+      const [saved] = await tx
+        .insert(submissions)
+        .values({
+          id: randomUUID(),
+          localSiteId: this.signing.siteId,
+          agreementRevisionId: revisionId,
+          input,
+          state: "pending",
+        })
+        .returning({ id: submissions.id, state: submissions.state });
+      if (!saved) throw new FederationError("OPERATION_CONFLICT");
+      await tx.insert(auditLog).values({
+        actor: actor.userId,
+        orgId: actor.orgId,
+        action: "federation.arbitration_policy.ledger_revocation",
+        target: policyId,
+        diff: {
+          after: {
+            submissionId: saved.id,
+            revocationId: payload.revocationId,
+            digest: signed.digest,
+          },
+        },
       });
       return saved;
     });

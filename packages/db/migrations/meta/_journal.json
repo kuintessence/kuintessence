@@ -1352,6 +1352,13 @@
       "when": 1794254077714,
       "tag": "0192_tricky_puff_adder",
       "breakpoints": true
+    },
+    {
+      "idx": 193,
+      "version": "7",
+      "when": 1794256959679,
+      "tag": "0193_late_abomination",
+      "breakpoints": true
     }
   ]
 }

@@ -393,6 +393,19 @@ export function createFederationCommercialRoutes(
           ),
         }),
     );
+    r.post(
+      `${path}/:policyId/ledger-revocation`,
+      kqValidator("param", policyId),
+      kqValidator("json", z.strictObject({})),
+      async (c) =>
+        c.json({
+          data: await arbitrationPolicies.submitRevocation(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").policyId,
+          ),
+        }),
+    );
   }
   if (disclosurePolicies) {
     const path = "/federation/commercial-agreements/:revisionId/disclosure-policies";

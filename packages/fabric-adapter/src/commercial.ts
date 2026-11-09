@@ -5,6 +5,7 @@ import {
   type Signer,
 } from "@hyperledger/fabric-gateway";
 import { FederationCancellationReceiptSchema } from "@kuintessence/shared/federation";
+import { CommercialArbitrationRevocationSchema } from "@kuintessence/shared/federation/arbitration-revocation";
 import {
   type CommercialAdapterProposalInput,
   CommercialAdapterProposalInputSchema,
@@ -78,7 +79,11 @@ export class FabricCommercialAdapter {
     const domain = this.config.trust.domains.find((domain) => domain.domainId === input.domainId);
     if (!domain?.siteIds.includes(this.config.siteId)) throw new Error("POLICY_DENIED");
     const now = new Date();
-    if (input.operation !== "record-usage" && input.operation !== "record-discount") {
+    if (
+      input.operation !== "record-usage" &&
+      input.operation !== "record-discount" &&
+      input.operation !== "revoke-arbitration-policy"
+    ) {
       const { sourceSiteId, targetSiteId } = input.envelope;
       if (
         sourceSiteId === targetSiteId ||
@@ -87,7 +92,26 @@ export class FabricCommercialAdapter {
       )
         throw new Error("POLICY_DENIED");
     }
-    if (input.operation === "register-agreement") {
+    if (input.operation === "revoke-arbitration-policy") {
+      const signed = await this.verify(
+        CommercialArbitrationRevocationSchema,
+        input.envelope.revocationJws,
+        input.envelope.issuerSiteId,
+        now,
+      );
+      const value = signed.payload;
+      if (
+        signed.digest !== input.digest ||
+        value.revocationId !== input.recordId ||
+        value.policyId !== input.policyId ||
+        value.domainId !== domain.domainId ||
+        value.issuerSiteId !== input.envelope.issuerSiteId ||
+        !domain.siteIds.includes(value.sourceSiteId) ||
+        !domain.siteIds.includes(value.targetSiteId) ||
+        Date.parse(value.issuedAt) > now.getTime() + 60000
+      )
+        throw new Error("POLICY_DENIED");
+    } else if (input.operation === "register-agreement") {
       const { sourceSiteId, targetSiteId } = input.envelope;
       const source = await this.verifyPair(CommercialAgreementSchema, input.envelope, now);
       if (
@@ -280,6 +304,7 @@ export class FabricCommercialAdapter {
         throw new Error("POLICY_DENIED");
     }
     const methods = {
+      "revoke-arbitration-policy": "RevokeArbitrationPolicy",
       "register-agreement": "RegisterAgreement",
       "record-usage": "RecordUsage",
       "reserve-execution": "ReserveExecution",

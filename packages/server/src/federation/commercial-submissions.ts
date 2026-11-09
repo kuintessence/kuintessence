@@ -3,6 +3,7 @@ import {
   federationCommercialAdjustments as adjustments,
   federationCommercialAgreements as agreements,
   federationCommercialExecutionApprovals as approvals,
+  federationArbitrationPolicies as arbitrationPolicies,
   federationCommercialAttempts as attempts,
   auditLog,
   federationCommercialBills as bills,
@@ -20,6 +21,7 @@ import {
   federationExecutionTerminals as terminals,
 } from "@kuintessence/db";
 import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
+import { CommercialArbitrationRevocationSchema } from "@kuintessence/shared/federation/arbitration-revocation";
 import {
   type CommercialAdapterProposalInput,
   CommercialAdapterProposalInputSchema,
@@ -60,6 +62,7 @@ type Lease = { id: string; token: string };
 class LeaseLost extends Error {}
 const MvccReconciling = "MVCC_RECONCILING";
 const recordTypes = {
+  "revoke-arbitration-policy": "arbitration-revocation",
   "register-agreement": "agreement",
   "record-usage": "usage",
   "reserve-execution": "reservation",
@@ -665,6 +668,45 @@ export class FederationCommercialSubmissionService {
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
+    if (input.operation === "revoke-arbitration-policy") {
+      const jws = input.envelope.revocationJws,
+        keyId = federationMessageKeyId(jws);
+      if (input.envelope.issuerSiteId !== this.siteId) throw new FederationError("POLICY_DENIED");
+      if (tx) await this.trust.assertKey(tx, this.siteId, keyId, new Date());
+      const signed = await verifyFederationMessage(
+        CommercialArbitrationRevocationSchema,
+        jws,
+        await this.trust.resolveKey(this.siteId, keyId, new Date(), tx),
+        new Date(),
+      );
+      const value = signed.payload;
+      const [policy] = await (tx ?? this.db)
+        .select()
+        .from(arbitrationPolicies)
+        .where(
+          and(
+            eq(arbitrationPolicies.localSiteId, this.siteId),
+            eq(arbitrationPolicies.policyId, input.policyId),
+          ),
+        );
+      if (
+        !policy?.revokedAt ||
+        value.issuerSiteId !== this.siteId ||
+        signed.digest !== input.digest ||
+        value.revocationId !== input.recordId ||
+        value.policyId !== input.policyId ||
+        value.policyDigest !== policy.digest ||
+        value.domainId !== input.domainId ||
+        value.domainId !== policy.payload.domainId ||
+        value.agreementRevisionId !== policy.agreementRevisionId ||
+        value.agreementDigest !== policy.payload.agreementDigest ||
+        value.sourceSiteId !== policy.payload.sourceSiteId ||
+        value.targetSiteId !== policy.payload.targetSiteId ||
+        Date.parse(value.issuedAt) > Date.now() + 60000
+      )
+        throw new FederationError("POLICY_DENIED");
+      return;
+    }
     if (input.operation === "adjust-settlement") {
       const [row] = await (tx ?? this.db)
         .select()
@@ -1014,18 +1056,20 @@ export class FederationCommercialSubmissionService {
       await requireFederationCapability(
         tx,
         actor,
-        row.input.operation === "record-dispute-freeze" ||
-          row.input.operation === "freeze-disputed-task"
-          ? "dispute.open"
-          : row.input.operation === "record-payment"
-            ? "payment.approve"
-            : row.input.operation === "adjust-settlement"
-              ? "adjustment.approve"
-              : row.input.operation === "settle-bill" || row.input.operation === "record-refund"
-                ? "settlement.approve"
-                : ["confirm-bill", "record-discount"].includes(row.input.operation)
-                  ? "billing.approve"
-                  : "agreement.approve",
+        row.input.operation === "revoke-arbitration-policy"
+          ? "arbitration.approve"
+          : row.input.operation === "record-dispute-freeze" ||
+              row.input.operation === "freeze-disputed-task"
+            ? "dispute.open"
+            : row.input.operation === "record-payment"
+              ? "payment.approve"
+              : row.input.operation === "adjust-settlement"
+                ? "adjustment.approve"
+                : row.input.operation === "settle-bill" || row.input.operation === "record-refund"
+                  ? "settlement.approve"
+                  : ["confirm-bill", "record-discount"].includes(row.input.operation)
+                    ? "billing.approve"
+                    : "agreement.approve",
       );
       const [attempt] = await this.latest(tx, id);
       if (
