@@ -1,14 +1,27 @@
 import { writeFile } from "node:fs/promises";
 import {
+  FederationAnyMediaExportApprovalSchema,
   FederationCurrentCapabilitiesSchema,
+  FederationMediaImportApprovalSchema,
+  FederationMediaRegistrationSchema,
+  FederationMediaRevocationSchema,
   federationCanonicalJson,
   MediaDeviceListSchema,
   MediaDeviceRegistrationSchema,
   MediaDeviceSchema,
   MediaDeviceUpdateSchema,
+  MediaExportDetailSchema,
+  MediaExportOperationSchema,
+  MediaExportSummarySchema,
   MediaHandoffRecordSchema,
   MediaHandoffSchema,
+  MediaImportAuthorizationSchema,
+  MediaImportOperationSchema,
+  MediaImportReceiptViewSchema,
   MediaLogisticsContextSchema,
+  MediaPackageDetailSchema,
+  MediaPackageSummarySchema,
+  MediaRecordedReceiptSchema,
   MediaShipmentDetailSchema,
   MediaShipmentListSchema,
   MediaShipmentRegistrationSchema,
@@ -349,7 +362,7 @@ export function registerFederationCommand(
     });
   const media = root
     .command("media")
-    .description("Physical media inventory and custody (not data authorization)");
+    .description("Encrypted delivery, import authorization and physical media custody");
   const mediaBase = "/federation/media";
   const mediaContext = async (s: Session) => {
     const context = await get(s, `${mediaBase}/logistics-context`, MediaLogisticsContextSchema);
@@ -548,6 +561,267 @@ export function registerFederationCommand(
       throw new Error(s.t("unknown"));
     }
   });
+
+  const exports = media.command("exports").description("Approve and produce encrypted packages");
+  const imports = media
+    .command("imports")
+    .description("Receive packages and authorize private imports");
+  const exportPath = (id: string) => `${mediaBase}/exports/${z.uuid().parse(id)}`;
+  const importPath = (id: string, authorization?: string) =>
+    `${mediaBase}/packages/${z.uuid().parse(id)}${authorization ? `/import-authorizations/${z.uuid().parse(authorization)}` : ""}`;
+  const sameFields = (row: object, expected: object) => {
+    if (
+      Object.entries(expected).some(([key, value]) =>
+        key === "expiresAt" && typeof value === "string"
+          ? Date.parse(Reflect.get(row, key)) !== Date.parse(value)
+          : Reflect.get(row, key) !== value,
+      )
+    )
+      throw new Error("Media response does not match the original request");
+  };
+  const mediaWrite = async (s: Session, path: string, input: unknown) => {
+    try {
+      return z.object({ success: z.literal(true) }).parse(await s.client.post(path, input));
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new Error(s.t("unknown"));
+    }
+  };
+  for (const [commands, path, schema] of [
+    [exports, "exports", MediaExportSummarySchema],
+    [imports, "packages", MediaPackageSummarySchema],
+  ] as const) {
+    const list = page(commands.command("list"));
+    action(list, async () => {
+      const s = scoped();
+      const rows = await get(s, `${mediaBase}/${path}?${query(list.opts())}`, z.array(schema));
+      output(
+        s,
+        rows,
+        rows.length
+          ? rows.map((row) => {
+              const state = row.revokedAt
+                ? s.t("revokedState")
+                : "expiresAt" in row
+                  ? s.t(Date.parse(row.expiresAt) <= Date.now() ? "expired" : "active")
+                  : s.t("saved");
+              return `${row.packageId}\t${row.manifestDigest}\t${state}`;
+            })
+          : [s.t("empty")],
+      );
+    });
+    action(commands.command("revoke <packageId> <file>"), async (packageId, file) => {
+      const s = scoped(),
+        input = FederationMediaRevocationSchema.parse(JSON.parse(await readInput(file)));
+      const value = await mediaWrite(
+        s,
+        `${mediaBase}/${path}/${z.uuid().parse(packageId)}/revoke`,
+        input,
+      );
+      output(s, value, [s.t("revoked")]);
+    });
+  }
+  action(exports.command("show <packageId>"), async (packageId) => {
+    const s = scoped(),
+      row = await get(s, exportPath(packageId), MediaExportDetailSchema);
+    sameFields(row, { packageId });
+    output(s, row, [
+      row.packageId,
+      `${row.manifest.subject.kind}\t${row.manifestDigest}`,
+      `${row.manifest.files.length} files\t${row.expiresAt}`,
+    ]);
+  });
+  action(exports.command("approve <file>"), async (file) => {
+    const s = scoped(),
+      input = FederationAnyMediaExportApprovalSchema.parse(JSON.parse(await readInput(file)));
+    try {
+      const row = await post(s, `${mediaBase}/exports`, input, MediaExportDetailSchema);
+      sameFields(row, {
+        packageId: input.packageId,
+        agreementRevisionId: input.agreementRevisionId,
+        recipientSiteId: input.recipientSiteId,
+        expiresAt: input.expiresAt,
+      });
+      if ("kind" in input) {
+        if (!row.taskSelection) throw new Error("Missing task selector");
+        sameFields(row.taskSelection, {
+          kind: input.kind,
+          operationId: input.operationId,
+          agentId: input.agentId,
+        });
+      } else sameFields(row, { versionId: input.versionId, locationId: input.locationId });
+      output(s, row, [`${s.t("saved")}: ${row.packageId}`]);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new Error(s.t("unknown"));
+    }
+  });
+  action(
+    exports
+      .command("manifest <packageId> <file>")
+      .description("Save registration JSON, without overwriting files"),
+    async (packageId, file) => {
+      const s = scoped(),
+        row = await get(s, exportPath(packageId), MediaExportDetailSchema);
+      sameFields(row, { packageId });
+      const registration = FederationMediaRegistrationSchema.parse({
+        senderSiteId: row.manifest.senderSiteId,
+        signedManifest: row.signedManifest,
+      });
+      await save(file, registration);
+      output(s, { packageId, file }, [`${s.t("saved")}: ${file}`]);
+    },
+  );
+  for (const command of ["run", "status"] as const) {
+    action(exports.command(`${command} <packageId>`), async (packageId) => {
+      const s = scoped(),
+        path = `${exportPath(packageId)}/${command === "run" ? "run" : "operation"}`;
+      const row =
+        command === "run"
+          ? await post(
+              s,
+              path,
+              {},
+              MediaExportOperationSchema.refine((row) => row.packageId === packageId),
+            )
+          : await get(s, path, MediaExportOperationSchema.nullable());
+      if (row) sameFields(row, { packageId });
+      output(s, row, [row ? `${row.packageId}\t${row.state}\t${row.updatedAt}` : s.t("empty")]);
+    });
+  }
+  const exportReceipts = page(exports.command("receipts <packageId>"));
+  action(exportReceipts, async (packageId) => {
+    const s = scoped(),
+      rows = await get(
+        s,
+        `${exportPath(packageId)}/receipts?${query(exportReceipts.opts())}`,
+        z.array(MediaRecordedReceiptSchema),
+      );
+    for (const row of rows) sameFields(row.receipt, { packageId });
+    output(
+      s,
+      rows,
+      rows.length
+        ? rows.map(
+            ({ receipt, acknowledgement }) =>
+              `${receipt.receiptId}\t${receipt.generation}\t${receipt.state}\t${acknowledgement.recordedAt}`,
+          )
+        : [s.t("empty")],
+    );
+  });
+  const importShow = imports
+    .command("show <packageId>")
+    .option("--authorization-offset <count>", "Authorization page offset", "0");
+  action(importShow, async (packageId) => {
+    const s = scoped(),
+      offset = z.coerce.number().int().nonnegative().parse(importShow.opts().authorizationOffset);
+    const row = await get(
+      s,
+      `${importPath(packageId)}?authorizationOffset=${offset}`,
+      MediaPackageDetailSchema,
+    );
+    sameFields(row, { packageId });
+    output(s, row, [
+      row.packageId,
+      `${row.subject.kind}\t${row.sizeBytes} B\t${row.manifestDigest}`,
+      ...row.authorizations.map(
+        (a) =>
+          `${a.authorizationId}\t${a.agentId}\t${a.managedRootId}\t${a.revokedAt ? s.t("revokedState") : a.expiresAt}`,
+      ),
+      ...(row.hasMoreAuthorizations
+        ? [
+            s.lang === "zh"
+              ? "还有批准记录；使用 --authorization-offset"
+              : "More authorizations; use --authorization-offset",
+          ]
+        : []),
+    ]);
+  });
+  action(imports.command("register <file>"), async (file) => {
+    const s = scoped(),
+      input = FederationMediaRegistrationSchema.parse(JSON.parse(await readInput(file)));
+    try {
+      const row = await post(s, `${mediaBase}/packages`, input, MediaPackageSummarySchema);
+      sameFields(row, { senderSiteId: input.senderSiteId });
+      output(s, row, [`${s.t("saved")}: ${row.packageId}`]);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new Error(s.t("unknown"));
+    }
+  });
+  action(imports.command("approve <packageId> <file>"), async (packageId, file) => {
+    const s = scoped(),
+      input = FederationMediaImportApprovalSchema.parse(JSON.parse(await readInput(file)));
+    try {
+      const row = await post(
+        s,
+        `${importPath(packageId)}/import-authorizations`,
+        input,
+        MediaImportAuthorizationSchema,
+      );
+      sameFields(row, { ...input, packageId });
+      output(s, row, [`${s.t("saved")}: ${row.authorizationId}`]);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new Error(s.t("unknown"));
+    }
+  });
+  for (const command of ["run", "status"] as const) {
+    action(
+      imports.command(`${command} <packageId> <authorizationId>`),
+      async (packageId, authorizationId) => {
+        const s = scoped(),
+          path = `${importPath(packageId, authorizationId)}/${command === "run" ? "run" : "operation"}`;
+        const row =
+          command === "run"
+            ? await post(
+                s,
+                path,
+                {},
+                MediaImportOperationSchema.refine((row) => row.authorizationId === authorizationId),
+              )
+            : await get(s, path, MediaImportOperationSchema.nullable());
+        if (row) sameFields(row, { authorizationId });
+        output(s, row, [
+          row
+            ? `${row.authorizationId}\t${row.state === "verified" ? "verified-private" : row.state}\t${row.updatedAt}`
+            : s.t("empty"),
+        ]);
+      },
+    );
+  }
+  action(
+    imports.command("receipt <packageId> <authorizationId>"),
+    async (packageId, authorizationId) => {
+      const s = scoped(),
+        row = await get(
+          s,
+          `${importPath(packageId, authorizationId)}/receipt`,
+          MediaImportReceiptViewSchema,
+        );
+      if (row.receipt) sameFields(row.receipt, { packageId });
+      if (row.acknowledgement)
+        sameFields(row.acknowledgement, { packageId, receiptId: row.receipt?.receiptId });
+      output(s, row, [`${authorizationId}\t${row.state}`]);
+    },
+  );
+  action(
+    imports.command("retry-receipt <packageId> <authorizationId>"),
+    async (packageId, authorizationId) => {
+      const s = scoped(),
+        value = await mediaWrite(s, `${importPath(packageId, authorizationId)}/receipt/retry`, {});
+      output(s, value, [s.t("retry")]);
+    },
+  );
+  action(
+    imports.command("revoke-authorization <packageId> <authorizationId> <file>"),
+    async (packageId, authorizationId, file) => {
+      const s = scoped(),
+        input = FederationMediaRevocationSchema.parse(JSON.parse(await readInput(file)));
+      const value = await mediaWrite(s, `${importPath(packageId, authorizationId)}/revoke`, input);
+      output(s, value, [s.t("revoked")]);
+    },
+  );
 
   const organizations = z.object({
     activeOrganizationId: z.uuid().nullable(),

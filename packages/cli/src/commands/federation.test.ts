@@ -990,3 +990,437 @@ test("CLI media handoff sends the original event on retry and rejects altered co
     "Write outcome unconfirmed",
   );
 });
+
+const mediaPackageId = "99999999-9999-4999-8999-999999999999";
+const mediaManifest = {
+  protocolVersion: 1,
+  kind: "media-manifest",
+  packageId: mediaPackageId,
+  senderSiteId: source,
+  recipientSiteId: target,
+  agreementRevisionId: revisionId,
+  createdAt: "2026-01-01T00:00:00Z",
+  subject: {
+    kind: "task-input",
+    operationId: userId,
+    taskId: reportId,
+    attempt: 1,
+    requestDigest: digest,
+    contentDigest: digest,
+  },
+  files: [
+    {
+      path: "objects/000000",
+      sizeBytes: 2,
+      sha256: "a".repeat(64),
+      license: null,
+      provenance: null,
+    },
+  ],
+};
+const mediaExport = {
+  packageId: mediaPackageId,
+  recipientSiteId: target,
+  agreementRevisionId: revisionId,
+  versionId: null,
+  locationId: null,
+  taskSelection: { kind: "task-input", operationId: userId, agentId: "storage-agent" },
+  manifest: mediaManifest,
+  manifestDigest: digest,
+  signedManifest: "signed.media.manifest",
+  approvedAt: "2026-01-01T00:00:00.000Z",
+  approvedBy: userId,
+  expiresAt: "2099-01-01T00:00:00.000Z",
+  revokedAt: null,
+  revocationReason: null,
+};
+const mediaImport = {
+  packageId: mediaPackageId,
+  senderSiteId: source,
+  recipientSiteId: target,
+  agreementRevisionId: revisionId,
+  manifestDigest: digest,
+  subject: mediaManifest.subject,
+  fileCount: 1,
+  sizeBytes: 2,
+  registeredAt: "2026-01-01T00:00:00.000Z",
+  registeredBy: userId,
+  revokedAt: null,
+  revocationReason: null,
+};
+const mediaAuthorization = {
+  authorizationId: billId,
+  localSiteId: target,
+  packageId: mediaPackageId,
+  agentId: "storage-agent",
+  managedRootId: reportId,
+  maxBytes: 2,
+  approvedBy: userId,
+  approvedAt: "2026-01-01T00:00:00.000Z",
+  expiresAt: "2099-01-01T00:00:00.000Z",
+  revokedAt: null,
+  revocationReason: null,
+};
+
+test.each([
+  "task-input",
+  "task-result",
+])("media CLI approves original %s selector without starting export or printing private fields", async (kind) => {
+  const input = {
+    packageId: mediaPackageId,
+    recipientSiteId: target,
+    agreementRevisionId: revisionId,
+    kind,
+    operationId: userId,
+    agentId: "storage-agent",
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  const file = join(directory, "approve.json");
+  await writeFile(file, JSON.stringify(input));
+  respond = () =>
+    Response.json({
+      data: {
+        ...mediaExport,
+        taskSelection: { ...mediaExport.taskSelection, kind },
+        manifest: { ...mediaManifest, subject: { ...mediaManifest.subject, kind } },
+        identityEncrypted: "private-sentinel",
+        source: { storageKey: "private-sentinel" },
+      },
+    });
+  await run(["--json", "media", "exports", "approve", file]);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    path: "/api/federation/media/exports",
+    method: "POST",
+    org: orgId,
+    body: input,
+  });
+  expect(JSON.stringify(output.mock.calls)).not.toContain("private-sentinel");
+  expect(JSON.parse(output.mock.calls[0]?.[0] ?? "{}").taskSelection.kind).toBe(kind);
+});
+
+test("media manifest export preserves registration signature in a new private file and refuses overwrite", async () => {
+  respond = () => Response.json({ data: mediaExport });
+  const file = join(directory, "registration.json");
+  await run(["media", "exports", "manifest", mediaPackageId, file]);
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
+    senderSiteId: source,
+    signedManifest: mediaExport.signedManifest,
+  });
+  expect((await stat(file)).mode & 0o777).toBe(0o600);
+  await expect(run(["media", "exports", "manifest", mediaPackageId, file])).rejects.toThrow();
+  expect(requests.every((r) => r.method === "GET")).toBe(true);
+});
+
+test("media CLI registers, approves and queues the same import separately with fixed organization", async () => {
+  const registration = join(directory, "register.json"),
+    approvalFile = join(directory, "authorize.json");
+  const input = {
+    authorizationId: billId,
+    agentId: "storage-agent",
+    managedRootId: reportId,
+    maxBytes: 2,
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  await writeFile(
+    registration,
+    JSON.stringify({ senderSiteId: source, signedManifest: mediaExport.signedManifest }),
+  );
+  await writeFile(approvalFile, JSON.stringify(input));
+  respond = (req) =>
+    Response.json({
+      data: req.url.endsWith("/packages")
+        ? mediaImport
+        : req.url.endsWith("/run")
+          ? {
+              authorizationId: billId,
+              generation: reportId,
+              requestedBy: userId,
+              state: "queued",
+              verifiedBytes: null,
+              verifiedAt: null,
+              updatedAt: "2026-01-01T00:00:00Z",
+              latestGrant: "private-sentinel",
+            }
+          : mediaAuthorization,
+    });
+  await run(["media", "imports", "register", registration]);
+  expect(requests).toHaveLength(1);
+  await run(["media", "imports", "approve", mediaPackageId, approvalFile]);
+  expect(requests).toHaveLength(2);
+  expect(requests[1]?.body).toEqual(input);
+  await run(["--json", "media", "imports", "run", mediaPackageId, billId]);
+  expect(requests[2]?.path).toBe(
+    `/api/federation/media/packages/${mediaPackageId}/import-authorizations/${billId}/run`,
+  );
+  expect(requests.every((r) => r.org === orgId)).toBe(true);
+  expect(JSON.stringify(output.mock.calls)).not.toContain("private-sentinel");
+});
+
+test("media CLI distinguishes private verification from task completion and supports an unstarted operation", async () => {
+  respond = () =>
+    Response.json({
+      data: {
+        authorizationId: billId,
+        generation: reportId,
+        requestedBy: userId,
+        state: "verified",
+        verifiedBytes: 2,
+        verifiedAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    });
+  await run(["media", "imports", "status", mediaPackageId, billId]);
+  expect(output.mock.calls[0]?.[0]).toContain("verified-private");
+  respond = () => Response.json({ data: null });
+  await run(["--json", "media", "exports", "status", mediaPackageId]);
+  expect(output.mock.calls.at(-1)?.[0]).toBe("null");
+});
+
+test("media CLI rejects wrong package, task and authorization response identities", async () => {
+  respond = () => Response.json({ data: { ...mediaExport, packageId: reportId } });
+  await expect(run(["media", "exports", "show", mediaPackageId])).rejects.toThrow();
+  respond = () =>
+    Response.json({
+      data: {
+        ...mediaExport,
+        taskSelection: { ...mediaExport.taskSelection, operationId: reportId },
+      },
+    });
+  await expect(run(["media", "exports", "show", mediaPackageId])).rejects.toThrow();
+  respond = () =>
+    Response.json({
+      data: {
+        authorizationId: reportId,
+        generation: reportId,
+        requestedBy: userId,
+        state: "queued",
+        verifiedBytes: null,
+        verifiedAt: null,
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    });
+  await expect(run(["media", "imports", "status", mediaPackageId, billId])).rejects.toThrow();
+  respond = () =>
+    Response.json({
+      data: {
+        localSiteId: source,
+        packageId: mediaPackageId,
+        generation: reportId,
+        requestedBy: userId,
+        state: "exported",
+        sha256: null,
+        sizeBytes: null,
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    });
+  await expect(run(["media", "exports", "status", mediaPackageId])).rejects.toThrow();
+  respond = () =>
+    Response.json({
+      data: {
+        authorizationId: billId,
+        generation: reportId,
+        requestedBy: userId,
+        state: "verified",
+        verifiedBytes: null,
+        verifiedAt: null,
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    });
+  await expect(run(["media", "imports", "status", mediaPackageId, billId])).rejects.toThrow();
+  expect(output).not.toHaveBeenCalled();
+});
+
+test("media CLI preserves pagination, rejects mismatched authorization details and invalid input before requests", async () => {
+  respond = () => Response.json({ data: [mediaExport] });
+  await run(["media", "exports", "list", "--offset", "20", "--limit", "10"]);
+  expect(requests[0]?.path).toBe("/api/federation/media/exports?limit=10&offset=20");
+  respond = () =>
+    Response.json({
+      data: {
+        ...mediaImport,
+        manifest: mediaManifest,
+        signedManifest: mediaExport.signedManifest,
+        authorizations: [{ ...mediaAuthorization, packageId: reportId }],
+        hasMoreAuthorizations: true,
+      },
+    });
+  await expect(
+    run(["media", "imports", "show", mediaPackageId, "--authorization-offset", "100"]),
+  ).rejects.toThrow();
+  expect(requests[1]?.path).toContain("authorizationOffset=100");
+  const invalid = join(directory, "invalid.json");
+  await writeFile(
+    invalid,
+    JSON.stringify({ packageId: mediaPackageId, sourcePath: "/private/file" }),
+  );
+  await expect(run(["media", "exports", "approve", invalid])).rejects.toThrow();
+  await expect(run(["media", "imports", "list"], "")).rejects.toThrow();
+  expect(requests).toHaveLength(2);
+});
+
+test("media CLI reports unconfirmed write responses without retrying or leaking server fields", async () => {
+  respond = () => Response.json({ data: { secret: "private-sentinel" } });
+  await expect(run(["media", "exports", "run", mediaPackageId])).rejects.toThrow(
+    "Write outcome unconfirmed",
+  );
+  expect(requests).toHaveLength(1);
+  expect(output).not.toHaveBeenCalled();
+});
+
+test("media CLI keeps dataset selectors and import authorization revocation explicit", async () => {
+  const file = join(directory, "dataset.json"),
+    reason = join(directory, "reason.json");
+  const input = {
+    packageId: mediaPackageId,
+    agreementRevisionId: revisionId,
+    recipientSiteId: target,
+    versionId: billId,
+    locationId: reportId,
+    expiresAt: mediaExport.expiresAt,
+  };
+  await writeFile(file, JSON.stringify(input));
+  await writeFile(reason, JSON.stringify({ reason: "Withdraw this import approval" }));
+  respond = (request) =>
+    request.url.endsWith("/revoke")
+      ? Response.json({ success: true })
+      : Response.json({
+          data: {
+            ...mediaExport,
+            versionId: billId,
+            locationId: reportId,
+            taskSelection: null,
+            manifest: {
+              ...mediaManifest,
+              subject: {
+                kind: "dataset",
+                asset: { originSiteId: source, kind: "dataset", id: userId, revision: "1", digest },
+              },
+            },
+          },
+        });
+  await run(["media", "exports", "approve", file]);
+  expect(requests[0]?.body).toEqual(input);
+  await run(["media", "imports", "revoke-authorization", mediaPackageId, billId, reason]);
+  expect(requests[1]?.path).toBe(
+    `/api/federation/media/packages/${mediaPackageId}/import-authorizations/${billId}/revoke`,
+  );
+  expect(requests[1]?.body).toEqual({ reason: "Withdraw this import approval" });
+  expect(requests).toHaveLength(2);
+});
+
+test("media CLI reads original signed receipt and retries delivery without granting data use", async () => {
+  const receipt = {
+    protocolVersion: 1,
+    kind: "media-import-receipt",
+    receiptId: reportId,
+    generation: revisionId,
+    senderSiteId: target,
+    recipientSiteId: source,
+    packageId: mediaPackageId,
+    agreementRevisionId: revisionId,
+    manifestDigest: digest,
+    keyQueryId: userId,
+    keyQueryDigest: digest,
+    state: "verified-private",
+    fileCount: 1,
+    sizeBytes: 2,
+    receivedAt: "2026-01-01T00:00:00Z",
+  };
+  const acknowledgement = {
+    protocolVersion: 1,
+    kind: "media-import-receipt-ack",
+    receiptId: reportId,
+    packageId: mediaPackageId,
+    senderSiteId: source,
+    recipientSiteId: target,
+    receiptDigest: digest,
+    recordedAt: "2026-01-01T00:00:01Z",
+  };
+  respond = (request) =>
+    request.method === "POST"
+      ? Response.json({ success: true })
+      : Response.json({
+          data: {
+            state: "recorded",
+            receipt,
+            acknowledgement,
+            signedReceipt: "original.receipt",
+            signedAcknowledgement: "original.ack",
+            lastError: null,
+            nextAttemptAt: "2026-01-01T00:00:02Z",
+            latestGrant: "private-sentinel",
+          },
+        });
+  await run(["--json", "media", "imports", "receipt", mediaPackageId, billId]);
+  const value = JSON.parse(output.mock.calls[0]?.[0] ?? "{}");
+  expect(value.receipt).toEqual(receipt);
+  expect(value.signedAcknowledgement).toBe("original.ack");
+  expect(value.latestGrant).toBeUndefined();
+  await run(["media", "imports", "retry-receipt", mediaPackageId, billId]);
+  expect(requests[1]?.path).toEndWith(`/import-authorizations/${billId}/receipt/retry`);
+  expect(requests[1]?.body).toEqual({});
+  expect(requests).toHaveLength(2);
+  respond = () =>
+    Response.json({
+      data: [
+        {
+          receipt,
+          acknowledgement,
+          signedReceipt: "original.receipt",
+          signedAcknowledgement: "original.ack",
+        },
+      ],
+    });
+  await run(["--json", "media", "exports", "receipts", mediaPackageId, "--offset", "20"]);
+  expect(requests.at(-1)?.path).toBe(
+    `/api/federation/media/exports/${mediaPackageId}/receipts?limit=20&offset=20`,
+  );
+  expect(JSON.parse(output.mock.calls.at(-1)?.[0] ?? "[]")[0].receipt).toEqual(receipt);
+  respond = () =>
+    Response.json({
+      data: { ...value, acknowledgement: { ...acknowledgement, receiptId: userId } },
+    });
+  await expect(run(["media", "imports", "receipt", mediaPackageId, billId])).rejects.toThrow();
+  respond = () =>
+    Response.json({
+      data: {
+        ...value,
+        receipt: null,
+        acknowledgement: null,
+        signedReceipt: null,
+        signedAcknowledgement: null,
+      },
+    });
+  await expect(run(["media", "imports", "receipt", mediaPackageId, billId])).rejects.toThrow();
+});
+
+test("media revocation and receipt retry keep ambiguous writes visible and never replay", async () => {
+  const file = join(directory, "revoke.json");
+  await writeFile(file, JSON.stringify({ reason: "Operator withdrawal" }));
+  respond = () => Response.json({ unexpected: "private-sentinel" });
+  const commands = [
+    ["exports", "revoke", mediaPackageId, file],
+    ["imports", "revoke", mediaPackageId, file],
+    ["imports", "revoke-authorization", mediaPackageId, billId, file],
+    ["imports", "retry-receipt", mediaPackageId, billId],
+  ];
+  for (const args of commands)
+    await expect(run(["media", ...args])).rejects.toThrow("Write outcome unconfirmed");
+  expect(requests).toHaveLength(commands.length);
+  expect(output).not.toHaveBeenCalled();
+});
+
+test("media lists distinguish expired exports from registered packages", async () => {
+  respond = (req) =>
+    Response.json({
+      data: req.url.includes("/exports")
+        ? [{ ...mediaExport, expiresAt: "2000-01-01T00:00:00Z" }]
+        : [mediaImport],
+    });
+  await run(["media", "exports", "list"]);
+  expect(output.mock.calls[0]?.[0]).toContain("Expired");
+  await run(["media", "imports", "list"]);
+  expect(output.mock.calls[1]?.[0]).toContain("Saved");
+  expect(output.mock.calls[1]?.[0]).not.toContain("Active");
+});

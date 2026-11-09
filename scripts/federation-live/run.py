@@ -2873,7 +2873,9 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             from task_media import verify_task_media
             verify_task_media(root, logs, namespace, env, sourceenv,
                               lambda path, body=None: api(path, body, token),
-                              lambda path, body=None: sourceapi(path, body, sourcetoken))
+                              lambda path, body=None: sourceapi(path, body, sourcetoken),
+                              {"serverUrl": f"http://127.0.0.1:{httpport}", "token": token},
+                              {"serverUrl": f"http://127.0.0.1:{sourcehttp}", "token": sourcetoken})
         elif scenario in ("outage", "stop"):
             verify_interruption()
         else:

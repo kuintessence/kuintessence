@@ -282,6 +282,7 @@ export * from "./media-logistics";
 export * from "./media-object";
 export * from "./media-receipts";
 export * from "./media-upload-task";
+export * from "./media-views";
 export * from "./permissions";
 export * from "./result-receipts";
 export * from "./result-transfer";

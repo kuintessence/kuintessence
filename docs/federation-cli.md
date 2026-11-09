@@ -111,7 +111,7 @@ kq federation --org "$ORG_ID" refunds list "$REVISION_ID" --record "$REFUND_ID"
 
 ## 范围与验证
 
-本入口覆盖上述财务操作，没有加入执行、市场、材料交付、独立减免、付款或争议命令。原生背书与私有数据规则继续由现有链码和 Adapter 实施。完整业务边界见[商业协议部署说明](../deploy/federation/fabric-commercial.md)。
+财务入口覆盖上述操作；介质交付命令见下文，执行、市场、独立减免、付款或争议命令仍待补齐。原生背书与私有数据规则继续由现有链码和 Adapter 实施。完整业务边界见[商业协议部署说明](../deploy/federation/fabric-commercial.md)。
 
 25 项 HTTP 夹具和中间件测试覆盖机构断言、精确金额、三模式状态、原文/编号、独立权限、文件安全、重定向和未知响应；另通过实际 CLI 子进程、真实 loopback HTTP、生产商业路由与隔离 PostgreSQL 的联合测试，验证机构改变拒绝、独立审批权、人类身份限制以及政策创建/读取/撤销和原结算读取。联调身份由测试中间件注入，不代替正式登录链路或 PR 预览验收。本轮不重复 Fabric 或调度器验收。
 
@@ -138,3 +138,57 @@ kq federation --org "$ORG_ID" refunds list "$REVISION_ID" --record "$REFUND_ID"
 本政策仅允许直接/异步合作中“永久取消且从未创建执行工作流”的完整额度归还；原账单/结算授权不包含退款。Server 自动生成和交换原退款，无须调用 `refunds draft/approve/attach`。双方必须各自授予；旧版本须先应用迁移 0155 并升级，见[机构预授权](../deploy/federation/fabric-commercial.md#执行前退款的机构预授权)。
 
 `federation closing tasks list <revision>` 查看源方退款处理记录；修正权限或信任后，通过 `federation closing tasks retry <revision> refund <operationId>` 重试未完成原任务。列表中的 recordId 是 refundId，可交给 `federation refunds list <revision> --record <refundId>` 查询。撤销通过原 `closing policies revoke`；撤销不使已签原件失效，也不再次退额。`--json` 保留授权编号和精确金额。
+
+## 加密介质导出与接收
+
+`federation media exports` 管理本站来源包，`federation media imports` 管理本站收到的包。继续使用 `--org` 固定当前会话机构、`--lang zh|en` 和 `--json`；不要求运输台账的 `media.logistics` 权限。查看需要 `asset.read`，来源批准/运行需要 `media.export`，接收批准/运行需要 `media.import`；服务端仍检查原任务所有人、Agent 归属、签名信任、当前授权和期限。
+
+任务输入或结果的 `export.json` 使用原委派 operationId，不能填 taskId、任意路径、对象 URL 或自定义文件清单：
+
+```json
+{
+  "packageId": "11111111-1111-4111-8111-111111111111",
+  "agreementRevisionId": "22222222-2222-4222-8222-222222222222",
+  "recipientSiteId": "33333333-3333-4333-8333-333333333333",
+  "kind": "task-input",
+  "operationId": "44444444-4444-4444-8444-444444444444",
+  "agentId": "local-storage-node",
+  "expiresAt": "2026-12-01T00:05:00.000Z"
+}
+```
+
+结果使用 `task-result`；共享数据集使用相同批准命令，正文改为原 `versionId`、`locationId`，省略 kind/operationId/agentId。示例编号与期限必须替换为实际值。批准只保存许可，运行才请求 Agent 生成密文：
+
+```sh
+kq federation --org "$ORG_ID" media exports approve export.json
+kq federation --org "$ORG_ID" media exports run "$PACKAGE_ID"
+kq federation --org "$ORG_ID" media exports status "$PACKAGE_ID"
+kq federation --org "$ORG_ID" media exports manifest "$PACKAGE_ID" registration.json
+```
+
+`manifest` 将原签名和 senderSiteId 保存为接收端可用的登记 JSON，以 0600 新建并拒绝覆盖；不导出包密钥、对象键或下载地址。Agent 生成的密文仍按[介质部署约定](../deploy/federation/README.md)搬运到接收方 inbox，登记 JSON 本身不包含文件内容。
+
+在接收方登录后操作：
+
+```sh
+kq federation --org "$ORG_ID" media imports register registration.json
+kq federation --org "$ORG_ID" media imports approve "$PACKAGE_ID" import.json
+kq federation --org "$ORG_ID" media imports run "$PACKAGE_ID" "$AUTHORIZATION_ID"
+kq federation --org "$ORG_ID" media imports status "$PACKAGE_ID" "$AUTHORIZATION_ID"
+kq federation --org "$ORG_ID" media imports receipt "$PACKAGE_ID" "$AUTHORIZATION_ID"
+```
+
+`import.json` 包含 authorizationId、agentId、managedRootId、maxBytes、expiresAt；必须使用接收机构的受管根和足够的字节上限。登记不会自动批准，批准不会自动启动。`status` 文本中的 `verified-private` 仅表示私有解密与文件校验完成，JSON 保留原 API 状态 `verified`；不能当作任务发布或作业完成。任务包之后由后台沿原 import 上传、独立验证并发布；共享数据集仍须独立使用授权和发布。
+
+来源可用 `exports receipts <packageId>` 查看对方私有导入的原签名和本站确认，支持 `--limit`、`--offset`。
+
+`exports list` / `imports list` 支持 `--limit`、`--offset`；`show <packageId>` 查看详细记录，接收方 `show` 另支持 `--authorization-offset`，以免遗漏超过一页的批准。撤销使用包含必填 `reason` 的 JSON：
+
+```sh
+kq federation --org "$ORG_ID" media exports revoke "$PACKAGE_ID" reason.json
+kq federation --org "$ORG_ID" media imports revoke "$PACKAGE_ID" reason.json
+kq federation --org "$ORG_ID" media imports revoke-authorization "$PACKAGE_ID" "$AUTHORIZATION_ID" reason.json
+kq federation --org "$ORG_ID" media imports retry-receipt "$PACKAGE_ID" "$AUTHORIZATION_ID"
+```
+
+回执重试只投递原私有导入证明，不批准数据使用，也不重新导入文件。所有写操作均不自动重试；响应未知时先查询原包、批准和操作，不更换编号。完整实际 CLI/双平台验收沿用[私有任务介质实验](../deploy/federation/execution-lab.md#私有任务文件的双向介质交付)。

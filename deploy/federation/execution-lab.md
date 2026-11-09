@@ -247,7 +247,7 @@ PYTHONDONTWRITEBYTECODE=1 bun run test:federation:direct
 
 场景建立两个独立 Server/数据库、mTLS Agent 和版本化对象存储。来源通过普通云盘 API 上传 `6\n`，通过普通 Workflow API 提交带 File 输入的 Federation 节点，输入和结果均声明 `media`。提供方必须先处于 DATA_WAITING，且没有 Job、目标文件或网络复制尝试。
 
-两次介质交付均由生产 API 批准、Agent 使用真实 age 导出。测试人员搬运密文至对方 inbox，然后调用登记、批准和运行 API；自动上传、固定版本独立校验、整包发布及作业恢复全部由生产后台执行。提供方运行两个轻量 Kubernetes Job，得到 `42\n` 中间文件和 `verified:42\n` 持久结果；结果经反向介质交付后，原 Workflow 下游 File 节点继续运行。
+两次介质交付均由实际 CLI 子进程调用生产 API 批准、Agent 使用真实 age 导出。CLI 配置保存于实验私有临时目录，使用真实测试登录会话和当前机构断言，清理时一并删除。测试人员搬运密文至对方 inbox，然后通过 CLI 调用登记、批准和运行 API；自动上传、固定版本独立校验、整包发布及作业恢复全部由生产后台执行。提供方运行两个轻量 Kubernetes Job，得到 `42\n` 中间文件和 `verified:42\n` 持久结果；结果经反向介质交付后，原 Workflow 下游 File 节点继续运行。
 
 `task-media-evidence.json` 保存原 operation/领取/导入关系、版本化校验证据、文件 SHA-256、密文摘要和最终状态。断言原输入/结果各只有一个介质尝试、配额预留归零、回执被确认、私有文件未进入共享数据集目录；最后通过来源云盘实际下载并逐字节核对结果。临时密钥、对象 URL 和 commit token 不写入该证据。
 
