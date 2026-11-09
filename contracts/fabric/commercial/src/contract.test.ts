@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   FederationCancellationReceiptSchema,
@@ -772,7 +772,22 @@ test("arbitration withdrawal by either party fences new reservations without cha
     const receipt = await f.revoke(value);
     const privateAfter = new Map(f.stub.privateState);
     expect(receipt.recordId).toBe(value.revocationId);
-    expect(await f.revoke(value)).toEqual(receipt);
+    const writes = spyOn(f.stub, "putPrivateData");
+    try {
+      expect(await f.revoke(value)).toEqual(receipt);
+      const key = f.stub.createCompositeKey("arbitration-revocation", [
+        domainId,
+        value.revocationId,
+      ]);
+      expect(writes).toHaveBeenCalledWith(
+        "commercial_AB_v1",
+        key,
+        privateAfter.get(`commercial_AB_v1:${key}`),
+      );
+      expect(writes).toHaveBeenCalledTimes(1);
+    } finally {
+      writes.mockRestore();
+    }
     expect(f.stub.privateState).toEqual(privateAfter);
     await expect(f.reserve(f.reservation)).rejects.toThrow("AUTHORIZATION_EXPIRED");
     expect(

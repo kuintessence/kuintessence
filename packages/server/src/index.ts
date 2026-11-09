@@ -53,6 +53,7 @@ import { FederationAdjustmentService } from "./federation/adjustment";
 import { FederationAgreementExchange } from "./federation/agreement-exchange";
 import { FederationAgreementService } from "./federation/agreements";
 import { FederationArbitrationPolicyService } from "./federation/arbitration-policy";
+import { FederationArbitrationRevocationDelivery } from "./federation/arbitration-revocations";
 import { FederationAssetService } from "./federation/assets";
 import { FederationAttestationService } from "./federation/attestation";
 import { UnixAttestationClient } from "./federation/attestation-client";
@@ -1886,6 +1887,14 @@ const federationCasePublications = await loadFederationCasePublications(
   config,
   federationSigningKey,
 );
+const federationArbitrationRevocations = federationSigningKey
+  ? new FederationArbitrationRevocationDelivery(
+      db,
+      federationSigningKey,
+      new FederationArbitrationPolicyService(db, federationSigningKey),
+      federationSender,
+    )
+  : undefined;
 const federationCaseRevocations =
   federationSigningKey && federationCasePublications
     ? new FederationCaseRevocationDelivery(
@@ -1977,6 +1986,7 @@ if (federationSigningKey && federationCommercial)
       federationDisputeFreezes,
       new FederationDisclosureService(db, federationSigningKey),
       new FederationArbitrationPolicyService(db, federationSigningKey),
+      federationArbitrationRevocations,
     ),
   );
 const federationPreparation = federationSigningKey
@@ -2883,6 +2893,7 @@ const federationCommercialWorker = federationCommercial
       federationDisputeFreezes,
       federationCaseSubmissions,
       federationCaseRevocations,
+      federationArbitrationRevocations,
     )
   : undefined;
 federationCommercialWorker?.start();

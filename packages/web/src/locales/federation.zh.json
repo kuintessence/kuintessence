@@ -121,7 +121,9 @@
       "commercial-dispute-receipt": "争议接收回执",
       "commercial-dispute-freeze": "争议财务冻结确认",
       "commercial-arbitration-policy": "仲裁预授权政策",
-      "commercial-arbitration-revocation": "撤销仲裁预授权"
+      "commercial-arbitration-revocation": "撤销仲裁预授权",
+      "arbitration-revocation-notice": "仲裁预授权撤销通知",
+      "arbitration-revocation-receipt": "仲裁预授权撤销回执"
     },
     "storage": {
       "title": "输入存储核对",

@@ -5,6 +5,8 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementExchange } from "./agreement-exchange";
+import { FederationArbitrationPolicyService } from "./arbitration-policy";
+import { FederationArbitrationRevocationDelivery } from "./arbitration-revocations";
 import { FederationCancellationReceiver } from "./cancellation";
 import type { FederationCasePublicationService } from "./case-publications";
 import { FederationCaseRevocationDelivery } from "./case-revocations";
@@ -302,6 +304,19 @@ export function createFederationIngress(
       await c.req.text(),
       c.req.header("x-kq-federation-cert") ?? "",
     );
+    return c.body(response, 200, {
+      "content-type": "application/jose",
+      "cache-control": "no-store",
+    });
+  });
+  r.post("/federation/v1/arbitration-revocations", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const response = await new FederationArbitrationRevocationDelivery(
+      db,
+      signingKey,
+      new FederationArbitrationPolicyService(db, signingKey),
+    ).receive(await c.req.text(), c.req.header("x-kq-federation-cert") ?? "");
     return c.body(response, 200, {
       "content-type": "application/jose",
       "cache-control": "no-store",

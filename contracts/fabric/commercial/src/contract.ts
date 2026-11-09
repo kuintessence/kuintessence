@@ -305,6 +305,8 @@ export class CommercialLedger {
     if (prior.length) {
       const stored = StoredArbitrationRevocation.parse(JSON.parse(Buffer.from(prior).toString()));
       if (stored.receipt.digest !== signed.digest) return fail("OPERATION_CONFLICT");
+      // Keep replay under the original collection policy, not the wider chaincode policy.
+      await stub.putPrivateData(domain.collection, key, prior);
       return encode(stored.receipt);
     }
     const bytes = await this.privateValue(

@@ -72,7 +72,7 @@ beforeAll(async () => {
     import { createServer } from 'node:https';
     import { readFileSync, writeFileSync } from 'node:fs';
     const server = createServer({ key:readFileSync('server.key'), cert:readFileSync('server.pem'), ca:readFileSync('ca.pem'), requestCert:true, rejectUnauthorized:true }, async (req,res) => {
-      if (!req.socket.authorized || req.socket.getPeerCertificate().subject.CN !== 'source' || req.method !== 'POST' || !['/federation/v1/case-revocations','/federation/v1/disclosure-downloads','/federation/v1/disclosure-authorizations','/federation/v1/dispute-freezes','/federation/v1/disputes','/federation/v1/delegations','/federation/v1/status','/federation/v1/usage','/federation/v1/agreement-approvals','/federation/v1/commercial-approvals','/federation/v1/commercial-closing','/federation/v1/market-requests','/federation/v1/reservation-proposals','/federation/v1/cancellations','/federation/v1/results','/federation/v1/result-downloads','/federation/v1/result-receipts','/federation/v1/materials','/federation/v1/input-downloads','/federation/v1/media-keys','/federation/v1/dataset-use','/federation/v1/media-receipts'].includes(req.url) || req.headers['content-type'] !== 'application/jose') { res.writeHead(403).end(); return; }
+      if (!req.socket.authorized || req.socket.getPeerCertificate().subject.CN !== 'source' || req.method !== 'POST' || !['/federation/v1/arbitration-revocations','/federation/v1/case-revocations','/federation/v1/disclosure-downloads','/federation/v1/disclosure-authorizations','/federation/v1/dispute-freezes','/federation/v1/disputes','/federation/v1/delegations','/federation/v1/status','/federation/v1/usage','/federation/v1/agreement-approvals','/federation/v1/commercial-approvals','/federation/v1/commercial-closing','/federation/v1/market-requests','/federation/v1/reservation-proposals','/federation/v1/cancellations','/federation/v1/results','/federation/v1/result-downloads','/federation/v1/result-receipts','/federation/v1/materials','/federation/v1/input-downloads','/federation/v1/media-keys','/federation/v1/dataset-use','/federation/v1/media-receipts'].includes(req.url) || req.headers['content-type'] !== 'application/jose') { res.writeHead(403).end(); return; }
       let body=''; for await (const chunk of req) body+=chunk;
       if (body==='redirect') { res.writeHead(307,{location:'/unexpected'}).end(); return; }
       if (body==='backlog') { res.writeHead(503,{'content-type':'application/json'}).end(JSON.stringify({error:{code:'ATTESTATION_BACKLOG'}})); return; }
@@ -107,6 +107,9 @@ afterAll(async () => {
 });
 
 test("outbound HTTPS sends the client identity and accepts a bounded JOSE response", async () => {
+  expect(await send(endpoint, "arbitration-jws", "/federation/v1/arbitration-revocations")).toBe(
+    "signed-receipt",
+  );
   expect(await send(endpoint, "request-jws")).toBe("signed-receipt");
   expect(await send(endpoint, "dispute-jws", "/federation/v1/disputes")).toBe("signed-receipt");
   expect(await send(endpoint, "withdrawal-jws", "/federation/v1/case-revocations")).toBe(

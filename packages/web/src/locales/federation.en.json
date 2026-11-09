@@ -121,7 +121,9 @@
       "commercial-dispute-receipt": "Dispute receipt",
       "commercial-dispute-freeze": "Dispute financial freeze",
       "commercial-arbitration-policy": "Arbitration preauthorization policy",
-      "commercial-arbitration-revocation": "Arbitration preauthorization withdrawal"
+      "commercial-arbitration-revocation": "Arbitration preauthorization withdrawal",
+      "arbitration-revocation-notice": "Arbitration withdrawal notice",
+      "arbitration-revocation-receipt": "Arbitration withdrawal receipt"
     },
     "storage": {
       "title": "Input storage reconciliation",

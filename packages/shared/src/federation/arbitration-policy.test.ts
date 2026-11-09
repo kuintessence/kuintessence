@@ -4,6 +4,10 @@ import {
   CommercialArbitrationPolicyDraftSchema,
   CommercialArbitrationPolicySchema,
 } from "./arbitration-policy";
+import {
+  ArbitrationRevocationNoticeSchema,
+  ArbitrationRevocationReceiptSchema,
+} from "./arbitration-revocation-notice";
 import { FederationArbitrationBindingSchema } from "./index";
 import { federationCapabilitySources } from "./permissions";
 import { FederationKeyInput } from "./trust";
@@ -136,5 +140,52 @@ test("a policy cannot add payment, minting or generic governance authority", () 
     expect(federationCapabilitySources(capability)).not.toContain("arbitration.approve");
   const kinds = FederationKeyInput.shape.allowedKinds.element.options;
   expect(kinds).toContain("commercial-arbitration-policy");
+  expect(FederationKeyInput.shape.allowedKinds.safeParse(kinds).success).toBe(true);
+});
+
+test("arbitration notification schemas restrict audience, fields and immutable receipt bindings", () => {
+  const value = ArbitrationRevocationNoticeSchema.parse({
+    protocolVersion: 1,
+    kind: "arbitration-revocation-notice",
+    noticeId: crypto.randomUUID(),
+    issuerSiteId: policy.sourceSiteId,
+    receivingSiteId: policy.targetSiteId,
+    policy,
+    policyJws: "original.policy.signature",
+    revocationJws: "signed.withdrawal.original",
+    issuedAt: "2027-02-01T00:00:00Z",
+  });
+  for (const patch of [
+    { receivingSiteId: value.issuerSiteId },
+    { contractJws: "private contract" },
+    { revocationJws: "" },
+    { unfreeze: true },
+  ])
+    expect(ArbitrationRevocationNoticeSchema.safeParse({ ...value, ...patch }).success).toBe(false);
+  const receipt = ArbitrationRevocationReceiptSchema.parse({
+    protocolVersion: 1,
+    kind: "arbitration-revocation-receipt",
+    noticeId: value.noticeId,
+    noticeDigest: policy.agreementDigest,
+    policyId: policy.policyId,
+    policyDigest: policy.agreementDigest,
+    revocationId: crypto.randomUUID(),
+    revocationDigest: policy.agreementDigest,
+    issuerSiteId: value.issuerSiteId,
+    receivingSiteId: value.receivingSiteId,
+    recordedAt: "2027-02-01T00:00:00Z",
+  });
+  for (const patch of [
+    { receivingSiteId: receipt.issuerSiteId },
+    { revocationDigest: "unknown" },
+    { policyDigest: undefined },
+    { amount: "1" },
+  ])
+    expect(ArbitrationRevocationReceiptSchema.safeParse({ ...receipt, ...patch }).success).toBe(
+      false,
+    );
+  const kinds = FederationKeyInput.shape.allowedKinds.element.options;
+  expect(kinds).toContain("arbitration-revocation-notice");
+  expect(kinds).toContain("arbitration-revocation-receipt");
   expect(FederationKeyInput.shape.allowedKinds.safeParse(kinds).success).toBe(true);
 });

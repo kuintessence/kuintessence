@@ -1,6 +1,7 @@
 import { createLogger } from "@kuintessence/shared";
 import type { FederationAccountingCollection } from "./accounting-collection";
 import type { FederationAgreementExchange } from "./agreement-exchange";
+import type { FederationArbitrationRevocationDelivery } from "./arbitration-revocations";
 import type { FederationCaseRevocationDelivery } from "./case-revocations";
 import type { FederationCaseSubmissionService } from "./case-submissions";
 import type { FederationClosingAutomation } from "./closing-automation";
@@ -44,6 +45,7 @@ export class FederationCommercialWorker {
     private readonly disputeFreezes?: FederationDisputeFreezeExchange,
     private readonly cases?: FederationCaseSubmissionService,
     private readonly caseRevocations?: FederationCaseRevocationDelivery,
+    private readonly arbitrationRevocations?: FederationArbitrationRevocationDelivery,
   ) {}
 
   start() {
@@ -194,6 +196,17 @@ export class FederationCommercialWorker {
         } catch {
           logger.error(
             "Dispute freeze exchange failed; original proofs and pending local freezes remain durable",
+          );
+        }
+      }
+      if (this.arbitrationRevocations) {
+        try {
+          await this.arbitrationRevocations.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.arbitrationRevocations.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Arbitration withdrawal delivery failed; signed notices and receipts remain durable",
           );
         }
       }

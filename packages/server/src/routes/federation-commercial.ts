@@ -39,6 +39,7 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationAdjustmentService } from "../federation/adjustment";
 import type { FederationArbitrationPolicyService } from "../federation/arbitration-policy";
+import type { FederationArbitrationRevocationDelivery } from "../federation/arbitration-revocations";
 import type { FederationBillingService } from "../federation/billing";
 import type { FederationClosingAutomation } from "../federation/closing-automation";
 import {
@@ -108,6 +109,7 @@ export function createFederationCommercialRoutes(
   disputeFreezes?: FederationDisputeFreezeExchange,
   disclosures?: FederationDisclosureService,
   arbitrationPolicies?: FederationArbitrationPolicyService,
+  arbitrationRevocations?: FederationArbitrationRevocationDelivery,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -318,6 +320,37 @@ export function createFederationCommercialRoutes(
             c.req.valid("param").grantId,
           ),
         }),
+    );
+  }
+  if (arbitrationRevocations) {
+    const path =
+      "/federation/commercial-agreements/:revisionId/arbitration-policies/:policyId/revocation-deliveries";
+    const params = id.extend({ policyId: z.uuid() });
+    r.get(path, kqValidator("param", params), async (c) => {
+      const p = c.req.valid("param");
+      return c.json({
+        success: true,
+        data: await arbitrationRevocations.status(
+          c.get("federationActor"),
+          p.revisionId,
+          p.policyId,
+        ),
+      });
+    });
+    r.post(
+      `${path}/:receivingSiteId/retry`,
+      kqValidator("param", params.extend({ receivingSiteId: z.uuid() })),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        const p = c.req.valid("param");
+        await arbitrationRevocations.retry(
+          c.get("federationActor"),
+          p.revisionId,
+          p.policyId,
+          p.receivingSiteId,
+        );
+        return c.json({ success: true });
+      },
     );
   }
   if (arbitrationPolicies) {

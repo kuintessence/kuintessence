@@ -101,6 +101,18 @@ jobs:
           KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-gate-result.json
           KQ_FABRIC_DATABASE_URL: postgres://kq:kq@localhost:5432/postgres
         run: bun run test:fabric:gate:integration
+      - name: Verify arbitration withdrawal races and native replay endorsement
+        env:
+          KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
+          KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-arbitration-result.json
+        run: bun scripts/fabric-evidence-network.ts --gate --arbitration-revocation
+      - name: Preserve arbitration assertion summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-arbitration-result
+          path: ${{ runner.temp }}/fabric-arbitration-result.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Preserve execution gate assertion summary
         uses: actions/upload-artifact@v4
         with:

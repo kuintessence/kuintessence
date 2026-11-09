@@ -32,6 +32,8 @@ import type {
   MediaShipmentState,
 } from "@kuintessence/shared/federation";
 import type { CommercialArbitrationPolicy } from "@kuintessence/shared/federation/arbitration-policy";
+import type { CommercialArbitrationRevocation } from "@kuintessence/shared/federation/arbitration-revocation";
+import type { ArbitrationRevocationNotice } from "@kuintessence/shared/federation/arbitration-revocation-notice";
 import type {
   CaseProposal,
   CasePublication,
@@ -156,6 +158,8 @@ export const federationSigningKeys = pgTable(
           | "commercial-payment"
           | "commercial-arbitration-policy"
           | "commercial-arbitration-revocation"
+          | "arbitration-revocation-notice"
+          | "arbitration-revocation-receipt"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
           | "case-evidence-publication"
@@ -1583,6 +1587,8 @@ export const federationArbitrationPolicies = pgTable(
     confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     revokedBy: uuid("revoked_by").references(() => users.id),
+    revocationPayload: jsonb("revocation_payload").$type<CommercialArbitrationRevocation>(),
+    revocationJws: text("revocation_jws"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -1613,7 +1619,84 @@ export const federationArbitrationPolicies = pgTable(
       AND ${t.arbitratorSiteId}::text NOT IN (${t.payload}->>'sourceSiteId', ${t.payload}->>'targetSiteId')
       AND (${t.counterpartyJws} IS NULL) = (${t.confirmedAt} IS NULL)
       AND (${t.revokedAt} IS NULL) = (${t.revokedBy} IS NULL)
+      AND (${t.revocationPayload} IS NULL) = (${t.revocationJws} IS NULL)
+      AND (${t.revocationPayload} IS NULL OR (${t.revokedAt} IS NOT NULL
+        AND ${t.revocationPayload}->>'policyId' = ${t.policyId}::text
+        AND ${t.revocationPayload}->>'policyDigest' = ${t.digest}
+        AND ${t.revocationPayload}->>'issuerSiteId' = ${t.localSiteId}::text))
     ) IS TRUE`,
+    ),
+  ],
+);
+
+/** Permanent exact-digest notices may precede approval and reach R without commercial access. */
+export const federationArbitrationRevocationNotices = pgTable(
+  "federation_arbitration_revocation_notices",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    policyId: uuid("policy_id").notNull(),
+    policyDigest: varchar("policy_digest", { length: 71 }).notNull(),
+    issuerSiteId: uuid("issuer_site_id").notNull(),
+    noticeId: uuid("notice_id").notNull(),
+    noticeDigest: varchar("notice_digest", { length: 71 }).notNull(),
+    revocationDigest: varchar("revocation_digest", { length: 71 }).notNull(),
+    payload: jsonb("payload").$type<ArbitrationRevocationNotice>().notNull(),
+    noticeJws: text("notice_jws").notNull(),
+    receiptJws: text("receipt_jws").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({
+      name: "arb_revocation_notice_pk",
+      columns: [t.localSiteId, t.policyId, t.policyDigest, t.issuerSiteId],
+    }),
+    uniqueIndex("arb_revocation_notice_id").on(t.localSiteId, t.noticeId),
+    check(
+      "arb_revocation_notice_identity",
+      sql`(${t.localSiteId} <> ${t.issuerSiteId}
+    AND ${t.policyDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.noticeDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.revocationDigest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.payload}->>'kind' = 'arbitration-revocation-notice' AND ${t.payload}->>'noticeId' = ${t.noticeId}::text
+    AND ${t.payload}->>'issuerSiteId' = ${t.issuerSiteId}::text AND ${t.payload}->>'receivingSiteId' = ${t.localSiteId}::text
+    AND ${t.payload}->'policy'->>'policyId' = ${t.policyId}::text) IS TRUE`,
+    ),
+  ],
+);
+export const federationArbitrationRevocationDeliveries = pgTable(
+  "federation_arbitration_revocation_deliveries",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    policyId: uuid("policy_id").notNull(),
+    receivingSiteId: uuid("receiving_site_id").notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    payload: jsonb("payload").$type<ArbitrationRevocationNotice>(),
+    noticeJws: text("notice_jws"),
+    receiptJws: text("receipt_jws"),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({
+      name: "arb_revocation_delivery_pk",
+      columns: [t.localSiteId, t.policyId, t.receivingSiteId],
+    }),
+    foreignKey({
+      name: "arb_revocation_delivery_policy_fk",
+      columns: [t.localSiteId, t.policyId],
+      foreignColumns: [
+        federationArbitrationPolicies.localSiteId,
+        federationArbitrationPolicies.policyId,
+      ],
+    }),
+    index("arb_revocation_delivery_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "arb_revocation_delivery_state",
+      sql`${t.localSiteId} <> ${t.receivingSiteId}
+    AND ${t.state} IN ('pending','received','needs_review') AND (${t.state} = 'received') = (${t.receiptJws} IS NOT NULL)
+    AND (${t.receiptJws} IS NULL) = (${t.acknowledgedAt} IS NULL) AND (${t.payload} IS NULL) = (${t.noticeJws} IS NULL)
+    AND (${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
     ),
   ],
 );

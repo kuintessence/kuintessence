@@ -12,6 +12,11 @@ import { Client, credentials } from "@grpc/grpc-js";
 import { connect, EndorseError, signers, type Transaction } from "@hyperledger/fabric-gateway";
 import { common, ledger, msp, peer, gateway as proto } from "@hyperledger/fabric-protos";
 import { federationCanonicalJson } from "@kuintessence/shared/federation";
+import { CommercialArbitrationPolicySchema } from "@kuintessence/shared/federation/arbitration-policy";
+import {
+  type CommercialArbitrationRevocationEnvelopeSchema,
+  CommercialArbitrationRevocationSchema,
+} from "@kuintessence/shared/federation/arbitration-revocation";
 import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
   CommercialAdjustmentSchema,
@@ -39,7 +44,10 @@ import {
   MarketExecutionStopSchema,
   MarketUnreservedClosureSchema,
 } from "@kuintessence/shared/federation/market";
-import { signFederationMessage } from "@kuintessence/shared/federation/signatures";
+import {
+  type FederationSigningKey,
+  signFederationMessage,
+} from "@kuintessence/shared/federation/signatures";
 import { importPKCS8 } from "jose";
 import { z } from "zod";
 import { Site } from "./fabric-evidence-fixture";
@@ -442,6 +450,207 @@ async function run() {
     probes.push(signed.sourceJws, signed.targetJws);
     return { value, signed };
   };
+  if (process.argv.includes("--arbitration-revocation")) {
+    const record = async (gateway: ReturnType<typeof connect>, type: string, id: string) =>
+      z
+        .object({ receipt: CommercialReceiptSchema.nullable() })
+        .parse(
+          JSON.parse(
+            Buffer.from(
+              await gateway
+                .getNetwork(network.channel)
+                .getContract("kq-commercial")
+                .evaluateTransaction("GetRecordReceipt", domain.domainId, type, id),
+            ).toString(),
+          ),
+        ).receipt;
+    for (const reserveFirst of [false, true]) {
+      const policy = CommercialArbitrationPolicySchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-arbitration-policy",
+        policyId: randomUUID(),
+        domainId: domain.domainId,
+        agreementRevisionId: agreementReceipt.recordId,
+        agreementDigest: agreementReceipt.digest,
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        arbitratorSiteId: site("C").siteId,
+        subjectTypes: ["bill"],
+        disclosures: [{ recordType: "bill", fields: ["dueAmount"] }],
+        requiredEvidence: [{ recordType: "bill", fields: ["dueAmount"] }],
+        decisionRule: "designated-arbitrator",
+        actions: ["settle"],
+        maxChargedAmount: amount,
+        unit: terms.agreement.unit,
+        salt: randomBytes(32).toString("hex"),
+        issuedAt: new Date().toISOString(),
+        validFrom: new Date().toISOString(),
+        validUntil: new Date(time + 1800000).toISOString(),
+      });
+      const approvals = await bilateral(CommercialArbitrationPolicySchema, policy);
+      const policyDigest = `sha256:${createHash("sha256")
+        .update(Buffer.from(approvals.sourceJws.split(".")[1] ?? "", "base64url"))
+        .digest("hex")}`;
+      const bind = async (task: Awaited<ReturnType<typeof claimed>>) => {
+        const reservation = CommercialReservationSchema.parse({
+          ...task.reservation,
+          request: {
+            ...task.reservation.request,
+            arbitration: {
+              policyId: policy.policyId,
+              policyDigest,
+              sourceJws: approvals.sourceJws,
+              targetJws: approvals.targetJws,
+            },
+          },
+        });
+        const signed = await bilateral(CommercialReservationSchema, reservation);
+        probes.push(signed.sourceJws, signed.targetJws);
+        return { ...task, reservation, signed };
+      };
+      const task = await bind(await claimed());
+      const issuer: FederationSigningKey = reserveFirst ? target : source;
+      const withdrawal = CommercialArbitrationRevocationSchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-arbitration-revocation",
+        revocationId: randomUUID(),
+        policyId: policy.policyId,
+        policyDigest,
+        domainId: domain.domainId,
+        agreementRevisionId: agreementReceipt.recordId,
+        agreementDigest: agreementReceipt.digest,
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        issuerSiteId: issuer.siteId,
+        issuedAt: new Date().toISOString(),
+        salt: randomBytes(32).toString("hex"),
+      });
+      const revocation: z.infer<typeof CommercialArbitrationRevocationEnvelopeSchema> = {
+        issuerSiteId: issuer.siteId,
+        revocationJws: await signFederationMessage(
+          CommercialArbitrationRevocationSchema,
+          withdrawal,
+          issuer,
+        ),
+      };
+      probes.push(approvals.sourceJws, approvals.targetJws, revocation.revocationJws);
+      await assert.rejects(
+        commercial(c, "RevokeArbitrationPolicy", withdrawal.revocationId, revocation).endorse(),
+        rejected("POLICY_DENIED"),
+      );
+      const caller = reserveFirst ? b : a;
+      const [reserveTx, revokeTx] = await Promise.all([
+        commercial(a, "ReserveExecution", task.reservation.reservationId, task.signed).endorse(),
+        commercial(
+          caller,
+          "RevokeArbitrationPolicy",
+          withdrawal.revocationId,
+          revocation,
+        ).endorse(),
+      ]);
+      let revokeForCommit = revokeTx;
+      if (!reserveFirst) {
+        const prepared = proto.PreparedTransaction.deserializeBinary(revokeTx.getBytes());
+        const envelope = prepared.getEnvelope();
+        assert(envelope);
+        const payload = common.Payload.deserializeBinary(envelope.getPayload_asU8());
+        const transaction = peer.Transaction.deserializeBinary(payload.getData_asU8());
+        for (const action of transaction.getActionsList()) {
+          const body = peer.ChaincodeActionPayload.deserializeBinary(action.getPayload_asU8());
+          const endorsements = body.getAction();
+          assert(endorsements);
+          const remaining = endorsements
+            .getEndorsementsList()
+            .filter(
+              (entry) =>
+                msp.SerializedIdentity.deserializeBinary(entry.getEndorser_asU8()).getMspid() ===
+                "AMSP",
+            );
+          assert.equal(remaining.length, 1);
+          endorsements.setEndorsementsList(remaining);
+          action.setPayload(body.serializeBinary());
+        }
+        payload.setData(transaction.serializeBinary());
+        envelope.setPayload(payload.serializeBinary());
+        assert.equal(
+          (await commit(a.newTransaction(prepared.serializeBinary()))).code,
+          peer.TxValidationCode.ENDORSEMENT_POLICY_FAILURE,
+        );
+        passed.push(
+          "unilateral business withdrawal still requires native A/B organizational endorsements",
+        );
+        revokeForCommit = await commercial(
+          caller,
+          "RevokeArbitrationPolicy",
+          withdrawal.revocationId,
+          revocation,
+        ).endorse();
+      }
+      const first = await commit(reserveFirst ? reserveTx : revokeForCommit);
+      assert.equal(first.successful, true);
+      const second = await commit(reserveFirst ? revokeForCommit : reserveTx);
+      if (reserveFirst) {
+        assert.equal(second.successful, true);
+        passed.push(
+          "reservation first: both transactions VALID, subsequent withdrawal preserves the original admission",
+        );
+      } else {
+        assert.equal(second.code, peer.TxValidationCode.MVCC_READ_CONFLICT);
+        passed.push(
+          "withdrawal first: the concurrent reservation is native MVCC INVALID on the previously absent private fence",
+        );
+      }
+      const expected = CommercialReceiptSchema.parse(
+        JSON.parse(Buffer.from(revokeTx.getResult()).toString()),
+      );
+      await retryRead(async () => {
+        const receipts = await Promise.all(
+          [a, b].map((g) => record(g, "arbitration-revocation", withdrawal.revocationId)),
+        );
+        return receipts.every((r) => r?.digest === expected.digest);
+      });
+      await assert.rejects(record(c, "arbitration-revocation", withdrawal.revocationId));
+      const stored = await record(a, "reservation", task.reservation.reservationId);
+      assert.equal(stored !== null, reserveFirst);
+      if (reserveFirst) {
+        const replay = await commercial(
+          a,
+          "ReserveExecution",
+          task.reservation.reservationId,
+          task.signed,
+        ).endorse();
+        assert.deepEqual(JSON.parse(Buffer.from(replay.getResult()).toString()), stored);
+        assert.equal((await commit(replay)).successful, true);
+      } else {
+        await assert.rejects(
+          commercial(a, "ReserveExecution", task.reservation.reservationId, task.signed).endorse(),
+          rejected("AUTHORIZATION_EXPIRED"),
+        );
+      }
+      const next = await bind(await claimed());
+      await assert.rejects(
+        commercial(a, "ReserveExecution", next.reservation.reservationId, next.signed).endorse(),
+        rejected("AUTHORIZATION_EXPIRED"),
+      );
+      const replay: Transaction = await commercial(
+        caller,
+        "RevokeArbitrationPolicy",
+        withdrawal.revocationId,
+        revocation,
+      ).endorse();
+      assert.deepEqual(JSON.parse(Buffer.from(replay.getResult()).toString()), expected);
+      assert.equal((await commit(replay)).successful, true);
+      passed.push(
+        `original withdrawal receipt is stable on A/B and denied to R; new reservations are refused (${reserveFirst ? "B" : "A"} withdraws)`,
+      );
+    }
+    await writeFile(
+      z.string().parse(process.argv[3]),
+      JSON.stringify({ passed, probes }, null, 2),
+      { mode: 0o600 },
+    );
+    return;
+  }
   if (process.argv.includes("--unreserved-closure")) {
     for (const reserveFirst of [false, true]) {
       const task = await claimed();

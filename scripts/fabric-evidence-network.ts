@@ -50,6 +50,15 @@ if (
   process.env.KQ_FEDERATION_EXECUTION_LAB !== "1"
 )
   throw new Error("Set KQ_FEDERATION_EXECUTION_LAB=1 for the disposable local k3s lab");
+if (
+  process.argv.includes("--arbitration-revocation") &&
+  (!process.argv.includes("--gate") ||
+    execution ||
+    process.argv.includes("--database") ||
+    process.argv.includes("--unreserved-closure") ||
+    process.argv.includes("--preexecution-closure"))
+)
+  throw new Error("Use --arbitration-revocation only with --gate, without other scoped probes");
 const toolsRoot = process.env.KQ_FABRIC_TOOLS;
 if (!toolsRoot) throw new Error("Set KQ_FABRIC_TOOLS to a verified Fabric 3.1.5 release directory");
 if (process.argv.includes("--database") && !process.env.KQ_FABRIC_DATABASE_URL)
@@ -409,6 +418,9 @@ async function setup() {
                 "commercial-payment",
                 "commercial-dispute",
                 "commercial-dispute-freeze",
+                ...(process.argv.includes("--arbitration-revocation")
+                  ? ["commercial-arbitration-policy", "commercial-arbitration-revocation"]
+                  : []),
                 "cancellation-receipt",
                 ...(gate
                   ? ["commercial-reservation", "commercial-release", "commercial-terminal"]

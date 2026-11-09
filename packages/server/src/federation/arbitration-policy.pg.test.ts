@@ -1,14 +1,16 @@
 import { afterAll, expect, test } from "bun:test";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   federationCommercialAttempts as attempts,
   auditLog,
   federationCommercialAgreements as contracts,
   createPgDb,
+  federationArbitrationRevocationDeliveries as deliveries,
   federationCapabilities,
   federationCertificates,
   federationSigningKeys,
   federationSites,
+  federationArbitrationRevocationNotices as notices,
   orgs,
   federationArbitrationPolicies as policies,
   federationCommercialSubmissions as submissions,
@@ -23,6 +25,10 @@ import {
   CommercialArbitrationPolicySchema,
 } from "@kuintessence/shared/federation/arbitration-policy";
 import { CommercialArbitrationRevocationSchema } from "@kuintessence/shared/federation/arbitration-revocation";
+import {
+  ArbitrationRevocationNoticeSchema,
+  ArbitrationRevocationReceiptSchema,
+} from "@kuintessence/shared/federation/arbitration-revocation-notice";
 import { CommercialAgreementSchema } from "@kuintessence/shared/federation/commercial";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -33,10 +39,12 @@ import { createErrorHandler } from "../middleware/error-handler";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
+import { FederationArbitrationRevocationDelivery } from "./arbitration-revocations";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { CommercialClient } from "./commercial-client";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
+import { FederationCommercialWorker } from "./commercial-worker";
 import { createFederationIngress } from "./ingress";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
@@ -178,6 +186,14 @@ afterAll(async () => {
             .where(inArray(submissions.localSiteId, f.sites)),
         ),
       );
+    await db.delete(deliveries).where(inArray(deliveries.localSiteId, f.sites));
+    await db.delete(notices).where(inArray(notices.localSiteId, f.sites));
+    await db.delete(auditLog).where(
+      inArray(
+        auditLog.actor,
+        f.sites.map((id) => `arbitration-revocation:${id}`),
+      ),
+    );
     await db.delete(syncs).where(inArray(syncs.localSiteId, f.sites));
     await db.delete(federationCertificates).where(inArray(federationCertificates.siteId, f.sites));
     await db.delete(policies).where(inArray(policies.localSiteId, f.sites));
@@ -836,4 +852,592 @@ test("arbitration approval rechecks expiry after a real policy identity lock wai
   expect((result as FederationError).code).toBe("AUTHORIZATION_EXPIRED");
   expect(await f.row()).toBeUndefined();
   expect(await f.audit("federation.arbitration_policy.approve")).toHaveLength(0);
+});
+
+async function withdrawalFixture(mode: FederationMode = "bilateral_direct") {
+  const f = await fixture(mode);
+  const fingerprint = randomBytes(32).toString("hex");
+  await db.insert(federationCertificates).values({
+    fingerprint,
+    siteId: f.a.signing.siteId,
+    certificatePem: "isolated verified-fingerprint fixture, not a TLS handshake",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2099-01-01"),
+  });
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-arbitration-revocation","arbitration-revocation-notice","arbitration-revocation-receipt"]'::jsonb`,
+    })
+    .where(
+      inArray(federationSigningKeys.siteId, [
+        f.a.signing.siteId,
+        f.b.signing.siteId,
+        f.r.signing.siteId,
+      ]),
+    );
+  const receivers = new Map(
+    [f.b, f.r].map((k) => [
+      k.signing.siteId,
+      new FederationArbitrationRevocationDelivery(
+        db,
+        k.signing,
+        new FederationArbitrationPolicyService(db, k.signing),
+      ),
+    ]),
+  );
+  const deliver: FederationSend = async (endpoint, jws, path) => {
+    expect(endpoint).toBe("https://test.invalid");
+    expect(path).toBe("/federation/v1/arbitration-revocations");
+    const value = ArbitrationRevocationNoticeSchema.parse(
+      JSON.parse(Buffer.from(jws.split(".")[1] ?? "", "base64url").toString()),
+    );
+    const receiver = receivers.get(value.receivingSiteId);
+    if (!receiver) throw new Error("Unexpected recipient");
+    return receiver.receive(jws, fingerprint);
+  };
+  const key = and(
+    eq(deliveries.localSiteId, f.a.signing.siteId),
+    eq(deliveries.policyId, f.draft.policyId),
+  );
+  const rows = () => db.select().from(deliveries).where(key).orderBy(deliveries.receivingSiteId);
+  const due = () =>
+    db
+      .update(deliveries)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(key);
+  return {
+    ...f,
+    fingerprint,
+    receivers,
+    deliver,
+    key,
+    rows,
+    due,
+    worker: (send = deliver) =>
+      new FederationArbitrationRevocationDelivery(db, f.a.signing, f.service, send),
+  };
+}
+
+async function signedWithdrawalNotice(
+  f: Awaited<ReturnType<typeof withdrawalFixture>>,
+  policy = f.draft,
+) {
+  const policyJws = await signFederationMessage(
+    CommercialArbitrationPolicySchema,
+    policy,
+    f.a.signing,
+  );
+  const policyDigest = `sha256:${createHash("sha256")
+    .update(Buffer.from(policyJws.split(".")[1] ?? "", "base64url"))
+    .digest("hex")}`;
+  const revocation = CommercialArbitrationRevocationSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-arbitration-revocation",
+    revocationId: randomUUID(),
+    policyId: policy.policyId,
+    policyDigest,
+    domainId: policy.domainId,
+    agreementRevisionId: policy.agreementRevisionId,
+    agreementDigest: policy.agreementDigest,
+    sourceSiteId: policy.sourceSiteId,
+    targetSiteId: policy.targetSiteId,
+    issuerSiteId: f.a.signing.siteId,
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const value = ArbitrationRevocationNoticeSchema.parse({
+    protocolVersion: 1,
+    kind: "arbitration-revocation-notice",
+    noticeId: randomUUID(),
+    issuerSiteId: f.a.signing.siteId,
+    receivingSiteId: f.b.signing.siteId,
+    policy,
+    policyJws,
+    revocationJws: await signFederationMessage(
+      CommercialArbitrationRevocationSchema,
+      revocation,
+      f.a.signing,
+    ),
+    issuedAt: new Date().toISOString(),
+  });
+  return {
+    value,
+    jws: await signFederationMessage(ArbitrationRevocationNoticeSchema, value, f.a.signing),
+  };
+}
+
+test("arbitration notification worker reaches both peer and R without contract disclosure or a ledger", async () => {
+  const f = await withdrawalFixture();
+  const { own } = await f.approve();
+  await f.peer.attachCounterparty(f.otherActor, f.revision, f.draft.policyId, own.approvalJws);
+  await f.service.revoke(f.actor, f.revision, f.draft.policyId);
+  // The original policy purpose may be removed without disabling its independent withdrawal.
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: [
+        "commercial-agreement",
+        "commercial-arbitration-revocation",
+        "arbitration-revocation-notice",
+      ],
+    })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  const args: ConstructorParameters<typeof FederationCommercialWorker> = [
+    new FederationCommercialSubmissionService(db, f.a.signing.siteId),
+  ];
+  args[19] = f.worker();
+  const worker = new FederationCommercialWorker(...args);
+  await worker.tick();
+  await worker.stop();
+  const rows = await f.rows();
+  expect(rows).toHaveLength(2);
+  expect(rows.every((row) => row.state === "received")).toBe(true);
+  expect(rows[0]?.payload?.revocationJws).toBe(rows[1]?.payload?.revocationJws);
+  expect(JSON.stringify(rows)).not.toContain("Private contract");
+  expect(
+    await db.select().from(contracts).where(eq(contracts.localSiteId, f.r.signing.siteId)),
+  ).toHaveLength(0);
+  await expect(
+    db.transaction((tx) =>
+      f.peer.exchangeRecord(tx, f.otherActor.orgId, f.revision, f.draft.policyId),
+    ),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  await expect(
+    f.peer.attachCounterparty(f.otherActor, f.revision, f.draft.policyId, own.approvalJws),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  expect((await f.peer.list(f.otherActor, f.revision)).data[0]?.approvalJws).toBeDefined();
+});
+
+test("arbitration notification arriving before approval fences only its exact policy digest", async () => {
+  const f = await withdrawalFixture();
+  const receiver = f.receivers.get(f.b.signing.siteId);
+  if (!receiver) throw new Error("Missing receiver");
+  const different = await signedWithdrawalNotice(f, {
+    ...f.draft,
+    salt: randomBytes(32).toString("hex"),
+  });
+  await receiver.receive(different.jws, f.fingerprint);
+  const approved = await f.peer.approve(f.otherActor, f.revision, f.draft);
+  expect(approved.policyId).toBe(f.draft.policyId);
+  await expect(receiver.receive(different.jws, f.fingerprint)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  const g = await withdrawalFixture();
+  const original = await signedWithdrawalNotice(g);
+  const response = await g.receivers.get(g.b.signing.siteId)?.receive(original.jws, g.fingerprint);
+  expect(response).toBeDefined();
+  await expect(g.peer.approve(g.otherActor, g.revision, g.draft)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+});
+
+test("arbitration notification retries lost responses using the original signed notice and receipt", async () => {
+  const f = await withdrawalFixture("bilateral_attested");
+  await f.approve();
+  await f.service.revoke(f.actor, f.revision, f.draft.policyId);
+  const receipts = new Map<string, string>();
+  const worker = f.worker(async (...args) => {
+    const receipt = await f.deliver(...args);
+    receipts.set(args[1], receipt);
+    throw new Error("Response lost");
+  });
+  await worker.discover();
+  await worker.advanceNext();
+  await worker.advanceNext();
+  const before = await f.rows();
+  expect(before.every((r) => r.state === "pending" && r.noticeJws)).toBe(true);
+  const queuedResult = await f.service.submitRevocation(f.actor, f.revision, f.draft.policyId);
+  const queued = (await f.ledger()).find((row) => row.id === queuedResult.id);
+  if (!queued || queued.input.operation !== "revoke-arbitration-policy")
+    throw new Error("Wrong operation");
+  const originalJws = before[0]?.payload?.revocationJws;
+  if (!originalJws) throw new Error("Missing signed withdrawal");
+  expect(queued.input.envelope.revocationJws).toBe(originalJws);
+  await f.due();
+  const recovered = f.worker();
+  await recovered.advanceNext();
+  await recovered.advanceNext();
+  const after = await f.rows();
+  for (let i = 0; i < after.length; i++) {
+    expect(after[i]?.noticeJws).toBe(before[i]?.noticeJws);
+    expect(after[i]?.receiptJws).toBe(receipts.get(before[i]?.noticeJws ?? ""));
+    expect(after[i]?.state).toBe("received");
+  }
+  expect(await f.audit("federation.arbitration_policy.withdrawal_signed")).toHaveLength(1);
+});
+
+test("arbitration notification adopts pre-upgrade native withdrawal and rejects ungranted senders", async () => {
+  const f = await withdrawalFixture("ledger_coordinated");
+  await f.approve();
+  await f.service.revoke(f.actor, f.revision, f.draft.policyId);
+  const queuedResult = await f.service.submitRevocation(f.actor, f.revision, f.draft.policyId);
+  const queued = (await f.ledger()).find((row) => row.id === queuedResult.id);
+  if (!queued || queued.input.operation !== "revoke-arbitration-policy")
+    throw new Error("Wrong operation");
+  await db
+    .update(policies)
+    .set({ revocationPayload: null, revocationJws: null })
+    .where(
+      and(eq(policies.localSiteId, f.a.signing.siteId), eq(policies.policyId, f.draft.policyId)),
+    );
+  const worker = f.worker();
+  await worker.discover();
+  await worker.advanceNext();
+  await worker.advanceNext();
+  const originalJws = queued.input.envelope.revocationJws;
+  expect((await f.rows()).every((r) => r.payload?.revocationJws === originalJws)).toBe(true);
+  const g = await withdrawalFixture();
+  await g.approve();
+  await g.service.revoke(g.actor, g.revision, g.draft.policyId);
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["arbitration-revocation-notice"] })
+    .where(eq(federationSigningKeys.siteId, g.a.signing.siteId));
+  const refused = g.worker();
+  await refused.discover();
+  await refused.advanceNext();
+  expect(
+    (await g.rows()).some(
+      (r) => r.state === "needs_review" && r.lastError === "UNTRUSTED_IDENTITY",
+    ),
+  ).toBe(true);
+});
+
+test("arbitration notification ingress requires certificate identity and independent signatures", async () => {
+  const f = await withdrawalFixture();
+  const original = await signedWithdrawalNotice(f);
+  const ingress = createFederationIngress(db, f.b.signing);
+  const post = (jws: string, fingerprint?: string) =>
+    ingress.request("/federation/v1/arbitration-revocations", {
+      method: "POST",
+      headers: {
+        "content-type": "application/jose",
+        ...(fingerprint ? { "x-kq-federation-cert": fingerprint } : {}),
+      },
+      body: jws,
+    });
+  expect((await post(original.jws)).status).toBe(401);
+  const good = await post(original.jws, f.fingerprint);
+  expect(good.status).toBe(200);
+  expect(good.headers.get("cache-control")).toBe("no-store");
+  expect(await (await post(original.jws, f.fingerprint)).text()).toBe(await good.text());
+  const wrong = await signFederationMessage(
+    ArbitrationRevocationNoticeSchema,
+    { ...original.value, noticeId: randomUUID() },
+    f.a.signing,
+  );
+  expect((await post(wrong, f.fingerprint)).status).toBe(409);
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["arbitration-revocation-receipt"] })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  expect((await post(original.jws, f.fingerprint)).status).toBe(401);
+});
+
+test("arbitration notification rolls back receiver and sender audits without changing original approvals", async () => {
+  const f = await withdrawalFixture();
+  await f.approve();
+  await f.service.revoke(f.actor, f.revision, f.draft.policyId);
+  const worker = f.worker();
+  await worker.discover();
+  for (const action of ["receive", "delivered"]) {
+    await db.execute(
+      sql.raw(
+        `alter table audit_log add constraint test_arbitration_notice_audit check (action <> 'federation.arbitration_revocation.${action}') NOT VALID`,
+      ),
+    );
+    try {
+      await f.due();
+      await worker.advanceNext();
+      await worker.advanceNext();
+      expect((await f.rows()).every((r) => r.state === "pending" && r.receiptJws === null)).toBe(
+        true,
+      );
+      const saved = await db.select().from(notices).where(eq(notices.policyId, f.draft.policyId));
+      expect(saved).toHaveLength(action === "receive" ? 0 : 2);
+    } finally {
+      await db.execute(sql`alter table audit_log drop constraint test_arbitration_notice_audit`);
+    }
+  }
+  await f.due();
+  await worker.advanceNext();
+  await worker.advanceNext();
+  expect((await f.rows()).every((r) => r.state === "received")).toBe(true);
+});
+
+test("arbitration notification ignores late lease responses and requires independent human retry", async () => {
+  const f = await withdrawalFixture();
+  await f.approve();
+  await f.service.revoke(f.actor, f.revision, f.draft.policyId);
+  const worker = f.worker(async (...args) => {
+    const response = await f.deliver(...args);
+    await db
+      .update(deliveries)
+      .set({ leaseToken: randomUUID(), leaseUntil: new Date(Date.now() + 60000) })
+      .where(f.key);
+    return response;
+  });
+  await worker.discover();
+  await worker.advanceNext();
+  const row = (await f.rows()).find((r) => r.noticeJws);
+  if (!row) throw new Error("Missing delivery");
+  expect(row.state).toBe("pending");
+  expect(row.receiptJws).toBeNull();
+  await expect(
+    f.worker().retry(f.actor, f.revision, f.draft.policyId, row.receivingSiteId),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(deliveries)
+    .set({ leaseUntil: new Date(0), state: "needs_review" })
+    .where(f.key);
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [
+    f.agreementsA,
+    new FederationCommercialSubmissionService(db, f.a.signing.siteId),
+  ];
+  deps[28] = f.worker();
+  const app = new Hono();
+  let automation = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, { ...f.actor, role: "platform_admin" } as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...deps));
+  const path = `/federation/commercial-agreements/${f.revision}/arbitration-policies/${f.draft.policyId}/revocation-deliveries`;
+  const post = (body: unknown) =>
+    app.request(`${path}/${row.receivingSiteId}/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  automation = true;
+  expect((await post({})).status).toBe(403);
+  automation = false;
+  expect((await post({ amount: "1" })).status).toBe(400);
+  await permissions.set(
+    { ...f.actor, capability: "arbitration.approve", enabled: false },
+    f.actor.userId,
+  );
+  expect((await post({})).status).toBe(403);
+  await permissions.set(
+    { ...f.actor, capability: "arbitration.approve", enabled: true },
+    f.actor.userId,
+  );
+  expect((await post({})).status).toBe(200);
+  const status = await app.request(path);
+  expect(status.status).toBe(200);
+  expect(await status.text()).not.toContain("Jws");
+  await f.worker().advanceNext();
+  expect((await f.rows()).find((r) => r.receivingSiteId === row.receivingSiteId)?.state).toBe(
+    "received",
+  );
+});
+
+test("arbitration notification refuses changed endpoints and invalid receipt authority", async () => {
+  for (const mutation of ["endpoint", "receipt"]) {
+    const f = await withdrawalFixture();
+    await f.approve();
+    await f.service.revoke(f.actor, f.revision, f.draft.policyId);
+    const worker = f.worker(async (...args) => {
+      const response = await f.deliver(...args);
+      const receipt = ArbitrationRevocationReceiptSchema.parse(
+        JSON.parse(Buffer.from(response.split(".")[1] ?? "", "base64url").toString()),
+      );
+      if (mutation === "endpoint")
+        await db
+          .update(federationSites)
+          .set({ endpoint: "https://changed.invalid" })
+          .where(eq(federationSites.id, receipt.receivingSiteId));
+      else
+        await db
+          .update(federationSigningKeys)
+          .set({ allowedKinds: ["commercial-agreement"] })
+          .where(eq(federationSigningKeys.siteId, receipt.receivingSiteId));
+      return response;
+    });
+    await worker.discover();
+    await worker.advanceNext();
+    expect((await f.rows()).some((r) => r.state === "needs_review" && r.receiptJws === null)).toBe(
+      true,
+    );
+  }
+});
+
+test("arbitration notification waits for an in-flight binding before permanently fencing new bindings", async () => {
+  const f = await withdrawalFixture();
+  const { own } = await f.approve();
+  await f.peer.attachCounterparty(f.otherActor, f.revision, f.draft.policyId, own.approvalJws);
+  const original = await signedWithdrawalNotice(f);
+  const held = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  const binding = db.transaction(async (tx) => {
+    await f.peer.verified(tx, f.otherActor, f.revision, f.draft.policyId);
+    held.resolve();
+    await release.promise;
+  });
+  await held.promise;
+  const receiving = f.receivers.get(f.b.signing.siteId)?.receive(original.jws, f.fingerprint);
+  if (!receiving) throw new Error("Missing receiver");
+  try {
+    let waiting = false;
+    for (let i = 0; i < 100; i++) {
+      const rows = await db.execute(
+        sql`select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like '%federation_arbitration_policies%for update%'`,
+      );
+      if (rows.length) {
+        waiting = true;
+        break;
+      }
+      await Bun.sleep(10);
+    }
+    expect(waiting).toBe(true);
+    expect(
+      await db.select().from(notices).where(eq(notices.policyId, f.draft.policyId)),
+    ).toHaveLength(0);
+  } finally {
+    release.resolve();
+    await binding;
+  }
+  await receiving;
+  await expect(
+    db.transaction((tx) => f.peer.verified(tx, f.otherActor, f.revision, f.draft.policyId)),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+});
+
+test("arbitration notification rechecks signer expiry after an actual approval identity lock wait", async () => {
+  const f = await withdrawalFixture();
+  const original = await signedWithdrawalNotice(f);
+  const until = new Date(Date.now() + 1000);
+  await db
+    .update(federationSigningKeys)
+    .set({ validUntil: until })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  const held = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  const lock = db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`arbitration-policy:${f.b.signing.siteId}:${f.draft.policyId}`}, 0))`,
+    );
+    held.resolve();
+    await release.promise;
+  });
+  await held.promise;
+  const receiving = f.receivers
+    .get(f.b.signing.siteId)
+    ?.receive(original.jws, f.fingerprint)
+    .then(
+      () => null,
+      (error: unknown) => error,
+    );
+  if (!receiving) throw new Error("Missing receiver");
+  try {
+    let waiting = false;
+    for (let i = 0; i < 100; i++) {
+      if (
+        (
+          await db.execute(
+            sql`select 1 from pg_stat_activity where datname = current_database() and wait_event = 'advisory'`,
+          )
+        ).length
+      ) {
+        waiting = true;
+        break;
+      }
+      await Bun.sleep(10);
+    }
+    expect(waiting).toBe(true);
+    await Bun.sleep(Math.max(1, until.getTime() - Date.now() + 20));
+  } finally {
+    release.resolve();
+    await lock;
+  }
+  const result = await receiving;
+  expect(result).toBeInstanceOf(FederationError);
+  expect((result as FederationError).code).toBe("UNTRUSTED_IDENTITY");
+  expect(
+    await db.select().from(notices).where(eq(notices.policyId, f.draft.policyId)),
+  ).toHaveLength(0);
+});
+
+test("arbitration notification forbids R and a nonparty to revoke a policy", async () => {
+  const f = await withdrawalFixture();
+  const original = await signedWithdrawalNotice(f);
+  const receiver = f.receivers.get(f.b.signing.siteId);
+  if (!receiver) throw new Error("Missing receiver");
+  for (const patch of [
+    { issuerSiteId: f.r.signing.siteId },
+    { policy: { ...f.draft, sourceSiteId: randomUUID() } },
+    { receivingSiteId: randomUUID() },
+  ]) {
+    const jws = await signFederationMessage(
+      ArbitrationRevocationNoticeSchema,
+      { ...original.value, ...patch },
+      f.a.signing,
+    );
+    await expect(receiver.receive(jws, f.fingerprint)).rejects.toBeInstanceOf(FederationError);
+  }
+  const rFingerprint = randomBytes(32).toString("hex");
+  await db.insert(federationCertificates).values({
+    fingerprint: rFingerprint,
+    siteId: f.r.signing.siteId,
+    certificatePem: "isolated verified-fingerprint fixture, not a TLS handshake",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2099-01-01"),
+  });
+  const rNotice = await signFederationMessage(
+    ArbitrationRevocationNoticeSchema,
+    { ...original.value, issuerSiteId: f.r.signing.siteId },
+    f.r.signing,
+  );
+  await expect(receiver.receive(rNotice, rFingerprint)).rejects.toThrow("POLICY_DENIED");
+  expect(
+    await db.select().from(notices).where(eq(notices.policyId, f.draft.policyId)),
+  ).toHaveLength(0);
+});
+
+test("arbitration notification and first approval serialize on the same identity lock", async () => {
+  const f = await withdrawalFixture();
+  const original = await signedWithdrawalNotice(f);
+  const receiver = f.receivers.get(f.b.signing.siteId);
+  if (!receiver) throw new Error("Missing receiver");
+  const held = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  const lock = db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`arbitration-policy:${f.b.signing.siteId}:${f.draft.policyId}`}, 0))`,
+    );
+    held.resolve();
+    await release.promise;
+  });
+  await held.promise;
+  const receiving = receiver.receive(original.jws, f.fingerprint);
+  const waiters = async (n: number) => {
+    for (let i = 0; i < 100; i++) {
+      const rows = await db.execute(
+        sql`select 1 from pg_stat_activity where datname = current_database() and wait_event = 'advisory'`,
+      );
+      if (rows.length === n) return;
+      await Bun.sleep(10);
+    }
+    throw new Error("Expected actual advisory lock wait");
+  };
+  let approval: Promise<unknown> | undefined;
+  try {
+    await waiters(1);
+    approval = f.peer.approve(f.otherActor, f.revision, f.draft).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await waiters(2);
+  } finally {
+    release.resolve();
+    await lock;
+  }
+  await receiving;
+  const result = await approval;
+  expect(result).toBeInstanceOf(FederationError);
+  expect((result as FederationError).code).toBe("AUTHORIZATION_EXPIRED");
+  expect((await f.peer.list(f.otherActor, f.revision)).data).toHaveLength(0);
 });

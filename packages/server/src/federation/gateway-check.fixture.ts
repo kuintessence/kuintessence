@@ -98,6 +98,7 @@ try {
         "/federation/v1/commercial-closing",
         "/federation/v1/disputes",
         "/federation/v1/case-revocations",
+        "/federation/v1/arbitration-revocations",
         "/federation/v1/dispute-freezes",
         "/federation/v1/market-requests",
         "/federation/v1/reservation-proposals",
@@ -193,6 +194,7 @@ try {
       "/federation/v1/disputes",
       "/federation/v1/dispute-freezes",
       "/federation/v1/case-revocations",
+      "/federation/v1/arbitration-revocations",
     ]) {
       assert.deepEqual(await call({ cert, key }, path), {
         status: 200,
@@ -271,7 +273,7 @@ try {
       (await call({ cert, key }, "/federation/v1/input-downloads?identity=forged")).status,
       404,
     );
-    assert.equal(calls, 24);
+    assert.equal(calls, 25);
     await new Promise<void>((resolve, reject) =>
       backend.close((error) => (error ? reject(error) : resolve())),
     );
