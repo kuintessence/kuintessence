@@ -6,6 +6,7 @@ import {
   CommercialAdjustmentSchema,
   CommercialAgreementApprovalSchema,
   CommercialBillSchema,
+  CommercialPaymentSchema,
   CommercialRefundSchema,
   CommercialSettlementSchema,
 } from "@kuintessence/shared/federation/commercial";
@@ -527,7 +528,7 @@ test("CLI settlement draft and approval preserve the original and reject a chang
       : valid(request, body);
   output.mockClear();
   await expect(run(["settlements", "approve", revisionId, file])).rejects.toThrow(
-    "record identity mismatch",
+    "Write outcome unconfirmed",
   );
   expect(output.mock.calls).toHaveLength(0);
 });
@@ -565,7 +566,7 @@ test("CLI attaches only the original counterpart signature and rejects mismatche
       });
     output.mockClear();
     await expect(run([kind, "attach", revisionId, id, file])).rejects.toThrow(
-      "record identity mismatch",
+      "Write outcome unconfirmed",
     );
     expect(output.mock.calls).toHaveLength(0);
   }
@@ -627,7 +628,7 @@ test("CLI adjustment draft preserves reviewed amount and reason, and approves th
       ? Response.json({ data: { ...savedAdjustment, settlementId: billId } })
       : valid(request, body);
   await expect(run(["adjustments", "approve", revisionId, file])).rejects.toThrow(
-    "record identity mismatch",
+    "Write outcome unconfirmed",
   );
 });
 
@@ -825,7 +826,7 @@ test("CLI refund treats changed response identity as unconfirmed", async () => {
         new URL(request.url).pathname === base ? approval : { ...savedRefund, operationId: source },
     });
   await expect(run(["refunds", "approve", revisionId, await inputFile(refund)])).rejects.toThrow(
-    "identity mismatch",
+    "Write outcome unconfirmed",
   );
 });
 
@@ -1423,4 +1424,213 @@ test("media lists distinguish expired exports from registered packages", async (
   await run(["media", "imports", "list"]);
   expect(output.mock.calls[1]?.[0]).toContain("Saved");
   expect(output.mock.calls[1]?.[0]).not.toContain("Active");
+});
+
+const receiptId = "77777777-7777-4777-8777-777777777777";
+const payment = CommercialPaymentSchema.parse({
+  protocolVersion: 1,
+  kind: "commercial-payment",
+  receiptId,
+  paymentId: userId,
+  domainId: approval.terms.domainId,
+  agreementRevisionId: revisionId,
+  agreementDigest: digest,
+  billId,
+  billDigest: digest,
+  sourceSiteId: source,
+  targetSiteId: target,
+  amount: "9007199254740993",
+  unit: bill.request.unit,
+  occurredAt: bill.issuedAt,
+  issuedAt: bill.issuedAt,
+  evidenceDigest: digest,
+  previous: null,
+  reason: "External receipt",
+  salt: "d".repeat(64),
+});
+const savedPayment = {
+  ...saved,
+  receiptId,
+  paymentId: payment.paymentId,
+  payload: payment,
+  current: false,
+  confirmedAt: null,
+};
+function paymentReplies(
+  transform: (
+    row: Omit<typeof savedPayment, "counterpartyJws" | "confirmedAt"> & {
+      counterpartyJws: string | null;
+      confirmedAt: string | null;
+    },
+  ) => unknown = (row) => row,
+) {
+  respond = (request, body) => {
+    const path = new URL(request.url).pathname;
+    if (path === base) return Response.json({ data: approval });
+    if (path.endsWith("/draft")) return Response.json({ data: payment });
+    if (path.endsWith("/payments"))
+      return Response.json({
+        data: { data: [{ payment: transform(savedPayment), ledger: null }], hasMore: false },
+      });
+    return Response.json({
+      data: transform(
+        path.endsWith("/counterparty")
+          ? {
+              ...savedPayment,
+              counterpartyJws: (body as { approvalJws: string }).approvalJws,
+              current: true,
+              confirmedAt: payment.issuedAt,
+            }
+          : savedPayment,
+      ),
+    });
+  };
+}
+const paymentDraftArgs = (file: string) => [
+  "payments",
+  "draft",
+  revisionId,
+  billId,
+  file,
+  "--id",
+  receiptId,
+  "--payment",
+  payment.paymentId,
+  "--amount",
+  payment.amount,
+  "--occurred-at",
+  payment.occurredAt,
+  "--evidence",
+  payment.evidenceDigest,
+  "--reason",
+  payment.reason,
+];
+
+test("CLI payment draft preserves explicit payment identity, precise amount and private file without approving", async () => {
+  paymentReplies();
+  const file = join(directory, "receipt.json");
+  await run(paymentDraftArgs(file));
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual(payment);
+  expect((await stat(file)).mode & 0o777).toBe(0o600);
+  expect(requests.filter((r) => r.method === "POST").map((r) => r.path)).toEqual([
+    `${base}/payments/draft`,
+  ]);
+  expect(requests[1]?.body).toEqual({
+    receiptId,
+    paymentId: payment.paymentId,
+    billId,
+    amount: payment.amount,
+    occurredAt: payment.occurredAt,
+    evidenceDigest: payment.evidenceDigest,
+    reason: payment.reason,
+  });
+  await expect(run(paymentDraftArgs(file))).rejects.toThrow();
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual(payment);
+});
+
+test("CLI payment approval and attachment preserve the same statement and original peer signature", async () => {
+  paymentReplies();
+  const file = await inputFile(payment);
+  await run(["payments", "approve", revisionId, file]);
+  expect(requests[1]?.body).toEqual(payment);
+  const signature = join(directory, "peer.jws");
+  await writeFile(signature, "peer.original.signature");
+  await run(["payments", "attach", revisionId, receiptId, signature]);
+  expect(requests.at(-1)?.body).toEqual({ approvalJws: "peer.original.signature" });
+});
+
+for (const mode of ["bilateral_direct", "bilateral_attested", "ledger_coordinated"] as const)
+  test(`CLI payment ${mode} separates confirmed current statements from ledger outcomes`, async () => {
+    respond = (request) =>
+      Response.json({
+        data:
+          new URL(request.url).pathname === base
+            ? {
+                ...approval,
+                terms: { ...approval.terms, agreement: { ...approval.terms.agreement, mode } },
+              }
+            : {
+                data: [
+                  {
+                    payment: {
+                      ...savedPayment,
+                      current: true,
+                      counterpartyJws: "peer.signature",
+                      confirmedAt: payment.issuedAt,
+                    },
+                    ledger:
+                      mode === "bilateral_direct"
+                        ? null
+                        : { id: userId, state: "pending", lastError: null },
+                  },
+                ],
+                hasMore: false,
+              },
+      });
+    const text = await run([
+      "payments",
+      "list",
+      revisionId,
+      "--record",
+      receiptId,
+      "--bill",
+      billId,
+      "--payment",
+      payment.paymentId,
+    ]);
+    expect(text).toContain(payment.amount);
+    expect(text).toContain("Payment statement: Current confirmation");
+    expect(text).toContain(
+      `Local evidence: ${mode === "bilateral_direct" ? "Not required" : "Pending"}`,
+    );
+    expect(text).not.toContain("Local accounting");
+    expect(requests[1]?.path).toBe(
+      `${base}/payments?limit=20&offset=0&recordId=${receiptId}&billId=${billId}&paymentId=${payment.paymentId}`,
+    );
+  });
+
+test("CLI payment validates scope and original digest before writing and rejects impossible confirmed responses", async () => {
+  paymentReplies();
+  await expect(
+    run([
+      "payments",
+      "approve",
+      revisionId,
+      await inputFile({ ...payment, agreementDigest: `sha256:${"0".repeat(64)}` }),
+    ]),
+  ).rejects.toThrow();
+  expect(requests.every((r) => r.method === "GET")).toBe(true);
+  paymentReplies((row) => ({ ...row, current: true }));
+  await expect(run(["payments", "list", revisionId])).rejects.toThrow();
+  paymentReplies((row) => ({ ...row, paymentId: billId }));
+  await expect(run(["payments", "list", revisionId])).rejects.toThrow();
+});
+
+test("CLI payment rejects changed draft facts and preserves unknown write outcomes", async () => {
+  paymentReplies();
+  const original = respond;
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/draft")
+      ? Response.json({ data: { ...payment, amount: "1" } })
+      : original(request, body);
+  await expect(run(paymentDraftArgs(join(directory, "wrong.json")))).rejects.toThrow();
+  expect(await Bun.file(join(directory, "wrong.json")).exists()).toBe(false);
+  paymentReplies((row) => ({ ...row, receiptId: billId }));
+  await expect(run(["payments", "approve", revisionId, await inputFile(payment)])).rejects.toThrow(
+    "Write outcome unconfirmed",
+  );
+  expect(requests.filter((r) => r.path.endsWith("/approve"))).toHaveLength(1);
+});
+
+test("CLI payment history never adds an old statement to the current amount", async () => {
+  paymentReplies((row) => ({
+    ...row,
+    current: false,
+    counterpartyJws: "peer.signature",
+    confirmedAt: payment.issuedAt,
+  }));
+  const text = await run(["payments", "list", revisionId]);
+  expect(text).toContain("Payment statement: Superseded");
+  paymentReplies();
+  expect(await run(["payments", "list", revisionId], orgId, "zh")).toContain("待双方确认");
 });

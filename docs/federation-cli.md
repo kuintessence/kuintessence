@@ -109,9 +109,33 @@ kq federation --org "$ORG_ID" refunds list "$REVISION_ID" --record "$REFUND_ID"
 
 `list` 支持分页、原编号筛选和 `--json`，金额保持整数字符串；原文及响应会核对机构、合同、任务和编号。结果未知时先查原退款，不重新生成。CLI 本轮提供草稿、批准、附签和查询；存证重试可通过合同退款页面或现有商业提交 API 操作。
 
+## 外部付款凭证
+
+付款命令记录双方认可的外部付款事实，不发起转账、不结算合作额度。合同须为 paid，审批人员须具有独立 `payment.approve`，业务密钥须具有 `commercial-payment` 用途。首次记录和更正均由双方审查同一份原文，再各自批准；后台交换已经存在的签名。
+
+```sh
+kq federation --org "$ORG_ID" payments draft "$REVISION_ID" "$BILL_ID" payment.json \
+  --id "$RECEIPT_ID" --payment "$PAYMENT_ID" --amount 40 \
+  --occurred-at '2026-11-09T08:00:00Z' --evidence "$EVIDENCE_DIGEST" --reason '双方确认收到付款'
+kq federation --org "$ORG_ID" payments approve "$REVISION_ID" payment.json
+kq federation --org "$ORG_ID" payments attach "$REVISION_ID" "$RECEIPT_ID" peer-payment.jws
+kq federation --org "$ORG_ID" payments list "$REVISION_ID" --bill "$BILL_ID" --payment "$PAYMENT_ID"
+kq federation --org "$ORG_ID" payments list "$REVISION_ID" --record "$RECEIPT_ID" --json
+```
+
+`PAYMENT_ID` 标识一笔外部付款，`RECEIPT_ID` 标识一次不可变声明；首次可省略 `--payment` 和 `--id` 生成新 UUID。更正时必须保留原 `--payment`，使用新的 `--id`；Server 补齐当前前驱和原账单摘要。`--amount` 是更正后的**完整金额**，不是差额，允许更正为 0；初始付款不得为 0。一次更正不会执行银行退款。不同真实分笔付款使用不同 paymentId。
+
+`--occurred-at` 为外部发生时间，须为 ISO UTC 时间；不能晚于签署时间。`--evidence` 为双方受控材料的 SHA-256 摘要，CLI 不上传银行流水文件。金额始终为整数字符串，单位沿用合同。草稿只生成 0600 新文件，禁止覆盖；它不批准付款，也不能代替对方批准。
+
+列表支持原账单、付款及单次凭证三个筛选条件，分别标明“待双方确认／当前确认／历史更正前值”、签署与本站存证。历史更正前金额不能与当前值相加。三种模式都在双方确认后保存付款事实；direct 不存证，attested/coordinated 异步存证，链故障不撤销付款声明。源机构没有本站链待办时显示“未同步”，不推断对端已完成上链。
+
+写入超时、响应损坏或成功响应的机构／编号／正文不一致时，提示结果未确认，不自动重试。先用原 receiptId 查询，不能更换编号再次审批。签署只说明双方认可声明，平台不验证银行入账真实性。待签记录目前没有单方撤销或替换正文的命令。
+
+付款扩展已有 60 项 CLI 命令文件测试通过（包含原财务、介质入口），以及实际 CLI 子进程 → loopback HTTP → 生产路由 → 隔离 PostgreSQL 验证：草稿不批准、机构切换／机器身份／独立权限拒绝、双签字节保留、按原编号查询、追加零额更正、旧附签重放不回退且预算不变。对端批准使用生产服务，身份由测试中间件注入，不等同正式登录或真实双平台付款验收。
+
 ## 范围与验证
 
-财务入口覆盖上述操作；介质交付命令见下文，执行、市场、独立减免、付款或争议命令仍待补齐。原生背书与私有数据规则继续由现有链码和 Adapter 实施。完整业务边界见[商业协议部署说明](../deploy/federation/fabric-commercial.md)。
+财务入口覆盖上述操作；介质交付命令见下文，执行、市场、独立减免和争议命令仍待补齐。原生背书与私有数据规则继续由现有链码和 Adapter 实施。完整业务边界见[商业协议部署说明](../deploy/federation/fabric-commercial.md)。
 
 25 项 HTTP 夹具和中间件测试覆盖机构断言、精确金额、三模式状态、原文/编号、独立权限、文件安全、重定向和未知响应；另通过实际 CLI 子进程、真实 loopback HTTP、生产商业路由与隔离 PostgreSQL 的联合测试，验证机构改变拒绝、独立审批权、人类身份限制以及政策创建/读取/撤销和原结算读取。联调身份由测试中间件注入，不代替正式登录链路或 PR 预览验收。本轮不重复 Fabric 或调度器验收。
 

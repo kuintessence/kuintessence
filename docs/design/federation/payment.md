@@ -24,7 +24,7 @@
 
 每个机构独立授予 `payment.approve`；该权限包含合同查看，但不包含账单、结算、额度或执行审批。密钥也须明确具有 `commercial-payment` 用途。平台角色不隐含这些权限，已有密钥不自动扩权。
 
-API 位于 `/api/federation/commercial-agreements/:revisionId/payments`：`GET` 分页查询并支持 `billId`、`paymentId` 筛选；`POST /draft` 从本站已双签的原合同／账单补全固定字段与当前前驱；`POST /approve` 批准完整同文声明；`POST /:receiptId/counterparty` 核验并保存对方原签名。请求使用人类会话和当前机构，响应禁止缓存。历史查询分别返回付款记录及本站链待办；需求方没有本站待办不表示提供方已存证。
+API 位于 `/api/federation/commercial-agreements/:revisionId/payments`：`GET` 分页查询并支持 `billId`、`paymentId`、`recordId` 筛选；`POST /draft` 从本站已双签的原合同／账单补全固定字段与当前前驱；`POST /approve` 批准完整同文声明；`POST /:receiptId/counterparty` 使用 `approvalJws` 字段核验并保存对方原签名。请求使用人类会话和当前机构，响应禁止缓存。历史查询分别返回付款记录及本站链待办；需求方没有本站待办不表示提供方已存证。
 
 数据库保存每次声明、双签和确认时间；`current` 只标记每笔付款的最新双方确认声明。单方审批不计为已确认。按 `paymentId` 的事务锁与唯一约束阻止本站签署竞争分支，确认、更换当前标记、审计及异步待办一起提交。旧原文和签名不覆盖；旧确认重放不恢复旧标记。待签声明不能直接改写；当前接口尚无撤销单方声明、另换正文的流程，双方需交换并核对同一份原文。
 
@@ -36,6 +36,6 @@ API 位于 `/api/federation/commercial-agreements/:revisionId/payments`：`GET` 
 
 共享格式、纯校验、私有链码、生产 Adapter、Server 审批／交换／查询和组织权限入口已实现。链码验证原签名、隔离、重复、追加更正、缺前驱和不改预算；真实商业链已验证付款和更正 VALID、同 head 并发只有一笔 VALID／另一笔 MVCC INVALID，旧凭证重放不回退。实际 PDC 写集仅含 payment/payment-head，公开区块和进程日志不含付款探针。
 
-平台验证覆盖独立权限、原始绑定、不可变历史、并发审批、零额更正、审计失败回滚、自动交换、私有 HTTP 查询以及链回执依赖。链协调付款确认使用预签原始合同／账单的隔离数据库夹具，仅验证付款事实与链状态分离，不替代真实执行 gate 验收。Web 付款操作页面、CLI 和真实双平台付款全流程仍待完成；没有真实银行转账或生产部署。存储压力／保留删除也仍须纳入全蓝图验收。
+平台验证覆盖独立权限、原始绑定、不可变历史、并发审批、零额更正、审计失败回滚、自动交换、私有 HTTP 查询以及链回执依赖。链协调付款确认使用预签原始合同／账单的隔离数据库夹具，仅验证付款事实与链状态分离，不替代真实执行 gate 验收。CLI 已提供草稿、审批、附签和历史筛选，见[命令说明](../../federation-cli.md#外部付款凭证)。Web 付款操作页面和真实双平台付款全流程仍待完成；没有真实银行转账或生产部署。存储压力／保留删除也仍须纳入全蓝图验收。
 
 真实链复验入口为 `KQ_FABRIC_TOOLS=<已校验的 Fabric 3.1.5 目录> bun run test:fabric:commercial`，复用已有三 Peer、Orderer、双向 TLS 和受控临时凭据。入口增加付款 Unix 客户端／Adapter 的断链和进程恢复检查；具体执行结果见[进展记录](progress.md)。

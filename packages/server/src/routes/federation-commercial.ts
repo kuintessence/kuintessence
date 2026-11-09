@@ -123,10 +123,14 @@ export function createFederationCommercialRoutes(
       kqValidator("param", id),
       kqValidator(
         "query",
-        page.extend({ billId: z.uuid().optional(), paymentId: z.uuid().optional() }),
+        page.extend({
+          billId: z.uuid().optional(),
+          paymentId: z.uuid().optional(),
+          recordId: z.uuid().optional(),
+        }),
       ),
       async (c) => {
-        const { limit, offset, billId, paymentId } = c.req.valid("query");
+        const { limit, offset, billId, paymentId, recordId } = c.req.valid("query");
         return c.json({
           data: await payments.list(
             c.get("federationActor"),
@@ -135,6 +139,7 @@ export function createFederationCommercialRoutes(
             offset,
             billId,
             paymentId,
+            recordId,
           ),
         });
       },
@@ -171,14 +176,14 @@ export function createFederationCommercialRoutes(
     r.post(
       `${path}/:receiptId/counterparty`,
       kqValidator("param", id.extend({ receiptId: z.uuid() })),
-      kqValidator("json", z.strictObject({ jws: z.string().min(1).max(524288) })),
+      kqValidator("json", z.strictObject({ approvalJws: z.string().min(1).max(524288) })),
       async (c) =>
         c.json({
           data: await payments.attachCounterparty(
             c.get("federationActor"),
             c.req.valid("param").revisionId,
             c.req.valid("param").receiptId,
-            c.req.valid("json").jws,
+            c.req.valid("json").approvalJws,
           ),
         }),
     );

@@ -347,6 +347,7 @@ export class FederationPaymentService {
     offset: number,
     billId?: string,
     paymentId?: string,
+    recordId?: string,
   ) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
@@ -376,6 +377,7 @@ export class FederationPaymentService {
             eq(payments.agreementRevisionId, revisionId),
             billId ? eq(payments.billId, billId) : undefined,
             paymentId ? eq(payments.paymentId, paymentId) : undefined,
+            recordId ? eq(payments.receiptId, recordId) : undefined,
           ),
         )
         .orderBy(desc(payments.createdAt), desc(payments.receiptId))

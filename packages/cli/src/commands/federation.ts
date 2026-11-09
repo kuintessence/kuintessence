@@ -42,6 +42,10 @@ import {
   CommercialBillApprovalSchema,
   CommercialBillListSchema,
   CommercialBillSchema,
+  CommercialPaymentApprovalSchema,
+  CommercialPaymentDraftInputSchema,
+  CommercialPaymentListSchema,
+  CommercialPaymentSchema,
   CommercialRefundApprovalSchema,
   CommercialRefundDraftInputSchema,
   CommercialRefundListSchema,
@@ -60,12 +64,14 @@ const businessSchemas = {
   settlement: CommercialSettlementSchema,
   adjustment: CommercialAdjustmentSchema,
   refund: CommercialRefundSchema,
+  payment: CommercialPaymentSchema,
 };
 const approvalSchemas = {
   bill: CommercialBillApprovalSchema,
   settlement: CommercialSettlementApprovalSchema,
   adjustment: CommercialAdjustmentApprovalSchema,
   refund: CommercialRefundApprovalSchema,
+  payment: CommercialPaymentApprovalSchema,
 };
 type Kind = keyof typeof businessSchemas;
 function recordId(value: z.infer<(typeof businessSchemas)[Kind]>) {
@@ -75,7 +81,9 @@ function recordId(value: z.infer<(typeof businessSchemas)[Kind]>) {
       ? value.settlementId
       : value.kind === "commercial-refund"
         ? value.refundId
-        : value.adjustmentId;
+        : value.kind === "commercial-payment"
+          ? value.receiptId
+          : value.adjustmentId;
 }
 const labels = {
   zh: {
@@ -93,6 +101,10 @@ const labels = {
     approved: "已批准原文；不代表付款或链上确认",
     selected: "当前会话机构已切换",
     signatures: "签署",
+    statement: "付款声明",
+    current: "当前确认",
+    superseded: "历史更正前值",
+    unconfirmed: "待双方确认",
     both: "双方已签署",
     local: "仅本站批准",
     accounting: "本站记账",
@@ -146,6 +158,10 @@ const labels = {
     approved: "Original approved; this is not payment or ledger confirmation",
     selected: "Active session organization changed",
     signatures: "Signatures",
+    statement: "Payment statement",
+    current: "Current confirmation",
+    superseded: "Superseded",
+    unconfirmed: "Awaiting both parties",
     both: "Both signed",
     local: "Locally approved",
     accounting: "Local accounting",
@@ -231,9 +247,10 @@ function checkBusiness(kind: Kind, raw: unknown, contract: CommercialAgreementAp
     parties.target !== contract.terms.agreement.targetSiteId ||
     parties.revision !== contract.revisionId ||
     parties.unit !== contract.terms.agreement.unit ||
-    (["commercial-bill", "commercial-refund"].includes(value.kind) &&
+    (["commercial-bill", "commercial-refund", "commercial-payment"].includes(value.kind) &&
       "agreementDigest" in value &&
       value.agreementDigest !== contract.digest) ||
+    (value.kind === "commercial-payment" && contract.terms.consideration !== "paid") ||
     (value.kind === "commercial-refund" &&
       (value.request.mode !== contract.terms.agreement.mode ||
         value.request.budgetDomainId !== contract.terms.agreement.budgetDomainId ||
@@ -248,7 +265,8 @@ function checkRecordIdentity(
     | z.infer<typeof CommercialBillApprovalSchema>
     | z.infer<typeof CommercialSettlementApprovalSchema>
     | z.infer<typeof CommercialAdjustmentApprovalSchema>
-    | z.infer<typeof CommercialRefundApprovalSchema>,
+    | z.infer<typeof CommercialRefundApprovalSchema>
+    | z.infer<typeof CommercialPaymentApprovalSchema>,
 ) {
   if (
     ("billId" in row && row.billId !== row.payload.billId) ||
@@ -260,6 +278,10 @@ function checkRecordIdentity(
       (!("refundId" in row) ||
         row.refundId !== row.payload.refundId ||
         row.operationId !== row.payload.request.operationId)) ||
+    (row.payload.kind === "commercial-payment" &&
+      (!("receiptId" in row) ||
+        row.receiptId !== row.payload.receiptId ||
+        row.paymentId !== row.payload.paymentId)) ||
     (row.payload.kind === "commercial-settlement" &&
       (!("settlementId" in row) || row.settlementId !== row.payload.settlementId))
   )
@@ -1020,17 +1042,48 @@ export function registerFederationCommand(
       output(s, { kind, referenceId: id }, [s.t("retry")]);
     },
   );
-  for (const kind of ["bill", "settlement", "adjustment", "refund"] as const) {
+  for (const kind of ["bill", "settlement", "adjustment", "refund", "payment"] as const) {
     const group = root.command(`${kind}s`);
     const list = page(
       group.command("list <revision>").option("--record <uuid>", "Filter the original record"),
     );
+    if (kind === "payment")
+      list
+        .option("--bill <uuid>", "Filter original bill")
+        .option("--payment <uuid>", "Show all statements for one payment");
     action(list, async (revision) => {
       const s = scoped(),
         c = await contract(s, revision),
         record = z.uuid().optional().parse(list.opts().record);
-      const path = `${base(c)}/${kind}s?${query(list.opts())}${record ? `&recordId=${record}` : ""}`;
-      if (kind === "bill") {
+      const billFilter =
+        kind === "payment" ? z.uuid().optional().parse(list.opts().bill) : undefined;
+      const paymentFilter =
+        kind === "payment" ? z.uuid().optional().parse(list.opts().payment) : undefined;
+      const path = `${base(c)}/${kind}s?${query(list.opts())}${record ? `&recordId=${record}` : ""}${billFilter ? `&billId=${billFilter}` : ""}${paymentFilter ? `&paymentId=${paymentFilter}` : ""}`;
+      if (kind === "payment") {
+        const view = await get(s, path, CommercialPaymentListSchema);
+        for (const { payment } of view.data) {
+          checkScope(payment, c);
+          checkRecordIdentity(payment);
+          checkBusiness(kind, payment.payload, c);
+          if (
+            (record && record !== payment.receiptId) ||
+            (billFilter && billFilter !== payment.billId) ||
+            (paymentFilter && paymentFilter !== payment.paymentId)
+          )
+            throw new Error(s.t("scope"));
+        }
+        output(
+          s,
+          view,
+          view.data.length
+            ? view.data.map(
+                ({ payment, ledger }) =>
+                  `${payment.receiptId}\t${payment.payload.amount} ${payment.payload.unit}\n  ${s.t("signatures")}: ${payment.counterpartyJws ? s.t("both") : s.t("local")}\t${s.t("statement")}: ${payment.current ? s.t("current") : payment.confirmedAt ? s.t("superseded") : s.t("unconfirmed")}\t${s.t("ledger")}: ${c.terms.agreement.mode === "bilateral_direct" ? s.t("notRequired") : ledger ? s.t(ledger.state) : s.t(c.localSiteId === c.terms.agreement.targetSiteId ? "noRecord" : "unknownLedger")}`,
+              )
+            : [s.t("empty")],
+        );
+      } else if (kind === "bill") {
         const view = await get(s, path, CommercialBillListSchema);
         for (const { bill } of view.data) {
           checkScope(bill, c);
@@ -1107,7 +1160,7 @@ export function registerFederationCommand(
     const draft = group
       .command("draft <revision> <reference> <file>")
       .description(
-        `Generate a ${kind} draft from ${kind === "bill" ? "report ID" : kind === "settlement" ? "bill ID" : kind === "refund" ? "operation ID" : "settlement ID"}; never approves`,
+        `Generate a ${kind} draft from ${kind === "bill" ? "report ID" : (kind === "settlement" || kind === "payment") ? "bill ID" : kind === "refund" ? "operation ID" : "settlement ID"}; never approves`,
       )
       .option("--id <uuid>", "Original draft ID");
     if (kind === "adjustment")
@@ -1120,52 +1173,79 @@ export function registerFederationCommand(
         .option("--evidence <digest>", "SHA-256 digest of supporting evidence");
     if (kind === "refund")
       draft.requiredOption("--reason <text>", "Reason reviewed by both institutions");
+    if (kind === "payment")
+      draft
+        .option("--payment <uuid>", "Original payment ID for corrections; new ID when omitted")
+        .requiredOption("--amount <integer>", "Full acknowledged amount, not a correction delta")
+        .requiredOption("--occurred-at <iso>", "External payment time in ISO 8601 UTC")
+        .requiredOption("--evidence <digest>", "SHA-256 digest of controlled payment evidence")
+        .requiredOption("--reason <text>", "Acknowledgement or correction reason");
     action(draft, async (revision, reference, file) => {
       const s = scoped(),
         ref = z.uuid().parse(reference),
         id = z.uuid().parse(draft.opts().id ?? crypto.randomUUID()),
         c = await contract(s, revision);
       const input =
-        kind === "bill"
-          ? { reportId: ref, billId: id }
-          : kind === "settlement"
-            ? { billId: ref, settlementId: id }
-            : kind === "refund"
-              ? CommercialRefundDraftInputSchema.parse({
-                  operationId: ref,
-                  refundId: id,
-                  reason: draft.opts().reason,
-                })
-              : CommercialAdjustmentDraftInputSchema.parse({
-                  settlementId: ref,
-                  adjustmentId: id,
-                  chargedAmount: draft.opts().amount,
-                  reason: draft.opts().reason,
-                  supportingEvidenceDigest: draft.opts().evidence ?? null,
-                });
+        kind === "payment"
+          ? CommercialPaymentDraftInputSchema.parse({
+              receiptId: id,
+              paymentId: draft.opts().payment ?? crypto.randomUUID(),
+              billId: ref,
+              amount: draft.opts().amount,
+              occurredAt: draft.opts().occurredAt,
+              evidenceDigest: draft.opts().evidence,
+              reason: draft.opts().reason,
+            })
+          : kind === "bill"
+            ? { reportId: ref, billId: id }
+            : kind === "settlement"
+              ? { billId: ref, settlementId: id }
+              : kind === "refund"
+                ? CommercialRefundDraftInputSchema.parse({
+                    operationId: ref,
+                    refundId: id,
+                    reason: draft.opts().reason,
+                  })
+                : CommercialAdjustmentDraftInputSchema.parse({
+                    settlementId: ref,
+                    adjustmentId: id,
+                    chargedAmount: draft.opts().amount,
+                    reason: draft.opts().reason,
+                    supportingEvidenceDigest: draft.opts().evidence ?? null,
+                  });
       const value = checkBusiness(
         kind,
         await post(s, `${base(c)}/${kind}s/draft`, input, businessSchemas[kind]),
         c,
       );
       if (
-        value.kind === "commercial-bill"
-          ? value.billId !== id || value.reportId !== ref
-          : value.kind === "commercial-settlement"
-            ? value.settlementId !== id || value.billId !== ref
-            : value.kind === "commercial-refund"
-              ? value.refundId !== id ||
-                value.request.operationId !== ref ||
-                value.reason !== CommercialRefundDraftInputSchema.parse(input).reason
-              : value.adjustmentId !== id ||
-                value.settlementId !== ref ||
-                federationCanonicalJson({
-                  settlementId: value.settlementId,
-                  adjustmentId: value.adjustmentId,
-                  chargedAmount: value.chargedAmount,
-                  reason: value.reason,
-                  supportingEvidenceDigest: value.supportingEvidenceDigest,
-                }) !== federationCanonicalJson(input)
+        value.kind === "commercial-payment"
+          ? federationCanonicalJson({
+              receiptId: value.receiptId,
+              paymentId: value.paymentId,
+              billId: value.billId,
+              amount: value.amount,
+              occurredAt: value.occurredAt,
+              evidenceDigest: value.evidenceDigest,
+              reason: value.reason,
+            }) !== federationCanonicalJson(input)
+          : value.kind === "commercial-bill"
+            ? value.billId !== id || value.reportId !== ref
+            : value.kind === "commercial-settlement"
+              ? value.settlementId !== id || value.billId !== ref
+              : value.kind === "commercial-refund"
+                ? value.refundId !== id ||
+                  value.request.operationId !== ref ||
+                  value.reason !== CommercialRefundDraftInputSchema.parse(input).reason
+                : value.adjustmentId !== id ||
+                  value.settlementId !== ref ||
+                  federationCanonicalJson({
+                    settlementId: value.settlementId,
+                    adjustmentId: value.adjustmentId,
+                    chargedAmount: value.chargedAmount,
+                    reason: value.reason,
+                    supportingEvidenceDigest: value.supportingEvidenceDigest,
+                  }) !== federationCanonicalJson(input)
       )
         throw new Error(s.t("scope"));
       await save(file, value);
@@ -1180,10 +1260,14 @@ export function registerFederationCommand(
           c = await contract(s, revision),
           input = checkBusiness(kind, JSON.parse(await readInput(file)), c);
         const row = await post(s, `${base(c)}/${kind}s/approve`, input, approvalSchemas[kind]);
-        checkScope(row, c);
-        checkRecordIdentity(row);
-        if (federationCanonicalJson(row.payload) !== federationCanonicalJson(input))
+        try {
+          checkScope(row, c);
+          checkRecordIdentity(row);
+          if (federationCanonicalJson(row.payload) !== federationCanonicalJson(input))
+            throw new Error("Changed approval response");
+        } catch {
           throw new Error(s.t("unknown"));
+        }
         output(s, row, [s.t("approved"), recordId(row.payload)]);
       },
     );
@@ -1206,11 +1290,15 @@ export function registerFederationCommand(
           { approvalJws },
           approvalSchemas[kind],
         );
-        checkScope(row, c);
-        checkRecordIdentity(row);
-        checkBusiness(kind, row.payload, c);
-        if (recordId(row.payload) !== id || row.counterpartyJws !== approvalJws)
+        try {
+          checkScope(row, c);
+          checkRecordIdentity(row);
+          checkBusiness(kind, row.payload, c);
+          if (recordId(row.payload) !== id || row.counterpartyJws !== approvalJws)
+            throw new Error("Changed counterparty response");
+        } catch {
           throw new Error(s.t("unknown"));
+        }
         output(s, row, [s.t("attached")]);
       },
     );

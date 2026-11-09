@@ -876,3 +876,8 @@ SelfAccount 实验还发现首次启动的 watchdog/Agent 建表竞态。watchdo
 ### 外部付款凭证的平台审批
 
 2026-11-09：付款新增生产 Adapter 与 Server 草稿、独立审批、双方签名交换、分页历史及异步上链。数据库保存不可变正文和单一当前凭证，确认、审计与待办同事务提交；直接模式不访问链，存证／链协调模式确认付款不等待链。组织权限配置新增中英文 `payment.approve`，不授予转账、结算或执行权限。Web 付款页面、CLI、完整跨平台和存储生命周期验收仍未完成；详见[付款契约与平台接口](../design/federation/payment.md)。
+
+
+### 外部付款 CLI
+
+2026-11-09：CLI 新增 `payments draft/approve/attach/list`，复用机构会话断言、原文校验和 0600 新文件导出。历史按 receiptId/paymentId/billId 筛选，当前确认、历史更正前值、单方签署和本站存证分别展示；三模式的已确认付款事实均不等待链。60 项 CLI 命令测试及实际子进程到生产路由／隔离 PostgreSQL 的付款联合检查通过。Web 付款页和正式双平台付款验收仍待完成，见[付款 CLI](../federation-cli.md#外部付款凭证)。

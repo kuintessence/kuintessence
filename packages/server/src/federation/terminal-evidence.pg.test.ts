@@ -6636,3 +6636,181 @@ test("payment coordinated confirmation is immediate with chain evidence pending 
   });
   expect(await f.budget()).toEqual(before);
 });
+
+test("payment CLI real HTTP and PostgreSQL preserve scope, approvals, signature bytes and corrected history", async () => {
+  const f = await paymentFixture(),
+    before = await f.budget();
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.provider.signing),
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  deps[21] = f.providerPayment;
+  const token = randomUUID(),
+    app = new Hono();
+  let actor = f.actor,
+    automation = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    if (c.req.header("authorization") !== `Bearer ${token}`) return c.json({}, 401);
+    c.set("principal" as never, actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.use("/api/federation/*", federationOrganizationContext);
+  app.route("/api", createFederationCommercialRoutes(...deps));
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: app.fetch });
+  cleanup.push(async () => {
+    server.stop(true);
+  });
+  const dir = await mkdtemp(join(tmpdir(), "kq-payment-cli-pg-"));
+  cleanup.push(() => rm(dir, { recursive: true, force: true }));
+  const config = join(dir, "config.json"),
+    file = join(dir, "payment.json"),
+    signature = join(dir, "peer.jws");
+  await writeFile(config, JSON.stringify({ serverUrl: `http://127.0.0.1:${server.port}`, token }), {
+    mode: 0o600,
+  });
+  const run = async (...args: string[]) => {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "--no-env-file",
+        fileURLToPath(new URL("../../../cli/src/index.ts", import.meta.url)),
+        "federation",
+        "--org",
+        f.orgId,
+        "--lang",
+        "en",
+        "--json",
+        ...args,
+      ],
+      { env: { ...process.env, KQ_CONFIG_FILE: config }, stdout: "pipe", stderr: "pipe" },
+    );
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
+  };
+  const draft = await run(
+    "payments",
+    "draft",
+    f.revisionId,
+    f.input.billId,
+    file,
+    "--id",
+    f.input.receiptId,
+    "--payment",
+    f.input.paymentId,
+    "--amount",
+    f.input.amount,
+    "--occurred-at",
+    f.input.occurredAt,
+    "--evidence",
+    f.input.evidenceDigest,
+    "--reason",
+    f.input.reason,
+  );
+  expect(draft.code).toBe(0);
+  expect((await f.providerPayment.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  const value = CommercialPaymentSchema.parse(await Bun.file(file).json());
+  actor = f.sourceActor;
+  expect((await run("payments", "approve", f.revisionId, file)).stderr).toContain(
+    "ORGANIZATION_CONTEXT_CHANGED",
+  );
+  actor = f.actor;
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "payment.approve", enabled: false },
+    f.userId,
+  );
+  expect((await run("payments", "approve", f.revisionId, file)).stderr).toContain("POLICY_DENIED");
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "payment.approve", enabled: true },
+    f.userId,
+  );
+  automation = true;
+  expect((await run("payments", "approve", f.revisionId, file)).code).toBe(1);
+  automation = false;
+  const approved = await run("payments", "approve", f.revisionId, file);
+  expect(approved.code).toBe(0);
+  expect(JSON.parse(approved.stdout)).toMatchObject({
+    receiptId: value.receiptId,
+    current: false,
+    confirmedAt: null,
+    payload: value,
+  });
+  const peer = await f.sourcePayment.approve(f.sourceActor, f.revisionId, value);
+  await writeFile(signature, peer.approvalJws, { mode: 0o600 });
+  const confirmed = await run("payments", "attach", f.revisionId, value.receiptId, signature);
+  expect(confirmed.code).toBe(0);
+  expect(JSON.parse(confirmed.stdout)).toMatchObject({
+    current: true,
+    counterpartyJws: peer.approvalJws,
+  });
+  const listed = await run(
+    "payments",
+    "list",
+    f.revisionId,
+    "--record",
+    value.receiptId,
+    "--bill",
+    value.billId,
+    "--payment",
+    value.paymentId,
+  );
+  expect(listed.code).toBe(0);
+  expect(JSON.parse(listed.stdout).data).toHaveLength(1);
+  const missing = await run("payments", "list", f.revisionId, "--record", randomUUID());
+  expect(JSON.parse(missing.stdout).data).toHaveLength(0);
+  const correctionFile = join(dir, "correction.json"),
+    correctionId = randomUUID();
+  expect(
+    (
+      await run(
+        "payments",
+        "draft",
+        f.revisionId,
+        value.billId,
+        correctionFile,
+        "--id",
+        correctionId,
+        "--payment",
+        value.paymentId,
+        "--amount",
+        "0",
+        "--occurred-at",
+        value.occurredAt,
+        "--evidence",
+        value.evidenceDigest,
+        "--reason",
+        "Correction",
+      )
+    ).code,
+  ).toBe(0);
+  const correction = CommercialPaymentSchema.parse(await Bun.file(correctionFile).json());
+  expect(correction.previous).toEqual({ receiptId: value.receiptId, digest: peer.digest });
+  await f.sourcePayment.attachCounterparty(
+    f.sourceActor,
+    f.revisionId,
+    value.receiptId,
+    JSON.parse(approved.stdout).approvalJws,
+  );
+  expect((await run("payments", "approve", f.revisionId, correctionFile)).code).toBe(0);
+  const peerCorrection = await f.sourcePayment.approve(f.sourceActor, f.revisionId, correction);
+  const correctionSignature = join(dir, "correction.jws");
+  await writeFile(correctionSignature, peerCorrection.approvalJws, { mode: 0o600 });
+  expect(
+    (await run("payments", "attach", f.revisionId, correctionId, correctionSignature)).code,
+  ).toBe(0);
+  expect((await run("payments", "attach", f.revisionId, value.receiptId, signature)).code).toBe(0);
+  const history = JSON.parse(
+    (await run("payments", "list", f.revisionId, "--payment", value.paymentId)).stdout,
+  );
+  expect(history.data).toHaveLength(2);
+  expect(
+    history.data.find((row: { payment: { current: boolean } }) => row.payment.current)?.payment
+      .payload.amount,
+  ).toBe("0");
+  expect(await f.budget()).toEqual(before);
+});

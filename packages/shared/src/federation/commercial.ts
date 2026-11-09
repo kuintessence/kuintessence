@@ -486,6 +486,39 @@ export const CommercialBillListSchema = z.object({
   hasMore: z.boolean(),
 });
 
+export const CommercialPaymentApprovalSchema = z
+  .object({
+    localSiteId: Id,
+    localOrgId: Id,
+    agreementRevisionId: Id,
+    receiptId: Id,
+    paymentId: Id,
+    billId: Id,
+    payload: CommercialPaymentSchema,
+    digest: FederationDigestSchema,
+    approvalJws: z.string().min(1).max(524288),
+    counterpartyJws: z.string().min(1).max(524288).nullable(),
+    approvedBy: Id,
+    current: z.boolean(),
+    confirmedAt: z.iso.datetime().nullable(),
+    createdAt: z.iso.datetime(),
+  })
+  .refine(
+    (v) =>
+      (v.counterpartyJws === null) === (v.confirmedAt === null) &&
+      (!v.current || v.confirmedAt !== null),
+    "Inconsistent payment confirmation",
+  );
+export const CommercialPaymentListSchema = z.object({
+  data: z.array(
+    z.object({
+      payment: CommercialPaymentApprovalSchema,
+      ledger: CommercialBillListSchema.shape.data.element.shape.ledger,
+    }),
+  ),
+  hasMore: z.boolean(),
+});
+
 export const CommercialRefundApprovalSchema = z.object({
   localSiteId: Id,
   localOrgId: Id,
