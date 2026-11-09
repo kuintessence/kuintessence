@@ -35,7 +35,7 @@ type GrpcServerRequest = Parameters<GrpcNodeHttpHandler>[0];
 type GrpcServerResponse = Parameters<GrpcNodeHttpHandler>[1];
 
 export interface CreateGrpcHandlerDeps {
-  federationResults?: Pick<FederationResultTransport, "grant" | "report">;
+  federationResults?: Pick<FederationResultTransport, "grant" | "report" | "canCopy">;
   agentManager: AgentManager;
   jobService: JobService;
   logger: Logger;

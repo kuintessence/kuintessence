@@ -57,8 +57,14 @@ export class FederationMediaUploadTransport {
       channel.federationMediaUploadV1 &&
       channel.verifiedCertFingerprint &&
       (kind === "task-input"
-        ? this.input && channel.federationInputCopyV1 && channel.federationInputVerifyV1
-        : this.result && channel.federationResultCopyV1 && channel.federationResultVerifyV1)
+        ? this.input &&
+          channel.federationInputVerifyV1 &&
+          (channel.federationTargetTransferV1 ||
+            (this.input.storage.canCopy && channel.federationInputCopyV1))
+        : this.result &&
+          channel.federationResultVerifyV1 &&
+          (channel.federationTargetTransferV1 ||
+            (this.result.storage.canCopy && channel.federationResultCopyV1)))
       ? channel
       : undefined;
   }

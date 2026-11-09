@@ -27,7 +27,12 @@ export class FederationInputTransport {
     private readonly dispatcher: AgentDispatcher,
   ) {}
 
+  get canCopy() {
+    return this.storage.canCopy;
+  }
+
   eligibleAgentIds() {
+    if (!this.canCopy) return [];
     return this.dispatcher.onlineAgentIds().filter((agentId) => {
       const channel = this.dispatcher.getChannel(agentId);
       return (
@@ -39,6 +44,7 @@ export class FederationInputTransport {
   }
 
   async dispatch(transferId: string, agentId: string) {
+    if (!this.canCopy) return false;
     const channel = this.dispatcher.getChannel(agentId);
     if (
       !channel?.federationInputCopyV1 ||
@@ -131,8 +137,7 @@ export class FederationInputTransport {
     if (["verified", "available"].includes(state.state)) return;
     const verification = await this.storage.assemble(agentId, report.generation);
     if (
-      !channel?.federationInputCopyV1 ||
-      !channel.federationInputVerifyV1 ||
+      !channel?.federationInputVerifyV1 ||
       !channel.verifiedCertFingerprint ||
       !this.dispatcher.isCurrentChannel(agentId, channel)
     )

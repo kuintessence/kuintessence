@@ -7267,7 +7267,22 @@ test("input worker negotiates capabilities, serializes concurrent scans and reco
       throw new Error("No grant expected");
     },
   };
-  const storage = new FederationInputStorage(f.transfers, backend, { clock });
+  const storage = new FederationInputStorage(f.transfers, backend, {
+    clock,
+    grants: {
+      reader: new FederationInputReader(
+        db,
+        b.signing,
+        async () => {
+          throw new Error("No source request expected");
+        },
+        f.transfers,
+        clock,
+      ),
+      sourceOrigins: ["https://source-storage.test.invalid"],
+      destinationOrigins: ["https://destination-storage.test.invalid"],
+    },
+  });
   const transport = new FederationInputTransport(f.transfers, storage, dispatcher);
   const worker = () => new FederationInputWorker(f.transfers, transport);
   try {
@@ -7340,7 +7355,22 @@ test("input transport fences allocations if the authenticated channel is replace
         throw new Error("No grant expected");
       },
     },
-    { clock },
+    {
+      clock,
+      grants: {
+        reader: new FederationInputReader(
+          db,
+          b.signing,
+          async () => {
+            throw new Error("No source request expected");
+          },
+          f.transfers,
+          clock,
+        ),
+        sourceOrigins: ["https://source-storage.test.invalid"],
+        destinationOrigins: ["https://destination-storage.test.invalid"],
+      },
+    },
   );
   try {
     expect(
@@ -7387,7 +7417,22 @@ test("input worker backs off denied transfers and does not recreate a cancelled 
         throw new Error("No grant expected");
       },
     },
-    { clock },
+    {
+      clock,
+      grants: {
+        reader: new FederationInputReader(
+          db,
+          b.signing,
+          async () => {
+            throw new Error("No source request expected");
+          },
+          f.transfers,
+          clock,
+        ),
+        sourceOrigins: ["https://source-storage.test.invalid"],
+        destinationOrigins: ["https://destination-storage.test.invalid"],
+      },
+    },
   );
   const worker = new FederationInputWorker(
     f.transfers,
@@ -11335,7 +11380,7 @@ taskMediaTest(
   },
 );
 
-async function taskMediaDispatchFixture(kind: "task-input" | "task-result") {
+async function taskMediaDispatchFixture(kind: "task-input" | "task-result", targetOnly = false) {
   const dispatcher = new AgentDispatcher();
   const messages: ServerMessage[] = [];
   let afterAllocate = async () => {};
@@ -11359,9 +11404,25 @@ async function taskMediaDispatchFixture(kind: "task-input" | "task-result") {
             throw new Error("No part grant expected");
           },
         },
-        { clock },
+        {
+          clock,
+          grants: {
+            reader: new FederationInputReader(
+              db,
+              t.signing,
+              async () => {
+                throw new Error("No download expected");
+              },
+              t.transfers,
+              clock,
+            ),
+            sourceOrigins: targetOnly ? [] : ["https://source-storage.test.invalid"],
+            destinationOrigins: ["https://destination-storage.test.invalid"],
+          },
+        },
       );
       return {
+        network: new FederationInputTransport(t.transfers, storage, dispatcher),
         operations: t.operations(),
         agentId: t.agentId,
         claimId: t.claimId,
@@ -11371,7 +11432,11 @@ async function taskMediaDispatchFixture(kind: "task-input" | "task-result") {
           storage,
           transfers: t.transfers,
         }),
-        attempts: () => db.select().from(federationInputAttempts),
+        attempts: () =>
+          db
+            .select()
+            .from(federationInputAttempts)
+            .where(eq(federationInputAttempts.agentId, t.agentId)),
         cleanup: () => storage.cleanup(),
         revoke: t.revoke,
         revokeSource: () =>
@@ -11382,23 +11447,38 @@ async function taskMediaDispatchFixture(kind: "task-input" | "task-result") {
         members: t.parent.manifest.inputs.flatMap((input) =>
           input.files.map((file) => ({ ...file, descriptor: input.descriptor })),
         ),
-        networkPending: () => t.transfers.pending([t.agentId]),
+        networkPending: async () =>
+          (await t.transfers.pending([t.agentId])).filter((row) =>
+            t.members.some((member) => member.id === row.transferId),
+          ),
       };
     }
     const t = await taskResultUploadFixture();
     t.backend.createMultipartUpload = allocate;
+    const storage = targetOnly
+      ? new FederationResultStorage(t.imports, t.results, t.backend, {
+          sourceOrigins: [],
+          destinationOrigins: ["https://destination-storage.test.invalid"],
+          clock,
+        })
+      : t.storage;
     return {
+      network: new FederationResultTransport(t.imports, storage, dispatcher),
       operations: t.operations(),
       agentId: t.agentId,
       claimId: t.claimId,
       authorizationId: t.approval.authorizationId,
       generation: t.started.generation,
       transport: new FederationMediaUploadTransport(t.operations(), dispatcher, undefined, {
-        storage: t.storage,
+        storage,
         imports: t.imports,
       }),
-      attempts: () => db.select().from(federationResultAttempts),
-      cleanup: () => t.storage.cleanup(),
+      attempts: () =>
+        db
+          .select()
+          .from(federationResultAttempts)
+          .where(eq(federationResultAttempts.agentId, t.agentId)),
+      cleanup: () => storage.cleanup(),
       revoke: t.revoke,
       revokeSource: () =>
         t.source
@@ -11408,7 +11488,8 @@ async function taskMediaDispatchFixture(kind: "task-input" | "task-result") {
       members: t.parent.report.manifest.outputs.flatMap((output) =>
         output.files.map((file) => ({ ...file, outputId: output.outputId })),
       ),
-      networkPending: () => t.imports.pending([t.agentId]),
+      networkPending: async () =>
+        (await t.imports.pending([t.agentId])).filter((row) => row.importId === t.importId),
     };
   })();
   const channel = {
@@ -11416,9 +11497,10 @@ async function taskMediaDispatchFixture(kind: "task-input" | "task-result") {
     close() {},
     federationMediaImportV1: true,
     federationMediaUploadV1: true,
-    federationInputCopyV1: true,
+    federationTargetTransferV1: true,
+    federationInputCopyV1: !targetOnly,
     federationInputVerifyV1: true,
-    federationResultCopyV1: true,
+    federationResultCopyV1: !targetOnly,
     federationResultVerifyV1: true,
     verifiedCertFingerprint: sourceFingerprint,
   };
@@ -11592,6 +11674,148 @@ taskMediaTest.each(["task-input", "task-result"] as const)(
     } finally {
       await f.transport.stop();
       await f.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "target-only media dispatch %s excludes network copies and requires an independent Agent",
+  async (kind) => {
+    const f = await taskMediaDispatchFixture(kind, true);
+    try {
+      const [candidate] = await f.operations.pendingUploads(kind, [f.agentId]);
+      if (!candidate) throw new Error("Expected media candidate");
+      expect(f.network.canCopy).toBe(false);
+      expect(f.network.eligibleAgentIds()).toEqual([]);
+      expect(await f.network.dispatch(candidate.transferId, f.agentId)).toBe(false);
+      f.channel.federationTargetTransferV1 = false;
+      f.channel.federationInputCopyV1 = true;
+      f.channel.federationResultCopyV1 = true;
+      await f.transport.tick();
+      expect(f.allocations()).toBe(0);
+      f.channel.federationTargetTransferV1 = true;
+      f.channel.federationInputCopyV1 = false;
+      f.channel.federationResultCopyV1 = false;
+      await f.transport.tick();
+      expect(f.messages).toHaveLength(1);
+      expect(f.allocations()).toBe(1);
+    } finally {
+      await f.transport.stop();
+      await f.release();
+    }
+  },
+);
+
+test("target-only input storage grants uploads and verification but never a source download", async () => {
+  const f = await inputVerificationFixture();
+  const storage = new FederationInputStorage(f.transfers, f.backend, {
+    clock,
+    grants: {
+      reader: new FederationInputReader(
+        db,
+        b.signing,
+        async () => {
+          throw new Error("Source must not be contacted");
+        },
+        f.transfers,
+        clock,
+      ),
+      sourceOrigins: [],
+      destinationOrigins: ["https://destination.test.invalid"],
+    },
+  });
+  try {
+    expect(storage.canCopy).toBe(false);
+    await expect(storage.grant(f.agentId, f.binding, "download")).rejects.toThrow("POLICY_DENIED");
+    expect((await storage.grant(f.agentId, f.binding, "upload", 1)).grant.direction).toBe("upload");
+    const dispatcher = new AgentDispatcher();
+    const messages: ServerMessage[] = [];
+    dispatcher.register(f.agentId, {
+      push: (msg) => {
+        messages.push(msg);
+      },
+      close() {},
+      federationInputCopyV1: false,
+      federationInputVerifyV1: true,
+      federationTargetTransferV1: true,
+      verifiedCertFingerprint: "verified",
+    });
+    const transport = new FederationInputTransport(f.transfers, storage, dispatcher);
+    await transport.report(
+      f.agentId,
+      create(FederationInputCopyReportSchema, {
+        generation: f.binding.generation,
+        copiedJson: JSON.stringify(f.copied),
+      }),
+    );
+    const message = messages[0];
+    if (message?.payload.case !== "federationInputVerify")
+      throw new Error("Expected target verification");
+    const task = JSON.parse(message.payload.value.taskJson);
+    expect((await storage.verificationGrant(f.agentId, task)).grant.direction).toBe("verify");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+taskMediaTest(
+  "target-only result storage grants uploads and verification but never a source download",
+  async () => {
+    const t = await taskResultUploadFixture();
+    const storage = new FederationResultStorage(t.imports, t.results, t.backend, {
+      sourceOrigins: [],
+      destinationOrigins: ["https://destination-storage.test.invalid"],
+      clock,
+    });
+    try {
+      await t.uploadGrant();
+      const allocated = await storage.allocate(t.member.id, t.agentId, t.claimId);
+      expect(storage.canCopy).toBe(false);
+      await expect(storage.grant(t.agentId, allocated.binding, "download")).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+      expect((await storage.grant(t.agentId, allocated.binding, "upload", 1)).grant.direction).toBe(
+        "upload",
+      );
+      const dispatcher = new AgentDispatcher();
+      const messages: ServerMessage[] = [];
+      dispatcher.register(t.agentId, {
+        push: (msg) => {
+          messages.push(msg);
+        },
+        close() {},
+        federationResultCopyV1: false,
+        federationResultVerifyV1: true,
+        federationTargetTransferV1: true,
+        verifiedCertFingerprint: "verified",
+      });
+      const transport = new FederationResultTransport(t.imports, storage, dispatcher);
+      await transport.report(
+        t.agentId,
+        create(FederationResultCopyReportSchema, {
+          generation: allocated.binding.generation,
+          copiedJson: JSON.stringify({
+            binding: allocated.binding,
+            sizeBytes: t.member.sizeBytes,
+            sha256: t.member.sha256,
+            parts: [{ partNumber: 1, etag: "target-part" }],
+          }),
+        }),
+      );
+      const message = messages[0];
+      if (message?.payload.case !== "federationResultVerify")
+        throw new Error("Expected target verification");
+      const task = JSON.parse(message.payload.value.taskJson);
+      expect((await storage.verificationGrant(t.agentId, task)).grant.direction).toBe("verify");
+      await storage.verified(t.agentId, {
+        ...task,
+        sizeBytes: t.member.sizeBytes,
+        sha256: t.member.sha256,
+      });
+      await storage.publish(t.local, t.importId);
+      expect(await t.files()).toHaveLength(1);
+    } finally {
+      await t.source.release();
     }
   },
 );

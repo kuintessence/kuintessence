@@ -10018,9 +10018,14 @@ test.each([
 
 for (const kind of ["task-input", "task-result"] as const) {
   test.each([
-    false,
-    true,
-  ])(`media upload stream ${kind} gates commands on negotiated support (%s)`, async (supported) => {
+    { supported: false, targetOnly: false },
+    { supported: true, targetOnly: false },
+    { supported: false, targetOnly: true },
+    { supported: true, targetOnly: true },
+  ])(`media upload stream ${kind} negotiates source and target separately %j`, async ({
+    supported,
+    targetOnly,
+  }) => {
     const task = mediaUploadClientTask(kind);
     const command = create(ServerMessageSchema, {
       payload: {
@@ -10038,8 +10043,10 @@ for (const kind of ["task-input", "task-result"] as const) {
           accepted: true,
           federationMediaImportV1Supported: true,
           federationMediaUploadV1Supported: supported,
-          federationInputCopyV1Supported: kind === "task-input",
-          federationResultCopyV1Supported: kind === "task-result",
+          federationInputCopyV1Supported: kind === "task-input" && !targetOnly,
+          federationInputVerifyV1Supported: kind === "task-input" && targetOnly && supported,
+          federationResultCopyV1Supported: kind === "task-result" && !targetOnly,
+          federationResultVerifyV1Supported: kind === "task-result" && targetOnly && supported,
         }),
       },
     });
@@ -10047,7 +10054,7 @@ for (const kind of ["task-input", "task-result"] as const) {
     const transfer = {
       stagingRoot: "/unused/transfer",
       maxStagingBytes: 1024,
-      allowedSourceOrigins: ["https://source.test.invalid"],
+      allowedSourceOrigins: targetOnly ? [] : ["https://source.test.invalid"],
       allowedDestinationOrigins: ["https://target.test.invalid"],
     };
     const stream = new AgentStream({
@@ -10086,7 +10093,17 @@ for (const kind of ["task-input", "task-result"] as const) {
       await waitForCondition(() => sent.length > 0);
       await settle(20);
       expect(sent[0]).toMatchObject({
-        payload: { case: "register", value: { federationMediaUploadV1: true } },
+        payload: {
+          case: "register",
+          value: {
+            federationMediaUploadV1: true,
+            federationTargetTransferV1: true,
+            federationInputCopyV1: kind === "task-input" && !targetOnly,
+            federationInputVerifyV1: kind === "task-input",
+            federationResultCopyV1: kind === "task-result" && !targetOnly,
+            federationResultVerifyV1: kind === "task-result",
+          },
+        },
       });
       if (supported) {
         await waitForCondition(() => reports().length > 0, 2000);

@@ -22,12 +22,14 @@ import {
   FederationExecutionRequestSchema,
   type FederationExecutionResponse,
   FederationExecutionResponseSchema,
+  FederationInputCopyReportSchema,
   FederationInputGrantRequestSchema,
   FederationInputGrantResponseSchema,
   FederationMediaExportLeaseRequestSchema,
   FederationMediaExportLeaseResponseSchema,
   FederationMediaImportGrantResponseSchema,
   FederationMediaImportKeyRequestSchema,
+  FederationResultCopyReportSchema,
   FederationResultGrantRequestSchema,
   FederationResultGrantResponseSchema,
   GpuMetricSchema,
@@ -318,6 +320,7 @@ describe("agent-handler", () => {
       logger: testLogger,
       dispatcher,
       federationResults: {
+        canCopy: true,
         grant: async (agentId, request) => {
           calls.push(agentId);
           await heartbeat.promise;
@@ -419,6 +422,7 @@ describe("agent-handler", () => {
       logger: testLogger,
       dispatcher,
       federationInputs: {
+        canCopy: true,
         grant: async (agentId, request) => {
           calls.push(agentId);
           await heartbeat.promise;
@@ -706,6 +710,10 @@ describe("agent-handler", () => {
   test.each([
     "input",
     "result",
+    "target-input",
+    "target-result",
+    "old-target-input",
+    "old-target-result",
     "legacy",
     "no-import",
     "no-source",
@@ -713,6 +721,9 @@ describe("agent-handler", () => {
     "no-verify",
     "unverified",
   ] as const)("media upload RPC negotiates complete capabilities: %s", async (mode) => {
+    const result = mode.endsWith("result");
+    const targetOnly = mode.includes("target-");
+    const independent = mode.startsWith("target-");
     const { router, handlers } = createMockRouter();
     const dispatcher = new AgentDispatcher();
     const done = Promise.withResolvers<void>();
@@ -730,21 +741,22 @@ describe("agent-handler", () => {
               report: async () => {},
             },
       federationInputs:
-        mode === "no-target" || mode === "result"
+        mode === "no-target" || result
           ? undefined
           : {
+              canCopy: !targetOnly,
               grant: async (_id, request) =>
                 create(FederationInputGrantResponseSchema, { requestId: request.requestId }),
               report: async () => {},
             },
-      federationResults:
-        mode === "result"
-          ? {
-              grant: async (_id, request) =>
-                create(FederationResultGrantResponseSchema, { requestId: request.requestId }),
-              report: async () => {},
-            }
-          : undefined,
+      federationResults: result
+        ? {
+            canCopy: !targetOnly,
+            grant: async (_id, request) =>
+              create(FederationResultGrantResponseSchema, { requestId: request.requestId }),
+            report: async () => {},
+          }
+        : undefined,
     });
     await agentManager.register({
       agentId: "grpc-test-agent-1",
@@ -757,10 +769,11 @@ describe("agent-handler", () => {
     Object.assign(frame.payload.value, {
       federationMediaImportV1: mode !== "no-import",
       federationMediaUploadV1: mode !== "legacy",
-      federationInputCopyV1: mode !== "result",
-      federationInputVerifyV1: mode !== "result" && mode !== "no-verify",
-      federationResultCopyV1: mode === "result",
-      federationResultVerifyV1: mode === "result",
+      federationTargetTransferV1: independent,
+      federationInputCopyV1: !result && !independent,
+      federationInputVerifyV1: !result && mode !== "no-verify",
+      federationResultCopyV1: result && !independent,
+      federationResultVerifyV1: result,
     });
     async function* messages() {
       yield frame;
@@ -778,14 +791,157 @@ describe("agent-handler", () => {
           const message = raw as ServerMessage;
           if (message.payload.case === "registerResponse") {
             expect(message.payload.value.federationMediaUploadV1Supported).toBe(
-              mode === "input" || mode === "result",
+              mode === "input" || mode === "result" || independent,
             );
+            if (targetOnly) {
+              expect(message.payload.value.federationInputCopyV1Supported).toBe(false);
+              expect(message.payload.value.federationResultCopyV1Supported).toBe(false);
+              expect(
+                result
+                  ? message.payload.value.federationResultVerifyV1Supported
+                  : message.payload.value.federationInputVerifyV1Supported,
+              ).toBe(true);
+            }
             done.resolve();
           }
         }
       },
     );
   });
+
+  for (const result of [false, true]) {
+    test(`target-only RPC ${result ? "result" : "input"} permits upload and verification but rejects source reads`, async () => {
+      const { router, handlers } = createMockRouter();
+      const replies = [
+        Promise.withResolvers<void>(),
+        Promise.withResolvers<void>(),
+        Promise.withResolvers<void>(),
+      ];
+      const reported = Promise.withResolvers<void>();
+      const grants: string[] = [];
+      const response = (request: { requestId: string; verificationJson: string }) => {
+        const grantJson = request.verificationJson ? "verify" : "upload";
+        grants.push(grantJson);
+        return { requestId: request.requestId, grantJson };
+      };
+      registerAgentHandler(router, {
+        agentManager,
+        jobService,
+        logger: testLogger,
+        dispatcher: new AgentDispatcher(),
+        ...(result
+          ? {
+              federationResults: {
+                canCopy: false,
+                grant: async (_id, request) =>
+                  create(FederationResultGrantResponseSchema, response(request)),
+                report: async () => {
+                  reported.resolve();
+                },
+              },
+            }
+          : {
+              federationInputs: {
+                canCopy: false,
+                grant: async (_id, request) =>
+                  create(FederationInputGrantResponseSchema, response(request)),
+                report: async () => {
+                  reported.resolve();
+                },
+              },
+            }),
+      });
+      await agentManager.register({
+        agentId: "grpc-test-agent-1",
+        siteName: "test",
+        schedulerType: "slurm",
+        schedulerVersion: "test",
+      });
+      const frame = registerFrame();
+      if (frame.payload.case !== "register") throw new Error("Expected registration");
+      Object.assign(frame.payload.value, {
+        federationTargetTransferV1: true,
+        federationInputVerifyV1: !result,
+        federationResultVerifyV1: result,
+        federationInputCopyV1: false,
+        federationResultCopyV1: false,
+      });
+      async function* messages() {
+        yield frame;
+        for (let i = 0; i < 3; i++) {
+          const request = {
+            requestId: crypto.randomUUID(),
+            bindingJson: i === 1 ? "" : "{}",
+            verificationJson: i === 1 ? "{}" : "",
+            upload: i === 0,
+            ...(i === 0 ? { partNumber: 1 } : {}),
+          };
+          yield result
+            ? create(AgentMessageSchema, {
+                payload: {
+                  case: "federationResultGrantRequest",
+                  value: create(FederationResultGrantRequestSchema, request),
+                },
+              })
+            : create(AgentMessageSchema, {
+                payload: {
+                  case: "federationInputGrantRequest",
+                  value: create(FederationInputGrantRequestSchema, request),
+                },
+              });
+          await replies[i]?.promise;
+        }
+        const report = { generation: crypto.randomUUID(), verifiedJson: "{}" };
+        yield result
+          ? create(AgentMessageSchema, {
+              payload: {
+                case: "federationResultCopyReport",
+                value: create(FederationResultCopyReportSchema, report),
+              },
+            })
+          : create(AgentMessageSchema, {
+              payload: {
+                case: "federationInputCopyReport",
+                value: create(FederationInputCopyReportSchema, report),
+              },
+            });
+        await reported.promise;
+      }
+      const connect = handlers.connect;
+      if (!connect) throw new Error("Missing handler");
+      const responses: string[] = [];
+      await runWithMtlsContext(
+        { agentId: "grpc-test-agent-1", fingerprintSha256: "verified" },
+        async () => {
+          for await (const raw of connect(messages())) {
+            const message = raw as ServerMessage;
+            if (message.payload.case === "registerResponse") {
+              expect(message.payload.value.accepted).toBe(true);
+              expect(
+                result
+                  ? message.payload.value.federationResultCopyV1Supported
+                  : message.payload.value.federationInputCopyV1Supported,
+              ).toBe(false);
+              expect(
+                result
+                  ? message.payload.value.federationResultVerifyV1Supported
+                  : message.payload.value.federationInputVerifyV1Supported,
+              ).toBe(true);
+            }
+            if (
+              message.payload.case === "federationResultGrantResponse" ||
+              message.payload.case === "federationInputGrantResponse"
+            ) {
+              responses.push(message.payload.value.grantJson);
+              replies[responses.length - 1]?.resolve();
+            }
+          }
+        },
+      );
+      expect(grants).toEqual(["upload", "verify"]);
+      expect(responses).toEqual(["upload", "verify", ""]);
+    });
+  }
 
   for (const installation of [false, true]) {
     test.each([

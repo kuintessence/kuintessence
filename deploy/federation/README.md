@@ -204,6 +204,26 @@ Agent 输入搬运独立默认关闭。可向接收端 Agent 进程注入 `AGENT
 
 Agent 结果搬运配置默认关闭。`AGENT_FEDERATION_RESULT_COPY` 是 JSON，例如 `{"stagingRoot":"/var/lib/kq/result-staging","maxStagingBytes":1073741824,"allowedSourceOrigins":["https://remote-storage.example.org"],"allowedDestinationOrigins":["https://local-storage.example.org"]}`。暂存路径须是 Agent 用户独占的绝对目录（0700，无符号链接），需要完整单文件空间；容量是文件上限，不是已验证支持 TB 级搬运。当前运行结果不跨进程续传。双方服务都需升级以协商复制与目的校验两项能力；仅支持复制的旧 Agent 不领取新任务，Agent 到 Server 必须通过 mTLS；缺失任一条件不派发。
 
+### 纯介质任务接收
+
+介质文件已在接收 Agent 的私有导入目录时，不需要配置远端对象下载地址。Server 保留联邦、签名/mTLS、介质导入和本地对象存储配置；按方向设置 `FEDERATION_INPUT_DOWNLOAD_ORIGINS` / `FEDERATION_RESULT_DOWNLOAD_ORIGINS` 为本地存储的 HTTPS origin，对应 `FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS` / `FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS` 可以为空。控制面仍须能联系来源机构重新核对授权，介质交付不等于完全离线执行。
+
+Agent 继续配置 `AGENT_FEDERATION_MEDIA_IMPORT`、受管根目录及原输入/结果传输设置；将 `allowedSourceOrigins` 留空或省略，例如：
+
+```json
+{
+  "stagingRoot": "/var/lib/kq/input-staging",
+  "maxStagingBytes": 1073741824,
+  "allowedSourceOrigins": [],
+  "allowedDestinationOrigins": ["https://receiver-storage.example.org"]
+}
+```
+
+将该 JSON 用于 `AGENT_FEDERATION_INPUT_COPY`；结果方向使用 `AGENT_FEDERATION_RESULT_COPY` 并为其选择独立暂存目录。没有 source origins 时只声明目标校验能力，不能领取网络复制任务；目标上传和校验仍必须使用配置的 HTTPS origin。暂存配置保留原格式，介质上传直接读取私有导入文件，不新增整份明文暂存。来源仍需按来源导出配置读取原始对象并生成加密包。
+
+新 Agent 显式声明 `federation_target_transfer_v1`，支持独立的目标校验协商。Server 不给旧 Agent 派发仅有目标配置的介质任务；原网络配置完整时，新旧版本继续按原复制＋校验能力协商。旧 Server 不认识独立能力时，纯介质 Agent 保持不派发，不用伪造来源地址开启功能。
+
+
 Server 已接结果传输服务、Agent RPC 与自动扫描。配置上述值并具备有效双边授权和可用 Agent 后，后台会处理 pending 导入，依次完成搬运、目的字节验证、整单发布及签名回执发送；以导入详情的实际状态为准，HTTP 202 不表示已交付。
 
 目的校验需要上述固定版本 GET 权限，分片完成后保存对象 ETag 与可用的 versionId，再由 Agent 实际读取字节。开启 versioning 的存储可固定读取已组装版本；未开启时使用 If-Match 和 SHA-256，不提供历史版本保留保证。Agent 需要能访问本端预签名 HTTPS 地址，校验读取不经 Server 中转、不占完整文件暂存空间。目前 verified 只代表传输完整性，不代表已登记云盘副本或已签收/结算。

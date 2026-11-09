@@ -260,6 +260,8 @@ message RegisterRequest {
   bool federation_sandbox_local_input_v1 = 38;
   bool federation_media_object_export_v1 = 39;
   bool federation_media_upload_v1 = 40;
+  // Understands target upload/verification negotiation independent of network copying.
+  bool federation_target_transfer_v1 = 41;
 }
 
 message RegisterResponse {
@@ -285,6 +287,9 @@ message RegisterResponse {
   bool federation_media_import_v1_supported = 13;
   bool federation_media_object_export_v1_supported = 14;
   bool federation_media_upload_v1_supported = 15;
+  // Target verification is available without permitting source downloads.
+  bool federation_input_verify_v1_supported = 16;
+  bool federation_result_verify_v1_supported = 17;
 }
 
 // tags 7–10 carry extended monitoring + installed-software

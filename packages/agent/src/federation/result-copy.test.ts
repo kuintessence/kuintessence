@@ -603,11 +603,14 @@ test("destination verification rejects same-size corruption, wrong versions, ful
   }
 });
 
-test("result client completes a separate destination read and returns a verification report", async () => {
+test.each([
+  false,
+  true,
+])("result client verifies destination with target-only configuration: %s", async (targetOnly) => {
   const { f, task, options } = await verificationFixture();
   const completed = Promise.withResolvers<FederationResultCopyReport>();
   const client = new FederationResultClient(
-    f.options,
+    { ...f.options, allowedSourceOrigins: targetOnly ? [] : f.options.allowedSourceOrigins },
     (request) => {
       expect(request.bindingJson).toBe("");
       void options
@@ -628,6 +631,15 @@ test("result client completes a separate destination read and returns a verifica
     (opts) => verifyFederationResultFile({ ...opts, fetcher: options.fetcher }),
   );
   try {
+    expect(client.supportsCopy).toBe(!targetOnly);
+    const sourceBefore = sourceRequests;
+    if (targetOnly)
+      client.start(
+        create(FederationResultCopySchema, {
+          taskJson: JSON.stringify(f.options.task),
+          leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+        }),
+      );
     client.startVerification(
       create(FederationResultVerifySchema, {
         taskJson: JSON.stringify(task),
@@ -636,6 +648,7 @@ test("result client completes a separate destination read and returns a verifica
     );
     const result = await completed.promise;
     expect(result.failed).toBe(false);
+    expect(sourceRequests).toBe(sourceBefore);
     expect(result.copiedJson).toBe("");
     expect(JSON.parse(result.verifiedJson).sha256).toBe(hash(content));
   } finally {
@@ -1134,5 +1147,59 @@ test("input client copies and independently verifies HTTPS bytes while sharing a
     release?.();
   } finally {
     await Promise.all([input.disconnect(), result.disconnect()]);
+  }
+});
+
+test("target-only input client refuses network copying and verifies actual destination bytes", async () => {
+  const f = inputFixture(Buffer.from("target-only-input"));
+  received.set(1, Buffer.from(content));
+  const options = inputVerificationOptions(f);
+  const completed = Promise.withResolvers<FederationInputCopyReport>();
+  let grants = 0;
+  const client = new FederationInputClient(
+    { ...f.options, allowedSourceOrigins: [] },
+    (request) => {
+      grants++;
+      expect(request.bindingJson).toBe("");
+      void options
+        .authorize(JSON.parse(request.verificationJson), new AbortController().signal)
+        .then((grant) =>
+          client.receive(
+            create(FederationInputGrantResponseSchema, {
+              requestId: request.requestId,
+              grantJson: JSON.stringify(grant),
+              leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+            }),
+          ),
+        )
+        .catch(completed.reject);
+      return true;
+    },
+    (report) => completed.resolve(report),
+    copyFederationInputFile,
+    (opts) => verifyFederationInputFile({ ...opts, fetcher: options.fetcher }),
+  );
+  try {
+    expect(client.supportsCopy).toBe(false);
+    client.start(
+      create(FederationInputCopySchema, {
+        taskJson: JSON.stringify(f.options.task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+      }),
+    );
+    expect(grants).toBe(0);
+    client.startVerification(
+      create(FederationInputVerifySchema, {
+        taskJson: JSON.stringify(options.task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+      }),
+    );
+    const report = await completed.promise;
+    expect(report.failed).toBe(false);
+    expect(JSON.parse(report.verifiedJson).sha256).toBe(hash(content));
+    expect(sourceRequests).toBe(0);
+    expect(targetRequests).toBeGreaterThan(0);
+  } finally {
+    await client.disconnect();
   }
 });

@@ -43,6 +43,9 @@ export class FederationInputClient {
       slot,
     );
   }
+  get supportsCopy() {
+    return this.config.allowedSourceOrigins.length > 0;
+  }
   hasPending(id: string) {
     return this.session.hasPending(id);
   }
@@ -53,6 +56,7 @@ export class FederationInputClient {
     return this.session.disconnect();
   }
   start(command: FederationInputCopy): void {
+    if (!this.supportsCopy) return;
     if (Buffer.byteLength(command.taskJson) > 256 * 1024) return;
     let task: FederationInputCopyTask;
     try {

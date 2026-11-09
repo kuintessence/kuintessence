@@ -50,13 +50,13 @@ export class FederationResultStorage {
         (value) => new URL(FederationDataOriginSchema.parse(value)).origin,
       ),
     );
-    if (
-      !this.sourceOrigins.length ||
-      !this.destinationOrigins.size ||
-      !storage.cleanupFederationResult
-    )
+    if (!this.destinationOrigins.size || !storage.cleanupFederationResult)
       throw new Error("FEDERATION_RESULT_STORAGE_UNAVAILABLE");
     this.clock = options.clock ?? (() => new Date());
+  }
+
+  get canCopy() {
+    return this.sourceOrigins.length > 0;
   }
 
   async allocate(transferId: string, agentId: string, mediaClaimId?: string) {
@@ -90,6 +90,7 @@ export class FederationResultStorage {
     direction: "download" | "upload",
     partNumber?: number,
   ) {
+    if (direction === "download" && !this.canCopy) throw new FederationError("POLICY_DENIED");
     const binding = FederationResultCopyBindingSchema.parse(input);
     if (direction !== "download" && direction !== "upload")
       throw new FederationError("INVALID_MESSAGE");

@@ -2194,7 +2194,6 @@ if (config.NETDRIVE_ENABLED) {
   if (
     config.FEDERATION_ENABLED &&
     federationOutbound &&
-    config.FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS.length &&
     config.FEDERATION_RESULT_DOWNLOAD_ORIGINS.length
   ) {
     const storage = new FederationResultStorage(
@@ -2539,9 +2538,7 @@ const federationInputStorage =
   federationInputTransfers && federationInputStorageBackend
     ? new FederationInputStorage(federationInputTransfers, federationInputStorageBackend, {
         grants:
-          federationInputReader &&
-          config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS.length &&
-          config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length
+          federationInputReader && config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length
             ? {
                 reader: federationInputReader,
                 sourceOrigins: config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS,
@@ -2554,7 +2551,7 @@ const federationInputs =
   config.FEDERATION_ENABLED &&
   federationInputTransfers &&
   federationInputStorage &&
-  config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS.length &&
+  federationInputReader &&
   config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length
     ? new FederationInputTransport(federationInputTransfers, federationInputStorage, dispatcher)
     : undefined;

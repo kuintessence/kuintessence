@@ -106,7 +106,7 @@ const AgentConfigSchema = z
         .strictObject({
           stagingRoot: dedicatedAbsolutePath("result staging root"),
           maxStagingBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-          allowedSourceOrigins: z.array(FederationDataOriginSchema).min(1).max(16),
+          allowedSourceOrigins: z.array(FederationDataOriginSchema).max(16).default([]),
           allowedDestinationOrigins: z.array(FederationDataOriginSchema).min(1).max(16),
         })
         .nullable(),
@@ -117,7 +117,7 @@ const AgentConfigSchema = z
         .strictObject({
           stagingRoot: dedicatedAbsolutePath("input staging root"),
           maxStagingBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-          allowedSourceOrigins: z.array(FederationDataOriginSchema).min(1).max(16),
+          allowedSourceOrigins: z.array(FederationDataOriginSchema).max(16).default([]),
           allowedDestinationOrigins: z.array(FederationDataOriginSchema).min(1).max(16),
         })
         .nullable(),

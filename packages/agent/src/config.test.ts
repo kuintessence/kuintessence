@@ -56,10 +56,14 @@ describe("loadAgentConfig", () => {
     const load = (value: unknown) =>
       loadAgentConfig({ ...baseEnv, AGENT_FEDERATION_RESULT_COPY: JSON.stringify(value) });
     expect(load(settings).AGENT_FEDERATION_RESULT_COPY).toEqual(settings);
+    expect(
+      load({ ...settings, allowedSourceOrigins: [] }).AGENT_FEDERATION_RESULT_COPY
+        ?.allowedSourceOrigins,
+    ).toEqual([]);
     for (const invalid of [
       { ...settings, stagingRoot: "/" },
       { ...settings, maxStagingBytes: 0 },
-      { ...settings, allowedSourceOrigins: [] },
+      { ...settings, allowedSourceOrigins: ["http://source.invalid"] },
       { ...settings, allowedDestinationOrigins: ["http://target.invalid"] },
     ])
       expect(() => load(invalid)).toThrow();
@@ -76,10 +80,14 @@ describe("loadAgentConfig", () => {
     const load = (value: unknown) =>
       loadAgentConfig({ ...baseEnv, AGENT_FEDERATION_INPUT_COPY: JSON.stringify(value) });
     expect(load(settings).AGENT_FEDERATION_INPUT_COPY).toEqual(settings);
+    expect(
+      load({ ...settings, allowedSourceOrigins: [] }).AGENT_FEDERATION_INPUT_COPY
+        ?.allowedSourceOrigins,
+    ).toEqual([]);
     for (const invalid of [
       { ...settings, stagingRoot: "/" },
       { ...settings, maxStagingBytes: 0 },
-      { ...settings, allowedSourceOrigins: [] },
+      { ...settings, allowedSourceOrigins: ["http://source.invalid"] },
       { ...settings, allowedDestinationOrigins: ["http://target.invalid"] },
     ])
       expect(() => load(invalid)).toThrow();

@@ -43,6 +43,9 @@ export class FederationResultClient {
       slot,
     );
   }
+  get supportsCopy() {
+    return this.config.allowedSourceOrigins.length > 0;
+  }
   hasPending(id: string) {
     return this.session.hasPending(id);
   }
@@ -53,6 +56,7 @@ export class FederationResultClient {
     return this.session.disconnect();
   }
   start(command: FederationResultCopy): void {
+    if (!this.supportsCopy) return;
     if (Buffer.byteLength(command.taskJson) > 256 * 1024) return;
     let task: FederationResultCopyTask;
     try {

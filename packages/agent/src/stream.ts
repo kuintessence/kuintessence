@@ -762,8 +762,10 @@ export class AgentStream {
   private federationMediaExport?: FederationMediaExportClient;
   private federationMediaImport?: FederationMediaImportClient;
   private federationInputCopySupported = false;
+  private federationInputVerifySupported = false;
   private federationInputCopy?: FederationInputClient;
   private federationResultCopySupported = false;
+  private federationResultVerifySupported = false;
   private federationResultCopy?: FederationResultClient;
   private federationExecutionSupported = false;
   private federationInstallationSupported = false;
@@ -942,13 +944,13 @@ export class AgentStream {
       this.federationResultCopy = new FederationResultClient(
         deps.federationResultCopy,
         (request) => {
-          if (!this.connected || !this.federationResultCopySupported) return false;
+          if (!this.connected || !this.federationResultVerifySupported) return false;
           this.outboundQueue.push({ kind: "federationResultGrantRequest", request });
           this.signalOutbound();
           return true;
         },
         (report) => {
-          if (!this.connected || !this.federationResultCopySupported) return;
+          if (!this.connected || !this.federationResultVerifySupported) return;
           this.outboundQueue.push({ kind: "federationResultCopyReport", report });
           this.signalOutbound();
         },
@@ -960,13 +962,13 @@ export class AgentStream {
       this.federationInputCopy = new FederationInputClient(
         deps.federationInputCopy,
         (request) => {
-          if (!this.connected || !this.federationInputCopySupported) return false;
+          if (!this.connected || !this.federationInputVerifySupported) return false;
           this.outboundQueue.push({ kind: "federationInputGrantRequest", request });
           this.signalOutbound();
           return true;
         },
         (report) => {
-          if (!this.connected || !this.federationInputCopySupported) return;
+          if (!this.connected || !this.federationInputVerifySupported) return;
           this.outboundQueue.push({ kind: "federationInputCopyReport", report });
           this.signalOutbound();
         },
@@ -998,7 +1000,7 @@ export class AgentStream {
             if (
               !this.connected ||
               !this.federationMediaUploadSupported ||
-              !this.federationInputCopySupported
+              !this.federationInputVerifySupported
             )
               return false;
             this.outboundQueue.push({ kind: "federationInputGrantRequest", request });
@@ -1009,7 +1011,7 @@ export class AgentStream {
             if (
               !this.connected ||
               !this.federationMediaUploadSupported ||
-              !this.federationResultCopySupported
+              !this.federationResultVerifySupported
             )
               return false;
             this.outboundQueue.push({ kind: "federationResultGrantRequest", request });
@@ -1020,7 +1022,7 @@ export class AgentStream {
             if (
               !this.connected ||
               !this.federationMediaUploadSupported ||
-              !this.federationInputCopySupported
+              !this.federationInputVerifySupported
             )
               return;
             this.outboundQueue.push({ kind: "federationInputCopyReport", report });
@@ -1030,7 +1032,7 @@ export class AgentStream {
             if (
               !this.connected ||
               !this.federationMediaUploadSupported ||
-              !this.federationResultCopySupported
+              !this.federationResultVerifySupported
             )
               return;
             this.outboundQueue.push({ kind: "federationResultCopyReport", report });
@@ -2182,13 +2184,14 @@ export class AgentStream {
             this.spackManager?.requireServerMaterials === true &&
             !!this.persistentQueue?.softwareOperations,
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
-          federationInputCopyV1: !!this.federationInputCopy,
+          federationInputCopyV1: this.federationInputCopy?.supportsCopy ?? false,
           federationMediaExportV1: !!this.federationMediaExport,
           federationMediaObjectExportV1: this.federationMediaExport?.supportsObjects ?? false,
           federationMediaImportV1: !!this.federationMediaImport,
           federationMediaUploadV1: !!this.federationMediaUpload,
+          federationTargetTransferV1: !!(this.federationInputCopy || this.federationResultCopy),
           federationInputVerifyV1: !!this.federationInputCopy,
-          federationResultCopyV1: !!this.federationResultCopy,
+          federationResultCopyV1: this.federationResultCopy?.supportsCopy ?? false,
           federationResultVerifyV1: !!this.federationResultCopy,
           federationAccountingV1:
             !!this.inboundAcks && ["slurm", "pbs-pro"].includes(this.deps.adapter.type),
@@ -2908,9 +2911,17 @@ export class AgentStream {
               this.federationMediaUploadSupported =
                 message.payload.value.federationMediaUploadV1Supported;
               this.federationInputCopySupported =
+                !!this.federationInputCopy?.supportsCopy &&
                 message.payload.value.federationInputCopyV1Supported;
+              this.federationInputVerifySupported =
+                message.payload.value.federationInputVerifyV1Supported ||
+                this.federationInputCopySupported;
               this.federationResultCopySupported =
+                !!this.federationResultCopy?.supportsCopy &&
                 message.payload.value.federationResultCopyV1Supported;
+              this.federationResultVerifySupported =
+                message.payload.value.federationResultVerifyV1Supported ||
+                this.federationResultCopySupported;
               this.federationExecutionSupported =
                 message.payload.value.federationExecutionV1Supported;
               this.federationInstallationSupported =
@@ -2968,8 +2979,10 @@ export class AgentStream {
       await this.federationMediaExport?.disconnect();
       await this.federationMediaImport?.disconnect();
       this.federationInputCopySupported = false;
+      this.federationInputVerifySupported = false;
       await this.federationInputCopy?.disconnect();
       this.federationResultCopySupported = false;
+      this.federationResultVerifySupported = false;
       await this.federationResultCopy?.disconnect();
       this.federationExecutionSupported = false;
       this.federationInstallationSupported = false;
@@ -3307,12 +3320,12 @@ export class AgentStream {
       return;
     }
     if (payload.case === "federationResultVerify") {
-      if (this.federationResultCopySupported)
+      if (this.federationResultVerifySupported)
         this.federationResultCopy?.startVerification(payload.value);
       return;
     }
     if (payload.case === "federationResultGrantResponse") {
-      if (this.federationResultCopySupported) this.federationResultCopy?.receive(payload.value);
+      if (this.federationResultVerifySupported) this.federationResultCopy?.receive(payload.value);
       if (this.federationMediaUploadSupported)
         this.federationMediaUpload?.receive("result", payload.value);
       return;
@@ -3322,12 +3335,12 @@ export class AgentStream {
       return;
     }
     if (payload.case === "federationInputVerify") {
-      if (this.federationInputCopySupported)
+      if (this.federationInputVerifySupported)
         this.federationInputCopy?.startVerification(payload.value);
       return;
     }
     if (payload.case === "federationInputGrantResponse") {
-      if (this.federationInputCopySupported) this.federationInputCopy?.receive(payload.value);
+      if (this.federationInputVerifySupported) this.federationInputCopy?.receive(payload.value);
       if (this.federationMediaUploadSupported)
         this.federationMediaUpload?.receive("input", payload.value);
       return;

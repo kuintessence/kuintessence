@@ -286,8 +286,8 @@ export interface AgentMetricsRecorder {
 export interface AgentHandlerDeps {
   federationMediaExports?: Pick<FederationMediaExportTransport, "grant" | "report">;
   federationMediaImports?: Pick<FederationMediaImportTransport, "grant" | "report">;
-  federationResults?: Pick<FederationResultTransport, "grant" | "report">;
-  federationInputs?: Pick<FederationInputTransport, "grant" | "report">;
+  federationResults?: Pick<FederationResultTransport, "grant" | "report" | "canCopy">;
+  federationInputs?: Pick<FederationInputTransport, "grant" | "report" | "canCopy">;
   agentManager: AgentManager;
   jobService: JobService;
   logger: Logger;
@@ -434,6 +434,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         federationMediaObjectExportV1: false,
         federationMediaImportV1: false,
         federationMediaUploadV1: false,
+        federationTargetTransferV1: false,
         federationInputCopyV1: false,
         federationInputVerifyV1: false,
         federationResultCopyV1: false,
@@ -568,6 +569,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.federationMediaImportV1 = reg.federationMediaImportV1;
               channel.federationMediaUploadV1 =
                 reg.federationMediaImportV1 && reg.federationMediaUploadV1;
+              channel.federationTargetTransferV1 = reg.federationTargetTransferV1;
               channel.federationInputCopyV1 = reg.federationInputCopyV1;
               channel.federationInputVerifyV1 = reg.federationInputVerifyV1;
               channel.federationResultCopyV1 = reg.federationResultCopyV1;
@@ -615,22 +617,34 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                         channel.federationMediaUploadV1 &&
                         !!channel.verifiedCertFingerprint &&
                         ((!!deps.federationInputs &&
-                          reg.federationInputCopyV1 &&
-                          reg.federationInputVerifyV1) ||
+                          reg.federationInputVerifyV1 &&
+                          (reg.federationTargetTransferV1 ||
+                            (deps.federationInputs.canCopy && reg.federationInputCopyV1))) ||
                           (!!deps.federationResults &&
-                            reg.federationResultCopyV1 &&
-                            reg.federationResultVerifyV1)),
+                            reg.federationResultVerifyV1 &&
+                            (reg.federationTargetTransferV1 ||
+                              (deps.federationResults.canCopy && reg.federationResultCopyV1)))),
                       federationMediaImportV1Supported:
                         !!deps.federationMediaImports &&
                         reg.federationMediaImportV1 &&
                         !!channel.verifiedCertFingerprint,
-                      federationResultCopyV1Supported:
+                      federationResultVerifyV1Supported:
                         !!deps.federationResults &&
+                        (reg.federationTargetTransferV1 || reg.federationResultCopyV1) &&
+                        reg.federationResultVerifyV1 &&
+                        !!channel.verifiedCertFingerprint,
+                      federationResultCopyV1Supported:
+                        !!deps.federationResults?.canCopy &&
                         reg.federationResultCopyV1 &&
                         reg.federationResultVerifyV1 &&
                         !!channel.verifiedCertFingerprint,
-                      federationInputCopyV1Supported:
+                      federationInputVerifyV1Supported:
                         !!deps.federationInputs &&
+                        (reg.federationTargetTransferV1 || reg.federationInputCopyV1) &&
+                        reg.federationInputVerifyV1 &&
+                        !!channel.verifiedCertFingerprint,
+                      federationInputCopyV1Supported:
+                        !!deps.federationInputs?.canCopy &&
                         reg.federationInputCopyV1 &&
                         reg.federationInputVerifyV1 &&
                         !!channel.verifiedCertFingerprint,
@@ -1348,8 +1362,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             if (
               !registeredAgentId ||
               !active ||
-              !channel.federationResultCopyV1 ||
               !channel.federationResultVerifyV1 ||
+              (!channel.federationResultCopyV1 && !channel.federationTargetTransferV1) ||
               !channel.verifiedCertFingerprint ||
               !deps.federationResults ||
               !dispatcher.isCurrentChannel(registeredAgentId, channel)
@@ -1373,6 +1387,12 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             void (async () => {
               try {
                 if (request.case === "federationResultGrantRequest") {
+                  if (
+                    !request.value.verificationJson &&
+                    !request.value.upload &&
+                    (!channel.federationResultCopyV1 || !transport.canCopy)
+                  )
+                    throw new Error("SOURCE_DOWNLOAD_DISABLED");
                   const response = await transport.grant(agentId, request.value);
                   if (current())
                     channel.push(
@@ -1408,8 +1428,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             if (
               !registeredAgentId ||
               !active ||
-              !channel.federationInputCopyV1 ||
               !channel.federationInputVerifyV1 ||
+              (!channel.federationInputCopyV1 && !channel.federationTargetTransferV1) ||
               !channel.verifiedCertFingerprint ||
               !deps.federationInputs ||
               !dispatcher.isCurrentChannel(registeredAgentId, channel)
@@ -1433,6 +1453,12 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             void (async () => {
               try {
                 if (request.case === "federationInputGrantRequest") {
+                  if (
+                    !request.value.verificationJson &&
+                    !request.value.upload &&
+                    (!channel.federationInputCopyV1 || !transport.canCopy)
+                  )
+                    throw new Error("SOURCE_DOWNLOAD_DISABLED");
                   const response = await transport.grant(agentId, request.value);
                   if (current())
                     channel.push(

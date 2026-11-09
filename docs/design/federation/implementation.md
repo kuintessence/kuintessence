@@ -202,7 +202,7 @@ Agent 的 `copyFederationResultFile` 已提供内部文件搬运函数：绑定�
 
 ### 结果搬运 AgentStream 通道
 
-新增兼容 protobuf 消息与 `federationResultCopyV1`/`federationResultVerifyV1` 协商；Server 只给同时支持复制和目的校验的 Agent 分配任务。Agent 显式配置 `AGENT_FEDERATION_RESULT_COPY` JSON 后才上报能力，包含 stagingRoot、maxStagingBytes、allowedSourceOrigins、allowedDestinationOrigins；默认 null。Server 同时要求 mTLS 已认证且为当前连接，旧 Agent/Server 不会误接派发。
+新增兼容 protobuf 消息与 `federationResultCopyV1`/`federationResultVerifyV1` 协商；网络复制仅分配给同时支持复制和目的校验的 Agent；介质上传可独立使用目标校验能力，见[纯介质配置](task-media.md#纯介质目标配置与版本兼容)。Agent 显式配置 `AGENT_FEDERATION_RESULT_COPY` JSON 后才上报能力，包含 stagingRoot、maxStagingBytes、allowedSourceOrigins、allowedDestinationOrigins；默认 null。Server 同时要求 mTLS 已认证且为当前连接，旧 Agent/Server 不会误接派发。
 
 任务、绑定、grant 与 copied 回报使用共享严格 schema；正文分别限制为 256 KiB、8 KiB、16 KiB 与 4 MiB，仅传元数据。Server 每连接最多同时处理两条结果请求，机构网络/S3 调用不阻塞心跳；响应只发给原连接，重连期间分配成功的旧上传保留清理责任。Agent 同时只搬一个文件，重复同 generation 不重启；不同 generation 在忙碌时报告失败。短期地址不入持久队列，断线、退出或两分钟租约结束停止当前搬运，迟到 grant 按 requestId 丢弃。上传报告丢失时由持久租约过期后清理和重新尝试，不承诺跨进程续传。
 
@@ -551,7 +551,7 @@ verified 不因传输租约到期而删除，仍占清单预留空间；取消/�
 
 ### Agent 输入传输与自动派发
 
-新增独立 FederationInputCopy/Verify、GrantRequest/Response、CopyReport 消息，不借用结果报告身份。Server/Agent 必须同时协商 federation_input_copy_v1 与 federation_input_verify_v1，且连接具有已核验的 mTLS 指纹。旧 Agent、未配置 Server、缺少目的校验能力或未核验连接均不领取输入任务；默认关闭的独立 Agent 配置为 AGENT_FEDERATION_INPUT_COPY，格式见部署说明。下载与上传/目的校验使用当前代次的短期凭据，不携带存储账号密钥。
+新增独立 FederationInputCopy/Verify、GrantRequest/Response、CopyReport 消息，不借用结果报告身份。网络复制要求 Server/Agent 同时协商 federation_input_copy_v1 与 federation_input_verify_v1，且连接具有已核验的 mTLS 指纹；纯介质上传使用独立目标能力，见[版本兼容规则](task-media.md#纯介质目标配置与版本兼容)。旧 Agent、未配置 Server、缺少目的校验能力或未核验连接均不领取输入任务；默认关闭的独立 Agent 配置为 AGENT_FEDERATION_INPUT_COPY，格式见部署说明。下载与上传/目的校验使用当前代次的短期凭据，不携带存储账号密钥。
 
 Server 接收处理保持异步，存储等待不阻塞心跳；输入/结果共用每连接至多两个在途请求上限。返回凭据前核对原连接仍为当前连接，重连期间完成的旧分配进入待清理，复制回报不能直接生成可用文件。独立 Agent 客户端复用租约/请求关联/断线取消会话，并共用一个传输槽；原结果协议保持兼容。到期或断线中断字节读写、清理暂存，迟到凭据被丢弃。
 
