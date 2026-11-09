@@ -20,6 +20,10 @@ import {
   CommercialDisclosurePolicyDraftSchema,
   CommercialDisclosurePolicySchema,
 } from "@kuintessence/shared/federation/disclosure-authorization";
+import {
+  CommercialDisputeDraftSchema,
+  CommercialDisputeSchema,
+} from "@kuintessence/shared/federation/disputes";
 import { MarketRequestSchema } from "@kuintessence/shared/federation/market-request";
 import { FederationTerminalProposalSchema } from "@kuintessence/shared/federation/terminal-proposal";
 import { Hono } from "hono";
@@ -37,6 +41,7 @@ import type { FederationCommercialApprovalExchange } from "../federation/commerc
 import type { FederationCommercialExecutionService } from "../federation/commercial-execution";
 import type { FederationCommercialSubmissionService } from "../federation/commercial-submissions";
 import type { FederationDisclosurePolicyService } from "../federation/disclosure-policy";
+import type { FederationDisputeService } from "../federation/disputes";
 import type { FederationExecutionAutomation } from "../federation/execution-automation";
 import type { FederationExecutionConfirmationService } from "../federation/execution-confirmation";
 import type { FederationExecutionStopService } from "../federation/execution-stop";
@@ -86,6 +91,7 @@ export function createFederationCommercialRoutes(
   refunds?: FederationRefundService,
   payments?: FederationPaymentService,
   disclosurePolicies?: FederationDisclosurePolicyService,
+  disputes?: FederationDisputeService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -122,6 +128,52 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (disputes) {
+    const path = "/federation/commercial-agreements/:revisionId/disputes";
+    r.get(
+      path,
+      kqValidator("param", id),
+      kqValidator("query", page.extend({ caseId: z.uuid().optional() })),
+      async (c) => {
+        const { limit, offset, caseId } = c.req.valid("query");
+        return c.json({
+          data: await disputes.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+            caseId,
+          ),
+        });
+      },
+    );
+    r.post(
+      `${path}/draft`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialDisputeDraftSchema),
+      async (c) =>
+        c.json({
+          data: await disputes.draft(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("json"),
+          ),
+        }),
+    );
+    r.post(
+      `${path}/open`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialDisputeSchema),
+      async (c) =>
+        c.json({
+          data: await disputes.open(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("json"),
+          ),
+        }),
+    );
+  }
   if (disclosurePolicies) {
     const path = "/federation/commercial-agreements/:revisionId/disclosure-policies";
     const policyId = id.extend({ policyId: z.uuid() });

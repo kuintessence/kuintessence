@@ -49,6 +49,10 @@ import type {
   CommercialUsageGap,
 } from "@kuintessence/shared/federation/commercial";
 import type { CommercialDisclosurePolicy } from "@kuintessence/shared/federation/disclosure-authorization";
+import type {
+  CommercialDispute,
+  CommercialDisputeState,
+} from "@kuintessence/shared/federation/disputes";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
 import type {
   MarketAdapterProposalInput,
@@ -136,6 +140,7 @@ export const federationSigningKeys = pgTable(
           | "commercial-payment"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
+          | "commercial-dispute"
           | "terminal-query"
           | "terminal-chunk"
           | "terminal-delivery"
@@ -215,7 +220,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'disclosure.approve', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'disclosure.approve', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -1355,6 +1360,63 @@ export const federationCommercialPayments = pgTable(
       AND (${t.counterpartyJws} IS NULL) = (${t.confirmedAt} IS NULL)
       AND (NOT ${t.current} OR ${t.confirmedAt} IS NOT NULL)
     ) IS TRUE`,
+    ),
+  ],
+);
+
+/** Opening only freezes new local approvals; cross-site agreement is tracked separately. */
+export const federationDisputes = pgTable(
+  "federation_disputes",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    taskId: uuid("task_id").notNull(),
+    attempt: integer("attempt").notNull(),
+    payload: jsonb("payload").$type<CommercialDispute>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    openingJws: text("opening_jws").notNull(),
+    openedBy: uuid("opened_by")
+      .notNull()
+      .references(() => users.id),
+    state: varchar("state", { length: 32 })
+      .$type<CommercialDisputeState>()
+      .notNull()
+      .default("FREEZE_PENDING"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.caseId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    index("federation_dispute_task").on(t.localSiteId, t.agreementRevisionId, t.taskId, t.attempt),
+    index("federation_dispute_org").on(t.localSiteId, t.localOrgId, t.createdAt),
+    check(
+      "federation_dispute_identity",
+      sql`(
+      ${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.attempt} > 0
+      AND ${t.payload}->>'kind' = 'commercial-dispute'
+      AND ${t.payload}->>'caseId' = ${t.caseId}::text
+      AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND ${t.payload}->>'taskId' = ${t.taskId}::text
+      AND ${t.payload}->>'attempt' = ${t.attempt}::text
+      AND ${t.payload}->>'sourceSiteId' <> ${t.payload}->>'targetSiteId'
+      AND ${t.localSiteId}::text IN (${t.payload}->>'sourceSiteId', ${t.payload}->>'targetSiteId')
+      AND ${t.payload}->>'openingSiteId' IN (${t.payload}->>'sourceSiteId', ${t.payload}->>'targetSiteId')
+    ) IS TRUE`,
+    ),
+    check(
+      "federation_dispute_state",
+      sql`${t.state} IN ('FREEZE_PENDING','DISPUTED','EVIDENCE_WAITING','DECIDED','APPLICATION_WAITING','RESOLVED')`,
     ),
   ],
 );

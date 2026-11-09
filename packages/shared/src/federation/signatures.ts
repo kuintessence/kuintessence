@@ -74,6 +74,7 @@ export interface FederationVerificationKey {
     | "commercial-payment"
     | "commercial-disclosure-policy"
     | "commercial-disclosure"
+    | "commercial-dispute"
     | "commercial-usage-query"
     | "commercial-usage-page"
     | "status-query"

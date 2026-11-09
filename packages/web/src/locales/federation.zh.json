@@ -109,7 +109,8 @@
       "media-import-receipt-ack": "介质导入回执确认",
       "commercial-payment": "外部付款凭证",
       "commercial-disclosure-policy": "证据披露政策",
-      "commercial-disclosure": "证据披露批准"
+      "commercial-disclosure": "证据披露批准",
+      "commercial-dispute": "争议开案"
     },
     "storage": {
       "title": "输入存储核对",
@@ -238,6 +239,10 @@
         },
         "disclosure": {
           "approve": "批准证据披露"
+        },
+        "dispute": {
+          "read": "查看争议案件",
+          "open": "发起争议"
         }
       },
       "effects": {
@@ -286,6 +291,10 @@
         },
         "disclosure": {
           "approve": "批准或撤销本机构的证据披露政策；包含合同查看，不授予仲裁、账单、结算或付款权限。"
+        },
+        "dispute": {
+          "read": "查看本机构案件及处理状态；不包含合同正文或仲裁权限。",
+          "open": "针对本机构原记录开案并停止相关任务的新财务批准；包含案件查看，不授予裁决或改账权限。"
         }
       }
     },

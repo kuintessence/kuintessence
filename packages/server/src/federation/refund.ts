@@ -30,6 +30,7 @@ import type { z } from "zod";
 import { readFederationCancellationState } from "./cancellation-state";
 import { assertClosingPolicyActive, FederationClosingPolicyService } from "./closing-policy";
 import { renewTaskCompletion } from "./completion-capacity";
+import { assertFederationTaskNotDisputed } from "./dispute-freeze";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -413,6 +414,7 @@ export class FederationRefundService {
         throw new FederationError("OPERATION_CONFLICT");
       return prior;
     }
+    await assertFederationTaskNotDisputed(tx, this.signing.siteId, value.request);
     await renewTaskCompletion(tx, this.signing.siteId, value.request, this.storageGuard);
     const signed = await this.verify(
       tx,

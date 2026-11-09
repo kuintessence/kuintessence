@@ -1240,6 +1240,13 @@
       "when": 1794219136972,
       "tag": "0176_opposite_black_tom",
       "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1794221062255,
+      "tag": "0177_careless_bloodstrike",
+      "breakpoints": true
     }
   ]
 }

@@ -40,6 +40,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { assertClosingPolicyActive, FederationClosingPolicyService } from "./closing-policy";
 import { renewTaskCompletion } from "./completion-capacity";
+import { assertFederationTaskNotDisputed } from "./dispute-freeze";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -451,6 +452,7 @@ export class FederationBillingService {
       return prior;
     }
     const f = await this.originals(tx, actor, revisionId, bill.reportId);
+    await assertFederationTaskNotDisputed(tx, this.signing.siteId, f.request);
     const discount = await this.concession(tx, actor, revisionId, bill.discount?.discountId);
     if (
       bill.reservationId !== f.reservationId ||
@@ -705,6 +707,7 @@ export class FederationBillingService {
       return prior;
     }
     const f = await this.originals(tx, actor, revisionId, value.reportId);
+    if (f.provider) await assertFederationTaskNotDisputed(tx, this.signing.siteId, f.request);
     assertCommercialDiscount(value, f.terms, f.contract.digest, f.report, f.reportDigest);
     if (Date.parse(value.issuedAt) > Date.now() + 60000) throw new FederationError("POLICY_DENIED");
     calculateCommercialBill(f.terms, f.request, f.report, value.amount);

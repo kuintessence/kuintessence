@@ -23,6 +23,7 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { assertClosingPolicyActive, FederationClosingPolicyService } from "./closing-policy";
+import { assertFederationTaskNotDisputed } from "./dispute-freeze";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -393,6 +394,7 @@ export class FederationSettlementService {
       await this.verify(tx, prior.approvalJws, this.signing.siteId);
       return prior;
     }
+    await assertFederationTaskNotDisputed(tx, this.signing.siteId, bill.payload.request);
     const signed = await this.verify(
       tx,
       await signFederationMessage(CommercialSettlementSchema, value, this.signing),

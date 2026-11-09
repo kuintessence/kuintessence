@@ -109,7 +109,8 @@
       "media-import-receipt-ack": "Media import receipt acknowledgement",
       "commercial-payment": "External payment receipt",
       "commercial-disclosure-policy": "Evidence disclosure policy",
-      "commercial-disclosure": "Evidence disclosure approval"
+      "commercial-disclosure": "Evidence disclosure approval",
+      "commercial-dispute": "Dispute opening"
     },
     "storage": {
       "title": "Input storage reconciliation",
@@ -238,6 +239,10 @@
         },
         "disclosure": {
           "approve": "Approve evidence disclosure"
+        },
+        "dispute": {
+          "read": "View disputes",
+          "open": "Open disputes"
         }
       },
       "effects": {
@@ -286,6 +291,10 @@
         },
         "disclosure": {
           "approve": "Approve or revoke this institution’s evidence disclosure policies, including contract viewing. Does not grant arbitration, billing, settlement or payment authority."
+        },
+        "dispute": {
+          "read": "View this institution’s cases and progress. Does not include contract contents or arbitration authority.",
+          "open": "Open cases on this institution’s original records and stop new financial approvals for the task. Includes case viewing, without award or accounting authority."
         }
       }
     },

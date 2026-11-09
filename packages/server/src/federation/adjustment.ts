@@ -27,6 +27,7 @@ import {
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { renewTaskCompletion } from "./completion-capacity";
+import { assertFederationTaskNotDisputed } from "./dispute-freeze";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -418,6 +419,7 @@ export class FederationAdjustmentService {
           throw new FederationError("OPERATION_CONFLICT");
         return prior;
       }
+      await assertFederationTaskNotDisputed(tx, this.signing.siteId, original.bill.payload.request);
       const previous = await head(tx, this.signing.siteId, value.settlementId);
       await this.verifyOriginals(tx, original, previous);
       check(value, original, previous);

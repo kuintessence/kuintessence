@@ -29,6 +29,7 @@ import {
   federationCommercialPayments,
   federationCommercialSettlements,
   federationCommercialSubmissions,
+  federationDisputes,
   federationOutbound,
   federationReceivedUsage,
   federationReservations,
@@ -67,6 +68,10 @@ import {
   commercialAutomaticMeters,
 } from "@kuintessence/shared/federation/commercial";
 import {
+  CommercialDisputeListSchema,
+  CommercialDisputeSchema,
+} from "@kuintessence/shared/federation/disputes";
+import {
   CommercialUsagePageSchema,
   CommercialUsageQuerySchema,
 } from "@kuintessence/shared/federation/usage-exchange";
@@ -77,6 +82,7 @@ import pino from "pino";
 import { z } from "zod";
 import { createErrorHandler } from "../middleware/error-handler";
 import { federationOrganizationContext } from "../middleware/federation-organization";
+import type { BoundPrincipal } from "../middleware/principal-binder";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
 import { revokeDataDeliveryJobs } from "../services/data-delivery";
 import { DataGrantRevocationCoordinator } from "../services/data-delivery-revocations";
@@ -92,6 +98,8 @@ import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
+import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
+import { FederationDisputeService } from "./disputes";
 import { FabricClientFailure } from "./fabric-client";
 import { createFederationIngress } from "./ingress";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -6813,4 +6821,488 @@ test("payment CLI real HTTP and PostgreSQL preserve scope, approvals, signature 
       .payload.amount,
   ).toBe("0");
   expect(await f.budget()).toEqual(before);
+});
+
+async function disputeAccess(
+  f: Pick<
+    Awaited<ReturnType<typeof billingFixture>>,
+    "provider" | "source" | "actor" | "sourceActor" | "report"
+  >,
+) {
+  for (const [keys, actor] of [
+    [f.provider, f.actor],
+    [f.source, f.sourceActor],
+  ] as const) {
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-dispute"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, keys.signing.siteId));
+    await new FederationPermissionService(db).set(
+      { ...actor, capability: "dispute.open", enabled: true },
+      actor.userId,
+    );
+  }
+  cleanup.push(async () => {
+    await db
+      .delete(federationDisputes)
+      .where(
+        inArray(federationDisputes.localSiteId, [
+          f.source.signing.siteId,
+          f.provider.signing.siteId,
+        ]),
+      );
+  });
+  const providerCases = new FederationDisputeService(db, f.provider.signing),
+    sourceCases = new FederationDisputeService(db, f.source.signing);
+  const input = {
+    caseId: randomUUID(),
+    subject: {
+      recordType: "usage" as const,
+      recordId: f.report.reportId,
+      recordDigest: f.report.digest,
+    },
+    reason: "Review this task's original accounting",
+    requestedResolution: "Verify usage before approving charges",
+  };
+  return { providerCases, sourceCases, input };
+}
+
+test("dispute opening freezes only local new approvals and retains original case signatures on replay", async () => {
+  const f = await billingFixture(),
+    c = await disputeAccess(f);
+  const draft = await c.providerCases.draft(f.actor, f.revisionId, c.input);
+  const before = await db
+    .select()
+    .from(federationBudgets)
+    .where(eq(federationBudgets.domainId, f.terms.budgetDomainId));
+  const pending = await c.providerCases.open(f.actor, f.revisionId, draft);
+  expect(pending.state).toBe("FREEZE_PENDING");
+  expect(await c.providerCases.open(f.actor, f.revisionId, draft)).toEqual(pending);
+  const restarted = new FederationDisputeService(db, f.provider.signing);
+  expect((await restarted.list(f.actor, f.revisionId, 10, 0, draft.caseId)).data).toEqual([
+    pending,
+  ]);
+  await expect(f.providerBilling.approve(f.actor, f.revisionId, f.draft)).rejects.toThrow(
+    "DATA_WAITING",
+  );
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.terms.budgetDomainId)),
+  ).toEqual(before);
+  // Until cross-site delivery is confirmed, the peer remains independent rather than falsely frozen.
+  expect((await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft)).billId).toBe(
+    f.draft.billId,
+  );
+  expect((await c.sourceCases.list(f.sourceActor, f.revisionId)).data).toHaveLength(0);
+  for (const task of [
+    { agreementRevisionId: f.revisionId, taskId: randomUUID(), attempt: 1 },
+    { agreementRevisionId: f.revisionId, taskId: draft.taskId, attempt: 2 },
+    { agreementRevisionId: randomUUID(), taskId: draft.taskId, attempt: 1 },
+  ])
+    await db.transaction((tx) =>
+      assertFederationTaskNotDisputed(tx, f.provider.signing.siteId, task),
+    );
+  const sourceDraft = await c.sourceCases.draft(f.sourceActor, f.revisionId, c.input);
+  expect((await c.sourceCases.open(f.sourceActor, f.revisionId, sourceDraft)).state).toBe(
+    "FREEZE_PENDING",
+  );
+  const altered = { ...draft, reason: "Different allegation" };
+  await expect(c.providerCases.open(f.actor, f.revisionId, altered)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+});
+
+test("dispute case permissions, originals, signing purposes and HTTP scope are independently checked", async () => {
+  const f = await billingFixture(),
+    c = await disputeAccess(f),
+    permissions = new FederationPermissionService(db);
+  const draft = await c.providerCases.draft(f.actor, f.revisionId, c.input);
+  await permissions.set({ ...f.actor, capability: "dispute.open", enabled: false }, f.userId);
+  await expect(c.providerCases.open(f.actor, f.revisionId, draft)).rejects.toThrow("POLICY_DENIED");
+  await permissions.set({ ...f.actor, capability: "dispute.open", enabled: true }, f.userId);
+  await expect(c.providerCases.open(f.sourceActor, f.revisionId, draft)).rejects.toThrow(
+    "AGREEMENT_UNAVAILABLE",
+  );
+  for (const patch of [
+    { taskId: randomUUID() },
+    { attempt: 2 },
+    { agreementDigest: `sha256:${"a".repeat(64)}` },
+  ])
+    await expect(
+      c.providerCases.open(f.actor, f.revisionId, { ...draft, ...patch }),
+    ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    c.providerCases.draft(f.actor, f.revisionId, {
+      ...c.input,
+      subject: { ...c.input.subject, recordDigest: `sha256:${"f".repeat(64)}` },
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'commercial-dispute'` })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await expect(c.providerCases.open(f.actor, f.revisionId, draft)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-dispute"]'::jsonb`,
+    })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  const args: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.provider.signing),
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  args[23] = c.providerCases;
+  const app = new Hono<{ Variables: { principal: BoundPrincipal; automation: boolean } }>();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  let actor = f.actor,
+    automation = false;
+  app.use("*", async (ctx, next) => {
+    ctx.set("principal", {
+      sub: actor.userId,
+      userId: actor.userId,
+      orgId: actor.orgId,
+      orgIds: [actor.orgId],
+      role: "platform_admin",
+      email: "fixture@example.invalid",
+      memberships: [{ orgId: actor.orgId, role: "owner" }],
+      capabilities: [],
+    });
+    ctx.set("automation", automation);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...args));
+  const path = `/federation/commercial-agreements/${f.revisionId}/disputes`;
+  const open = await app.request(`${path}/open`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(draft),
+  });
+  expect(open.status).toBe(200);
+  expect(open.headers.get("cache-control")).toBe("no-store");
+  const response = await app.request(`${path}?caseId=${draft.caseId}`);
+  expect(
+    z.object({ data: CommercialDisputeListSchema }).parse(await response.json()).data.data,
+  ).toHaveLength(1);
+  actor = f.sourceActor;
+  const other = await app.request(path);
+  expect(
+    z.object({ data: CommercialDisputeListSchema }).parse(await other.json()).data.data,
+  ).toHaveLength(0);
+  automation = true;
+  expect((await app.request(path)).status).toBe(403);
+});
+
+test("dispute opening and pending settlement reconcile original signatures without authorizing new charges", async () => {
+  const f = await settlementFixture(),
+    c = await disputeAccess(f);
+  const both = await f.approve();
+  const input = {
+    ...c.input,
+    subject: {
+      recordType: "settlement" as const,
+      recordId: both.provider.settlementId,
+      recordDigest: both.provider.digest,
+    },
+  };
+  const draft = await c.providerCases.draft(f.actor, f.revisionId, input);
+  await c.providerCases.open(f.actor, f.revisionId, draft);
+  expect(await f.providerSettlement.approve(f.actor, f.revisionId, f.draft)).toEqual(both.provider);
+  await f.providerSettlement.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.draft.settlementId,
+    both.source.approvalJws,
+  );
+  expect(await f.budget()).toMatchObject({ available: "47", reserved: "0", spent: "53" });
+  expect((await c.providerCases.list(f.actor, f.revisionId)).data[0]?.state).toBe("FREEZE_PENDING");
+});
+
+test("dispute on a bill prevents new settlement while unrelated facts stay readable", async () => {
+  const f = await settlementFixture(),
+    c = await disputeAccess(f);
+  const [bill] = await db
+    .select()
+    .from(federationCommercialBills)
+    .where(
+      and(
+        eq(federationCommercialBills.localSiteId, f.provider.signing.siteId),
+        eq(federationCommercialBills.billId, f.bill.billId),
+      ),
+    );
+  if (!bill) throw new Error("Missing original bill");
+  const draft = await c.providerCases.draft(f.actor, f.revisionId, {
+    ...c.input,
+    subject: { recordType: "bill", recordId: bill.billId, recordDigest: bill.digest },
+  });
+  await c.providerCases.open(f.actor, f.revisionId, draft);
+  await expect(f.providerSettlement.approve(f.actor, f.revisionId, f.draft)).rejects.toThrow(
+    "DATA_WAITING",
+  );
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "60", spent: "0" });
+});
+
+test("dispute on adjustment stops new debit holds while old signed adjustments remain recoverable", async () => {
+  const f = await adjustmentServiceFixture(),
+    c = await disputeAccess(f);
+  const first = await f.make("40"),
+    signed = await f.approveAdjustment(first);
+  await f.attachAdjustment(signed);
+  const draft = await c.providerCases.draft(f.actor, f.revisionId, {
+    ...c.input,
+    subject: {
+      recordType: "adjustment",
+      recordId: first.adjustmentId,
+      recordDigest: signed.provider.digest,
+    },
+  });
+  const debit = await f.make("55"),
+    before = await f.budget();
+  await c.providerCases.open(f.actor, f.revisionId, draft);
+  await expect(f.providerAdjustment.approve(f.actor, f.revisionId, debit)).rejects.toThrow(
+    "DATA_WAITING",
+  );
+  expect(await f.budget()).toEqual(before);
+  expect((await f.providerAdjustment.approve(f.actor, f.revisionId, first)).adjustmentId).toBe(
+    first.adjustmentId,
+  );
+});
+
+test("dispute on an external payment preserves the ability to append factual corrections without changing funds", async () => {
+  const f = await paymentFixture(),
+    c = await disputeAccess(f),
+    original = await f.confirm(),
+    before = await f.budget();
+  const draft = await c.providerCases.draft(f.actor, f.revisionId, {
+    ...c.input,
+    subject: { recordType: "payment", recordId: original.receiptId, recordDigest: original.digest },
+  });
+  await c.providerCases.open(f.actor, f.revisionId, draft);
+  const correction = await f.providerPayment.draft(f.actor, f.revisionId, {
+    ...f.input,
+    receiptId: randomUUID(),
+    amount: "0",
+    reason: "Correct the external fact",
+  });
+  expect((await f.confirm(correction)).confirmedAt).not.toBeNull();
+  expect(await f.budget()).toEqual(before);
+  expect((await c.providerCases.list(f.actor, f.revisionId)).data[0]?.state).toBe("FREEZE_PENDING");
+});
+
+test("dispute opening audit failure rolls back both the case and its approval freeze", async () => {
+  const f = await billingFixture(),
+    c = await disputeAccess(f),
+    draft = await c.providerCases.draft(f.actor, f.revisionId, c.input);
+  await db.execute(
+    sql.raw(
+      "ALTER TABLE audit_log ADD CONSTRAINT dispute_audit_failure CHECK (action <> 'federation.dispute.open') NOT VALID",
+    ),
+  );
+  try {
+    await expect(c.providerCases.open(f.actor, f.revisionId, draft)).rejects.toThrow();
+  } finally {
+    await db.execute(sql.raw("ALTER TABLE audit_log DROP CONSTRAINT dispute_audit_failure"));
+  }
+  expect((await c.providerCases.list(f.actor, f.revisionId)).data).toHaveLength(0);
+  expect((await f.providerBilling.approve(f.actor, f.revisionId, f.draft)).billId).toBe(
+    f.draft.billId,
+  );
+});
+test("dispute prevents institutional automatic bills and settlements without consuming approval budgets", async () => {
+  const f = await closingFlowFixture(),
+    c = await disputeAccess(f);
+  const draft = await c.providerCases.draft(f.actor, f.revisionId, c.input);
+  await c.providerCases.open(f.actor, f.revisionId, draft);
+  const args: ConstructorParameters<typeof FederationCommercialWorker> = [
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  args[13] = f.closing;
+  await new FederationCommercialWorker(...args).tick();
+  expect(await f.billPolicy.read()).toMatchObject({ approvedRecords: 0, approvedAmount: "0" });
+  expect(f.network.bodies).toHaveLength(0);
+  expect((await f.view()).records[0]).toMatchObject({
+    state: "pending",
+    lastError: "DATA_WAITING",
+  });
+  const other = await settlementFixture(),
+    d = await disputeAccess(other),
+    policy = await grantClosing(other, "settlement");
+  await d.providerCases.open(
+    other.actor,
+    other.revisionId,
+    await d.providerCases.draft(other.actor, other.revisionId, d.input),
+  );
+  await expect(other.providerSettlement.automate(policy.policy.id, other.draft)).rejects.toThrow(
+    "DATA_WAITING",
+  );
+  expect(await policy.read()).toMatchObject({ approvedRecords: 0, approvedAmount: "0" });
+});
+
+test("dispute freezes new concessions in attested mode without waiting for or creating ledger work", async () => {
+  const f = await billingFixture("bilateral_attested"),
+    c = await disputeAccess(f);
+  const before = await db
+    .select()
+    .from(federationCommercialSubmissions)
+    .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+  const draft = await c.providerCases.draft(f.actor, f.revisionId, c.input);
+  await c.providerCases.open(f.actor, f.revisionId, draft);
+  const discount = CommercialDiscountSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-discount",
+    discountId: randomUUID(),
+    billId: f.draft.billId,
+    domainId: f.contract.domainId,
+    agreementRevisionId: f.revisionId,
+    agreementDigest: f.draft.agreementDigest,
+    reportId: f.draft.reportId,
+    reportDigest: f.draft.reportDigest,
+    taskId: f.draft.request.taskId,
+    attempt: 1,
+    sourceSiteId: f.source.signing.siteId,
+    targetSiteId: f.provider.signing.siteId,
+    unit: f.draft.request.unit,
+    amount: "7",
+    reason: "New concession",
+    issuedAt: new Date().toISOString(),
+    salt: "b".repeat(64),
+  });
+  await expect(f.providerBilling.approveDiscount(f.actor, f.revisionId, discount)).rejects.toThrow(
+    "DATA_WAITING",
+  );
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId)),
+  ).toEqual(before);
+});
+
+test("dispute concurrent case ID claims have one immutable winner and one audit", async () => {
+  const f = await billingFixture(),
+    c = await disputeAccess(f),
+    draft = await c.providerCases.draft(f.actor, f.revisionId, c.input);
+  const competing = CommercialDisputeSchema.parse({
+    ...draft,
+    requestedResolution: "A competing demand",
+  });
+  const settled = await Promise.allSettled([
+    c.providerCases.open(f.actor, f.revisionId, draft),
+    c.providerCases.open(f.actor, f.revisionId, competing),
+  ]);
+  expect(settled.filter((v) => v.status === "fulfilled")).toHaveLength(1);
+  expect(settled.filter((v) => v.status === "rejected")).toHaveLength(1);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(eq(auditLog.action, "federation.dispute.open"), eq(auditLog.target, draft.caseId)),
+      ),
+  ).toHaveLength(1);
+});
+
+test("dispute opening and a concurrent financial approval use the same transaction lock", async () => {
+  const f = await billingFixture(),
+    c = await disputeAccess(f),
+    draft = await c.providerCases.draft(f.actor, f.revisionId, c.input);
+  const arrived = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  const barrier = `dispute-audit-test:${randomUUID()}`;
+  await db.execute(
+    sql.raw(
+      `CREATE FUNCTION dispute_audit_barrier() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.dispute.open' THEN PERFORM pg_advisory_xact_lock(hashtextextended('${barrier}',0)); END IF; RETURN NEW; END $$`,
+    ),
+  );
+  await db.execute(
+    sql.raw(
+      "CREATE TRIGGER dispute_audit_barrier BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION dispute_audit_barrier()",
+    ),
+  );
+  const held = db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${barrier},0))`);
+    arrived.resolve();
+    await release.promise;
+  });
+  await arrived.promise;
+  const opening = c.providerCases.open(f.actor, f.revisionId, draft);
+  let approval: ReturnType<typeof f.providerBilling.approve> | undefined;
+  try {
+    // Observe the real opening transaction waiting inside its audit write, with the task lock held.
+    let blocked = false;
+    for (let n = 0; n < 100; n++) {
+      const rows = await db.execute<{ waiting: boolean }>(
+        sql`select exists(select 1 from pg_locks where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())) as waiting`,
+      );
+      if (rows[0]?.waiting) {
+        blocked = true;
+        break;
+      }
+      await Bun.sleep(10);
+    }
+    expect(blocked).toBe(true);
+    let finished = false;
+    approval = f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+    const observed = approval.then(
+      () => {
+        finished = true;
+      },
+      () => {
+        finished = true;
+      },
+    );
+    await Bun.sleep(30);
+    expect(finished).toBe(false);
+    release.resolve();
+    await held;
+    expect((await opening).state).toBe("FREEZE_PENDING");
+    await expect(approval).rejects.toThrow("DATA_WAITING");
+    await observed;
+    // The same lock is available after both transactions finish; no orphaned transaction remains.
+    await db.transaction((tx) => lockFederationDisputeTask(tx, f.provider.signing.siteId, draft));
+  } finally {
+    release.resolve();
+    await Promise.allSettled([held, opening, ...(approval ? [approval] : [])]);
+    await db.execute(sql.raw("DROP TRIGGER dispute_audit_barrier ON audit_log"));
+    await db.execute(sql.raw("DROP FUNCTION dispute_audit_barrier()"));
+  }
+});
+
+test("dispute rejects a correctly signed usage report that names a task different from its local reservation", async () => {
+  const f = await billingFixture(),
+    c = await disputeAccess(f);
+  const report = CommercialUsageSchema.parse({ ...f.report.report, taskId: randomUUID() });
+  const reportJws = await signFederationMessage(CommercialUsageSchema, report, f.provider.signing);
+  const signed = await verifyFederationMessage(
+    CommercialUsageSchema,
+    reportJws,
+    { ...f.provider.verification, allowedKinds: ["commercial-usage"] },
+    new Date(),
+  );
+  await db
+    .update(federationReceivedUsage)
+    .set({ report, reportJws, digest: signed.digest })
+    .where(
+      and(
+        eq(federationReceivedUsage.localSiteId, f.source.signing.siteId),
+        eq(federationReceivedUsage.reportId, report.reportId),
+      ),
+    );
+  await db
+    .update(federationUsageReports)
+    .set({ report, reportJws, digest: signed.digest })
+    .where(eq(federationUsageReports.id, report.reportId));
+  const input = { ...c.input, subject: { ...c.input.subject, recordDigest: signed.digest } };
+  await expect(c.sourceCases.draft(f.sourceActor, f.revisionId, input)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(c.providerCases.draft(f.actor, f.revisionId, input)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
 });
