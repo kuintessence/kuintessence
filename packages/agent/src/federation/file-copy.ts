@@ -6,7 +6,10 @@ import {
 } from "@kuintessence/shared/federation";
 import type { z } from "zod";
 import type { HttpClient } from "../staging/http-client";
-import { multipartUploadFromFile } from "../staging/multipart-upload-from-file";
+import {
+  type MultipartFromFileSource,
+  multipartUploadFromFile,
+} from "../staging/multipart-upload-from-file";
 import { resumableDownload } from "../staging/resumable-download";
 
 export class FederationFileTransferError extends Error {
@@ -94,41 +97,15 @@ export async function copyFederationFile<B extends FederationFileBinding>(
       throw new FederationFileTransferError("STAGING_UNAVAILABLE");
     directory = await mkdtemp(join(opts.stagingRoot, "transfer-"));
     const path = join(directory, "content");
-    const authorize = async (direction: "download" | "upload", partNumber?: number) => {
-      const timeout = AbortSignal.timeout(10_000);
-      const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
-      const response = await boundedAuthorization(
-        opts.authorize(structuredClone(binding), direction, partNumber, signal),
-        signal,
+    const authorize = (direction: "download" | "upload", partNumber?: number) =>
+      fileGrant(
+        opts,
+        binding,
+        direction,
+        partNumber,
+        direction === "download" ? sourceOrigins : destinationOrigins,
+        (signal) => opts.authorize(structuredClone(binding), direction, partNumber, signal),
       );
-      const checked = opts.grantSchema.safeParse(response);
-      if (
-        !checked.success ||
-        federationCanonicalJson(checked.data.binding) !== federationCanonicalJson(binding) ||
-        checked.data.direction !== direction ||
-        checked.data.partNumber !== partNumber
-      )
-        throw new FederationFileTransferError("INVALID_GRANT");
-      const grant = checked.data,
-        expires = Date.parse(grant.expiresAt);
-      if (
-        expires <= Date.now() ||
-        expires > Date.now() + 60_000 ||
-        expires > Date.parse(opts.availableUntil)
-      )
-        throw new FederationFileTransferError("GRANT_EXPIRED");
-      const url = new URL(grant.url);
-      if (
-        url.username ||
-        url.password ||
-        url.hash ||
-        url.protocol !== "https:" ||
-        !(direction === "download" ? sourceOrigins : destinationOrigins).has(url.origin)
-      )
-        throw new FederationFileTransferError("UNTRUSTED_ORIGIN");
-      const lease = AbortSignal.timeout(Math.max(1, expires - Date.now()));
-      return { ...grant, signal: opts.signal ? AbortSignal.any([opts.signal, lease]) : lease };
-    };
     const fetcher = opts.fetcher ?? fetch;
     const http: HttpClient = async (request) => {
       const grant = await authorize("download");
@@ -164,41 +141,13 @@ export async function copyFederationFile<B extends FederationFileBinding>(
       http,
       signal: opts.signal,
     });
-    let partGrant: Awaited<ReturnType<typeof authorize>> | undefined;
-    const uploaded = await multipartUploadFromFile({
+    return await uploadFederationFile({
+      ...opts,
+      binding,
       filePath: path,
-      size: binding.sizeBytes,
-      partSize: opts.partSize,
-      signal: opts.signal,
-      maxRetries: 0,
-      getPartUrls: async ([partNumber]) => {
-        if (partNumber === undefined) throw new FederationFileTransferError("INVALID_TASK");
-        partGrant = await authorize("upload", partNumber);
-        return [{ partNumber, url: partGrant.url }];
-      },
-      put: async (url, body) => {
-        if (!partGrant || partGrant.url !== url || partGrant.signal.aborted)
-          throw new FederationFileTransferError("GRANT_EXPIRED");
-        const response = await fetcher(url, {
-          method: "PUT",
-          body,
-          redirect: "error",
-          signal: partGrant.signal,
-          headers: {
-            "Content-Length": String(body.size),
-            "Content-Type": "application/octet-stream",
-          },
-        });
-        const etag = response.headers.get("etag") ?? "";
-        await response.body?.cancel();
-        partGrant.signal.throwIfAborted();
-        return { ok: response.ok, status: response.status, etag };
-      },
+      authorize: (partNumber, signal) =>
+        opts.authorize(structuredClone(binding), "upload", partNumber, signal),
     });
-    opts.signal?.throwIfAborted();
-    if (uploaded.sha256 !== binding.sha256 || uploaded.size !== binding.sizeBytes)
-      throw new FederationFileTransferError("TRANSFER_IO_FAILED");
-    return { binding, parts: uploaded.parts, sizeBytes: uploaded.size, sha256: uploaded.sha256 };
   } catch (error) {
     if (opts.signal?.aborted) throw new FederationFileTransferError("TRANSFER_CANCELLED");
     if (error instanceof FederationFileTransferError) throw error;
@@ -238,4 +187,125 @@ export async function boundedAuthorization<T>(
   } finally {
     signal.removeEventListener("abort", abort);
   }
+}
+
+export type FederationFileUploadOptions<B extends FederationFileBinding> = MultipartFromFileSource &
+  Pick<
+    FederationFileCopyOptions<B>,
+    | "binding"
+    | "partSize"
+    | "availableUntil"
+    | "grantSchema"
+    | "allowedDestinationOrigins"
+    | "signal"
+    | "fetcher"
+  > & {
+    authorize(partNumber: number, signal: AbortSignal): Promise<FederationFileCopyGrant<B>>;
+    authorizeRead?: () => Promise<void>;
+  };
+
+/** Upload only; the caller owns an existing private file and publication remains a Server operation. */
+export async function uploadFederationFile<B extends FederationFileBinding>(
+  opts: FederationFileUploadOptions<B>,
+) {
+  const binding = structuredClone(opts.binding);
+  const destinationOrigins = origins(opts.allowedDestinationOrigins);
+  if (
+    !Number.isFinite(Date.parse(opts.availableUntil)) ||
+    Date.parse(opts.availableUntil) <= Date.now() ||
+    !Number.isSafeInteger(binding.sizeBytes) ||
+    binding.sizeBytes < 0 ||
+    binding.sizeBytes > 5 * 1024 ** 4 ||
+    !Number.isSafeInteger(opts.partSize) ||
+    opts.partSize < 1 ||
+    opts.partSize > 5 * 1024 ** 3 ||
+    Math.ceil(binding.sizeBytes / opts.partSize) > 10_000
+  )
+    throw new FederationFileTransferError("INVALID_TASK");
+  try {
+    const authorize = (partNumber: number) =>
+      fileGrant(opts, binding, "upload", partNumber, destinationOrigins, (signal) =>
+        opts.authorize(partNumber, signal),
+      );
+    let partGrant: Awaited<ReturnType<typeof authorize>> | undefined;
+    const uploaded = await multipartUploadFromFile({
+      ...(opts.fileHandle ? { fileHandle: opts.fileHandle } : { filePath: opts.filePath }),
+      size: binding.sizeBytes,
+      partSize: opts.partSize,
+      signal: opts.signal,
+      maxRetries: 0,
+      authorizeRead: opts.authorizeRead,
+      getPartUrls: async ([partNumber]) => {
+        if (partNumber === undefined) throw new FederationFileTransferError("INVALID_TASK");
+        partGrant = await authorize(partNumber);
+        return [{ partNumber, url: partGrant.url }];
+      },
+      put: async (url, body) => {
+        if (!partGrant || partGrant.url !== url || partGrant.signal.aborted)
+          throw new FederationFileTransferError("GRANT_EXPIRED");
+        const response = await (opts.fetcher ?? fetch)(url, {
+          method: "PUT",
+          body,
+          redirect: "error",
+          signal: partGrant.signal,
+          headers: {
+            "Content-Length": String(body.size),
+            "Content-Type": "application/octet-stream",
+          },
+        });
+        const etag = response.headers.get("etag") ?? "";
+        await response.body?.cancel();
+        partGrant.signal.throwIfAborted();
+        return { ok: response.ok, status: response.status, etag };
+      },
+    });
+    opts.signal?.throwIfAborted();
+    if (uploaded.sha256 !== binding.sha256 || uploaded.size !== binding.sizeBytes)
+      throw new FederationFileTransferError("TRANSFER_IO_FAILED");
+    return { binding, parts: uploaded.parts, sizeBytes: uploaded.size, sha256: uploaded.sha256 };
+  } catch (error) {
+    if (opts.signal?.aborted) throw new FederationFileTransferError("TRANSFER_CANCELLED");
+    if (error instanceof FederationFileTransferError) throw error;
+    throw new FederationFileTransferError("TRANSFER_IO_FAILED");
+  }
+}
+
+async function fileGrant<B extends FederationFileBinding>(
+  opts: Pick<FederationFileCopyOptions<B>, "grantSchema" | "availableUntil" | "signal">,
+  binding: B,
+  direction: "download" | "upload",
+  partNumber: number | undefined,
+  allowedOrigins: ReadonlySet<string>,
+  request: (signal: AbortSignal) => Promise<FederationFileCopyGrant<B>>,
+) {
+  const timeout = AbortSignal.timeout(10_000);
+  const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+  const response = await boundedAuthorization(request(signal), signal);
+  const checked = opts.grantSchema.safeParse(response);
+  if (
+    !checked.success ||
+    federationCanonicalJson(checked.data.binding) !== federationCanonicalJson(binding) ||
+    checked.data.direction !== direction ||
+    checked.data.partNumber !== partNumber
+  )
+    throw new FederationFileTransferError("INVALID_GRANT");
+  const grant = checked.data,
+    expires = Date.parse(grant.expiresAt);
+  if (
+    expires <= Date.now() ||
+    expires > Date.now() + 60_000 ||
+    expires > Date.parse(opts.availableUntil)
+  )
+    throw new FederationFileTransferError("GRANT_EXPIRED");
+  const url = new URL(grant.url);
+  if (
+    url.username ||
+    url.password ||
+    url.hash ||
+    url.protocol !== "https:" ||
+    !allowedOrigins.has(url.origin)
+  )
+    throw new FederationFileTransferError("UNTRUSTED_ORIGIN");
+  const lease = AbortSignal.timeout(Math.max(1, expires - Date.now()));
+  return { ...grant, signal: opts.signal ? AbortSignal.any([opts.signal, lease]) : lease };
 }

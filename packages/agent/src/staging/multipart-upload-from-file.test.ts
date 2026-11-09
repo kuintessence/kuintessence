@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { multipartUploadFromFile, rewriteUrlWithConnectTo } from "./multipart-upload-from-file";
@@ -131,6 +131,47 @@ describe("multipartUploadFromFile", () => {
     expect(result.parts).toEqual([{ partNumber: 1, etag: "etag-1" }]);
     expect(result.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
     expect(result.size).toBe(1);
+  });
+
+  test.each([
+    "success",
+    "failure",
+    "cancel",
+    "read-revoked",
+  ] as const)("caller-owned file handle stays pinned and open after %s", async (mode) => {
+    const { filePath, bytes } = await spool("original");
+    const handle = await open(filePath, "r");
+    try {
+      await rename(filePath, `${filePath}.old`);
+      await writeFile(filePath, "replaced");
+      const controller = new AbortController();
+      let requests = 0;
+      const result = multipartUploadFromFile({
+        fileHandle: handle,
+        size: bytes.length,
+        partSize: 4,
+        maxRetries: 0,
+        signal: controller.signal,
+        authorizeRead: async () => {
+          if (mode === "read-revoked") throw new Error("revoked");
+        },
+        getPartUrls: async ([partNumber]) => [{ partNumber: partNumber ?? 0, url: "mock://part" }],
+        put: async (_url, body) => {
+          const chunk = Buffer.from(await body.arrayBuffer());
+          expect(chunk.equals(bytes.subarray(requests * 4, (requests + 1) * 4))).toBe(true);
+          requests++;
+          if (mode === "cancel") controller.abort();
+          return { ok: mode !== "failure", status: mode === "failure" ? 500 : 200, etag: "part" };
+        },
+      });
+      if (mode === "success")
+        expect((await result).sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+      else await expect(result).rejects.toThrow();
+      expect((await handle.stat()).size).toBe(bytes.length);
+      if (mode === "read-revoked") expect(requests).toBe(0);
+    } finally {
+      await handle.close();
+    }
   });
 });
 

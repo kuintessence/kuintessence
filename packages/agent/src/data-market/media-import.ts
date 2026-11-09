@@ -1,28 +1,19 @@
-import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  assertMediaKeyGrant,
   type FederationMediaImportGrant,
   type FederationMediaImportTask,
   FederationMediaImportTaskSchema,
   type FederationMediaImportVerified,
-  FederationMediaKeyGrantSchema,
-  FederationMediaKeyQuerySchema,
-  FederationMediaManifestSchema,
   type FederationMediaRecipientKey,
-  federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import type { MediaAge } from "@kuintessence/shared/federation/media-age";
 import { decryptFederationMediaIdentity } from "@kuintessence/shared/federation/media-key-crypto";
-import {
-  parseFederationPublicKey,
-  verifyFederationMessage,
-} from "@kuintessence/shared/federation/signatures";
 import type { AgentDataRoots } from "./local-data-security";
 import { exportMediaArchive, privateMediaDirectory, quarantineMediaArchive } from "./media-archive";
 
+import { mediaImportAuthorization, verifyMediaImportManifest } from "./media-authority";
 import { withMediaWorkspace } from "./media-workspace";
 
 const readOnly = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
@@ -41,30 +32,7 @@ export async function importFederationMedia(options: {
   const task = FederationMediaImportTaskSchema.parse(options.task);
   const { signal } = options;
   if (task.agentId !== options.agentId) throw new Error("MEDIA_AGENT_MISMATCH");
-  const key = {
-    ...task.signingKey,
-    siteId: task.sourceSiteId,
-    publicKey: await parseFederationPublicKey(task.signingKey.publicKeyPem),
-    validFrom: new Date(task.signingKey.validFrom),
-    validUntil: new Date(task.signingKey.validUntil),
-    allowedKinds: ["media-manifest"] as const,
-    revoked: false,
-  };
-  const verified = await verifyFederationMessage(
-    FederationMediaManifestSchema,
-    task.signedManifest,
-    { ...key, allowedKinds: [...key.allowedKinds] },
-    new Date(),
-  );
-  const manifest = verified.payload;
-  if (
-    verified.digest !== task.manifestDigest ||
-    manifest.packageId !== task.packageId ||
-    manifest.senderSiteId !== task.sourceSiteId ||
-    manifest.recipientSiteId !== task.recipientSiteId ||
-    manifest.agreementRevisionId !== task.agreementRevisionId
-  )
-    throw new Error("MEDIA_MANIFEST_MISMATCH");
+  const manifest = await verifyMediaImportManifest(task);
   const sizeBytes = manifest.files.reduce((sum, file) => sum + file.sizeBytes, 0);
   if (sizeBytes > task.maxBytes) throw new Error("MEDIA_STORAGE_LIMIT_EXCEEDED");
   const managedRoot = await options.roots.resolveManagedDataPath(task.managedRootId, ".");
@@ -73,66 +41,13 @@ export async function importFederationMedia(options: {
   await mkdir(parent, { recursive: true, mode: 0o700 });
   await privateMediaDirectory(parent);
   const target = join(parent, task.packageId);
-  let current: { encryptedIdentity: string; queryDigest: string } | undefined;
-  let lastAuthorized = 0;
-  async function authorize(force = false) {
-    signal.throwIfAborted();
-    if (Date.parse(task.expiresAt) <= Date.now()) throw new Error("MEDIA_APPROVAL_EXPIRED");
-    if (!force && current && Date.now() - lastAuthorized < 15_000) return current;
-    const permit = await options.authorize(signal);
-    const query = FederationMediaKeyQuerySchema.parse(permit.query);
-    const digest = `sha256:${createHash("sha256").update(JSON.stringify(query)).digest("hex")}`;
-    if (
-      permit.binding.generation !== task.generation ||
-      permit.binding.packageId !== task.packageId ||
-      permit.binding.authorizationId !== task.authorizationId ||
-      permit.binding.manifestDigest !== task.manifestDigest ||
-      query.senderSiteId !== task.recipientSiteId ||
-      query.recipientSiteId !== task.sourceSiteId ||
-      query.packageId !== task.packageId ||
-      query.manifestDigest !== task.manifestDigest ||
-      query.agreementRevisionId !== task.agreementRevisionId ||
-      query.authorizationId !== task.authorizationId ||
-      query.agentId !== task.agentId ||
-      query.managedRootId !== task.managedRootId ||
-      query.maxBytes !== task.maxBytes ||
-      query.authorizationExpiresAt !== task.expiresAt ||
-      federationCanonicalJson(query.recipientKey) !==
-        federationCanonicalJson(options.recipientKey) ||
-      digest !== permit.queryDigest
-    )
-      throw new Error("MEDIA_KEY_SCOPE_INVALID");
-    const signed = await verifyFederationMessage(
-      FederationMediaKeyGrantSchema,
-      permit.signedGrant,
-      {
-        ...permit.signingKey,
-        siteId: task.sourceSiteId,
-        publicKey: await parseFederationPublicKey(permit.signingKey.publicKeyPem),
-        validFrom: new Date(permit.signingKey.validFrom),
-        validUntil: new Date(permit.signingKey.validUntil),
-        allowedKinds: ["media-key-grant"],
-        revoked: false,
-      },
-      new Date(),
-    );
-    assertMediaKeyGrant(query, digest, signed.payload, new Date());
-    if (
-      Date.parse(permit.expiresAt) <= Date.now() ||
-      Date.parse(permit.expiresAt) > Date.parse(signed.payload.expiresAt)
-    )
-      throw new Error("MEDIA_LEASE_INVALID");
-    signal.throwIfAborted();
-    current = { encryptedIdentity: signed.payload.encryptedIdentity, queryDigest: digest };
-    lastAuthorized = Date.now();
-    return current;
-  }
+  const authorize = mediaImportAuthorization({ ...options, task });
   const verifyManifest = async (jws: string) => {
     if (jws !== task.signedManifest) throw new Error("MEDIA_MANIFEST_MISMATCH");
     return manifest;
   };
-  const report = (): FederationMediaImportVerified => {
-    if (!current) throw new Error("MEDIA_KEY_SCOPE_INVALID");
+  const report = async (): Promise<FederationMediaImportVerified> => {
+    const current = await authorize();
     return {
       generation: task.generation,
       packageId: task.packageId,

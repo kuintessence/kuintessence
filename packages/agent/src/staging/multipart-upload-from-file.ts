@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { type FileHandle, open } from "node:fs/promises";
 
 export interface MultipartFromFileResult {
   parts: { partNumber: number; etag: string }[];
@@ -7,9 +7,11 @@ export interface MultipartFromFileResult {
   size: number;
 }
 
-export interface MultipartFromFileOptions {
-  /** A spooled temp file containing the whole object. */
-  filePath: string;
+export type MultipartFromFileSource =
+  | { filePath: string; fileHandle?: never }
+  | { fileHandle: FileHandle; filePath?: never };
+
+export type MultipartFromFileOptions = MultipartFromFileSource & {
   /** Exact spooled size in bytes. */
   size: number;
   partSize: number;
@@ -24,7 +26,9 @@ export interface MultipartFromFileOptions {
   retryBackoffMs?: number;
   onProgress?: (copiedBytes: number) => void;
   signal?: AbortSignal;
-}
+  /** Refresh source authority while hashing large private files, before reading each bounded chunk. */
+  authorizeRead?: () => Promise<void>;
+};
 
 const defaultPut = async (
   url: string,
@@ -77,7 +81,8 @@ export async function multipartUploadFromFile(
   const parts: { partNumber: number; etag: string }[] = [];
   let copied = 0;
 
-  const fh = await open(opts.filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fh =
+    opts.fileHandle ?? (await open(opts.filePath, constants.O_RDONLY | constants.O_NOFOLLOW));
   try {
     const stat = await fh.stat();
     if (!stat.isFile() || stat.size !== opts.size) throw new Error("Multipart source size changed");
@@ -90,6 +95,7 @@ export async function multipartUploadFromFile(
       const body = source.slice(offset, offset + len);
       let read = 0;
       while (read < len) {
+        await opts.authorizeRead?.();
         throwIfAborted(opts.signal);
         const { bytesRead } = await fh.read(
           buffer,
@@ -152,7 +158,7 @@ export async function multipartUploadFromFile(
     )
       throw new Error("Multipart source changed while uploading");
   } finally {
-    await fh.close();
+    if (!opts.fileHandle) await fh.close();
   }
 
   parts.sort((a, b) => a.partNumber - b.partNumber);
