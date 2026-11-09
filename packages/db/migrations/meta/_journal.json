@@ -1233,6 +1233,13 @@
       "when": 1794208756834,
       "tag": "0175_giant_korath",
       "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1794219136972,
+      "tag": "0176_opposite_black_tom",
+      "breakpoints": true
     }
   ]
 }

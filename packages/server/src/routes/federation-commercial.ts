@@ -16,6 +16,10 @@ import {
   CommercialUsageCorrectionInputSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { CommercialApprovalRecordKindSchema } from "@kuintessence/shared/federation/commercial-approval-exchange";
+import {
+  CommercialDisclosurePolicyDraftSchema,
+  CommercialDisclosurePolicySchema,
+} from "@kuintessence/shared/federation/disclosure-authorization";
 import { MarketRequestSchema } from "@kuintessence/shared/federation/market-request";
 import { FederationTerminalProposalSchema } from "@kuintessence/shared/federation/terminal-proposal";
 import { Hono } from "hono";
@@ -32,6 +36,7 @@ import type { FederationCommercialAgreementService } from "../federation/commerc
 import type { FederationCommercialApprovalExchange } from "../federation/commercial-approval-exchange";
 import type { FederationCommercialExecutionService } from "../federation/commercial-execution";
 import type { FederationCommercialSubmissionService } from "../federation/commercial-submissions";
+import type { FederationDisclosurePolicyService } from "../federation/disclosure-policy";
 import type { FederationExecutionAutomation } from "../federation/execution-automation";
 import type { FederationExecutionConfirmationService } from "../federation/execution-confirmation";
 import type { FederationExecutionStopService } from "../federation/execution-stop";
@@ -80,6 +85,7 @@ export function createFederationCommercialRoutes(
   adjustments?: FederationAdjustmentService,
   refunds?: FederationRefundService,
   payments?: FederationPaymentService,
+  disclosurePolicies?: FederationDisclosurePolicyService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -116,6 +122,80 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (disclosurePolicies) {
+    const path = "/federation/commercial-agreements/:revisionId/disclosure-policies";
+    const policyId = id.extend({ policyId: z.uuid() });
+    r.get(
+      path,
+      kqValidator("param", id),
+      kqValidator("query", page.extend({ policyId: z.uuid().optional() })),
+      async (c) => {
+        const { limit, offset, policyId } = c.req.valid("query");
+        return c.json({
+          data: await disclosurePolicies.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+            policyId,
+          ),
+        });
+      },
+    );
+    r.post(
+      `${path}/draft`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialDisclosurePolicyDraftSchema),
+      async (c) =>
+        c.json({
+          data: await disclosurePolicies.draft(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("json"),
+          ),
+        }),
+    );
+    r.post(
+      `${path}/approve`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialDisclosurePolicySchema),
+      async (c) =>
+        c.json({
+          data: await disclosurePolicies.approve(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("json"),
+          ),
+        }),
+    );
+    r.post(
+      `${path}/:policyId/counterparty`,
+      kqValidator("param", policyId),
+      kqValidator("json", z.strictObject({ approvalJws: z.string().min(1).max(524288) })),
+      async (c) =>
+        c.json({
+          data: await disclosurePolicies.attachCounterparty(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").policyId,
+            c.req.valid("json").approvalJws,
+          ),
+        }),
+    );
+    r.post(
+      `${path}/:policyId/revoke`,
+      kqValidator("param", policyId),
+      kqValidator("json", z.strictObject({})),
+      async (c) =>
+        c.json({
+          data: await disclosurePolicies.revoke(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").policyId,
+          ),
+        }),
+    );
+  }
   if (payments) {
     const path = "/federation/commercial-agreements/:revisionId/payments";
     r.get(

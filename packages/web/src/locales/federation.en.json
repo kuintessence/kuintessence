@@ -235,6 +235,9 @@
         },
         "payment": {
           "approve": "Approve external payment receipts"
+        },
+        "disclosure": {
+          "approve": "Approve evidence disclosure"
         }
       },
       "effects": {
@@ -280,6 +283,9 @@
         },
         "payment": {
           "approve": "Confirm external payment facts and corrections, exchange signatures and retry evidence; includes agreement reading, not bank transfers or credit issuance."
+        },
+        "disclosure": {
+          "approve": "Approve or revoke this institution’s evidence disclosure policies, including contract viewing. Does not grant arbitration, billing, settlement or payment authority."
         }
       }
     },

@@ -53,6 +53,51 @@ export const CommercialDisclosurePolicySchema = z
   );
 export type CommercialDisclosurePolicy = z.infer<typeof CommercialDisclosurePolicySchema>;
 
+export const CommercialDisclosurePolicyDraftSchema = z
+  .strictObject({
+    policyId: CommercialDisclosurePolicySchema.shape.policyId,
+    recipientSiteId: CommercialDisclosurePolicySchema.shape.recipientSiteId,
+    disclosures: CommercialDisclosurePolicySchema.shape.disclosures,
+    validUntil: CommercialDisclosurePolicySchema.shape.validUntil,
+  })
+  .refine(
+    (v) =>
+      new Set(v.disclosures.map((s) => s.recordType)).size === v.disclosures.length &&
+      v.disclosures.every((s) => new Set(s.fields).size === s.fields.length),
+    "Duplicate disclosure selector",
+  );
+export const CommercialDisclosurePolicyApprovalSchema = z
+  .object({
+    localSiteId: z.uuid(),
+    localOrgId: z.uuid(),
+    agreementRevisionId: z.uuid(),
+    policyId: z.uuid(),
+    recipientSiteId: z.uuid(),
+    payload: CommercialDisclosurePolicySchema,
+    digest: FederationDigestSchema,
+    approvalJws: z.string().min(1).max(524288),
+    counterpartyJws: z.string().min(1).max(524288).nullable(),
+    approvedBy: z.uuid(),
+    confirmedAt: z.iso.datetime().nullable(),
+    revokedAt: z.iso.datetime().nullable(),
+    revokedBy: z.uuid().nullable(),
+    createdAt: z.iso.datetime(),
+  })
+  .refine(
+    (v) =>
+      v.policyId === v.payload.policyId &&
+      v.agreementRevisionId === v.payload.agreementRevisionId &&
+      v.recipientSiteId === v.payload.recipientSiteId &&
+      [v.payload.sourceSiteId, v.payload.targetSiteId].includes(v.localSiteId) &&
+      (v.counterpartyJws === null) === (v.confirmedAt === null) &&
+      (v.revokedAt === null) === (v.revokedBy === null),
+    "Inconsistent disclosure policy approval",
+  );
+export const CommercialDisclosurePolicyListSchema = z.object({
+  data: CommercialDisclosurePolicyApprovalSchema.array(),
+  hasMore: z.boolean(),
+});
+
 /** Caller checks approvals and revocation first. Scope is checked again before signing a projection. */
 export function assertCommercialDisclosurePolicy(
   rawGrant: CommercialDisclosureGrant,
