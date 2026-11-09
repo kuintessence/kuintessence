@@ -11,6 +11,7 @@ export type FederationSend = (
   endpoint: string,
   jws: string,
   path?:
+    | "/federation/v1/dispute-freezes"
     | "/federation/v1/disputes"
     | "/federation/v1/delegations"
     | "/federation/v1/agreement-approvals"
@@ -42,6 +43,7 @@ export function createFederationSender(tls: {
 }): FederationSend {
   return (origin, jws, path = "/federation/v1/delegations") => {
     if (
+      path !== "/federation/v1/dispute-freezes" &&
       path !== "/federation/v1/disputes" &&
       path !== "/federation/v1/delegations" &&
       path !== "/federation/v1/agreement-approvals" &&

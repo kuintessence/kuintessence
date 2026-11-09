@@ -9,6 +9,7 @@ import { FederationCancellationReceiver } from "./cancellation";
 import { FederationClosingAutomation } from "./closing-automation";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationDatasetUseResponder } from "./dataset-use-exchange";
+import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
 import { FederationDisputeService } from "./disputes";
 import type { FederationDownloadStorage } from "./download-credential";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
@@ -51,7 +52,8 @@ export function createFederationIngress(
       const status =
         error.code === "ATTESTATION_BACKLOG" ||
         error.code === "STORAGE_PRESSURE" ||
-        (error.code === "DATA_WAITING" && c.req.path === "/federation/v1/disputes")
+        (error.code === "DATA_WAITING" &&
+          ["/federation/v1/disputes", "/federation/v1/dispute-freezes"].includes(c.req.path))
           ? 503
           : error.code === "INVALID_MESSAGE"
             ? 400
@@ -67,6 +69,19 @@ export function createFederationIngress(
       "Federation admission failed; inspect database and signing-key availability",
     );
     return c.json({ error: { code: "TEMPORARILY_UNAVAILABLE", incidentId } }, 503);
+  });
+  const disputeFreezes = new FederationDisputeFreezeExchange(db, signingKey);
+  r.post("/federation/v1/dispute-freezes", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const response = await disputeFreezes.receive(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(response, 200, {
+      "content-type": "application/jose",
+      "cache-control": "no-store",
+    });
   });
   const disputes = new FederationDisputeService(db, signingKey);
   r.post("/federation/v1/disputes", async (c) => {

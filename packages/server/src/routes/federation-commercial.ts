@@ -42,6 +42,7 @@ import type { FederationCommercialExecutionService } from "../federation/commerc
 import type { FederationCommercialSubmissionService } from "../federation/commercial-submissions";
 import type { FederationDisclosurePolicyService } from "../federation/disclosure-policy";
 import type { FederationDisputeDelivery } from "../federation/dispute-delivery";
+import type { FederationDisputeFreezeExchange } from "../federation/dispute-freeze-exchange";
 import type { FederationDisputeService } from "../federation/disputes";
 import type { FederationExecutionAutomation } from "../federation/execution-automation";
 import type { FederationExecutionConfirmationService } from "../federation/execution-confirmation";
@@ -94,6 +95,7 @@ export function createFederationCommercialRoutes(
   disclosurePolicies?: FederationDisclosurePolicyService,
   disputes?: FederationDisputeService,
   disputeDelivery?: FederationDisputeDelivery,
+  disputeFreezes?: FederationDisputeFreezeExchange,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -146,6 +148,26 @@ export function createFederationCommercialRoutes(
       async (c) => {
         const { revisionId, caseId } = c.req.valid("param");
         await disputeDelivery.retry(c.get("federationActor"), revisionId, caseId);
+        return c.json({ data: { queued: true } });
+      },
+    );
+  }
+  if (disputeFreezes) {
+    const path = "/federation/commercial-agreements/:revisionId/disputes/:caseId/freeze";
+    const params = id.extend({ caseId: z.uuid() });
+    r.get(path, kqValidator("param", params), async (c) => {
+      const { revisionId, caseId } = c.req.valid("param");
+      return c.json({
+        data: await disputeFreezes.status(c.get("federationActor"), revisionId, caseId),
+      });
+    });
+    r.post(
+      `${path}/retry`,
+      kqValidator("param", params),
+      kqValidator("json", z.object({}).strict()),
+      async (c) => {
+        const { revisionId, caseId } = c.req.valid("param");
+        await disputeFreezes.retry(c.get("federationActor"), revisionId, caseId);
         return c.json({ data: { queued: true } });
       },
     );

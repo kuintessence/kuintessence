@@ -76,6 +76,7 @@ export interface FederationVerificationKey {
     | "commercial-disclosure"
     | "commercial-dispute"
     | "commercial-dispute-receipt"
+    | "commercial-dispute-freeze"
     | "commercial-usage-query"
     | "commercial-usage-page"
     | "status-query"

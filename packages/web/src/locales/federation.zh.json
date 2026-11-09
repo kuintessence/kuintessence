@@ -111,7 +111,8 @@
       "commercial-disclosure-policy": "证据披露政策",
       "commercial-disclosure": "证据披露批准",
       "commercial-dispute": "争议开案",
-      "commercial-dispute-receipt": "争议接收回执"
+      "commercial-dispute-receipt": "争议接收回执",
+      "commercial-dispute-freeze": "争议财务冻结确认"
     },
     "storage": {
       "title": "输入存储核对",

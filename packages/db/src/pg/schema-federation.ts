@@ -51,6 +51,8 @@ import type {
 import type { CommercialDisclosurePolicy } from "@kuintessence/shared/federation/disclosure-authorization";
 import type {
   CommercialDispute,
+  CommercialDisputeFinancialView,
+  CommercialDisputeFreeze,
   CommercialDisputeState,
 } from "@kuintessence/shared/federation/disputes";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
@@ -142,6 +144,7 @@ export const federationSigningKeys = pgTable(
           | "commercial-disclosure"
           | "commercial-dispute"
           | "commercial-dispute-receipt"
+          | "commercial-dispute-freeze"
           | "terminal-query"
           | "terminal-chunk"
           | "terminal-delivery"
@@ -1466,6 +1469,62 @@ export const federationDisputeDeliveries = pgTable(
       sql`
       (${t.state} = 'received') = (${t.receiptJws} IS NOT NULL)
       AND (${t.receiptJws} IS NULL) = (${t.acknowledgedAt} IS NULL)`,
+    ),
+  ],
+);
+
+/** Durable bilateral freeze proof; coordinated transitions still require a native ledger gate. */
+export const federationDisputeFreezes = pgTable(
+  "federation_dispute_freezes",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    payload: jsonb("payload").$type<CommercialDisputeFreeze>(),
+    financialView: jsonb("financial_view").$type<CommercialDisputeFinancialView>(),
+    digest: varchar("digest", { length: 71 }),
+    approvalJws: text("approval_jws"),
+    counterpartyJws: text("counterparty_jws"),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.caseId] }),
+    foreignKey({
+      name: "federation_dispute_freeze_case_fk",
+      columns: [t.localSiteId, t.caseId],
+      foreignColumns: [federationDisputes.localSiteId, federationDisputes.caseId],
+    }),
+    index("federation_dispute_freeze_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "federation_dispute_freeze_state",
+      sql`${t.state} IN ('pending','confirmed','needs_review')`,
+    ),
+    check(
+      "federation_dispute_freeze_lease",
+      sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL) AND (${t.state} = 'pending' OR ${t.leaseToken} IS NULL)`,
+    ),
+    check(
+      "federation_dispute_freeze_original",
+      sql`
+    (${t.payload} IS NULL AND ${t.financialView} IS NULL AND ${t.digest} IS NULL AND ${t.approvalJws} IS NULL)
+    OR (${t.payload} IS NOT NULL AND ${t.financialView} IS NOT NULL AND ${t.digest} IS NOT NULL AND ${t.approvalJws} IS NOT NULL
+      AND (${t.digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.payload}->>'kind' = 'commercial-dispute-freeze'
+        AND ${t.payload}->>'caseId' = ${t.caseId}::text AND ${t.financialView}->>'caseId' = ${t.caseId}::text
+        AND ${t.payload}->>'caseDigest' = ${t.financialView}->>'caseDigest'
+        AND ${t.payload}->>'headDigest' = ${t.financialView}->>'headDigest'
+        AND ${t.financialView}->>'localReady' = 'true'
+        AND ${t.localSiteId}::text IN (${t.payload}->>'sourceSiteId', ${t.payload}->>'targetSiteId')) IS TRUE)`,
+    ),
+    check(
+      "federation_dispute_freeze_confirmed",
+      sql`
+    (${t.state} = 'confirmed') = (${t.confirmedAt} IS NOT NULL)
+    AND (${t.counterpartyJws} IS NULL) = (${t.confirmedAt} IS NULL)
+    AND (${t.state} <> 'confirmed' OR (${t.approvalJws} IS NOT NULL AND ${t.payload}->>'mode' IN ('bilateral_direct','bilateral_attested')) IS TRUE)`,
     ),
   ],
 );

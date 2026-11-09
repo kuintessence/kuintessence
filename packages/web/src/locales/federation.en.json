@@ -111,7 +111,8 @@
       "commercial-disclosure-policy": "Evidence disclosure policy",
       "commercial-disclosure": "Evidence disclosure approval",
       "commercial-dispute": "Dispute opening",
-      "commercial-dispute-receipt": "Dispute receipt"
+      "commercial-dispute-receipt": "Dispute receipt",
+      "commercial-dispute-freeze": "Dispute financial freeze"
     },
     "storage": {
       "title": "Input storage reconciliation",

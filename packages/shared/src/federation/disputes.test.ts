@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   CommercialDisputeDraftSchema,
   CommercialDisputeFinancialViewSchema,
+  CommercialDisputeFreezeSchema,
   CommercialDisputeReceiptSchema,
   CommercialDisputeSchema,
 } from "./disputes";
@@ -148,4 +149,36 @@ test("local financial readiness cannot claim bilateral freeze or hide pending re
       requiresLedgerFreeze: true,
     }).localReady,
   ).toBe(true);
+});
+
+test("freeze proof binds the settled head and institutions without granting award or evidence rights", () => {
+  const d = dispute();
+  const proof = {
+    protocolVersion: 1,
+    kind: "commercial-dispute-freeze",
+    caseId: d.caseId,
+    caseDigest: d.agreementDigest,
+    agreementRevisionId: d.agreementRevisionId,
+    sourceSiteId: d.sourceSiteId,
+    targetSiteId: d.targetSiteId,
+    taskId: d.taskId,
+    attempt: d.attempt,
+    mode: "bilateral_direct",
+    headDigest: d.agreementDigest,
+    issuedAt: d.issuedAt,
+    salt: d.salt,
+  };
+  expect(CommercialDisputeFreezeSchema.parse(proof).headDigest).toBe(d.agreementDigest);
+  for (const patch of [
+    { targetSiteId: d.sourceSiteId },
+    { headDigest: null },
+    { amount: "1" },
+    { award: "approved" },
+    { disclosureGranted: true },
+    { taskId: "other" },
+  ])
+    expect(CommercialDisputeFreezeSchema.safeParse({ ...proof, ...patch }).success).toBe(false);
+  expect(FederationKeyInput.shape.allowedKinds.element.options).toContain(
+    "commercial-dispute-freeze",
+  );
 });

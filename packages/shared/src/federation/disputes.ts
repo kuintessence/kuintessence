@@ -128,3 +128,24 @@ export const CommercialDisputeFinancialViewSchema = z
       ),
     "Inconsistent local financial observation",
   );
+
+/** Both institutions attest the same settled commitment set; this authorizes no debit or disclosure. */
+export const CommercialDisputeFreezeSchema = z
+  .strictObject({
+    protocolVersion: z.literal(1),
+    kind: z.literal("commercial-dispute-freeze"),
+    caseId: z.uuid(),
+    caseDigest: FederationDigestSchema,
+    agreementRevisionId: z.uuid(),
+    sourceSiteId: z.uuid(),
+    targetSiteId: z.uuid(),
+    taskId: z.uuid(),
+    attempt: z.number().int().min(1).max(2147483647),
+    mode: FederationModeSchema,
+    headDigest: FederationDigestSchema,
+    issuedAt: z.iso.datetime(),
+    salt: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .refine((v) => v.sourceSiteId !== v.targetSiteId, "Invalid freeze parties");
+export type CommercialDisputeFreeze = z.infer<typeof CommercialDisputeFreezeSchema>;
+export type CommercialDisputeFinancialView = z.infer<typeof CommercialDisputeFinancialViewSchema>;

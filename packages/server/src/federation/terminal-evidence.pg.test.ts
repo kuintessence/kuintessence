@@ -31,6 +31,7 @@ import {
   federationCommercialSettlements,
   federationCommercialSubmissions,
   federationDisputeDeliveries,
+  federationDisputeFreezes,
   federationDisputes,
   federationOutbound,
   federationReceivedUsage,
@@ -73,6 +74,7 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import {
   CommercialDisputeFinancialViewSchema,
+  CommercialDisputeFreezeSchema,
   CommercialDisputeListSchema,
   CommercialDisputeReceiptSchema,
   CommercialDisputeSchema,
@@ -106,6 +108,7 @@ import { FederationCommercialSubmissionService } from "./commercial-submissions"
 import { FederationCommercialWorker } from "./commercial-worker";
 import { FederationDisputeDelivery } from "./dispute-delivery";
 import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
+import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
 import { FederationDisputeService } from "./disputes";
 import { FabricClientFailure } from "./fabric-client";
 import { createFederationIngress } from "./ingress";
@@ -8423,4 +8426,545 @@ test("dispute financial view keeps one database snapshot while an original settl
     await observing;
     resolve.mockRestore();
   }
+});
+
+async function freezeFixture(f: Parameters<typeof financialDispute>[0]) {
+  const c = await financialDispute(f);
+  for (const siteId of [f.source.signing.siteId, f.provider.signing.siteId])
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-dispute-freeze"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, siteId));
+  cleanup.push(async () => {
+    const ids = [f.source.signing.siteId, f.provider.signing.siteId];
+    await db
+      .delete(federationDisputeFreezes)
+      .where(inArray(federationDisputeFreezes.localSiteId, ids));
+    await db
+      .delete(federationDisputeDeliveries)
+      .where(inArray(federationDisputeDeliveries.localSiteId, ids));
+    await db.delete(auditLog).where(
+      inArray(
+        auditLog.actor,
+        ids.flatMap((id) => [`dispute-freeze:${id}`, `dispute-delivery:${id}`]),
+      ),
+    );
+  });
+  const delivery = new FederationDisputeDelivery(db, f.source.signing, async (_endpoint, jws) =>
+    c.providerCases.receive(jws, f.fingerprint),
+  );
+  await delivery.discover();
+  await delivery.advanceNext();
+  const ingress = createFederationIngress(db, f.provider.signing),
+    bodies: string[] = [];
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/dispute-freezes");
+    if (!path) throw new Error("Missing freeze path");
+    bodies.push(jws);
+    const response = await ingress.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/jose", "x-kq-federation-cert": f.fingerprint },
+      body: jws,
+    });
+    if (response.status !== 200)
+      throw new FederationDeliveryError(
+        response.status >= 500 ? "DELIVERY_UNAVAILABLE" : "INVALID_RECEIPT_RESPONSE",
+      );
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-type")).toBe("application/jose");
+    return response.text();
+  };
+  const freeze = new FederationDisputeFreezeExchange(db, f.source.signing, send);
+  const receiver = new FederationDisputeFreezeExchange(db, f.provider.signing);
+  const key = and(
+    eq(federationDisputeFreezes.localSiteId, f.source.signing.siteId),
+    eq(federationDisputeFreezes.caseId, c.original.caseId),
+  );
+  const read = async (siteId = f.source.signing.siteId) =>
+    (
+      await db
+        .select()
+        .from(federationDisputeFreezes)
+        .where(
+          and(
+            eq(federationDisputeFreezes.localSiteId, siteId),
+            eq(federationDisputeFreezes.caseId, c.original.caseId),
+          ),
+        )
+    )[0];
+  const due = () =>
+    db
+      .update(federationDisputeFreezes)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(key);
+  const advance = async () => {
+    await freeze.discover();
+    return freeze.advanceNext();
+  };
+  return { ...c, freeze, receiver, key, read, due, advance, send, bodies, ingress };
+}
+
+test("dispute freeze automatically confirms one settled head in direct and attested modes without changing funds", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await adjustmentServiceFixture(mode),
+      c = await freezeFixture(f);
+    const budget = await f.budget(),
+      submissions = await db
+        .select()
+        .from(federationCommercialSubmissions)
+        .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+    await new FederationPermissionService(db).set(
+      { ...f.sourceActor, capability: "dispute.open", enabled: false },
+      f.sourceActor.userId,
+    );
+    const args: ConstructorParameters<typeof FederationCommercialWorker> = [
+      new FederationCommercialSubmissionService(db, f.source.signing.siteId),
+    ];
+    args[16] = c.freeze;
+    await new FederationCommercialWorker(...args).tick();
+    const source = await c.read(),
+      target = await c.read(f.provider.signing.siteId);
+    expect(source?.state).toBe("confirmed");
+    expect(target?.state).toBe("confirmed");
+    expect(source?.digest).toBe(target?.digest);
+    expect(source?.approvalJws).toBe(target?.counterpartyJws);
+    expect(source?.counterpartyJws).toBe(target?.approvalJws);
+    expect(source?.financialView?.records).toEqual(target?.financialView?.records);
+    expect(await f.budget()).toEqual(budget);
+    expect(
+      await db
+        .select()
+        .from(federationCommercialSubmissions)
+        .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId)),
+    ).toEqual(submissions);
+    expect((await c.providerCases.list(f.actor, f.revisionId)).data[0]?.state).toBe("DISPUTED");
+    await expect(
+      f.providerAdjustment.approve(f.actor, f.revisionId, await f.make("40")),
+    ).rejects.toThrow("DATA_WAITING");
+    expect(await c.receiver.advanceNext()).toBe(false);
+  }
+});
+
+test("dispute freeze waits for both original applications and reuses its first proposal", async () => {
+  const f = await settlementFixture(),
+    approved = await f.approve(),
+    c = await freezeFixture(f);
+  await c.advance();
+  expect(await c.read()).toMatchObject({
+    state: "pending",
+    lastError: "DATA_WAITING",
+    approvalJws: null,
+  });
+  expect(c.bodies).toHaveLength(0);
+  await f.sourceSettlement.attachCounterparty(
+    f.sourceActor,
+    f.revisionId,
+    f.draft.settlementId,
+    approved.provider.approvalJws,
+  );
+  await c.due();
+  await c.advance();
+  const pending = await c.read();
+  expect(pending).toMatchObject({ state: "pending", lastError: "DELIVERY_UNAVAILABLE" });
+  expect(pending?.approvalJws).toBeTruthy();
+  expect(await c.read(f.provider.signing.siteId)).toBeUndefined();
+  await f.providerSettlement.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.draft.settlementId,
+    approved.source.approvalJws,
+  );
+  await c.due();
+  await c.advance();
+  expect(await c.read()).toMatchObject({ state: "confirmed", approvalJws: pending?.approvalJws });
+  if (!pending?.approvalJws) throw new Error("Missing original freeze proposal");
+  expect(c.bodies).toEqual([pending.approvalJws, pending.approvalJws]);
+});
+
+test("dispute freeze lost response recovers after service restart and preserves a later recipient case state", async () => {
+  const f = await billingExchangeFixture(),
+    c = await freezeFixture(f);
+  const lost = new FederationDisputeFreezeExchange(db, f.source.signing, async (...args) => {
+    await c.send(...args);
+    throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+  });
+  await lost.discover();
+  await lost.advanceNext();
+  const first = await c.read(),
+    received = await c.read(f.provider.signing.siteId);
+  expect(first?.state).toBe("pending");
+  expect(received?.state).toBe("confirmed");
+  expect((await c.sourceCases.list(f.sourceActor, f.revisionId)).data[0]?.state).toBe(
+    "FREEZE_PENDING",
+  );
+  await db
+    .update(federationDisputes)
+    .set({ state: "EVIDENCE_WAITING" })
+    .where(
+      and(
+        eq(federationDisputes.localSiteId, f.provider.signing.siteId),
+        eq(federationDisputes.caseId, c.original.caseId),
+      ),
+    );
+  await c.due();
+  const restarted = new FederationDisputeFreezeExchange(db, f.source.signing, c.send);
+  await restarted.discover();
+  await restarted.advanceNext();
+  expect(await c.read()).toMatchObject({
+    state: "confirmed",
+    approvalJws: first?.approvalJws,
+    counterpartyJws: received?.approvalJws,
+  });
+  if (!first?.approvalJws) throw new Error("Missing original freeze proposal");
+  expect(c.bodies).toEqual([first.approvalJws, first.approvalJws]);
+  expect((await c.providerCases.list(f.actor, f.revisionId)).data[0]?.state).toBe(
+    "EVIDENCE_WAITING",
+  );
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, c.original.caseId),
+          eq(auditLog.action, "federation.dispute.freeze_confirm"),
+        ),
+      ),
+  ).toHaveLength(2);
+});
+
+test("dispute freeze rejects another head, purpose or certificate without confirming the receiver", async () => {
+  const f = await billingExchangeFixture(),
+    c = await freezeFixture(f);
+  const offline = new FederationDisputeFreezeExchange(db, f.source.signing, async () => {
+    throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+  });
+  await offline.discover();
+  await offline.advanceNext();
+  const original = await c.read();
+  if (!original?.payload || !original.approvalJws) throw new Error("Missing proposal");
+  for (const patch of [
+    { headDigest: `sha256:${"a".repeat(64)}` },
+    { taskId: randomUUID() },
+    { caseDigest: `sha256:${"b".repeat(64)}` },
+    { issuedAt: new Date(0).toISOString() },
+  ]) {
+    const forged = await signFederationMessage(
+      CommercialDisputeFreezeSchema,
+      { ...original.payload, ...patch },
+      f.source.signing,
+    );
+    await expect(c.receiver.receive(forged, f.fingerprint)).rejects.toThrow();
+  }
+  await expect(c.receiver.receive(original.approvalJws, "unknown")).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'commercial-dispute-freeze'` })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await expect(c.receiver.receive(original.approvalJws, f.fingerprint)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  expect(await c.read(f.provider.signing.siteId)).toBeUndefined();
+  expect((await c.providerCases.list(f.actor, f.revisionId)).data[0]?.state).toBe("FREEZE_PENDING");
+  expect(
+    (
+      await c.ingress.request("/federation/v1/dispute-freezes", {
+        method: "POST",
+        body: original.approvalJws,
+      })
+    ).status,
+  ).toBe(415);
+});
+
+test("dispute freeze audit failures roll back state and recover the original peer proof", async () => {
+  const f = await billingExchangeFixture(),
+    c = await freezeFixture(f);
+  await c.freeze.discover();
+  await db.execute(
+    sql.raw(
+      `ALTER TABLE audit_log ADD CONSTRAINT freeze_audit_failure CHECK (action <> 'federation.dispute.freeze_confirm' OR actor <> 'dispute-freeze:${f.provider.signing.siteId}') NOT VALID`,
+    ),
+  );
+  try {
+    await c.freeze.advanceNext();
+  } finally {
+    await db.execute(sql.raw("ALTER TABLE audit_log DROP CONSTRAINT freeze_audit_failure"));
+  }
+  expect(await c.read(f.provider.signing.siteId)).toBeUndefined();
+  expect((await c.providerCases.list(f.actor, f.revisionId)).data[0]?.state).toBe("FREEZE_PENDING");
+  const original = await c.read();
+  await c.due();
+  await db.execute(
+    sql.raw(
+      `ALTER TABLE audit_log ADD CONSTRAINT freeze_audit_failure CHECK (action <> 'federation.dispute.freeze_confirm' OR actor <> 'dispute-freeze:${f.source.signing.siteId}') NOT VALID`,
+    ),
+  );
+  try {
+    await c.freeze.advanceNext();
+  } finally {
+    await db.execute(sql.raw("ALTER TABLE audit_log DROP CONSTRAINT freeze_audit_failure"));
+  }
+  expect(await c.read()).toMatchObject({
+    state: "pending",
+    counterpartyJws: null,
+    confirmedAt: null,
+    approvalJws: original?.approvalJws,
+  });
+  expect((await c.sourceCases.list(f.sourceActor, f.revisionId)).data[0]?.state).toBe(
+    "FREEZE_PENDING",
+  );
+  expect((await c.read(f.provider.signing.siteId))?.state).toBe("confirmed");
+  await c.due();
+  await c.freeze.advanceNext();
+  expect(await c.read()).toMatchObject({ state: "confirmed", approvalJws: original?.approvalJws });
+});
+
+test("dispute freeze fences concurrent workers and ignores the expired worker's late response", async () => {
+  const f = await billingExchangeFixture(),
+    c = await freezeFixture(f);
+  const entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  const slow = new FederationDisputeFreezeExchange(db, f.source.signing, async (...args) => {
+    const response = await c.send(...args);
+    entered.resolve();
+    await release.promise;
+    return response;
+  });
+  await slow.discover();
+  const pending = slow.advanceNext();
+  try {
+    await entered.promise;
+    expect(await c.freeze.advanceNext()).toBe(false);
+    await expect(c.freeze.retry(f.sourceActor, f.revisionId, c.original.caseId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await db
+      .update(federationDisputeFreezes)
+      .set({ leaseUntil: new Date(0) })
+      .where(c.key);
+    expect(await c.freeze.advanceNext()).toBe(true);
+    const complete = await c.read();
+    expect(complete?.state).toBe("confirmed");
+    release.resolve();
+    await pending;
+    expect(await c.read()).toEqual(complete);
+  } finally {
+    release.resolve();
+    await pending;
+  }
+});
+
+test("dispute freeze rechecks changed endpoint and revoked signing authority after the network response", async () => {
+  for (const change of ["endpoint", "key"] as const) {
+    const f = await billingExchangeFixture(),
+      c = await freezeFixture(f);
+    const service = new FederationDisputeFreezeExchange(db, f.source.signing, async (...args) => {
+      const response = await c.send(...args);
+      if (change === "endpoint")
+        await db
+          .update(federationSites)
+          .set({ endpoint: "https://changed.example.invalid" })
+          .where(eq(federationSites.id, f.provider.signing.siteId));
+      else
+        await db
+          .update(federationSigningKeys)
+          .set({ revokedAt: new Date() })
+          .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+      return response;
+    });
+    await service.discover();
+    await service.advanceNext();
+    expect(await c.read()).toMatchObject({
+      state: "needs_review",
+      lastError: "UNTRUSTED_IDENTITY",
+      counterpartyJws: null,
+    });
+    expect((await c.read(f.provider.signing.siteId))?.state).toBe("confirmed");
+  }
+});
+
+test("dispute freeze refuses native-ledger downgrade and partial or rewritten proof storage", async () => {
+  const f = await billingExchangeFixture(),
+    c = await freezeFixture(f);
+  const helper = new FederationDisputeService(db, f.source.signing),
+    snapshot = helper.financialSnapshot.bind(helper);
+  const observe = spyOn(FederationDisputeService.prototype, "financialSnapshot").mockImplementation(
+    async (...args) => {
+      const current = await snapshot(...args);
+      return {
+        ...current,
+        view: { ...current.view, mode: "ledger_coordinated" as const, requiresLedgerFreeze: true },
+      };
+    },
+  );
+  try {
+    await c.advance();
+  } finally {
+    observe.mockRestore();
+  }
+  expect(await c.read()).toMatchObject({
+    state: "needs_review",
+    lastError: "LEDGER_REQUIRED",
+    approvalJws: null,
+  });
+  expect(c.bodies).toHaveLength(0);
+  await c.freeze.retry(f.sourceActor, f.revisionId, c.original.caseId);
+  await c.freeze.advanceNext();
+  const complete = await c.read();
+  if (!complete?.payload) throw new Error("Missing confirmed proof");
+  for (const patch of [
+    { approvalJws: null },
+    { counterpartyJws: null },
+    { confirmedAt: null },
+    { financialView: null },
+    { leaseToken: randomUUID(), leaseUntil: new Date() },
+    { payload: { ...complete.payload, mode: "ledger_coordinated" as const } },
+  ])
+    await expect(
+      Promise.resolve(db.update(federationDisputeFreezes).set(patch).where(c.key)),
+    ).rejects.toThrow();
+  const altered = await signFederationMessage(
+    CommercialDisputeFreezeSchema,
+    { ...complete.payload, salt: "f".repeat(64) },
+    f.source.signing,
+  );
+  await expect(c.receiver.receive(altered, f.fingerprint)).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("dispute freeze status and retry keep human, organization and independent capability boundaries", async () => {
+  const f = await billingExchangeFixture(),
+    c = await freezeFixture(f);
+  const disabled = new FederationDisputeFreezeExchange(db, f.source.signing);
+  await disabled.discover();
+  expect(await disabled.advanceNext()).toBe(false);
+  expect(await disabled.status(f.sourceActor, f.revisionId, c.original.caseId)).toEqual({
+    enabled: false,
+    sync: null,
+  });
+  await expect(disabled.retry(f.sourceActor, f.revisionId, c.original.caseId)).rejects.toThrow(
+    "ASSET_UNAVAILABLE",
+  );
+  await c.freeze.discover();
+  const args: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.source.signing),
+    new FederationCommercialSubmissionService(db, f.source.signing.siteId),
+  ];
+  args[25] = c.freeze;
+  const app = new Hono<{ Variables: { principal: BoundPrincipal; automation: boolean } }>();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  let actor = f.sourceActor,
+    automation = false;
+  app.use("*", async (ctx, next) => {
+    ctx.set("principal", {
+      sub: actor.userId,
+      userId: actor.userId,
+      orgId: actor.orgId,
+      orgIds: [actor.orgId],
+      role: "platform_admin",
+      email: "fixture@example.invalid",
+      memberships: [{ orgId: actor.orgId, role: "owner" }],
+      capabilities: [],
+    });
+    ctx.set("automation", automation);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...args));
+  const path = `/federation/commercial-agreements/${f.revisionId}/disputes/${c.original.caseId}/freeze`;
+  const retry = (body = "{}") =>
+    app.request(`${path}/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+  const response = await app.request(path),
+    body = await response.text();
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  for (const field of ["approvalJws", "counterpartyJws", "financialView", "leaseToken", "endpoint"])
+    expect(body).not.toContain(field);
+  expect((await retry('{"state":"confirmed"}')).status).toBe(400);
+  expect((await retry()).status).toBe(200);
+  await new FederationPermissionService(db).set(
+    { ...f.sourceActor, capability: "dispute.read", enabled: true },
+    f.sourceActor.userId,
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.sourceActor, capability: "dispute.open", enabled: false },
+    f.sourceActor.userId,
+  );
+  expect((await app.request(path)).status).toBe(200);
+  expect((await retry()).status).toBe(403);
+  actor = f.actor;
+  expect((await app.request(path)).status).toBe(403);
+  actor = f.sourceActor;
+  automation = true;
+  expect((await app.request(path)).status).toBe(403);
+});
+
+test("dispute freeze rechecks the certificate inside the transaction and rejects a corrupted stored snapshot", async () => {
+  const f = await billingExchangeFixture(),
+    c = await freezeFixture(f);
+  const offline = new FederationDisputeFreezeExchange(db, f.source.signing, async () => {
+    throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+  });
+  await offline.discover();
+  await offline.advanceNext();
+  const original = await c.read();
+  if (!original?.approvalJws || !original.financialView) throw new Error("Missing prepared freeze");
+  const resolve = f.trust.resolvePeer.bind(f.trust);
+  const peer = spyOn(FederationTrustRegistry.prototype, "resolvePeer").mockImplementation(
+    async (...args) => {
+      const result = await resolve(...args);
+      await db
+        .update(federationCertificates)
+        .set({ revokedAt: new Date() })
+        .where(eq(federationCertificates.fingerprint, f.fingerprint));
+      return result;
+    },
+  );
+  try {
+    await expect(c.receiver.receive(original.approvalJws, f.fingerprint)).rejects.toThrow(
+      "UNTRUSTED_IDENTITY",
+    );
+  } finally {
+    peer.mockRestore();
+  }
+  expect(await c.read(f.provider.signing.siteId)).toBeUndefined();
+  await db
+    .update(federationDisputeFreezes)
+    .set({ financialView: { ...original.financialView, taskId: randomUUID() } })
+    .where(c.key);
+  await c.due();
+  await c.freeze.advanceNext();
+  expect(await c.read()).toMatchObject({
+    state: "needs_review",
+    lastError: "OPERATION_CONFLICT",
+    counterpartyJws: null,
+  });
+  expect(c.bodies).toHaveLength(0);
+});
+
+test("dispute freeze also reconciles a provider-opened case without reversing the contract parties", async () => {
+  const f = await billingExchangeFixture();
+  const c = await freezeFixture({
+    ...f,
+    source: f.provider,
+    provider: f.source,
+    sourceActor: f.actor,
+    actor: f.sourceActor,
+    fingerprint: f.providerFingerprint,
+  });
+  await c.advance();
+  expect(c.original.payload.openingSiteId).toBe(f.provider.signing.siteId);
+  const proof = await c.read();
+  expect(proof?.state).toBe("confirmed");
+  expect(proof?.payload).toMatchObject({
+    sourceSiteId: f.source.signing.siteId,
+    targetSiteId: f.provider.signing.siteId,
+  });
+  expect((await c.read(f.source.signing.siteId))?.digest).toBe(proof?.digest);
 });

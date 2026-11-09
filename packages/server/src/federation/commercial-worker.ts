@@ -6,6 +6,7 @@ import type { FederationCommercialApprovalExchange } from "./commercial-approval
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
 import type { FederationCompletionCapacity } from "./completion-capacity";
 import type { FederationDisputeDelivery } from "./dispute-delivery";
+import type { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
 import type { FederationExecutionAutomation } from "./execution-automation";
 import type { FederationExecutionStopService } from "./execution-stop";
 import type { FederationTerminalExchange } from "./execution-terminal-exchange";
@@ -38,6 +39,7 @@ export class FederationCommercialWorker {
     private readonly closing?: FederationClosingAutomation,
     private readonly completion?: FederationCompletionCapacity,
     private readonly disputes?: FederationDisputeDelivery,
+    private readonly disputeFreezes?: FederationDisputeFreezeExchange,
   ) {}
 
   start() {
@@ -177,6 +179,17 @@ export class FederationCommercialWorker {
         } catch {
           logger.error(
             "Dispute delivery failed; original notices and local freezes remain in PostgreSQL",
+          );
+        }
+      }
+      if (this.disputeFreezes) {
+        try {
+          await this.disputeFreezes.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.disputeFreezes.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Dispute freeze exchange failed; original proofs and pending local freezes remain durable",
           );
         }
       }
