@@ -5,6 +5,7 @@ import type { FederationClosingAutomation } from "./closing-automation";
 import type { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
 import type { FederationCompletionCapacity } from "./completion-capacity";
+import type { FederationDisputeDelivery } from "./dispute-delivery";
 import type { FederationExecutionAutomation } from "./execution-automation";
 import type { FederationExecutionStopService } from "./execution-stop";
 import type { FederationTerminalExchange } from "./execution-terminal-exchange";
@@ -36,6 +37,7 @@ export class FederationCommercialWorker {
     private readonly marketRequests?: FederationMarketRequestService,
     private readonly closing?: FederationClosingAutomation,
     private readonly completion?: FederationCompletionCapacity,
+    private readonly disputes?: FederationDisputeDelivery,
   ) {}
 
   start() {
@@ -165,6 +167,17 @@ export class FederationCommercialWorker {
             if (!(await this.exchange.advanceNext())) break;
         } catch {
           logger.error("Usage exchange scan failed; received evidence remains in PostgreSQL");
+        }
+      }
+      if (this.disputes) {
+        try {
+          await this.disputes.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.disputes.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Dispute delivery failed; original notices and local freezes remain in PostgreSQL",
+          );
         }
       }
       if (this.closing) {

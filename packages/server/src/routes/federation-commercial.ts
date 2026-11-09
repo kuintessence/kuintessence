@@ -41,6 +41,7 @@ import type { FederationCommercialApprovalExchange } from "../federation/commerc
 import type { FederationCommercialExecutionService } from "../federation/commercial-execution";
 import type { FederationCommercialSubmissionService } from "../federation/commercial-submissions";
 import type { FederationDisclosurePolicyService } from "../federation/disclosure-policy";
+import type { FederationDisputeDelivery } from "../federation/dispute-delivery";
 import type { FederationDisputeService } from "../federation/disputes";
 import type { FederationExecutionAutomation } from "../federation/execution-automation";
 import type { FederationExecutionConfirmationService } from "../federation/execution-confirmation";
@@ -92,6 +93,7 @@ export function createFederationCommercialRoutes(
   payments?: FederationPaymentService,
   disclosurePolicies?: FederationDisclosurePolicyService,
   disputes?: FederationDisputeService,
+  disputeDelivery?: FederationDisputeDelivery,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -128,6 +130,26 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (disputeDelivery) {
+    const path = "/federation/commercial-agreements/:revisionId/disputes/:caseId/delivery";
+    const params = id.extend({ caseId: z.uuid() });
+    r.get(path, kqValidator("param", params), async (c) => {
+      const { revisionId, caseId } = c.req.valid("param");
+      return c.json({
+        data: await disputeDelivery.status(c.get("federationActor"), revisionId, caseId),
+      });
+    });
+    r.post(
+      `${path}/retry`,
+      kqValidator("param", params),
+      kqValidator("json", z.object({}).strict()),
+      async (c) => {
+        const { revisionId, caseId } = c.req.valid("param");
+        await disputeDelivery.retry(c.get("federationActor"), revisionId, caseId);
+        return c.json({ data: { queued: true } });
+      },
+    );
+  }
   if (disputes) {
     const path = "/federation/commercial-agreements/:revisionId/disputes";
     r.get(

@@ -49,7 +49,9 @@ export function createFederationIngress(
     if (error instanceof FederationError) {
       c.header("cache-control", "no-store");
       const status =
-        error.code === "ATTESTATION_BACKLOG" || error.code === "STORAGE_PRESSURE"
+        error.code === "ATTESTATION_BACKLOG" ||
+        error.code === "STORAGE_PRESSURE" ||
+        (error.code === "DATA_WAITING" && c.req.path === "/federation/v1/disputes")
           ? 503
           : error.code === "INVALID_MESSAGE"
             ? 400

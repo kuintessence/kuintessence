@@ -541,6 +541,44 @@ export class FederationDisputeService {
       return acceptanceJws;
     });
   }
+  /** Revalidate the stored institutional notice without requiring the opener's current user grant. */
+  async deliveryOriginal(tx: PgTransaction, caseId: string) {
+    const [row] = await tx
+      .select()
+      .from(cases)
+      .where(and(eq(cases.localSiteId, this.signing.siteId), eq(cases.caseId, caseId)))
+      .for("share");
+    if (!row?.openedBy || row.payload.openingSiteId !== this.signing.siteId)
+      throw new FederationError("POLICY_DENIED");
+    const signed = await this.verify(
+      tx,
+      CommercialDisputeSchema,
+      row.openingJws,
+      this.signing.siteId,
+    );
+    if (
+      signed.digest !== row.digest ||
+      federationCanonicalJson(signed.payload) !== federationCanonicalJson(row.payload)
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    this.check(
+      signed.payload,
+      await this.originals(
+        tx,
+        { orgId: row.localOrgId },
+        row.agreementRevisionId,
+        signed.payload.subject,
+      ),
+      this.signing.siteId,
+    );
+    return {
+      ...row,
+      other:
+        signed.payload.sourceSiteId === this.signing.siteId
+          ? signed.payload.targetSiteId
+          : signed.payload.sourceSiteId,
+    };
+  }
   async list(actor: FederationActor, revisionId: string, limit = 50, offset = 0, caseId?: string) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "dispute.read");

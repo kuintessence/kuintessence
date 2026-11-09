@@ -76,6 +76,7 @@ import { FederationDatasetUsePolicies } from "./federation/dataset-use-policies"
 import { FederationDatasetUseWorker } from "./federation/dataset-use-worker";
 import { FederationDisclosurePolicyService } from "./federation/disclosure-policy";
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
+import { FederationDisputeDelivery } from "./federation/dispute-delivery";
 import { FederationDisputeService } from "./federation/disputes";
 import { FederationExecutionAutomation } from "./federation/execution-automation";
 import {
@@ -1857,6 +1858,9 @@ const federationReservationProposals = federationSigningKey
       federationStorageGuard,
     )
   : undefined;
+const federationDisputeDelivery = federationSigningKey
+  ? new FederationDisputeDelivery(db, federationSigningKey, federationSender)
+  : undefined;
 const federationApprovalExchange = federationSigningKey
   ? new FederationCommercialApprovalExchange(db, federationSigningKey, federationSender)
   : undefined;
@@ -1902,6 +1906,7 @@ if (federationSigningKey && federationCommercial)
       new FederationPaymentService(db, federationSigningKey),
       new FederationDisclosurePolicyService(db, federationSigningKey),
       new FederationDisputeService(db, federationSigningKey),
+      federationDisputeDelivery,
     ),
   );
 const federationPreparation = federationSigningKey
@@ -2803,6 +2808,7 @@ const federationCommercialWorker = federationCommercial
       federationMarketRequests,
       federationClosing,
       federationCompletion,
+      federationDisputeDelivery,
     )
   : undefined;
 federationCommercialWorker?.start();

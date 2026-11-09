@@ -29,6 +29,7 @@ import {
   federationCommercialPayments,
   federationCommercialSettlements,
   federationCommercialSubmissions,
+  federationDisputeDeliveries,
   federationDisputes,
   federationOutbound,
   federationReceivedUsage,
@@ -99,6 +100,7 @@ import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
+import { FederationDisputeDelivery } from "./dispute-delivery";
 import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
 import { FederationDisputeService } from "./disputes";
 import { FabricClientFailure } from "./fabric-client";
@@ -7555,4 +7557,451 @@ test("dispute inbox rechecks a certificate revoked between initial verification 
   } finally {
     peer.mockRestore();
   }
+});
+
+async function disputeDeliveryFixture() {
+  const f = await disputeInboxFixture();
+  const key = and(
+    eq(federationDisputeDeliveries.localSiteId, f.source.signing.siteId),
+    eq(federationDisputeDeliveries.caseId, f.caseDraft.caseId),
+  );
+  cleanup.push(async () => {
+    await db
+      .delete(federationDisputeDeliveries)
+      .where(
+        inArray(federationDisputeDeliveries.localSiteId, [
+          f.source.signing.siteId,
+          f.provider.signing.siteId,
+        ]),
+      );
+    await db
+      .delete(auditLog)
+      .where(
+        inArray(auditLog.actor, [
+          `dispute-delivery:${f.source.signing.siteId}`,
+          `dispute-delivery:${f.provider.signing.siteId}`,
+        ]),
+      );
+  });
+  const ingress = createFederationIngress(db, f.provider.signing);
+  const bodies: string[] = [];
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/disputes");
+    if (!path) throw new Error("Missing dispute delivery path");
+    bodies.push(jws);
+    const response = await ingress.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/jose", "x-kq-federation-cert": f.fingerprint },
+      body: jws,
+    });
+    if (response.status !== 200)
+      throw new FederationDeliveryError(
+        response.status >= 500 ? "DELIVERY_UNAVAILABLE" : "INVALID_RECEIPT_RESPONSE",
+      );
+    return response.text();
+  };
+  const delivery = new FederationDisputeDelivery(db, f.source.signing, send);
+  const read = async () => (await db.select().from(federationDisputeDeliveries).where(key))[0];
+  const due = () =>
+    db
+      .update(federationDisputeDeliveries)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(key);
+  return { ...f, key, bodies, send, delivery, read, due };
+}
+
+test("dispute delivery survives lost response and restart without repeating case creation or financial transitions", async () => {
+  const f = await disputeDeliveryFixture();
+  const lost = new FederationDisputeDelivery(db, f.source.signing, async (...args) => {
+    await f.send(...args);
+    throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+  });
+  await lost.discover();
+  await lost.advanceNext();
+  expect(await f.read()).toMatchObject({
+    state: "pending",
+    receiptJws: null,
+    lastError: "DELIVERY_UNAVAILABLE",
+  });
+  const received = await f.received();
+  expect(received?.state).toBe("FREEZE_PENDING");
+  // Institutional authority persists even if the person who opened the case loses permission.
+  await new FederationPermissionService(db).set(
+    { ...f.sourceActor, capability: "dispute.open", enabled: false },
+    f.sourceActor.userId,
+  );
+  await f.due();
+  const args: ConstructorParameters<typeof FederationCommercialWorker> = [
+    new FederationCommercialSubmissionService(db, f.source.signing.siteId),
+  ];
+  args[15] = new FederationDisputeDelivery(db, f.source.signing, f.send);
+  await new FederationCommercialWorker(...args).tick();
+  expect(await f.read()).toMatchObject({
+    state: "received",
+    receiptJws: received?.acceptanceJws,
+    leaseToken: null,
+    lastError: null,
+  });
+  expect(f.bodies).toEqual([f.original.openingJws, f.original.openingJws]);
+  expect(await f.received()).toEqual(received);
+  expect(
+    (
+      await db
+        .select()
+        .from(federationDisputes)
+        .where(eq(federationDisputes.caseId, f.caseDraft.caseId))
+    ).map((r) => r.state),
+  ).toEqual(["FREEZE_PENDING", "FREEZE_PENDING"]);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, f.caseDraft.caseId),
+          eq(auditLog.action, "federation.dispute.delivered"),
+        ),
+      ),
+  ).toHaveLength(1);
+  const peerDelivery = new FederationDisputeDelivery(db, f.provider.signing, f.send);
+  await peerDelivery.discover();
+  expect(await peerDelivery.advanceNext()).toBe(false);
+});
+
+test("dispute delivery concurrent workers share one lease and an expired late response cannot overwrite recovery", async () => {
+  const f = await disputeDeliveryFixture(),
+    entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  const slow = new FederationDisputeDelivery(db, f.source.signing, async (...args) => {
+    const receipt = await f.send(...args);
+    entered.resolve();
+    await release.promise;
+    return receipt;
+  });
+  await slow.discover();
+  const pending = slow.advanceNext();
+  try {
+    await entered.promise;
+    expect(await f.delivery.advanceNext()).toBe(false);
+    await expect(f.delivery.retry(f.sourceActor, f.revisionId, f.caseDraft.caseId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await db
+      .update(federationDisputeDeliveries)
+      .set({ leaseUntil: new Date(0) })
+      .where(f.key);
+    expect(await f.delivery.advanceNext()).toBe(true);
+    const recovered = await f.read();
+    expect(recovered?.state).toBe("received");
+    release.resolve();
+    await pending;
+    expect(await f.read()).toEqual(recovered);
+    expect(f.bodies).toEqual([f.original.openingJws, f.original.openingJws]);
+  } finally {
+    release.resolve();
+    await pending;
+  }
+});
+
+test("dispute delivery rejects receipts with wrong identities, digest, case or time and refuses missing receipt authority", async () => {
+  const f = await disputeDeliveryFixture();
+  const receipt = CommercialDisputeReceiptSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute-receipt",
+    caseId: f.caseDraft.caseId,
+    caseDigest: f.original.digest,
+    openingSiteId: f.source.signing.siteId,
+    receivingSiteId: f.provider.signing.siteId,
+    recordedAt: new Date().toISOString(),
+  });
+  await f.delivery.discover();
+  for (const patch of [
+    { caseId: randomUUID() },
+    { caseDigest: `sha256:${"f".repeat(64)}` },
+    { openingSiteId: randomUUID() },
+    { receivingSiteId: randomUUID() },
+    { recordedAt: new Date(0).toISOString() },
+    { recordedAt: new Date(Date.now() + 120000).toISOString() },
+  ]) {
+    await f.delivery.retry(f.sourceActor, f.revisionId, f.caseDraft.caseId);
+    const service = new FederationDisputeDelivery(db, f.source.signing, async () =>
+      signFederationMessage(
+        CommercialDisputeReceiptSchema,
+        { ...receipt, ...patch },
+        f.provider.signing,
+      ),
+    );
+    await service.advanceNext();
+    expect(await f.read()).toMatchObject({
+      state: "needs_review",
+      receiptJws: null,
+      lastError: "OPERATION_CONFLICT",
+    });
+  }
+  await f.delivery.retry(f.sourceActor, f.revisionId, f.caseDraft.caseId);
+  const service = new FederationDisputeDelivery(db, f.source.signing, async () => {
+    const jws = await signFederationMessage(
+      CommercialDisputeReceiptSchema,
+      receipt,
+      f.provider.signing,
+    );
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'commercial-dispute-receipt'`,
+      })
+      .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+    return jws;
+  });
+  await service.advanceNext();
+  expect(await f.read()).toMatchObject({
+    state: "needs_review",
+    receiptJws: null,
+    lastError: "UNTRUSTED_IDENTITY",
+  });
+});
+
+test("dispute delivery rechecks endpoint and signing-key revocation after network I/O", async () => {
+  for (const change of ["endpoint", "key"] as const) {
+    const f = await disputeDeliveryFixture();
+    const service = new FederationDisputeDelivery(db, f.source.signing, async (...args) => {
+      const jws = await f.send(...args);
+      if (change === "endpoint")
+        await db
+          .update(federationSites)
+          .set({ endpoint: "https://changed.example.invalid" })
+          .where(eq(federationSites.id, f.provider.signing.siteId));
+      else
+        await db
+          .update(federationSigningKeys)
+          .set({ revokedAt: new Date() })
+          .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+      return jws;
+    });
+    await service.discover();
+    await service.advanceNext();
+    expect(await f.read()).toMatchObject({
+      state: "needs_review",
+      receiptJws: null,
+      lastError: "UNTRUSTED_IDENTITY",
+    });
+    expect((await f.received())?.acceptanceJws).toBeTruthy();
+  }
+});
+
+test("dispute delivery audit failure rolls back the saved receipt and recovers the peer's original receipt", async () => {
+  const f = await disputeDeliveryFixture();
+  await f.delivery.discover();
+  await db.execute(
+    sql.raw(
+      "ALTER TABLE audit_log ADD CONSTRAINT dispute_delivery_audit_failure CHECK (action <> 'federation.dispute.delivered') NOT VALID",
+    ),
+  );
+  try {
+    await f.delivery.advanceNext();
+  } finally {
+    await db.execute(
+      sql.raw("ALTER TABLE audit_log DROP CONSTRAINT dispute_delivery_audit_failure"),
+    );
+  }
+  expect(await f.read()).toMatchObject({
+    state: "pending",
+    receiptJws: null,
+    acknowledgedAt: null,
+    lastError: "DELIVERY_RETRY",
+  });
+  const receipt = (await f.received())?.acceptanceJws;
+  await f.due();
+  await f.delivery.advanceNext();
+  expect(await f.read()).toMatchObject({ state: "received", receiptJws: receipt });
+  await expect(f.delivery.retry(f.sourceActor, f.revisionId, f.caseDraft.caseId)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  for (const patch of [
+    { receiptJws: null },
+    { acknowledgedAt: null },
+    { state: "pending" },
+    { leaseToken: randomUUID(), leaseUntil: new Date() },
+  ])
+    await expect(
+      Promise.resolve(db.update(federationDisputeDeliveries).set(patch).where(f.key)),
+    ).rejects.toThrow();
+});
+
+test("dispute delivery missing remote original returns retryable HTTP and later resumes", async () => {
+  const f = await disputeDeliveryFixture();
+  const [report] = await db
+    .delete(federationUsageReports)
+    .where(eq(federationUsageReports.id, f.report.reportId))
+    .returning();
+  if (!report) throw new Error("Missing usage fixture");
+  await f.delivery.discover();
+  const ingress = createFederationIngress(db, f.provider.signing);
+  const response = await ingress.request("/federation/v1/disputes", {
+    method: "POST",
+    headers: { "content-type": "application/jose", "x-kq-federation-cert": f.fingerprint },
+    body: f.original.openingJws,
+  });
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({ error: { code: "DATA_WAITING" } });
+  await f.delivery.advanceNext();
+  expect(await f.read()).toMatchObject({ state: "pending", lastError: "DELIVERY_UNAVAILABLE" });
+  await db.insert(federationUsageReports).values(report);
+  await f.due();
+  await f.delivery.advanceNext();
+  expect((await f.read())?.state).toBe("received");
+});
+
+test("dispute delivery no transport leaves discovery idle and exposes no signature or internal lease", async () => {
+  const f = await disputeDeliveryFixture(),
+    disabled = new FederationDisputeDelivery(db, f.source.signing);
+  await disabled.discover();
+  expect(await disabled.advanceNext()).toBe(false);
+  expect(await disabled.status(f.sourceActor, f.revisionId, f.caseDraft.caseId)).toEqual({
+    enabled: false,
+    sync: null,
+  });
+  await expect(disabled.retry(f.sourceActor, f.revisionId, f.caseDraft.caseId)).rejects.toThrow(
+    "ASSET_UNAVAILABLE",
+  );
+  await f.delivery.discover();
+  await expect(f.delivery.status(f.actor, f.revisionId, f.caseDraft.caseId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await expect(f.delivery.retry(f.actor, f.revisionId, f.caseDraft.caseId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await expect(f.delivery.status(f.sourceActor, randomUUID(), f.caseDraft.caseId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  const permissions = new FederationPermissionService(db);
+  await permissions.set(
+    { ...f.sourceActor, capability: "dispute.read", enabled: true },
+    f.sourceActor.userId,
+  );
+  await permissions.set(
+    { ...f.sourceActor, capability: "dispute.open", enabled: false },
+    f.sourceActor.userId,
+  );
+  const status = await f.delivery.status(f.sourceActor, f.revisionId, f.caseDraft.caseId);
+  expect(Object.keys(status.sync ?? {}).sort()).toEqual([
+    "acknowledgedAt",
+    "lastError",
+    "nextAttemptAt",
+    "state",
+  ]);
+  await expect(f.delivery.retry(f.sourceActor, f.revisionId, f.caseDraft.caseId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await permissions.set(
+    { ...f.sourceActor, capability: "dispute.read", enabled: false },
+    f.sourceActor.userId,
+  );
+  await expect(f.delivery.status(f.sourceActor, f.revisionId, f.caseDraft.caseId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+});
+
+test("dispute delivery human routes retain case scope, strict retry input and read-only permission", async () => {
+  const f = await disputeDeliveryFixture();
+  await f.delivery.discover();
+  const args: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.source.signing),
+    new FederationCommercialSubmissionService(db, f.source.signing.siteId),
+  ];
+  args[24] = f.delivery;
+  const app = new Hono<{ Variables: { principal: BoundPrincipal; automation: boolean } }>();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  let actor = f.sourceActor,
+    automation = false;
+  app.use("*", async (ctx, next) => {
+    ctx.set("principal", {
+      sub: actor.userId,
+      userId: actor.userId,
+      orgId: actor.orgId,
+      orgIds: [actor.orgId],
+      role: "platform_admin",
+      email: "fixture@example.invalid",
+      memberships: [{ orgId: actor.orgId, role: "owner" }],
+      capabilities: [],
+    });
+    ctx.set("automation", automation);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...args));
+  const path = `/federation/commercial-agreements/${f.revisionId}/disputes/${f.caseDraft.caseId}/delivery`;
+  const retry = (body = "{}") =>
+    app.request(`${path}/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+  const view = await app.request(path);
+  expect(view.status).toBe(200);
+  expect(view.headers.get("cache-control")).toBe("no-store");
+  expect((await retry('{"state":"received"}')).status).toBe(400);
+  expect((await retry()).status).toBe(200);
+  await new FederationPermissionService(db).set(
+    { ...f.sourceActor, capability: "dispute.read", enabled: true },
+    actor.userId,
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.sourceActor, capability: "dispute.open", enabled: false },
+    actor.userId,
+  );
+  expect((await retry()).status).toBe(403);
+  expect((await app.request(path)).status).toBe(200);
+  actor = f.actor;
+  expect((await app.request(path)).status).toBe(403);
+  automation = true;
+  expect((await app.request(path)).status).toBe(403);
+});
+
+test("dispute delivery validates the original before sending and rejects a replaced source after sending", async () => {
+  const f = await disputeDeliveryFixture();
+  const caseKey = and(
+    eq(federationDisputes.localSiteId, f.source.signing.siteId),
+    eq(federationDisputes.caseId, f.caseDraft.caseId),
+  );
+  await f.delivery.discover();
+  await db
+    .update(federationDisputes)
+    .set({ payload: { ...f.caseDraft, reason: "Unsigned replacement" } })
+    .where(caseKey);
+  await f.delivery.advanceNext();
+  expect(f.bodies).toHaveLength(0);
+  expect(await f.read()).toMatchObject({
+    state: "needs_review",
+    lastError: "OPERATION_CONFLICT",
+    receiptJws: null,
+  });
+  await db.update(federationDisputes).set({ payload: f.caseDraft }).where(caseKey);
+  await f.delivery.retry(f.sourceActor, f.revisionId, f.caseDraft.caseId);
+  const changed = { ...f.caseDraft, reason: "A separately signed replacement" };
+  const changedJws = await signFederationMessage(
+    CommercialDisputeSchema,
+    changed,
+    f.source.signing,
+  );
+  const changedSigned = await verifyFederationMessage(
+    CommercialDisputeSchema,
+    changedJws,
+    await f.trust.resolveKey(f.source.signing.siteId, f.source.signing.keyId, new Date()),
+    new Date(),
+  );
+  const replacing = new FederationDisputeDelivery(db, f.source.signing, async (...args) => {
+    const receipt = await f.send(...args);
+    await db
+      .update(federationDisputes)
+      .set({ payload: changed, openingJws: changedJws, digest: changedSigned.digest })
+      .where(caseKey);
+    return receipt;
+  });
+  await replacing.advanceNext();
+  expect(await f.read()).toMatchObject({
+    state: "needs_review",
+    lastError: "OPERATION_CONFLICT",
+    receiptJws: null,
+  });
+  expect((await f.received())?.digest).toBe(f.original.digest);
 });

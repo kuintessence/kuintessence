@@ -1429,6 +1429,47 @@ export const federationDisputes = pgTable(
   ],
 );
 
+/** A receipt proves delivery only; financial freeze reconciliation remains on the case. */
+export const federationDisputeDeliveries = pgTable(
+  "federation_dispute_deliveries",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    receiptJws: text("receipt_jws"),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.caseId] }),
+    foreignKey({
+      name: "federation_dispute_delivery_case_fk",
+      columns: [t.localSiteId, t.caseId],
+      foreignColumns: [federationDisputes.localSiteId, federationDisputes.caseId],
+    }),
+    index("federation_dispute_delivery_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "federation_dispute_delivery_state",
+      sql`${t.state} IN ('pending','received','needs_review')`,
+    ),
+    check(
+      "federation_dispute_delivery_lease",
+      sql`
+      (${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)
+      AND (${t.state} = 'pending' OR ${t.leaseToken} IS NULL)`,
+    ),
+    check(
+      "federation_dispute_delivery_receipt",
+      sql`
+      (${t.state} = 'received') = (${t.receiptJws} IS NOT NULL)
+      AND (${t.receiptJws} IS NULL) = (${t.acknowledgedAt} IS NULL)`,
+    ),
+  ],
+);
+
 /** Policy originals and signatures survive revocation; this table conveys no money authority. */
 export const federationDisclosurePolicies = pgTable(
   "federation_disclosure_policies",
