@@ -49,7 +49,10 @@ import type {
   CommercialUsageGap,
 } from "@kuintessence/shared/federation/commercial";
 import type { CommercialDisclosure } from "@kuintessence/shared/federation/disclosure";
-import type { CommercialDisclosurePolicy } from "@kuintessence/shared/federation/disclosure-authorization";
+import type {
+  CommercialDisclosurePolicy,
+  CommercialDisclosureReadQuery,
+} from "@kuintessence/shared/federation/disclosure-authorization";
 import type {
   CommercialDispute,
   CommercialDisputeFinancialView,
@@ -143,6 +146,8 @@ export const federationSigningKeys = pgTable(
           | "commercial-payment"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
+          | "commercial-disclosure-read-query"
+          | "commercial-disclosure-read-authorization"
           | "commercial-dispute"
           | "commercial-dispute-receipt"
           | "commercial-dispute-freeze"
@@ -3471,6 +3476,35 @@ export const federationMediaHandoffs = pgTable(
     check(
       "federation_media_handoff_identity",
       sql`(${t.version} > 1 AND ${t.payload}->>'eventId' = ${t.eventId}::text AND (${t.payload}->>'expectedVersion')::int = ${t.version} - 1 AND ${t.payload}->>'state' IN ('dispatched','received','returning','returned','closed','cancelled','lost','damaged')) IS TRUE`,
+    ),
+  ],
+);
+
+/** Durable original authorization responses; later reads must still check current revocation. */
+export const federationDisclosureReadAuthorizations = pgTable(
+  "federation_disclosure_read_authorizations",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    queryId: uuid("query_id").notNull(),
+    grantId: uuid("grant_id").notNull(),
+    query: jsonb("query").$type<CommercialDisclosureReadQuery>().notNull(),
+    queryDigest: varchar("query_digest", { length: 71 }).notNull(),
+    responseJws: text("response_jws").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.queryId] }),
+    foreignKey({
+      name: "federation_disclosure_read_grant_fk",
+      columns: [t.localSiteId, t.grantId],
+      foreignColumns: [federationDisclosures.localSiteId, federationDisclosures.grantId],
+    }),
+    check(
+      "federation_disclosure_read_identity",
+      sql`(${t.query}->>'kind' = 'commercial-disclosure-read-query'
+    AND ${t.query}->>'recipientSiteId' = ${t.localSiteId}::text AND ${t.query}->>'queryId' = ${t.queryId}::text
+    AND ${t.query}->'scope'->>'grantId' = ${t.grantId}::text) IS TRUE`,
     ),
   ],
 );

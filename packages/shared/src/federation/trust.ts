@@ -50,6 +50,8 @@ export const FederationKeyInput = z
           "commercial-payment",
           "commercial-disclosure-policy",
           "commercial-disclosure",
+          "commercial-disclosure-read-query",
+          "commercial-disclosure-read-authorization",
           "commercial-dispute",
           "commercial-dispute-receipt",
           "commercial-dispute-freeze",
@@ -83,7 +85,7 @@ export const FederationKeyInput = z
         ]),
       )
       .min(1)
-      .max(54),
+      .max(56),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

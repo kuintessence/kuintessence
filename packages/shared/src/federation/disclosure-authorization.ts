@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { federationCanonicalJson } from "./assets";
 import { CommercialAgreementEnvelopeSchema } from "./commercial";
 import {
   type CommercialDisclosureGrant,
@@ -12,6 +13,7 @@ import {
   federationMessageKeyId,
   verifyFederationMessage,
 } from "./signatures";
+import { assertFederationStatusQueryFresh } from "./status";
 
 const selection = { recordType: true, fields: true } as const;
 const selections = CommercialDisclosureGrantSchema.options;
@@ -219,4 +221,86 @@ export async function verifyCommercialDisclosure(
     if (error instanceof FederationError) throw error;
     throw new FederationError("INVALID_MESSAGE");
   }
+}
+
+/** Exact evidence selection; hashes bind fields/values without transporting them. */
+export const CommercialDisclosureReadScopeSchema = z
+  .strictObject({
+    grantId: z.uuid(),
+    disclosureDigest: FederationDigestSchema,
+    caseId: z.uuid(),
+    policyId: z.uuid(),
+    policyDigest: FederationDigestSchema,
+    domainId: z.uuid(),
+    agreementRevisionId: z.uuid(),
+    agreementDigest: FederationDigestSchema,
+    sourceSiteId: z.uuid(),
+    targetSiteId: z.uuid(),
+    evidenceRecipientSiteId: z.uuid(),
+  })
+  .refine((v) => new Set([v.sourceSiteId, v.targetSiteId, v.evidenceRecipientSiteId]).size === 3);
+export type CommercialDisclosureReadScope = z.infer<typeof CommercialDisclosureReadScopeSchema>;
+const readIdentity = {
+  protocolVersion: z.literal(1),
+  readId: z.uuid(),
+  queryId: z.uuid(),
+  senderSiteId: z.uuid(),
+  recipientSiteId: z.uuid(),
+  scope: CommercialDisclosureReadScopeSchema,
+  issuedAt: z.iso.datetime(),
+  expiresAt: z.iso.datetime(),
+};
+const readWindow = (v: { issuedAt: string; expiresAt: string }) => {
+  const duration = Date.parse(v.expiresAt) - Date.parse(v.issuedAt);
+  return duration > 0 && duration <= 30000;
+};
+export const CommercialDisclosureReadQuerySchema = z
+  .strictObject({
+    ...readIdentity,
+    kind: z.literal("commercial-disclosure-read-query"),
+  })
+  .refine(
+    (v) =>
+      readWindow(v) &&
+      v.senderSiteId === v.scope.evidenceRecipientSiteId &&
+      [v.scope.sourceSiteId, v.scope.targetSiteId].includes(v.recipientSiteId),
+  );
+export type CommercialDisclosureReadQuery = z.infer<typeof CommercialDisclosureReadQuerySchema>;
+export const CommercialDisclosureReadAuthorizationSchema = z
+  .strictObject({
+    ...readIdentity,
+    kind: z.literal("commercial-disclosure-read-authorization"),
+    queryDigest: FederationDigestSchema,
+  })
+  .refine(
+    (v) =>
+      readWindow(v) &&
+      v.recipientSiteId === v.scope.evidenceRecipientSiteId &&
+      [v.scope.sourceSiteId, v.scope.targetSiteId].includes(v.senderSiteId),
+  );
+export type CommercialDisclosureReadAuthorization = z.infer<
+  typeof CommercialDisclosureReadAuthorizationSchema
+>;
+
+/** A short-lived observation, never permission to skip revocation checks at material delivery. */
+export function assertCommercialDisclosureReadAuthorization(
+  query: CommercialDisclosureReadQuery,
+  queryDigest: string,
+  authorization: CommercialDisclosureReadAuthorization,
+  now: Date,
+) {
+  assertFederationStatusQueryFresh(query, now);
+  assertFederationStatusQueryFresh(authorization, now);
+  if (
+    authorization.senderSiteId !== query.recipientSiteId ||
+    authorization.recipientSiteId !== query.senderSiteId ||
+    authorization.queryId !== query.queryId ||
+    authorization.readId !== query.readId ||
+    authorization.queryDigest !== queryDigest ||
+    federationCanonicalJson(authorization.scope) !== federationCanonicalJson(query.scope) ||
+    Date.parse(authorization.expiresAt) > Date.parse(query.expiresAt) ||
+    Date.parse(authorization.issuedAt) > now.getTime() ||
+    Date.parse(authorization.issuedAt) < Date.parse(query.issuedAt) - 60000
+  )
+    throw new FederationError("INVALID_MESSAGE");
 }

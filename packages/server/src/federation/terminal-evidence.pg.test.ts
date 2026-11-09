@@ -32,6 +32,7 @@ import {
   federationCommercialSettlements,
   federationCommercialSubmissions,
   federationDisclosurePolicies,
+  federationDisclosureReadAuthorizations,
   federationDisclosures,
   federationDisputeDeliveries,
   federationDisputeFreezes,
@@ -83,6 +84,10 @@ import {
   CommercialDisclosureSchema,
 } from "@kuintessence/shared/federation/disclosure";
 import {
+  CommercialDisclosureReadQuerySchema,
+  CommercialDisclosureReadScopeSchema,
+} from "@kuintessence/shared/federation/disclosure-authorization";
+import {
   CommercialDisputeFinancialViewSchema,
   CommercialDisputeFreezeSchema,
   CommercialDisputeListSchema,
@@ -119,6 +124,10 @@ import { FederationCommercialSubmissionService } from "./commercial-submissions"
 import { FederationCommercialWorker } from "./commercial-worker";
 import { FederationDisclosureService } from "./disclosure";
 import { FederationDisclosurePolicyService } from "./disclosure-policy";
+import {
+  FederationDisclosureReadClient,
+  FederationDisclosureReadResponder,
+} from "./disclosure-read";
 import { FederationDisputeDelivery } from "./dispute-delivery";
 import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
 import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
@@ -10906,3 +10915,302 @@ for (const kind of ["disclosure-policy", "disclosure"] as const) {
     ).toHaveLength(1);
   });
 }
+
+async function disclosureReadFixture() {
+  const f = await disclosureFixture(),
+    keys = await testKeys(f.recipient);
+  const fingerprint = randomUUID().replaceAll("-", "").repeat(2);
+  cleanup.push(async () => {
+    const sites = [f.source.signing.siteId, f.provider.signing.siteId];
+    await db
+      .delete(federationDisclosureReadAuthorizations)
+      .where(inArray(federationDisclosureReadAuthorizations.localSiteId, sites));
+    await db.delete(auditLog).where(
+      inArray(
+        auditLog.actor,
+        sites.map((site) => `disclosure-read:${site}`),
+      ),
+    );
+    await db
+      .delete(federationCertificates)
+      .where(eq(federationCertificates.fingerprint, fingerprint));
+    await db.delete(federationSigningKeys).where(eq(federationSigningKeys.siteId, f.recipient));
+  });
+  await f.confirm(f.value);
+  await f.trust.addKey(
+    f.recipient,
+    {
+      keyId: keys.signing.keyId,
+      publicKeyPem: await exportSPKI(keys.verification.publicKey),
+      allowedKinds: ["commercial-disclosure-read-query"],
+      validFrom: "2020-01-01T00:00:00Z",
+      validUntil: "2099-01-01T00:00:00Z",
+    },
+    f.actor.userId,
+  );
+  await db.insert(federationCertificates).values({
+    fingerprint,
+    siteId: f.recipient,
+    certificatePem: "Authenticated recipient fixture; separate TLS suite tests certificates",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2099-01-01"),
+  });
+  for (const site of [f.source.signing.siteId, f.provider.signing.siteId])
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-disclosure-read-authorization"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, site));
+  const [record] = (await f.service.list(f.sourceActor, f.revisionId)).data;
+  if (!record) throw new Error("Missing approved material");
+  const g = record.payload.grant;
+  const scope = CommercialDisclosureReadScopeSchema.parse({
+    grantId: g.grantId,
+    disclosureDigest: record.digest,
+    caseId: g.caseId,
+    policyId: g.policyId,
+    policyDigest: g.policyDigest,
+    domainId: g.domainId,
+    agreementRevisionId: g.agreementRevisionId,
+    agreementDigest: f.policy.agreementDigest,
+    sourceSiteId: g.sourceSiteId,
+    targetSiteId: g.targetSiteId,
+    evidenceRecipientSiteId: g.recipientSiteId,
+  });
+  const a = new FederationDisclosureReadResponder(db, f.source.signing),
+    b = new FederationDisclosureReadResponder(db, f.provider.signing);
+  const transport: { afterResponse?: (jws: string, site: string) => Promise<string> } = {};
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/disclosure-authorizations");
+    const query = await verifyFederationMessage(
+      CommercialDisclosureReadQuerySchema,
+      jws,
+      { ...keys.verification, allowedKinds: ["commercial-disclosure-read-query"] },
+      new Date(),
+    );
+    const responder = query.payload.recipientSiteId === f.source.signing.siteId ? a : b;
+    const response = await responder.receive(jws, fingerprint);
+    return transport.afterResponse
+      ? transport.afterResponse(response, query.payload.recipientSiteId)
+      : response;
+  };
+  const client = new FederationDisclosureReadClient(db, keys.signing, send);
+  const query = async (patch = {}) => {
+    const now = new Date();
+    return signFederationMessage(
+      CommercialDisclosureReadQuerySchema,
+      CommercialDisclosureReadQuerySchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-disclosure-read-query",
+        readId: randomUUID(),
+        queryId: randomUUID(),
+        senderSiteId: f.recipient,
+        recipientSiteId: f.source.signing.siteId,
+        scope,
+        issuedAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + 30000).toISOString(),
+        ...patch,
+      }),
+      keys.signing,
+    );
+  };
+  const rows = () =>
+    db
+      .select()
+      .from(federationDisclosureReadAuthorizations)
+      .where(eq(federationDisclosureReadAuthorizations.grantId, scope.grantId));
+  return { ...f, keys, fingerprint, scope, a, b, client, query, rows, send, transport };
+}
+
+test("disclosure read obtains both current independent authorizations without private values or new ledger work", async () => {
+  const f = await disclosureReadFixture(),
+    budget = await f.budget();
+  const pair = await f.client.request(f.scope);
+  expect(pair.authorizations).toHaveLength(2);
+  expect(pair.authorizations.map((v) => v.authorization.senderSiteId)).toEqual([
+    f.source.signing.siteId,
+    f.provider.signing.siteId,
+  ]);
+  for (const item of pair.authorizations) {
+    expect(item.authorization.readId).toBe(pair.readId);
+    expect(item.authorization.scope).toEqual(f.scope);
+    expect(Object.keys(item.authorization)).not.toContain("values");
+    expect(Object.keys(item.authorization)).not.toContain("approvalJws");
+    expect(
+      Date.parse(item.authorization.expiresAt) - Date.parse(item.authorization.issuedAt),
+    ).toBeLessThanOrEqual(30000);
+  }
+  expect(await f.rows()).toHaveLength(2);
+  expect(await f.budget()).toEqual(budget);
+});
+
+test("disclosure read replay and service restart preserve original signature and audit but recheck revocation", async () => {
+  const f = await disclosureReadFixture(),
+    query = await f.query();
+  const [a, b] = await Promise.all([
+    f.a.receive(query, f.fingerprint),
+    f.a.receive(query, f.fingerprint),
+  ]);
+  expect(a).toBe(b);
+  const restarted = new FederationDisclosureReadResponder(db, f.source.signing);
+  expect(await restarted.receive(query, f.fingerprint)).toBe(a);
+  expect(await f.rows()).toHaveLength(1);
+  const row = (await f.rows())[0];
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.target, row?.queryId ?? "")),
+  ).toHaveLength(1);
+  await f.service.revoke(f.sourceActor, f.revisionId, f.scope.grantId);
+  await expect(restarted.receive(query, f.fingerprint)).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  expect((await f.rows())[0]?.responseJws).toBe(a);
+});
+
+for (const changed of ["policy", "grant", "purpose", "recipient", "case"] as const) {
+  test(`disclosure read refuses ${changed} invalidation even with historical dual approval`, async () => {
+    const f = await disclosureReadFixture();
+    if (changed === "policy")
+      await f.providerPolicy.revoke(f.actor, f.revisionId, f.scope.policyId);
+    else if (changed === "grant") await f.peer.revoke(f.actor, f.revisionId, f.scope.grantId);
+    else if (changed === "purpose")
+      await db
+        .update(federationSigningKeys)
+        .set({
+          allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'commercial-disclosure-read-authorization'`,
+        })
+        .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+    else if (changed === "recipient")
+      await db
+        .update(federationSites)
+        .set({ state: "suspended" })
+        .where(eq(federationSites.id, f.recipient));
+    else
+      await db
+        .update(federationDisputes)
+        .set({ state: "RESOLVED" })
+        .where(
+          and(
+            eq(federationDisputes.localSiteId, f.provider.signing.siteId),
+            eq(federationDisputes.caseId, f.scope.caseId),
+          ),
+        );
+    await expect(f.client.request(f.scope)).rejects.toThrow();
+  });
+}
+
+test("disclosure read binds full scope and request identity rather than accepting a known grant ID", async () => {
+  const f = await disclosureReadFixture();
+  for (const field of ["caseId", "policyId", "agreementRevisionId", "domainId"] as const)
+    await expect(
+      f.a.receive(await f.query({ scope: { ...f.scope, [field]: randomUUID() } }), f.fingerprint),
+    ).rejects.toThrow();
+  for (const field of ["disclosureDigest", "policyDigest", "agreementDigest"] as const)
+    await expect(
+      f.a.receive(
+        await f.query({ scope: { ...f.scope, [field]: `sha256:${"d".repeat(64)}` } }),
+        f.fingerprint,
+      ),
+    ).rejects.toThrow();
+  const queryId = randomUUID();
+  await f.a.receive(await f.query({ queryId }), f.fingerprint);
+  await expect(f.a.receive(await f.query({ queryId }), f.fingerprint)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  expect(await f.rows()).toHaveLength(1);
+});
+
+test("disclosure read client refuses unavailable parties and responses bound to another read", async () => {
+  const f = await disclosureReadFixture();
+  const prior = await f.client.request(f.scope);
+  const offline = new FederationDisclosureReadClient(db, f.keys.signing, async () => {
+    throw new Error("Peer offline");
+  });
+  await expect(offline.request(f.scope)).rejects.toThrow("Peer offline");
+  f.transport.afterResponse = async (_response, site) =>
+    prior.authorizations.find((v) => v.authorization.senderSiteId === site)?.authorizationJws ?? "";
+  await expect(f.client.request(f.scope)).rejects.toThrow("INVALID_MESSAGE");
+});
+
+for (const changed of ["endpoint", "purpose", "expiry"] as const) {
+  test(`disclosure read client rechecks ${changed} after both network replies`, async () => {
+    const f = await disclosureReadFixture();
+    f.transport.afterResponse = async (response, site) => {
+      if (site === f.provider.signing.siteId) {
+        if (changed === "endpoint")
+          await db
+            .update(federationSites)
+            .set({ endpoint: "https://changed.test.invalid" })
+            .where(eq(federationSites.id, site));
+        else if (changed === "purpose")
+          await db
+            .update(federationSigningKeys)
+            .set({
+              allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'commercial-disclosure-read-authorization'`,
+            })
+            .where(eq(federationSigningKeys.siteId, site));
+        else setSystemTime(new Date(Date.now() + 31000));
+      }
+      return response;
+    };
+    try {
+      await expect(f.client.request(f.scope)).rejects.toThrow();
+    } finally {
+      setSystemTime();
+    }
+  });
+}
+
+test("disclosure read authorization expiry is bounded by recipient key lifetime", async () => {
+  const f = await disclosureReadFixture();
+  const until = new Date(Date.now() + 15000);
+  await db
+    .update(federationSigningKeys)
+    .set({ validUntil: until })
+    .where(eq(federationSigningKeys.siteId, f.recipient));
+  const pair = await f.client.request(f.scope);
+  for (const item of pair.authorizations)
+    expect(Date.parse(item.authorization.expiresAt)).toBeLessThanOrEqual(until.getTime());
+});
+
+test("disclosure read audit failure leaves no issued authorization and retries the same request", async () => {
+  const f = await disclosureReadFixture(),
+    query = await f.query();
+  await db.execute(
+    sql`ALTER TABLE audit_log ADD CONSTRAINT disclosure_read_audit_fixture CHECK (action <> 'federation.disclosure.read_authorization') NOT VALID`,
+  );
+  try {
+    await expect(f.a.receive(query, f.fingerprint)).rejects.toThrow();
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT disclosure_read_audit_fixture`);
+  }
+  expect(await f.rows()).toHaveLength(0);
+  await f.a.receive(query, f.fingerprint);
+  expect(await f.rows()).toHaveLength(1);
+});
+
+test("disclosure read production ingress requires certificate identity and dedicated recipient signing purpose", async () => {
+  const f = await disclosureReadFixture(),
+    query = await f.query();
+  const ingress = createFederationIngress(db, f.source.signing);
+  const post = (fingerprint?: string) =>
+    ingress.request("/federation/v1/disclosure-authorizations", {
+      method: "POST",
+      body: query,
+      headers: {
+        "content-type": "application/jose",
+        ...(fingerprint ? { "x-kq-federation-cert": fingerprint } : {}),
+      },
+    });
+  expect((await post()).status).toBe(401);
+  expect((await post(f.providerFingerprint)).status).toBe(401);
+  const response = await post(f.fingerprint);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-disclosure"] })
+    .where(eq(federationSigningKeys.siteId, f.recipient));
+  expect((await post(f.fingerprint)).status).toBe(401);
+});

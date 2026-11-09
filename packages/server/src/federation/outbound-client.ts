@@ -13,6 +13,7 @@ export type FederationSend = (
   path?:
     | "/federation/v1/dispute-freezes"
     | "/federation/v1/disputes"
+    | "/federation/v1/disclosure-authorizations"
     | "/federation/v1/delegations"
     | "/federation/v1/agreement-approvals"
     | "/federation/v1/commercial-approvals"
@@ -45,6 +46,7 @@ export function createFederationSender(tls: {
     if (
       path !== "/federation/v1/dispute-freezes" &&
       path !== "/federation/v1/disputes" &&
+      path !== "/federation/v1/disclosure-authorizations" &&
       path !== "/federation/v1/delegations" &&
       path !== "/federation/v1/agreement-approvals" &&
       path !== "/federation/v1/commercial-approvals" &&

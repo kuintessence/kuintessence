@@ -110,6 +110,8 @@
       "commercial-payment": "External payment receipt",
       "commercial-disclosure-policy": "Evidence disclosure policy",
       "commercial-disclosure": "Evidence disclosure approval",
+      "commercial-disclosure-read-query": "Evidence read query",
+      "commercial-disclosure-read-authorization": "Evidence read authorization",
       "commercial-dispute": "Dispute opening",
       "commercial-dispute-receipt": "Dispute receipt",
       "commercial-dispute-freeze": "Dispute financial freeze"

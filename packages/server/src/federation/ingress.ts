@@ -9,6 +9,7 @@ import { FederationCancellationReceiver } from "./cancellation";
 import { FederationClosingAutomation } from "./closing-automation";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationDatasetUseResponder } from "./dataset-use-exchange";
+import { FederationDisclosureReadResponder } from "./disclosure-read";
 import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
 import { FederationDisputeService } from "./disputes";
 import type { FederationDownloadStorage } from "./download-credential";
@@ -277,6 +278,18 @@ export function createFederationIngress(
         return c.json({ error: { code: "DATA_WAITING" } }, 503);
       throw error;
     }
+  });
+  r.post("/federation/v1/disclosure-authorizations", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const response = await new FederationDisclosureReadResponder(db, signingKey).receive(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(response, 200, {
+      "content-type": "application/jose",
+      "cache-control": "no-store",
+    });
   });
   r.post("/federation/v1/commercial-approvals", async (c) => {
     if (c.req.header("content-type") !== "application/jose")
