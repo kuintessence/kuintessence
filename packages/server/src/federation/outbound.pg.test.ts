@@ -21,6 +21,7 @@ import {
   federationMediaExportOperations,
   federationMediaExports,
   federationMediaImportAuthorizations,
+  federationMediaImportOperations,
   federationMediaKeyGrants,
   federationMediaPackages,
   federationOutbound,
@@ -32,6 +33,7 @@ import {
   federationResultTransfers,
   federationSigningKeys,
   federationSites,
+  federationTaskMediaClaims,
   federationWorkflowBindings,
   federationWorkflowInputExports,
   jobs,
@@ -179,6 +181,21 @@ const sourceFingerprint = "ab".repeat(32);
 const targetFingerprint = "cd".repeat(32);
 
 afterEach(async () => {
+  const mediaAuthorizationIds = db
+    .select({ id: federationMediaImportAuthorizations.authorizationId })
+    .from(federationMediaImportAuthorizations)
+    .where(
+      inArray(federationMediaImportAuthorizations.localSiteId, [
+        a.signing.siteId,
+        b.signing.siteId,
+      ]),
+    );
+  await db
+    .delete(federationTaskMediaClaims)
+    .where(inArray(federationTaskMediaClaims.authorizationId, mediaAuthorizationIds));
+  await db
+    .delete(federationMediaImportOperations)
+    .where(inArray(federationMediaImportOperations.authorizationId, mediaAuthorizationIds));
   await db
     .delete(federationMediaImportAuthorizations)
     .where(
@@ -9375,7 +9392,21 @@ taskMediaTest.each(["task-input", "task-result"] as const)(
         c.set("principal" as never, t.local as never);
         await next();
       });
-      app.route("/api", createFederationMediaRoutes(t.service()));
+      app.route(
+        "/api",
+        createFederationMediaRoutes(
+          t.service(),
+          undefined,
+          undefined,
+          new FederationMediaImportOperations(
+            db,
+            t.signing.siteId,
+            t.service(),
+            t.requester(),
+            clock,
+          ),
+        ),
+      );
       const path = "/api/federation/media/packages";
       const response = await app.request(path, {
         method: "POST",
@@ -9417,16 +9448,13 @@ taskMediaTest.each(["task-input", "task-result"] as const)(
       expect(
         await t.service().approveImport(t.local, t.exported.packageId, t.approval),
       ).toMatchObject({ authorizationId: t.approval.authorizationId });
-      // Local approval is not permission to publish task files through the dataset-only importer.
-      await expect(
-        new FederationMediaImportOperations(
-          db,
-          t.signing.siteId,
-          t.service(),
-          t.requester(),
-          clock,
-        ).start(t.local, t.exported.packageId, t.approval.authorizationId),
-      ).rejects.toThrow("POLICY_DENIED");
+      // HTTP start queues private verification, without publishing original task files.
+      const started = await app.request(
+        `${path}/${t.exported.packageId}/import-authorizations/${t.approval.authorizationId}/run`,
+        { method: "POST" },
+      );
+      expect(started.status).toBe(202);
+      expect(await started.json()).toMatchObject({ data: { state: "queued" } });
     } finally {
       await t.source.release();
     }
@@ -9767,3 +9795,407 @@ taskMediaTest("task target rechecks a rotated recipient query key after network 
     await t.source.release();
   }
 });
+
+async function startedTaskMedia(kind: "task-input" | "task-result") {
+  const t = await taskTargetFixture(kind);
+  await t.service().register(t.local, t.registration);
+  await t.service().approveImport(t.local, t.exported.packageId, t.approval);
+  const operations = (send = t.send) =>
+    new FederationMediaImportOperations(
+      db,
+      t.signing.siteId,
+      t.service(),
+      t.requester(send),
+      clock,
+    );
+  const started = await operations().start(
+    t.local,
+    t.exported.packageId,
+    t.approval.authorizationId,
+  );
+  const prepared = await operations().task(t.approval.agentId, t.approval.authorizationId);
+  const recipient = await generateKeyPair("RSA-OAEP-256");
+  const jwk = await exportJWK(recipient.publicKey);
+  if (!jwk.n || jwk.e !== "AQAB") throw new Error("Expected RSA recipient");
+  const request = {
+    generation: started.generation,
+    authorizationId: t.approval.authorizationId,
+    packageId: t.exported.packageId,
+    manifestDigest: t.exported.manifestDigest,
+    recipientKey: { kty: "RSA" as const, n: jwk.n, e: "AQAB" as const },
+  };
+  const grant = () => operations().grant(t.approval.agentId, request);
+  return { ...t, operations, started, prepared, request, grant };
+}
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task media claim %s survives service recreation and verifies privately without publishing",
+  async (kind) => {
+    const t = await startedTaskMedia(kind);
+    try {
+      const repeated = await Promise.all(
+        [1, 2].map(() =>
+          t.operations().start(t.local, t.exported.packageId, t.approval.authorizationId),
+        ),
+      );
+      expect(repeated.every((value) => value.generation === t.started.generation)).toBe(true);
+      const pending = await t.operations().pending([t.approval.agentId]);
+      expect(pending).toContainEqual({
+        authorizationId: t.approval.authorizationId,
+        agentId: t.approval.agentId,
+      });
+      expect(t.prepared.task).toMatchObject({
+        generation: t.started.generation,
+        signedManifest: t.registration.signedManifest,
+      });
+      const permit = await t.grant();
+      const report = {
+        ...permit.binding,
+        state: "verified" as const,
+        queryDigest: permit.queryDigest,
+        sizeBytes: t.approval.maxBytes,
+      };
+      await t.operations().report(t.approval.agentId, report);
+      await t.operations().report(t.approval.agentId, report);
+      const [saved] = await db
+        .select()
+        .from(federationMediaImportOperations)
+        .where(eq(federationMediaImportOperations.authorizationId, t.approval.authorizationId));
+      expect(saved).toMatchObject({ state: "verified", receipt: { state: "verified-private" } });
+      const [claimed] = await db
+        .select()
+        .from(federationTaskMediaClaims)
+        .where(eq(federationTaskMediaClaims.authorizationId, t.approval.authorizationId));
+      expect(claimed).toMatchObject({
+        generation: t.started.generation,
+        releasedAt: null,
+        taskInputImportId: kind === "task-input" ? t.importId : null,
+        taskResultImportId: kind === "task-result" ? t.importId : null,
+      });
+      const table = kind === "task-input" ? federationInputImports : federationResultImports;
+      const [original] = await db
+        .select({ state: table.state, reservedBytes: table.reservedBytes })
+        .from(table)
+        .where(eq(table.id, t.importId ?? ""));
+      expect(original).toEqual({ state: "pending", reservedBytes: t.approval.maxBytes });
+      expect(await t.operations().pending([t.approval.agentId])).toEqual([]);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task media claim %s rejects a competing approval and retains retry history",
+  async (kind) => {
+    const t = await startedTaskMedia(kind);
+    try {
+      const other = { ...t.approval, authorizationId: crypto.randomUUID() };
+      await t.service().approveImport(t.local, t.exported.packageId, other);
+      await expect(
+        t.operations().start(t.local, t.exported.packageId, other.authorizationId),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+      expect(
+        await db
+          .select()
+          .from(federationMediaImportOperations)
+          .where(eq(federationMediaImportOperations.authorizationId, other.authorizationId)),
+      ).toEqual([]);
+      const failed = {
+        generation: t.started.generation,
+        packageId: t.exported.packageId,
+        authorizationId: t.approval.authorizationId,
+        manifestDigest: t.exported.manifestDigest,
+        state: "failed",
+      };
+      await t.operations().report(t.approval.agentId, failed);
+      const retried = await t
+        .operations()
+        .start(t.local, t.exported.packageId, t.approval.authorizationId);
+      expect(retried.generation).not.toBe(t.started.generation);
+      const claims = await db
+        .select()
+        .from(federationTaskMediaClaims)
+        .where(eq(federationTaskMediaClaims.authorizationId, t.approval.authorizationId));
+      expect(claims).toHaveLength(2);
+      expect(claims.find((claim) => claim.generation === t.started.generation)?.releasedAt).toEqual(
+        clock(),
+      );
+      expect(
+        claims.find((claim) => claim.generation === retried.generation)?.releasedAt,
+      ).toBeNull();
+      await expect(t.grant()).rejects.toThrow("OPERATION_CONFLICT");
+      await expect(t.operations().report(t.approval.agentId, failed)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task media claim %s only replaces revoked approval after old storage is cleaned",
+  async (kind) => {
+    const t = await startedTaskMedia(kind);
+    try {
+      const transferTable =
+        kind === "task-input" ? federationInputTransfers : federationResultTransfers;
+      const [transfer] = await db
+        .select({ id: transferTable.id })
+        .from(transferTable)
+        .where(eq(transferTable.importId, t.importId ?? ""));
+      if (!transfer) throw new Error("Expected original transfer");
+      const attempts = kind === "task-input" ? federationInputAttempts : federationResultAttempts;
+      const generation = crypto.randomUUID();
+      await db.insert(attempts).values({
+        generation,
+        transferId: transfer.id,
+        agentId: t.approval.agentId,
+        state: "cleanup_pending",
+        storageKey: `private-old/${generation}`,
+        leaseUntil: new Date(clock().getTime() + 30_000),
+      });
+      await t
+        .service()
+        .revoke(
+          t.local,
+          t.exported.packageId,
+          { reason: "Replace failed media" },
+          t.approval.authorizationId,
+        );
+      const other = { ...t.approval, authorizationId: crypto.randomUUID() };
+      await t.service().approveImport(t.local, t.exported.packageId, other);
+      await expect(
+        t.operations().start(t.local, t.exported.packageId, other.authorizationId),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+      await db
+        .update(attempts)
+        .set({ state: "cleaned" })
+        .where(eq(attempts.generation, generation));
+      const replacement = await t
+        .operations()
+        .start(t.local, t.exported.packageId, other.authorizationId);
+      expect(replacement.state).toBe("queued");
+      const [previous] = await db
+        .select()
+        .from(federationTaskMediaClaims)
+        .where(eq(federationTaskMediaClaims.authorizationId, t.approval.authorizationId));
+      expect(previous?.releasedAt).toEqual(clock());
+      await expect(t.grant()).rejects.toThrow("POLICY_DENIED");
+      const [original] = await db
+        .select()
+        .from(kind === "task-input" ? federationInputImports : federationResultImports);
+      expect(original?.reservedBytes).toBe(t.approval.maxBytes);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task media claim %s rechecks local revocation after the remote key response",
+  async (kind) => {
+    const t = await startedTaskMedia(kind);
+    try {
+      const send: FederationSend = async (...args) => {
+        const response = await t.send(...args);
+        await t
+          .service()
+          .revoke(
+            t.local,
+            t.exported.packageId,
+            { reason: "Stop import" },
+            t.approval.authorizationId,
+          );
+        return response;
+      };
+      await expect(t.operations(send).grant(t.approval.agentId, t.request)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+      const [saved] = await db
+        .select()
+        .from(federationMediaImportOperations)
+        .where(eq(federationMediaImportOperations.authorizationId, t.approval.authorizationId));
+      expect(saved?.latestGrant).toBeNull();
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task media claim %s fences wrong Agent, stale grant and corrupt report without releasing quota",
+  async (kind) => {
+    const t = await startedTaskMedia(kind);
+    try {
+      await expect(t.operations().task("wrong-agent", t.approval.authorizationId)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+      const grant = await t.grant();
+      const report = {
+        ...grant.binding,
+        state: "verified" as const,
+        queryDigest: grant.queryDigest,
+        sizeBytes: t.approval.maxBytes,
+      };
+      await expect(
+        t.operations().report(t.approval.agentId, { ...report, sizeBytes: report.sizeBytes + 1 }),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+      await t.grant();
+      await expect(t.operations().report(t.approval.agentId, report)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+      const latest = await t.grant();
+      time = new Date(Date.parse(latest.expiresAt) + 1);
+      await expect(
+        t.operations().report(t.approval.agentId, { ...report, queryDigest: latest.queryDigest }),
+      ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+      expect(
+        (await t.operations().status(t.local, t.exported.packageId, t.approval.authorizationId))
+          ?.state,
+      ).toBe("queued");
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task media claim %s serializes competing replacement packages",
+  async (kind) => {
+    const t = await startedTaskMedia(kind);
+    try {
+      await t.operations().report(t.approval.agentId, {
+        generation: t.started.generation,
+        authorizationId: t.approval.authorizationId,
+        packageId: t.exported.packageId,
+        manifestDigest: t.exported.manifestDigest,
+        state: "failed",
+      });
+      const secondPackage = crypto.randomUUID();
+      await t.source
+        .service()
+        .prepare(t.source.local, { ...t.source.input, packageId: secondPackage });
+      const [exported] = await db
+        .select()
+        .from(federationMediaExports)
+        .where(eq(federationMediaExports.packageId, secondPackage));
+      if (!exported) throw new Error("Expected source package");
+      await t.service().register(t.local, {
+        senderSiteId: t.source.signing.siteId,
+        signedManifest: exported.manifestJws,
+      });
+      const candidates = [t.exported.packageId, secondPackage].map((packageId) => ({
+        packageId,
+        approval: { ...t.approval, authorizationId: crypto.randomUUID() },
+      }));
+      for (const candidate of candidates)
+        await t.service().approveImport(t.local, candidate.packageId, candidate.approval);
+      const results = await Promise.allSettled(
+        candidates.map((candidate) =>
+          t.operations().start(t.local, candidate.packageId, candidate.approval.authorizationId),
+        ),
+      );
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure?.status !== "rejected") throw new Error("Expected conflicting claimant");
+      expect(failure.reason instanceof FederationError && failure.reason.code).toBe(
+        "OPERATION_CONFLICT",
+      );
+      const claims = await db.select().from(federationTaskMediaClaims);
+      expect(claims.filter((claim) => !claim.releasedAt)).toHaveLength(1);
+      expect(claims.filter((claim) => claim.releasedAt)).toHaveLength(1);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task media claim audit failure rolls back release and replacement atomically",
+  async () => {
+    const t = await startedTaskMedia("task-input");
+    try {
+      await t.operations().report(t.approval.agentId, {
+        generation: t.started.generation,
+        authorizationId: t.approval.authorizationId,
+        packageId: t.exported.packageId,
+        manifestDigest: t.exported.manifestDigest,
+        state: "failed",
+      });
+      await db.execute(
+        sql`CREATE FUNCTION task_media_reject_claim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.media.task_claim' THEN RAISE EXCEPTION 'test audit unavailable'; END IF; RETURN NEW; END $$`,
+      );
+      await db.execute(
+        sql`CREATE TRIGGER task_media_reject_claim BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION task_media_reject_claim()`,
+      );
+      try {
+        await expect(
+          t.operations().start(t.local, t.exported.packageId, t.approval.authorizationId),
+        ).rejects.toThrow();
+        const claims = await db.select().from(federationTaskMediaClaims);
+        expect(claims).toHaveLength(1);
+        expect(claims[0]).toMatchObject({ generation: t.started.generation, releasedAt: null });
+        expect(
+          await t.operations().status(t.local, t.exported.packageId, t.approval.authorizationId),
+        ).toMatchObject({ generation: t.started.generation, state: "failed" });
+      } finally {
+        await db.execute(sql`DROP TRIGGER task_media_reject_claim ON audit_log`);
+        await db.execute(sql`DROP FUNCTION task_media_reject_claim()`);
+      }
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task media claim rejects a report after its distinct source grant key lifetime is shortened",
+  async () => {
+    const t = await startedTaskMedia("task-result");
+    try {
+      const rotated = await testKeys(t.source.signing.siteId);
+      rotated.signing.keyId = `rotated-grant-${crypto.randomUUID()}`;
+      await trust.addKey(
+        t.source.signing.siteId,
+        {
+          keyId: rotated.signing.keyId,
+          publicKeyPem: await exportSPKI(rotated.verification.publicKey),
+          allowedKinds: ["media-key-grant"],
+          validFrom: rotated.verification.validFrom.toISOString(),
+          validUntil: rotated.verification.validUntil.toISOString(),
+        },
+        actor.userId,
+      );
+      const responder = new FederationMediaKeyResponder(
+        db,
+        rotated.signing,
+        t.source.service(),
+        clock,
+      );
+      const send: FederationSend = async (_endpoint, jws) =>
+        responder.respond(jws, sourceFingerprint);
+      const grant = await t.operations(send).grant(t.approval.agentId, t.request);
+      await db
+        .update(federationSigningKeys)
+        .set({ validUntil: new Date(clock().getTime() + 10_000) })
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, rotated.signing.siteId),
+            eq(federationSigningKeys.keyId, rotated.signing.keyId),
+          ),
+        );
+      await expect(
+        t.operations().report(t.approval.agentId, {
+          ...grant.binding,
+          state: "verified",
+          queryDigest: grant.queryDigest,
+          sizeBytes: t.approval.maxBytes,
+        }),
+      ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+    } finally {
+      await t.source.release();
+    }
+  },
+);

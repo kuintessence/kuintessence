@@ -25,6 +25,8 @@ import type { FederationMediaPackageService } from "./media-packages";
 import { mediaImportReceipt } from "./media-receipts";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
+import { assertTaskMediaClaim, claimTaskMediaImport } from "./task-media-claims";
+import type { TaskMediaTargetReader } from "./task-media-target";
 import { FederationTrustRegistry } from "./trust-registry";
 
 export class FederationMediaImportOperations {
@@ -41,6 +43,7 @@ export class FederationMediaImportOperations {
   async start(actor: FederationActor, packageId: string, authorizationId: string) {
     z.uuid().parse(packageId);
     z.uuid().parse(authorizationId);
+    const reader = await this.inventory.reader(packageId, { actor });
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "media.import");
       const scope = await this.inventory.assertImportAuthorized(
@@ -48,10 +51,8 @@ export class FederationMediaImportOperations {
         actor.orgId,
         packageId,
         authorizationId,
+        reader,
       );
-      // Task input/result package publication has separate workflow ownership semantics.
-      if (scope.package.manifest.subject.kind !== "dataset")
-        throw new FederationError("POLICY_DENIED");
       const created = await tx
         .insert(operations)
         .values({
@@ -74,11 +75,17 @@ export class FederationMediaImportOperations {
           authorizationId,
           generation: existing.generation,
         });
+      const next =
+        existing.state === "failed" ? { ...existing, generation: crypto.randomUUID() } : existing;
+      if (scope.package.manifest.subject.kind !== "dataset") {
+        if (existing.requestedBy !== actor.userId) throw new FederationError("POLICY_DENIED");
+        await claimTaskMediaImport(tx, scope.package, next, this.clock());
+      }
       if (existing.state !== "failed") return summary(existing);
       const [retry] = await tx
         .update(operations)
         .set({
-          generation: crypto.randomUUID(),
+          generation: next.generation,
           requestedBy: actor.userId,
           state: "queued",
           latestGrant: null,
@@ -142,7 +149,37 @@ export class FederationMediaImportOperations {
       .set({ updatedAt: this.clock() })
       .where(and(eq(operations.authorizationId, authorizationId), eq(operations.state, "queued")));
   }
-  private async scope(tx: PgTransaction, agentId: string, authorizationId: string) {
+  private async reader(agentId: string, authorizationId: string) {
+    const [selected] = await this.db
+      .select({ orgId: packages.localOrgId, packageId: packages.packageId })
+      .from(authorizations)
+      .innerJoin(
+        packages,
+        and(
+          eq(packages.localSiteId, authorizations.localSiteId),
+          eq(packages.packageId, authorizations.packageId),
+        ),
+      )
+      .where(
+        and(
+          eq(authorizations.localSiteId, this.siteId),
+          eq(authorizations.authorizationId, authorizationId),
+          eq(authorizations.agentId, agentId),
+        ),
+      );
+    if (!selected) throw new FederationError("POLICY_DENIED");
+    return this.inventory.reader(selected.packageId, {
+      orgId: selected.orgId,
+      agentId,
+      authorizationId,
+    });
+  }
+  private async scope(
+    tx: PgTransaction,
+    agentId: string,
+    authorizationId: string,
+    reader?: TaskMediaTargetReader,
+  ) {
     const [selected] = await tx
       .select({
         orgId: packages.localOrgId,
@@ -169,14 +206,19 @@ export class FederationMediaImportOperations {
       selected.orgId,
       selected.packageId,
       authorizationId,
+      reader,
     );
     const [operation] = await tx
       .select()
       .from(operations)
       .where(eq(operations.authorizationId, authorizationId))
       .for("update");
-    if (!operation || scope.package.manifest.subject.kind !== "dataset")
-      throw new FederationError("POLICY_DENIED");
+    if (!operation) throw new FederationError("POLICY_DENIED");
+    if (scope.package.manifest.subject.kind !== "dataset") {
+      if (operation.requestedBy !== scope.package.registeredBy)
+        throw new FederationError("POLICY_DENIED");
+      await assertTaskMediaClaim(tx, scope.package, operation);
+    }
     await requireFederationCapability(
       tx,
       { orgId: selected.orgId, userId: operation.requestedBy },
@@ -203,8 +245,9 @@ export class FederationMediaImportOperations {
       throw new FederationError("OPERATION_CONFLICT");
   }
   async task(agentId: string, authorizationId: string) {
+    const reader = await this.reader(agentId, authorizationId);
     return this.db.transaction(async (tx) => {
-      const s = await this.scope(tx, agentId, authorizationId);
+      const s = await this.scope(tx, agentId, authorizationId, reader);
       if (s.operation.state !== "queued") throw new FederationError("OPERATION_CONFLICT");
       return {
         task: FederationMediaImportTaskSchema.parse({
@@ -231,6 +274,7 @@ export class FederationMediaImportOperations {
           Math.min(
             this.clock().getTime() + 30_000,
             s.authorization.expiresAt.getTime(),
+            s.authorizedUntil,
             s.key.validUntil.getTime(),
           ),
         ),
@@ -245,8 +289,9 @@ export class FederationMediaImportOperations {
       authorizationId: input.authorizationId,
       manifestDigest: input.manifestDigest,
     });
+    const reader = await this.reader(agentId, input.authorizationId);
     const orgId = await this.db.transaction(async (tx) => {
-      const s = await this.scope(tx, agentId, input.authorizationId);
+      const s = await this.scope(tx, agentId, input.authorizationId, reader);
       this.match(s, binding);
       if (s.operation.state !== "queued") throw new FederationError("OPERATION_CONFLICT");
       return s.package.localOrgId;
@@ -259,7 +304,7 @@ export class FederationMediaImportOperations {
       recipientKey: input.recipientKey,
     });
     return this.db.transaction(async (tx) => {
-      const s = await this.scope(tx, agentId, input.authorizationId);
+      const s = await this.scope(tx, agentId, input.authorizationId, reader);
       this.match(s, binding);
       if (s.operation.state !== "queued") throw new FederationError("OPERATION_CONFLICT");
       assertMediaKeyGrant(response.query, response.queryDigest, response.grant, this.clock());
@@ -268,6 +313,7 @@ export class FederationMediaImportOperations {
           this.clock().getTime() + 30_000,
           Date.parse(response.grant.expiresAt),
           s.authorization.expiresAt.getTime(),
+          s.authorizedUntil,
           s.key.validUntil.getTime(),
           Date.parse(response.signingKey.validUntil),
         ),
@@ -298,6 +344,8 @@ export class FederationMediaImportOperations {
     const keyId = federationMessageKeyId(grant.signedGrant);
     await this.trust.assertKey(tx, grant.query.recipientSiteId, keyId, this.clock());
     const key = await this.trust.resolveKey(grant.query.recipientSiteId, keyId, this.clock(), tx);
+    if (Date.parse(grant.expiresAt) > key.validUntil.getTime())
+      throw new FederationError("AUTHORIZATION_EXPIRED");
     const verified = await verifyFederationMessage(
       FederationMediaKeyGrantSchema,
       grant.signedGrant,
@@ -308,8 +356,9 @@ export class FederationMediaImportOperations {
   }
   async report(agentId: string, raw: unknown) {
     const report = FederationMediaImportReportSchema.parse(raw);
+    const reader = await this.reader(agentId, report.authorizationId);
     return this.db.transaction(async (tx) => {
-      const s = await this.scope(tx, agentId, report.authorizationId);
+      const s = await this.scope(tx, agentId, report.authorizationId, reader);
       this.match(s, report);
       if (s.operation.state === "verified") {
         if (
@@ -330,6 +379,8 @@ export class FederationMediaImportOperations {
         )
           throw new FederationError("OPERATION_CONFLICT");
         await this.assertSourceGrant(tx, s.operation.latestGrant);
+        if (Date.parse(s.operation.latestGrant.expiresAt) > s.authorizedUntil)
+          throw new FederationError("AUTHORIZATION_EXPIRED");
       }
       const receivedAt = this.clock();
       const receipt =

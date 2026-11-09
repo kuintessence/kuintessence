@@ -1191,6 +1191,13 @@
       "when": 1794189441760,
       "tag": "0169_typical_scarlet_spider",
       "breakpoints": true
+    },
+    {
+      "idx": 170,
+      "version": "7",
+      "when": 1794192083679,
+      "tag": "0170_numerous_anita_blake",
+      "breakpoints": true
     }
   ]
 }

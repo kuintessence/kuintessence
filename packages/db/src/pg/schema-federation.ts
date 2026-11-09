@@ -2734,6 +2734,39 @@ export const federationMediaImportOperations = pgTable(
   ],
 );
 
+/** One current media generation owns an original task inventory; released claims remain historical. */
+export const federationTaskMediaClaims = pgTable(
+  "federation_task_media_claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    taskInputImportId: uuid("task_input_import_id").references(() => federationInputImports.id),
+    taskResultImportId: uuid("task_result_import_id").references(() => federationResultImports.id),
+    authorizationId: uuid("authorization_id")
+      .notNull()
+      .references(() => federationMediaImportOperations.authorizationId),
+    generation: uuid("generation").notNull(),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull(),
+    releasedAt: timestamp("released_at", { withTimezone: true }),
+  },
+  (t) => [
+    check(
+      "federation_task_media_claim_direction",
+      sql`num_nonnulls(${t.taskInputImportId}, ${t.taskResultImportId}) = 1`,
+    ),
+    uniqueIndex("federation_task_media_claim_generation").on(t.authorizationId, t.generation),
+    uniqueIndex("federation_task_media_claim_input")
+      .on(t.taskInputImportId)
+      .where(sql`${t.releasedAt} IS NULL`),
+    uniqueIndex("federation_task_media_claim_result")
+      .on(t.taskResultImportId)
+      .where(sql`${t.releasedAt} IS NULL`),
+    check(
+      "federation_task_media_claim_time",
+      sql`${t.releasedAt} IS NULL OR ${t.releasedAt} >= ${t.claimedAt}`,
+    ),
+  ],
+);
+
 /** Source authorization is independent of a particular transport package or import approval. */
 export const federationDatasetUsePolicies = pgTable(
   "federation_dataset_use_policies",
