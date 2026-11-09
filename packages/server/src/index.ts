@@ -1743,7 +1743,7 @@ const federationMarketRequests = federationSigningKey
       federationStorageGuard,
     )
   : undefined;
-const federationOutbound =
+const federationOutbound: FederationOutboundService | undefined =
   federationSigningKey && federationSender
     ? new FederationOutboundService(
         db,
@@ -1754,6 +1754,7 @@ const federationOutbound =
         federationConfirmations,
         federationMarketRequests,
         federationStorageGuard,
+        () => federationMediaImportOperations,
       )
     : undefined;
 const federationStops = federationSigningKey

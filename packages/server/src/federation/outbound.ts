@@ -54,6 +54,7 @@ import { stopCancelledExecution } from "./execution-stop";
 import { FabricClientFailure } from "./fabric-client";
 import { FederationWorkflowInputExports } from "./input-exports";
 import type { FederationMarketRequestService } from "./market-requests";
+import type { FederationMediaImportOperations } from "./media-import-operations";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { FederationResultImports } from "./result-imports";
@@ -117,6 +118,7 @@ export class FederationOutboundService {
     private readonly confirmations?: FederationExecutionConfirmationService,
     private readonly marketRequests?: FederationMarketRequestService,
     private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
+    media?: () => FederationMediaImportOperations | undefined,
   ) {
     this.trust = new FederationTrustRegistry(db);
     this.resultReceipts = new FederationResultReceiptSender(db, signingKey, send, clock);
@@ -127,6 +129,7 @@ export class FederationOutboundService {
       this.results,
       clock,
       storageGuard,
+      media,
     );
     this.cancellations = new FederationCancellationSender(
       db,

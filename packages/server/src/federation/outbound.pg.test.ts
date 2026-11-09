@@ -2752,21 +2752,22 @@ test("result imports accept only an identical copied receipt replay and cap each
   expect((await second.imports.begin(second.member.id, f.agentId)).attempt.agentId).toBe(f.agentId);
 });
 
+const signedUrl = (origin: string, seconds: number) => {
+  const url = new URL(`${origin}/opaque-object`);
+  url.searchParams.set(
+    "X-Amz-Date",
+    clock()
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\.\d{3}/, ""),
+  );
+  url.searchParams.set("X-Amz-Expires", String(seconds));
+  url.searchParams.set("X-Amz-Signature", "private-storage-ticket");
+  return url;
+};
+
 async function resultStorageFixture(fileCount = 1, workflowSource = false) {
   const f = await resultImportFixture(fileCount, workflowSource);
-  const signedUrl = (origin: string, seconds: number) => {
-    const url = new URL(`${origin}/opaque-object`);
-    url.searchParams.set(
-      "X-Amz-Date",
-      clock()
-        .toISOString()
-        .replace(/[-:]/g, "")
-        .replace(/\.\d{3}/, ""),
-    );
-    url.searchParams.set("X-Amz-Expires", String(seconds));
-    url.searchParams.set("X-Amz-Signature", "private-storage-ticket");
-    return url;
-  };
   const downloads: FederationResultDownloadStorage = {
     allowedOrigins: ["https://source-storage.test.invalid"],
     storage: {
@@ -9383,6 +9384,7 @@ async function taskTargetFixture(
     inputs,
     preparation,
     exchange,
+    results,
     resultImports,
     targets,
     service,
@@ -9810,8 +9812,8 @@ taskMediaTest("task target rechecks a rotated recipient query key after network 
   }
 });
 
-async function startedTaskMedia(kind: "task-input" | "task-result") {
-  const t = await taskTargetFixture(kind);
+async function startedTaskMedia(kind: "task-input" | "task-result", expiredExecution = false) {
+  const t = await taskTargetFixture(kind, true, expiredExecution);
   await t.service().register(t.local, t.registration);
   await t.service().approveImport(t.local, t.exported.packageId, t.approval);
   const operations = (send = t.send) =>
@@ -10214,8 +10216,8 @@ taskMediaTest(
   },
 );
 
-async function verifiedTaskMedia(kind: "task-input" | "task-result") {
-  const t = await startedTaskMedia(kind);
+async function verifiedTaskMedia(kind: "task-input" | "task-result", expiredExecution = false) {
+  const t = await startedTaskMedia(kind, expiredExecution);
   const permit = await t.grant();
   const report = {
     ...permit.binding,
@@ -10834,6 +10836,498 @@ taskMediaTest(
         }),
       ).rejects.toThrow();
       expect(await t.files()).toHaveLength(0);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+async function taskResultUploadFixture(expiredExecution = false) {
+  const t = await verifiedTaskMedia("task-result", expiredExecution);
+  if (!t.importId) throw new Error("Expected original result import");
+  const importId = t.importId;
+  const [parent] = await db
+    .select()
+    .from(federationResultImports)
+    .where(eq(federationResultImports.id, importId));
+  const [member] = await db
+    .select()
+    .from(federationResultTransfers)
+    .where(eq(federationResultTransfers.importId, importId));
+  if (!parent || !member) throw new Error("Expected result member");
+  const ready = await t.operations().uploadTask(t.approval.agentId, t.approval.authorizationId);
+  const service = () =>
+    new FederationResultImports(db, t.signing.siteId, t.results, clock, undefined, () =>
+      t.operations(),
+    );
+  const imports = service();
+  const agentId = t.approval.agentId;
+  const objects = new Map<string, ObjectStat>();
+  const backend = {
+    createMultipartUpload: async (_key: string) => ({ uploadId: "task-result-upload" }),
+    completeMultipartUpload: async (key: string) => {
+      objects.set(key, {
+        size: member.sizeBytes,
+        etag: "task-result-object",
+        versionId: "task-result-version",
+        contentType: "application/octet-stream",
+        lastModified: clock(),
+      });
+      return { etag: "task-result-object", versionId: "task-result-version" };
+    },
+    head: async (key: string, _version?: string): Promise<ObjectStat | null> =>
+      objects.get(key) ?? null,
+    presignUploadPart: async (
+      _key: string,
+      uploadId: string,
+      partNumber: number,
+      seconds: number,
+    ) => {
+      const url = signedUrl("https://destination-storage.test.invalid", seconds);
+      url.searchParams.set("uploadId", uploadId);
+      url.searchParams.set("partNumber", String(partNumber));
+      return url.toString();
+    },
+    presignDownload: async (
+      _key: string,
+      seconds: number,
+      _filename?: string,
+      versionId?: string,
+    ) => {
+      const url = signedUrl("https://destination-storage.test.invalid", seconds);
+      if (versionId) url.searchParams.set("versionId", versionId);
+      return url.toString();
+    },
+    cleanupFederationResult: async (key: string) => {
+      objects.delete(key);
+    },
+  };
+  const storage = new FederationResultStorage(imports, t.results, backend, {
+    sourceOrigins: ["https://source-storage.test.invalid"],
+    destinationOrigins: ["https://destination-storage.test.invalid"],
+    clock,
+  });
+  const start = async () => {
+    await t.uploadGrant();
+    const allocated = await storage.allocate(member.id, agentId, ready.claimId);
+    const binding = {
+      transferId: member.id,
+      generation: allocated.task.generation,
+      operationId: parent.operationId,
+      manifestDigest: parent.manifestDigest,
+      outputId: member.outputId,
+      path: member.path,
+      sizeBytes: member.sizeBytes,
+      sha256: member.sha256,
+      partSize: member.partSize,
+    };
+    return { ...allocated, binding };
+  };
+  const copy = async () => {
+    const started = await start();
+    const copied = {
+      binding: started.binding,
+      sizeBytes: member.sizeBytes,
+      sha256: member.sha256,
+      parts: [{ partNumber: 1, etag: "task-result-part" }],
+    };
+    await imports.copied(agentId, copied);
+    return { ...started, copied };
+  };
+  const verify = async () => {
+    const copied = await copy();
+    const verification = await storage.assemble(agentId, copied.binding.generation);
+    const receipt = { ...verification.task, sizeBytes: member.sizeBytes, sha256: member.sha256 };
+    await storage.verified(agentId, receipt);
+    return { ...copied, verification, receipt };
+  };
+  const files = () => db.select().from(netdriveFiles).where(eq(netdriveFiles.id, member.id));
+  const revoke = () =>
+    t
+      .service()
+      .revoke(
+        t.local,
+        t.exported.packageId,
+        { reason: "Stop result upload" },
+        t.approval.authorizationId,
+      );
+  return {
+    ...t,
+    importId,
+    parent,
+    member,
+    agentId,
+    claimId: ready.claimId,
+    imports,
+    serviceImports: service,
+    backend,
+    storage,
+    start,
+    copy,
+    verify,
+    files,
+    revoke,
+  };
+}
+
+taskMediaTest.each([false, true])(
+  "task result upload publishes the original result with independent deadline (execution expired: %s)",
+  async (expired) => {
+    const t = await taskResultUploadFixture(expired);
+    try {
+      await expect(t.imports.begin(t.member.id, t.agentId)).rejects.toThrow("POLICY_DENIED");
+      await expect(t.imports.begin(t.member.id, t.agentId, crypto.randomUUID())).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+      await expect(t.imports.begin(t.member.id, "foreign-agent", t.claimId)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+      await expect(t.imports.begin(t.member.id, t.agentId, t.claimId)).rejects.toThrow(
+        "DATA_WAITING",
+      );
+      const verified = await t.verify();
+      const [attempt] = await db
+        .select()
+        .from(federationResultAttempts)
+        .where(eq(federationResultAttempts.generation, verified.binding.generation));
+      expect(attempt).toMatchObject({ state: "verified", mediaClaimId: t.claimId });
+      expect(await t.files()).toHaveLength(0);
+      const result = await t.storage.publish(t.local, t.importId);
+      expect(result.state).toBe("available");
+      t.backend.head = async () => {
+        throw new Error("No repeated HEAD expected");
+      };
+      expect(await t.storage.publish(t.local, t.importId)).toEqual(result);
+      expect(await t.files()).toMatchObject([
+        {
+          size: t.member.sizeBytes,
+          sha256: t.member.sha256,
+          storageVersionId: "task-result-version",
+        },
+      ]);
+      const [parent] = await db
+        .select()
+        .from(federationResultImports)
+        .where(eq(federationResultImports.id, t.importId));
+      expect(parent).toMatchObject({
+        reservedBytes: 0,
+        state: "available",
+        receipt: { sizeBytes: t.member.sizeBytes, fileCount: 1, operationId: t.parent.operationId },
+      });
+      const [privateOperation] = await db
+        .select()
+        .from(federationMediaImportOperations)
+        .where(eq(federationMediaImportOperations.authorizationId, t.approval.authorizationId));
+      expect(privateOperation).toEqual(t.original);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task result upload fences late allocation after revocation and keeps cleanup available",
+  async () => {
+    const t = await taskResultUploadFixture();
+    try {
+      await t.uploadGrant();
+      t.backend.createMultipartUpload = async () => {
+        await t.revoke();
+        return { uploadId: "late-result-upload" };
+      };
+      await expect(t.storage.allocate(t.member.id, t.agentId, t.claimId)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+      const [attempt] = await db
+        .select()
+        .from(federationResultAttempts)
+        .where(eq(federationResultAttempts.transferId, t.member.id));
+      expect(attempt).toMatchObject({
+        uploadId: "late-result-upload",
+        mediaClaimId: t.claimId,
+        state: "cleanup_pending",
+      });
+      if (!attempt) throw new Error("Expected attempt");
+      await t.imports.cancel(t.local, t.importId);
+      time = new Date(attempt.leaseUntil.getTime() + 1);
+      expect(await t.storage.cleanup()).toBeGreaterThanOrEqual(1);
+      expect(await t.imports.get(t.local, t.importId)).toMatchObject({ state: "cancelled" });
+      const [parent] = await db
+        .select()
+        .from(federationResultImports)
+        .where(eq(federationResultImports.id, t.importId));
+      expect(parent?.reservedBytes).toBe(0);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["preparing", "copying", "assembling", "verifying"] as const)(
+  "task result upload blocks revoked authority at %s",
+  async (stage) => {
+    const t = await taskResultUploadFixture();
+    try {
+      if (stage === "preparing") {
+        await t.uploadGrant();
+        const started = await t.imports.begin(t.member.id, t.agentId, t.claimId);
+        await t.revoke();
+        await expect(
+          t.serviceImports().preparing(t.agentId, started.attempt.generation),
+        ).rejects.toThrow("POLICY_DENIED");
+      } else {
+        const started = await t.start();
+        const copied = {
+          ...started,
+          copied: {
+            binding: started.binding,
+            sizeBytes: t.member.sizeBytes,
+            sha256: t.member.sha256,
+            parts: [{ partNumber: 1, etag: "task-result-part" }],
+          },
+        };
+        if (stage !== "copying") await t.imports.copied(t.agentId, copied.copied);
+        const verification =
+          stage === "verifying"
+            ? await t.storage.assemble(t.agentId, copied.binding.generation)
+            : undefined;
+        await t.revoke();
+        if (stage === "copying") {
+          await expect(
+            t.serviceImports().assertCopyLease(t.agentId, copied.binding),
+          ).rejects.toThrow("POLICY_DENIED");
+          await expect(t.imports.renew(t.agentId, copied.binding.generation)).rejects.toThrow(
+            "POLICY_DENIED",
+          );
+          await expect(t.imports.copied(t.agentId, copied.copied)).rejects.toThrow("POLICY_DENIED");
+        }
+        if (stage === "assembling") {
+          await expect(t.imports.assembling(t.agentId, copied.binding.generation)).rejects.toThrow(
+            "POLICY_DENIED",
+          );
+          await expect(
+            t.imports.assembled(t.agentId, copied.binding.generation, {
+              versionId: "late",
+              etag: "late",
+            }),
+          ).rejects.toThrow("POLICY_DENIED");
+        }
+        if (verification) {
+          await expect(
+            t.imports.verificationTask(t.agentId, copied.binding.generation),
+          ).rejects.toThrow("POLICY_DENIED");
+          await expect(t.imports.verification(t.agentId, verification.task, true)).rejects.toThrow(
+            "POLICY_DENIED",
+          );
+          await expect(
+            t.imports.verified(t.agentId, {
+              ...verification.task,
+              sizeBytes: t.member.sizeBytes,
+              sha256: t.member.sha256,
+            }),
+          ).rejects.toThrow("POLICY_DENIED");
+        }
+      }
+      expect(await t.files()).toHaveLength(0);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["source", "receiver", "claim"] as const)(
+  "task result upload rejects %s changes during publication HEAD",
+  async (change) => {
+    const t = await taskResultUploadFixture();
+    try {
+      const verified = await t.verify();
+      const head = t.backend.head;
+      t.backend.head = async (...args) => {
+        const stat = await head(...args);
+        if (change === "source")
+          await t.source
+            .service()
+            .revoke(t.source.local, t.exported.packageId, { reason: "Stop during HEAD" });
+        if (change === "receiver") await t.revoke();
+        if (change === "claim")
+          await db
+            .update(federationResultAttempts)
+            .set({ mediaClaimId: null })
+            .where(eq(federationResultAttempts.generation, verified.binding.generation));
+        return stat;
+      };
+      await expect(t.storage.publish(t.local, t.importId)).rejects.toThrow();
+      expect(await t.files()).toHaveLength(0);
+      const [parent] = await db
+        .select()
+        .from(federationResultImports)
+        .where(eq(federationResultImports.id, t.importId));
+      expect(parent).toMatchObject({
+        state: "transferring",
+        reservedBytes: t.parent.reservedBytes,
+        receipt: null,
+      });
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task result upload checks the original owner before source refresh and retains claim identity in snapshots",
+  async () => {
+    const t = await taskResultUploadFixture();
+    try {
+      const verified = await t.verify();
+      const snapshot = await t.imports.publication(t.local, t.importId);
+      if (snapshot.state !== "ready") throw new Error("Expected snapshot");
+      const before = (await t.read()).grant.queryDigest;
+      await expect(t.imports.publication(receiver, t.importId)).rejects.toThrow("POLICY_DENIED");
+      const report = await t.results.read(t.local, t.parent.operationId);
+      await expect(t.imports.publish(receiver, t.importId, snapshot, report)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+      await expect(
+        t.imports.verification("foreign-agent", verified.verification.task, true),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+      expect((await t.read()).grant.queryDigest).toBe(before);
+      await expect(
+        t.imports.publish(t.local, t.importId, { ...snapshot, mediaClaimId: null }, report),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+      await expect(
+        t.imports.publish(
+          t.local,
+          t.importId,
+          { ...snapshot, mediaClaimId: crypto.randomUUID() },
+          report,
+        ),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+      expect(await t.files()).toHaveLength(0);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task result upload signs only live bounded target grants and refuses network source downloads",
+  async () => {
+    const t = await taskResultUploadFixture();
+    try {
+      const started = await t.start();
+      const part = await t.storage.grant(t.agentId, started.binding, "upload", 1);
+      expect(Date.parse(part.grant.expiresAt)).toBeLessThanOrEqual(
+        (await t.read()).authorizedUntil,
+      );
+      await expect(t.storage.grant(t.agentId, started.binding, "download")).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+      const sign = t.backend.presignUploadPart;
+      t.backend.presignUploadPart = async (...args) => {
+        const url = await sign(...args);
+        await t.revoke();
+        return url;
+      };
+      await expect(t.storage.grant(t.agentId, started.binding, "upload", 1)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+      expect(await t.files()).toHaveLength(0);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task result upload verification renews source consent and refuses remote revocation",
+  async () => {
+    const t = await taskResultUploadFixture();
+    try {
+      const copied = await t.copy();
+      const verification = await t.storage.assemble(t.agentId, copied.binding.generation);
+      const before = (await t.read()).grant.queryDigest;
+      time = new Date(clock().getTime() + 5_000);
+      const refreshed = await t.storage.verificationGrant(t.agentId, verification.task);
+      expect((await t.read()).grant.queryDigest).not.toBe(before);
+      expect(Date.parse(refreshed.grant.expiresAt)).toBeLessThanOrEqual(
+        (await t.read()).authorizedUntil,
+      );
+      await t.source
+        .service()
+        .revoke(t.source.local, t.exported.packageId, { reason: "Stop source verification" });
+      await expect(t.imports.verification(t.agentId, verification.task, true)).rejects.toThrow();
+      await expect(
+        t.imports.verified(t.agentId, {
+          ...verification.task,
+          sizeBytes: t.member.sizeBytes,
+          sha256: t.member.sha256,
+        }),
+      ).rejects.toThrow();
+      expect(await t.files()).toHaveLength(0);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task result upload cannot detach the claim or revive an expired storage attempt",
+  async () => {
+    const t = await taskResultUploadFixture();
+    try {
+      const started = await t.start();
+      await db
+        .update(federationResultAttempts)
+        .set({ mediaClaimId: null })
+        .where(eq(federationResultAttempts.generation, started.binding.generation));
+      await expect(t.imports.assertCopyLease(t.agentId, started.binding)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+      await db
+        .update(federationResultAttempts)
+        .set({ mediaClaimId: t.claimId })
+        .where(eq(federationResultAttempts.generation, started.binding.generation));
+      time = new Date(Date.parse(started.leaseExpiresAt) + 1);
+      await t.uploadGrant();
+      await expect(t.serviceImports().renew(t.agentId, started.binding.generation)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+      expect(await t.files()).toHaveLength(0);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task result upload retries a cleaned generation without duplicating or losing the original quota",
+  async () => {
+    const t = await taskResultUploadFixture();
+    try {
+      const first = await t.start();
+      await t.imports.failed(t.agentId, first.binding.generation, "COPY_FAILED");
+      await expect(t.imports.begin(t.member.id, t.agentId, t.claimId)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+      time = new Date(Date.parse(first.leaseExpiresAt) + 1);
+      expect(await t.storage.cleanup()).toBeGreaterThanOrEqual(1);
+      const [parent] = await db
+        .select()
+        .from(federationResultImports)
+        .where(eq(federationResultImports.id, t.importId));
+      expect(parent?.reservedBytes).toBe(t.parent.reservedBytes);
+      const next = await t.start();
+      expect(next.binding.generation).not.toBe(first.binding.generation);
+      await expect(t.imports.assertCopyLease(t.agentId, first.binding)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+      const attempts = await db
+        .select()
+        .from(federationResultAttempts)
+        .where(eq(federationResultAttempts.transferId, t.member.id));
+      expect(attempts).toHaveLength(2);
+      expect(attempts.every((attempt) => attempt.mediaClaimId === t.claimId)).toBe(true);
+      expect(attempts.map((attempt) => attempt.state).sort()).toEqual(["cleaned", "copying"]);
     } finally {
       await t.source.release();
     }

@@ -27,6 +27,7 @@ import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota"
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import { federationMaterialDigest } from "./assets";
 import { renewTaskCompletion } from "./completion-capacity";
+import type { FederationMediaImportOperations } from "./media-import-operations";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import type { FederationResultReader } from "./result-reader";
 import { federationMessageKeyId } from "./signatures";
@@ -48,6 +49,7 @@ export class FederationResultImports {
     private readonly reader: FederationResultReader,
     private readonly clock: () => Date = () => new Date(),
     private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
+    private readonly media?: () => FederationMediaImportOperations | undefined,
   ) {}
 
   async enqueue(
@@ -188,11 +190,11 @@ export class FederationResultImports {
     });
   }
 
-  async begin(transferId: string, agentId: string) {
+  async begin(transferId: string, agentId: string, mediaClaimId?: string) {
+    const authorize = await this.transferAuthorization(transferId, agentId, mediaClaimId);
     return this.db.transaction(async (tx) => {
-      const rows = await this.lockTransfer(tx, transferId);
+      const rows = await authorize(tx);
       await this.authorize(tx, rows.parent);
-      if (rows.parent.delivery !== "network") throw new FederationError("POLICY_DENIED");
       if (rows.parent.reservedBytes === 0) {
         const bytes = rows.parent.report.manifest.outputs.reduce(
           (sum, output) => sum + output.sizeBytes,
@@ -228,16 +230,18 @@ export class FederationResultImports {
           ),
         );
       if (previous) throw new FederationError("OPERATION_CONFLICT");
+      this.assertMediaDeadline(rows.authorizedUntil);
       const generation = crypto.randomUUID();
       const [attempt] = await tx
         .insert(federationResultAttempts)
         .values({
           generation,
+          mediaClaimId: rows.mediaClaimId,
           transferId,
           agentId,
           storageKey: `federation-results/${rows.parent.id}/${generation}`,
           state: "preparing",
-          leaseUntil: this.lease(rows.parent),
+          leaseUntil: this.lease(rows.parent, rows.authorizedUntil),
           createdAt: this.clock(),
           updatedAt: this.clock(),
         })
@@ -302,8 +306,9 @@ export class FederationResultImports {
   }
 
   async assertCopyLease(agentId: string, binding: FederationResultCopyBinding) {
+    const authorize = await this.attemptAuthorization(binding.generation, agentId, false);
     return this.db.transaction(async (tx) => {
-      const rows = await this.lockAttempt(tx, binding.generation);
+      const rows = await authorize(tx);
       await this.assertAttempt(tx, rows, agentId, "copying");
       if (federationMaterialDigest(this.binding(rows)) !== federationMaterialDigest(binding))
         throw new FederationError("OPERATION_CONFLICT");
@@ -318,11 +323,12 @@ export class FederationResultImports {
   }
 
   async renew(agentId: string, generation: string) {
+    const authorize = await this.attemptAuthorization(generation, agentId, false);
     return this.db.transaction(async (tx) => {
-      const rows = await this.lockAttempt(tx, generation);
+      const rows = await authorize(tx);
       await lockFederationTransferSlot(tx, agentId);
       await this.assertAttempt(tx, rows, agentId, "copying");
-      const leaseUntil = this.lease(rows.parent);
+      const leaseUntil = this.lease(rows.parent, rows.authorizedUntil);
       await tx
         .update(federationResultAttempts)
         .set({ leaseUntil, updatedAt: this.clock() })
@@ -333,8 +339,9 @@ export class FederationResultImports {
 
   async copied(agentId: string, input: z.infer<typeof CopiedSchema>) {
     const receipt = CopiedSchema.parse(input);
+    const authorize = await this.attemptAuthorization(receipt.binding.generation, agentId, false);
     return this.db.transaction(async (tx) => {
-      const rows = await this.lockAttempt(tx, receipt.binding.generation);
+      const rows = await authorize(tx);
       if (!["copying", "assembling", "verifying", "verified"].includes(rows.attempt.state))
         throw new FederationError("OPERATION_CONFLICT");
       await this.assertAttempt(tx, rows, agentId, rows.attempt.state);
@@ -372,8 +379,9 @@ export class FederationResultImports {
   }
 
   async assembling(agentId: string, generation: string) {
+    const authorize = await this.attemptAuthorization(generation, agentId, false);
     return this.db.transaction(async (tx) => {
-      const rows = await this.lockAttempt(tx, generation);
+      const rows = await authorize(tx);
       await this.assertAttempt(tx, rows, agentId, "assembling");
       return { ...rows, binding: this.binding(rows) };
     });
@@ -385,11 +393,12 @@ export class FederationResultImports {
     object: z.infer<typeof FederationResultObjectSchema>,
   ) {
     const pin = FederationResultObjectSchema.parse(object);
+    const authorize = await this.attemptAuthorization(generation, agentId, true);
     return this.db.transaction(async (tx) => {
-      const rows = await this.lockAttempt(tx, generation);
+      const rows = await authorize(tx);
       await lockFederationTransferSlot(tx, agentId);
       await this.assertAttempt(tx, rows, agentId, "assembling");
-      const leaseUntil = this.lease(rows.parent);
+      const leaseUntil = this.lease(rows.parent, rows.authorizedUntil);
       await tx
         .update(federationResultAttempts)
         .set({
@@ -417,8 +426,9 @@ export class FederationResultImports {
   }
 
   async verificationTask(agentId: string, generation: string) {
+    const authorize = await this.attemptAuthorization(generation, agentId, true);
     return this.db.transaction(async (tx) => {
-      const rows = await this.lockAttempt(tx, generation);
+      const rows = await authorize(tx);
       await this.assertAttempt(tx, rows, agentId, "verifying");
       const task = FederationResultVerifyTaskSchema.parse({
         binding: this.binding(rows),
@@ -434,14 +444,17 @@ export class FederationResultImports {
 
   async verification(agentId: string, input: FederationResultVerifyTask, renew = false) {
     const task = FederationResultVerifyTaskSchema.parse(input);
+    const authorize = await this.attemptAuthorization(task.binding.generation, agentId, renew);
     return this.db.transaction(async (tx) => {
-      const rows = await this.lockAttempt(tx, task.binding.generation);
+      const rows = await authorize(tx);
       if (!(renew ? ["verifying"] : ["verifying", "verified"]).includes(rows.attempt.state))
         throw new FederationError("OPERATION_CONFLICT");
       if (renew) await lockFederationTransferSlot(tx, agentId);
       await this.assertAttempt(tx, rows, agentId, rows.attempt.state);
       this.assertVerification(rows, task);
-      const leaseUntil = renew ? this.lease(rows.parent) : rows.attempt.leaseUntil;
+      const leaseUntil = renew
+        ? this.lease(rows.parent, rows.authorizedUntil)
+        : rows.attempt.leaseUntil;
       if (renew)
         await tx
           .update(federationResultAttempts)
@@ -453,8 +466,9 @@ export class FederationResultImports {
 
   async verified(agentId: string, input: FederationResultVerified) {
     const receipt = FederationResultVerifiedSchema.parse(input);
+    const authorize = await this.attemptAuthorization(receipt.binding.generation, agentId, true);
     return this.db.transaction(async (tx) => {
-      const rows = await this.lockAttempt(tx, receipt.binding.generation);
+      const rows = await authorize(tx);
       if (!["verifying", "verified"].includes(rows.attempt.state))
         throw new FederationError("OPERATION_CONFLICT");
       await this.assertAttempt(tx, rows, agentId, rows.attempt.state);
@@ -491,7 +505,9 @@ export class FederationResultImports {
 
   /** Snapshot for storage checks; no network operations run under these locks. */
   async publication(actor: FederationActor, importId: string) {
+    const media = await this.publicationAuthorization(actor, importId);
     return this.db.transaction(async (tx) => {
+      const permit = await media?.(tx);
       const parent = await this.lockImport(tx, actor, importId);
       await requireFederationCapability(tx, actor, "result.read");
       if (parent.state === "available")
@@ -501,7 +517,8 @@ export class FederationResultImports {
         state: "ready" as const,
         operationId: parent.operationId,
         manifestDigest: parent.manifestDigest,
-        files: await this.publicationFiles(tx, parent),
+        mediaClaimId: permit?.claimId ?? null,
+        files: await this.publicationFiles(tx, parent, permit?.claimId),
       };
     });
   }
@@ -516,13 +533,16 @@ export class FederationResultImports {
     >,
     verified: Awaited<ReturnType<FederationResultReader["read"]>>,
   ) {
+    const media = await this.publicationAuthorization(actor, importId, snapshot.mediaClaimId);
     return this.db.transaction(async (tx) => {
+      const permit = await media?.(tx);
       const parent = await this.lockImport(tx, actor, importId);
       await requireFederationCapability(tx, actor, "result.read");
       if (parent.state === "available") return this.summary(tx, parent);
       await this.authorize(tx, parent);
       const report = verified.report;
       const assertFresh = () => {
+        this.assertMediaDeadline(permit?.authorizedUntil);
         const verifiedAt = Date.parse(verified.verifiedAt);
         if (
           !Number.isFinite(verifiedAt) ||
@@ -549,7 +569,7 @@ export class FederationResultImports {
         federationMessageKeyId(verified.reportJws),
         this.clock(),
       );
-      const files = await this.publicationFiles(tx, parent);
+      const files = await this.publicationFiles(tx, parent, permit?.claimId);
       if (federationMaterialDigest(files) !== federationMaterialDigest(snapshot.files))
         throw new FederationError("OPERATION_CONFLICT");
       await lockCloudWrites(tx, actor.userId);
@@ -651,7 +671,37 @@ export class FederationResultImports {
     return parent;
   }
 
-  private async publicationFiles(tx: FederationTransaction, parent: Import) {
+  private async publicationAuthorization(
+    actor: FederationActor,
+    importId: string,
+    claimId?: string | null,
+  ) {
+    // Check the original owner and current permission before triggering any source refresh.
+    const parent = await this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "result.read");
+      const [row] = await tx
+        .select()
+        .from(federationResultImports)
+        .where(eq(federationResultImports.id, importId));
+      if (!row) throw new FederationError("POLICY_DENIED");
+      this.assertOwner(row, actor, row.operationId);
+      if (row.state !== "available") await this.authorize(tx, row);
+      return row;
+    });
+    if (parent.state === "available") return undefined;
+    if (parent.delivery !== "media") {
+      if (claimId) throw new FederationError("OPERATION_CONFLICT");
+      return undefined;
+    }
+    if (claimId === null) throw new FederationError("OPERATION_CONFLICT");
+    const operations = this.media?.();
+    if (!operations) throw new FederationError("POLICY_DENIED");
+    return operations.uploadForImport({ kind: "task-result", importId, claimId, refresh: true });
+  }
+
+  private async publicationFiles(tx: FederationTransaction, parent: Import, claimId?: string) {
+    if ((parent.delivery === "media") !== !!claimId)
+      throw new FederationError("OPERATION_CONFLICT");
     const members = await tx
       .select()
       .from(federationResultTransfers)
@@ -692,6 +742,11 @@ export class FederationResultImports {
       const attempt = attempts.find((row) => row.transferId === member.id);
       if (member.state !== "verified" || !attempt?.verifiedAt || !attempt.destinationEtag)
         throw new FederationError("DATA_WAITING");
+      if (
+        attempt.mediaClaimId !== (claimId ?? null) ||
+        attempt.storageKey !== `federation-results/${parent.id}/${attempt.generation}`
+      )
+        throw new FederationError("OPERATION_CONFLICT");
       // Cloud downloads must keep serving the verified bytes after a same-key overwrite.
       if (!attempt.destinationVersionId || attempt.destinationVersionId === "null")
         throw new FederationError("POLICY_DENIED");
@@ -1002,10 +1057,11 @@ export class FederationResultImports {
   }
 
   async preparing(agentId: string, generation: string) {
+    const authorize = await this.attemptAuthorization(generation, agentId, false);
     return this.db.transaction(async (tx) => {
-      const rows = await this.lockAttempt(tx, generation);
+      const rows = await authorize(tx);
       await this.assertAttempt(tx, rows, agentId, "preparing");
-      return { ...rows, actor: this.actor(rows.parent) };
+      return { ...rows, actor: this.actor(rows.parent), binding: this.binding(rows) };
     });
   }
 
@@ -1067,6 +1123,90 @@ export class FederationResultImports {
     });
   }
 
+  private async transferAuthorization(
+    transferId: string,
+    agentId: string,
+    claimId?: string | null,
+    refresh = false,
+  ) {
+    const [selected] = await this.db
+      .select({ parent: federationResultImports })
+      .from(federationResultTransfers)
+      .innerJoin(
+        federationResultImports,
+        eq(federationResultImports.id, federationResultTransfers.importId),
+      )
+      .where(eq(federationResultTransfers.id, transferId));
+    if (!selected || selected.parent.localSiteId !== this.siteId)
+      throw new FederationError("POLICY_DENIED");
+    const operations = this.media?.();
+    if (selected.parent.delivery === "media" ? !claimId || !operations : !!claimId)
+      throw new FederationError("POLICY_DENIED");
+    const media =
+      selected.parent.delivery === "media" && operations
+        ? await operations.uploadForImport({
+            kind: "task-result",
+            importId: selected.parent.id,
+            agentId,
+            claimId: claimId ?? undefined,
+            refresh,
+          })
+        : undefined;
+    return async (tx: PgTransaction) => {
+      const permit = await media?.(tx);
+      const rows = await this.lockTransfer(tx, transferId);
+      if (rows.parent.id !== selected.parent.id || (rows.parent.delivery === "media") !== !!permit)
+        throw new FederationError("OPERATION_CONFLICT");
+      this.assertMediaDeadline(permit?.authorizedUntil);
+      return {
+        ...rows,
+        mediaClaimId: permit?.claimId ?? null,
+        authorizedUntil: permit?.authorizedUntil,
+      };
+    };
+  }
+
+  private async attemptAuthorization(generation: string, agentId: string, refresh = false) {
+    const [attempt] = await this.db
+      .select()
+      .from(federationResultAttempts)
+      .where(eq(federationResultAttempts.generation, generation));
+    if (!attempt) throw new FederationError("POLICY_DENIED");
+    if (attempt.agentId !== agentId) throw new FederationError("OPERATION_CONFLICT");
+    const authorize = await this.transferAuthorization(
+      attempt.transferId,
+      agentId,
+      attempt.mediaClaimId,
+      refresh,
+    );
+    return async (tx: PgTransaction) => {
+      const permit = await authorize(tx);
+      const rows = await this.lockAttempt(tx, generation);
+      if (
+        rows.transfer.id !== permit.transfer.id ||
+        rows.attempt.mediaClaimId !== permit.mediaClaimId ||
+        rows.attempt.storageKey !== `federation-results/${rows.parent.id}/${generation}`
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      this.assertMediaDeadline(permit.authorizedUntil);
+      return {
+        ...rows,
+        attempt: {
+          ...rows.attempt,
+          leaseUntil: new Date(
+            Math.min(rows.attempt.leaseUntil.getTime(), permit.authorizedUntil ?? Infinity),
+          ),
+        },
+        authorizedUntil: permit.authorizedUntil,
+      };
+    };
+  }
+
+  private assertMediaDeadline(authorizedUntil?: number) {
+    if (authorizedUntil !== undefined && authorizedUntil <= this.clock().getTime())
+      throw new FederationError("AUTHORIZATION_EXPIRED");
+  }
+
   private async lockTransfer(tx: FederationTransaction, transferId: string) {
     const [lookup] = await tx
       .select()
@@ -1104,7 +1244,7 @@ export class FederationResultImports {
   }
   private async assertAttempt(
     tx: FederationTransaction,
-    rows: { parent: Import; transfer: Transfer; attempt: Attempt },
+    rows: { parent: Import; transfer: Transfer; attempt: Attempt; authorizedUntil?: number },
     agentId: string,
     state: string,
   ) {
@@ -1118,6 +1258,7 @@ export class FederationResultImports {
     if (!agent || agent.providerOrgId !== rows.parent.localOrgId || agent.status !== "online")
       throw new FederationError("POLICY_DENIED");
     await this.authorize(tx, rows.parent);
+    this.assertMediaDeadline(rows.authorizedUntil);
   }
   private async authorize(tx: FederationTransaction, row: Import) {
     if (
@@ -1134,9 +1275,13 @@ export class FederationResultImports {
   private actor(row: Import) {
     return { orgId: row.localOrgId, userId: row.requestedBy };
   }
-  private lease(row: Import) {
+  private lease(row: Import, authorizedUntil = Infinity) {
     return new Date(
-      Math.min(this.clock().getTime() + 120_000, Date.parse(row.report.manifest.availableUntil)),
+      Math.min(
+        this.clock().getTime() + 120_000,
+        Date.parse(row.report.manifest.availableUntil),
+        authorizedUntil,
+      ),
     );
   }
   private binding(rows: {

@@ -59,8 +59,8 @@ export class FederationResultStorage {
     this.clock = options.clock ?? (() => new Date());
   }
 
-  async allocate(transferId: string, agentId: string) {
-    const started = await this.imports.begin(transferId, agentId);
+  async allocate(transferId: string, agentId: string, mediaClaimId?: string) {
+    const started = await this.imports.begin(transferId, agentId, mediaClaimId);
     const generation = started.attempt.generation;
     try {
       const ready = await this.imports.preparing(agentId, generation);
@@ -71,7 +71,8 @@ export class FederationResultStorage {
           return this.imports.allocated(generation, uploadId);
         });
       if (!(await this.bounded(allocated))) throw new FederationError("POLICY_DENIED");
-      return { task: started.task, leaseExpiresAt: started.attempt.leaseUntil.toISOString() };
+      const current = await this.imports.assertCopyLease(agentId, ready.binding);
+      return { task: started.task, leaseExpiresAt: current.leaseUntil.toISOString() };
     } catch (error) {
       await this.imports.failed(agentId, generation, "STORAGE_FAILED");
       if (error instanceof FederationError) throw error;
