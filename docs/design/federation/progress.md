@@ -3119,3 +3119,5 @@ PR 的旧 head 已通过真实隐私、商业恢复和任务市场，gate 数据
 付款网页、真实双平台流程及原蓝图其他未完成项继续推进，没有新数据库迁移，也未重复运行真实 Fabric／科学软件／调度器实验。
 
 本轮收尾：全仓 lint 退出 0（既有 47 warnings/1 info），完整 typecheck 含 protobuf 生成、各包与独立 Fabric 脚本退出 0；948 个本地文档目标和 diff 检查通过。隔离数据库、loopback HTTP 及 CLI 临时文件已清理。前一 head 的主 CI/bundle 已绿，Fabric gate 恢复仍在运行，等待其终态后再推送，避免取消已有验证。
+
+远端确认：head b27e5ad 的 Fabric run 42580409885 已 completed/success，真实隐私与数据库恢复、商业协议与数据库恢复、市场原生背书、gate/数据库/Adapter 恢复全部执行通过，确认两处 socket 路径修复。该 head 主 CI 与 bundle 同样 success，预览因草稿正常 skipped；不把远端通过视为整套蓝图交付完成。付款 CLI 最后响应提示调整的定向类型复查也退出 0，继续推送 CLI 提交。
