@@ -8,6 +8,7 @@ import {
   federationCommercialAdjustments,
   federationCommercialAttempts,
   federationCommercialBills,
+  federationCommercialPayments,
   federationCommercialRefunds,
   federationCommercialSettlements,
   federationCommercialSubmissions,
@@ -96,6 +97,7 @@ try {
     .from(federationOutbound);
   const refunds = await db.select().from(federationCommercialRefunds);
   const bills = await db.select().from(federationCommercialBills);
+  const payments = await db.select().from(federationCommercialPayments);
   const adjustments = await db.select().from(federationCommercialAdjustments);
   const settlements = await db.select().from(federationCommercialSettlements);
   const bindings = await db
@@ -265,6 +267,7 @@ try {
         refunds,
         settlements,
         adjustments,
+        payments,
         bindings,
         execution,
         demand,

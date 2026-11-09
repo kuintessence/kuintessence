@@ -1,6 +1,6 @@
 """Isolated full Server and real Kubernetes artifact pipeline probe; no deployment credentials."""
 
-import errno, json, os, pathlib, secrets, shutil, signal, socket, subprocess, sys, tempfile, time, urllib.request, uuid
+import errno, hashlib, json, os, pathlib, secrets, shutil, signal, socket, subprocess, sys, tempfile, time, urllib.request, uuid
 from datetime import datetime, timedelta
 
 repo = pathlib.Path(__file__).resolve().parents[2]
@@ -1242,6 +1242,68 @@ def verify_bilateral_finance():
     (logs / "bilateral-settlement.json").write_text(json.dumps({"draft": draft, "statuses": statuses}, indent=2) + "\n")
     print("REAL BILATERAL ACCOUNTING PASSED: task-preauthorized bill and settlement; exact local budget; debit hold; original settlement and two adjustments replay safely; " + ("Orderer remains stopped" if attested else "no ledger configuration, attempts or outbox"), flush=True)
 
+
+
+def verify_direct_payments():
+    assert mode == "bilateral_direct"
+    config = json.loads((root / "source-init.json").read_text())
+    path = "federation/commercial-agreements/" + config["request"]["agreementRevisionId"]
+    bill = json.loads((logs / "billing-offline-evidence.json").read_text())["draft"]
+    parties = (("provider", api, token), ("source", sourceapi, sourcetoken))
+    inspect_ledgers("payment-before")
+    before = {name: json.loads((logs / (name + "-payment-before.json")).read_text()) for name, _, _ in parties}
+    synthetic_evidence = b"Isolated payment acknowledgement fixture; no bank transfer.\n"
+    (logs / "payment-evidence.txt").write_bytes(synthetic_evidence)
+    evidence_digest = "sha256:" + hashlib.sha256(synthetic_evidence).hexdigest()
+    assert config["commercial"]["consideration"] == "paid", "Payment acceptance requires a paid contract"
+    payment_id, previous, originals = str(uuid.uuid4()), None, []
+    for number, amount in enumerate((bill["calculation"]["dueAmount"], "0"), 1):
+        body = {
+            "receiptId": str(uuid.uuid4()), "paymentId": payment_id, "billId": bill["billId"],
+            "amount": amount, "occurredAt": bill["issuedAt"], "evidenceDigest": evidence_digest,
+            "reason": "Synthetic external receipt " + str(number) + "; no money transfer",
+        }
+        draft = api(path + "/payments/draft", body, token)["data"]
+        assert draft["previous"] == previous
+        assert all(draft[key] == value for key, value in body.items())
+        first = sourceapi(path + "/payments/approve", draft, sourcetoken)["data"]
+        assert not first["current"] and first["confirmedAt"] is None and first["counterpartyJws"] is None
+        api(path + "/payments/approve", draft, token)
+        records = {}
+        for _ in range(60):
+            for name, read, auth in parties:
+                history = read(path + "/payments?recordId=" + draft["receiptId"], token=auth)["data"]
+                assert len(history["data"]) == 1 and not history["hasMore"]
+                records[name] = history["data"][0]
+                assert records[name]["payment"]["payload"] == draft and records[name]["ledger"] is None
+            if all(row["payment"]["confirmedAt"] and row["payment"]["current"] for row in records.values()):
+                break
+            time.sleep(2)
+        else:
+            raise AssertionError("Payment signatures did not exchange between real platforms")
+        for name, read, auth in parties:
+            row = records[name]["payment"]
+            other = records["source" if name == "provider" else "provider"]["payment"]
+            assert row["counterpartyJws"] == other["approvalJws"]
+            assert read(path + "/payments/approve", draft, auth)["data"] == row
+        previous = {"receiptId": draft["receiptId"], "digest": records["provider"]["payment"]["digest"]}
+        originals.append({"draft": draft, "records": records})
+    for name, read, auth in parties:
+        old = read(path + "/payments/approve", originals[0]["draft"], auth)["data"]
+        assert not old["current"] and old["payload"] == originals[0]["draft"]
+        history = read(path + "/payments?paymentId=" + payment_id + "&billId=" + bill["billId"], token=auth)["data"]
+        assert not history["hasMore"] and len(history["data"]) == 2
+        current = [row["payment"] for row in history["data"] if row["payment"]["current"]]
+        assert len(current) == 1 and current[0]["receiptId"] == previous["receiptId"] and current[0]["payload"]["amount"] == "0"
+    inspect_ledgers("payment-after")
+    for name, _, _ in parties:
+        after = json.loads((logs / (name + "-payment-after.json")).read_text())
+        for key in ("budgets", "bills", "settlements", "adjustments", "execution"):
+            assert after[key] == before[name][key], "Payment changed accounting or execution: " + key
+        assert len(after["payments"]) == 2
+        assert not after["commercial"] and not after["commercialTransactions"]
+    (logs / "bilateral-payments.json").write_text(json.dumps(originals, indent=2) + "\n")
+    print("REAL DIRECT PAYMENTS PASSED: independent approvals, automatic original-signature exchange, zero correction, old replay, unchanged accounting/execution and no ledger", flush=True)
 
 
 def verify_refund():
@@ -2888,6 +2950,8 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
                 verify_adjustments()
             else:
                 verify_bilateral_finance()
+                if mode == "bilateral_direct":
+                    verify_direct_payments()
                 if attested:
                     verify_attested_recovery()
         inspect_ledgers("after")

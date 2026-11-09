@@ -48,7 +48,13 @@ try {
   }
   await writeFile(
     join(root, "execution-fixture.json"),
-    JSON.stringify(ExecutionFixtureSchema.parse({ domainId: randomUUID(), sites })),
+    JSON.stringify(
+      ExecutionFixtureSchema.parse({
+        domainId: randomUUID(),
+        sites,
+        consideration: scenario === "success" ? "paid" : "exchange",
+      }),
+    ),
     { mode: 0o600 },
   );
   const env = { ...process.env };

@@ -69,7 +69,9 @@ bun run test:federation:direct
 
 所有检查点要求市场/商业提交、链交易尝试、存证 outbox 和证据批次为空；提供方本地预算 `available + reserved + spent` 恒等于原限额，需求方不复制提供方可花费余额。结算后重复批准不再次改账；调减和调增不改写原账单/结算或重复执行作业。
 
-私有目录为 `temp/federation-execution-direct-*`，新增 `preauthorized-closing.json` 保存提交前政策，`bilateral-settlement.json`、`bilateral-adjustment-1/2.json` 保存同文账务记录，双方对应快照保存实际额度和空链待办。仍保留原文件工作流证据，脚本退出时清理自建服务、namespace、数据库和临时身份。只有命令退出 0 且完整断言通过才算本场景验收成功；它不证明异步存证恢复、跨 Slurm/PBS 全矩阵、真实软件离线安装或 PR 预览已完成。
+直接模式成功路径还会用原已确认账单生成两份付款声明：首次确认和零额更正。双方通过生产 HTTP 独立批准，原签名由后台经 mTLS 自动交换，不手工搬运对签；单方批准保持未确认。更正后重放首次声明不得回退当前记录，付款前后分别比较预算、原账单、结算、调整和实际 Job 身份／状态，确认均未改变。测试使用明确标注的合成外部凭据及其 SHA-256，不执行银行转账；此处尚不覆盖异步／链协调付款。
+
+私有目录为 `temp/federation-execution-direct-*`，新增 `preauthorized-closing.json` 保存提交前政策，`bilateral-settlement.json`、`bilateral-adjustment-1/2.json` 保存同文账务记录，双方对应快照保存实际额度和空链待办；`bilateral-payments.json`、`payment-evidence.txt` 和双方 `payment-before/after.json` 保存付款更正与不改账证据。仍保留原文件工作流证据，脚本退出时清理自建服务、namespace、数据库和临时身份。只有命令退出 0 且完整断言通过才算本场景验收成功；它不证明异步存证恢复、跨 Slurm/PBS 全矩阵、真实软件离线安装或 PR 预览已完成。
 
 ## 异步存证断链验收
 

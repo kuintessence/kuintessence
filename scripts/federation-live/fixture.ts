@@ -8,6 +8,7 @@ import type { FederationSigningKey } from "../../packages/server/src/federation/
 
 export const ExecutionFixtureSchema = z.object({
   domainId: z.uuid(),
+  consideration: z.enum(["exchange", "paid"]).default("exchange"),
   sites: z
     .array(
       z.object({ name: z.enum(["A", "B"]), siteId: z.uuid(), businessKeyFile: z.string().min(1) }),
@@ -35,7 +36,7 @@ export async function approveContract(
       salt: randomBytes(32).toString("hex"),
       createdAt: new Date().toISOString(),
       agreement: terms,
-      consideration: "exchange",
+      consideration: fixture.consideration,
       priceVersionId: randomUUID(),
       prices: [
         {
