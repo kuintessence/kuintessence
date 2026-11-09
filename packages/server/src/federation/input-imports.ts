@@ -185,6 +185,7 @@ export class FederationInputImports {
           ownerId: identity.userId,
           manifestDigest: digest,
           manifest,
+          delivery: request.inputDelivery ?? "network",
           state: "pending",
           reservedBytes: bytes,
           expiresAt: new Date(federationExecutionDeadline(request)),
@@ -220,6 +221,7 @@ export class FederationInputImports {
       row.ownerId !== scope.identity.userId ||
       row.localOrgId !== scope.identity.orgId ||
       row.manifestDigest !== scope.request.inputFilesDigest ||
+      row.delivery !== (scope.request.inputDelivery ?? "network") ||
       !FederationInputFilesSchema.safeParse(row.manifest).success ||
       federationMaterialDigest(row.manifest) !== row.manifestDigest
     )
@@ -292,6 +294,7 @@ export class FederationInputImports {
       importId: row.id,
       reservationId: row.reservationId,
       state: row.state,
+      delivery: row.delivery,
       manifestDigest: row.manifestDigest,
       reservedBytes: row.reservedBytes,
     };

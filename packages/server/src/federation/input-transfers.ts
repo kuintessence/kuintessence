@@ -66,6 +66,7 @@ export class FederationInputTransfers {
       .where(
         and(
           eq(federationInputImports.localSiteId, this.preparation.localSiteId),
+          eq(federationInputImports.delivery, "network"),
           inArray(federationInputImports.state, ["pending", "transferring"]),
           eq(federationInputTransfers.state, "pending"),
           lte(federationInputTransfers.updatedAt, new Date(this.clock().getTime() - 30_000)),
@@ -115,6 +116,7 @@ export class FederationInputTransfers {
     return this.db.transaction(async (tx) => {
       await this.imports.lock(tx, scope);
       const { parent, transfer } = await this.lockTransfer(tx, transferId);
+      if (parent.delivery !== "network") throw new FederationError("POLICY_DENIED");
       if (parent.reservationId !== scope.saved.reservation.id)
         throw new FederationError("OPERATION_CONFLICT");
       await this.agent(tx, agentId, parent);

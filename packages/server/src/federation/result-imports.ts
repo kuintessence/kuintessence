@@ -139,6 +139,7 @@ export class FederationResultImports {
           requestedBy: actor.userId,
           report: verified.report,
           reportJws: verified.reportJws,
+          delivery: outbound.request.resultDelivery ?? "network",
           manifestDigest: verified.report.manifestDigest,
           reservedBytes,
           state: "pending",
@@ -191,6 +192,7 @@ export class FederationResultImports {
     return this.db.transaction(async (tx) => {
       const rows = await this.lockTransfer(tx, transferId);
       await this.authorize(tx, rows.parent);
+      if (rows.parent.delivery !== "network") throw new FederationError("POLICY_DENIED");
       if (rows.parent.reservedBytes === 0) {
         const bytes = rows.parent.report.manifest.outputs.reduce(
           (sum, output) => sum + output.sizeBytes,
@@ -912,6 +914,7 @@ export class FederationResultImports {
         and(
           eq(federationResultImports.localSiteId, this.siteId),
           inArray(federationResultImports.state, ["pending", "transferring"]),
+          eq(federationResultImports.delivery, "network"),
           eq(federationResultTransfers.state, "pending"),
           lte(federationResultImports.nextAttemptAt, this.clock()),
           notExists(
@@ -1124,7 +1127,9 @@ export class FederationResultImports {
       throw new FederationError("POLICY_DENIED");
     if (federationMaterialDigest(row.report.manifest) !== row.manifestDigest)
       throw new FederationError("OPERATION_CONFLICT");
-    await this.reader.authorize(tx, this.actor(row), row.operationId);
+    const { row: outbound } = await this.reader.authorize(tx, this.actor(row), row.operationId);
+    if (row.delivery !== (outbound.request.resultDelivery ?? "network"))
+      throw new FederationError("OPERATION_CONFLICT");
   }
   private actor(row: Import) {
     return { orgId: row.localOrgId, userId: row.requestedBy };
@@ -1179,6 +1184,7 @@ export class FederationResultImports {
       manifestDigest: row.manifestDigest,
       state: row.state,
       lastError: row.lastError,
+      delivery: row.delivery,
       receipt: row.receipt
         ? {
             state: row.receiptAck ? "recorded" : "pending",

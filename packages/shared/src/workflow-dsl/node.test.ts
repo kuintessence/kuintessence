@@ -205,6 +205,12 @@ test("Federation market selection is optional and only allows explicit public co
     outputs: [],
   };
   expect(WorkflowNodeSchema.safeParse(node).success).toBe(true);
+  expect(
+    WorkflowNodeSchema.parse({ ...node, inputDelivery: "media", resultDelivery: "network" }),
+  ).toMatchObject({ inputDelivery: "media", resultDelivery: "network" });
+  expect(WorkflowNodeSchema.safeParse({ ...node, resultDelivery: "automatic" }).success).toBe(
+    false,
+  );
   const market = { policyId: id, title: "Shared task", description: "" };
   expect(WorkflowNodeSchema.safeParse({ ...node, market }).success).toBe(true);
   for (const patch of [

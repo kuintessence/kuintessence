@@ -66,6 +66,28 @@ test("amounts preserve 38-digit precision and reject ambiguous or lossy encoding
     expect(FederationAmountSchema.safeParse(invalid).success).toBe(false);
 });
 
+test("file delivery preserves legacy signed payloads and requires explicit media input inventory", () => {
+  expect(FederationDelegationSchema.parse(request)).not.toHaveProperty("inputDelivery");
+  expect(FederationDelegationSchema.parse(request)).not.toHaveProperty("resultDelivery");
+  for (const inputDelivery of ["network", "media"])
+    for (const resultDelivery of ["network", "media"])
+      expect(
+        FederationDelegationSchema.parse({
+          ...request,
+          inputFilesDigest: digest,
+          inputDelivery,
+          resultDelivery,
+        }),
+      ).toMatchObject({ inputDelivery, resultDelivery });
+  for (const patch of [
+    { inputDelivery: "media" },
+    { inputDelivery: "automatic" },
+    { resultDelivery: "automatic" },
+    { inputDelivery: null },
+  ])
+    expect(FederationDelegationSchema.safeParse({ ...request, ...patch }).success).toBe(false);
+});
+
 test("admission binds the exact template, budget epoch, units and resource caps", () => {
   expect(() => assertDelegationPolicy(agreement, request, now)).not.toThrow();
   for (const override of [

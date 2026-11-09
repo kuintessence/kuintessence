@@ -141,6 +141,7 @@ export class FederationResultResponder {
       )
         throw new FederationError("UNTRUSTED_IDENTITY");
       const snapshot = await this.manifest(tx, query);
+      if (snapshot.delivery !== "network") throw new FederationError("POLICY_DENIED");
       const file = snapshot.sources.get(`${query.binding.outputId}/${query.binding.path}`);
       if (
         !file ||
@@ -262,6 +263,7 @@ export class FederationResultResponder {
       expiresAt: new Date(this.clock().getTime() + 30_000).toISOString(),
     };
     const snapshot = await this.manifest(tx, query);
+    if (snapshot.delivery !== "media") throw new FederationError("POLICY_DENIED");
     return {
       ...snapshot,
       operationId: reservation.operationId,
@@ -533,6 +535,7 @@ export class FederationResultResponder {
     return {
       manifest,
       sources,
+      delivery: request.resultDelivery ?? "network",
       authorizedUntil: Math.min(authorizedUntil, requestKey.validUntil.getTime()),
     };
   }

@@ -766,6 +766,7 @@ export const federationInputImports = pgTable(
       .references(() => users.id),
     manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
     manifest: jsonb("manifest").$type<FederationInputFiles>().notNull(),
+    delivery: varchar("delivery", { length: 16 }).notNull().default("network"),
     state: varchar("state", { length: 16 }).notNull().default("pending"),
     reservedBytes: bigint("reserved_bytes", { mode: "number" }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -778,6 +779,7 @@ export const federationInputImports = pgTable(
   },
   (t) => [
     uniqueIndex("federation_input_import_reservation").on(t.reservationId),
+    check("federation_input_import_delivery", sql`${t.delivery} IN ('network', 'media')`),
     index("federation_input_import_pending")
       .on(t.localSiteId, t.nextCheckAt)
       .where(sql`${t.state} IN ('pending', 'transferring', 'available')`),
@@ -952,6 +954,7 @@ export const federationResultImports = pgTable(
       .notNull()
       .references(() => users.id),
     report: jsonb("report").$type<FederationResultReport>().notNull(),
+    delivery: varchar("delivery", { length: 16 }).notNull().default("network"),
     reportJws: text("report_jws").notNull(),
     manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
     state: varchar("state", { length: 24 }).notNull().default("pending"),
@@ -977,6 +980,7 @@ export const federationResultImports = pgTable(
     uniqueIndex("federation_result_import_manifest")
       .on(t.localSiteId, t.operationId, t.requestedBy, t.manifestDigest)
       .where(sql`${t.state} <> 'cancelled'`),
+    check("federation_result_import_delivery", sql`${t.delivery} IN ('network', 'media')`),
     index("federation_result_import_owner").on(
       t.localSiteId,
       t.localOrgId,

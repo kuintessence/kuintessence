@@ -88,6 +88,8 @@ export class FederationWorkflowExecutor {
           unit: terms.unit,
           template: node.template,
           inputManifestDigest: node.inputManifestDigest,
+          ...(node.inputDelivery ? { inputDelivery: node.inputDelivery } : {}),
+          ...(node.resultDelivery ? { resultDelivery: node.resultDelivery } : {}),
           environmentLockDigest: node.environmentLockDigest,
           resources: node.resources,
           maxAmount: node.maxAmount,

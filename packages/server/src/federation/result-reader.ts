@@ -115,7 +115,12 @@ export class FederationResultReader {
     allowedOrigins: readonly string[],
   ) {
     const binding = FederationResultCopyBindingSchema.parse(input);
-    const authorize = (tx: FederationTransaction) => this.authorize(tx, actor, binding.operationId);
+    const authorize = async (tx: FederationTransaction) => {
+      const scope = await this.authorize(tx, actor, binding.operationId);
+      if ((scope.row.request.resultDelivery ?? "network") !== "network")
+        throw new FederationError("POLICY_DENIED");
+      return scope;
+    };
     const { row, receipt, policy } = await this.db.transaction(authorize);
     const origins = new Set(
       allowedOrigins.map((value) => new URL(FederationDataOriginSchema.parse(value)).origin),

@@ -2932,3 +2932,10 @@ Drizzle 生成迁移 0166，四张表保存介质、不可变批次、活动占�
 新增 Server `FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS` 并由 Compose 透传；Agent 原 JSON 配置增加默认空的 allowedSourceOrigins。protobuf 只修改原定义并通过生成器生成，未手改生成文件，无迁移或依赖变更。目标任务上传/原子发布和 DATA_WAITING 恢复、跨平台/掉电与剩余完整蓝图、Web/CLI 和最终 PR 预览仍保持原目标。没有重复科学编译或原生调度器实验。
 
 本轮静态收尾：全仓 lint 退出 0（既有 47 warnings/1 info），全仓 typecheck 含 protobuf 生成及各产品包通过；新增真实存储脚本的版本号类型收窄后，脚本类型检查另行通过。913 个本地文档目标、Compose YAML 与配置透传、diff 检查通过。未推送、部署或缩减完整 PR 预览目标。
+
+
+## 任务交付方式持久化
+
+2026-11-09：Workflow Federation 节点和原签名委派增加 inputDelivery/resultDelivery，分别选择 network/media；旧请求省略字段保持原摘要和网络行为。原输入/结果 import 保存模式并在领取许可时核对原任务，网络 worker 不领取 media，双方网络下载接口拒发对应数据凭据。来源介质准备必须与原签名交付方式一致，禁止重放时切换。任务清单/授权交换、原配额和独立结果期限继续复用。迁移 0168 由 Drizzle 生成；初次生成前字段定位错误已通过生成器撤回并重新生成，未手改迁移或 snapshot。
+
+该项是任务介质接收的前置约束；尚未放开仅数据集可运行的保护，任务包上传/整包发布及原任务恢复继续推进。没有新增运行中切换或自动网络回退，完整蓝图和 PR 预览目标保持不变。58 项相关 PostgreSQL 用例及 25 项 schema/DSL 测试通过，覆盖旧网络输入/结果、来源介质、重启重放、方式篡改、禁止凭据签发、配额去重和取消。首轮发现可选字段 undefined 进入规范化签名，已修复为省略未设置字段；测试夹具的跨用例 pending 清单与错误文本断言修正后专项复验通过。隔离数据库均从空库迁移并已清理，未重复原生调度器或科学软件实验。最终全仓 lint 退出 0（既有 47 warnings/1 info），全仓 typecheck 含 protobuf 生成、全部产品和实验脚本退出 0；348 个本地文档目标与 diff 检查通过。未推送或部署 PR 预览。

@@ -1869,23 +1869,32 @@ const resultPolicy: NonNullable<FederationAgreement["resultPolicy"]> = {
   maxBytes: 20,
   availableUntil: "2026-01-04T00:00:00.000Z",
 };
-async function resultFixture(policy = resultPolicy, workflowSource = false) {
+async function resultFixture(
+  policy = resultPolicy,
+  workflowSource = false,
+  resultDelivery?: "network" | "media",
+) {
   const sourceWorkflow = workflowSource ? await workflowDelegationFixture(policy) : null;
   const f = sourceWorkflow ?? (await fixture(policy));
   await permission.set({ ...actor, capability: "result.read", enabled: true }, actor.userId);
   if (sourceWorkflow) {
-    const queued = await f
-      .service()
-      .enqueueForWorkflow(
-        actor,
-        sourceWorkflow.lease,
-        "remote",
-        sourceWorkflow.invocation,
-        { ...sourceWorkflow.plan, executionExpiresAt: f.terms.validUntil },
-        600,
-      );
+    const queued = await f.service().enqueueForWorkflow(
+      actor,
+      sourceWorkflow.lease,
+      "remote",
+      sourceWorkflow.invocation,
+      {
+        ...sourceWorkflow.plan,
+        executionExpiresAt: f.terms.validUntil,
+        ...(resultDelivery ? { resultDelivery } : {}),
+      },
+      600,
+    );
     f.request = (await row(queued.operationId)).request;
-  } else await f.service().enqueue(actor, f.request);
+  } else {
+    f.request = { ...f.request, ...(resultDelivery ? { resultDelivery } : {}) };
+    await f.service().enqueue(actor, f.request);
+  }
   await f.service().deliverNext();
   const saved = await row(f.request.operationId);
   if (!saved.receipt) throw new Error("Expected acceptance");
@@ -2163,8 +2172,8 @@ test("result queries cannot change task identity or bypass receiver agreement an
   await expect(f.read()).rejects.toThrow("OPERATION_CONFLICT");
 });
 
-async function resultDownloadFixture() {
-  const f = await resultFixture();
+async function resultDownloadFixture(resultDelivery?: "network" | "media") {
+  const f = await resultFixture(resultPolicy, false, resultDelivery);
   const { report } = await f.read();
   const output = report.manifest.outputs[0];
   const member = output?.files[0];
@@ -2405,8 +2414,12 @@ test("result downloads require separately registered key purposes on both sites"
   ).rejects.toThrow();
 });
 
-async function resultImportFixture(fileCount = 1, workflowSource = false) {
-  const f = await resultFixture(resultPolicy, workflowSource);
+async function resultImportFixture(
+  fileCount = 1,
+  workflowSource = false,
+  resultDelivery?: "network" | "media",
+) {
+  const f = await resultFixture(resultPolicy, workflowSource, resultDelivery);
   if (fileCount === 2) {
     const secondId = crypto.randomUUID();
     await db.insert(netdriveFiles).values({
@@ -4713,6 +4726,7 @@ async function inputInventoryFixture(
   policy: FederationAgreement["inputPolicy"] | null = inputPolicy,
   longExecution = false,
   batch = false,
+  inputDelivery?: "network" | "media",
 ) {
   const f = await workflowDelegationFixture(undefined, {}, policy ?? undefined, {
     input: { type: batch ? "FileBatch" : "File", required: true },
@@ -4736,15 +4750,23 @@ async function inputInventoryFixture(
       f.lease,
       "remote",
       invocation,
-      longExecution ? { ...f.plan, executionExpiresAt: f.terms.validUntil } : f.plan,
+      {
+        ...f.plan,
+        ...(longExecution ? { executionExpiresAt: f.terms.validUntil } : {}),
+        ...(inputDelivery ? { inputDelivery } : {}),
+      },
       60,
       {},
       files,
     );
   return { ...f, fileId, files, source, enqueue };
 }
-async function acceptedInputInventory(longExecution = false, batch = false) {
-  const f = await inputInventoryFixture(inputPolicy, longExecution, batch);
+async function acceptedInputInventory(
+  longExecution = false,
+  batch = false,
+  inputDelivery?: "network" | "media",
+) {
+  const f = await inputInventoryFixture(inputPolicy, longExecution, batch, inputDelivery);
   if (batch)
     f.files.splice(0, 1, {
       descriptor: "input",
@@ -5014,8 +5036,8 @@ function inputDownloadStorage() {
   return { calls, downloads };
 }
 
-async function inputDownloadFixture() {
-  const f = await acceptedInputInventory();
+async function inputDownloadFixture(inputDelivery?: "network" | "media") {
+  const f = await acceptedInputInventory(false, false, inputDelivery);
   const { kind: _kind, materialDigest, offset: _offset, ...identity } = f.query;
   const query = FederationInputDownloadQuerySchema.parse({
     ...identity,
@@ -5296,8 +5318,12 @@ test("input downloads recheck current permissions and both signing purposes afte
   }
 });
 
-async function inputImportFixture(longExecution = false, batch = false) {
-  const f = await acceptedInputInventory(longExecution, batch);
+async function inputImportFixture(
+  longExecution = false,
+  batch = false,
+  inputDelivery?: "network" | "media",
+) {
+  const f = await acceptedInputInventory(longExecution, batch, inputDelivery);
   const preparation = new FederationPreparationService(db, b.signing.siteId, assets, clock);
   let calls = 0;
   const transport: FederationSend = async (_endpoint, jws, path) => {
@@ -5702,8 +5728,8 @@ test("input imports reject transport signing purposes revoked while receiving a 
   }
 });
 
-async function inputTransferFixture(batch = false) {
-  const f = await inputImportFixture(true, batch);
+async function inputTransferFixture(batch = false, inputDelivery?: "network" | "media") {
+  const f = await inputImportFixture(true, batch, inputDelivery);
   const imported = await f.imports.ensure(f.reservationId);
   if (!imported) throw new Error("Expected input inventory");
   const [member] = await db
@@ -7652,7 +7678,10 @@ test("input publication waits for every FileBatch member and publishes the compl
   }
 });
 
-test("workflow file slots create signed source snapshots through the ordinary Federation executor", async () => {
+test.each([
+  undefined,
+  "media",
+] as const)("workflow file slots create signed source snapshots with %s delivery through the ordinary Federation executor", async (delivery) => {
   const f = await inputInventoryFixture();
   try {
     const remote = new FederationWorkflowExecutor(db, a.signing.siteId, f.source, clock);
@@ -7673,6 +7702,8 @@ test("workflow file slots create signed source snapshots through the ordinary Fe
       agreementRevisionId: f.terms.agreementRevisionId,
       template: f.request.template,
       inputManifestDigest: f.request.inputManifestDigest,
+      inputDelivery: delivery,
+      resultDelivery: delivery,
       environmentLockDigest: f.request.environmentLockDigest,
       resources: f.request.resources,
       maxAmount: "1",
@@ -7711,6 +7742,8 @@ test("workflow file slots create signed source snapshots through the ordinary Fe
       .where(eq(federationOutbound.agreementRevisionId, f.terms.agreementRevisionId));
     expect(sent?.receipt?.status).toBe("RESERVED");
     expect(sent?.request.inputFilesDigest).toBe(snapshots[0]?.manifestDigest);
+    expect(sent?.request.inputDelivery).toBe(delivery);
+    expect(sent?.request.resultDelivery).toBe(delivery);
     await db
       .update(netdriveFiles)
       .set({ storageVersionId: "replaced" })
@@ -8359,7 +8392,9 @@ const taskMediaTest = process.env.KQ_MEDIA_AGE_TEST_BIN ? test : test.skip;
 
 async function taskMediaFixture(kind: "task-input" | "task-result" = "task-input") {
   const f =
-    kind === "task-input" ? await acceptedInputInventory(true, true) : await resultFixture();
+    kind === "task-input"
+      ? await acceptedInputInventory(true, true, "media")
+      : await resultFixture(resultPolicy, false, "media");
   const local = kind === "task-input" ? actor : receiver;
   const signing = kind === "task-input" ? a.signing : b.signing;
   await permission.set({ ...local, capability: "media.export", enabled: true }, actor.userId);
@@ -9011,3 +9046,174 @@ taskMediaTest(
     }
   },
 );
+
+test("media delivery keeps input inventory waiting across restarts without network attempts or quota duplication", async () => {
+  const f = await inputTransferFixture(true, "media");
+  try {
+    expect(f.imported).toMatchObject({ delivery: "media", state: "pending", reservedBytes: 8 });
+    time = new Date(clock().getTime() + 31_000);
+    expect(await f.transfers.pending([f.agentId])).toEqual([]);
+    await expect(f.transfers.begin(f.member.id, f.agentId)).rejects.toThrow("POLICY_DENIED");
+    const recovered = new FederationInputImports(db, f.preparation, f.exchange, clock);
+    expect(await recovered.ensure(f.reservationId)).toEqual(f.imported);
+    expect(await f.transferService().pending([f.agentId])).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(federationInputAttempts)
+        .where(eq(federationInputAttempts.transferId, f.member.id)),
+    ).toHaveLength(0);
+    await db
+      .update(federationInputImports)
+      .set({ delivery: "network" })
+      .where(eq(federationInputImports.id, f.imported.importId));
+    await expect(recovered.ensure(f.reservationId)).rejects.toThrow("OPERATION_CONFLICT");
+    await expect(f.transfers.begin(f.member.id, f.agentId)).rejects.toThrow("OPERATION_CONFLICT");
+    await db
+      .update(federationInputImports)
+      .set({ delivery: "media" })
+      .where(eq(federationInputImports.id, f.imported.importId));
+    await db.transaction((tx) =>
+      cancelFederationInputImport(tx, f.reservationId, "CANCELLATION_REQUESTED", clock()),
+    );
+    expect((await f.inventory())[0]).toMatchObject({
+      delivery: "media",
+      state: "cancelled",
+      reservedBytes: 0,
+    });
+    await expect(recovered.ensure(f.reservationId)).rejects.toThrow("CANCELLATION_REQUESTED");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("media delivery refuses input download credentials but preserves signed inventory exchange", async () => {
+  const f = await inputDownloadFixture("media");
+  try {
+    await expect(f.read()).rejects.toThrow("POLICY_DENIED");
+    expect(f.calls).toHaveLength(0);
+    await expect(
+      f.source.enqueueForWorkflow(
+        actor,
+        f.lease,
+        "remote",
+        f.invocation,
+        { ...f.plan, inputDelivery: "network" },
+        60,
+        {},
+        f.files,
+      ),
+    ).rejects.toThrow("Workflow invocation changed its delegation intent");
+    const preparation = new FederationPreparationService(db, b.signing.siteId, assets, clock);
+    const exchange = new FederationMaterialExchange(
+      db,
+      b.signing,
+      (_endpoint, jws) => f.source.materialChunk(jws, targetFingerprint),
+      preparation,
+      assets,
+      clock,
+    );
+    const received = await exchange.inputFiles(f.reservationId);
+    expect(received.manifest.inputs[0]?.files).toHaveLength(1);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("media delivery keeps result imports waiting and rejects a changed cached delivery mode", async () => {
+  const f = await resultImportFixture(1, false, "media");
+  expect(f.imported).toMatchObject({ delivery: "media", state: "pending" });
+  expect(await f.imports.pending([f.agentId])).not.toContainEqual(
+    expect.objectContaining({ importId: f.imported.id }),
+  );
+  await expect(f.imports.begin(f.member.id, f.agentId)).rejects.toThrow("POLICY_DENIED");
+  expect(await f.serviceImports().enqueue(actor, f.request.operationId, f.imported.id)).toEqual(
+    f.imported,
+  );
+  expect(
+    await f.serviceImports().enqueue(actor, f.request.operationId, crypto.randomUUID()),
+  ).toEqual(f.imported);
+  expect(
+    await db
+      .select()
+      .from(federationResultAttempts)
+      .where(eq(federationResultAttempts.transferId, f.member.id)),
+  ).toHaveLength(0);
+  await db
+    .update(federationResultImports)
+    .set({ delivery: "network" })
+    .where(eq(federationResultImports.id, f.imported.id));
+  await expect(f.imports.begin(f.member.id, f.agentId)).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationResultImports)
+    .set({ delivery: "media" })
+    .where(eq(federationResultImports.id, f.imported.id));
+  await f.imports.cancel(actor, f.imported.id);
+  const [cancelled] = await db
+    .select()
+    .from(federationResultImports)
+    .where(eq(federationResultImports.id, f.imported.id));
+  expect(cancelled).toMatchObject({ delivery: "media", state: "cancelled", reservedBytes: 0 });
+});
+
+test("media delivery blocks result download credentials on both platforms while allowing result metadata", async () => {
+  const f = await resultDownloadFixture("media");
+  let sent = false;
+  await expect(
+    f.download(async (...args) => {
+      sent = true;
+      return f.sendDownload(...args);
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  expect(sent).toBe(false);
+  const query = FederationResultDownloadQuerySchema.parse({
+    protocolVersion: 1,
+    kind: "result-download-query",
+    queryId: crypto.randomUUID(),
+    senderSiteId: a.signing.siteId,
+    recipientSiteId: b.signing.siteId,
+    operationId: f.saved.operationId,
+    agreementRevisionId: f.saved.agreementRevisionId,
+    taskId: f.saved.taskId,
+    attempt: f.saved.attempt,
+    reservationId: f.saved.receipt?.reservationId,
+    requestDigest: f.saved.requestDigest,
+    issuedAt: clock().toISOString(),
+    expiresAt: new Date(clock().getTime() + 30_000).toISOString(),
+    binding: f.binding,
+  });
+  let storageTouched = false;
+  f.downloads.storage.head = async () => {
+    storageTouched = true;
+    throw new Error("Must not access storage");
+  };
+  const jws = await signFederationMessage(FederationResultDownloadQuerySchema, query, a.signing);
+  await expect(f.responder.receiveDownload(jws, sourceFingerprint, f.downloads)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  expect(storageTouched).toBe(false);
+  expect(f.calls).toHaveLength(0);
+  time = new Date("2026-01-03T00:00:00.000Z");
+  expect((await f.read()).report.manifestDigest).toBe(f.binding.manifestDigest);
+});
+
+test("media delivery cannot export an originally network-only task through the local media reader", async () => {
+  const f = await acceptedInputInventory(true);
+  try {
+    const reader = await f.source.mediaInputs(actor, f.saved.operationId);
+    await expect(db.transaction(reader)).rejects.toThrow("POLICY_DENIED");
+  } finally {
+    await f.lease.release();
+  }
+  const result = await resultFixture();
+  await permission.set({ ...receiver, capability: "media.export", enabled: true }, actor.userId);
+  await expect(
+    db.transaction((tx) =>
+      result.responder.mediaResults(tx, receiver, {
+        operationId: result.saved.operationId,
+        agreementRevisionId: result.saved.agreementRevisionId,
+        recipientSiteId: a.signing.siteId,
+      }),
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+});

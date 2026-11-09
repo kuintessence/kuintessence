@@ -798,3 +798,8 @@ SelfAccount 实验还发现首次启动的 watchdog/Agent 建表竞态。watchdo
 ### 任务介质来源 Agent 导出
 
 2026-11-09：接通版本化对象的 AgentStream 许可及实际 age 密文导出，独立双端 HTTPS origin 设置、新旧能力协商、原代次/成员绑定、存储 I/O 后授权复查和最终原子发布。Server 与 Agent 均保留旧受管目录出口；旧 Agent 不接对象命令。任务/对象来源数据库 20 项、数据集回归 66 项、gRPC 6 项、实际 Agent 子进程 TLS/age 4 项及隔离 RustFS 真实签名 URL 1 项通过，覆盖同名对象被覆盖后仍导出获批旧版本。目标任务上传/原子发布、完整双平台恢复、Web/CLI 及 PR 预览继续待完成。详见[任务介质交付](../design/federation/task-media.md)。
+
+
+### 任务文件交付方式
+
+原签名委派和 Workflow 节点可分别选择输入/结果的 network/media 方式；原 import 持久保存并复核，网络 worker 和下载接口拒绝对 media 任务自动复制。旧请求默认网络，不改变旧签名；原任务重试不能切换交付方式。迁移 0168 由 Drizzle 生成。任务介质上传和原子发布仍未接通，当前 media 任务会等待，不能用于完整交付验收。见[任务介质交付](../design/federation/task-media.md#签名固定任务文件交付方式)。

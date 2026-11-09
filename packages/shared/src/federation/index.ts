@@ -152,6 +152,8 @@ const OperationFields = {
   attempt: z.number().int().min(1).max(2_147_483_647),
 };
 
+export const FederationFileDeliverySchema = z.enum(["network", "media"]);
+
 export const FederationDelegationSchema = z
   .strictObject({
     ...OperationFields,
@@ -164,6 +166,9 @@ export const FederationDelegationSchema = z
     // Parameters, software locks and input manifests are immutable, separately authorized assets.
     inputManifestDigest: FederationDigestSchema,
     inputFilesDigest: FederationDigestSchema.optional(),
+    // Omission preserves legacy signed messages; it means network delivery.
+    inputDelivery: FederationFileDeliverySchema.optional(),
+    resultDelivery: FederationFileDeliverySchema.optional(),
     environmentLockDigest: FederationDigestSchema,
     resources: FederationResourcesSchema,
     maxAmount: FederationAmountSchema,
@@ -183,6 +188,8 @@ export const FederationDelegationSchema = z
       });
     if (value.senderSiteId === value.recipientSiteId)
       ctx.addIssue({ code: "custom", message: "Delegation requires different sites" });
+    if (value.inputDelivery === "media" && !value.inputFilesDigest)
+      ctx.addIssue({ code: "custom", message: "Media inputs require a signed file inventory" });
   });
 export type FederationDelegation = z.infer<typeof FederationDelegationSchema>;
 

@@ -748,6 +748,7 @@ export class FederationOutboundService {
     );
     const read = async (tx: FederationTransaction) => {
       const snapshot = await authorize(tx);
+      if (snapshot.inputDelivery !== "network") throw new FederationError("POLICY_DENIED");
       const file = snapshot.inputExport?.bindings.find(
         (file) => file.descriptor === query.binding.descriptor && file.path === query.binding.path,
       );
@@ -944,6 +945,7 @@ export class FederationOutboundService {
         content: Buffer.from(federationCanonicalJson(content), "utf8"),
         inputExport,
         inputFilesDigest: saved.request.inputFilesDigest,
+        inputDelivery: saved.request.inputDelivery ?? "network",
         deadline: Math.min(
           confirmation?.expiresAtUnixMs ?? Number.POSITIVE_INFINITY,
           federationExecutionDeadline(saved.request),
@@ -1029,6 +1031,7 @@ export class FederationOutboundService {
       );
       const receipt = accepted.payload,
         request = original.payload;
+      if (request.inputDelivery !== "media") throw new FederationError("POLICY_DENIED");
       if (
         original.digest !== current.requestDigest ||
         federationCanonicalJson(request) !== federationCanonicalJson(current.request) ||
