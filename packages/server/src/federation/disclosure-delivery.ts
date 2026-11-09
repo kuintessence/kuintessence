@@ -480,6 +480,12 @@ export class FederationEvidenceService {
     });
   }
   async read(actor: FederationActor, caseId: string, grantId: string) {
+    const proof = await this.prepareRead(actor, caseId, grantId);
+    return this.db.transaction(
+      async (tx) => (await this.verifyRead(tx, actor, caseId, proof)).payload,
+    );
+  }
+  async prepareRead(actor: FederationActor, caseId: string, grantId: string) {
     if (!this.send) throw new FederationError("ASSET_UNAVAILABLE");
     const record = await this.db.transaction(async (tx) => {
       await this.visible(tx, actor, caseId);
@@ -507,9 +513,42 @@ export class FederationEvidenceService {
         authorizationJws,
       })),
     );
-    return this.db.transaction(async (tx) => {
-      await this.visible(tx, actor, caseId);
-      return this.verify(tx, record.scope, record.evidence, current.readId, pair);
-    });
+    return { record, current, pair };
+  }
+  async verifyRead(
+    tx: PgTransaction,
+    actor: FederationActor,
+    caseId: string,
+    proof: Awaited<ReturnType<FederationEvidenceService["prepareRead"]>>,
+  ) {
+    await this.visible(tx, actor, caseId);
+    const { record, current, pair } = proof;
+    if (record.caseId !== caseId || record.localSiteId !== this.signing.siteId)
+      throw new FederationError("POLICY_DENIED");
+    const payload = await this.verify(tx, record.scope, record.evidence, current.readId, pair);
+    let until = Math.min(
+      Date.parse(payload.grant.validUntil),
+      await verifyDisclosureReadPair(tx, this.trust, record.scope, current.readId, pair),
+    );
+    for (const envelope of [record.evidence.policy, record.evidence.disclosure]) {
+      for (const [siteId, jws] of [
+        [envelope.sourceSiteId, envelope.sourceJws],
+        [envelope.targetSiteId, envelope.targetJws],
+      ] as const) {
+        const key = await this.trust.resolveKey(
+          siteId,
+          federationMessageKeyId(jws),
+          new Date(),
+          tx,
+        );
+        until = Math.min(until, key.validUntil.getTime());
+      }
+    }
+    if (until <= Date.now()) throw new FederationError("AUTHORIZATION_EXPIRED");
+    return {
+      payload,
+      digest: record.scope.disclosureDigest,
+      expiresAt: new Date(until).toISOString(),
+    };
   }
 }

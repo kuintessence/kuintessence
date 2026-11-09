@@ -42,6 +42,8 @@ const response = ArbitrationContextSchema.parse({
   queryDigest: digest,
   sourceJws: "source",
   targetJws: "target",
+  financial: null,
+  subject: { recordType: "bill", recordId: randomUUID(), recordDigest: digest },
   binding: {
     ...bindingScope,
     arbitratorSiteId: evidenceRecipientSiteId,

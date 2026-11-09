@@ -119,6 +119,45 @@ export class FederationDisputeFreezeExchange {
       throw new FederationError("OPERATION_CONFLICT");
     return { ...row, payload: signed.payload, approvalJws: row.approvalJws, digest: row.digest };
   }
+  /** Revalidate an existing freeze against today's originals. No new freeze or ledger operation. */
+  async arbitrationSnapshot(tx: PgTransaction, caseId: string) {
+    const current = await this.disputes.financialSnapshot(tx, caseId);
+    const [row] = await tx.select().from(freezes).where(this.key(caseId)).for("share");
+    if (
+      !row ||
+      row.state !== "confirmed" ||
+      !["DISPUTED", "EVIDENCE_WAITING"].includes(current.record.state)
+    )
+      return null;
+    const original = await this.saved(tx, row, current.record.other);
+    this.checkIdentity(original.payload, current.record);
+    if (
+      !original.counterpartyJws ||
+      !current.view.localReady ||
+      current.view.headDigest !== original.payload.headDigest ||
+      current.view.mode !== original.payload.mode
+    )
+      throw new FederationError("DATA_WAITING");
+    if (
+      current.view.requiresLedgerFreeze &&
+      (!original.ledgerReceipt ||
+        original.ledgerReceipt.recordId !== caseId ||
+        original.ledgerReceipt.digest !== original.digest)
+    )
+      throw new FederationError("DATA_WAITING");
+    const source = current.record.payload.sourceSiteId === this.signing.siteId;
+    return {
+      current,
+      financial: {
+        headDigest: original.payload.headDigest,
+        freezeDigest: original.digest,
+        records: current.view.records,
+        ledgerReceipt: current.view.requiresLedgerFreeze ? original.ledgerReceipt : null,
+        sourceJws: source ? original.approvalJws : original.counterpartyJws,
+        targetJws: source ? original.counterpartyJws : original.approvalJws,
+      },
+    };
+  }
   private async confirm(tx: PgTransaction, current: Snapshot, digest: string) {
     // New commitments were already blocked by the case; old signatures must have finished first.
     await tx

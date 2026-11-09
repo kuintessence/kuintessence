@@ -809,6 +809,7 @@ export class FederationDisputeService {
     return {
       binding,
       policy: policy.payload,
+      subject: record.payload.subject,
       sourceJws: r.arbitration.sourceJws,
       targetJws: r.arbitration.targetJws,
     };

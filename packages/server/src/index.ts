@@ -54,6 +54,7 @@ import { FederationAgreementExchange } from "./federation/agreement-exchange";
 import { FederationAgreementService } from "./federation/agreements";
 import { FederationArbitrationContextService } from "./federation/arbitration-context";
 import { FederationArbitrationPolicyService } from "./federation/arbitration-policy";
+import { FederationArbitrationReviewService } from "./federation/arbitration-review";
 import { FederationArbitrationRevocationDelivery } from "./federation/arbitration-revocations";
 import { FederationAssetService } from "./federation/assets";
 import { FederationAttestationService } from "./federation/attestation";
@@ -1930,14 +1931,22 @@ const federationTerminalExchange = federationSigningKey
 const federationUsageExchange = federationSigningKey
   ? new FederationUsageExchange(db, federationSigningKey, federationSender, federationStorageGuard)
   : undefined;
-if (federationSigningKey)
+if (federationSigningKey) {
+  const evidence = new FederationEvidenceService(db, federationSigningKey, federationSender);
+  const contexts = new FederationArbitrationContextService(
+    db,
+    federationSigningKey,
+    federationSender,
+  );
   protectedApi.route(
     "/",
     createFederationEvidenceRoutes(
-      new FederationEvidenceService(db, federationSigningKey, federationSender),
-      new FederationArbitrationContextService(db, federationSigningKey, federationSender),
+      evidence,
+      contexts,
+      new FederationArbitrationReviewService(db, contexts, evidence),
     ),
   );
+}
 if (federationCasePublications)
   protectedApi.route(
     "/",

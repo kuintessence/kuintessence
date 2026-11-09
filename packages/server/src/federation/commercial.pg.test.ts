@@ -25,6 +25,12 @@ import {
   federationCommercialBills,
   federationCommercialRefunds,
   federationCompletionClaims,
+  federationDisclosureDownloads,
+  federationDisclosurePolicies,
+  federationDisclosureReadAuthorizations,
+  federationDisclosures,
+  federationDisputeDeliveries,
+  federationDisputeFreezes,
   federationDisputes,
   federationEvidence,
   federationEvidenceCases,
@@ -32,6 +38,7 @@ import {
   federationMarketRequests,
   federationMaterials,
   federationOutbound,
+  federationReceivedDisclosures,
   federationReservationPolicies,
   federationReservationProposals,
   federationReservations,
@@ -85,6 +92,7 @@ import {
   ArbitrationContextQuerySchema,
   ArbitrationContextSchema,
   ArbitrationContextViewSchema,
+  ArbitrationReviewSchema,
 } from "@kuintessence/shared/federation/arbitration-context";
 import { CommercialArbitrationTaskBindingSchema } from "@kuintessence/shared/federation/arbitration-policy";
 import { ArbitrationRevocationNoticeSchema } from "@kuintessence/shared/federation/arbitration-revocation-notice";
@@ -105,7 +113,10 @@ import {
   CommercialApprovalQuerySchema,
   CommercialApprovalWaitingSchema,
 } from "@kuintessence/shared/federation/commercial-approval-exchange";
-import { CommercialDisputeSchema } from "@kuintessence/shared/federation/disputes";
+import {
+  CommercialDisputeFreezeSchema,
+  CommercialDisputeSchema,
+} from "@kuintessence/shared/federation/disputes";
 import {
   type MarketAdapterProposalInput,
   type MarketAdvanceResult,
@@ -146,6 +157,7 @@ import {
   FederationArbitrationContextService,
 } from "./arbitration-context";
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
+import { FederationArbitrationReviewService } from "./arbitration-review";
 import { FederationArbitrationRevocationDelivery } from "./arbitration-revocations";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationClosingAutomation } from "./closing-automation";
@@ -156,9 +168,13 @@ import type { CommercialClient } from "./commercial-client";
 import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
+import { FederationDisclosureService } from "./disclosure";
 import { FederationEvidenceService } from "./disclosure-delivery";
+import { FederationDisclosurePolicyService } from "./disclosure-policy";
 import { FederationDispatchAuthorization } from "./dispatch-authorization";
+import { FederationDisputeDelivery } from "./dispute-delivery";
 import { lockFederationDisputeTask } from "./dispute-freeze";
+import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
 import { FederationDisputeService } from "./disputes";
 import { FederationExecutionAutomation } from "./execution-automation";
 import { FederationExecutionBindingService } from "./execution-binding";
@@ -360,6 +376,11 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
     .where(eq(submissions.id, row.id));
 }
 afterAll(async () => {
+  if (arbitrationSites.length)
+    await db
+      .delete(federationReceivedDisclosures)
+      .where(inArray(federationReceivedDisclosures.localSiteId, arbitrationSites));
+
   if (arbitrationSites.length) {
     await db
       .delete(federationEvidenceCases)
@@ -385,6 +406,24 @@ afterAll(async () => {
   }
   for (const f of fixtures) {
     const siteIds = [f.a.signing.siteId, f.b.signing.siteId];
+    await db
+      .delete(federationDisclosureDownloads)
+      .where(inArray(federationDisclosureDownloads.localSiteId, siteIds));
+    await db
+      .delete(federationDisclosureReadAuthorizations)
+      .where(inArray(federationDisclosureReadAuthorizations.localSiteId, siteIds));
+    await db
+      .delete(federationDisclosures)
+      .where(inArray(federationDisclosures.localSiteId, siteIds));
+    await db
+      .delete(federationDisclosurePolicies)
+      .where(inArray(federationDisclosurePolicies.localSiteId, siteIds));
+    await db
+      .delete(federationDisputeFreezes)
+      .where(inArray(federationDisputeFreezes.localSiteId, siteIds));
+    await db
+      .delete(federationDisputeDeliveries)
+      .where(inArray(federationDisputeDeliveries.localSiteId, siteIds));
     await db
       .delete(federationArbitrationPolicies)
       .where(inArray(federationArbitrationPolicies.localSiteId, siteIds));
@@ -955,7 +994,10 @@ async function executionFixture(
     },
   };
 }
-async function arbitrationForExecution(f: Awaited<ReturnType<typeof executionFixture>>) {
+async function arbitrationForExecution(
+  f: Awaited<ReturnType<typeof executionFixture>>,
+  fields: ("dueAmount" | "grossAmount")[] = ["dueAmount"],
+) {
   const arbitratorSiteId = randomUUID();
   arbitrationSites.push(arbitratorSiteId);
   await f.trust.addSite(
@@ -995,8 +1037,8 @@ async function arbitrationForExecution(f: Awaited<ReturnType<typeof executionFix
     policyId: randomUUID(),
     arbitratorSiteId,
     subjectTypes: ["bill"],
-    disclosures: [{ recordType: "bill", fields: ["dueAmount"] }],
-    requiredEvidence: [{ recordType: "bill", fields: ["dueAmount"] }],
+    disclosures: [{ recordType: "bill", fields }],
+    requiredEvidence: [{ recordType: "bill", fields }],
     decisionRule: "designated-arbitrator",
     actions: ["settle"],
     maxChargedAmount: "60",
@@ -1017,9 +1059,12 @@ async function arbitrationForExecution(f: Awaited<ReturnType<typeof executionFix
   return { source, target, policy, binding, confirm };
 }
 
-async function arbitrationAdmission(mode: "bilateral_direct" | "bilateral_attested") {
+async function arbitrationAdmission(
+  mode: "bilateral_direct" | "bilateral_attested",
+  fields?: ("dueAmount" | "grossAmount")[],
+) {
   const f = await executionFixture(true, true, false, undefined, mode);
-  const arbitration = await arbitrationForExecution(f);
+  const arbitration = await arbitrationForExecution(f, fields);
   const source = new FederationAgreementService(db, f.a.signing);
   const target = new FederationAgreementService(db, f.b.signing);
   const executionUserId = randomUUID();
@@ -11921,8 +11966,9 @@ test("execution dispute approval waits for a concurrent case transaction and obs
 async function arbitrationCaseFixture(
   mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
   legacy = false,
+  fields?: ("dueAmount" | "grossAmount")[],
 ) {
-  const f = await arbitrationAdmission(mode);
+  const f = await arbitrationAdmission(mode, fields);
   await f.arbitration.confirm();
   const request = {
     ...f.reservation.request,
@@ -12305,8 +12351,9 @@ test("arbitration case binding checks the original contract budget and mode even
 
 async function arbitrationContextFixture(
   mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  fields?: ("dueAmount" | "grossAmount")[],
 ) {
-  const f = await arbitrationCaseFixture(mode);
+  const f = await arbitrationCaseFixture(mode, false, fields);
   const owner = await fixture(); // R has its own local organization and user.
   const r = await testKeys(f.arbitration.policy.arbitratorSiteId);
   await f.trust.addKey(
@@ -12364,7 +12411,14 @@ async function arbitrationContextFixture(
   const send: FederationSend = async (endpoint, jws, path) => {
     if (offline) throw new Error("offline fixture");
     const key = endpoint === `https://${f.a.signing.siteId}.test.invalid` ? f.a : f.b;
-    if (path !== "/federation/v1/arbitration-contexts")
+    if (
+      !path ||
+      ![
+        "/federation/v1/arbitration-contexts",
+        "/federation/v1/disclosure-authorizations",
+        "/federation/v1/disclosure-downloads",
+      ].includes(path)
+    )
       throw new Error("Unexpected context endpoint");
     const ingress = createFederationIngress(db, key.signing);
     const res = await ingress.request(path, {
@@ -12378,6 +12432,7 @@ async function arbitrationContextFixture(
     }
     expect(res.headers.get("cache-control")).toBe("no-store");
     let response = await res.text();
+    if (path !== "/federation/v1/arbitration-contexts") return response;
     const query = ArbitrationContextQuerySchema.parse(
       JSON.parse(Buffer.from(jws.split(".")[1] ?? "", "base64url").toString()),
     );
@@ -12392,7 +12447,8 @@ async function arbitrationContextFixture(
     owner,
     r,
     scope,
-    evidence,
+    evidence: new FederationEvidenceService(db, r.signing, send),
+    send,
     service,
     fingerprint,
     deliveries,
@@ -12702,4 +12758,324 @@ test("arbitration context requires explicit message purposes and registered call
     .set({ revokedAt: new Date() })
     .where(eq(federationCertificates.fingerprint, f.fingerprint));
   await expect(f.read()).rejects.toThrow("UNTRUSTED_IDENTITY");
+});
+
+async function arbitrationReviewFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  fields?: ("dueAmount" | "grossAmount")[],
+) {
+  const f = await arbitrationContextFixture(mode, fields);
+  for (const siteId of [f.a.signing.siteId, f.b.signing.siteId])
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-dispute-freeze", "commercial-disclosure-policy", "commercial-disclosure", "commercial-disclosure-read-authorization"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, siteId));
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-disclosure-read-query", "commercial-disclosure-download-query"]'::jsonb`,
+    })
+    .where(eq(federationSigningKeys.siteId, f.r.signing.siteId));
+  const [certificate] = await db
+    .select()
+    .from(federationCertificates)
+    .where(eq(federationCertificates.siteId, f.b.signing.siteId));
+  if (!certificate) throw new Error("Missing opener fingerprint");
+  const delivery = new FederationDisputeDelivery(db, f.b.signing, async (_endpoint, jws) =>
+    f.sourceCases.receive(jws, certificate.fingerprint),
+  );
+  await delivery.discover();
+  await delivery.advanceNext();
+  const receiver = new FederationDisputeFreezeExchange(db, f.a.signing);
+  const freeze = new FederationDisputeFreezeExchange(db, f.b.signing, async (_endpoint, jws) =>
+    receiver.receive(jws, certificate.fingerprint),
+  );
+  await freeze.discover();
+  await freeze.advanceNext();
+  const frozen = await db
+    .select()
+    .from(federationDisputeFreezes)
+    .where(eq(federationDisputeFreezes.caseId, f.scope.caseId));
+  if (frozen.length !== 2 || frozen.some((row) => row.state !== "confirmed"))
+    throw new Error(
+      `Fixture freeze incomplete: ${frozen.map((r) => `${r.state}:${r.lastError}`).join(",")}`,
+    );
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "disclosure.approve", enabled: true },
+    f.actor.userId,
+  );
+  const aPolicy = new FederationDisclosurePolicyService(db, f.a.signing),
+    bPolicy = new FederationDisclosurePolicyService(db, f.b.signing);
+  const policy = await aPolicy.draft(f.actor, f.revisionId, {
+    policyId: randomUUID(),
+    recipientSiteId: f.r.signing.siteId,
+    disclosures: [{ recordType: "bill", fields: ["dueAmount", "grossAmount"] }],
+    validUntil: "2097-01-01T00:00:00Z",
+  });
+  const ap = await aPolicy.approve(f.actor, f.revisionId, policy),
+    bp = await bPolicy.approve(f.actor, f.revisionId, policy);
+  await aPolicy.attachCounterparty(f.actor, f.revisionId, policy.policyId, bp.approvalJws);
+  await bPolicy.attachCounterparty(f.actor, f.revisionId, policy.policyId, ap.approvalJws);
+  const aDisclosure = new FederationDisclosureService(db, f.a.signing),
+    bDisclosure = new FederationDisclosureService(db, f.b.signing);
+  const createMaterial = async (fields: ("dueAmount" | "grossAmount")[] = ["dueAmount"]) => {
+    const draft = await aDisclosure.draft(f.actor, f.revisionId, {
+      grantId: randomUUID(),
+      caseId: f.scope.caseId,
+      policyId: policy.policyId,
+      ...f.draft.subject,
+      recordType: "bill",
+      fields,
+      validUntil: "2096-01-01T00:00:00Z",
+    });
+    const a = await aDisclosure.approve(f.actor, f.revisionId, draft),
+      b = await bDisclosure.approve(f.actor, f.revisionId, draft);
+    await aDisclosure.attachCounterparty(f.actor, f.revisionId, draft.grant.grantId, b.approvalJws);
+    await bDisclosure.attachCounterparty(f.actor, f.revisionId, draft.grant.grantId, a.approvalJws);
+    const scope = {
+      ...f.scope,
+      grantId: draft.grant.grantId,
+      disclosureDigest: a.digest,
+      policyId: policy.policyId,
+      policyDigest: ap.digest,
+    };
+    await f.evidence.import(f.owner.actor, f.scope.caseId, scope);
+    return { draft, scope };
+  };
+  const material = await createMaterial();
+  const review = new FederationArbitrationReviewService(db, f.service, f.evidence);
+  return {
+    ...f,
+    frozen,
+    material,
+    createMaterial,
+    aDisclosure,
+    bDisclosure,
+    aPolicy,
+    policy,
+    review,
+    inspect: (grantIds = [material.draft.grant.grantId]) =>
+      review.review(f.owner.actor, f.scope.caseId, { grantIds }),
+  };
+}
+
+test("arbitration review verifies bilateral frozen heads and imported evidence without ledger waits or financial changes", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await arbitrationReviewFixture(mode);
+    const before = await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.request.budgetDomainId));
+    const queued = await db
+      .select()
+      .from(submissions)
+      .where(eq(submissions.agreementRevisionId, f.revisionId));
+    const result = ArbitrationReviewSchema.parse(await f.inspect());
+    const frozen = f.frozen[0];
+    if (!result.context.financial || !frozen?.payload || !frozen.digest)
+      throw new Error("Missing confirmed financial context");
+    expect(result.context.financial.headDigest).toBe(frozen.payload.headDigest);
+    expect(result.context.financial.freezeDigest).toBe(frozen.digest);
+    expect(result.context.financial?.ledgerReceipt).toBeNull();
+    expect(result.evidence).toEqual([
+      {
+        ...f.draft.subject,
+        grantId: f.material.draft.grant.grantId,
+        disclosureDigest: f.material.scope.disclosureDigest,
+        fields: ["dueAmount"],
+      },
+    ]);
+    expect(Date.parse(result.expiresAt)).toBeGreaterThan(Date.now());
+    for (const secret of [
+      f.original.requestJws,
+      f.original.receiptJws,
+      f.frozen[0]?.approvalJws,
+      f.draft.reason,
+      "Jws",
+      '"values"',
+    ])
+      expect(JSON.stringify(result)).not.toContain(secret ?? "missing");
+    expect(
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.request.budgetDomainId)),
+    ).toEqual(before);
+    expect(
+      await db.select().from(submissions).where(eq(submissions.agreementRevisionId, f.revisionId)),
+    ).toEqual(queued);
+  }
+});
+
+test("arbitration review rejects missing freeze, missing evidence, excess fields and duplicate selections", async () => {
+  const pending = await arbitrationContextFixture();
+  expect((await pending.read()).financial).toBeNull();
+  await expect(
+    new FederationArbitrationReviewService(db, pending.service, pending.evidence).review(
+      pending.owner.actor,
+      pending.scope.caseId,
+      { grantIds: [] },
+    ),
+  ).rejects.toThrow("DATA_WAITING");
+  const f = await arbitrationReviewFixture();
+  await expect(f.inspect([])).rejects.toThrow("DATA_WAITING");
+  await expect(
+    f.inspect([f.material.draft.grant.grantId, f.material.draft.grant.grantId]),
+  ).rejects.toThrow();
+  const excess = await f.createMaterial(["dueAmount", "grossAmount"]);
+  // A disclosure policy can allow more than the original arbitration policy; the latter still bounds this review.
+  await expect(f.inspect([excess.draft.grant.grantId])).rejects.toThrow("POLICY_DENIED");
+  await f.aDisclosure.revoke(f.actor, f.revisionId, f.material.draft.grant.grantId);
+  await expect(f.inspect()).rejects.toThrow();
+});
+
+test("arbitration review requires independent evidence authority and rechecks it after the network", async () => {
+  const f = await arbitrationReviewFixture();
+  await new FederationPermissionService(db).set(
+    { ...f.owner.actor, capability: "disclosure.receive", enabled: false },
+    f.owner.actor.userId,
+  );
+  await expect(f.inspect()).rejects.toThrow("POLICY_DENIED");
+  await new FederationPermissionService(db).set(
+    { ...f.owner.actor, capability: "disclosure.receive", enabled: true },
+    f.owner.actor.userId,
+  );
+  const evidence = new FederationEvidenceService(db, f.r.signing, async (...args) => {
+    const response = await f.send(...args);
+    await new FederationPermissionService(db).set(
+      { ...f.owner.actor, capability: "disclosure.receive", enabled: false },
+      f.owner.actor.userId,
+    );
+    return response;
+  });
+  await expect(
+    new FederationArbitrationReviewService(db, f.service, evidence).review(
+      f.owner.actor,
+      f.scope.caseId,
+      { grantIds: [f.material.draft.grant.grantId] },
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+});
+
+test("arbitration review rejects mismatched frozen signatures, changed heads, and another case's imported material", async () => {
+  const f = await arbitrationReviewFixture();
+  const other = await arbitrationReviewFixture();
+  await expect(f.inspect([other.material.draft.grant.grantId])).rejects.toThrow(
+    "ASSET_UNAVAILABLE",
+  );
+  const saved = f.frozen.find((r) => r.localSiteId === f.a.signing.siteId);
+  if (!saved?.counterpartyJws) throw new Error("Missing freeze original");
+  await db
+    .update(federationDisputeFreezes)
+    .set({ counterpartyJws: saved.approvalJws })
+    .where(
+      and(
+        eq(federationDisputeFreezes.localSiteId, f.a.signing.siteId),
+        eq(federationDisputeFreezes.caseId, f.scope.caseId),
+      ),
+    );
+  await expect(f.inspect()).rejects.toThrow("UNTRUSTED_IDENTITY");
+  await db
+    .update(federationDisputeFreezes)
+    .set({ counterpartyJws: saved.counterpartyJws })
+    .where(
+      and(
+        eq(federationDisputeFreezes.localSiteId, f.a.signing.siteId),
+        eq(federationDisputeFreezes.caseId, f.scope.caseId),
+      ),
+    );
+  await db
+    .update(federationCommercialBills)
+    .set({ counterpartyJws: null })
+    .where(
+      and(
+        eq(federationCommercialBills.localSiteId, f.a.signing.siteId),
+        eq(federationCommercialBills.billId, f.draft.subject.recordId),
+      ),
+    );
+  await expect(f.inspect()).rejects.toThrow("DATA_WAITING");
+});
+
+test("arbitration review HTTP rejects automation and malformed selections and returns no execution permit", async () => {
+  const f = await arbitrationReviewFixture();
+  const app = new Hono();
+  let automation = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.owner.actor as never);
+    c.set("automation" as never, automation as never);
+    await next();
+  });
+  app.route("/", createFederationEvidenceRoutes(f.evidence, f.service, f.review));
+  const call = (body: unknown) =>
+    app.request(`/federation/evidence-cases/${f.scope.caseId}/arbitration-review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const ok = await call({ grantIds: [f.material.draft.grant.grantId] });
+  expect(ok.status).toBe(200);
+  expect(ok.headers.get("cache-control")).toBe("no-store");
+  const parsed = z.object({ data: ArbitrationReviewSchema }).parse(await ok.json());
+  expect(Object.keys(parsed.data)).toEqual(["context", "evidence", "expiresAt"]);
+  expect((await call({ grantIds: [f.material.draft.grant.grantId], execute: true })).status).toBe(
+    400,
+  );
+  automation = true;
+  expect((await call({ grantIds: [f.material.draft.grant.grantId] })).status).toBe(403);
+});
+
+test("arbitration review can combine authorized fields only for the same bound original and cannot outlive context", async () => {
+  const f = await arbitrationReviewFixture("bilateral_direct", ["dueAmount", "grossAmount"]);
+  await expect(f.inspect()).rejects.toThrow("DATA_WAITING");
+  const second = await f.createMaterial(["grossAmount"]);
+  const ids = [f.material.draft.grant.grantId, second.draft.grant.grantId];
+  expect((await f.inspect(ids)).evidence).toHaveLength(2);
+  const evidence = new FederationEvidenceService(db, f.r.signing, async (...args) => {
+    const response = await f.send(...args);
+    setSystemTime(new Date(Date.now() + 31000));
+    return response;
+  });
+  try {
+    await expect(
+      new FederationArbitrationReviewService(db, f.service, evidence).review(
+        f.owner.actor,
+        f.scope.caseId,
+        { grantIds: ids },
+      ),
+    ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  } finally {
+    setSystemTime();
+  }
+});
+
+test("arbitration review rejects signed but unauthorized subject types and future freeze proofs", async () => {
+  const f = await arbitrationReviewFixture();
+  f.change(async (jws, key) => {
+    const context = ArbitrationContextSchema.parse(
+      JSON.parse(Buffer.from(jws.split(".")[1] ?? "", "base64url").toString()),
+    );
+    context.subject.recordType = "usage";
+    return signFederationMessage(ArbitrationContextSchema, context, key.signing);
+  });
+  await expect(f.inspect()).rejects.toThrow("POLICY_DENIED");
+  const original = f.frozen[0]?.payload;
+  if (!original) throw new Error("Missing frozen boundary");
+  const future = { ...original, issuedAt: new Date(Date.now() + 86400000).toISOString() };
+  const sourceJws = await signFederationMessage(CommercialDisputeFreezeSchema, future, f.a.signing);
+  const targetJws = await signFederationMessage(CommercialDisputeFreezeSchema, future, f.b.signing);
+  const digest = `sha256:${createHash("sha256")
+    .update(Buffer.from(sourceJws.split(".")[1] ?? "", "base64url"))
+    .digest("hex")}`;
+  f.change(async (jws, key) => {
+    const context = ArbitrationContextSchema.parse(
+      JSON.parse(Buffer.from(jws.split(".")[1] ?? "", "base64url").toString()),
+    );
+    if (!context.financial) throw new Error("Missing signed financial context");
+    context.financial = { ...context.financial, sourceJws, targetJws, freezeDigest: digest };
+    return signFederationMessage(ArbitrationContextSchema, context, key.signing);
+  });
+  await expect(f.inspect()).rejects.toThrow("POLICY_DENIED");
 });

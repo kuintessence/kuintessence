@@ -1,5 +1,6 @@
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
+import { ArbitrationReviewInputSchema } from "@kuintessence/shared/federation/arbitration-context";
 import {
   CommercialDisclosureReadScopeSchema,
   CommercialEvidenceCaseInputSchema,
@@ -8,6 +9,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationArbitrationContextService } from "../federation/arbitration-context";
+import type { FederationArbitrationReviewService } from "../federation/arbitration-review";
 import type { FederationEvidenceService } from "../federation/disclosure-delivery";
 import { FederationDeliveryError } from "../federation/outbound-client";
 import type { FederationActor } from "../federation/permissions";
@@ -17,6 +19,7 @@ import { kqValidator } from "../middleware/validator";
 export function createFederationEvidenceRoutes(
   service: FederationEvidenceService,
   arbitration?: FederationArbitrationContextService,
+  review?: FederationArbitrationReviewService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   const path = "/federation/evidence-cases";
@@ -110,5 +113,20 @@ export function createFederationEvidenceRoutes(
       data: await arbitration.read(c.get("federationActor"), c.req.valid("param").caseId),
     });
   });
+  r.post(
+    `${path}/:caseId/arbitration-review`,
+    kqValidator("param", id),
+    kqValidator("json", ArbitrationReviewInputSchema),
+    async (c) => {
+      if (!review) throw new FederationError("ASSET_UNAVAILABLE");
+      return c.json({
+        data: await review.review(
+          c.get("federationActor"),
+          c.req.valid("param").caseId,
+          c.req.valid("json"),
+        ),
+      });
+    },
+  );
   return r;
 }

@@ -13875,3 +13875,33 @@ test("case revocation rechecks the independent envelope key after a real publica
   expect(await receiving).toBeInstanceOf(FederationError);
   expect(await f.received()).toHaveLength(0);
 });
+
+test("arbitration freeze observation waits for native receipt and revalidates the confirmed local head", async () => {
+  const f = await nativeFreezeFixture();
+  const read = () => db.transaction((tx) => f.freeze.arbitrationSnapshot(tx, f.original.caseId));
+  await f.advance();
+  expect(await read()).toBeNull();
+  for (let i = 0; i < 3; i++) await f.worker().advanceNext();
+  await f.dueBoth();
+  await f.receiver.advanceNext();
+  await f.freeze.advanceNext();
+  const snapshot = await read();
+  if (!snapshot) throw new Error("Missing confirmed native freeze observation");
+  expect(snapshot.financial.ledgerReceipt).toEqual({
+    recordId: f.original.caseId,
+    digest: snapshot.financial.freezeDigest,
+  });
+  const original = await f.read();
+  if (!original?.payload) throw new Error("Missing original native freeze");
+  expect(snapshot.financial.headDigest).toBe(original.payload.headDigest);
+  const before = await f.queued();
+  f.setOnline(false);
+  expect((await read())?.financial).toEqual(snapshot?.financial);
+  expect(await f.queued()).toEqual(before);
+  // This observes the persisted native confirmation; it does not assert current ledger availability.
+  await db
+    .update(federationSigningKeys)
+    .set({ revokedAt: new Date() })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await expect(read()).rejects.toThrow("UNTRUSTED_IDENTITY");
+});
