@@ -4,6 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import { verifyDatabaseAttestation } from "./fabric-evidence-database";
+import { FabricEvidenceProbeFailureSchema } from "./fabric-evidence-diagnostics";
 
 interface NetworkControls {
   onCleanup(cleanup: () => Promise<void>): void;
@@ -56,7 +57,19 @@ export async function verifyEvidenceNetwork(root: string, controls: NetworkContr
         new Response(child.stderr).text(),
       ]);
       await writeFile(join(root, `${name}.log`), stdout + stderr, { mode: 0o600 });
-      assert.equal(code, 0, `Probe failed: inspect ${name}.log in private artifacts`);
+      if (code !== 0) {
+        const failure = FabricEvidenceProbeFailureSchema.safeParse(
+          await Bun.file(response)
+            .json()
+            .catch(() => null),
+        );
+        const details = failure.success
+          ? `${failure.data.error}, gRPC=${failure.data.code ?? "unknown"}`
+          : "no valid diagnostic response";
+        assert.fail(
+          `${name} action=${input.action}, exit=${code}: ${details}; inspect private artifacts`,
+        );
+      }
       return Reply.parse(JSON.parse(await readFile(response, "utf8")));
     } finally {
       clearTimeout(timeout);

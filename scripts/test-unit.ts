@@ -22,6 +22,7 @@ const slices: TestSlice[] = [
       "packages/fabric-adapter",
       "contracts/fabric",
       "scripts/fabric-case-check.test.ts",
+      "scripts/fabric-evidence-diagnostics.test.ts",
       "packages/proto",
       "packages/db",
       "packages/cli",

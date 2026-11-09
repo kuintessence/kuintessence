@@ -25,7 +25,7 @@ import {
   AttestationFailure,
   UnixAttestationClient,
 } from "../packages/server/src/federation/attestation-client";
-
+import { fabricEvidenceProbeFailure } from "./fabric-evidence-diagnostics";
 import { Network, Site } from "./fabric-evidence-fixture";
 
 const Request = z.discriminatedUnion("action", [
@@ -360,10 +360,9 @@ try {
   await write(replyPath, await execute());
 } catch (error) {
   // Keep test diagnostics useful without printing transient data or serialized private proposals.
-  const code =
-    error && typeof error === "object" && "code" in error ? String(error.code) : "unknown";
-  await write(replyPath, { error: error instanceof Error ? error.name : "Error", code });
-  process.stderr.write(`Fabric evidence probe failed (${code}); request: ${requestPath}\n`);
+  const failure = fabricEvidenceProbeFailure(error);
+  await write(replyPath, failure);
+  process.stderr.write(`Fabric evidence probe failed (${failure.code ?? "unknown"})\n`);
   process.exitCode = 1;
 } finally {
   gateway.close();
