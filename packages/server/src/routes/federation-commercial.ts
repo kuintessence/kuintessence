@@ -169,6 +169,16 @@ export function createFederationCommercialRoutes(
         });
       },
     );
+    r.get(
+      `${path}/:caseId/financial-view`,
+      kqValidator("param", id.extend({ caseId: z.uuid() })),
+      async (c) => {
+        const { revisionId, caseId } = c.req.valid("param");
+        return c.json({
+          data: await disputes.financialView(c.get("federationActor"), revisionId, caseId),
+        });
+      },
+    );
     r.post(
       `${path}/draft`,
       kqValidator("param", id),

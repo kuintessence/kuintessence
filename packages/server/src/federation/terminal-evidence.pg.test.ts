@@ -27,6 +27,7 @@ import {
   federationCommercialBills,
   federationCommercialDiscounts,
   federationCommercialPayments,
+  federationCommercialRefunds,
   federationCommercialSettlements,
   federationCommercialSubmissions,
   federationDisputeDeliveries,
@@ -55,6 +56,7 @@ import type { FederationAccountingRequest } from "@kuintessence/shared/federatio
 import {
   FederationAcceptanceSchema,
   type FederationAgreement,
+  FederationCancellationReceiptSchema,
 } from "@kuintessence/shared/federation";
 import {
   CommercialAdjustmentListSchema,
@@ -63,12 +65,14 @@ import {
   CommercialBillSchema,
   CommercialDiscountSchema,
   CommercialPaymentSchema,
+  CommercialRefundSchema,
   CommercialSettlementSchema,
   type CommercialUsageCorrectionInput,
   CommercialUsageSchema,
   commercialAutomaticMeters,
 } from "@kuintessence/shared/federation/commercial";
 import {
+  CommercialDisputeFinancialViewSchema,
   CommercialDisputeListSchema,
   CommercialDisputeReceiptSchema,
   CommercialDisputeSchema,
@@ -8004,4 +8008,419 @@ test("dispute delivery validates the original before sending and rejects a repla
     receiptJws: null,
   });
   expect((await f.received())?.digest).toBe(f.original.digest);
+});
+
+async function financialDispute(
+  f: Parameters<typeof disputeAccess>[0] &
+    Pick<Awaited<ReturnType<typeof billingExchangeFixture>>, "revisionId" | "fingerprint">,
+) {
+  const c = await disputeAccess(f);
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-dispute-receipt"]'::jsonb`,
+    })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  const draft = await c.sourceCases.draft(f.sourceActor, f.revisionId, c.input);
+  const original = await c.sourceCases.open(f.sourceActor, f.revisionId, draft);
+  await c.providerCases.receive(original.openingJws, f.fingerprint);
+  return {
+    ...c,
+    original,
+    sourceView: () => c.sourceCases.financialView(f.sourceActor, f.revisionId, draft.caseId),
+    providerView: () => c.providerCases.financialView(f.actor, f.revisionId, draft.caseId),
+  };
+}
+
+test("dispute financial view compares empty local commitments without claiming bilateral freeze", async () => {
+  const f = await billingExchangeFixture(),
+    c = await financialDispute(f);
+  const a = await c.sourceView(),
+    b = await c.providerView();
+  expect(a).toMatchObject({ localReady: true, records: [], requiresLedgerFreeze: false });
+  expect(a.headDigest).toBe(b.headDigest);
+  expect(a.headDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+  expect((await c.sourceCases.list(f.sourceActor, f.revisionId)).data[0]?.state).toBe(
+    "FREEZE_PENDING",
+  );
+  expect((await c.providerCases.list(f.actor, f.revisionId)).data[0]?.state).toBe("FREEZE_PENDING");
+  expect(await c.sourceView()).toMatchObject({ headDigest: a.headDigest });
+});
+
+test("dispute financial view tracks original in-flight signatures and applications on both sites", async () => {
+  const f = await settlementFixture(),
+    approvals = await f.approve(),
+    c = await financialDispute(f);
+  const before = await c.sourceView();
+  expect(before).toMatchObject({ localReady: false, headDigest: null });
+  expect(before.records).toContainEqual({
+    recordType: "settlement",
+    recordId: f.draft.settlementId,
+    recordDigest: approvals.source.digest,
+    state: "counterparty_waiting",
+  });
+  await f.providerSettlement.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.draft.settlementId,
+    approvals.source.approvalJws,
+  );
+  expect((await c.providerView()).localReady).toBe(true);
+  expect((await c.sourceView()).localReady).toBe(false);
+  await f.sourceSettlement.attachCounterparty(
+    f.sourceActor,
+    f.revisionId,
+    f.draft.settlementId,
+    approvals.provider.approvalJws,
+  );
+  const a = await c.sourceView(),
+    b = await c.providerView();
+  expect(a.localReady).toBe(true);
+  expect(a.headDigest).toBe(b.headDigest);
+  const key = and(
+    eq(federationCommercialSettlements.localSiteId, f.source.signing.siteId),
+    eq(federationCommercialSettlements.settlementId, f.draft.settlementId),
+  );
+  const [saved] = await db
+    .update(federationCommercialSettlements)
+    .set({ appliedAt: null })
+    .where(key)
+    .returning();
+  expect(saved?.counterpartyJws).toBeTruthy();
+  expect((await c.sourceView()).records.find((r) => r.recordType === "settlement")?.state).toBe(
+    "application_waiting",
+  );
+  expect((await c.sourceView()).headDigest).toBeNull();
+  expect((await c.sourceCases.list(f.sourceActor, f.revisionId)).data[0]?.state).toBe(
+    "FREEZE_PENDING",
+  );
+});
+
+test("dispute financial view includes every adjustment and waits for held debit completion", async () => {
+  const f = await adjustmentServiceFixture();
+  const first = await f.approveAdjustment(await f.make("40"));
+  await f.attachAdjustment(first);
+  const second = await f.approveAdjustment(await f.make("55"));
+  const c = await financialDispute(f),
+    budgetBefore = await f.budget();
+  const before = await c.providerView();
+  expect(before.records.filter((r) => r.recordType === "adjustment")).toHaveLength(2);
+  expect(before.localReady).toBe(false);
+  expect(before.headDigest).toBeNull();
+  expect(await f.budget()).toEqual(budgetBefore);
+  expect((await f.sourceProjection())?.adjustmentHeldAmount).toBe("15");
+  await f.attachAdjustment(second);
+  const ready = await c.providerView();
+  expect(ready.localReady).toBe(true);
+  expect(ready.headDigest).toBe((await c.sourceView()).headDigest);
+  expect((await f.sourceProjection())?.adjustmentHeldAmount).toBe("0");
+  expect(ready.records.map((r) => r.recordId)).toContain(first.provider.adjustmentId);
+  const key = and(
+    eq(federationCommercialAdjustments.localSiteId, f.provider.signing.siteId),
+    eq(federationCommercialAdjustments.adjustmentId, second.provider.adjustmentId),
+  );
+  await db.update(federationCommercialAdjustments).set({ number: 3 }).where(key);
+  await expect(c.providerView()).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("dispute financial view in attested mode does not wait for evidence-only ledger submissions", async () => {
+  const f = await adjustmentServiceFixture("bilateral_attested"),
+    c = await financialDispute(f);
+  const pending = await db
+    .select()
+    .from(federationCommercialSubmissions)
+    .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+  expect(pending.some((r) => r.state === "pending")).toBe(true);
+  const a = await c.sourceView(),
+    b = await c.providerView();
+  expect(a.mode).toBe("bilateral_attested");
+  expect(a.localReady).toBe(true);
+  expect(a.requiresLedgerFreeze).toBe(false);
+  expect(a.headDigest).toBe(b.headDigest);
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId)),
+  ).toEqual(pending);
+});
+
+test("dispute financial view revalidates signatures and task scope instead of trusting ready columns", async () => {
+  const f = await billingExchangeFixture();
+  const approved = await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  const c = await financialDispute(f);
+  const key = and(
+    eq(federationCommercialBills.localSiteId, f.provider.signing.siteId),
+    eq(federationCommercialBills.billId, approved.billId),
+  );
+  await db
+    .update(federationCommercialBills)
+    .set({ payload: { ...approved.payload, domainId: randomUUID() } })
+    .where(key);
+  await expect(c.providerView()).rejects.toThrow("OPERATION_CONFLICT");
+  const replaced = { ...approved.payload, domainId: randomUUID() };
+  const jws = await signFederationMessage(CommercialBillSchema, replaced, f.provider.signing);
+  const signed = await verifyFederationMessage(
+    CommercialBillSchema,
+    jws,
+    await f.trust.resolveKey(f.provider.signing.siteId, f.provider.signing.keyId, new Date()),
+    new Date(),
+  );
+  await db
+    .update(federationCommercialBills)
+    .set({ payload: replaced, approvalJws: jws, digest: signed.digest })
+    .where(key);
+  await expect(c.providerView()).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationCommercialBills)
+    .set({ payload: approved.payload, approvalJws: approved.approvalJws, digest: approved.digest })
+    .where(key);
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'commercial-bill'` })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await expect(c.providerView()).rejects.toThrow("UNTRUSTED_IDENTITY");
+});
+
+test("dispute financial view is scoped to the case with no original prices, amounts, signatures or approval rights", async () => {
+  const f = await settlementFixture(),
+    c = await financialDispute(f);
+  const permissions = new FederationPermissionService(db);
+  await permissions.set(
+    { ...f.sourceActor, capability: "dispute.read", enabled: true },
+    f.sourceActor.userId,
+  );
+  await permissions.set(
+    { ...f.sourceActor, capability: "dispute.open", enabled: false },
+    f.sourceActor.userId,
+  );
+  await permissions.set(
+    { ...f.sourceActor, capability: "agreement.approve", enabled: false },
+    f.sourceActor.userId,
+  );
+  const args: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.source.signing),
+    new FederationCommercialSubmissionService(db, f.source.signing.siteId),
+  ];
+  args[23] = c.sourceCases;
+  const app = new Hono<{ Variables: { principal: BoundPrincipal; automation: boolean } }>();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  let actor = f.sourceActor,
+    automation = false;
+  app.use("*", async (ctx, next) => {
+    ctx.set("principal", {
+      sub: actor.userId,
+      userId: actor.userId,
+      orgId: actor.orgId,
+      orgIds: [actor.orgId],
+      role: "platform_admin",
+      email: "fixture@example.invalid",
+      memberships: [{ orgId: actor.orgId, role: "owner" }],
+      capabilities: [],
+    });
+    ctx.set("automation", automation);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...args));
+  const path = `/federation/commercial-agreements/${f.revisionId}/disputes/${c.original.caseId}/financial-view`;
+  const response = await app.request(path),
+    text = await response.text();
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(CommercialDisputeFinancialViewSchema.parse(JSON.parse(text).data).records).toHaveLength(1);
+  for (const field of [
+    "approvalJws",
+    "payload",
+    "prices",
+    "chargedAmount",
+    "dueAmount",
+    "openedBy",
+    "leaseToken",
+  ])
+    expect(text).not.toContain(field);
+  await expect(
+    c.sourceCases.financialView(f.sourceActor, randomUUID(), c.original.caseId),
+  ).rejects.toThrow("POLICY_DENIED");
+  actor = f.actor;
+  expect((await app.request(path)).status).toBe(403);
+  actor = f.sourceActor;
+  automation = true;
+  expect((await app.request(path)).status).toBe(403);
+  automation = false;
+  await permissions.set(
+    { ...f.sourceActor, capability: "dispute.read", enabled: false },
+    f.sourceActor.userId,
+  );
+  expect((await app.request(path)).status).toBe(403);
+});
+
+test("dispute financial view includes pending refunds and validates their signed cancellation binding", async () => {
+  const f = await billingExchangeFixture(),
+    c = await financialDispute(f);
+  cleanup.push(async () => {
+    await db
+      .delete(federationCommercialRefunds)
+      .where(eq(federationCommercialRefunds.localSiteId, f.source.signing.siteId));
+  });
+  for (const siteId of [f.source.signing.siteId, f.provider.signing.siteId])
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-refund", "cancellation-receipt"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, siteId));
+  const request = f.draft.request,
+    now = new Date().toISOString();
+  const [operation] = await db
+    .select()
+    .from(federationOutbound)
+    .where(
+      and(
+        eq(federationOutbound.localSiteId, f.source.signing.siteId),
+        eq(federationOutbound.operationId, request.operationId),
+      ),
+    );
+  if (!operation) throw new Error("Missing source request original");
+  const receipt = FederationCancellationReceiptSchema.parse({
+    protocolVersion: 1,
+    kind: "cancellation-receipt",
+    operationId: request.operationId,
+    senderSiteId: request.recipientSiteId,
+    recipientSiteId: request.senderSiteId,
+    agreementRevisionId: f.revisionId,
+    taskId: request.taskId,
+    attempt: request.attempt,
+    requestDigest: operation.requestDigest,
+    cancellationDigest: `sha256:${"a".repeat(64)}`,
+    recordedAt: now,
+    observedAt: now,
+    reservationId: f.reservationId,
+    state: "stopped",
+    workflow: null,
+  });
+  const cancellationReceiptJws = await signFederationMessage(
+    FederationCancellationReceiptSchema,
+    receipt,
+    f.provider.signing,
+  );
+  // Stored-original fixture: this exercises observation, not execution cancellation or refund approval.
+  const value = CommercialRefundSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-refund",
+    refundId: randomUUID(),
+    domainId: f.contract.domainId,
+    agreementDigest: f.draft.agreementDigest,
+    request,
+    requestDigest: operation.requestDigest,
+    cancellationReceiptJws,
+    releasedAmount: request.maxAmount,
+    issuedAt: new Date().toISOString(),
+    salt: "c".repeat(64),
+    reason: "Prior signed release",
+  });
+  const approvalJws = await signFederationMessage(CommercialRefundSchema, value, f.source.signing);
+  const own = await f.trust.resolveKey(f.source.signing.siteId, f.source.signing.keyId, new Date());
+  const signed = await verifyFederationMessage(
+    CommercialRefundSchema,
+    approvalJws,
+    own,
+    new Date(),
+  );
+  const key = and(
+    eq(federationCommercialRefunds.localSiteId, f.source.signing.siteId),
+    eq(federationCommercialRefunds.refundId, value.refundId),
+  );
+  await db.insert(federationCommercialRefunds).values({
+    localSiteId: f.source.signing.siteId,
+    localOrgId: f.sourceActor.orgId,
+    refundId: value.refundId,
+    agreementRevisionId: f.revisionId,
+    operationId: request.operationId,
+    payload: value,
+    digest: signed.digest,
+    approvalJws,
+    approvedBy: f.sourceActor.userId,
+  });
+  expect((await c.sourceView()).records).toEqual([
+    {
+      recordType: "refund",
+      recordId: value.refundId,
+      recordDigest: signed.digest,
+      state: "counterparty_waiting",
+    },
+  ]);
+  const counterpartyJws = await signFederationMessage(
+    CommercialRefundSchema,
+    value,
+    f.provider.signing,
+  );
+  await db.update(federationCommercialRefunds).set({ counterpartyJws }).where(key);
+  expect((await c.sourceView()).records[0]?.state).toBe("application_waiting");
+  expect((await c.sourceView()).headDigest).toBeNull();
+  const wrongReceipt = await signFederationMessage(
+    FederationCancellationReceiptSchema,
+    { ...receipt, taskId: randomUUID() },
+    f.provider.signing,
+  );
+  const changed = { ...value, cancellationReceiptJws: wrongReceipt };
+  const changedJws = await signFederationMessage(CommercialRefundSchema, changed, f.source.signing);
+  const changedSigned = await verifyFederationMessage(
+    CommercialRefundSchema,
+    changedJws,
+    own,
+    new Date(),
+  );
+  await db
+    .update(federationCommercialRefunds)
+    .set({
+      payload: changed,
+      digest: changedSigned.digest,
+      approvalJws: changedJws,
+      counterpartyJws: null,
+    })
+    .where(key);
+  await expect(c.sourceView()).rejects.toThrow("POLICY_DENIED");
+});
+
+test("dispute financial view keeps one database snapshot while an original settlement finishes", async () => {
+  const f = await settlementFixture(),
+    approved = await f.approve(),
+    c = await financialDispute(f);
+  const entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  const original = f.trust.resolveKey.bind(f.trust);
+  let pause = true;
+  const resolve = spyOn(FederationTrustRegistry.prototype, "resolveKey").mockImplementation(
+    async (...args) => {
+      const result = await original(...args);
+      if (pause && args[3]) {
+        pause = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return result;
+    },
+  );
+  const observing = c.providerView();
+  try {
+    await entered.promise;
+    await f.providerSettlement.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      f.draft.settlementId,
+      approved.source.approvalJws,
+    );
+    release.resolve();
+    const snapshot = await observing;
+    expect(snapshot.localReady).toBe(false);
+    expect(snapshot.records.find((r) => r.recordType === "settlement")?.state).toBe(
+      "counterparty_waiting",
+    );
+    expect((await c.providerView()).localReady).toBe(true);
+    expect((await c.sourceView()).localReady).toBe(false);
+  } finally {
+    release.resolve();
+    await observing;
+    resolve.mockRestore();
+  }
 });

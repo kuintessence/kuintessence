@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FederationModeSchema } from "./index";
 import { FederationDigestSchema } from "./references";
 
 export const CommercialDisputeSubjectSchema = z.strictObject({
@@ -90,3 +91,40 @@ export const CommercialDisputeListSchema = z.object({
   data: CommercialDisputeRecordSchema.array(),
   hasMore: z.boolean(),
 });
+
+/** Local observation only. No signature, bilateral freeze, award or permission to change funds. */
+export const CommercialDisputeFinancialViewSchema = z
+  .strictObject({
+    caseId: z.uuid(),
+    caseDigest: FederationDigestSchema,
+    agreementRevisionId: z.uuid(),
+    taskId: z.uuid(),
+    attempt: z.number().int().min(1).max(2147483647),
+    mode: FederationModeSchema,
+    observedAt: z.iso.datetime(),
+    records: z.array(
+      z.strictObject({
+        recordType: z.enum(["bill", "settlement", "adjustment", "refund"]),
+        recordId: z.uuid(),
+        recordDigest: FederationDigestSchema,
+        state: z.enum(["counterparty_waiting", "application_waiting", "ready"]),
+      }),
+    ),
+    localReady: z.boolean(),
+    headDigest: FederationDigestSchema.nullable(),
+    requiresLedgerFreeze: z.boolean(),
+  })
+  .refine(
+    (v) =>
+      v.localReady === v.records.every((r) => r.state === "ready") &&
+      v.localReady === (v.headDigest !== null) &&
+      v.requiresLedgerFreeze === (v.mode === "ledger_coordinated") &&
+      new Set(v.records.map((r) => `${r.recordType}:${r.recordId}`)).size === v.records.length &&
+      v.records.every(
+        (r, i) =>
+          i === 0 ||
+          `${v.records[i - 1]?.recordType}:${v.records[i - 1]?.recordId}` <
+            `${r.recordType}:${r.recordId}`,
+      ),
+    "Inconsistent local financial observation",
+  );

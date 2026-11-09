@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   CommercialDisputeDraftSchema,
+  CommercialDisputeFinancialViewSchema,
   CommercialDisputeReceiptSchema,
   CommercialDisputeSchema,
 } from "./disputes";
@@ -98,4 +99,53 @@ test("dispute receipt acknowledges an exact case without agreeing a financial he
   expect(FederationKeyInput.shape.allowedKinds.element.options).toContain(
     "commercial-dispute-receipt",
   );
+});
+
+test("local financial readiness cannot claim bilateral freeze or hide pending records", () => {
+  const d = dispute();
+  const view = {
+    caseId: d.caseId,
+    caseDigest: d.agreementDigest,
+    agreementRevisionId: d.agreementRevisionId,
+    taskId: d.taskId,
+    attempt: 1,
+    mode: "bilateral_direct",
+    observedAt: d.issuedAt,
+    records: [],
+    localReady: true,
+    headDigest: d.agreementDigest,
+    requiresLedgerFreeze: false,
+  };
+  expect(CommercialDisputeFinancialViewSchema.parse(view).localReady).toBe(true);
+  for (const patch of [
+    { state: "DISPUTED" },
+    { headDigest: null },
+    { requiresLedgerFreeze: true },
+    { award: "1" },
+    { originalJws: "private" },
+  ])
+    expect(CommercialDisputeFinancialViewSchema.safeParse({ ...view, ...patch }).success).toBe(
+      false,
+    );
+  const row = {
+    recordType: "settlement",
+    recordId: d.caseId,
+    recordDigest: d.agreementDigest,
+    state: "application_waiting",
+  };
+  expect(CommercialDisputeFinancialViewSchema.safeParse({ ...view, records: [row] }).success).toBe(
+    false,
+  );
+  const waiting = { ...view, records: [row], localReady: false, headDigest: null };
+  expect(CommercialDisputeFinancialViewSchema.parse(waiting).localReady).toBe(false);
+  expect(
+    CommercialDisputeFinancialViewSchema.safeParse({ ...waiting, records: [row, row] }).success,
+  ).toBe(false);
+  expect(
+    CommercialDisputeFinancialViewSchema.parse({
+      ...view,
+      mode: "ledger_coordinated",
+      requiresLedgerFreeze: true,
+    }).localReady,
+  ).toBe(true);
 });
