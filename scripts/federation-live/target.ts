@@ -41,6 +41,7 @@ import { SoftwareAvailabilityService } from "../../packages/server/src/services/
 import { approveContract, executionFixture } from "./fixture";
 import { mediaExecutionFixture } from "./media-execution";
 
+const taskMedia = process.env.LAB_SCENARIO === "task-media";
 const selfAccount = process.env.LAB_SELF_ACCOUNT === "1";
 const root = z.string().min(1).parse(process.env.LAB_ROOT);
 if (
@@ -149,6 +150,8 @@ if (process.argv[2] === "inspect") {
     "settlement.approve",
     "adjustment.approve",
     "asset.map",
+    "media.export",
+    "media.import",
   ] as const)
     await new FederationPermissionService(db).set(
       { ...actor, capability, enabled: true },
@@ -234,7 +237,7 @@ if (process.argv[2] === "inspect") {
           "result-download-grant",
           "result-receipt",
           "result-receipt-ack",
-          ...(process.env.LAB_SCENARIO === "media"
+          ...(["media", "task-media"].includes(process.env.LAB_SCENARIO ?? "")
             ? ([
                 "media-manifest",
                 "media-key-query",
@@ -311,7 +314,7 @@ printf 'federation-file-consumed:42\\n'
     mediaWork?.workflow ??
     workflowDsl.WorkflowSchema.parse({
       name: "Federation file transfer probe",
-      parameters: [{ name: "value", type: "string", required: true }],
+      parameters: [{ name: "value", type: taskMedia ? "json" : "string", required: true }],
       spec: {
         nodeDrafts: [
           {
@@ -320,8 +323,10 @@ printf 'federation-file-consumed:42\\n'
             type: "Script",
             source: { type: "Inline", language: "bash", content: producer },
             runtimeContractRef: { name: "bash", version: "1" },
-            inputs: { value: { type: "Text" } },
-            inputSlots: [{ descriptor: "value", type: "Text", from: { param: "value" } }],
+            inputs: { value: { type: taskMedia ? "File" : "Text" } },
+            inputSlots: [
+              { descriptor: "value", type: taskMedia ? "File" : "Text", from: { param: "value" } },
+            ],
             outputs: {
               result: { type: "File", durability: "Checkpoint" },
               optional: { type: "File", required: false },
@@ -434,7 +439,7 @@ printf 'federation-file-consumed:42\\n'
   const inputs = mediaWork?.inputs ?? {
     protocolVersion: 1 as const,
     kind: "inputs" as const,
-    parameters: { value: "6" },
+    parameters: taskMedia ? {} : { value: "6" },
     datasets: [],
     bindings: [],
   };
@@ -486,6 +491,9 @@ printf 'federation-file-consumed:42\\n'
       gpus: 0,
       wallTimeSec: outage ? 900 : mediaWork ? 600 : selfAccount ? 120 : 30,
     },
+    ...(taskMedia
+      ? { inputPolicy: { scope: "workflow-input-files", maxFiles: 4, maxBytes: 1024 } }
+      : {}),
     resultPolicy: {
       scope: "persistent-files",
       maxFiles: 4,

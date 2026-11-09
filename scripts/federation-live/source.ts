@@ -99,7 +99,7 @@ if (process.argv[2] === "inspect") {
           "result-download-grant",
           "result-receipt",
           "result-receipt-ack",
-          ...(process.env.LAB_SCENARIO === "media"
+          ...(["media", "task-media"].includes(process.env.LAB_SCENARIO ?? "")
             ? ([
                 "media-manifest",
                 "media-key-query",
@@ -133,6 +133,8 @@ if (process.argv[2] === "inspect") {
     "delegation.cancel",
     "delegation.read",
     "asset.map",
+    "media.export",
+    "media.import",
     "result.read",
   ] as const)
     await new FederationPermissionService(db).set(

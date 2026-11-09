@@ -23,17 +23,19 @@ scenario = os.environ.get("LAB_SCENARIO", "success")
 refund_scenario = scenario in ("refund", "refund-auto")
 automatic_refund = scenario == "refund-auto"
 assert not disk_pressure or automatic_refund, "Disk recovery currently requires refund-auto"
-assert not refund_scenario if coordinated else scenario in ("success", "refund", "refund-auto", "media")
-assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto", "media")
+assert not refund_scenario if coordinated else scenario in ("success", "refund", "refund-auto", "media", "task-media")
+assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto", "media", "task-media")
 media_scenario = scenario == "media"
+task_media = scenario == "task-media"
+uses_media = media_scenario or task_media
 self_account = os.environ.get("KQ_FEDERATION_SELFACCOUNT") == "1"
 assert not self_account or (mode == "bilateral_direct" and scenario == "success"), "SelfAccount lab requires direct success workflow"
 media_execution = os.environ.get("KQ_MEDIA_EXECUTION", "")
 assert media_execution in ("", "slurm", "pbs-pro")
 assert not media_execution or media_scenario
 hpc_execution = "slurm" if self_account else media_execution
-assert not media_scenario or mode == "bilateral_direct"
-media_age = pathlib.Path(os.environ["KQ_MEDIA_AGE_BIN"]).resolve(strict=True) if media_scenario else None
+assert not uses_media or mode == "bilateral_direct"
+media_age = pathlib.Path(os.environ["KQ_MEDIA_AGE_BIN"]).resolve(strict=True) if uses_media else None
 if media_age:
     assert media_age.is_dir() and all((media_age / name).is_file() for name in ("age", "age-keygen")), "KQ_MEDIA_AGE_BIN must be the directory containing age and age-keygen"
 media_source_root, media_target_root = str(uuid.uuid4()), str(uuid.uuid4())
@@ -110,7 +112,7 @@ env.update(
     LAB_ROOT=str(root),
     LAB_AGENT="federation-live-agent",
 )
-if media_scenario:
+if uses_media:
     env.update(FEDERATION_MEDIA_AGE_DIRECTORY=str(media_age), FEDERATION_MEDIA_WRAPPING_KEY=secrets.token_hex(32), LAB_MEDIA_ROOT_ID=media_target_root)
 if media_execution:
     env["LAB_MEDIA_EXECUTION"] = media_execution
@@ -2075,6 +2077,9 @@ try:
         "Two versioned cloud buckets and independently scoped HTTPS storage endpoints ready",
         flush=True,
     )
+    if task_media:
+        env["FEDERATION_INPUT_DOWNLOAD_ORIGINS"] = targetorigin
+        env["FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS"] = targetorigin
     if disk_pressure:
         configure_storage(env, "provider")
     server = subprocess.Popen(
@@ -2269,9 +2274,13 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         "NODE_ENV": "development",
         "NODE_EXTRA_CA_CERTS": str(root / "ca/ca.crt"),
     }
-    if media_scenario:
+    if uses_media:
         agentenv.update(AGENT_DATASET_ROOTS_JSON=json.dumps({media_target_root: "."}),
                         AGENT_FEDERATION_MEDIA_IMPORT=json.dumps({"mediaDirectory": "/var/lib/kuintessence/media", "ageDirectory": "/opt/kq/age"}))
+    if task_media:
+        agentenv.update(
+            AGENT_FEDERATION_INPUT_COPY=json.dumps({"stagingRoot": "/var/lib/kuintessence/input-staging", "maxStagingBytes": 1048576, "allowedDestinationOrigins": [targetorigin]}),
+            AGENT_FEDERATION_MEDIA_EXPORT=json.dumps({"mediaDirectory": "/var/lib/kuintessence/media", "ageDirectory": "/opt/kq/age", "allowedSourceOrigins": [targetorigin]}))
     resources = [
         {
             "apiVersion": "v1",
@@ -2416,7 +2425,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             ],
         },
     }
-    if media_scenario:
+    if uses_media:
         pod["spec"]["volumes"].append({"name": "age", "hostPath": {"path": str(media_age), "type": "Directory"}})
         pod["spec"]["containers"][0]["volumeMounts"].append({"name": "age", "mountPath": "/opt/kq/age", "readOnly": True})
     source_pod_template = copy.deepcopy(pod)
@@ -2558,7 +2567,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     sourcehttp, sourcegrpc = port(), port()
     env["LAB_SOURCE_HTTP"] = f"http://127.0.0.1:{sourcehttp}"
     sourceenv = env.copy()
-    if media_scenario:
+    if uses_media:
         sourceenv.update(FEDERATION_MEDIA_WRAPPING_KEY=secrets.token_hex(32), LAB_MEDIA_ROOT_ID=media_source_root)
     if coordinated or attested:
         sourceenv["FEDERATION_COMMERCIAL_SOCKET_PATH"] = str(networkroot / "live-A-commercial/commercial.sock")
@@ -2593,7 +2602,9 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         NETDRIVE_SECRET_KEY=sourcecommitsecret,
         NETDRIVE_PUBLIC_URL=sourceorigin,
         FEDERATION_RESULT_DOWNLOAD_ORIGINS=sourceorigin,
-        FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS=targetorigin,
+        FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS="" if task_media else targetorigin,
+        FEDERATION_INPUT_DOWNLOAD_ORIGINS=sourceorigin if task_media else "",
+        FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS=sourceorigin if task_media else "",
         FEDERATION_SITE_ID=configuration["source"]["siteId"],
         FEDERATION_SIGNING_KEY_ID=configuration["source"]["keyId"],
         FEDERATION_SIGNING_KEY_FILE=str(root / "source-signing.pem"),
@@ -2739,7 +2750,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             (logs / "preauthorized-closing.json").write_text(json.dumps(closing_grants, indent=2) + "\n")
         if media_scenario:
             print("Media execution scenario: submission waits for source dataset setup" if media_execution else "Media-only scenario: no compute submission", flush=True)
-        elif scenario == "workflow":
+        elif scenario in ("workflow", "task-media"):
             print("Ordinary Workflow owns delegation; no manual outbound submission", flush=True)
         else:
             first = sourceapi("federation/outbound", configuration["request"], sourcetoken)
@@ -2816,7 +2827,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
                 {
                     "stagingRoot": "/var/lib/kuintessence/result-staging",
                     "maxStagingBytes": 1048576,
-                    "allowedSourceOrigins": [targetorigin],
+                    "allowedSourceOrigins": [] if task_media else [targetorigin],
                     "allowedDestinationOrigins": [sourceorigin],
                 }
             ),
@@ -2825,6 +2836,10 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             sourceagentenv.pop("AGENT_FEDERATION_MEDIA_IMPORT", None)
             sourceagentenv.update(AGENT_DATASET_ROOTS_JSON=json.dumps({media_source_root: "."}),
                                   AGENT_FEDERATION_MEDIA_EXPORT=json.dumps({"mediaDirectory": "/var/lib/kuintessence/media", "ageDirectory": "/opt/kq/age"}))
+        if task_media:
+            sourceagentenv.pop("AGENT_FEDERATION_INPUT_COPY", None)
+            sourceagentenv.update(AGENT_DATASET_ROOTS_JSON=json.dumps({media_source_root: "."}),
+                                  AGENT_FEDERATION_MEDIA_EXPORT=json.dumps({"mediaDirectory": "/var/lib/kuintessence/media", "ageDirectory": "/opt/kq/age", "allowedSourceOrigins": [sourceorigin]}))
         sourcepod["spec"]["containers"][0]["env"] = [
             {"name": a, "value": b} for a, b in sourceagentenv.items()
         ]
@@ -2854,6 +2869,11 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             verify_media(root, logs, namespace, env, sourceenv,
                          lambda path, body=None: api(path, body, token),
                          lambda path, body=None: sourceapi(path, body, sourcetoken))
+        elif task_media:
+            from task_media import verify_task_media
+            verify_task_media(root, logs, namespace, env, sourceenv,
+                              lambda path, body=None: api(path, body, token),
+                              lambda path, body=None: sourceapi(path, body, sourcetoken))
         elif scenario in ("outage", "stop"):
             verify_interruption()
         else:

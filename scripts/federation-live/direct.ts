@@ -11,7 +11,7 @@ assert.equal(
 );
 const scenario = process.env.KQ_FEDERATION_LAB_SCENARIO ?? "success";
 assert(
-  ["success", "refund", "refund-auto", "media"].includes(scenario),
+  ["success", "refund", "refund-auto", "media", "task-media"].includes(scenario),
   "Unsupported direct scenario",
 );
 const repo = resolve(import.meta.dir, "../..");

@@ -234,3 +234,21 @@ PYTHONDONTWRITEBYTECODE=1 bun run test:federation:direct
 HPC 普通 Sandbox 的输出按签名容器路径暂存到本作业 outputs 目录，并将该目录挂载至 `/kq/outputs`；可选文件允许在脚本运行前及结束后不存在，不能用空占位文件代替。输入仍逐项只读挂载，产物收集只接受声明项。此验收保留一个未生成的可选输出，以覆盖实际 Apptainer 启动和产物缺省语义。
 
 中断时机以结果文件中的临时标记及原生 RUNNING 状态共同确定；限长日志管道可能缓冲短输出，不用 stdout 刷新判断脚本是否已经开始。脚本最终必须覆盖该文件为 `42\n`，下游输出为 `verified:42\n`，最终按精确 SHA-256 验收。
+
+## 私有任务文件的双向介质交付
+
+使用同页 PostgreSQL 工具配置和已缓存的 age 目录，运行独立场景：
+
+```bash
+KQ_FEDERATION_EXECUTION_LAB=1 KQ_FEDERATION_LAB_SCENARIO=task-media \
+KQ_MEDIA_AGE_BIN=/path/to/age-bin \
+PYTHONDONTWRITEBYTECODE=1 bun run test:federation:direct
+```
+
+场景建立两个独立 Server/数据库、mTLS Agent 和版本化对象存储。来源通过普通云盘 API 上传 `6\n`，通过普通 Workflow API 提交带 File 输入的 Federation 节点，输入和结果均声明 `media`。提供方必须先处于 DATA_WAITING，且没有 Job、目标文件或网络复制尝试。
+
+两次介质交付均由生产 API 批准、Agent 使用真实 age 导出。测试人员搬运密文至对方 inbox，然后调用登记、批准和运行 API；自动上传、固定版本独立校验、整包发布及作业恢复全部由生产后台执行。提供方运行两个轻量 Kubernetes Job，得到 `42\n` 中间文件和 `verified:42\n` 持久结果；结果经反向介质交付后，原 Workflow 下游 File 节点继续运行。
+
+`task-media-evidence.json` 保存原 operation/领取/导入关系、版本化校验证据、文件 SHA-256、密文摘要和最终状态。断言原输入/结果各只有一个介质尝试、配额预留归零、回执被确认、私有文件未进入共享数据集目录；最后通过来源云盘实际下载并逐字节核对结果。临时密钥、对象 URL 和 commit token 不写入该证据。
+
+这个场景验证私有任务介质链路，使用真实轻量脚本；不代表科学软件离线安装、真实硬盘物流或 Slurm/PBS 矩阵。授权和回执控制面保持在线，跨站输入/结果网络复制源配置为空。共享数据集场景仍为 `media`，两者验收口径分开。
