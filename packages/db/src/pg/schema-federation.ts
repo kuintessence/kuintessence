@@ -2747,6 +2747,8 @@ export const federationTaskMediaClaims = pgTable(
     generation: uuid("generation").notNull(),
     claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull(),
     releasedAt: timestamp("released_at", { withTimezone: true }),
+    uploadGrantToken: uuid("upload_grant_token"),
+    uploadGrant: jsonb("upload_grant").$type<FederationMediaImportGrant>(),
   },
   (t) => [
     check(
@@ -2763,6 +2765,12 @@ export const federationTaskMediaClaims = pgTable(
     check(
       "federation_task_media_claim_time",
       sql`${t.releasedAt} IS NULL OR ${t.releasedAt} >= ${t.claimedAt}`,
+    ),
+    check(
+      "federation_task_media_upload_grant",
+      sql`${t.uploadGrant} IS NULL OR (${t.uploadGrantToken} IS NOT NULL AND
+        ${t.uploadGrant}->'binding'->>'authorizationId' = ${t.authorizationId}::text AND
+        ${t.uploadGrant}->'binding'->>'generation' = ${t.generation}::text) IS TRUE`,
     ),
   ],
 );

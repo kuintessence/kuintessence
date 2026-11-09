@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import {
   auditLog,
   federationMediaImportAuthorizations as authorizations,
+  federationTaskMediaClaims as claims,
   federationMediaImportOperations as operations,
   type PgDb,
   type PgTransaction,
@@ -16,6 +18,7 @@ import {
   FederationMediaImportReportSchema,
   FederationMediaImportTaskSchema,
   FederationMediaKeyGrantSchema,
+  FederationMediaKeyQuerySchema,
 } from "@kuintessence/shared/federation";
 import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import { exportSPKI } from "jose";
@@ -214,10 +217,11 @@ export class FederationMediaImportOperations {
       .where(eq(operations.authorizationId, authorizationId))
       .for("update");
     if (!operation) throw new FederationError("POLICY_DENIED");
+    let claim: typeof claims.$inferSelect | undefined;
     if (scope.package.manifest.subject.kind !== "dataset") {
       if (operation.requestedBy !== scope.package.registeredBy)
         throw new FederationError("POLICY_DENIED");
-      await assertTaskMediaClaim(tx, scope.package, operation);
+      claim = await assertTaskMediaClaim(tx, scope.package, operation);
     }
     await requireFederationCapability(
       tx,
@@ -230,7 +234,7 @@ export class FederationMediaImportOperations {
       this.clock(),
       tx,
     );
-    return { ...scope, operation, key };
+    return { ...scope, operation, key, claim };
   }
   private match(
     scope: Awaited<ReturnType<FederationMediaImportOperations["scope"]>>,
@@ -249,38 +253,52 @@ export class FederationMediaImportOperations {
     return this.db.transaction(async (tx) => {
       const s = await this.scope(tx, agentId, authorizationId, reader);
       if (s.operation.state !== "queued") throw new FederationError("OPERATION_CONFLICT");
-      return {
-        task: FederationMediaImportTaskSchema.parse({
-          generation: s.operation.generation,
-          authorizationId,
-          packageId: s.package.packageId,
-          manifestDigest: s.package.manifestDigest,
-          agentId,
-          sourceSiteId: s.package.senderSiteId,
-          recipientSiteId: this.siteId,
-          agreementRevisionId: s.package.agreementRevisionId,
-          managedRootId: s.authorization.managedRootId,
-          maxBytes: s.authorization.maxBytes,
-          signedManifest: s.package.manifestJws,
-          signingKey: {
-            keyId: s.key.keyId,
-            publicKeyPem: await exportSPKI(s.key.publicKey),
-            validFrom: s.key.validFrom.toISOString(),
-            validUntil: s.key.validUntil.toISOString(),
-          },
-          expiresAt: s.authorization.expiresAt.toISOString(),
-        }),
-        expiresAt: new Date(
-          Math.min(
-            this.clock().getTime() + 30_000,
-            s.authorization.expiresAt.getTime(),
-            s.authorizedUntil,
-            s.key.validUntil.getTime(),
-          ),
-        ),
-      };
+      return this.preparedTask(s);
     });
   }
+  /** Only a verified private task package can be used as an upload source. */
+  async uploadTask(agentId: string, authorizationId: string) {
+    const reader = await this.reader(agentId, authorizationId);
+    return this.db.transaction(async (tx) => {
+      const s = await this.scope(tx, agentId, authorizationId, reader);
+      if (!s.claim || s.operation.state !== "verified")
+        throw new FederationError("OPERATION_CONFLICT");
+      return { ...(await this.preparedTask(s)), claimId: s.claim.id };
+    });
+  }
+  private async preparedTask(s: Awaited<ReturnType<FederationMediaImportOperations["scope"]>>) {
+    return {
+      task: FederationMediaImportTaskSchema.parse({
+        generation: s.operation.generation,
+        authorizationId: s.operation.authorizationId,
+        packageId: s.package.packageId,
+        manifestDigest: s.package.manifestDigest,
+        agentId: s.authorization.agentId,
+        sourceSiteId: s.package.senderSiteId,
+        recipientSiteId: this.siteId,
+        agreementRevisionId: s.package.agreementRevisionId,
+        managedRootId: s.authorization.managedRootId,
+        maxBytes: s.authorization.maxBytes,
+        signedManifest: s.package.manifestJws,
+        signingKey: {
+          keyId: s.key.keyId,
+          publicKeyPem: await exportSPKI(s.key.publicKey),
+          validFrom: s.key.validFrom.toISOString(),
+          validUntil: s.key.validUntil.toISOString(),
+        },
+        expiresAt: s.authorization.expiresAt.toISOString(),
+      }),
+      expiresAt: new Date(
+        Math.min(
+          this.clock().getTime() + 30_000,
+          s.authorization.expiresAt.getTime(),
+          s.authorizedUntil,
+          s.key.validUntil.getTime(),
+        ),
+      ),
+    };
+  }
+
   async grant(agentId: string, raw: unknown) {
     const input = FederationMediaImportKeyRequestSchema.parse(raw);
     const binding = FederationMediaImportBindingSchema.parse({
@@ -290,10 +308,18 @@ export class FederationMediaImportOperations {
       manifestDigest: input.manifestDigest,
     });
     const reader = await this.reader(agentId, input.authorizationId);
+    const uploadToken = input.purpose === "task-upload" ? crypto.randomUUID() : undefined;
     const orgId = await this.db.transaction(async (tx) => {
       const s = await this.scope(tx, agentId, input.authorizationId, reader);
       this.match(s, binding);
-      if (s.operation.state !== "queued") throw new FederationError("OPERATION_CONFLICT");
+      if (uploadToken) {
+        if (!s.claim || s.operation.state !== "verified")
+          throw new FederationError("OPERATION_CONFLICT");
+        await tx
+          .update(claims)
+          .set({ uploadGrantToken: uploadToken, uploadGrant: null })
+          .where(eq(claims.id, s.claim.id));
+      } else if (s.operation.state !== "queued") throw new FederationError("OPERATION_CONFLICT");
       return s.package.localOrgId;
     });
     const response = await this.requester.request({
@@ -306,7 +332,14 @@ export class FederationMediaImportOperations {
     return this.db.transaction(async (tx) => {
       const s = await this.scope(tx, agentId, input.authorizationId, reader);
       this.match(s, binding);
-      if (s.operation.state !== "queued") throw new FederationError("OPERATION_CONFLICT");
+      if (uploadToken) {
+        if (
+          !s.claim ||
+          s.operation.state !== "verified" ||
+          s.claim.uploadGrantToken !== uploadToken
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+      } else if (s.operation.state !== "queued") throw new FederationError("OPERATION_CONFLICT");
       assertMediaKeyGrant(response.query, response.queryDigest, response.grant, this.clock());
       const expiresAt = new Date(
         Math.min(
@@ -328,12 +361,46 @@ export class FederationMediaImportOperations {
         expiresAt: expiresAt.toISOString(),
       });
       await this.assertSourceGrant(tx, grant);
-      await tx
-        .update(operations)
-        .set({ latestGrant: grant, updatedAt: this.clock() })
-        .where(eq(operations.authorizationId, input.authorizationId));
+      if (uploadToken && s.claim)
+        await tx.update(claims).set({ uploadGrant: grant }).where(eq(claims.id, s.claim.id));
+      else
+        await tx
+          .update(operations)
+          .set({ latestGrant: grant, updatedAt: this.clock() })
+          .where(eq(operations.authorizationId, input.authorizationId));
       return grant;
     });
+  }
+  /** Preflight outside the caller's transaction; the returned reader locks the original task before the claim. */
+  async uploadAuthorization(agentId: string, raw: FederationMediaImportBinding) {
+    const binding = FederationMediaImportBindingSchema.parse(raw);
+    const reader = await this.reader(agentId, binding.authorizationId);
+    return async (tx: PgTransaction) => {
+      const s = await this.scope(tx, agentId, binding.authorizationId, reader);
+      this.match(s, binding);
+      if (!s.claim?.uploadGrant || s.operation.state !== "verified")
+        throw new FederationError("DATA_WAITING");
+      const grant = FederationMediaImportGrantSchema.parse(s.claim.uploadGrant);
+      this.match(s, grant.binding);
+      const query = grant.query;
+      if (
+        query.senderSiteId !== this.siteId ||
+        query.recipientSiteId !== s.package.senderSiteId ||
+        query.packageId !== binding.packageId ||
+        query.authorizationId !== binding.authorizationId ||
+        query.manifestDigest !== binding.manifestDigest ||
+        query.agentId !== agentId ||
+        query.managedRootId !== s.authorization.managedRootId ||
+        query.agreementRevisionId !== s.package.agreementRevisionId ||
+        query.maxBytes !== s.authorization.maxBytes ||
+        query.authorizationExpiresAt !== s.authorization.expiresAt.toISOString()
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      await this.assertSourceGrant(tx, grant);
+      if (Date.parse(grant.expiresAt) > s.authorizedUntil)
+        throw new FederationError("AUTHORIZATION_EXPIRED");
+      return { ...s, grant, authorizedUntil: Date.parse(grant.expiresAt) };
+    };
   }
   private async assertSourceGrant(
     tx: PgTransaction,
@@ -341,6 +408,16 @@ export class FederationMediaImportOperations {
   ) {
     if (Date.parse(grant.expiresAt) <= this.clock().getTime())
       throw new FederationError("AUTHORIZATION_EXPIRED");
+    // JSONB reorders object keys; the signed query used the schema's wire order.
+    const query = FederationMediaKeyQuerySchema.parse(grant.query);
+    if (
+      grant.queryDigest !==
+        `sha256:${createHash("sha256").update(JSON.stringify(query)).digest("hex")}` ||
+      grant.binding.packageId !== grant.query.packageId ||
+      grant.binding.authorizationId !== grant.query.authorizationId ||
+      grant.binding.manifestDigest !== grant.query.manifestDigest
+    )
+      throw new FederationError("OPERATION_CONFLICT");
     const keyId = federationMessageKeyId(grant.signedGrant);
     await this.trust.assertKey(tx, grant.query.recipientSiteId, keyId, this.clock());
     const key = await this.trust.resolveKey(grant.query.recipientSiteId, keyId, this.clock(), tx);

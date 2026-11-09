@@ -53,6 +53,7 @@ import {
   FederationInputCopyReportSchema,
   FederationInputGrantRequestSchema,
   FederationMediaExportLeaseRequestSchema,
+  FederationMediaImportKeyRequestSchema,
   FederationResultCopyReportSchema,
   FederationResultGrantRequestSchema,
   type ServerMessage,
@@ -131,6 +132,7 @@ import { FederationMediaExportOperations } from "./media-export-operations";
 import { FederationMediaExportTransport } from "./media-export-transport";
 import { FederationMediaExportService } from "./media-exports";
 import { FederationMediaImportOperations } from "./media-import-operations";
+import { FederationMediaImportTransport } from "./media-import-transport";
 import { FederationMediaKeyRequester, FederationMediaKeyResponder } from "./media-key-exchange";
 import { FederationMediaPackageService } from "./media-packages";
 import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
@@ -10195,6 +10197,226 @@ taskMediaTest(
         }),
       ).rejects.toThrow("AUTHORIZATION_EXPIRED");
     } finally {
+      await t.source.release();
+    }
+  },
+);
+
+async function verifiedTaskMedia(kind: "task-input" | "task-result") {
+  const t = await startedTaskMedia(kind);
+  const permit = await t.grant();
+  const report = {
+    ...permit.binding,
+    state: "verified" as const,
+    queryDigest: permit.queryDigest,
+    sizeBytes: t.approval.maxBytes,
+  };
+  await t.operations().report(t.approval.agentId, report);
+  const [original] = await db
+    .select()
+    .from(federationMediaImportOperations)
+    .where(eq(federationMediaImportOperations.authorizationId, t.approval.authorizationId));
+  if (!original) throw new Error("Expected private import");
+  const request = { ...t.request, purpose: "task-upload" as const };
+  const uploadGrant = (send = t.send) => t.operations(send).grant(t.approval.agentId, request);
+  const read = async () =>
+    db.transaction(await t.operations().uploadAuthorization(t.approval.agentId, permit.binding));
+  return { ...t, original, report, uploadRequest: request, uploadGrant, read };
+}
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task upload authority %s requires verified quarantine and keeps the historical receipt immutable",
+  async (kind) => {
+    const t = await startedTaskMedia(kind);
+    try {
+      const uploadRequest = { ...t.request, purpose: "task-upload" };
+      await expect(
+        t.operations().uploadTask(t.approval.agentId, t.approval.authorizationId),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+      await expect(t.operations().grant(t.approval.agentId, uploadRequest)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+      const imported = await t.grant();
+      const report = {
+        ...imported.binding,
+        state: "verified" as const,
+        queryDigest: imported.queryDigest,
+        sizeBytes: t.approval.maxBytes,
+      };
+      await t.operations().report(t.approval.agentId, report);
+      const [before] = await db
+        .select()
+        .from(federationMediaImportOperations)
+        .where(eq(federationMediaImportOperations.authorizationId, t.approval.authorizationId));
+      const prepared = await t
+        .operations()
+        .uploadTask(t.approval.agentId, t.approval.authorizationId);
+      expect(prepared.task).toEqual(t.prepared.task);
+      const authorization = await t
+        .operations()
+        .uploadAuthorization(t.approval.agentId, imported.binding);
+      await expect(db.transaction(authorization)).rejects.toThrow("DATA_WAITING");
+      const transport = new FederationMediaImportTransport(t.operations(), new AgentDispatcher());
+      const wire = await transport.grant(
+        t.approval.agentId,
+        create(FederationMediaImportKeyRequestSchema, {
+          requestId: crypto.randomUUID(),
+          bindingJson: JSON.stringify(uploadRequest),
+        }),
+      );
+      const uploaded = JSON.parse(wire.grantJson);
+      const permitted = await db.transaction(authorization);
+      expect(permitted.claim?.id).toBe(prepared.claimId);
+      expect(permitted.grant.queryDigest).toBe(uploaded.queryDigest);
+      expect(permitted.grant.queryDigest).not.toBe(imported.queryDigest);
+      expect(permitted.authorizedUntil).toBe(Number(wire.leaseExpiresAtUnixMs));
+      const [after] = await db
+        .select()
+        .from(federationMediaImportOperations)
+        .where(eq(federationMediaImportOperations.authorizationId, t.approval.authorizationId));
+      expect(after).toEqual(before);
+      await t.operations().report(t.approval.agentId, report);
+      await expect(t.grant()).rejects.toThrow("OPERATION_CONFLICT");
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task upload authority %s fences late responses and clears stale permission on failed refresh",
+  async (kind) => {
+    const t = await verifiedTaskMedia(kind);
+    const release = Promise.withResolvers<void>();
+    try {
+      const arrived = Promise.withResolvers<void>();
+      const slow: FederationSend = async (...args) => {
+        const response = await t.send(...args);
+        arrived.resolve();
+        await release.promise;
+        return response;
+      };
+      const old = t.uploadGrant(slow);
+      await arrived.promise;
+      const fresh = await t.uploadGrant();
+      release.resolve();
+      await expect(old).rejects.toThrow("OPERATION_CONFLICT");
+      expect((await t.read()).grant.queryDigest).toBe(fresh.queryDigest);
+      const offline: FederationSend = async () => {
+        throw new Error("source unavailable");
+      };
+      await expect(t.uploadGrant(offline)).rejects.toThrow();
+      await expect(t.read()).rejects.toThrow("DATA_WAITING");
+      const [saved] = await db
+        .select()
+        .from(federationMediaImportOperations)
+        .where(eq(federationMediaImportOperations.authorizationId, t.approval.authorizationId));
+      expect(saved).toEqual(t.original);
+      expect((await t.uploadGrant()).queryDigest).not.toBe(fresh.queryDigest);
+      await t.read();
+    } finally {
+      release.resolve();
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task upload authority %s rejects stale, transplanted and altered cached source authority",
+  async (kind) => {
+    const t = await verifiedTaskMedia(kind);
+    try {
+      const grant = await t.uploadGrant();
+      await expect(
+        t.operations().uploadAuthorization("wrong-agent", grant.binding),
+      ).rejects.toThrow("POLICY_DENIED");
+      const wrong = await t.operations().uploadAuthorization(t.approval.agentId, {
+        ...grant.binding,
+        generation: crypto.randomUUID(),
+      });
+      await expect(db.transaction(wrong)).rejects.toThrow("OPERATION_CONFLICT");
+      const changed = structuredClone(grant);
+      changed.query.recipientKey.n = "b".repeat(342);
+      await db
+        .update(federationTaskMediaClaims)
+        .set({ uploadGrant: changed })
+        .where(eq(federationTaskMediaClaims.authorizationId, t.approval.authorizationId));
+      await expect(t.read()).rejects.toThrow("OPERATION_CONFLICT");
+      const fresh = await t.uploadGrant();
+      time = new Date(Date.parse(fresh.expiresAt) + 1);
+      await expect(t.read()).rejects.toThrow("AUTHORIZATION_EXPIRED");
+      const renewed = await t.uploadGrant();
+      expect(Date.parse(renewed.expiresAt)).toBeGreaterThan(clock().getTime());
+      await t.read();
+      const [saved] = await db
+        .select()
+        .from(federationMediaImportOperations)
+        .where(eq(federationMediaImportOperations.authorizationId, t.approval.authorizationId));
+      expect(saved).toEqual(t.original);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task upload authority %s cannot retain a remote response after receiver revocation",
+  async (kind) => {
+    const t = await verifiedTaskMedia(kind);
+    try {
+      await t.uploadGrant();
+      const revoke: FederationSend = async (...args) => {
+        const reply = await t.send(...args);
+        await t
+          .service()
+          .revoke(
+            t.local,
+            t.exported.packageId,
+            { reason: "Stop uploads" },
+            t.approval.authorizationId,
+          );
+        return reply;
+      };
+      await expect(t.uploadGrant(revoke)).rejects.toThrow("POLICY_DENIED");
+      const [claim] = await db
+        .select()
+        .from(federationTaskMediaClaims)
+        .where(eq(federationTaskMediaClaims.authorizationId, t.approval.authorizationId));
+      expect(claim?.uploadGrant).toBeNull();
+      await expect(t.read()).rejects.toThrow("POLICY_DENIED");
+      const [saved] = await db
+        .select()
+        .from(federationMediaImportOperations)
+        .where(eq(federationMediaImportOperations.authorizationId, t.approval.authorizationId));
+      expect(saved).toEqual(t.original);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task upload authority %s checks current key limits when reading a cached upload grant",
+  async (kind) => {
+    const t = await verifiedTaskMedia(kind);
+    const condition = and(
+      eq(federationSigningKeys.siteId, t.source.signing.siteId),
+      eq(federationSigningKeys.keyId, t.source.signing.keyId),
+    );
+    const [original] = await db.select().from(federationSigningKeys).where(condition);
+    try {
+      await t.uploadGrant();
+      await db
+        .update(federationSigningKeys)
+        .set({ validUntil: new Date(clock().getTime() + 1000) })
+        .where(condition);
+      await expect(t.read()).rejects.toThrow("AUTHORIZATION_EXPIRED");
+    } finally {
+      if (original)
+        await db
+          .update(federationSigningKeys)
+          .set({ validUntil: original.validUntil })
+          .where(condition);
       await t.source.release();
     }
   },

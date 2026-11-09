@@ -27,6 +27,7 @@ export type FederationMediaImportTask = z.infer<typeof FederationMediaImportTask
 export const FederationMediaImportKeyRequestSchema = z.strictObject({
   ...FederationMediaImportBindingSchema.shape,
   recipientKey: FederationMediaRecipientKeySchema,
+  purpose: z.literal("task-upload").optional(),
 });
 export const FederationMediaImportGrantSchema = z.strictObject({
   binding: FederationMediaImportBindingSchema,

@@ -1457,6 +1457,45 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     await expect(operations.task(agentId, f.input.authorizationId)).rejects.toThrow();
   });
 
+  test("dataset private verification cannot obtain task upload authority", async () => {
+    const f = await keyFixture();
+    const operations = new FederationMediaImportOperations(
+      db,
+      target.signing.siteId,
+      f.receiver,
+      f.requester(),
+      () => now,
+    );
+    const started = await operations.start(actor, f.input.packageId, f.input.authorizationId);
+    const task = (await operations.task(agentId, f.input.authorizationId)).task;
+    const binding = {
+      generation: started.generation,
+      authorizationId: f.input.authorizationId,
+      packageId: f.input.packageId,
+      manifestDigest: task.manifestDigest,
+    };
+    const grant = await operations.grant(agentId, {
+      ...binding,
+      recipientKey: f.input.recipientKey,
+    });
+    await operations.report(agentId, {
+      ...binding,
+      state: "verified",
+      queryDigest: grant.queryDigest,
+      sizeBytes: 4,
+    });
+    await expect(operations.uploadTask(agentId, f.input.authorizationId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await expect(
+      operations.grant(agentId, {
+        ...binding,
+        recipientKey: f.input.recipientKey,
+        purpose: "task-upload",
+      }),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+  });
+
   test("media import rejects revoked in-flight key approval and rolls back failed audit", async () => {
     const f = await keyFixture();
     const operations = new FederationMediaImportOperations(
