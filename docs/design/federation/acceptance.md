@@ -435,3 +435,17 @@ L09 的直接／异步双边冻结已接生产后台和私有机构入口：同�
 原生真实联合恢复、合法退出单方承诺、披露授权／撤权、A/B/R 仲裁、治理归档、完整调度软件矩阵及可信预览仍待完成。完整目标保持 active，未合并或部署。
 
 最终完整 lint（既有 47 warnings／1 info）和 typecheck（含 protobuf、全部包、独立 Fabric 脚本）均退出 0；985 个文档目标及 diff 检查通过。26 项不同 PG 检查通过，临时数据库已清理。上一提交 f626f36 的 CI、bundle、Fabric 全部 success；本轮提交到原草稿 PR 后另跟进新 CI，不合并或部署。
+
+
+### 原生冻结的真实双平台与私有账本恢复
+
+2026-11-09：`KQ_FEDERATION_LAB_SCENARIO=success KQ_FEDERATION_LAB_DISPUTE=1 bun run test:fabric:execution` 完整入口退出 0。运行条件和证据说明见[独立平台恢复](../../../deploy/federation/execution-lab.md#原生争议冻结的独立平台恢复)。
+
+- 两个独立 Server／数据库、真实 mTLS、两端 Agent／版本化存储和三 Peer Fabric 实际运行。两个轻量 Kubernetes 作业生成 12 字节持久结果，实际回传、下载并核对 SHA-256；真实用量、账单、结算形成冻结前置事实。
+- 停 Orderer 后真实会话开案，生产后台投递及交换同文冻结签名，两站 ledger_pending／FREEZE_PENDING，没有本地假确认。强制结束两端 Server 和商业 Adapter 后重启，原证明及已背书交易检查点不变。
+- 恢复链后原 transactionId 取得 VALID；两站各自查询私有收据后 confirmed／DISPUTED，只存在一份冻结待办。重复开案保留原签名，两端拒绝新调整批准；原账务、预算、作业和 gate 不变。
+- 独立 Node Gateway 读取三个 Peer 的公共区块和私有写集：A/B 原证明相同，C 无正文，公共块无案件探针和原 JWS；冻结只写案件证明和任务标记。结算原交易及私有资金写入检查同时通过。
+
+首轮退出 1：生产 Node Gateway 漏放行两个争议路径，导致投递进入 INVALID_RECEIPT_RESPONSE，提供方没有案件。真实 TLS 回归先复现 404，再验证修复与证书／身份头／精确路径边界，2 项通过。验收脚本修复诊断读取耗尽 HTTP 错误正文，并立即报告投递复核；随后才取得上述完整成功结果，没有修改业务权限或直接注入冻结状态。
+
+完整 lint/typecheck 通过，两次隔离服务、数据库、凭据、namespace 和 Fabric/Adapter 均已清理。验收仍限同机机构、开发会话和轻量真实脚本；双边争议恢复、单方承诺退出、授权披露、解除冻结及仲裁、正式身份、完整软件／调度器矩阵与可信预览不能由此标记完成。

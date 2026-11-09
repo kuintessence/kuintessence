@@ -12,6 +12,9 @@ import {
   federationCommercialRefunds,
   federationCommercialSettlements,
   federationCommercialSubmissions,
+  federationDisputeDeliveries,
+  federationDisputeFreezes,
+  federationDisputes,
   federationEvidenceBatches,
   federationMarketAttempts,
   federationMarketSubmissions,
@@ -66,6 +69,9 @@ try {
       recoveryDigest: sql<string>`md5(${federationCommercialAttempts.recovery})`,
     })
     .from(federationCommercialAttempts);
+  const disputes = await db.select().from(federationDisputes);
+  const freezes = await db.select().from(federationDisputeFreezes);
+  const disputeDeliveries = await db.select().from(federationDisputeDeliveries);
   const budgets = await db.select().from(federationBudgets);
   const attestationOutbox = await db.select().from(federationAttestationOutbox);
   const attestationAttempts = await db
@@ -258,6 +264,9 @@ try {
         commercial,
         commercialTransactions,
         budgets,
+        disputes,
+        freezes,
+        disputeDeliveries,
         attestationOutbox,
         attestationAttempts,
         evidenceBatches,

@@ -262,3 +262,23 @@ PYTHONDONTWRITEBYTECODE=1 bun run test:federation:direct
 `task-media-evidence.json` 保存原 operation/领取/导入关系、版本化校验证据、文件 SHA-256、密文摘要和最终状态。断言原输入/结果各只有一个介质尝试、配额预留归零、回执被确认、私有文件未进入共享数据集目录；最后通过来源云盘实际下载并逐字节核对结果。临时密钥、对象 URL 和 commit token 不写入该证据。
 
 这个场景验证私有任务介质链路，使用真实轻量脚本；不代表科学软件离线安装、真实硬盘物流或 Slurm/PBS 矩阵。授权和回执控制面保持在线，跨站输入/结果网络复制源配置为空。共享数据集场景仍为 `media`，两者验收口径分开。
+
+
+## 原生争议冻结的独立平台恢复
+
+在上述运行条件下，专门验证协调模式冻结：
+
+```bash
+KQ_FEDERATION_LAB_SCENARIO=success KQ_FEDERATION_LAB_DISPUTE=1 bun run test:fabric:execution
+```
+
+此选项只允许协调模式 success／workflow；完成原轻量文件作业、实际用量、账单及结算后，跳过本次无关的调整／付款实验。需求方通过真实登录会话调用生产开案 API，双方 Server 通过原 mTLS 通道自动投递案件与交换冻结签名；原件和冻结待办由生产服务生成，不直接写测试冻结状态。
+
+停 Orderer 后等待双方 ledger_pending 与原已背书交易检查点，确认案件仍 FREEZE_PENDING。强制结束两端 Server 与商业 Adapter，再用原数据库和密钥启动；原证明与交易恢复记录必须保持不变。恢复 Orderer 后，两端须各自查询到匹配私有收据才进入 DISPUTED；新财务批准必须被拒绝，原预算／账单／结算／作业／执行 gate 不变。重复开案返回原签名，不创建第二笔冻结待办。
+
+`freeze-offline/restarted/committed` 的两站快照、`freeze-crash-recovery.json` 与 `freeze-recovery-evidence.json` 保存在私有证据目录。独立 `freeze-proof.ts` 用真实 Gateway 读取 A/B/C 的公共区块与私有写集，核验原 transactionId 的 VALID、公共区块无原签名／案件标记、A/B 原文对应且 C 无正文；冻结事务只能写案件原件和任务冻结标记，不写资金或作业许可。结果保存到 `freeze-private-ledger.json`。
+
+必须整条命令退出 0、上述所有断言和独立私有区块核验通过才记为完成。本项仍是同机模拟机构；轻量脚本不等于 Spack 科学软件，开发登录不代表正式身份或 PR 预览验收，也不覆盖解除冻结和仲裁。
+
+
+2026-11-09 完整入口已退出 0：两端真实文件作业及 12 字节结果回传、账单／结算、停链双签、Server／Adapter SIGKILL、原交易 VALID 和两端独立私有收据确认全部通过。独立 A/B/C PDC 检查通过，原财务／Job/gate 不变；重复开案不重签，新调整批准被拒绝。首轮发现 Node 网关缺失两个争议路径，修复后完整复验成功；需双方同步升级 Server 与 Gateway。隔离服务和 namespace 已清理，证据仅存本机忽略目录。

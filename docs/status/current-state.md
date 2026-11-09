@@ -928,3 +928,6 @@ SelfAccount 实验还发现首次启动的 watchdog/Agent 建表竞态。watchdo
 
 
 原生冻结平台确认已接通：两站分别验证财务、占额／释放原件和已提交私有收据，保存双签后仍为 FREEZE_PENDING；开案方提交原商业待办，各站读回匹配 native-dispute-freeze 收据后才更新 DISPUTED。断链、重建、过期租约、权限撤销和审计回滚经过隔离 PG 检查，原签名和交易保留；未解除冻结或修改资金。26 项不同相关检查通过，实际双平台／Fabric 验收仍待推进。见[原生平台确认](../design/federation/disputes.md#原生冻结的平台确认与恢复)。
+
+
+原生冻结已通过真实双 Server／数据库、mTLS、Agent/Kubernetes 和三 Peer Fabric 联合验收：实际文件任务与财务收尾后停链，双方签署、强制重启两端 Server／Adapter，再恢复同一笔交易；两站独立私有收据确认，原资金／作业不变。独立区块读取验证 A/B 有原证明、C 无正文，只有案件与冻结标记写入。发现并修复 Node 网关漏放行争议路径，真实 TLS 回归和完整复验通过。仍为同机开发身份及轻量脚本，不代表仲裁、科学软件完整矩阵或 PR 预览完成，见[真实原生恢复](../design/federation/disputes.md#真实双平台原生冻结恢复)。

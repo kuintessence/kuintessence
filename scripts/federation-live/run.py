@@ -1,6 +1,6 @@
 """Isolated full Server and real Kubernetes artifact pipeline probe; no deployment credentials."""
 
-import errno, hashlib, json, os, pathlib, secrets, shutil, signal, socket, subprocess, sys, tempfile, time, urllib.request, uuid
+import errno, hashlib, io, json, os, pathlib, secrets, shutil, signal, socket, subprocess, sys, tempfile, time, urllib.request, uuid
 from datetime import datetime, timedelta
 
 repo = pathlib.Path(__file__).resolve().parents[2]
@@ -25,6 +25,8 @@ automatic_refund = scenario == "refund-auto"
 assert not disk_pressure or automatic_refund, "Disk recovery currently requires refund-auto"
 assert not refund_scenario if coordinated else scenario in ("success", "refund", "refund-auto", "media", "task-media")
 assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto", "media", "task-media")
+native_dispute = os.environ.get("KQ_FEDERATION_LAB_DISPUTE") == "1"
+assert not native_dispute or (coordinated and scenario in ("success", "workflow")), "Native dispute requires coordinated success/workflow"
 media_scenario = scenario == "media"
 task_media = scenario == "task-media"
 uses_media = media_scenario or task_media
@@ -313,8 +315,9 @@ def api(path, body=None, token=None, headers=None):
         with urllib.request.urlopen(req, timeout=10) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
-        (logs / "target-http-error.json").write_bytes(error.read())
-        raise
+        body = error.read()
+        (logs / "target-http-error.json").write_bytes(body)
+        raise urllib.error.HTTPError(error.url, error.code, error.msg, error.headers, io.BytesIO(body)) from error
 
 
 def orderer(action):
@@ -1613,6 +1616,114 @@ def verify_attested_recovery():
     print("REAL ATTESTED RECOVERY PASSED: original commercial submissions VALID and admission evidence anchored; exact local balances, original signatures, Jobs and recovery checkpoints unchanged", flush=True)
 
 
+def verify_native_dispute():
+    config = json.loads((root / "source-init.json").read_text())
+    path = "federation/commercial-agreements/" + config["request"]["agreementRevisionId"]
+    parties = (("source", sourceapi, sourcetoken), ("provider", api, token))
+    inspect_ledgers("freeze-before")
+    before = {name: json.loads((logs / (name + "-freeze-before.json")).read_text()) for name, _, _ in parties}
+    bill = before["source"]["bills"][0]
+    unchanged = ("budgets", "reservations", "outbound", "bills", "settlements", "adjustments", "payments", "execution", "gate", "demand")
+    orderer("stop")
+    try:
+        draft = sourceapi(path + "/disputes/draft", {
+            "caseId": str(uuid.uuid4()),
+            "subject": {"recordType": "bill", "recordId": bill["billId"], "recordDigest": bill["digest"]},
+            "reason": "Private original usage review " + uuid.uuid4().hex,
+            "requestedResolution": "Keep the signed financial boundary pending review",
+        }, sourcetoken)["data"]
+        original = sourceapi(path + "/disputes/open", draft, sourcetoken)["data"]
+        assert original["state"] == "FREEZE_PENDING"
+        freeze_path = path + "/disputes/" + draft["caseId"] + "/freeze"
+        for _ in range(100):
+            delivery = sourceapi(path + "/disputes/" + draft["caseId"] + "/delivery", token=sourcetoken)["data"]
+            assert not delivery["sync"] or delivery["sync"]["state"] != "needs_review", json.dumps(delivery)
+            statuses = {name: read(freeze_path, token=auth)["data"] for name, read, auth in parties if name == "source" or read(path + "/disputes?caseId=" + draft["caseId"], token=auth)["data"]["data"]}
+            for status in statuses.values():
+                assert not status["sync"] or status["sync"]["state"] != "needs_review", json.dumps(status)
+            if len(statuses) == 2 and all(value["sync"] and value["sync"]["state"] == "ledger_pending" for value in statuses.values()):
+                break
+            time.sleep(2)
+        else:
+            raise AssertionError("Native freeze did not exchange original signatures")
+        assert statuses["source"]["attestation"] and statuses["provider"]["attestation"] is None
+        submission_id = statuses["source"]["attestation"]["id"]
+        for _ in range(100):
+            inspect_ledgers("freeze-offline")
+            offline = {name: json.loads((logs / (name + "-freeze-offline.json")).read_text()) for name, _, _ in parties}
+            attempts = [row for row in offline["source"]["commercialTransactions"] if row["submissionId"] == submission_id]
+            if len(attempts) == 1 and attempts[0]["stage"] == "transaction":
+                break
+            assert all(row["state"] != "needs_review" for row in offline["source"]["commercial"]), "Freeze proposal requires review"
+            time.sleep(2)
+        else:
+            raise AssertionError("Native transaction checkpoint was not persisted")
+        for name, read, auth in parties:
+            state = offline[name]
+            assert len(state["freezes"]) == 1 and len(state["disputes"]) == 1
+            assert state["freezes"][0]["state"] == "ledger_pending" and state["freezes"][0]["ledgerReceipt"] is None
+            assert state["disputes"][0]["state"] == "FREEZE_PENDING"
+            for key in unchanged:
+                assert state[key] == before[name][key], "Freeze changed original state: " + key
+        source_proof, target_proof = offline["source"]["freezes"][0], offline["provider"]["freezes"][0]
+        assert source_proof["approvalJws"] == target_proof["counterpartyJws"] and source_proof["counterpartyJws"] == target_proof["approvalJws"]
+        assert source_proof["digest"] == target_proof["digest"]
+        checkpoint = attempts[0]
+        recovery = restart_commercial_servers()
+        inspect_ledgers("freeze-restarted")
+        for name, read, auth in parties:
+            restarted = json.loads((logs / (name + "-freeze-restarted.json")).read_text())
+            assert restarted["disputes"][0]["state"] == "FREEZE_PENDING"
+            for key in ("payload", "digest", "approvalJws", "counterpartyJws", "financialView", "confirmedAt", "ledgerReceipt"):
+                assert restarted["freezes"][0][key] == offline[name]["freezes"][0][key], "Restart changed signed freeze proof"
+        (logs / "freeze-crash-recovery.json").write_text(json.dumps({**recovery, "checkpoint": checkpoint}, indent=2) + "\n")
+        print("REAL NATIVE FREEZE OFFLINE PASSED: independent platforms retain dual proof and original endorsed transaction across SIGKILL; neither case claims DISPUTED", flush=True)
+    finally:
+        orderer("start")
+    for _ in range(140):
+        statuses = {name: read(freeze_path, token=auth)["data"] for name, read, auth in parties}
+        assert all(value["sync"]["state"] != "needs_review" for value in statuses.values()), json.dumps(statuses)
+        assert statuses["source"]["attestation"]["state"] != "needs_review", json.dumps(statuses)
+        if all(value["sync"]["state"] == "confirmed" for value in statuses.values()) and statuses["source"]["attestation"]["state"] == "committed":
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError("Native freeze did not recover to independently verified receipts")
+    inspect_ledgers("freeze-committed")
+    committed = {name: json.loads((logs / (name + "-freeze-committed.json")).read_text()) for name, _, _ in parties}
+    for name, read, auth in parties:
+        state = committed[name]
+        assert state["disputes"][0]["state"] == "DISPUTED"
+        assert state["freezes"][0]["ledgerReceipt"] == {"recordId": draft["caseId"], "digest": source_proof["digest"]}
+        for key in ("payload", "digest", "approvalJws", "counterpartyJws", "financialView"):
+            assert state["freezes"][0][key] == offline[name]["freezes"][0][key]
+        for key in unchanged:
+            assert state[key] == before[name][key], "Confirmed freeze changed original state: " + key
+        added = [row for row in state["commercial"] if row["input"]["operation"] == "freeze-disputed-task"]
+        assert len(added) == (1 if name == "source" else 0), "Duplicate native submission"
+    transactions = [row for row in committed["source"]["commercialTransactions"] if row["submissionId"] == submission_id]
+    assert len(transactions) == 1 and transactions[0]["stage"] == "committed" and transactions[0]["validationCode"] == 0
+    for key in ("transactionId", "submissionId", "recoveryDigest"):
+        assert transactions[0][key] == checkpoint[key], "Native recovery replaced the transaction"
+    replay = sourceapi(path + "/disputes/open", draft, sourcetoken)["data"]
+    assert replay["openingJws"] == original["openingJws"] and replay["state"] == "DISPUTED"
+    settlement = before["provider"]["settlements"][0]
+    adjustment = api(path + "/adjustments/draft", {"settlementId": settlement["settlementId"], "adjustmentId": str(uuid.uuid4()), "chargedAmount": "0", "reason": "Must remain frozen", "supportingEvidenceDigest": None}, token)["data"]
+    for name, read, auth in parties:
+        try:
+            read(path + "/adjustments/approve", adjustment, auth)
+        except urllib.error.HTTPError as error:
+            assert json.load(error)["error"]["code"] == "DATA_WAITING"
+        else:
+            raise AssertionError("Disputed task accepted a new financial commitment")
+    submission = next(row for row in committed["source"]["commercial"] if row["id"] == submission_id)
+    proof = {"draft": source_proof["payload"], "opening": draft, "envelope": submission["input"]["envelope"],
+             "receipt": committed["source"]["freezes"][0]["ledgerReceipt"], "transaction": transactions[0], "evidenceDirectory": str(logs)}
+    (networkroot / "live-freeze-proof.json").write_text(json.dumps(proof, indent=2) + "\n")
+    (logs / "freeze-recovery-evidence.json").write_text(json.dumps({"statuses": statuses, "transaction": transactions[0]}, indent=2) + "\n")
+    print("REAL NATIVE FREEZE RECOVERY PASSED: original transaction VALID, each platform confirmed its private receipt, immutable proof and unchanged money/Jobs; new financial approvals refused", flush=True)
+
+
 def restart_commercial_servers():
     global server, sourceserver
     crashed = []
@@ -2791,8 +2902,9 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             with urllib.request.urlopen(req, timeout=15) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
-            (logs / "source-http-error.json").write_bytes(error.read())
-            raise
+            body = error.read()
+            (logs / "source-http-error.json").write_bytes(body)
+            raise urllib.error.HTTPError(error.url, error.code, error.msg, error.headers, io.BytesIO(body)) from error
 
     for _ in range(45):
         if sourceserver.poll() is not None:
@@ -2857,7 +2969,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         for name, setting in [("source", sourceenv), ("provider", env)]:
             subprocess.run(
                 ["bun", "--no-env-file", "scripts/federation-live/inspect.ts"]
-                + (["--closed"] if scenario in ("success", "workflow") and (suffix in ("after", "settlement-offline", "settlement-committed") or suffix.startswith(("adjustment-", "payment-"))) else []),
+                + (["--closed"] if scenario in ("success", "workflow") and (suffix in ("after", "settlement-offline", "settlement-committed") or suffix.startswith(("adjustment-", "payment-", "freeze-"))) else []),
                 cwd=repo,
                 env={
                     **setting,
@@ -3027,8 +3139,11 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             bill_record = verify_billing()
             if coordinated:
                 verify_settlement()
-                verify_adjustments()
-                verify_payments()
+                if native_dispute:
+                    verify_native_dispute()
+                else:
+                    verify_adjustments()
+                    verify_payments()
             else:
                 verify_bilateral_finance()
                 verify_payments()

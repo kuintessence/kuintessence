@@ -18,6 +18,8 @@ export async function verifyLiveExecution(
   );
   const attested = process.env.KQ_FEDERATION_LAB_MODE === "bilateral_attested";
   const selection = process.env.KQ_FEDERATION_LAB_SCENARIO ?? (attested ? "success" : "both");
+  const nativeDispute = process.env.KQ_FEDERATION_LAB_DISPUTE === "1";
+  assert(!nativeDispute || (!attested && ["success", "workflow"].includes(selection)));
   const network = await Bun.file(join(root, "network.json")).json();
   await Bun.write(
     join(root, "execution-fixture.json"),
@@ -103,28 +105,43 @@ export async function verifyLiveExecution(
         `Real ${attested ? "attested" : "coordinated"} execution ${scenario} failed`,
       );
       if (["success", "workflow", "refund", "refund-auto"].includes(scenario)) {
-        const build = await Bun.build({
-          entrypoints: [
-            join(import.meta.dir, attested ? "attested-proof.ts" : "settlement-proof.ts"),
-          ],
-          target: "node",
-          format: "esm",
-          external: ["@hyperledger/fabric-gateway", "@hyperledger/fabric-protos", "@grpc/grpc-js"],
-        });
-        assert(build.success && build.outputs[0]);
-        const entry = join(root, "live-settlement-proof.mjs");
-        await Bun.write(entry, await build.outputs[0].text());
-        for (const record of attested
-          ? ["attested"]
-          : ["settlement", "adjustment-1", "adjustment-2", "payment-1", "payment-2"]) {
-          const probe = Bun.spawn(["node", entry, root, record], {
-            stdout: "inherit",
-            stderr: "inherit",
+        const checks = nativeDispute
+          ? [
+              { file: "settlement-proof.ts", records: ["settlement"] },
+              { file: "freeze-proof.ts", records: ["freeze"] },
+            ]
+          : [
+              {
+                file: attested ? "attested-proof.ts" : "settlement-proof.ts",
+                records: attested
+                  ? ["attested"]
+                  : ["settlement", "adjustment-1", "adjustment-2", "payment-1", "payment-2"],
+              },
+            ];
+        for (const check of checks) {
+          const build = await Bun.build({
+            entrypoints: [join(import.meta.dir, check.file)],
+            target: "node",
+            format: "esm",
+            external: [
+              "@hyperledger/fabric-gateway",
+              "@hyperledger/fabric-protos",
+              "@grpc/grpc-js",
+            ],
           });
-          try {
-            assert.equal(await probe.exited, 0, "Real settlement private ledger proof failed");
-          } finally {
-            if (probe.exitCode === null) probe.kill("SIGTERM");
+          assert(build.success && build.outputs[0]);
+          const entry = join(root, `live-${check.file}.mjs`);
+          await Bun.write(entry, await build.outputs[0].text());
+          for (const record of check.records) {
+            const probe = Bun.spawn(["node", entry, root, record], {
+              stdout: "inherit",
+              stderr: "inherit",
+            });
+            try {
+              assert.equal(await probe.exited, 0, "Real settlement private ledger proof failed");
+            } finally {
+              if (probe.exitCode === null) probe.kill("SIGTERM");
+            }
           }
         }
       }
