@@ -1170,6 +1170,13 @@
       "when": 1794182446309,
       "tag": "0166_old_black_panther",
       "breakpoints": true
+    },
+    {
+      "idx": 167,
+      "version": "7",
+      "when": 1794186406397,
+      "tag": "0167_shiny_vampiro",
+      "breakpoints": true
     }
   ]
 }

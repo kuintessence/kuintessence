@@ -1,9 +1,9 @@
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import {
+  FederationAnyMediaExportApprovalSchema,
   FederationDatasetPublicationSchema,
   FederationDatasetUseApprovalSchema,
   FederationError,
-  FederationMediaExportApprovalSchema,
   FederationMediaImportApprovalSchema,
   FederationMediaRegistrationSchema,
   FederationMediaRevocationSchema,
@@ -361,7 +361,7 @@ export function createFederationMediaRoutes(
   );
   r.post(
     "/federation/media/exports",
-    kqValidator("json", FederationMediaExportApprovalSchema),
+    kqValidator("json", FederationAnyMediaExportApprovalSchema),
     async (c) =>
       c.json(
         {

@@ -17,6 +17,8 @@ import {
   federationInputImports,
   federationInputTransfers,
   federationMaterials,
+  federationMediaExports,
+  federationMediaKeyGrants,
   federationOutbound,
   federationPreparations,
   federationReservations,
@@ -66,6 +68,9 @@ import {
   FederationInputDownloadQuerySchema,
   FederationMaterialChunkSchema,
   FederationMaterialQuerySchema,
+  FederationMediaKeyGrantSchema,
+  FederationMediaKeyQuerySchema,
+  FederationMediaManifestSchema,
   type FederationParameterOverrides,
   FederationResultDownloadGrantSchema,
   FederationResultDownloadQuerySchema,
@@ -78,14 +83,16 @@ import {
   FederationStatusReportSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
+import { MediaAge } from "@kuintessence/shared/federation/media-age";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
-import { exportSPKI } from "jose";
+import { exportJWK, exportSPKI, generateKeyPair } from "jose";
 import pino from "pino";
 import { stringify } from "yaml";
 import { AgentDispatcher } from "../grpc/dispatcher";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createAdminFederationStorageRoutes } from "../routes/admin-federation-storage";
+import { createFederationMediaRoutes } from "../routes/federation-media";
 import { createFederationOutboundRoutes } from "../routes/federation-outbound";
 import { artifactBatchHash } from "../services/artifact-members";
 import { NetDriveService } from "../services/netdrive";
@@ -113,6 +120,10 @@ import { FederationInputTransfers } from "./input-transfers";
 import { FederationInputTransport } from "./input-transport";
 import { FederationInputWorker } from "./input-worker";
 import { FederationMaterialExchange } from "./material-exchange";
+import { FederationMediaExportOperations } from "./media-export-operations";
+import { FederationMediaExportService } from "./media-exports";
+import { FederationMediaKeyResponder } from "./media-key-exchange";
+import { FederationMediaPackageService } from "./media-packages";
 import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
@@ -127,6 +138,7 @@ import { type FederationResultDownloadStorage, FederationResultResponder } from 
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationStatusResponder } from "./status";
 import type { FederationStorageGuard } from "./storage-capacity";
+import { FederationTaskMediaSources } from "./task-media-source";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
 import { lockFederationTransferSlot } from "./transfer-agent";
 import { FederationTrustRegistry } from "./trust-registry";
@@ -274,6 +286,9 @@ beforeAll(async () => {
           "material-chunk",
           "input-download-query",
           "input-download-grant",
+          "media-manifest",
+          "media-key-query",
+          "media-key-grant",
         ],
         validFrom: key.verification.validFrom.toISOString(),
         validUntil: key.verification.validUntil.toISOString(),
@@ -299,6 +314,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   const orgIds = [actor.orgId, receiver.orgId];
+  await db
+    .delete(federationMediaKeyGrants)
+    .where(inArray(federationMediaKeyGrants.localSiteId, [a.signing.siteId, b.signing.siteId]));
+  await db.delete(federationMediaExports).where(inArray(federationMediaExports.localOrgId, orgIds));
   await db
     .delete(federationResultReceipts)
     .where(inArray(federationResultReceipts.localSiteId, [a.signing.siteId, b.signing.siteId]));
@@ -8327,3 +8346,450 @@ test("completion renewal preserves an accepted intent cancellation under physica
     await db.delete(pools).where(eq(pools.localSiteId, siteId));
   }
 });
+
+const taskMediaTest = process.env.KQ_MEDIA_AGE_TEST_BIN ? test : test.skip;
+
+async function taskMediaFixture(kind: "task-input" | "task-result" = "task-input") {
+  const f =
+    kind === "task-input" ? await acceptedInputInventory(true, true) : await resultFixture();
+  const local = kind === "task-input" ? actor : receiver;
+  const signing = kind === "task-input" ? a.signing : b.signing;
+  await permission.set({ ...local, capability: "media.export", enabled: true }, actor.userId);
+  await permission.set({ ...local, capability: "asset.read", enabled: true }, actor.userId);
+  const agentId = `media-object-${crypto.randomUUID()}`;
+  transferAgentIds.push(agentId);
+  await db.insert(agents).values({
+    agentId,
+    providerOrgId: local.orgId,
+    siteName: "Task storage",
+    schedulerType: "kubernetes",
+    schedulerVersion: "test",
+    status: "online",
+  });
+  if (kind === "task-result")
+    await db
+      .update(netdriveFiles)
+      .set({ storageVersionId: "original-version" })
+      .where(eq(netdriveFiles.id, f.fileId));
+  const ageDirectory = process.env.KQ_MEDIA_AGE_TEST_BIN;
+  if (!ageDirectory) throw new Error("Real age required for task media tests");
+  const age = new MediaAge(ageDirectory);
+  const sources = new FederationTaskMediaSources(
+    db,
+    signing.siteId,
+    f.service(),
+    new FederationResultResponder(db, signing, clock),
+  );
+  const service = (keygen: Pick<MediaAge, "generateIdentity"> = age) =>
+    new FederationMediaExportService(
+      db,
+      signing,
+      keygen,
+      "task-media-test-wrapping-key-not-for-deployment",
+      clock,
+      sources,
+    );
+  const input = {
+    kind,
+    packageId: crypto.randomUUID(),
+    operationId: f.saved.operationId,
+    agreementRevisionId: f.terms.agreementRevisionId,
+    recipientSiteId: kind === "task-input" ? b.signing.siteId : a.signing.siteId,
+    agentId,
+    expiresAt: new Date(clock().getTime() + 300_000).toISOString(),
+  };
+  const release = async () => {
+    if ("lease" in f) await f.lease.release();
+  };
+  const authorize = async () => {
+    const reader = await service().reader(input.packageId, { actor: local });
+    return db.transaction((tx) =>
+      service().assertExportAuthorized(tx, local.orgId, input.packageId, reader),
+    );
+  };
+  return { f, local, signing, input, service, age, sources, authorize, release };
+}
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task media %s prepares original signed inventory without exposing object keys",
+  async (kind) => {
+    const t = await taskMediaFixture(kind);
+    try {
+      const app = new Hono();
+      app.onError(createErrorHandler(pino({ level: "silent" })));
+      app.use("*", async (c, next) => {
+        c.set("principal" as never, t.local as never);
+        await next();
+      });
+      app.route(
+        "/api",
+        createFederationMediaRoutes(
+          new FederationMediaPackageService(db, t.signing.siteId, clock),
+          t.service(),
+        ),
+      );
+      const post = (body: unknown) =>
+        app.request("/api/federation/media/exports", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      const response = await post(t.input);
+      expect(response.status).toBe(201);
+      const body = await response.text();
+      const saved = await t.authorize();
+      expect(saved.taskSelection).toEqual({
+        kind,
+        operationId: t.input.operationId,
+        agentId: t.input.agentId,
+      });
+      expect(saved.versionId).toBeNull();
+      expect(saved.locationId).toBeNull();
+      const signed = await verifyFederationMessage(
+        FederationMediaManifestSchema,
+        saved.manifestJws,
+        await trust.resolveKey(t.signing.siteId, t.signing.keyId, clock()),
+        clock(),
+      );
+      expect(signed.digest).toBe(saved.manifestDigest);
+      expect(signed.payload.subject).toMatchObject({
+        kind,
+        operationId: t.f.saved.operationId,
+        taskId: t.f.saved.taskId,
+        attempt: t.f.saved.attempt,
+        requestDigest: t.f.saved.requestDigest,
+      });
+      expect(saved.manifest.files.map((file) => file.path)).toEqual(
+        kind === "task-input" ? ["objects/000000", "objects/000001"] : ["objects/000000"],
+      );
+      expect(
+        saved.manifest.files.every((file) => file.license === null && file.provenance === null),
+      ).toBe(true);
+      if (!("objects" in saved.source)) throw new Error("Expected object source");
+      for (const secret of [
+        saved.identityEncrypted,
+        t.f.fileId,
+        "AGE-SECRET-KEY",
+        "original-version",
+        ...saved.source.objects.map((file) => file.storageKey),
+      ])
+        expect(body).not.toContain(secret);
+      expect(await t.service().prepare(t.local, t.input)).toEqual(
+        await t.service().details(t.local, t.input.packageId),
+      );
+      expect(
+        (await t.service().list(t.local)).some((row) => row.packageId === t.input.packageId),
+      ).toBe(true);
+      for (const extra of [
+        { taskId: crypto.randomUUID() },
+        { files: [] },
+        { url: "https://storage.invalid" },
+        { versionId: crypto.randomUUID() },
+      ])
+        expect((await post({ ...t.input, ...extra })).status).toBe(400);
+      // Object dispatch remains closed until Agent capability negotiation and object grants are connected.
+      await expect(
+        new FederationMediaExportOperations(db, t.signing.siteId, t.service(), clock).start(
+          t.local,
+          t.input.packageId,
+        ),
+      ).rejects.toThrow("POLICY_DENIED");
+      await expect(
+        db.transaction((tx) =>
+          t.service().assertExportAuthorized(tx, t.local.orgId, t.input.packageId),
+        ),
+      ).rejects.toThrow("POLICY_DENIED");
+      await expect(
+        t.service().prepare(t.local, {
+          ...t.input,
+          expiresAt: new Date(Date.parse(t.input.expiresAt) + 1000).toISOString(),
+        }),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+    } finally {
+      await t.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task media %s rejects foreign scope and changed file versions",
+  async (kind) => {
+    const t = await taskMediaFixture(kind);
+    try {
+      for (const patch of [
+        { recipientSiteId: crypto.randomUUID() },
+        { agreementRevisionId: crypto.randomUUID() },
+        { operationId: crypto.randomUUID() },
+        { agentId: "unregistered" },
+      ])
+        await expect(t.service().prepare(t.local, { ...t.input, ...patch })).rejects.toThrow();
+      await expect(
+        t.service().prepare(kind === "task-input" ? receiver : actor, t.input),
+      ).rejects.toThrow("POLICY_DENIED");
+      await t.service().prepare(t.local, t.input);
+      const [original] = await db
+        .select()
+        .from(netdriveFiles)
+        .where(eq(netdriveFiles.id, t.f.fileId));
+      if (!original) throw new Error("Missing source");
+      for (const patch of [
+        { storageVersionId: "replacement" },
+        { storageKey: "another-key" },
+        { deletedAt: clock() },
+        { ownerId: kind === "task-input" ? receiver.userId : actor.userId },
+        { sha256: "f".repeat(64) },
+      ]) {
+        try {
+          await db.update(netdriveFiles).set(patch).where(eq(netdriveFiles.id, t.f.fileId));
+          await expect(t.authorize()).rejects.toThrow();
+          await expect(t.service().prepare(t.local, t.input)).rejects.toThrow();
+        } finally {
+          await db.update(netdriveFiles).set(original).where(eq(netdriveFiles.id, original.id));
+        }
+      }
+      await permission.set(
+        { ...t.local, capability: "media.export", enabled: false },
+        actor.userId,
+      );
+      await expect(t.authorize()).rejects.toThrow("POLICY_DENIED");
+      await permission.set({ ...t.local, capability: "media.export", enabled: true }, actor.userId);
+      expect((await t.authorize()).packageId).toBe(t.input.packageId);
+      await t.service().revoke(t.local, t.input.packageId, { reason: "Withdraw export" });
+      await expect(t.authorize()).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      await permission.set({ ...t.local, capability: "media.export", enabled: true }, actor.userId);
+      await t.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task media input requires original human owner and a live original workflow after preflight",
+  async () => {
+    const t = await taskMediaFixture();
+    try {
+      const read = await t.sources.authorize(t.local, t.input);
+      const saved = await db.transaction(read);
+      expect(saved.subject).toMatchObject({ contentDigest: t.f.saved.request.inputFilesDigest });
+      const binding = await db
+        .select()
+        .from(workflowExecutionDelegations)
+        .where(eq(workflowExecutionDelegations.operationId, t.input.operationId));
+      const runId = binding[0]?.runId;
+      if (!runId) throw new Error("Missing original workflow");
+      await db.update(workflowRuns).set({ status: "cancelled" }).where(eq(workflowRuns.id, runId));
+      await expect(db.transaction(read)).rejects.toThrow("CANCELLATION_REQUESTED");
+      await db.update(workflowRuns).set({ status: "running" }).where(eq(workflowRuns.id, runId));
+      const [owner] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId));
+      await db
+        .update(workflowRuns)
+        .set({ submittedBy: receiver.userId })
+        .where(eq(workflowRuns.id, runId));
+      await expect(db.transaction(read)).rejects.toThrow("POLICY_DENIED");
+      await db
+        .update(workflowRuns)
+        .set({ submittedBy: owner?.submittedBy })
+        .where(eq(workflowRuns.id, runId));
+      const receipt = t.f.saved.receipt;
+      if (!receipt) throw new Error("Missing acceptance");
+      await db
+        .update(federationOutbound)
+        .set({ receipt: { ...receipt, taskId: crypto.randomUUID() } })
+        .where(eq(federationOutbound.operationId, t.input.operationId));
+      await expect(db.transaction(read)).rejects.toThrow("OPERATION_CONFLICT");
+      await db
+        .update(federationOutbound)
+        .set({ receipt })
+        .where(eq(federationOutbound.operationId, t.input.operationId));
+      await t.f.service().cancellations.request(t.local, t.input.operationId);
+      await expect(db.transaction(read)).rejects.toThrow();
+    } finally {
+      await t.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task media result keeps its independent disclosure window and requires pinned completed artifacts",
+  async () => {
+    const t = await taskMediaFixture("task-result");
+    try {
+      time = new Date("2026-01-03T00:00:00.000Z");
+      t.input.expiresAt = new Date(clock().getTime() + 300_000).toISOString();
+      await t.service().prepare(t.local, t.input);
+      expect((await t.authorize()).manifest.subject.kind).toBe("task-result");
+      for (const storageVersionId of [null, "null", "", "a".repeat(1025)]) {
+        await db
+          .update(netdriveFiles)
+          .set({ storageVersionId })
+          .where(eq(netdriveFiles.id, t.f.fileId));
+        await expect(t.authorize()).rejects.toThrow("ASSET_UNAVAILABLE");
+      }
+      await db
+        .update(netdriveFiles)
+        .set({ storageVersionId: "original-version" })
+        .where(eq(netdriveFiles.id, t.f.fileId));
+      const [binding] = await db
+        .select()
+        .from(federationWorkflowBindings)
+        .where(
+          eq(federationWorkflowBindings.reservationId, t.f.saved.receipt?.reservationId ?? ""),
+        );
+      if (!binding) throw new Error("Missing binding");
+      await db
+        .update(workflowRuns)
+        .set({ status: "running" })
+        .where(eq(workflowRuns.id, binding.workflowRunId));
+      await expect(t.authorize()).rejects.toThrow("DATA_WAITING");
+      await db
+        .update(workflowRuns)
+        .set({ status: "completed" })
+        .where(eq(workflowRuns.id, binding.workflowRunId));
+      await db
+        .delete(workflowArtifacts)
+        .where(eq(workflowArtifacts.workflowRunId, binding.workflowRunId));
+      await expect(t.authorize()).rejects.toThrow("ASSET_UNAVAILABLE");
+    } finally {
+      await t.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task media %s rechecks after real key generation and rolls back stale snapshots",
+  async (kind) => {
+    const t = await taskMediaFixture(kind);
+    let identity: Buffer | undefined;
+    try {
+      const changing = t.service({
+        async generateIdentity(signal) {
+          const result = await t.age.generateIdentity(signal);
+          identity = result.identity;
+          await db
+            .update(netdriveFiles)
+            .set({ storageVersionId: "changed-during-generation" })
+            .where(eq(netdriveFiles.id, t.f.fileId));
+          return result;
+        },
+      });
+      await expect(changing.prepare(t.local, t.input)).rejects.toThrow();
+      expect(identity?.every((byte) => byte === 0)).toBe(true);
+      expect(
+        await db
+          .select()
+          .from(federationMediaExports)
+          .where(eq(federationMediaExports.packageId, t.input.packageId)),
+      ).toHaveLength(0);
+    } finally {
+      await t.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task media database rejects mixed selectors and mismatched task identity",
+  async () => {
+    const t = await taskMediaFixture();
+    try {
+      await t.service().prepare(t.local, t.input);
+      const saved = await t.authorize();
+      if (!saved.taskSelection) throw new Error("Missing selector");
+      for (const patch of [
+        { taskSelection: null },
+        { taskSelection: { ...saved.taskSelection, operationId: crypto.randomUUID() } },
+        { taskSelection: { ...saved.taskSelection, kind: "task-result" as const } },
+        {
+          source: {
+            agentId: t.input.agentId,
+            managedRootId: crypto.randomUUID(),
+            relativePath: "fake",
+          },
+        },
+      ])
+        await expect(
+          db.transaction((tx) =>
+            tx
+              .update(federationMediaExports)
+              .set(patch)
+              .where(eq(federationMediaExports.packageId, t.input.packageId)),
+          ),
+        ).rejects.toThrow();
+      expect((await t.authorize()).manifestDigest).toBe(saved.manifestDigest);
+    } finally {
+      await t.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task media %s key grants are peer bound, deadline capped and rechecked on replay",
+  async (kind) => {
+    const t = await taskMediaFixture(kind);
+    const peer = kind === "task-input" ? b : a;
+    const fingerprint = kind === "task-input" ? targetFingerprint : sourceFingerprint;
+    const condition = and(
+      eq(federationSigningKeys.siteId, peer.signing.siteId),
+      eq(federationSigningKeys.keyId, peer.signing.keyId),
+    );
+    try {
+      const prepared = await t.service().prepare(t.local, t.input);
+      const pair = await generateKeyPair("RSA-OAEP-256", { extractable: true });
+      const jwk = await exportJWK(pair.publicKey);
+      const query = FederationMediaKeyQuerySchema.parse({
+        protocolVersion: 1,
+        kind: "media-key-query",
+        queryId: crypto.randomUUID(),
+        senderSiteId: peer.signing.siteId,
+        recipientSiteId: t.signing.siteId,
+        packageId: t.input.packageId,
+        agreementRevisionId: t.input.agreementRevisionId,
+        manifestDigest: prepared.manifestDigest,
+        authorizationId: crypto.randomUUID(),
+        agentId: "target-media-node",
+        managedRootId: crypto.randomUUID(),
+        recipientKey: { kty: jwk.kty, n: jwk.n, e: jwk.e },
+        maxBytes: 32,
+        authorizationExpiresAt: t.input.expiresAt,
+        issuedAt: clock().toISOString(),
+        expiresAt: new Date(clock().getTime() + 30_000).toISOString(),
+      });
+      const jws = await signFederationMessage(FederationMediaKeyQuerySchema, query, peer.signing);
+      const responder = new FederationMediaKeyResponder(db, t.signing, t.service(), clock);
+      await expect(responder.respond(jws, "ee".repeat(32))).rejects.toThrow();
+      await db
+        .update(federationSigningKeys)
+        .set({ validUntil: new Date(clock().getTime() + 10_000) })
+        .where(condition);
+      const first = await responder.respond(jws, fingerprint);
+      const grant = await verifyFederationMessage(
+        FederationMediaKeyGrantSchema,
+        first,
+        await trust.resolveKey(t.signing.siteId, t.signing.keyId, clock()),
+        clock(),
+      );
+      expect(Date.parse(grant.payload.expiresAt)).toBe(clock().getTime() + 10_000);
+      expect(await responder.respond(jws, fingerprint)).toBe(first);
+      await db
+        .update(netdriveFiles)
+        .set({ storageVersionId: "changed-after-key" })
+        .where(eq(netdriveFiles.id, t.f.fileId));
+      await expect(responder.respond(jws, fingerprint)).rejects.toThrow();
+      await expect(
+        responder.respond(
+          await signFederationMessage(
+            FederationMediaKeyQuerySchema,
+            { ...query, agreementRevisionId: crypto.randomUUID() },
+            peer.signing,
+          ),
+          fingerprint,
+        ),
+      ).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      await db
+        .update(federationSigningKeys)
+        .set({ validUntil: peer.verification.validUntil })
+        .where(condition);
+      await t.release();
+    }
+  },
+);

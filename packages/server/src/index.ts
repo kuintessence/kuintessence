@@ -126,6 +126,7 @@ import { FederationReservationProposalService } from "./federation/reservation-p
 import { FederationResultStorage } from "./federation/result-storage";
 import { FederationResultTransport } from "./federation/result-transport";
 import { FederationResultWorker } from "./federation/result-worker";
+import { FederationResultResponder } from "./federation/results";
 import {
   loadFederationSender,
   loadFederationSigningKey,
@@ -133,6 +134,7 @@ import {
   startFederationIngress,
 } from "./federation/runtime";
 import { FederationSettlementService } from "./federation/settlement";
+import { FederationTaskMediaSources } from "./federation/task-media-source";
 import { FederationTerminalAutomation } from "./federation/terminal-automation";
 import { FederationTerminalPolicyService } from "./federation/terminal-policy";
 import { FederationTrustRegistry } from "./federation/trust-registry";
@@ -1923,6 +1925,15 @@ const federationMediaExports =
         federationSigningKey,
         new MediaAge(config.FEDERATION_MEDIA_AGE_DIRECTORY),
         config.FEDERATION_MEDIA_WRAPPING_KEY,
+        undefined,
+        federationOutbound
+          ? new FederationTaskMediaSources(
+              db,
+              federationSigningKey.siteId,
+              federationOutbound,
+              new FederationResultResponder(db, federationSigningKey),
+            )
+          : undefined,
       )
     : undefined;
 const federationMediaExportOperations =

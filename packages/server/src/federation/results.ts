@@ -28,6 +28,7 @@ import { validateArtifactMembers } from "../services/artifact-members";
 import { federationMaterialDigest } from "./assets";
 import { type FederationDownloadStorage, signedDownloadExpiry } from "./download-credential";
 import { requireExecutionIdentity } from "./execution-identity";
+import { type FederationActor, requireFederationCapability } from "./permissions";
 import { requireFederationResultPolicy } from "./result-policy";
 import {
   type FederationSigningKey,
@@ -220,6 +221,56 @@ export class FederationResultResponder {
     return signed;
   }
 
+  /** Local operator may release only this organization's original execution results to its requester. */
+  async mediaResults(
+    tx: FederationTransaction,
+    actor: FederationActor,
+    input: { operationId: string; agreementRevisionId: string; recipientSiteId: string },
+  ) {
+    await requireFederationCapability(tx, actor, "media.export");
+    const [row] = await tx
+      .select({ reservation: federationReservations, agreement: federationAgreements })
+      .from(federationReservations)
+      .innerJoin(
+        federationAgreements,
+        eq(federationAgreements.revisionId, federationReservations.agreementRevisionId),
+      )
+      .where(
+        and(
+          eq(federationReservations.operationId, input.operationId),
+          eq(federationReservations.senderSiteId, input.recipientSiteId),
+          eq(federationAgreements.revisionId, input.agreementRevisionId),
+          eq(federationAgreements.targetSiteId, this.signingKey.siteId),
+          eq(federationAgreements.localOrgId, actor.orgId),
+        ),
+      )
+      .for("share", { of: [federationReservations, federationAgreements] });
+    if (!row) throw new FederationError("POLICY_DENIED");
+    const reservation = row.reservation;
+    const query = {
+      protocolVersion: 1 as const,
+      queryId: crypto.randomUUID(),
+      senderSiteId: reservation.senderSiteId,
+      recipientSiteId: this.signingKey.siteId,
+      agreementRevisionId: reservation.agreementRevisionId,
+      operationId: reservation.operationId,
+      reservationId: reservation.id,
+      requestDigest: reservation.requestDigest,
+      taskId: reservation.taskId,
+      attempt: reservation.attempt,
+      issuedAt: this.clock().toISOString(),
+      expiresAt: new Date(this.clock().getTime() + 30_000).toISOString(),
+    };
+    const snapshot = await this.manifest(tx, query);
+    return {
+      ...snapshot,
+      operationId: reservation.operationId,
+      taskId: reservation.taskId,
+      attempt: reservation.attempt,
+      requestDigest: reservation.requestDigest,
+    };
+  }
+
   private async manifest(tx: FederationTransaction, query: Omit<FederationResultQuery, "kind">) {
     const [agreement] = await tx
       .select()
@@ -233,7 +284,7 @@ export class FederationResultResponder {
       )
       .for("share");
     if (!agreement) throw new FederationError("POLICY_DENIED");
-    const { terms, policy } = await requireFederationResultPolicy(
+    const { terms, policy, authorizedUntil } = await requireFederationResultPolicy(
       tx,
       this.trust,
       agreement,
@@ -479,6 +530,10 @@ export class FederationResultResponder {
       availableUntil: policy.availableUntil,
       outputs,
     });
-    return { manifest, sources };
+    return {
+      manifest,
+      sources,
+      authorizedUntil: Math.min(authorizedUntil, requestKey.validUntil.getTime()),
+    };
   }
 }

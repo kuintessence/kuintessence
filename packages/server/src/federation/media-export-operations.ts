@@ -37,7 +37,8 @@ export class FederationMediaExportOperations {
     z.uuid().parse(packageId);
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "media.export");
-      await this.exports.assertExportAuthorized(tx, actor.orgId, packageId);
+      const row = await this.exports.assertExportAuthorized(tx, actor.orgId, packageId);
+      if (!("managedRootId" in row.source)) throw new FederationError("POLICY_DENIED");
       const inserted = await tx
         .insert(operations)
         .values({
@@ -160,6 +161,7 @@ export class FederationMediaExportOperations {
     return this.db.transaction(async (tx) => {
       const s = await this.scope(tx, agentId, packageId);
       if (s.operation.state !== "queued") throw new FederationError("OPERATION_CONFLICT");
+      if (!("managedRootId" in s.row.source)) throw new FederationError("POLICY_DENIED");
       const task = FederationMediaExportTaskSchema.parse({
         generation: s.operation.generation,
         packageId,

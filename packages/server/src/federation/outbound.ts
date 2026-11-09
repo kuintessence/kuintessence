@@ -242,6 +242,7 @@ export class FederationOutboundService {
       request,
       allowReplay ? new Date(Math.min(now.getTime(), Date.parse(request.expiresAt) - 1)) : now,
     );
+    let authorizedUntil = Date.parse(terms.validUntil);
     for (const [siteId, jws] of [
       [terms.sourceSiteId, approval.approvalJws],
       [terms.targetSiteId, approval.counterpartyApprovalJws],
@@ -250,6 +251,7 @@ export class FederationOutboundService {
       const keyId = federationMessageKeyId(jws);
       await this.trust.assertKey(tx, siteId, keyId, now);
       const key = await this.trust.resolveKey(siteId, keyId, now, tx);
+      authorizedUntil = Math.min(authorizedUntil, key.validUntil.getTime());
       const verified = await verifyFederationMessage(FederationAgreementSchema, jws, key, now);
       if (
         verified.digest !== approval.termsDigest ||
@@ -274,7 +276,14 @@ export class FederationOutboundService {
     const inputExport = await this.inputExports.forDelegation(tx, actor, request, terms);
     if (confirmation && confirmation.expiresAtUnixMs <= this.clock().getTime())
       throw new FabricClientFailure("LEDGER_PENDING");
-    return { terms, ownKey, endpoint: target.endpoint, inputExport, confirmation };
+    return {
+      terms,
+      ownKey,
+      endpoint: target.endpoint,
+      inputExport,
+      confirmation,
+      authorizedUntil: Math.min(authorizedUntil, ownKey.validUntil.getTime()),
+    };
   }
 
   async enqueue(actor: FederationActor, raw: FederationDelegation) {
@@ -943,6 +952,134 @@ export class FederationOutboundService {
           currentPeer.validUntil.getTime(),
           originalKey.validUntil.getTime(),
         ),
+      };
+    };
+  }
+
+  /** Local task export approval; no peer identity is fabricated and all original ownership remains required. */
+  async mediaInputs(actor: FederationActor, operationId: string) {
+    const [saved] = await this.db.select().from(federationOutbound).where(this.key(operationId));
+    if (
+      !saved ||
+      saved.localOrgId !== actor.orgId ||
+      saved.submittedBy !== actor.userId ||
+      saved.state !== "accepted" ||
+      saved.cancelState ||
+      !saved.receipt ||
+      !saved.receiptJws ||
+      !saved.request.inputFilesDigest
+    )
+      throw new FederationError("POLICY_DENIED");
+    const materials = await this.materials(actor, saved.request);
+    if (saved.request.mode === "ledger_coordinated") {
+      if (!this.confirmations) throw new FederationError("LEDGER_REQUIRED");
+      await this.confirmations.refreshForExecution(actor.orgId, saved.request);
+    }
+    return async (tx: PgTransaction) => {
+      const {
+        terms,
+        endpoint,
+        inputExport,
+        confirmation,
+        authorizedUntil: agreementDeadline,
+      } = await this.authorize(tx, actor, saved.request, materials, true);
+      const [current] = await tx
+        .select()
+        .from(federationOutbound)
+        .where(this.key(operationId))
+        .for("share");
+      if (
+        !current ||
+        current.localOrgId !== actor.orgId ||
+        current.submittedBy !== actor.userId ||
+        current.state !== "accepted" ||
+        current.cancelState ||
+        !current.receipt ||
+        !current.receiptJws ||
+        current.requestDigest !== saved.requestDigest ||
+        current.requestJws !== saved.requestJws ||
+        current.receiptJws !== saved.receiptJws ||
+        current.endpoint !== endpoint ||
+        !inputExport
+      )
+        throw new FederationError("POLICY_DENIED");
+      const now = this.clock();
+      const requestKeyId = federationMessageKeyId(current.requestJws),
+        receiptKeyId = federationMessageKeyId(current.receiptJws);
+      await this.trust.assertKey(tx, this.signingKey.siteId, requestKeyId, now);
+      await this.trust.assertKey(tx, current.request.recipientSiteId, receiptKeyId, now);
+      const requestKey = await this.trust.resolveKey(this.signingKey.siteId, requestKeyId, now, tx);
+      const receiptKey = await this.trust.resolveKey(
+        current.request.recipientSiteId,
+        receiptKeyId,
+        now,
+        tx,
+      );
+      const original = await verifyFederationMessage(
+        FederationDelegationSchema,
+        current.requestJws,
+        requestKey,
+        now,
+      );
+      const accepted = await verifyFederationMessage(
+        FederationAcceptanceSchema,
+        current.receiptJws,
+        receiptKey,
+        now,
+      );
+      const receipt = accepted.payload,
+        request = original.payload;
+      if (
+        original.digest !== current.requestDigest ||
+        federationCanonicalJson(request) !== federationCanonicalJson(current.request) ||
+        federationCanonicalJson(receipt) !== federationCanonicalJson(current.receipt) ||
+        receipt.senderSiteId !== request.recipientSiteId ||
+        receipt.recipientSiteId !== request.senderSiteId ||
+        receipt.requestDigest !== original.digest ||
+        receipt.reservedAmount !== request.maxAmount ||
+        receipt.unit !== request.unit ||
+        (
+          [
+            "operationId",
+            "agreementRevisionId",
+            "mode",
+            "budgetDomainId",
+            "epoch",
+            "taskId",
+            "attempt",
+          ] as const
+        ).some((field) => receipt[field] !== request[field]) ||
+        (confirmation && receipt.reservationId !== confirmation.reservationId) ||
+        inputExport.manifestDigest !== request.inputFilesDigest
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      (confirmation ? assertDelegationTerms : assertDelegationPolicy)(
+        terms,
+        request,
+        this.clock(),
+        "execution",
+      );
+      const validUntil = Math.min(
+        federationExecutionDeadline(request),
+        Date.parse(terms.validUntil),
+      );
+      const authorizedUntil = Math.min(
+        validUntil,
+        agreementDeadline,
+        requestKey.validUntil.getTime(),
+        receiptKey.validUntil.getTime(),
+        confirmation?.expiresAtUnixMs ?? Infinity,
+      );
+      if (authorizedUntil <= this.clock().getTime())
+        throw new FederationError("AUTHORIZATION_EXPIRED");
+      return {
+        request,
+        requestDigest: original.digest,
+        manifest: inputExport.manifest,
+        contentDigest: inputExport.manifestDigest,
+        bindings: inputExport.bindings,
+        validUntil,
+        authorizedUntil,
       };
     };
   }

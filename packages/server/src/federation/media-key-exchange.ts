@@ -52,6 +52,8 @@ export class FederationMediaKeyResponder {
     const query = verified.payload;
     if (query.senderSiteId !== peer.siteId || query.recipientSiteId !== this.signing.siteId)
       throw new FederationError("UNTRUSTED_IDENTITY");
+    assertFederationStatusQueryFresh(query, this.clock());
+    const reader = await this.exports.reader(query.packageId, { query });
     return this.db.transaction(async (tx) => {
       // All retries of a query ID preserve its original Agent key and original response.
       await tx.execute(
@@ -62,7 +64,7 @@ export class FederationMediaKeyResponder {
       const currentPeer = await this.trust.resolveKey(peer.siteId, peer.keyId, this.clock(), tx);
       if (!currentPeer.allowedKinds.includes("media-key-query"))
         throw new FederationError("UNTRUSTED_IDENTITY");
-      const source = await this.exports.keyScope(tx, query);
+      const source = await this.exports.keyScope(tx, query, reader);
       const [existing] = await tx
         .select()
         .from(federationMediaKeyGrants)
@@ -75,7 +77,11 @@ export class FederationMediaKeyResponder {
       if (existing) {
         if (existing.queryDigest !== verified.digest || existing.packageId !== query.packageId)
           throw new FederationError("OPERATION_CONFLICT");
-        if (existing.expiresAt <= this.clock()) throw new FederationError("AUTHORIZATION_EXPIRED");
+        if (
+          existing.expiresAt <= this.clock() ||
+          existing.expiresAt.getTime() > source.authorizedUntil
+        )
+          throw new FederationError("AUTHORIZATION_EXPIRED");
         await this.signingAuthority(tx, federationMessageKeyId(existing.responseJws));
         return existing.responseJws;
       }
@@ -91,6 +97,7 @@ export class FederationMediaKeyResponder {
         Math.min(
           Date.parse(query.expiresAt),
           source.expiresAt.getTime(),
+          source.authorizedUntil,
           now.getTime() + 60_000,
           signingKey.validUntil.getTime(),
           currentPeer.validUntil.getTime(),

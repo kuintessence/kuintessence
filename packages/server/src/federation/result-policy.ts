@@ -21,6 +21,7 @@ export async function requireFederationResultPolicy(
     throw new FederationError("POLICY_DENIED");
   if (Date.parse(terms.resultPolicy.availableUntil) <= now.getTime())
     throw new FederationError("AUTHORIZATION_EXPIRED");
+  let authorizedUntil = Date.parse(terms.resultPolicy.availableUntil);
   for (const [siteId, jws] of [
     [terms.sourceSiteId, agreement.sourceApprovalJws],
     [terms.targetSiteId, agreement.targetApprovalJws],
@@ -29,6 +30,7 @@ export async function requireFederationResultPolicy(
     const keyId = federationMessageKeyId(jws);
     await trust.assertKey(tx, siteId, keyId, now);
     const key = await trust.resolveKey(siteId, keyId, now, tx);
+    authorizedUntil = Math.min(authorizedUntil, key.validUntil.getTime());
     const verified = await verifyFederationMessage(FederationAgreementSchema, jws, key, now);
     if (
       verified.digest !== agreement.termsDigest ||
@@ -36,5 +38,5 @@ export async function requireFederationResultPolicy(
     )
       throw new FederationError("OPERATION_CONFLICT");
   }
-  return { terms, policy: terms.resultPolicy };
+  return { terms, policy: terms.resultPolicy, authorizedUntil };
 }

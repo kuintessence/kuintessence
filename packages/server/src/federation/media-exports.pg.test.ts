@@ -462,6 +462,9 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
   test("logistics source: signed exports share one batch without disclosing keys or changing data permissions", async () => {
     await permissions.set({ ...actor, capability: "media.logistics", enabled: true }, actor.userId);
     const logistics = new FederationMediaLogistics(db, source.signing.siteId, () => now);
+    const earlierPackages = (await logistics.transportPackages(actor)).data.map(
+      (row) => row.packageId,
+    );
     const first = await service.prepare(actor, request());
     const second = await service.prepare(actor, request());
     const devices = [crypto.randomUUID(), crypto.randomUUID()];
@@ -480,7 +483,9 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     };
     const registered = await logistics.registerShipment(actor, input);
     const transport = await logistics.transportPackages(actor);
-    expect(transport.data.map((row) => row.packageId).sort()).toEqual([...input.packageIds].sort());
+    expect(transport.data.map((row) => row.packageId).sort()).toEqual(
+      [...earlierPackages, ...input.packageIds].sort(),
+    );
     expect(
       transport.data.every(
         (row) => row.senderSiteId === source.signing.siteId && row.subjectKind === "dataset",

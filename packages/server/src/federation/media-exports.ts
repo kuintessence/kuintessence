@@ -6,11 +6,12 @@ import {
   type PgTransaction,
 } from "@kuintessence/db";
 import {
+  type FederationAnyMediaExportApproval,
+  FederationAnyMediaExportApprovalSchema,
   FederationDigestSchema,
   FederationError,
-  type FederationMediaExportApproval,
-  FederationMediaExportApprovalSchema,
   type FederationMediaKeyQuery,
+  type FederationMediaManifest,
   FederationMediaManifestSchema,
   FederationMediaRevocationSchema,
   federationCanonicalJson,
@@ -29,9 +30,21 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationTaskMediaSources, TaskMediaReader } from "./task-media-source";
 import { FederationTrustRegistry } from "./trust-registry";
 
 type Export = typeof federationMediaExports.$inferSelect;
+type ExportSnapshot = {
+  subject: FederationMediaManifest["subject"];
+  files: FederationMediaManifest["files"];
+  source: Export["source"];
+  authorizedUntil: number;
+};
+type ExportReaderScope =
+  | { actor: FederationActor }
+  | { agentId: string }
+  | { query: FederationMediaKeyQuery };
+
 export function mediaIdentityDomain(
   row: Pick<Export, "localSiteId" | "packageId" | "manifestDigest">,
 ) {
@@ -47,15 +60,17 @@ export class FederationMediaExportService {
     private readonly age: Pick<MediaAge, "generateIdentity">,
     private readonly wrappingKey: string,
     private readonly clock: () => Date = () => new Date(),
+    private readonly taskSources?: FederationTaskMediaSources,
   ) {
     if (wrappingKey.length < 32) throw new Error("MEDIA_WRAPPING_KEY_REQUIRED");
     this.trust = new FederationTrustRegistry(db);
   }
 
   async prepare(actor: FederationActor, raw: unknown) {
-    const input = FederationMediaExportApprovalSchema.parse(raw);
+    const input = FederationAnyMediaExportApprovalSchema.parse(raw);
+    const reader = "kind" in input ? await this.taskSources?.authorize(actor, input) : undefined;
     const snapshot = await this.db.transaction(async (tx) => {
-      const data = await this.current(tx, actor, input);
+      const data = await this.current(tx, actor, input, true, reader);
       const existing = await this.find(tx, input.packageId);
       if (existing) {
         this.matchRequest(existing, actor, input);
@@ -93,8 +108,7 @@ export class FederationMediaExportService {
         localOrgId: actor.orgId,
         recipientSiteId: input.recipientSiteId,
         agreementRevisionId: input.agreementRevisionId,
-        versionId: input.versionId,
-        locationId: input.locationId,
+        ...selectors(input),
         source: snapshot.data.source,
         manifest,
         manifestDigest,
@@ -110,7 +124,7 @@ export class FederationMediaExportService {
         mediaIdentityDomain(draft),
       );
       return await this.db.transaction(async (tx) => {
-        const current = await this.current(tx, actor, input);
+        const current = await this.current(tx, actor, input, true, reader);
         this.matchData(draft, current);
         await this.assertManifestKey(tx, this.signing.keyId);
         const [created] = await tx
@@ -135,8 +149,7 @@ export class FederationMediaExportService {
             after: {
               manifestDigest,
               recipientSiteId: input.recipientSiteId,
-              versionId: input.versionId,
-              locationId: input.locationId,
+              ...selectors(input),
               expiresAt: input.expiresAt,
             },
           },
@@ -148,23 +161,52 @@ export class FederationMediaExportService {
     }
   }
 
-  /** A future authenticated export/key worker must call this guard for the original approval. */
-  async assertExportAuthorized(tx: PgTransaction, orgId: string, packageId: string) {
+  /** Resolve external asset/ledger checks outside locks, then recheck the original approval in each transaction. */
+  async reader(packageId: string, scope: ExportReaderScope): Promise<TaskMediaReader | undefined> {
+    const row = await this.db.transaction(async (tx) => {
+      if ("actor" in scope) await requireFederationCapability(tx, scope.actor, "media.export");
+      const row = await this.find(tx, packageId);
+      if (!row || row.revokedAt || row.expiresAt <= this.clock())
+        throw new FederationError("POLICY_DENIED");
+      if ("actor" in scope && row.localOrgId !== scope.actor.orgId)
+        throw new FederationError("POLICY_DENIED");
+      if ("agentId" in scope && row.source.agentId !== scope.agentId)
+        throw new FederationError("POLICY_DENIED");
+      if ("query" in scope) this.matchKeyQuery(row, scope.query);
+      return row;
+    });
+    const input = this.request(row);
+    if (!("kind" in input)) return undefined;
+    if (!this.taskSources) throw new FederationError("POLICY_DENIED");
+    return this.taskSources.authorize({ orgId: row.localOrgId, userId: row.approvedBy }, input);
+  }
+
+  async assertExportAuthorized(
+    tx: PgTransaction,
+    orgId: string,
+    packageId: string,
+    reader?: TaskMediaReader,
+  ) {
     const row = await this.find(tx, packageId);
     if (!row || row.localOrgId !== orgId || row.revokedAt)
       throw new FederationError("POLICY_DENIED");
     const input = this.request(row);
-    const data = await this.current(tx, { orgId, userId: row.approvedBy }, input, false);
+    const data = await this.current(tx, { orgId, userId: row.approvedBy }, input, false, reader);
     this.matchData(row, data);
     const keyId = federationMessageKeyId(row.manifestJws);
     await this.assertManifestKey(tx, keyId);
-    return row;
+    return { ...row, authorizedUntil: data.authorizedUntil };
   }
 
-  async keyScope(tx: PgTransaction, query: FederationMediaKeyQuery) {
+  async keyScope(tx: PgTransaction, query: FederationMediaKeyQuery, reader?: TaskMediaReader) {
     const row = await this.find(tx, query.packageId);
+    if (!row) throw new FederationError("POLICY_DENIED");
+    this.matchKeyQuery(row, query);
+    return this.assertExportAuthorized(tx, row.localOrgId, row.packageId, reader);
+  }
+
+  private matchKeyQuery(row: Export, query: FederationMediaKeyQuery) {
     if (
-      !row ||
       query.recipientSiteId !== row.localSiteId ||
       query.senderSiteId !== row.recipientSiteId ||
       query.manifestDigest !== row.manifestDigest ||
@@ -172,7 +214,6 @@ export class FederationMediaExportService {
       query.maxBytes < row.manifest.files.reduce((sum, file) => sum + file.sizeBytes, 0)
     )
       throw new FederationError("POLICY_DENIED");
-    return this.assertExportAuthorized(tx, row.localOrgId, row.packageId);
   }
 
   /** Only the institution-authenticated key responder may call this; never a human HTTP route. */
@@ -209,6 +250,7 @@ export class FederationMediaExportService {
           agreementRevisionId: t.agreementRevisionId,
           versionId: t.versionId,
           locationId: t.locationId,
+          taskSelection: t.taskSelection,
           manifestDigest: t.manifestDigest,
           approvedAt: t.approvedAt,
           approvedBy: t.approvedBy,
@@ -274,9 +316,10 @@ export class FederationMediaExportService {
   private async current(
     tx: PgTransaction,
     actor: FederationActor,
-    input: FederationMediaExportApproval,
+    input: FederationAnyMediaExportApproval,
     newApproval = true,
-  ) {
+    reader?: TaskMediaReader,
+  ): Promise<ExportSnapshot> {
     await requireFederationCapability(tx, actor, "media.export");
     const now = this.clock(),
       expiresAt = Date.parse(input.expiresAt);
@@ -294,6 +337,20 @@ export class FederationMediaExportService {
       .for("share");
     if (sites.length !== 2 || sites.some((site) => site.state !== "active"))
       throw new FederationError("UNTRUSTED_IDENTITY");
+    if ("kind" in input) {
+      if (!reader) throw new FederationError("POLICY_DENIED");
+      const data = await reader(tx);
+      if (
+        data.subject.kind !== input.kind ||
+        data.subject.operationId !== input.operationId ||
+        data.source.agentId !== input.agentId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      if (expiresAt > data.validUntil) throw new FederationError("POLICY_DENIED");
+      if (data.authorizedUntil <= this.clock().getTime())
+        throw new FederationError("AUTHORIZATION_EXPIRED");
+      return data;
+    }
     const terms = await requireMediaAgreement(
       tx,
       this.trust,
@@ -303,24 +360,9 @@ export class FederationMediaExportService {
     if (expiresAt > Date.parse(terms.validUntil)) throw new FederationError("POLICY_DENIED");
     const data = await readMediaExportDataset(tx, actor, input, now);
     if (expiresAt > data.authorizationExpiresAt) throw new FederationError("POLICY_DENIED");
-    return data;
-  }
-
-  private manifest(
-    input: FederationMediaExportApproval,
-    data: Awaited<ReturnType<typeof readMediaExportDataset>>,
-    createdAt: Date,
-  ) {
     const digest = data.version.manifestDigest ?? "";
-    const raw = {
-      protocolVersion: 1,
-      kind: "media-manifest",
-      packageId: input.packageId,
-      senderSiteId: this.signing.siteId,
-      recipientSiteId: input.recipientSiteId,
-      agreementRevisionId: input.agreementRevisionId,
-      createdAt: createdAt.toISOString(),
-      subject: {
+    return {
+      subject: FederationMediaManifestSchema.shape.subject.parse({
         kind: "dataset",
         asset: {
           originSiteId: this.signing.siteId,
@@ -333,25 +375,42 @@ export class FederationMediaExportService {
         },
         license: data.version.manifest.license ?? data.asset.metadata.license ?? null,
         provenance: data.version.provenance,
-      },
+      }),
+      files: data.files,
+      source: data.source,
+      authorizedUntil: Math.min(data.authorizationExpiresAt, Date.parse(terms.validUntil)),
+    };
+  }
+
+  private manifest(
+    input: Pick<
+      FederationAnyMediaExportApproval,
+      "packageId" | "agreementRevisionId" | "recipientSiteId"
+    >,
+    data: ExportSnapshot,
+    createdAt: Date,
+  ) {
+    const raw = {
+      protocolVersion: 1,
+      kind: "media-manifest",
+      packageId: input.packageId,
+      senderSiteId: this.signing.siteId,
+      recipientSiteId: input.recipientSiteId,
+      agreementRevisionId: input.agreementRevisionId,
+      createdAt: createdAt.toISOString(),
+      subject: data.subject,
       files: data.files,
     };
     federationCanonicalJson(raw);
     return FederationMediaManifestSchema.parse(raw);
   }
 
-  private matchData(
-    row: Pick<Export, "manifest" | "source" | "expiresAt" | "versionId" | "locationId">,
-    data: Awaited<ReturnType<typeof readMediaExportDataset>>,
-  ) {
+  private matchData(row: Pick<Export, "manifest" | "source">, data: ExportSnapshot) {
     const manifest = this.manifest(
       {
         packageId: row.manifest.packageId,
         agreementRevisionId: row.manifest.agreementRevisionId,
         recipientSiteId: row.manifest.recipientSiteId,
-        versionId: row.versionId,
-        locationId: row.locationId,
-        expiresAt: row.expiresAt.toISOString(),
       },
       data,
       new Date(row.manifest.createdAt),
@@ -363,18 +422,21 @@ export class FederationMediaExportService {
       throw new FederationError("OPERATION_CONFLICT");
   }
 
-  private request(row: Export): FederationMediaExportApproval {
-    return {
+  private request(row: Export): FederationAnyMediaExportApproval {
+    return FederationAnyMediaExportApprovalSchema.parse({
       packageId: row.packageId,
       agreementRevisionId: row.agreementRevisionId,
       recipientSiteId: row.recipientSiteId,
-      versionId: row.versionId,
-      locationId: row.locationId,
+      ...(row.taskSelection ?? { versionId: row.versionId, locationId: row.locationId }),
       expiresAt: row.expiresAt.toISOString(),
-    };
+    });
   }
 
-  private matchRequest(row: Export, actor: FederationActor, input: FederationMediaExportApproval) {
+  private matchRequest(
+    row: Export,
+    actor: FederationActor,
+    input: FederationAnyMediaExportApproval,
+  ) {
     if (
       row.revokedAt ||
       row.localOrgId !== actor.orgId ||
@@ -396,6 +458,7 @@ function view(row: Export) {
     agreementRevisionId: row.agreementRevisionId,
     versionId: row.versionId,
     locationId: row.locationId,
+    taskSelection: row.taskSelection,
     manifest: row.manifest,
     manifestDigest: row.manifestDigest,
     signedManifest: row.manifestJws,
@@ -406,4 +469,14 @@ function view(row: Export) {
     revokedAt: row.revokedAt,
     revocationReason: row.revocationReason,
   };
+}
+
+function selectors(input: FederationAnyMediaExportApproval) {
+  return "kind" in input
+    ? {
+        versionId: null,
+        locationId: null,
+        taskSelection: { kind: input.kind, operationId: input.operationId, agentId: input.agentId },
+      }
+    : { versionId: input.versionId, locationId: input.locationId, taskSelection: null };
 }

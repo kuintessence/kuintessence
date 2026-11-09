@@ -23,6 +23,8 @@ import type {
   FederationResultReport,
   FederationStatusReport,
   FederationStorageReconciliationRecord,
+  FederationTaskMediaExportApproval,
+  FederationTaskMediaSource,
   FederationTerminalEvidence,
   FederationTerminalSourceReview,
   MediaHandoff,
@@ -2547,14 +2549,16 @@ export const federationMediaExports = pgTable(
       .notNull()
       .references(() => federationSites.id),
     agreementRevisionId: uuid("agreement_revision_id").notNull(),
-    versionId: uuid("version_id")
-      .notNull()
-      .references(() => dataAssetVersions.id),
-    locationId: uuid("location_id")
-      .notNull()
-      .references(() => dataLocations.id),
+    versionId: uuid("version_id").references(() => dataAssetVersions.id),
+    locationId: uuid("location_id").references(() => dataLocations.id),
+    taskSelection:
+      jsonb("task_selection").$type<
+        Pick<FederationTaskMediaExportApproval, "kind" | "operationId" | "agentId">
+      >(),
     source: jsonb("source")
-      .$type<{ agentId: string; managedRootId: string; relativePath: string }>()
+      .$type<
+        { agentId: string; managedRootId: string; relativePath: string } | FederationTaskMediaSource
+      >()
       .notNull(),
     manifest: jsonb("manifest").$type<FederationMediaManifest>().notNull(),
     manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
@@ -2580,6 +2584,23 @@ export const federationMediaExports = pgTable(
       ],
     }),
     index("federation_media_export_org").on(t.localSiteId, t.localOrgId, t.approvedAt),
+    check(
+      "federation_media_export_selector",
+      sql`((
+        ${t.manifest}->'subject'->>'kind' = 'dataset'
+        AND ${t.versionId} IS NOT NULL AND ${t.locationId} IS NOT NULL
+        AND ${t.taskSelection} IS NULL
+        AND NOT (${t.source} ? 'objects')
+      ) OR (
+        ${t.versionId} IS NULL AND ${t.locationId} IS NULL
+        AND ${t.taskSelection}->>'kind' IN ('task-input', 'task-result')
+        AND ${t.taskSelection}->>'kind' = ${t.manifest}->'subject'->>'kind'
+        AND ${t.taskSelection}->>'operationId' = ${t.manifest}->'subject'->>'operationId'
+        AND ${t.taskSelection}->>'agentId' = ${t.source}->>'agentId'
+        AND jsonb_typeof(${t.source}->'objects') = 'array'
+        AND NOT (${t.source} ?| array['managedRootId', 'relativePath'])
+      )) IS TRUE`,
+    ),
     check(
       "federation_media_export_identity",
       sql`(

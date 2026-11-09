@@ -99,3 +99,36 @@ export const FederationMediaExportApprovalSchema = z.strictObject({
   expiresAt: z.iso.datetime(),
 });
 export type FederationMediaExportApproval = z.infer<typeof FederationMediaExportApprovalSchema>;
+
+/** Original task selectors only; task identity and file inventory are derived from the accepted request. */
+export const FederationTaskMediaExportApprovalSchema = z.strictObject({
+  packageId: z.uuid(),
+  agreementRevisionId: z.uuid(),
+  recipientSiteId: z.uuid(),
+  kind: z.enum(["task-input", "task-result"]),
+  operationId: z.uuid(),
+  agentId: z.string().min(1).max(255),
+  expiresAt: z.iso.datetime(),
+});
+export type FederationTaskMediaExportApproval = z.infer<
+  typeof FederationTaskMediaExportApprovalSchema
+>;
+export const FederationAnyMediaExportApprovalSchema = z.union([
+  FederationMediaExportApprovalSchema,
+  FederationTaskMediaExportApprovalSchema,
+]);
+export type FederationAnyMediaExportApproval = z.infer<
+  typeof FederationAnyMediaExportApprovalSchema
+>;
+
+export type FederationTaskMediaSource = {
+  agentId: string;
+  objects: Array<{
+    fileId: string;
+    storageKey: string;
+    versionId: string;
+    path: string;
+    sha256: string;
+    sizeBytes: number;
+  }>;
+};
