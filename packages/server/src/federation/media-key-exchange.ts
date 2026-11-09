@@ -187,8 +187,19 @@ export class FederationMediaKeyRequester {
     authenticatedAgentId: string;
     recipientKey: FederationMediaRecipientKey;
   }) {
+    const reader = await this.packages.reader(input.packageId, {
+      orgId: input.orgId,
+      agentId: input.authenticatedAgentId,
+      authorizationId: input.authorizationId,
+    });
     const current = (tx: PgTransaction) =>
-      this.packages.assertImportAuthorized(tx, input.orgId, input.packageId, input.authorizationId);
+      this.packages.assertImportAuthorized(
+        tx,
+        input.orgId,
+        input.packageId,
+        input.authorizationId,
+        reader,
+      );
     const prepared = await this.db.transaction(async (tx) => {
       const scope = await current(tx);
       if (scope.authorization.agentId !== input.authenticatedAgentId)
@@ -220,7 +231,7 @@ export class FederationMediaKeyRequester {
         authorizationExpiresAt: scope.authorization.expiresAt.toISOString(),
         issuedAt: now.toISOString(),
         expiresAt: new Date(
-          Math.min(now.getTime() + 60_000, scope.authorization.expiresAt.getTime()),
+          Math.min(now.getTime() + 60_000, scope.authorizedUntil, own.validUntil.getTime()),
         ).toISOString(),
       });
       const [site] = await tx
@@ -275,6 +286,11 @@ export class FederationMediaKeyRequester {
         this.clock(),
       );
       assertMediaKeyGrant(prepared.query, prepared.digest, grant.payload, this.clock());
+      if (
+        Date.parse(grant.payload.expiresAt) >
+        Math.min(scope.authorizedUntil, own.validUntil.getTime())
+      )
+        throw new FederationError("AUTHORIZATION_EXPIRED");
       return {
         query: prepared.query,
         queryDigest: prepared.digest,

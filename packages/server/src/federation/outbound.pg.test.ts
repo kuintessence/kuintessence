@@ -4,6 +4,7 @@ import { create } from "@bufbuild/protobuf";
 import {
   agents,
   auditLog,
+  clusterFileRoots,
   createPgDb,
   federationAgreementApprovals,
   federationAgreements,
@@ -19,7 +20,9 @@ import {
   federationMaterials,
   federationMediaExportOperations,
   federationMediaExports,
+  federationMediaImportAuthorizations,
   federationMediaKeyGrants,
+  federationMediaPackages,
   federationOutbound,
   federationPreparations,
   federationReservations,
@@ -125,7 +128,8 @@ import { FederationMaterialExchange } from "./material-exchange";
 import { FederationMediaExportOperations } from "./media-export-operations";
 import { FederationMediaExportTransport } from "./media-export-transport";
 import { FederationMediaExportService } from "./media-exports";
-import { FederationMediaKeyResponder } from "./media-key-exchange";
+import { FederationMediaImportOperations } from "./media-import-operations";
+import { FederationMediaKeyRequester, FederationMediaKeyResponder } from "./media-key-exchange";
 import { FederationMediaPackageService } from "./media-packages";
 import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -142,6 +146,7 @@ import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationStatusResponder } from "./status";
 import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTaskMediaSources } from "./task-media-source";
+import { FederationTaskMediaTargets } from "./task-media-target";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
 import { lockFederationTransferSlot } from "./transfer-agent";
 import { FederationTrustRegistry } from "./trust-registry";
@@ -174,6 +179,19 @@ const sourceFingerprint = "ab".repeat(32);
 const targetFingerprint = "cd".repeat(32);
 
 afterEach(async () => {
+  await db
+    .delete(federationMediaImportAuthorizations)
+    .where(
+      inArray(federationMediaImportAuthorizations.localSiteId, [
+        a.signing.siteId,
+        b.signing.siteId,
+      ]),
+    );
+  await db
+    .delete(federationMediaPackages)
+    .where(inArray(federationMediaPackages.localSiteId, [a.signing.siteId, b.signing.siteId]));
+  if (transferAgentIds.length)
+    await db.delete(clusterFileRoots).where(inArray(clusterFileRoots.agentId, transferAgentIds));
   const inputIds = db
     .select({ id: federationInputImports.id })
     .from(federationInputImports)
@@ -9216,4 +9234,536 @@ test("media delivery cannot export an originally network-only task through the l
       }),
     ),
   ).rejects.toThrow("POLICY_DENIED");
+});
+
+async function taskTargetFixture(
+  kind: "task-input" | "task-result",
+  imported = true,
+  expiredExecution = false,
+) {
+  const source = await taskMediaFixture(kind);
+  const f = source.f;
+  const local = kind === "task-input" ? receiver : actor;
+  const signing = kind === "task-input" ? b.signing : a.signing;
+  if (expiredExecution) {
+    time = new Date("2026-01-03T00:00:00.000Z");
+    source.input.expiresAt = new Date(clock().getTime() + 300_000).toISOString();
+  }
+  for (const capability of ["asset.map", "asset.read", "media.import"] as const)
+    await permission.set({ ...local, capability, enabled: true }, actor.userId);
+  await source.service().prepare(source.local, source.input);
+  const exported = await source.authorize();
+  const preparation = new FederationPreparationService(db, signing.siteId, assets, clock);
+  const exchange = new FederationMaterialExchange(
+    db,
+    signing,
+    async (_endpoint, jws) => {
+      if (!("source" in f)) throw new Error("Only input inventories use this exchange");
+      return f.source.materialChunk(jws, targetFingerprint);
+    },
+    preparation,
+    assets,
+    clock,
+  );
+  const inputs = new FederationInputImports(db, preparation, exchange, clock);
+  const results = "send" in f ? f.service(f.send).results : f.service().results;
+  const resultImports = new FederationResultImports(db, signing.siteId, results, clock);
+  const ensure = async () => {
+    if ("source" in f) return (await inputs.ensure(f.reservationId))?.importId;
+    return (await resultImports.enqueue(local, f.saved.operationId, crypto.randomUUID())).id;
+  };
+  const importId = imported ? await ensure() : undefined;
+  const targets = new FederationTaskMediaTargets(
+    db,
+    signing.siteId,
+    preparation,
+    inputs,
+    results,
+    clock,
+  );
+  const service = () => new FederationMediaPackageService(db, signing.siteId, clock, targets);
+  const agentId = `task-media-target-${crypto.randomUUID()}`;
+  transferAgentIds.push(agentId);
+  await db.insert(agents).values({
+    agentId,
+    providerOrgId: local.orgId,
+    siteName: "Task receiver",
+    schedulerType: "kubernetes",
+    schedulerVersion: "test",
+    status: "online",
+  });
+  const managedRootId = crypto.randomUUID();
+  await db.insert(clusterFileRoots).values({
+    id: managedRootId,
+    label: "Private media",
+    providerOrgId: local.orgId,
+    agentId,
+    path: "/managed/private-media",
+  });
+  const registration = {
+    senderSiteId: source.signing.siteId,
+    signedManifest: exported.manifestJws,
+  };
+  const approval = {
+    authorizationId: crypto.randomUUID(),
+    agentId,
+    managedRootId,
+    maxBytes: exported.manifest.files.reduce((sum, file) => sum + file.sizeBytes, 0),
+    expiresAt: new Date(clock().getTime() + 60_000).toISOString(),
+  };
+  const current = async () => {
+    const inventory = service();
+    const reader = await inventory.reader(exported.packageId, { actor: local });
+    return db.transaction((tx) =>
+      inventory.assertImportAuthorized(
+        tx,
+        local.orgId,
+        exported.packageId,
+        approval.authorizationId,
+        reader,
+      ),
+    );
+  };
+  const responder = new FederationMediaKeyResponder(db, source.signing, source.service(), clock);
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/media-keys");
+    return responder.respond(jws, kind === "task-input" ? targetFingerprint : sourceFingerprint);
+  };
+  const requester = (transport = send, requestSigning = signing) =>
+    new FederationMediaKeyRequester(db, requestSigning, service(), transport, clock);
+  const requestKey = async (transport = send, requestSigning = signing) => {
+    const keys = await generateKeyPair("RSA-OAEP-256");
+    const jwk = await exportJWK(keys.publicKey);
+    if (!jwk.n || jwk.e !== "AQAB") throw new Error("Expected RSA recipient");
+    return requester(transport, requestSigning).request({
+      orgId: local.orgId,
+      packageId: exported.packageId,
+      authorizationId: approval.authorizationId,
+      authenticatedAgentId: agentId,
+      recipientKey: { kty: "RSA", n: jwk.n, e: jwk.e },
+    });
+  };
+  return {
+    source,
+    f,
+    local,
+    signing,
+    exported,
+    importId,
+    ensure,
+    inputs,
+    resultImports,
+    targets,
+    service,
+    approval,
+    registration,
+    current,
+    send,
+    requester,
+    requestKey,
+  };
+}
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task target %s binds the original import and keeps private selectors off HTTP responses",
+  async (kind) => {
+    const t = await taskTargetFixture(kind);
+    try {
+      const app = new Hono();
+      app.onError(createErrorHandler(pino({ level: "silent" })));
+      app.use("*", async (c, next) => {
+        c.set("principal" as never, t.local as never);
+        await next();
+      });
+      app.route("/api", createFederationMediaRoutes(t.service()));
+      const path = "/api/federation/media/packages";
+      const response = await app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(t.registration),
+      });
+      expect(response.status).toBe(201);
+      const responseBody = await response.text();
+      expect(responseBody).not.toContain(t.importId ?? "missing-import");
+      expect(responseBody).not.toContain("taskInputImportId");
+      expect(responseBody).not.toContain("taskResultImportId");
+      const [saved] = await db
+        .select()
+        .from(federationMediaPackages)
+        .where(
+          and(
+            eq(federationMediaPackages.localSiteId, t.signing.siteId),
+            eq(federationMediaPackages.packageId, t.exported.packageId),
+          ),
+        );
+      expect(saved).toMatchObject({
+        taskInputImportId: kind === "task-input" ? t.importId : null,
+        taskResultImportId: kind === "task-result" ? t.importId : null,
+      });
+      expect(
+        JSON.parse(JSON.stringify(await t.service().register(t.local, t.registration))),
+      ).toEqual(JSON.parse(responseBody).data);
+      const approved = await app.request(`${path}/${t.exported.packageId}/import-authorizations`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(t.approval),
+      });
+      expect(approved.status).toBe(201);
+      const allowed = await t.current();
+      expect(allowed.authorizedUntil).toBe(Date.parse(t.approval.expiresAt));
+      const grant = await t.requestKey();
+      expect(grant.query.packageId).toBe(t.exported.packageId);
+      expect(Date.parse(grant.grant.expiresAt)).toBeLessThanOrEqual(allowed.authorizedUntil);
+      expect(
+        await t.service().approveImport(t.local, t.exported.packageId, t.approval),
+      ).toMatchObject({ authorizationId: t.approval.authorizationId });
+      // Local approval is not permission to publish task files through the dataset-only importer.
+      await expect(
+        new FederationMediaImportOperations(
+          db,
+          t.signing.siteId,
+          t.service(),
+          t.requester(),
+          clock,
+        ).start(t.local, t.exported.packageId, t.approval.authorizationId),
+      ).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task target %s waits for the original quota-backed inventory",
+  async (kind) => {
+    const t = await taskTargetFixture(kind, false);
+    try {
+      await expect(t.service().register(t.local, t.registration)).rejects.toThrow("DATA_WAITING");
+      expect(
+        await db
+          .select()
+          .from(federationMediaPackages)
+          .where(eq(federationMediaPackages.packageId, t.exported.packageId)),
+      ).toHaveLength(0);
+      await t.ensure();
+      await t.service().register(t.local, t.registration);
+      await t.service().approveImport(t.local, t.exported.packageId, t.approval);
+      await t.current();
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task target %s rejects signed wrong task or member inventory",
+  async (kind) => {
+    const t = await taskTargetFixture(kind);
+    try {
+      const manifest = t.exported.manifest;
+      const first = manifest.files[0];
+      if (!first || manifest.subject.kind === "dataset") throw new Error("Expected task inventory");
+      for (const patch of [
+        { subject: { ...manifest.subject, taskId: crypto.randomUUID() } },
+        { subject: { ...manifest.subject, attempt: manifest.subject.attempt + 1 } },
+        { subject: { ...manifest.subject, requestDigest: `sha256:${"b".repeat(64)}` } },
+        { files: [{ ...first, path: "objects/000009" }, ...manifest.files.slice(1)] },
+        { files: [{ ...first, sha256: "b".repeat(64) }, ...manifest.files.slice(1)] },
+        { files: [{ ...first, sizeBytes: first.sizeBytes + 1 }, ...manifest.files.slice(1)] },
+      ]) {
+        const signedManifest = await signFederationMessage(
+          FederationMediaManifestSchema,
+          { ...manifest, ...patch },
+          t.source.signing,
+        );
+        await expect(
+          t.service().register(t.local, { ...t.registration, signedManifest }),
+        ).rejects.toThrow("OPERATION_CONFLICT");
+      }
+      expect(
+        await db
+          .select()
+          .from(federationMediaPackages)
+          .where(eq(federationMediaPackages.packageId, manifest.packageId)),
+      ).toHaveLength(0);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task target %s fences revoked local consent after a source key response",
+  async (kind) => {
+    const t = await taskTargetFixture(kind);
+    try {
+      await t.service().register(t.local, t.registration);
+      await t.service().approveImport(t.local, t.exported.packageId, t.approval);
+      await expect(
+        t.requestKey(async (...args) => {
+          const response = await t.send(...args);
+          await t
+            .service()
+            .revoke(
+              t.local,
+              t.exported.packageId,
+              { reason: "Operator stopped import" },
+              t.approval.authorizationId,
+            );
+          return response;
+        }),
+      ).rejects.toThrow("POLICY_DENIED");
+      await expect(t.current()).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task target result keeps its independent policy deadline after execution expires",
+  async () => {
+    const t = await taskTargetFixture("task-result", true, true);
+    try {
+      await t.service().register(t.local, t.registration);
+      await t.service().approveImport(t.local, t.exported.packageId, t.approval);
+      await t.requestKey();
+      await expect(
+        t.service().approveImport(t.local, t.exported.packageId, {
+          ...t.approval,
+          authorizationId: crypto.randomUUID(),
+          expiresAt: "2026-01-05T00:00:00.000Z",
+        }),
+      ).rejects.toThrow("POLICY_DENIED");
+      time = new Date(resultPolicy.availableUntil);
+      await expect(
+        t
+          .service()
+          .reader(t.exported.packageId, { actor: t.local })
+          .then((read) => {
+            if (!read) throw new Error("Expected task reader");
+            return db.transaction(read);
+          }),
+      ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task target input checks cancellation and cannot rebind an existing package",
+  async () => {
+    const t = await taskTargetFixture("task-input");
+    try {
+      if (!("source" in t.f)) throw new Error("Expected input task");
+      await t.service().register(t.local, t.registration);
+      await t.service().approveImport(t.local, t.exported.packageId, t.approval);
+      const reader = await t.service().reader(t.exported.packageId, { actor: t.local });
+      await db.transaction((tx) =>
+        cancelFederationInputImport(
+          tx,
+          t.f.saved.receipt?.reservationId ?? "",
+          "CANCELLATION_REQUESTED",
+          clock(),
+        ),
+      );
+      await expect(
+        db.transaction((tx) =>
+          t
+            .service()
+            .assertImportAuthorized(
+              tx,
+              t.local.orgId,
+              t.exported.packageId,
+              t.approval.authorizationId,
+              reader,
+            ),
+        ),
+      ).rejects.toThrow("CANCELLATION_REQUESTED");
+      expect(
+        (
+          await db
+            .select()
+            .from(federationInputImports)
+            .where(eq(federationInputImports.id, t.importId ?? ""))
+        )[0],
+      ).toMatchObject({ reservedBytes: 0 });
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task target result cannot move a package onto a replacement import after cancellation",
+  async () => {
+    const t = await taskTargetFixture("task-result");
+    try {
+      if (!t.importId) throw new Error("Expected result import");
+      await t.service().register(t.local, t.registration);
+      await t.service().approveImport(t.local, t.exported.packageId, t.approval);
+      await t.resultImports.cancel(t.local, t.importId);
+      const replacement = await t.ensure();
+      expect(replacement).not.toBe(t.importId);
+      await expect(t.current()).rejects.toThrow("OPERATION_CONFLICT");
+      await expect(t.service().register(t.local, t.registration)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task target %s isolates private packages from other operators and foreign Agents",
+  async (kind) => {
+    const t = await taskTargetFixture(kind);
+    const other = {
+      orgId: t.local.orgId,
+      userId: kind === "task-input" ? actor.userId : receiver.userId,
+    };
+    try {
+      await db
+        .insert(userOrgMemberships)
+        .values({ ...other, role: "member" })
+        .onConflictDoNothing();
+      for (const capability of ["asset.map", "asset.read", "media.import", "result.read"] as const)
+        await permission.set({ ...other, capability, enabled: true }, actor.userId);
+      await t.service().register(t.local, t.registration);
+      expect(await t.service().list(other)).not.toContainEqual(
+        expect.objectContaining({ packageId: t.exported.packageId }),
+      );
+      await expect(t.service().details(other, t.exported.packageId)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+      await expect(t.service().register(other, t.registration)).rejects.toThrow("POLICY_DENIED");
+      await expect(
+        t.service().approveImport(other, t.exported.packageId, t.approval),
+      ).rejects.toThrow("POLICY_DENIED");
+      await expect(
+        t.service().revoke(other, t.exported.packageId, { reason: "Different operator" }),
+      ).rejects.toThrow("POLICY_DENIED");
+      await expect(
+        t.service().approveImport(t.local, t.exported.packageId, {
+          ...t.approval,
+          agentId: t.source.input.agentId,
+        }),
+      ).rejects.toThrow("POLICY_DENIED");
+      await t.service().approveImport(t.local, t.exported.packageId, t.approval);
+      await expect(
+        t.service().reader(t.exported.packageId, {
+          orgId: t.local.orgId,
+          agentId: t.source.input.agentId,
+          authorizationId: t.approval.authorizationId,
+        }),
+      ).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      for (const capability of ["asset.map", "asset.read", "media.import", "result.read"] as const)
+        await permission.set({ ...other, capability, enabled: false }, actor.userId);
+      await db
+        .delete(userOrgMemberships)
+        .where(
+          and(
+            eq(userOrgMemberships.orgId, other.orgId),
+            eq(userOrgMemberships.userId, other.userId),
+          ),
+        );
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task target %s cannot approve a legacy unbound package or release an overlong key grant",
+  async (kind) => {
+    const t = await taskTargetFixture(kind);
+    try {
+      await t.service().register(t.local, t.registration);
+      await t.service().approveImport(t.local, t.exported.packageId, t.approval);
+      const keyCondition = and(
+        eq(federationSigningKeys.siteId, t.source.signing.siteId),
+        eq(federationSigningKeys.keyId, t.source.signing.keyId),
+      );
+      const [original] = await db.select().from(federationSigningKeys).where(keyCondition);
+      if (!original) throw new Error("Expected signing key");
+      try {
+        await expect(
+          t.requestKey(async (...args) => {
+            const response = await t.send(...args);
+            await db
+              .update(federationSigningKeys)
+              .set({ validUntil: new Date(clock().getTime() + 10_000) })
+              .where(keyCondition);
+            return response;
+          }),
+        ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+      } finally {
+        await db
+          .update(federationSigningKeys)
+          .set({ validUntil: original.validUntil })
+          .where(keyCondition);
+      }
+      await db
+        .update(federationMediaPackages)
+        .set({ taskInputImportId: null, taskResultImportId: null })
+        .where(
+          and(
+            eq(federationMediaPackages.localSiteId, t.signing.siteId),
+            eq(federationMediaPackages.packageId, t.exported.packageId),
+          ),
+        );
+      await expect(t.current()).rejects.toThrow("OPERATION_CONFLICT");
+      await expect(t.service().register(t.local, t.registration)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+      await expect(
+        t.service().approveImport(t.local, t.exported.packageId, {
+          ...t.approval,
+          authorizationId: crypto.randomUUID(),
+        }),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest("task target rechecks a rotated recipient query key after network I/O", async () => {
+  const t = await taskTargetFixture("task-result");
+  try {
+    await t.service().register(t.local, t.registration);
+    await t.service().approveImport(t.local, t.exported.packageId, t.approval);
+    const rotated = await testKeys();
+    const signing = { ...rotated.signing, siteId: t.signing.siteId };
+    await trust.addKey(
+      t.signing.siteId,
+      {
+        keyId: signing.keyId,
+        publicKeyPem: await exportSPKI(rotated.verification.publicKey),
+        allowedKinds: ["media-key-query"],
+        validFrom: rotated.verification.validFrom.toISOString(),
+        validUntil: rotated.verification.validUntil.toISOString(),
+      },
+      actor.userId,
+    );
+    await expect(
+      t.requestKey(async (...args) => {
+        const response = await t.send(...args);
+        await db
+          .update(federationSigningKeys)
+          .set({ validUntil: new Date(clock().getTime() + 10_000) })
+          .where(
+            and(
+              eq(federationSigningKeys.siteId, signing.siteId),
+              eq(federationSigningKeys.keyId, signing.keyId),
+            ),
+          );
+        return response;
+      }, signing),
+    ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  } finally {
+    await t.source.release();
+  }
 });

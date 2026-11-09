@@ -18,10 +18,16 @@ import {
   FederationMediaRegistrationSchema,
   FederationMediaRevocationSchema,
 } from "@kuintessence/shared/federation";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import { federationMaterialDigest } from "./assets";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
+import type {
+  FederationTaskMediaTargets,
+  TaskMediaTarget,
+  TaskMediaTargetReader,
+} from "./task-media-target";
 import { FederationTrustRegistry } from "./trust-registry";
 
 type Package = typeof federationMediaPackages.$inferSelect;
@@ -34,6 +40,7 @@ export class FederationMediaPackageService {
     private readonly db: PgDb,
     private readonly localSiteId: string,
     private readonly clock: () => Date = () => new Date(),
+    private readonly targets?: FederationTaskMediaTargets,
   ) {
     z.uuid().parse(localSiteId);
     this.trust = new FederationTrustRegistry(db);
@@ -41,7 +48,7 @@ export class FederationMediaPackageService {
 
   async register(actor: FederationActor, raw: unknown) {
     const input = FederationMediaRegistrationSchema.parse(raw);
-    return this.db.transaction(async (tx) => {
+    const { manifest, digest } = await this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "asset.map");
       const now = this.clock(),
         keyId = federationMessageKeyId(input.signedManifest);
@@ -59,7 +66,18 @@ export class FederationMediaPackageService {
         Date.parse(manifest.createdAt) > now.getTime()
       )
         throw new FederationError("INVALID_MESSAGE");
-      await this.agreement(tx, manifest, actor.orgId, false);
+      return { manifest, digest };
+    });
+    const read =
+      manifest.subject.kind === "dataset" ? undefined : await this.taskReader(actor, manifest);
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "asset.map");
+      await this.manifestKey(tx, manifest.senderSiteId, input.signedManifest);
+      const target = read ? await read(tx) : undefined;
+      if (!target) await this.agreement(tx, manifest, actor.orgId, false);
+      else if (target.authorizedUntil <= this.clock().getTime())
+        throw new FederationError("AUTHORIZATION_EXPIRED");
+      const now = this.clock();
       const [created] = await tx
         .insert(federationMediaPackages)
         .values({
@@ -71,6 +89,8 @@ export class FederationMediaPackageService {
           manifest,
           manifestDigest: digest,
           manifestJws: input.signedManifest,
+          taskInputImportId: target?.taskInputImportId ?? null,
+          taskResultImportId: target?.taskResultImportId ?? null,
           registeredBy: actor.userId,
           registeredAt: now,
         })
@@ -78,7 +98,13 @@ export class FederationMediaPackageService {
         .returning();
       if (!created) {
         const existing = await this.package(tx, actor.orgId, manifest.packageId);
-        if (existing.manifestDigest !== digest || existing.revokedAt)
+        this.human(existing, actor);
+        if (
+          existing.manifestDigest !== digest ||
+          existing.revokedAt ||
+          existing.taskInputImportId !== (target?.taskInputImportId ?? null) ||
+          existing.taskResultImportId !== (target?.taskResultImportId ?? null)
+        )
           throw new FederationError("OPERATION_CONFLICT");
         return summary(existing);
       }
@@ -116,6 +142,10 @@ export class FederationMediaPackageService {
           and(
             eq(federationMediaPackages.localSiteId, this.localSiteId),
             eq(federationMediaPackages.localOrgId, actor.orgId),
+            or(
+              sql`${t.manifest}->'subject'->>'kind' = 'dataset'`,
+              eq(t.registeredBy, actor.userId),
+            ),
           ),
         )
         .orderBy(
@@ -132,6 +162,7 @@ export class FederationMediaPackageService {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "asset.read");
       const row = await this.package(tx, actor.orgId, packageId);
+      this.human(row, actor);
       const authorizations = await tx
         .select()
         .from(federationMediaImportAuthorizations)
@@ -159,9 +190,12 @@ export class FederationMediaPackageService {
 
   async approveImport(actor: FederationActor, packageId: string, raw: unknown) {
     const input = FederationMediaImportApprovalSchema.parse(raw);
+    const reader = await this.reader(packageId, { actor });
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "media.import");
+      const target = reader ? await reader(tx) : undefined;
       const row = await this.package(tx, actor.orgId, packageId);
+      this.human(row, actor);
       const now = this.clock();
       const expiresAt = new Date(input.expiresAt);
       if (
@@ -180,7 +214,7 @@ export class FederationMediaPackageService {
         revokedAt: null,
         revocationReason: null,
       };
-      await this.checkImport(tx, row, authorization);
+      await this.checkImport(tx, row, authorization, target);
       const [created] = await tx
         .insert(federationMediaImportAuthorizations)
         .values(authorization)
@@ -223,7 +257,9 @@ export class FederationMediaPackageService {
     orgId: string,
     packageId: string,
     authorizationId: string,
+    reader?: TaskMediaTargetReader,
   ) {
+    const target = reader ? await reader(tx) : undefined;
     const row = await this.package(tx, orgId, packageId);
     const [authorization] = await tx
       .select()
@@ -237,8 +273,8 @@ export class FederationMediaPackageService {
       )
       .for("share");
     if (!authorization) throw new FederationError("POLICY_DENIED");
-    await this.checkImport(tx, row, authorization);
-    return { package: row, authorization };
+    const authorizedUntil = await this.checkImport(tx, row, authorization, target);
+    return { package: row, authorization, authorizedUntil };
   }
 
   async revoke(actor: FederationActor, packageId: string, raw: unknown, authorizationId?: string) {
@@ -246,6 +282,7 @@ export class FederationMediaPackageService {
     await this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, authorizationId ? "media.import" : "asset.map");
       const row = await this.package(tx, actor.orgId, packageId);
+      this.human(row, actor);
       const now = this.clock();
       if (authorizationId) {
         const [authorization] = await tx
@@ -301,7 +338,72 @@ export class FederationMediaPackageService {
     return row;
   }
 
-  private async checkImport(tx: PgTransaction, row: Package, authorization: Authorization) {
+  async reader(
+    packageId: string,
+    selector:
+      | { actor: FederationActor }
+      | { orgId: string; agentId: string; authorizationId: string },
+  ): Promise<TaskMediaTargetReader | undefined> {
+    const selected = await this.db.transaction(async (tx) => {
+      const orgId = "actor" in selector ? selector.actor.orgId : selector.orgId;
+      const row = await this.package(tx, orgId, packageId);
+      let actor: FederationActor;
+      if ("actor" in selector) actor = selector.actor;
+      else {
+        const [authorization] = await tx
+          .select()
+          .from(federationMediaImportAuthorizations)
+          .where(
+            and(
+              eq(federationMediaImportAuthorizations.authorizationId, selector.authorizationId),
+              eq(federationMediaImportAuthorizations.localSiteId, this.localSiteId),
+              eq(federationMediaImportAuthorizations.packageId, packageId),
+              eq(federationMediaImportAuthorizations.agentId, selector.agentId),
+            ),
+          );
+        if (!authorization) throw new FederationError("POLICY_DENIED");
+        actor = { orgId, userId: authorization.approvedBy };
+      }
+      await requireFederationCapability(tx, actor, "media.import");
+      this.human(row, actor);
+      return { row, actor };
+    });
+    if (selected.row.manifest.subject.kind === "dataset") return undefined;
+    const read = await this.taskReader(selected.actor, selected.row.manifest);
+    return async (tx) => {
+      const target = await read(tx);
+      if (
+        target.taskInputImportId !== selected.row.taskInputImportId ||
+        target.taskResultImportId !== selected.row.taskResultImportId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return target;
+    };
+  }
+
+  private taskReader(actor: FederationActor, manifest: FederationMediaManifest) {
+    if (!this.targets) throw new FederationError("POLICY_DENIED");
+    return this.targets.authorize(actor, manifest);
+  }
+  private human(row: Package, actor: FederationActor) {
+    if (row.manifest.subject.kind !== "dataset" && row.registeredBy !== actor.userId)
+      throw new FederationError("POLICY_DENIED");
+  }
+  private async manifestKey(tx: PgTransaction, senderSiteId: string, jws: string) {
+    const keyId = federationMessageKeyId(jws);
+    await this.trust.assertKey(tx, senderSiteId, keyId, this.clock());
+    const key = await this.trust.resolveKey(senderSiteId, keyId, this.clock(), tx);
+    if (!key.allowedKinds.includes("media-manifest"))
+      throw new FederationError("UNTRUSTED_IDENTITY");
+    return key;
+  }
+
+  private async checkImport(
+    tx: PgTransaction,
+    row: Package,
+    authorization: Authorization,
+    target?: TaskMediaTarget,
+  ) {
     const now = this.clock();
     if (
       row.revokedAt ||
@@ -315,16 +417,36 @@ export class FederationMediaPackageService {
       { orgId: row.localOrgId, userId: authorization.approvedBy },
       "media.import",
     );
-    await this.trust.assertKey(tx, row.senderSiteId, federationMessageKeyId(row.manifestJws), now);
-    const key = await this.trust.resolveKey(
-      row.senderSiteId,
-      federationMessageKeyId(row.manifestJws),
+    this.human(row, { orgId: row.localOrgId, userId: authorization.approvedBy });
+    const key = await this.manifestKey(tx, row.senderSiteId, row.manifestJws);
+    const signed = await verifyFederationMessage(
+      FederationMediaManifestSchema,
+      row.manifestJws,
+      key,
       now,
-      tx,
     );
-    if (!key.allowedKinds.includes("media-manifest"))
-      throw new FederationError("UNTRUSTED_IDENTITY");
-    await this.agreement(tx, row.manifest, row.localOrgId, true);
+    if (
+      signed.digest !== row.manifestDigest ||
+      federationMaterialDigest(row.manifest) !== federationMaterialDigest(signed.payload)
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    let authorizedUntil = Math.min(authorization.expiresAt.getTime(), key.validUntil.getTime());
+    if (row.manifest.subject.kind === "dataset")
+      await this.agreement(tx, row.manifest, row.localOrgId, true);
+    else {
+      if (!target) throw new FederationError("POLICY_DENIED");
+      if (
+        target.manifestContentDigest !== federationMaterialDigest(row.manifest) ||
+        target.taskInputImportId !== row.taskInputImportId ||
+        target.taskResultImportId !== row.taskResultImportId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      if (authorization.expiresAt.getTime() > target.validUntil)
+        throw new FederationError("POLICY_DENIED");
+      authorizedUntil = Math.min(authorizedUntil, target.authorizedUntil);
+    }
+    if (authorizedUntil <= this.clock().getTime())
+      throw new FederationError("AUTHORIZATION_EXPIRED");
     const [root] = await tx
       .select({ root: clusterFileRoots, agent: agents })
       .from(clusterFileRoots)
@@ -342,6 +464,9 @@ export class FederationMediaPackageService {
       root.agent.providerOrgId !== row.localOrgId
     )
       throw new FederationError("POLICY_DENIED");
+    if (authorizedUntil <= this.clock().getTime())
+      throw new FederationError("AUTHORIZATION_EXPIRED");
+    return authorizedUntil;
   }
 
   private async agreement(

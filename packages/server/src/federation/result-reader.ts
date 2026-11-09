@@ -252,7 +252,7 @@ export class FederationResultReader {
       )
       .for("share");
     if (!approval?.counterpartyApprovalJws) throw new FederationError("AGREEMENT_UNAVAILABLE");
-    const { terms, policy } = await requireFederationResultPolicy(
+    const { terms, policy, authorizedUntil } = await requireFederationResultPolicy(
       tx,
       this.trust,
       {
@@ -276,6 +276,6 @@ export class FederationResultReader {
     if (!target || target.state !== "active") throw new FederationError("UNTRUSTED_IDENTITY");
     if (target.endpoint !== row.endpoint) throw new FederationError("OPERATION_CONFLICT");
     await this.trust.assertKey(tx, this.signingKey.siteId, this.signingKey.keyId, this.clock());
-    return { row, receipt: row.receipt, policy };
+    return { row, receipt: row.receipt, policy, authorizedUntil };
   }
 }

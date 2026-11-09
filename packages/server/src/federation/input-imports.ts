@@ -243,10 +243,10 @@ export class FederationInputImports {
   }
 
   async lock(tx: PgTransaction, scope: Scope) {
-    await this.preparation.lockMaterialScope(tx, scope);
+    const authorizedUntil = await this.preparation.lockMaterialScope(tx, scope);
     const row = await this.existing(tx, scope);
     if (!row) throw new FederationError("DATA_WAITING");
-    return row;
+    return { ...row, authorizedUntil };
   }
 
   private async members(tx: PgTransaction, row: Import) {

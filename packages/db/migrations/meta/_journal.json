@@ -1184,6 +1184,13 @@
       "when": 1794188603363,
       "tag": "0168_salty_omega_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 169,
+      "version": "7",
+      "when": 1794189441760,
+      "tag": "0169_typical_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }

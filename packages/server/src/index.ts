@@ -135,6 +135,7 @@ import {
 } from "./federation/runtime";
 import { FederationSettlementService } from "./federation/settlement";
 import { FederationTaskMediaSources } from "./federation/task-media-source";
+import { FederationTaskMediaTargets } from "./federation/task-media-target";
 import { FederationTerminalAutomation } from "./federation/terminal-automation";
 import { FederationTerminalPolicyService } from "./federation/terminal-policy";
 import { FederationTrustRegistry } from "./federation/trust-registry";
@@ -1904,6 +1905,26 @@ const federationPreparation = federationSigningKey
       federationConfirmations,
     )
   : undefined;
+const federationMaterialExchange =
+  federationSigningKey && federationSender && federationPreparation
+    ? new FederationMaterialExchange(
+        db,
+        federationSigningKey,
+        federationSender,
+        federationPreparation,
+        federationAssets,
+      )
+    : undefined;
+const federationInputImports =
+  federationPreparation && federationMaterialExchange
+    ? new FederationInputImports(
+        db,
+        federationPreparation,
+        federationMaterialExchange,
+        undefined,
+        federationStorageGuard,
+      )
+    : undefined;
 federationDispatchAuthorization = federationPreparation
   ? new FederationDispatchAuthorization(
       db,
@@ -1957,7 +1978,20 @@ const federationMediaKeys =
     ? new FederationMediaKeyResponder(db, federationSigningKey, federationMediaExports)
     : undefined;
 const federationMediaInventory = config.FEDERATION_SITE_ID
-  ? new FederationMediaPackageService(db, config.FEDERATION_SITE_ID)
+  ? new FederationMediaPackageService(
+      db,
+      config.FEDERATION_SITE_ID,
+      undefined,
+      federationPreparation && federationInputImports && federationOutbound
+        ? new FederationTaskMediaTargets(
+            db,
+            config.FEDERATION_SITE_ID,
+            federationPreparation,
+            federationInputImports,
+            federationOutbound.results,
+          )
+        : undefined,
+    )
   : undefined;
 const federationMediaImportOperations =
   federationSigningKey && federationSender && federationMediaInventory
@@ -2478,26 +2512,6 @@ protectedApi.route(
   createComputeProviderRoutes(new ComputeProviderService(db), authzService),
 );
 
-const federationMaterialExchange =
-  federationSigningKey && federationSender && federationPreparation
-    ? new FederationMaterialExchange(
-        db,
-        federationSigningKey,
-        federationSender,
-        federationPreparation,
-        federationAssets,
-      )
-    : undefined;
-const federationInputImports =
-  federationPreparation && federationMaterialExchange
-    ? new FederationInputImports(
-        db,
-        federationPreparation,
-        federationMaterialExchange,
-        undefined,
-        federationStorageGuard,
-      )
-    : undefined;
 const federationInputTransfers =
   federationPreparation && federationInputImports
     ? new FederationInputTransfers(db, federationPreparation, federationInputImports)

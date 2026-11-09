@@ -2467,9 +2467,10 @@ export const federationMediaPackages = pgTable(
     senderSiteId: uuid("sender_site_id")
       .notNull()
       .references(() => federationSites.id),
-    agreementRevisionId: uuid("agreement_revision_id")
-      .notNull()
-      .references(() => federationAgreements.revisionId),
+    // Results return to the source approval table; task guards validate the directional agreement.
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    taskInputImportId: uuid("task_input_import_id").references(() => federationInputImports.id),
+    taskResultImportId: uuid("task_result_import_id").references(() => federationResultImports.id),
     manifest: jsonb("manifest").$type<FederationMediaManifest>().notNull(),
     manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
     manifestJws: text("manifest_jws").notNull(),
@@ -2483,6 +2484,12 @@ export const federationMediaPackages = pgTable(
   (t) => [
     primaryKey({ columns: [t.localSiteId, t.packageId] }),
     index("federation_media_package_org").on(t.localSiteId, t.localOrgId, t.registeredAt),
+    // Legacy task inventories may be unbound, but cannot receive a new import/key grant.
+    check(
+      "federation_media_package_target",
+      sql`((${t.taskInputImportId} IS NULL OR (${t.manifest}->'subject'->>'kind' = 'task-input' AND ${t.taskResultImportId} IS NULL))
+        AND (${t.taskResultImportId} IS NULL OR (${t.manifest}->'subject'->>'kind' = 'task-result' AND ${t.taskInputImportId} IS NULL))) IS TRUE`,
+    ),
     check(
       "federation_media_package_identity",
       sql`(
