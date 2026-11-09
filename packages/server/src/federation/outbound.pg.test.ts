@@ -17,6 +17,7 @@ import {
   federationInputImports,
   federationInputTransfers,
   federationMaterials,
+  federationMediaExportOperations,
   federationMediaExports,
   federationMediaKeyGrants,
   federationOutbound,
@@ -46,6 +47,7 @@ import {
 import {
   FederationInputCopyReportSchema,
   FederationInputGrantRequestSchema,
+  FederationMediaExportLeaseRequestSchema,
   FederationResultCopyReportSchema,
   FederationResultGrantRequestSchema,
   type ServerMessage,
@@ -121,6 +123,7 @@ import { FederationInputTransport } from "./input-transport";
 import { FederationInputWorker } from "./input-worker";
 import { FederationMaterialExchange } from "./material-exchange";
 import { FederationMediaExportOperations } from "./media-export-operations";
+import { FederationMediaExportTransport } from "./media-export-transport";
 import { FederationMediaExportService } from "./media-exports";
 import { FederationMediaKeyResponder } from "./media-key-exchange";
 import { FederationMediaPackageService } from "./media-packages";
@@ -317,6 +320,11 @@ afterAll(async () => {
   await db
     .delete(federationMediaKeyGrants)
     .where(inArray(federationMediaKeyGrants.localSiteId, [a.signing.siteId, b.signing.siteId]));
+  await db
+    .delete(federationMediaExportOperations)
+    .where(
+      inArray(federationMediaExportOperations.localSiteId, [a.signing.siteId, b.signing.siteId]),
+    );
   await db.delete(federationMediaExports).where(inArray(federationMediaExports.localOrgId, orgIds));
   await db
     .delete(federationResultReceipts)
@@ -8487,7 +8495,7 @@ taskMediaTest.each(["task-input", "task-result"] as const)(
         { versionId: crypto.randomUUID() },
       ])
         expect((await post({ ...t.input, ...extra })).status).toBe(400);
-      // Object dispatch remains closed until Agent capability negotiation and object grants are connected.
+      // An unconfigured object storage backend must still keep task dispatch closed.
       await expect(
         new FederationMediaExportOperations(db, t.signing.siteId, t.service(), clock).start(
           t.local,
@@ -8790,6 +8798,216 @@ taskMediaTest.each(["task-input", "task-result"] as const)(
         .set({ validUntil: peer.verification.validUntil })
         .where(condition);
       await t.release();
+    }
+  },
+);
+
+async function taskObjectExportFixture() {
+  const t = await taskMediaFixture();
+  await t.service().prepare(t.local, t.input);
+  const saved = await t.authorize();
+  if (!("objects" in saved.source) || !saved.source.objects[0]) throw new Error("Missing source");
+  const object = saved.source.objects[0];
+  const calls: string[] = [];
+  const backend: FederationDownloadStorage = {
+    allowedOrigins: ["https://local-storage.invalid"],
+    storage: {
+      async head(key, version) {
+        calls.push("head");
+        expect(key).toBe(object.storageKey);
+        expect(version).toBe(object.versionId);
+        return {
+          size: object.sizeBytes,
+          versionId: object.versionId,
+          etag: "test",
+          contentType: "application/octet-stream",
+          lastModified: clock(),
+        };
+      },
+      async presignDownload(key, seconds, _filename, version) {
+        calls.push("presign");
+        expect(key).toBe(object.storageKey);
+        expect(version).toBe(object.versionId);
+        const params = new URLSearchParams({
+          versionId: version ?? "",
+          "X-Amz-Date": clock()
+            .toISOString()
+            .replace(/[-:]/g, "")
+            .replace(/\.\d{3}Z$/, "Z"),
+          "X-Amz-Expires": String(seconds),
+          "X-Amz-Signature": "test-not-real-storage-signature",
+        });
+        return `https://local-storage.invalid/object?${params}`;
+      },
+    },
+  };
+  const operations = new FederationMediaExportOperations(
+    db,
+    t.signing.siteId,
+    t.service(),
+    clock,
+    () => backend,
+  );
+  const operation = await operations.start(t.local, t.input.packageId);
+  const { task } = await operations.task(t.input.agentId, t.input.packageId);
+  const binding = {
+    generation: operation.generation,
+    packageId: t.input.packageId,
+    manifestDigest: saved.manifestDigest,
+    fileIndex: 0,
+    path: object.path,
+    sizeBytes: object.sizeBytes,
+    sha256: object.sha256,
+    versionId: object.versionId,
+  };
+  return { ...t, saved, object, calls, backend, operations, operation, task, binding };
+}
+
+taskMediaTest(
+  "task object export pins members, keeps keys private and fences retry generations",
+  async () => {
+    const f = await taskObjectExportFixture();
+    try {
+      expect("objects" in f.task).toBe(true);
+      for (const secret of [f.object.storageKey, f.object.fileId, f.saved.identityEncrypted])
+        expect(JSON.stringify(f.task)).not.toContain(secret);
+      expect(await f.operations.start(f.local, f.input.packageId)).toEqual(f.operation);
+      const grant = await f.operations.objectGrant(f.input.agentId, f.binding);
+      expect(grant.binding).toEqual(f.binding);
+      expect(Date.parse(grant.expiresAt)).toBe(clock().getTime() + 30_000);
+      expect(f.calls).toEqual(["head", "presign"]);
+      f.calls.length = 0;
+      for (const change of [
+        { generation: crypto.randomUUID() },
+        { fileIndex: 3 },
+        { versionId: "other" },
+        { path: "objects/000001" },
+        { sha256: "b".repeat(64) },
+      ])
+        await expect(
+          f.operations.objectGrant(f.input.agentId, { ...f.binding, ...change }),
+        ).rejects.toThrow("OPERATION_CONFLICT");
+      await expect(f.operations.objectGrant("foreign-agent", f.binding)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+      expect(f.calls).toEqual([]);
+      const report = {
+        generation: f.operation.generation,
+        packageId: f.input.packageId,
+        manifestDigest: f.saved.manifestDigest,
+        state: "failed",
+      };
+      await f.operations.report(f.input.agentId, report);
+      const retry = await f.operations.start(f.local, f.input.packageId);
+      expect(retry.generation).not.toBe(f.operation.generation);
+      await expect(f.operations.objectGrant(f.input.agentId, f.binding)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+      await f.operations.report(f.input.agentId, {
+        ...report,
+        state: "exported",
+        generation: retry.generation,
+        sha256: "c".repeat(64),
+        sizeBytes: 123,
+      });
+      await expect(
+        f.operations.objectGrant(f.input.agentId, { ...f.binding, generation: retry.generation }),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+    } finally {
+      await f.release();
+    }
+  },
+);
+
+taskMediaTest.each([
+  "head-version",
+  "head-size",
+  "no-version-url",
+  "foreign-origin",
+  "overlong-url",
+  "revoked",
+  "file-changed",
+] as const)("task object export denies storage or authorization change: %s", async (mode) => {
+  const f = await taskObjectExportFixture();
+  try {
+    const head = f.backend.storage.head.bind(f.backend.storage),
+      presign = f.backend.storage.presignDownload.bind(f.backend.storage);
+    f.backend.storage.head = async (...args) => {
+      const stat = await head(...args);
+      return (
+        stat && {
+          ...stat,
+          ...(mode === "head-version"
+            ? { versionId: "wrong" }
+            : mode === "head-size"
+              ? { size: 88 }
+              : {}),
+        }
+      );
+    };
+    f.backend.storage.presignDownload = async (...args) => {
+      if (mode === "revoked")
+        await f
+          .service()
+          .revoke(f.local, f.input.packageId, { reason: "Withdraw while presigning" });
+      if (mode === "file-changed")
+        await db
+          .update(netdriveFiles)
+          .set({ storageVersionId: "changed" })
+          .where(eq(netdriveFiles.id, f.f.fileId));
+      const url = new URL(await presign(...args));
+      if (mode === "no-version-url") url.searchParams.delete("versionId");
+      if (mode === "foreign-origin") url.hostname = "elsewhere.invalid";
+      if (mode === "overlong-url") url.searchParams.set("X-Amz-Expires", "31");
+      return url.href;
+    };
+    await expect(f.operations.objectGrant(f.input.agentId, f.binding)).rejects.toThrow();
+    if (mode.startsWith("head-")) expect(f.calls).toEqual(["head"]);
+  } finally {
+    await f.release();
+  }
+});
+
+taskMediaTest(
+  "task object transport requires new authenticated capability and drops disconnected grants",
+  async () => {
+    const f = await taskObjectExportFixture();
+    try {
+      const dispatcher = new AgentDispatcher();
+      const sent: ServerMessage[] = [];
+      const channel = {
+        push: (message: ServerMessage) => {
+          sent.push(message);
+        },
+        close: () => {},
+        federationMediaExportV1: true,
+        federationMediaObjectExportV1: false,
+        verifiedCertFingerprint: "fixture",
+      };
+      dispatcher.register(f.input.agentId, channel);
+      const transport = new FederationMediaExportTransport(f.operations, dispatcher);
+      expect(await transport.dispatch(f.input.agentId, f.input.packageId)).toBe(false);
+      expect(sent).toHaveLength(0);
+      const request = create(FederationMediaExportLeaseRequestSchema, {
+        requestId: crypto.randomUUID(),
+        bindingJson: JSON.stringify(f.binding),
+      });
+      await expect(transport.grant(f.input.agentId, request)).rejects.toThrow("POLICY_DENIED");
+      expect(f.calls).toEqual([]);
+      channel.federationMediaObjectExportV1 = true;
+      expect(await transport.dispatch(f.input.agentId, f.input.packageId)).toBe(true);
+      expect(sent[0]?.payload.case).toBe("federationMediaExport");
+      expect(
+        JSON.parse((await transport.grant(f.input.agentId, request)).grantJson).binding,
+      ).toEqual(f.binding);
+      const presign = f.backend.storage.presignDownload.bind(f.backend.storage);
+      f.backend.storage.presignDownload = async (...args) => {
+        dispatcher.register(f.input.agentId, { ...channel });
+        return presign(...args);
+      };
+      await expect(transport.grant(f.input.agentId, request)).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      await f.release();
     }
   },
 );

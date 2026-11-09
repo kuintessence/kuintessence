@@ -1936,9 +1936,18 @@ const federationMediaExports =
           : undefined,
       )
     : undefined;
+let federationMediaObjectStorage:
+  | import("./federation/download-credential").FederationDownloadStorage
+  | undefined;
 const federationMediaExportOperations =
   federationSigningKey && federationMediaExports
-    ? new FederationMediaExportOperations(db, federationSigningKey.siteId, federationMediaExports)
+    ? new FederationMediaExportOperations(
+        db,
+        federationSigningKey.siteId,
+        federationMediaExports,
+        undefined,
+        () => federationMediaObjectStorage,
+      )
     : undefined;
 const federationMediaExportTransport = federationMediaExportOperations
   ? new FederationMediaExportTransport(federationMediaExportOperations, dispatcher)
@@ -2130,6 +2139,11 @@ if (config.NETDRIVE_ENABLED) {
   });
   const minioBackend = await createRealMinioBackend(minioCfg);
   federationInputStorageBackend = minioBackend;
+  if (config.FEDERATION_ENABLED && config.FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS.length)
+    federationMediaObjectStorage = {
+      storage: minioBackend,
+      allowedOrigins: config.FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS,
+    };
   if (config.FEDERATION_ENABLED && config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length)
     federationInputDownloads = {
       storage: minioBackend,

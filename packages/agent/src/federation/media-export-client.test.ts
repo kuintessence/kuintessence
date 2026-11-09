@@ -5,6 +5,7 @@ import {
   FederationMediaExportSchema,
 } from "@kuintessence/proto";
 import {
+  FederationMediaDirectoryExportTaskSchema,
   FederationMediaExportReceiptSchema,
   FederationMediaExportTaskSchema,
 } from "@kuintessence/shared/federation";
@@ -12,7 +13,7 @@ import { AgentDataRoots } from "../data-market/local-data-security";
 import { FederationMediaExportClient } from "./media-export-client";
 
 function task() {
-  return FederationMediaExportTaskSchema.parse({
+  return FederationMediaDirectoryExportTaskSchema.parse({
     generation: crypto.randomUUID(),
     packageId: crypto.randomUUID(),
     manifestDigest: `sha256:${"a".repeat(64)}`,
@@ -155,4 +156,50 @@ test("media export expiry aborts active work when the Server cannot renew", asyn
   expect(JSON.parse(await finished.promise).state).toBe("failed");
   expect(stopped).toBe(true);
   await client.disconnect();
+});
+
+test("object media commands require local origins and the negotiated object capability", async () => {
+  const { managedRootId: _root, relativePath: _path, ...base } = task();
+  const input = {
+    ...base,
+    objects: [{ path: "objects/000000", sha256: "a".repeat(64), sizeBytes: 0, versionId: "v1" }],
+  };
+  let called = false;
+  for (const allowedSourceOrigins of [undefined, ["https://local.invalid"]]) {
+    const client = new FederationMediaExportClient(
+      { ...config, allowedSourceOrigins },
+      () => {
+        called = true;
+        return false;
+      },
+      () => {
+        called = true;
+      },
+    );
+    expect(client.supportsObjects).toBe(!!allowedSourceOrigins);
+    client.start(
+      create(FederationMediaExportSchema, {
+        taskJson: JSON.stringify(input),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + 30_000),
+      }),
+      false,
+    );
+    if (!allowedSourceOrigins)
+      client.start(
+        create(FederationMediaExportSchema, {
+          taskJson: JSON.stringify(input),
+          leaseExpiresAtUnixMs: BigInt(Date.now() + 30_000),
+        }),
+        true,
+      );
+    await client.disconnect();
+  }
+  expect(called).toBe(false);
+  expect(
+    FederationMediaExportTaskSchema.safeParse({
+      ...input,
+      managedRootId: crypto.randomUUID(),
+      relativePath: "source",
+    }).success,
+  ).toBe(false);
 });

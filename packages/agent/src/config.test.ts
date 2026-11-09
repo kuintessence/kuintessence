@@ -9,6 +9,24 @@ describe("loadAgentConfig", () => {
     AGENT_SITE_NAME: "test-site",
   };
 
+  test("media object export defaults closed and requires locally configured HTTPS origins", () => {
+    const config = { mediaDirectory: "/var/lib/kq/media", ageDirectory: "/opt/age" };
+    const load = (value: unknown) =>
+      loadAgentConfig({ ...baseEnv, AGENT_FEDERATION_MEDIA_EXPORT: JSON.stringify(value) })
+        .AGENT_FEDERATION_MEDIA_EXPORT;
+    expect(load(config)?.allowedSourceOrigins).toEqual([]);
+    expect(
+      load({ ...config, allowedSourceOrigins: ["https://local.invalid"] })?.allowedSourceOrigins,
+    ).toEqual(["https://local.invalid"]);
+    for (const origin of [
+      "http://local.invalid",
+      "https://user:password@local.invalid",
+      "https://local.invalid/path",
+      "https://local.invalid?secret=x",
+    ])
+      expect(() => load({ ...config, allowedSourceOrigins: [origin] })).toThrow();
+  });
+
   test("loads valid config with defaults", () => {
     const cfg = loadAgentConfig(baseEnv);
     expect(cfg.AGENT_ID).toBe("agent-test");

@@ -87,6 +87,7 @@ const AgentConfigSchema = z
         .strictObject({
           mediaDirectory: dedicatedAbsolutePath("media directory"),
           ageDirectory: dedicatedAbsolutePath("age tools directory"),
+          allowedSourceOrigins: z.array(FederationDataOriginSchema).max(16).default([]),
         })
         .nullable(),
       "null",

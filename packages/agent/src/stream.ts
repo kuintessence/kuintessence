@@ -754,6 +754,7 @@ export class AgentStream {
   private running = true;
   private connected = false;
   private federationMediaExportSupported = false;
+  private federationMediaObjectExportSupported = false;
   private federationMediaImportSupported = false;
   private federationMediaExport?: FederationMediaExportClient;
   private federationMediaImport?: FederationMediaImportClient;
@@ -2113,6 +2114,7 @@ export class AgentStream {
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
           federationInputCopyV1: !!this.federationInputCopy,
           federationMediaExportV1: !!this.federationMediaExport,
+          federationMediaObjectExportV1: this.federationMediaExport?.supportsObjects ?? false,
           federationMediaImportV1: !!this.federationMediaImport,
           federationInputVerifyV1: !!this.federationInputCopy,
           federationResultCopyV1: !!this.federationResultCopy,
@@ -2817,6 +2819,8 @@ export class AgentStream {
             clearTimeout(registrationTimer);
             if (message.payload.value.accepted) {
               this.connected = true;
+              this.federationMediaObjectExportSupported =
+                message.payload.value.federationMediaObjectExportV1Supported;
               this.federationMediaExportSupported =
                 message.payload.value.federationMediaExportV1Supported;
               this.federationMediaImportSupported =
@@ -2875,6 +2879,7 @@ export class AgentStream {
       }
       this.connected = false;
       this.federationMediaExportSupported = false;
+      this.federationMediaObjectExportSupported = false;
       this.federationMediaImportSupported = false;
       await this.federationMediaExport?.disconnect();
       await this.federationMediaImport?.disconnect();
@@ -3191,7 +3196,8 @@ export class AgentStream {
     }
 
     if (payload.case === "federationMediaExport") {
-      if (this.federationMediaExportSupported) this.federationMediaExport?.start(payload.value);
+      if (this.federationMediaExportSupported)
+        this.federationMediaExport?.start(payload.value, this.federationMediaObjectExportSupported);
       return;
     }
     if (payload.case === "federationMediaExportLeaseResponse") {

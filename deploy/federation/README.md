@@ -33,6 +33,7 @@ Server 设置：
 | `FEDERATION_INPUT_DOWNLOAD_ORIGINS` | 本机构输入文件存储的 HTTPS origin，逗号分隔；独立于结果授权，默认空（关闭） |
 | `FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS` | 接收输入文件允许访问的源站存储 HTTPS origin，逗号分隔；独立于本地/结果存储配置，默认空（不发输入搬运凭据） |
 | `FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS` | 导入结果允许访问的对端存储 HTTPS origin，逗号分隔；默认空，不启用 Agent 结果传输服务 |
+| `FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS` | 本站任务介质源对象的 HTTPS origin，逗号分隔，默认空（不启用对象导出）；Compose 已透传，不能代替 Agent 本地允许清单 |
 | `FEDERATION_MEDIA_AGE_DIRECTORY` | 可选，来源介质包使用的固定版本官方 age 工具绝对目录；须与 wrapping key 同时配置 |
 | `FEDERATION_MEDIA_WRAPPING_KEY` | 可选，来源包私钥托管的独立高熵密钥，至少 32 字符，不得复用 JWT/SSO 密钥；需安全备份 |
 
@@ -302,3 +303,12 @@ Server 已接结果传输服务、Agent RPC 与自动扫描。配置上述值并
 ## 实际存储容量保护
 
 可用[存储侧签名观测](storage-capacity.md)限制新接单：采样实际数据库/节点卷，Server 校验报告身份和时效，保留旧请求恢复入口。该功能与双方签署的业务积压上限分别配置；阈值余量不是物理磁盘预留，完整容量保护仍在实现中。
+
+
+### 任务介质来源导出
+
+任务包沿用来源 age/wrapping key 配置和原任务审批，另需启用 NetDrive 版本存储，以及 Server 的 `FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS`。源 Agent 的 `AGENT_FEDERATION_MEDIA_EXPORT` 在原 `mediaDirectory`、`ageDirectory` 之外配置 `allowedSourceOrigins`，例如 `["https://storage.example.org"]`；默认空，仍可处理受管目录的数据集包。两处允许清单独立校验，不继承远端任务输入/结果复制的 origin。
+
+更新 Server 和 Agent 后协商 `federation_media_object_export_v1`，旧 Agent 仅接目录包。按原任务准备包后可显式调用 `/api/federation/media/exports/:id/run`；读取许可经受认证 AgentStream 发放，固定原对象版本、包和代次，最多 30 秒。HTTPS 存储证书必须被 Agent 信任，不关闭 TLS 校验。对象存储不应改写已签名 URL 的 Host 或丢失 versionId。
+
+任务包导出成功只说明完整密文已在源 Agent outbox，目标任务导入/原子发布及 DATA_WAITING 恢复仍未接通，不能作为可离线运行的证明。接口、边界与实际测试见[任务介质交付](../../docs/design/federation/task-media.md)。

@@ -431,6 +431,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         softwareOperationReplayV1: false,
         federationAccountingV1: false,
         federationMediaExportV1: false,
+        federationMediaObjectExportV1: false,
         federationMediaImportV1: false,
         federationInputCopyV1: false,
         federationInputVerifyV1: false,
@@ -561,6 +562,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.softwareOperationReplayV1 = reg.softwareOperationReplayV1;
               channel.federationAccountingV1 = reg.federationAccountingV1;
               channel.federationMediaExportV1 = reg.federationMediaExportV1;
+              channel.federationMediaObjectExportV1 =
+                reg.federationMediaExportV1 && reg.federationMediaObjectExportV1;
               channel.federationMediaImportV1 = reg.federationMediaImportV1;
               channel.federationInputCopyV1 = reg.federationInputCopyV1;
               channel.federationInputVerifyV1 = reg.federationInputVerifyV1;
@@ -596,6 +599,10 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       computeHealthV1Supported: true,
                       queueInventoryV1Supported: queueInventory !== undefined,
                       queueValidationShadowRejectionAckSupported: queueObservability !== undefined,
+                      federationMediaObjectExportV1Supported:
+                        !!deps.federationMediaExports &&
+                        channel.federationMediaObjectExportV1 &&
+                        !!channel.verifiedCertFingerprint,
                       federationMediaExportV1Supported:
                         !!deps.federationMediaExports &&
                         reg.federationMediaExportV1 &&

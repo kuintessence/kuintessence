@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { FEDERATION_MEDIA_MAX_BYTES } from "./media";
-import { FederationMediaExportTaskSchema } from "./media-export-task";
+import { FederationMediaDirectoryExportTaskSchema } from "./media-export-task";
 import { FederationMediaKeyQuerySchema, FederationMediaRecipientKeySchema } from "./media-keys";
 import { FederationDigestSchema } from "./references";
 
@@ -20,7 +20,7 @@ export const FederationMediaImportTaskSchema = z.strictObject({
   managedRootId: z.uuid(),
   maxBytes: z.number().int().nonnegative().max(FEDERATION_MEDIA_MAX_BYTES),
   signedManifest: z.string().min(1).max(400_000),
-  signingKey: FederationMediaExportTaskSchema.shape.signingKey,
+  signingKey: FederationMediaDirectoryExportTaskSchema.shape.signingKey,
   expiresAt: z.iso.datetime(),
 });
 export type FederationMediaImportTask = z.infer<typeof FederationMediaImportTaskSchema>;
@@ -33,7 +33,7 @@ export const FederationMediaImportGrantSchema = z.strictObject({
   query: FederationMediaKeyQuerySchema,
   queryDigest: FederationDigestSchema,
   signedGrant: z.string().min(1).max(16384),
-  signingKey: FederationMediaExportTaskSchema.shape.signingKey,
+  signingKey: FederationMediaDirectoryExportTaskSchema.shape.signingKey,
   expiresAt: z.iso.datetime(),
 });
 export type FederationMediaImportGrant = z.infer<typeof FederationMediaImportGrantSchema>;

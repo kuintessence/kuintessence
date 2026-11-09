@@ -8,6 +8,7 @@ import {
   type FederationMediaExportTask,
   FederationMediaExportTaskSchema,
   FederationMediaManifestSchema,
+  type FederationMediaObjectBinding,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import type { MediaAge } from "@kuintessence/shared/federation/media-age";
@@ -16,8 +17,9 @@ import {
   verifyFederationMessage,
 } from "@kuintessence/shared/federation/signatures";
 import { z } from "zod";
+import { readFederationMediaObject } from "../federation/media-object-reader";
 import type { AgentDataRoots } from "./local-data-security";
-import { exportMediaArchive } from "./media-archive";
+import { exportMediaArchive, exportMediaArchiveFromFiles } from "./media-archive";
 import { withMediaWorkspace } from "./media-workspace";
 
 const StoredReceipt = FederationMediaExportReceiptSchema.omit({ generation: true }).extend({
@@ -34,6 +36,8 @@ export async function exportFederationMedia(options: {
   age: Pick<MediaAge, "encrypt">;
   signal: AbortSignal;
   authorize(signal: AbortSignal): Promise<void>;
+  allowedSourceOrigins?: readonly string[];
+  authorizeObject?(binding: FederationMediaObjectBinding, signal: AbortSignal): Promise<unknown>;
 }): Promise<FederationMediaExportReceipt> {
   const { signal } = options;
   const task = FederationMediaExportTaskSchema.parse(options.task);
@@ -71,6 +75,24 @@ export async function exportFederationMedia(options: {
     manifest.recipientSiteId !== task.recipientSiteId
   )
     throw new Error("MEDIA_MANIFEST_MISMATCH");
+  if ("objects" in task) {
+    if (
+      manifest.subject.kind === "dataset" ||
+      !options.authorizeObject ||
+      !options.allowedSourceOrigins?.length ||
+      task.objects.length !== manifest.files.length ||
+      task.objects.some((object, index) => {
+        const file = manifest.files[index];
+        return (
+          !file ||
+          file.path !== object.path ||
+          file.sizeBytes !== object.sizeBytes ||
+          file.sha256 !== object.sha256
+        );
+      })
+    )
+      throw new Error("MEDIA_MANIFEST_MISMATCH");
+  } else if (manifest.subject.kind !== "dataset") throw new Error("MEDIA_MANIFEST_MISMATCH");
   const sourceDigest = createHash("sha256")
     .update(
       federationCanonicalJson({
@@ -79,8 +101,9 @@ export async function exportFederationMedia(options: {
         recipientSiteId: task.recipientSiteId,
         packageId: task.packageId,
         manifestDigest: task.manifestDigest,
-        managedRootId: task.managedRootId,
-        relativePath: task.relativePath,
+        ...("objects" in task
+          ? { objects: task.objects }
+          : { managedRootId: task.managedRootId, relativePath: task.relativePath }),
         recipient: task.recipient,
       }),
     )
@@ -148,17 +171,43 @@ export async function exportFederationMedia(options: {
       let sizeBytes = 0;
       const hash = createHash("sha256");
       try {
-        const archive = exportMediaArchive({
+        const common = {
           signedManifest: task.signedManifest,
-          verifyManifest: async (jws) => {
+          verifyManifest: async (jws: string) => {
             if (jws !== task.signedManifest) throw new Error("MEDIA_MANIFEST_MISMATCH");
             return manifest;
           },
-          roots: options.roots,
-          managedRootId: task.managedRootId,
-          relativePath: task.relativePath,
           signal,
-        });
+        };
+        const archive =
+          "objects" in task
+            ? exportMediaArchiveFromFiles({
+                ...common,
+                readFile: (_file, fileIndex) => {
+                  const object = task.objects[fileIndex];
+                  if (!object || !options.authorizeObject || !options.allowedSourceOrigins)
+                    throw new Error("MEDIA_MANIFEST_MISMATCH");
+                  return readFederationMediaObject({
+                    binding: {
+                      generation: task.generation,
+                      packageId: task.packageId,
+                      manifestDigest: task.manifestDigest,
+                      fileIndex,
+                      ...object,
+                    },
+                    availableUntil: task.expiresAt,
+                    allowedSourceOrigins: options.allowedSourceOrigins,
+                    authorize: options.authorizeObject,
+                    signal,
+                  });
+                },
+              })
+            : exportMediaArchive({
+                ...common,
+                roots: options.roots,
+                managedRootId: task.managedRootId,
+                relativePath: task.relativePath,
+              });
         for await (const chunk of options.age.encrypt(archive, task.recipient, signal)) {
           await authorize();
           sizeBytes += chunk.byteLength;

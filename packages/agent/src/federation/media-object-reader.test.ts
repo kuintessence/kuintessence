@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -411,3 +411,142 @@ test("an empty-object response containing bytes cannot complete", async () => {
     "TRANSFER_IO_FAILED",
   );
 });
+
+live.each(["task-input", "task-result", "bad-binding", "revoke-final"] as const)(
+  "actual Agent media client and default TLS reader publish only authorized ciphertext: %s",
+  async (scenario) => {
+    const f = await mediaExportFixture();
+    try {
+      content = f.bytes;
+      const manifest = FederationMediaManifestSchema.parse({
+        ...f.manifest,
+        subject: {
+          kind: scenario === "task-result" ? "task-result" : "task-input",
+          operationId: crypto.randomUUID(),
+          taskId: crypto.randomUUID(),
+          attempt: 1,
+          requestDigest: `sha256:${"a".repeat(64)}`,
+          contentDigest: `sha256:${"b".repeat(64)}`,
+        },
+        files: f.manifest.files.map((file) => ({ ...file, path: "objects/000000" })),
+      });
+      const signedManifest = await signFederationMessage(FederationMediaManifestSchema, manifest, {
+        siteId: manifest.senderSiteId,
+        keyId: f.options.task.signingKey.keyId,
+        privateKey: f.keyPair.privateKey,
+      });
+      const { managedRootId: _root, relativePath: _path, ...common } = f.options.task;
+      const task = {
+        ...common,
+        signedManifest,
+        manifestDigest: (await f.verify(signedManifest)).digest,
+        objects: manifest.files.map(({ path, sha256, sizeBytes }) => ({
+          path,
+          sha256,
+          sizeBytes,
+          versionId: "v1",
+        })),
+      };
+      const input = join(f.root, "client-input.json");
+      const run = async (generation = task.generation) => {
+        await writeFile(
+          input,
+          JSON.stringify({
+            task: { ...task, generation },
+            mediaDirectory: f.options.mediaDirectory,
+            ageDirectory: process.env.KQ_MEDIA_AGE_TEST_BIN,
+            origin: server.url.origin,
+            scenario,
+          }),
+          { mode: 0o600 },
+        );
+        const child = Bun.spawn(
+          [
+            process.execPath,
+            "--no-env-file",
+            "--eval",
+            `
+          import { create } from "@bufbuild/protobuf";
+          import { FederationMediaExportSchema, FederationMediaExportLeaseResponseSchema } from "@kuintessence/proto";
+          import { FederationMediaExportClient } from ${JSON.stringify(import.meta.resolve("./media-export-client"))};
+          import { AgentDataRoots } from ${JSON.stringify(import.meta.resolve("../data-market/local-data-security"))};
+          const input = await Bun.file(process.env.KQ_MEDIA_CLIENT_INPUT).json();
+          let permits = 0, members = 0;
+          const finished = Promise.withResolvers();
+          const client = new FederationMediaExportClient({ agentId: input.task.agentId, mediaDirectory: input.mediaDirectory, ageDirectory: input.ageDirectory, allowedSourceOrigins: [input.origin], roots: new AgentDataRoots({ datasetRoot: "/unused-source", jobWorkRoot: "/unused-job", managedRoots: {} }) }, request => {
+            const binding = JSON.parse(request.bindingJson), isObject = "fileIndex" in binding;
+            if (isObject) members++; else permits++;
+            const expiresAt = new Date(Date.now()+20_000).toISOString();
+            const grant = isObject ? { binding: { ...binding, ...(input.scenario === "bad-binding" ? { versionId: "wrong" } : {}) }, url: input.origin+"/object?versionId=v1", expiresAt } : { ...binding, expiresAt };
+            queueMicrotask(() => client.receive(create(FederationMediaExportLeaseResponseSchema, { requestId: request.requestId, grantJson: !isObject && permits === 2 && input.scenario === "revoke-final" ? "" : JSON.stringify(grant), leaseExpiresAtUnixMs: BigInt(Date.parse(expiresAt)) })));
+            return true;
+          }, report => finished.resolve(JSON.parse(report.reportJson)));
+          client.start(create(FederationMediaExportSchema, { taskJson: JSON.stringify(input.task), leaseExpiresAtUnixMs: BigInt(Date.now()+20_000) }), true);
+          const report = await finished.promise; await client.disconnect();
+          console.log(JSON.stringify({ report, permits, members }));
+        `,
+          ],
+          {
+            env: {
+              ...process.env,
+              NODE_EXTRA_CA_CERTS: join(root, "tls.pem"),
+              KQ_MEDIA_CLIENT_INPUT: input,
+            },
+            stdout: "pipe",
+            stderr: "pipe",
+          },
+        );
+        const [stdout, stderr, code] = await Promise.all([
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+          child.exited,
+        ]);
+        if (code !== 0) throw new Error(`Agent child exited ${code}: ${stderr}`);
+        return JSON.parse(stdout) as {
+          report: { state: string; sha256: string; sizeBytes: number; generation: string };
+          permits: number;
+          members: number;
+        };
+      };
+      const result = await run();
+      if (scenario === "bad-binding" || scenario === "revoke-final") {
+        expect(result.report.state).toBe("failed");
+        expect(
+          (await readdir(join(f.options.mediaDirectory, "outbox"))).filter(
+            (name) => name !== ".media-work",
+          ),
+        ).toEqual([]);
+        if (scenario === "bad-binding") expect(requests).toBe(0);
+        else expect(requests).toBeGreaterThan(0);
+      } else {
+        expect(result.report.state).toBe("exported");
+        expect(result.members).toBe(2);
+        expect(result.permits).toBe(2);
+        const target = join(f.options.mediaDirectory, "outbox", task.packageId, "bundle.age");
+        const cipher = await readFile(target);
+        expect(hash(cipher)).toBe(result.report.sha256);
+        expect(cipher.length).toBe(result.report.sizeBytes);
+        const imported = await quarantineMediaArchive({
+          stream: f.age.decrypt(target, f.identity.identity, f.options.signal),
+          quarantineRoot: join(f.root, "quarantine"),
+          maxBytes: content.length,
+          reserveBytes: 1024 * 1024,
+          verifyManifest: async (jws) => (await f.verify(jws)).payload,
+          signal: f.options.signal,
+        });
+        expect(await readFile(join(imported.directory, "files", "objects/000000"))).toEqual(
+          content,
+        );
+        const reads = requests,
+          generation = crypto.randomUUID();
+        const replay = await run(generation);
+        expect(replay.report).toEqual({ ...result.report, generation });
+        expect(requests).toBe(reads);
+        expect(replay.members).toBe(0);
+      }
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);

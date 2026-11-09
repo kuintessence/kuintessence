@@ -11,6 +11,7 @@ import {
   type FederationMediaExportBindingSchema,
   FederationMediaExportLeaseSchema,
   FederationMediaExportTaskSchema,
+  FederationMediaObjectGrantSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
@@ -23,6 +24,7 @@ export interface FederationMediaExportConfig {
   mediaDirectory: string;
   ageDirectory: string;
   roots: AgentDataRoots;
+  allowedSourceOrigins?: readonly string[];
 }
 export class FederationMediaExportClient {
   private readonly session: FederationTransferSession;
@@ -71,7 +73,10 @@ export class FederationMediaExportClient {
   disconnect() {
     return this.session.disconnect();
   }
-  start(command: FederationMediaExport): void {
+  get supportsObjects() {
+    return !!this.config.allowedSourceOrigins?.length;
+  }
+  start(command: FederationMediaExport, allowObjects = false): void {
     if (Buffer.byteLength(command.taskJson) > 512 * 1024) return;
     const parsed = (() => {
       try {
@@ -82,6 +87,7 @@ export class FederationMediaExportClient {
     })();
     if (!parsed?.success || parsed.data.agentId !== this.config.agentId) return;
     const task = parsed.data;
+    if ("objects" in task && (!allowObjects || !this.supportsObjects)) return;
     const binding = {
       generation: task.generation,
       packageId: task.packageId,
@@ -98,6 +104,20 @@ export class FederationMediaExportClient {
           task,
           age: this.age,
           signal,
+          authorizeObject: async (member, requestSignal) => {
+            const response = await this.session.request(
+              { requestId: crypto.randomUUID(), bindingJson: JSON.stringify(member) },
+              requestSignal,
+            );
+            const grant = FederationMediaObjectGrantSchema.parse(JSON.parse(response.grantJson));
+            if (
+              federationCanonicalJson(grant.binding) !== federationCanonicalJson(member) ||
+              Date.parse(grant.expiresAt) !== Number(response.leaseExpiresAtUnixMs)
+            )
+              throw new Error("INVALID_GRANT");
+            lease(response.leaseExpiresAtUnixMs);
+            return grant;
+          },
           authorize: async (requestSignal) => {
             const response = await this.session.request(
               { requestId: crypto.randomUUID(), bindingJson: JSON.stringify(binding) },

@@ -7,7 +7,10 @@ import {
   ServerMessageSchema,
 } from "@kuintessence/proto";
 import { createLogger } from "@kuintessence/shared";
-import { FederationError } from "@kuintessence/shared/federation";
+import {
+  FederationError,
+  FederationMediaObjectBindingSchema,
+} from "@kuintessence/shared/federation";
 import { z } from "zod";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { FederationMediaExportOperations } from "./media-export-operations";
@@ -46,6 +49,13 @@ export class FederationMediaExportTransport {
     for (const row of await this.operations.pending(eligible)) {
       if (this.stopping) return;
       const agentId = row.source.agentId;
+      if (
+        "objects" in row.source &&
+        !this.dispatcher.getChannel(agentId)?.federationMediaObjectExportV1
+      ) {
+        await this.operations.defer(row.packageId);
+        continue;
+      }
       if (used.has(agentId)) continue;
       used.add(agentId);
       try {
@@ -60,7 +70,11 @@ export class FederationMediaExportTransport {
     const channel = this.dispatcher.getChannel(agentId);
     if (!channel?.federationMediaExportV1 || !channel.verifiedCertFingerprint) return false;
     const prepared = await this.operations.task(agentId, packageId);
-    if (!this.dispatcher.isCurrentChannel(agentId, channel)) return false;
+    if (
+      !this.dispatcher.isCurrentChannel(agentId, channel) ||
+      ("objects" in prepared.task && !channel.federationMediaObjectExportV1)
+    )
+      return false;
     const taskJson = JSON.stringify(prepared.task);
     if (Buffer.byteLength(taskJson) > 512 * 1024) throw new FederationError("INVALID_MESSAGE");
     channel.push(
@@ -79,7 +93,21 @@ export class FederationMediaExportTransport {
   async grant(agentId: string, request: FederationMediaExportLeaseRequest) {
     z.uuid().parse(request.requestId);
     if (Buffer.byteLength(request.bindingJson) > 8192) throw new FederationError("INVALID_MESSAGE");
-    const grant = await this.operations.lease(agentId, JSON.parse(request.bindingJson));
+    const raw: unknown = JSON.parse(request.bindingJson);
+    const object = FederationMediaObjectBindingSchema.safeParse(raw);
+    const channel = this.dispatcher.getChannel(agentId);
+    if (
+      object.success &&
+      (!channel?.federationMediaExportV1 ||
+        !channel.federationMediaObjectExportV1 ||
+        !channel.verifiedCertFingerprint)
+    )
+      throw new FederationError("POLICY_DENIED");
+    const grant = object.success
+      ? await this.operations.objectGrant(agentId, object.data)
+      : await this.operations.lease(agentId, raw);
+    if (object.success && (!channel || !this.dispatcher.isCurrentChannel(agentId, channel)))
+      throw new FederationError("POLICY_DENIED");
     return create(FederationMediaExportLeaseResponseSchema, {
       requestId: request.requestId,
       grantJson: JSON.stringify(grant),

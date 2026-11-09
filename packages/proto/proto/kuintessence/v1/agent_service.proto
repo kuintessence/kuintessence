@@ -257,6 +257,7 @@ message RegisterRequest {
   bool federation_media_export_v1 = 36;
   bool federation_media_import_v1 = 37;
   bool federation_sandbox_local_input_v1 = 38;
+  bool federation_media_object_export_v1 = 39;
 }
 
 message RegisterResponse {
@@ -280,6 +281,7 @@ message RegisterResponse {
   bool federation_input_copy_v1_supported = 11;
   bool federation_media_export_v1_supported = 12;
   bool federation_media_import_v1_supported = 13;
+  bool federation_media_object_export_v1_supported = 14;
 }
 
 // tags 7–10 carry extended monitoring + installed-software
@@ -1148,7 +1150,7 @@ message FederationMediaExport {
 }
 message FederationMediaExportLeaseRequest {
   string request_id = 1;
-  string binding_json = 2; // Shared binding, at most 8 KiB.
+  string binding_json = 2; // Export binding or fixed object member binding, at most 8 KiB.
 }
 message FederationMediaExportLeaseResponse {
   string request_id = 1;

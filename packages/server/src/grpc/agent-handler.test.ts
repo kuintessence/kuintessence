@@ -505,6 +505,7 @@ describe("agent-handler", () => {
     "granted",
     "denied",
     "legacy",
+    "directory-only",
     "unverified",
     "replaced",
   ] as const)("media export RPC trust and nonblocking delivery: %s", async (mode) => {
@@ -540,6 +541,7 @@ describe("agent-handler", () => {
     const register = registerFrame();
     if (register.payload.case !== "register") throw new Error("Missing register");
     register.payload.value.federationMediaExportV1 = mode !== "legacy";
+    register.payload.value.federationMediaObjectExportV1 = mode !== "directory-only";
     async function* messages() {
       yield register;
       yield create(AgentMessageSchema, {
@@ -588,13 +590,20 @@ describe("agent-handler", () => {
     expect(registration.payload.value.federationMediaExportV1Supported).toBe(
       !["legacy", "unverified"].includes(mode),
     );
+    expect(registration.payload.value.federationMediaObjectExportV1Supported).toBe(
+      !["legacy", "unverified", "directory-only"].includes(mode),
+    );
     const grants = output.flatMap((message) =>
       message.payload.case === "federationMediaExportLeaseResponse"
         ? [message.payload.value.grantJson]
         : [],
     );
     expect(grants).toEqual(
-      mode === "granted" ? ["short-lived-export-lease"] : mode === "denied" ? [""] : [],
+      ["granted", "directory-only"].includes(mode)
+        ? ["short-lived-export-lease"]
+        : mode === "denied"
+          ? [""]
+          : [],
     );
   });
   test.each([
