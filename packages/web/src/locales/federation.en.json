@@ -229,6 +229,9 @@
           "use": {
             "approve": "Approve federated dataset use"
           }
+        },
+        "payment": {
+          "approve": "Approve external payment receipts"
         }
       },
       "effects": {
@@ -271,6 +274,9 @@
           "use": {
             "approve": "Authorize or revoke a specific dataset version for a partner institution; grants neither file disclosure nor the recipient’s local access."
           }
+        },
+        "payment": {
+          "approve": "Confirm external payment facts and corrections, exchange signatures and retry evidence; includes agreement reading, not bank transfers or credit issuance."
         }
       }
     },

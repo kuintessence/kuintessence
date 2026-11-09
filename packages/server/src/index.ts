@@ -118,6 +118,7 @@ import {
 import { FederationMediaUploadTransport } from "./federation/media-upload-transport";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
+import { FederationPaymentService } from "./federation/payment";
 import { FederationPermissionService } from "./federation/permissions";
 import { FederationPreparationService } from "./federation/preparation";
 import { FederationPreparationWorker } from "./federation/preparation-worker";
@@ -1896,6 +1897,7 @@ if (federationSigningKey && federationCommercial)
       federationClosing,
       new FederationAdjustmentService(db, federationSigningKey, federationStorageGuard),
       new FederationRefundService(db, federationSigningKey, federationStorageGuard),
+      new FederationPaymentService(db, federationSigningKey),
     ),
   );
 const federationPreparation = federationSigningKey

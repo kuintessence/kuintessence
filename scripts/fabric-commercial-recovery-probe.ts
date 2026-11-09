@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  CommercialProposalInputSchema,
+  CommercialAdapterProposalInputSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { FabricProposalCheckpointSchema } from "@kuintessence/shared/federation/ledger";
@@ -15,6 +15,7 @@ const root = z.string().parse(process.argv[2]);
 const action = z.enum(["prepare", "advance", "advance-then-crash"]).parse(process.argv[3]);
 const checkpointFile = z.string().parse(process.argv[4]);
 const replyFile = z.string().parse(process.argv[5]);
+const record = z.enum(["agreement", "payment"]).default("agreement").parse(process.argv[6]);
 const network = z
   .object({
     channel: z.literal("kq-evidence-test"),
@@ -54,8 +55,16 @@ try {
   close = await startCommercialAdapter(configFile);
   const client = new UnixCommercialClient(join(runDirectory, "commercial.sock"));
   if (action === "prepare") {
-    const input = CommercialProposalInputSchema.parse(
-      JSON.parse(await readFile(join(root, "commercial-proposal.json"), "utf8")),
+    const input = CommercialAdapterProposalInputSchema.parse(
+      JSON.parse(
+        await readFile(
+          join(
+            root,
+            record === "payment" ? "commercial-payment-proposal.json" : "commercial-proposal.json",
+          ),
+          "utf8",
+        ),
+      ),
     );
     const checkpoint = await client.prepare(input);
     await writeFile(checkpointFile, JSON.stringify(checkpoint), { mode: 0o600 });
@@ -68,9 +77,14 @@ try {
     const prior = FabricProposalCheckpointSchema.parse(
       JSON.parse(await readFile(checkpointFile, "utf8")),
     );
-    const next = await client.advance(prior.recovery);
+    let next = await client.advance(prior.recovery);
     assert.equal(next.transactionId, prior.transactionId);
     if (action === "advance-then-crash") {
+      // A listening Orderer may still be electing its leader; keep the original checkpoint.
+      for (let attempt = 0; attempt < 2 && next.state === "pending"; attempt++) {
+        next = await client.advance(prior.recovery);
+        assert.equal(next.transactionId, prior.transactionId);
+      }
       assert.equal(next.state, "committed");
       process.exit(86);
     }

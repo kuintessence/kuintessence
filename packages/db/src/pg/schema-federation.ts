@@ -38,6 +38,7 @@ import type {
   CommercialBill,
   CommercialDiscount,
   CommercialExecutionApproval,
+  CommercialPayment,
   CommercialRefund,
   CommercialReservation,
   CommercialSettlement,
@@ -211,7 +212,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -1292,6 +1293,69 @@ export const federationCommercialBills = pgTable(
 );
 
 /** Separate business consent; appliedAt is local accounting, not bank payment. */
+/** Immutable signed statements; current marks the latest jointly confirmed revision. */
+export const federationCommercialPayments = pgTable(
+  "federation_commercial_payments",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    receiptId: uuid("receipt_id").notNull(),
+    paymentId: uuid("payment_id").notNull(),
+    billId: uuid("bill_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    payload: jsonb("payload").$type<CommercialPayment>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    current: boolean("current").notNull().default(false),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.receiptId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.billId],
+      foreignColumns: [federationCommercialBills.localSiteId, federationCommercialBills.billId],
+    }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    uniqueIndex("federation_payment_current")
+      .on(t.localSiteId, t.paymentId)
+      .where(sql`${t.current}`),
+    // Never sign two competing revisions, including before either receives the peer's approval.
+    uniqueIndex("federation_payment_successor").on(
+      t.localSiteId,
+      t.paymentId,
+      sql`coalesce(${t.payload}->'previous'->>'receiptId', '')`,
+    ),
+    index("federation_payment_bill").on(t.localSiteId, t.billId, t.createdAt),
+    check(
+      "federation_payment_identity",
+      sql`(
+      ${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.payload}->>'kind' = 'commercial-payment'
+      AND ${t.payload}->>'receiptId' = ${t.receiptId}::text
+      AND ${t.payload}->>'paymentId' = ${t.paymentId}::text
+      AND ${t.payload}->>'billId' = ${t.billId}::text
+      AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text)
+      AND (${t.counterpartyJws} IS NULL) = (${t.confirmedAt} IS NULL)
+      AND (NOT ${t.current} OR ${t.confirmedAt} IS NOT NULL)
+    ) IS TRUE`,
+    ),
+  ],
+);
+
 export const federationCommercialSettlements = pgTable(
   "federation_commercial_settlements",
   {
@@ -1478,7 +1542,7 @@ export const federationCommercialSubmissions = pgTable(
     ),
     check(
       "federation_commercial_submission_input",
-      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement','record-refund') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement','record-refund','record-payment') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
     check(
       "federation_commercial_submission_lease",
@@ -2195,7 +2259,14 @@ export const federationCommercialApprovalSyncs = pgTable(
     agreementRevisionId: uuid("agreement_revision_id").notNull(),
     recordKind: varchar("record_kind", { length: 16 })
       .$type<
-        "agreement" | "reservation" | "release" | "bill" | "settlement" | "adjustment" | "refund"
+        | "agreement"
+        | "reservation"
+        | "release"
+        | "bill"
+        | "settlement"
+        | "adjustment"
+        | "refund"
+        | "payment"
       >()
       .notNull(),
     recordId: uuid("record_id").notNull(),
@@ -2219,7 +2290,7 @@ export const federationCommercialApprovalSyncs = pgTable(
     index("federation_approval_sync_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
     check(
       "federation_approval_sync_identity",
-      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment','refund') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
+      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment','refund','payment') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
     ),
     check(
       "federation_approval_sync_state",

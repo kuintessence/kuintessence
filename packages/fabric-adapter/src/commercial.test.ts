@@ -18,6 +18,7 @@ import {
   CommercialDiscountSchema,
   type CommercialExecutionProposalInput,
   CommercialExecutionProposalInputSchema,
+  CommercialPaymentSchema,
   type CommercialProposalInput,
   CommercialRefundSchema,
   CommercialReleaseSchema,
@@ -91,6 +92,7 @@ beforeAll(async () => {
           "commercial-settlement",
           "commercial-adjustment",
           "commercial-refund",
+          "commercial-payment",
           "cancellation-receipt",
         ],
       })),
@@ -791,7 +793,42 @@ async function billingInputs() {
   });
   const adjustmentJws = await signFederationMessage(CommercialAdjustmentSchema, adjustment, source);
 
+  const payment = CommercialPaymentSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-payment",
+    receiptId: randomUUID(),
+    paymentId: randomUUID(),
+    domainId: bill.domainId,
+    agreementRevisionId: bill.request.agreementRevisionId,
+    agreementDigest: bill.agreementDigest,
+    billId: bill.billId,
+    billDigest: hash(sourceJws),
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    unit: bill.request.unit,
+    amount: "5",
+    occurredAt: bill.issuedAt,
+    issuedAt: bill.issuedAt,
+    evidenceDigest: digest,
+    previous: null,
+    reason: "PRIVATE-PAYMENT-PROBE",
+    salt: randomBytes(32).toString("hex"),
+  });
+  const paymentJws = await signFederationMessage(CommercialPaymentSchema, payment, source);
+
   return [
+    CommercialAdapterProposalInputSchema.parse({
+      operation: "record-payment",
+      domainId: payment.domainId,
+      recordId: payment.receiptId,
+      digest: hash(paymentJws),
+      envelope: {
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        sourceJws: paymentJws,
+        targetJws: await signFederationMessage(CommercialPaymentSchema, payment, target),
+      },
+    }),
     CommercialAdapterProposalInputSchema.parse({
       operation: "adjust-settlement",
       domainId: adjustment.domainId,
@@ -838,7 +875,7 @@ async function billingInputs() {
   ];
 }
 
-test("bill, discount, settlement and adjustment proposals disclose only to the two PDC institutions, never normal arguments", async () => {
+test("bill, discount, settlement, adjustment and payment proposals disclose only to the two PDC institutions, never normal arguments", async () => {
   for (const value of await billingInputs()) {
     const provider = keys[1];
     if (!provider) throw new Error("Missing provider");
@@ -863,13 +900,15 @@ test("bill, discount, settlement and adjustment proposals disclose only to the t
       ?.getArgsList_asU8()
       .map((bytes) => Buffer.from(bytes).toString());
     expect(args).toEqual([
-      value.operation === "confirm-bill"
-        ? "ConfirmBill"
-        : value.operation === "settle-bill"
-          ? "SettleBill"
-          : value.operation === "adjust-settlement"
-            ? "AdjustSettlement"
-            : "RecordDiscount",
+      value.operation === "record-payment"
+        ? "RecordPayment"
+        : value.operation === "confirm-bill"
+          ? "ConfirmBill"
+          : value.operation === "settle-bill"
+            ? "SettleBill"
+            : value.operation === "adjust-settlement"
+              ? "AdjustSettlement"
+              : "RecordDiscount",
       value.domainId,
       value.recordId,
     ]);
@@ -891,6 +930,7 @@ test("new billing operations reject mismatched identities, old key authority and
       CommercialAdapterProposalInputSchema.safeParse({ ...value, dueAmount: "10" }).success,
     ).toBe(false);
     if (
+      value.operation === "record-payment" ||
       value.operation === "confirm-bill" ||
       value.operation === "settle-bill" ||
       value.operation === "adjust-settlement"

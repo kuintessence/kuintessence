@@ -477,6 +477,24 @@ async function run() {
     targetJws: await signFederationMessage(CommercialPaymentSchema, value, targetKey),
   });
   const paymentSigned = await paymentEnvelope(payment);
+  const adapterPayment = CommercialPaymentSchema.parse({
+    ...payment,
+    paymentId: randomUUID(),
+    receiptId: randomUUID(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  await writeFile(
+    join(dirname(process.argv[2] ?? ""), "commercial-payment-proposal.json"),
+    JSON.stringify({
+      operation: "record-payment",
+      domainId: adapterPayment.domainId,
+      recordId: adapterPayment.receiptId,
+      digest: `sha256:${createHash("sha256").update(JSON.stringify(adapterPayment)).digest("hex")}`,
+      envelope: await paymentEnvelope(adapterPayment),
+    }),
+    { mode: 0o600 },
+  );
+
   await assert.rejects(
     proposal(a, "RecordPayment", payment.receiptId, {
       ...paymentSigned,

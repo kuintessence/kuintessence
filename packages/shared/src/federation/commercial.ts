@@ -277,6 +277,15 @@ export const CommercialPaymentSchema = z
     "Invalid payment receipt",
   );
 export type CommercialPayment = z.infer<typeof CommercialPaymentSchema>;
+export const CommercialPaymentDraftInputSchema = z.strictObject({
+  receiptId: CommercialPaymentSchema.shape.receiptId,
+  paymentId: CommercialPaymentSchema.shape.paymentId,
+  billId: CommercialPaymentSchema.shape.billId,
+  amount: CommercialPaymentSchema.shape.amount,
+  occurredAt: CommercialPaymentSchema.shape.occurredAt,
+  evidenceDigest: CommercialPaymentSchema.shape.evidenceDigest,
+  reason: CommercialPaymentSchema.shape.reason,
+});
 
 /** A separate financial approval for a permanently cancelled task that never created a workflow. */
 export const CommercialRefundSchema = z
@@ -682,6 +691,11 @@ export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operat
   ...CommercialProposalInputSchema.options,
   ...CommercialExecutionProposalInputSchema.options,
   CommercialAdjustmentProposalInputSchema,
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("record-payment"),
+    envelope: CommercialAgreementEnvelopeSchema,
+  }),
   z.strictObject({
     ...ProposalIdentity,
     operation: z.literal("record-refund"),

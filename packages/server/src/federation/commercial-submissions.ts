@@ -10,6 +10,7 @@ import {
   federationMarketSubmissions as marketSubmissions,
   type PgDb,
   type PgTransaction,
+  federationCommercialPayments as payments,
   federationCommercialRefunds as refunds,
   federationUsageReports as reports,
   federationCommercialSettlements as settlements,
@@ -25,6 +26,7 @@ import {
   CommercialBillSchema,
   CommercialDiscountSchema,
   CommercialExecutionApprovalSchema,
+  CommercialPaymentSchema,
   CommercialReceiptQueryResultSchema,
   CommercialRefundSchema,
   CommercialSettlementSchema,
@@ -61,6 +63,7 @@ const recordTypes = {
   "settle-bill": "settlement",
   "adjust-settlement": "adjustment",
   "record-refund": "refund",
+  "record-payment": "payment",
 } as const;
 
 export class FederationCommercialSubmissionService {
@@ -559,6 +562,40 @@ export class FederationCommercialSubmissionService {
       }
       return true;
     }
+    if (input.operation === "record-payment") {
+      const [row] = await this.db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.localSiteId, this.siteId), eq(payments.receiptId, input.recordId)));
+      if (!row?.counterpartyJws || !row.confirmedAt) throw new FederationError("POLICY_DENIED");
+      if (!this.client?.receipt) throw new FabricClientFailure("PAYMENT_RECEIPT_UNAVAILABLE", true);
+      const references = [
+        { recordType: "bill" as const, recordId: row.billId, digest: row.payload.billDigest },
+        ...(row.payload.previous
+          ? [
+              {
+                recordType: "payment" as const,
+                recordId: row.payload.previous.receiptId,
+                digest: row.payload.previous.digest,
+              },
+            ]
+          : []),
+      ];
+      for (const ref of references) {
+        const { receipt } = CommercialReceiptQueryResultSchema.parse(
+          await this.client.receipt({
+            operation: "get-commercial-receipt",
+            domainId: input.domainId,
+            recordType: ref.recordType,
+            recordId: ref.recordId,
+          }),
+        );
+        if (!receipt) throw new FabricClientFailure("LEDGER_PENDING", false);
+        if (receipt.recordId !== ref.recordId || receipt.digest !== ref.digest)
+          throw new FederationError("OPERATION_CONFLICT");
+      }
+      return true;
+    }
     if (input.operation === "settle-bill") {
       const [row] = await this.db
         .select()
@@ -640,6 +677,40 @@ export class FederationCommercialSubmissionService {
             row.counterpartyJws !== input.envelope.targetJws
           : row.approvalJws !== input.envelope.targetJws ||
             row.counterpartyJws !== input.envelope.sourceJws)
+      )
+        throw new FederationError("POLICY_DENIED");
+    }
+    if (input.operation === "record-payment") {
+      const [row] = await (tx ?? this.db)
+        .select()
+        .from(payments)
+        .where(and(eq(payments.localSiteId, this.siteId), eq(payments.receiptId, input.recordId)));
+      if (
+        !row?.counterpartyJws ||
+        !row.confirmedAt ||
+        row.digest !== input.digest ||
+        row.payload.domainId !== input.domainId ||
+        row.payload.targetSiteId !== this.siteId ||
+        row.payload.sourceSiteId !== input.envelope.sourceSiteId ||
+        input.envelope.targetSiteId !== this.siteId ||
+        row.approvalJws !== input.envelope.targetJws ||
+        row.counterpartyJws !== input.envelope.sourceJws
+      )
+        throw new FederationError("POLICY_DENIED");
+      const [contract] = await (tx ?? this.db)
+        .select()
+        .from(agreements)
+        .where(
+          and(
+            eq(agreements.localSiteId, this.siteId),
+            eq(agreements.revisionId, row.agreementRevisionId),
+            eq(agreements.localOrgId, row.localOrgId),
+          ),
+        );
+      if (
+        !contract?.counterpartyJws ||
+        contract.terms.agreement.mode === "bilateral_direct" ||
+        contract.digest !== row.payload.agreementDigest
       )
         throw new FederationError("POLICY_DENIED");
     }
@@ -757,6 +828,7 @@ export class FederationCommercialSubmissionService {
         "settle-bill": "commercial-settlement",
         "adjust-settlement": "commercial-adjustment",
         "record-refund": "commercial-refund",
+        "record-payment": "commercial-payment",
       } as const;
       for (const [siteId, jws] of [
         [input.envelope.sourceSiteId, input.envelope.sourceJws],
@@ -774,6 +846,7 @@ export class FederationCommercialSubmissionService {
             CommercialBillSchema,
             CommercialSettlementSchema,
             CommercialRefundSchema,
+            CommercialPaymentSchema,
             CommercialAdjustmentSchema,
           ]),
           jws,
@@ -872,13 +945,15 @@ export class FederationCommercialSubmissionService {
       await requireFederationCapability(
         tx,
         actor,
-        row.input.operation === "adjust-settlement"
-          ? "adjustment.approve"
-          : row.input.operation === "settle-bill" || row.input.operation === "record-refund"
-            ? "settlement.approve"
-            : ["confirm-bill", "record-discount"].includes(row.input.operation)
-              ? "billing.approve"
-              : "agreement.approve",
+        row.input.operation === "record-payment"
+          ? "payment.approve"
+          : row.input.operation === "adjust-settlement"
+            ? "adjustment.approve"
+            : row.input.operation === "settle-bill" || row.input.operation === "record-refund"
+              ? "settlement.approve"
+              : ["confirm-bill", "record-discount"].includes(row.input.operation)
+                ? "billing.approve"
+                : "agreement.approve",
       );
       const [attempt] = await this.latest(tx, id);
       if (

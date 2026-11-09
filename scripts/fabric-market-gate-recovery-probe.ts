@@ -59,7 +59,7 @@ const user = isMarket ? "User2" : "User1";
 const msp = join(dirname(dirname(site.userMsp)), `${user}@a.kq.test`, "msp");
 const keys = await readdir(join(msp, "keystore"));
 assert(keys.length === 1 && keys[0]);
-const runDirectory = join(root, `gate-${kind}-adapter`);
+const runDirectory = join(root, isMarket ? "gate-m" : "gate-c");
 await mkdir(runDirectory, { recursive: true, mode: 0o700 });
 const configFile = join(root, `gate-${kind}-adapter.json`);
 await writeFile(

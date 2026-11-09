@@ -78,7 +78,7 @@ export const FederationKeyInput = z
         ]),
       )
       .min(1)
-      .max(48),
+      .max(49),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

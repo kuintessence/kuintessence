@@ -32,7 +32,14 @@ test("commercial approval exchange binds record kind, digest, distinct parties a
     { autoApprove: true },
   ])
     expect(CommercialApprovalQuerySchema.safeParse({ ...query, ...patch }).success).toBe(false);
-  for (const recordKind of ["bill", "reservation", "settlement", "adjustment", "refund"]) {
+  for (const recordKind of [
+    "bill",
+    "reservation",
+    "settlement",
+    "adjustment",
+    "refund",
+    "payment",
+  ]) {
     expect(
       CommercialApprovalQuerySchema.safeParse({
         ...query,

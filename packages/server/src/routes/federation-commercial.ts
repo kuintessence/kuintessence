@@ -7,6 +7,8 @@ import {
   CommercialBillSchema,
   CommercialDiscountSchema,
   CommercialExecutionApprovalSchema,
+  CommercialPaymentDraftInputSchema,
+  CommercialPaymentSchema,
   CommercialRefundDraftInputSchema,
   CommercialRefundSchema,
   CommercialReservationSchema,
@@ -37,6 +39,7 @@ import type { FederationExecutionTerminalService } from "../federation/execution
 import type { FederationTerminalExchange } from "../federation/execution-terminal-exchange";
 import { FabricClientFailure } from "../federation/fabric-client";
 import type { FederationMarketRequestService } from "../federation/market-requests";
+import type { FederationPaymentService } from "../federation/payment";
 import type { FederationActor } from "../federation/permissions";
 import type { FederationRefundService } from "../federation/refund";
 import {
@@ -76,6 +79,7 @@ export function createFederationCommercialRoutes(
   closing?: FederationClosingAutomation,
   adjustments?: FederationAdjustmentService,
   refunds?: FederationRefundService,
+  payments?: FederationPaymentService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -112,6 +116,73 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (payments) {
+    const path = "/federation/commercial-agreements/:revisionId/payments";
+    r.get(
+      path,
+      kqValidator("param", id),
+      kqValidator(
+        "query",
+        page.extend({ billId: z.uuid().optional(), paymentId: z.uuid().optional() }),
+      ),
+      async (c) => {
+        const { limit, offset, billId, paymentId } = c.req.valid("query");
+        return c.json({
+          data: await payments.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+            billId,
+            paymentId,
+          ),
+        });
+      },
+    );
+    r.post(
+      `${path}/draft`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialPaymentDraftInputSchema),
+      async (c) =>
+        c.json({
+          data: await payments.draft(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("json"),
+          ),
+        }),
+    );
+    r.post(
+      `${path}/approve`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialPaymentSchema),
+      async (c) =>
+        c.json(
+          {
+            data: await payments.approve(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("json"),
+            ),
+          },
+          201,
+        ),
+    );
+    r.post(
+      `${path}/:receiptId/counterparty`,
+      kqValidator("param", id.extend({ receiptId: z.uuid() })),
+      kqValidator("json", z.strictObject({ jws: z.string().min(1).max(524288) })),
+      async (c) =>
+        c.json({
+          data: await payments.attachCounterparty(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").receiptId,
+            c.req.valid("json").jws,
+          ),
+        }),
+    );
+  }
   if (adjustments) {
     const path = "/federation/commercial-agreements/:revisionId/adjustments";
     r.get(

@@ -15,6 +15,7 @@ import {
   CommercialDiscountSchema,
   CommercialGateHashSchema,
   CommercialGateQuerySchema,
+  CommercialPaymentSchema,
   CommercialReceiptQueryResultSchema,
   CommercialReceiptQuerySchema,
   CommercialReceiptSchema,
@@ -176,6 +177,18 @@ export class FabricCommercialAdapter {
         Date.parse(receipt.recordedAt) > Date.parse(receipt.observedAt)
       )
         throw new Error("POLICY_DENIED");
+    } else if (input.operation === "record-payment") {
+      const signed = await this.verifyPair(CommercialPaymentSchema, input.envelope, now),
+        value = signed.payload;
+      if (
+        signed.digest !== input.digest ||
+        value.domainId !== input.domainId ||
+        value.receiptId !== input.recordId ||
+        value.sourceSiteId !== input.envelope.sourceSiteId ||
+        value.targetSiteId !== input.envelope.targetSiteId ||
+        Date.parse(value.issuedAt) > now.getTime() + 60000
+      )
+        throw new Error("POLICY_DENIED");
     } else if (input.operation === "settle-bill") {
       const signed = await this.verifyPair(CommercialSettlementSchema, input.envelope, now),
         value = signed.payload;
@@ -246,6 +259,7 @@ export class FabricCommercialAdapter {
       "settle-bill": "SettleBill",
       "adjust-settlement": "AdjustSettlement",
       "record-refund": "RecordRefund",
+      "record-payment": "RecordPayment",
     } as const;
     const proposal = this.gateway
       .getNetwork(this.config.channel)

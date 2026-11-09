@@ -1,5 +1,5 @@
 import { afterEach, expect, setSystemTime, spyOn, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +26,7 @@ import {
   federationCommercialAttempts,
   federationCommercialBills,
   federationCommercialDiscounts,
+  federationCommercialPayments,
   federationCommercialSettlements,
   federationCommercialSubmissions,
   federationOutbound,
@@ -59,6 +60,7 @@ import {
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialDiscountSchema,
+  CommercialPaymentSchema,
   CommercialSettlementSchema,
   type CommercialUsageCorrectionInput,
   CommercialUsageSchema,
@@ -93,6 +95,7 @@ import { FederationCommercialWorker } from "./commercial-worker";
 import { FabricClientFailure } from "./fabric-client";
 import { createFederationIngress } from "./ingress";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
+import { FederationPaymentService } from "./payment";
 import { FederationPermissionService } from "./permissions";
 import { FederationSettlementService } from "./settlement";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
@@ -6184,4 +6187,452 @@ test("completion release rolls back the capacity change when its audit cannot be
   }
   await f.sourceCapacity.capacity.advanceNext();
   expect(await f.sourceCapacity.capacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+});
+
+async function paymentFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await billingExchangeFixture(mode);
+  await f.approveBoth();
+  cleanup.push(async () => {
+    for (const siteId of [f.source.signing.siteId, f.provider.signing.siteId]) {
+      await db
+        .delete(federationCommercialPayments)
+        .where(eq(federationCommercialPayments.localSiteId, siteId));
+      await db.delete(auditLog).where(eq(auditLog.actor, `payment-exchange:${siteId}`));
+    }
+  });
+  for (const siteId of [f.source.signing.siteId, f.provider.signing.siteId])
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-payment"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, siteId));
+  for (const actor of [f.actor, f.sourceActor])
+    await new FederationPermissionService(db).set(
+      { ...actor, capability: "payment.approve", enabled: true },
+      actor.userId,
+    );
+  const providerPayment = new FederationPaymentService(db, f.provider.signing),
+    sourcePayment = new FederationPaymentService(db, f.source.signing);
+  const input = {
+    receiptId: randomUUID(),
+    paymentId: randomUUID(),
+    billId: f.draft.billId,
+    amount: "7",
+    occurredAt: new Date().toISOString(),
+    evidenceDigest: `sha256:${"a".repeat(64)}`,
+    reason: "External receipt",
+  };
+  const draft = await providerPayment.draft(f.actor, f.revisionId, input);
+  const approve = async (value = draft) => ({
+    source: await sourcePayment.approve(f.sourceActor, f.revisionId, value),
+    provider: await providerPayment.approve(f.actor, f.revisionId, value),
+  });
+  const confirm = async (value = draft) => {
+    const both = await approve(value);
+    await sourcePayment.attachCounterparty(
+      f.sourceActor,
+      f.revisionId,
+      value.receiptId,
+      both.provider.approvalJws,
+    );
+    return providerPayment.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      value.receiptId,
+      both.source.approvalJws,
+    );
+  };
+  const budget = async () =>
+    (
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.terms.budgetDomainId))
+    )[0];
+  return { ...f, input, draft, approve, confirm, budget, providerPayment, sourcePayment };
+}
+
+test("payment direct preserves money and immutable receipts, replaces only the current amount and replays old signatures", async () => {
+  const f = await paymentFixture(),
+    before = await f.budget();
+  const pending = await f.approve();
+  expect(pending.provider).toMatchObject({
+    current: false,
+    confirmedAt: null,
+    counterpartyJws: null,
+  });
+  await f.confirm();
+  const correction = await f.providerPayment.draft(f.actor, f.revisionId, {
+    ...f.input,
+    receiptId: randomUUID(),
+    amount: "0",
+    reason: "Correct erroneous report",
+  });
+  expect(correction.previous).toEqual({
+    receiptId: f.draft.receiptId,
+    digest: pending.provider.digest,
+  });
+  await f.confirm(correction);
+  const replay = await f.providerPayment.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.draft.receiptId,
+    pending.source.approvalJws,
+  );
+  expect(replay.current).toBe(false);
+  expect((await f.providerPayment.approve(f.actor, f.revisionId, f.draft)).approvalJws).toBe(
+    pending.provider.approvalJws,
+  );
+  const history = await f.providerPayment.list(
+    f.actor,
+    f.revisionId,
+    10,
+    0,
+    f.draft.billId,
+    f.draft.paymentId,
+  );
+  expect(history.data).toHaveLength(2);
+  expect(
+    history.data.filter((r) => r.payment.current).map((r) => r.payment.payload.amount),
+  ).toEqual(["0"]);
+  expect(
+    history.data.find((r) => r.payment.receiptId === f.draft.receiptId)?.payment.payload.amount,
+  ).toBe("7");
+  expect(history.data.every((r) => r.ledger === null)).toBe(true);
+  expect(await f.budget()).toEqual(before);
+  expect(
+    await new FederationCommercialSubmissionService(db, f.provider.signing.siteId).advanceNext(),
+  ).toBe(false);
+  await expect(
+    f.providerPayment.approve(f.actor, f.revisionId, { ...correction, receiptId: randomUUID() }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("payment requires independent authority, original bill scope, exact signatures and current payment key purpose", async () => {
+  const f = await paymentFixture();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "payment.approve", enabled: false },
+    f.actor.userId,
+  );
+  await expect(f.providerPayment.approve(f.actor, f.revisionId, f.draft)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "payment.approve", enabled: true },
+    f.actor.userId,
+  );
+  for (const change of [
+    { unit: "other" },
+    { billDigest: `sha256:${"b".repeat(64)}` },
+    { sourceSiteId: randomUUID() },
+    { issuedAt: new Date(Date.now() + 120000).toISOString() },
+  ])
+    await expect(
+      f.providerPayment.approve(f.actor, f.revisionId, { ...f.draft, ...change }),
+    ).rejects.toThrow("POLICY_DENIED");
+  await expect(f.providerPayment.approve(f.sourceActor, f.revisionId, f.draft)).rejects.toThrow(
+    "AGREEMENT_UNAVAILABLE",
+  );
+  const both = await f.approve();
+  await expect(
+    f.providerPayment.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      f.draft.receiptId,
+      both.provider.approvalJws,
+    ),
+  ).rejects.toThrow();
+  await expect(
+    f.providerPayment.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      f.draft.receiptId,
+      await signFederationMessage(
+        CommercialPaymentSchema,
+        { ...f.draft, amount: "8" },
+        f.source.signing,
+      ),
+    ),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'commercial-payment'` })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await expect(f.providerPayment.approve(f.actor, f.revisionId, f.draft)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  await expect(
+    f.providerPayment.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      f.draft.receiptId,
+      both.source.approvalJws,
+    ),
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+});
+
+test("payment concurrent competing statements cannot both be signed and duplicate confirmation creates one head", async () => {
+  const f = await paymentFixture();
+  const results = await Promise.allSettled([
+    f.providerPayment.approve(f.actor, f.revisionId, f.draft),
+    f.providerPayment.approve(f.actor, f.revisionId, {
+      ...f.draft,
+      receiptId: randomUUID(),
+      amount: "8",
+    }),
+  ]);
+  expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+  const saved = results.find((r) => r.status === "fulfilled");
+  if (saved?.status !== "fulfilled") throw new Error("Missing approved receipt");
+  const source = await f.sourcePayment.approve(f.sourceActor, f.revisionId, saved.value.payload);
+  await Promise.all(
+    [1, 2].map(() =>
+      f.providerPayment.attachCounterparty(
+        f.actor,
+        f.revisionId,
+        saved.value.receiptId,
+        source.approvalJws,
+      ),
+    ),
+  );
+  expect((await f.providerPayment.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(1);
+});
+
+test("payment confirmation rolls back head and attestation enqueue when its audit write fails", async () => {
+  const f = await paymentFixture("bilateral_attested"),
+    both = await f.approve(),
+    before = await f.budget();
+  await db.execute(
+    sql`alter table audit_log add constraint test_payment_audit_failure check (action <> 'federation.payment.counterparty')`,
+  );
+  try {
+    await expect(
+      f.providerPayment.attachCounterparty(
+        f.actor,
+        f.revisionId,
+        f.draft.receiptId,
+        both.source.approvalJws,
+      ),
+    ).rejects.toThrow();
+    expect((await f.providerPayment.list(f.actor, f.revisionId, 10, 0)).data[0]).toMatchObject({
+      payment: { current: false, confirmedAt: null, counterpartyJws: null },
+      ledger: null,
+    });
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_payment_audit_failure`);
+  }
+  expect(await f.budget()).toEqual(before);
+  await f.confirm();
+  expect((await f.providerPayment.list(f.actor, f.revisionId, 10, 0)).data[0]).toMatchObject({
+    payment: { current: true },
+    ledger: { state: "pending" },
+  });
+});
+
+test("payment approval exchange joins existing signatures and preserves confirmed facts while attestation is unavailable", async () => {
+  const f = await paymentFixture("bilateral_attested"),
+    before = await f.budget();
+  await f.approve();
+  await f.providerAuto.discover();
+  await f.sourceAuto.discover();
+  for (let i = 0; i < 6; i++) {
+    await f.providerAuto.advanceNext();
+    await f.sourceAuto.advanceNext();
+    await f.due();
+  }
+  const provider = (await f.providerPayment.list(f.actor, f.revisionId, 10, 0)).data[0];
+  const source = (await f.sourcePayment.list(f.sourceActor, f.revisionId, 10, 0)).data[0];
+  expect(provider).toMatchObject({ payment: { current: true }, ledger: { state: "pending" } });
+  expect(source).toMatchObject({ payment: { current: true }, ledger: null });
+  expect(await f.budget()).toEqual(before);
+});
+
+test("payment HTTP keeps reads private, scopes the bill and rejects automation or noninteger amounts", async () => {
+  const f = await paymentFixture();
+  const dependencies: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.provider.signing),
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  dependencies[21] = f.providerPayment;
+  let automation = false;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...dependencies));
+  const path = `/federation/commercial-agreements/${f.revisionId}/payments`;
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const post = (suffix: string, value: unknown) =>
+    app.request(path + suffix, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(value),
+    });
+  expect((await post("/approve", { ...f.draft, amount: "1.5" })).status).toBe(400);
+  expect((await post("/draft", { ...f.input, billId: randomUUID() })).status).toBe(409);
+  expect((await post("/approve", f.draft)).status).toBe(201);
+  automation = true;
+  expect((await app.request(path)).status).toBe(403);
+});
+
+test("payment worker waits for the bill and correction predecessor, resumes one submission and never alters local money", async () => {
+  const f = await paymentFixture("bilateral_attested"),
+    before = await f.budget();
+  const first = await f.confirm();
+  const correction = await f.providerPayment.draft(f.actor, f.revisionId, {
+    ...f.input,
+    receiptId: randomUUID(),
+    amount: "9",
+  });
+  await f.confirm(correction);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(
+      and(
+        eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId),
+        sql`${federationCommercialSubmissions.input}->>'recordId' <> ${correction.receiptId}`,
+      ),
+    );
+  let present = false,
+    prepares = 0,
+    advances = 0;
+  const seen: string[] = [],
+    txid = "a".repeat(64);
+  const client = {
+    receipt: async (query: { recordType: string; recordId: string }) => {
+      seen.push(query.recordType);
+      return {
+        receipt:
+          query.recordType === "bill"
+            ? { recordId: f.draft.billId, digest: f.draft.billDigest }
+            : present
+              ? { recordId: first.receiptId, digest: first.digest }
+              : null,
+      };
+    },
+    prepare: async () => {
+      prepares++;
+      return { transactionId: txid, recovery: "proposal" };
+    },
+    advance: async () => {
+      advances++;
+      return advances === 1
+        ? {
+            state: "prepared" as const,
+            transactionId: txid,
+            recovery: Buffer.from("transaction").toString("base64"),
+          }
+        : { state: "committed" as const, transactionId: txid, blockNumber: "81" };
+    },
+  };
+  const worker = () =>
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId, client);
+  const view = async () =>
+    (await f.providerPayment.list(f.actor, f.revisionId, 10, 0)).data.find(
+      (v) => v.payment.receiptId === correction.receiptId,
+    );
+  await worker().advanceNext();
+  expect(seen).toEqual(["bill", "payment"]);
+  expect(prepares).toBe(0);
+  expect((await view())?.ledger).toMatchObject({ state: "pending", lastError: "LEDGER_PENDING" });
+  present = true;
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ nextAttemptAt: sql`clock_timestamp()` })
+    .where(eq(federationCommercialSubmissions.id, (await view())?.ledger?.id ?? ""));
+  for (let i = 0; i < 3; i++) await worker().advanceNext();
+  expect(prepares).toBe(1);
+  expect(advances).toBe(2);
+  expect((await view())?.ledger).toMatchObject({ state: "committed", lastError: null });
+  expect((await view())?.payment).toMatchObject({ current: true, payload: { amount: "9" } });
+  expect(await f.budget()).toEqual(before);
+});
+
+test("payment coordinated confirmation is immediate with chain evidence pending and does not settle execution funds", async () => {
+  const f = await paymentFixture("bilateral_attested"),
+    before = await f.budget();
+  // Preapproved originals isolate payment behavior; coordinated execution gates have their own real Fabric suite.
+  const contract = CommercialAgreementSchema.parse({
+    ...f.contract,
+    agreement: {
+      ...f.contract.agreement,
+      mode: "ledger_coordinated",
+    },
+  });
+  const agreementDigest = `sha256:${createHash("sha256").update(JSON.stringify(contract)).digest("hex")}`;
+  const [originalBill] = await db
+    .select()
+    .from(federationCommercialBills)
+    .where(
+      and(
+        eq(federationCommercialBills.localSiteId, f.provider.signing.siteId),
+        eq(federationCommercialBills.billId, f.draft.billId),
+      ),
+    );
+  if (!originalBill) throw new Error("Missing approved bill");
+  const bill = CommercialBillSchema.parse({
+    ...originalBill.payload,
+    agreementDigest,
+    request: { ...originalBill.payload.request, mode: "ledger_coordinated" },
+    reservationId: f.reservationId,
+  });
+  const billDigest = `sha256:${createHash("sha256").update(JSON.stringify(bill)).digest("hex")}`;
+  for (const [local, other] of [
+    [f.provider, f.source],
+    [f.source, f.provider],
+  ]) {
+    if (!local || !other) throw new Error("Missing fixture institution");
+    await db
+      .update(federationCommercialAgreements)
+      .set({
+        terms: contract,
+        digest: agreementDigest,
+        approvalJws: await signFederationMessage(
+          CommercialAgreementSchema,
+          contract,
+          local.signing,
+        ),
+        counterpartyJws: await signFederationMessage(
+          CommercialAgreementSchema,
+          contract,
+          other.signing,
+        ),
+      })
+      .where(
+        and(
+          eq(federationCommercialAgreements.localSiteId, local.signing.siteId),
+          eq(federationCommercialAgreements.revisionId, f.revisionId),
+        ),
+      );
+    await db
+      .update(federationCommercialBills)
+      .set({
+        payload: bill,
+        digest: billDigest,
+        approvalJws: await signFederationMessage(CommercialBillSchema, bill, local.signing),
+        counterpartyJws: await signFederationMessage(CommercialBillSchema, bill, other.signing),
+      })
+      .where(
+        and(
+          eq(federationCommercialBills.localSiteId, local.signing.siteId),
+          eq(federationCommercialBills.billId, bill.billId),
+        ),
+      );
+  }
+  const value = await f.providerPayment.draft(f.actor, f.revisionId, f.input);
+  await f.confirm(value);
+  expect((await f.providerPayment.list(f.actor, f.revisionId, 10, 0)).data[0]).toMatchObject({
+    payment: { current: true },
+    ledger: { state: "pending" },
+  });
+  expect(await f.budget()).toEqual(before);
 });
