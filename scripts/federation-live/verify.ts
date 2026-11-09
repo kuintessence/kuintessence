@@ -10,14 +10,17 @@ export async function verifyLiveExecution(
     startOrderer(): Promise<void>;
     onCleanup(fn: () => Promise<void>): void;
   },
+  cases = false,
 ) {
   assert.equal(
     process.env.KQ_FEDERATION_EXECUTION_LAB,
     "1",
     "Explicit disposable local k3s opt-in required",
   );
-  const attested = process.env.KQ_FEDERATION_LAB_MODE === "bilateral_attested";
-  const selection = process.env.KQ_FEDERATION_LAB_SCENARIO ?? (attested ? "success" : "both");
+  const attested = !cases && process.env.KQ_FEDERATION_LAB_MODE === "bilateral_attested";
+  const selection = cases
+    ? "success"
+    : (process.env.KQ_FEDERATION_LAB_SCENARIO ?? (attested ? "success" : "both"));
   const nativeDispute = process.env.KQ_FEDERATION_LAB_DISPUTE === "1";
   assert(!nativeDispute || (!attested && ["success", "workflow"].includes(selection)));
   const network = await Bun.file(join(root, "network.json")).json();
@@ -31,7 +34,7 @@ export async function verifyLiveExecution(
       }),
     ),
   );
-  const adapters = await startAdapters(root, attested);
+  const adapters = await startAdapters(root, attested, cases);
   controls.onCleanup(adapters.cleanup);
   assert(
     attested
@@ -46,9 +49,15 @@ export async function verifyLiveExecution(
     const child = Bun.spawn(["python3", join(import.meta.dir, "run.py")], {
       env: {
         ...process.env,
+        PYTHONDONTWRITEBYTECODE: "1",
         LAB_FABRIC_ROOT: root,
         LAB_FIXTURE_ROOT: root,
-        LAB_MODE: attested ? "bilateral_attested" : "ledger_coordinated",
+        LAB_MODE: cases
+          ? "bilateral_direct"
+          : attested
+            ? "bilateral_attested"
+            : "ledger_coordinated",
+        ...(cases ? { KQ_FEDERATION_LAB_CASES: "1", KQ_FEDERATION_LAB_DISCLOSURE: "1" } : {}),
         LAB_SCENARIO: scenario,
       },
       stdout: "inherit",
@@ -86,15 +95,19 @@ export async function verifyLiveExecution(
             await Bun.write(ack, requestId);
           }
         }
-        const restartRequest = Bun.file(join(root, "execution-commercial-restart"));
-        const restartAck = Bun.file(join(root, "execution-commercial-restart.ack"));
+        const restartRequest = Bun.file(
+          join(root, cases ? "execution-case-restart" : "execution-commercial-restart"),
+        );
+        const restartAck = Bun.file(
+          join(root, cases ? "execution-case-restart.ack" : "execution-commercial-restart.ack"),
+        );
         if (await restartRequest.exists()) {
           const requestId = await restartRequest.text();
           const prior = (await restartAck.exists()) ? await restartAck.json() : null;
           if (prior?.requestId !== requestId)
             await Bun.write(
               restartAck,
-              JSON.stringify({ requestId, restarts: await adapters.restartCommercial() }),
+              JSON.stringify({ requestId, restarts: await adapters.restart() }),
             );
         }
         await Bun.sleep(300);
@@ -102,9 +115,9 @@ export async function verifyLiveExecution(
       assert.equal(
         await child.exited,
         0,
-        `Real ${attested ? "attested" : "coordinated"} execution ${scenario} failed`,
+        `Real ${cases ? "case" : attested ? "attested" : "coordinated"} execution ${scenario} failed`,
       );
-      if (["success", "workflow", "refund", "refund-auto"].includes(scenario)) {
+      if (!cases && ["success", "workflow", "refund", "refund-auto"].includes(scenario)) {
         const checks = nativeDispute
           ? [
               { file: "settlement-proof.ts", records: ["settlement"] },

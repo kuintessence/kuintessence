@@ -45,7 +45,10 @@ if (
   (!process.argv.includes("--gate") || execution)
 )
   throw new Error("Use --preexecution-closure only with --gate (without execution)");
-if (execution && process.env.KQ_FEDERATION_EXECUTION_LAB !== "1")
+if (
+  (execution || process.argv.includes("--cases-live")) &&
+  process.env.KQ_FEDERATION_EXECUTION_LAB !== "1"
+)
   throw new Error("Set KQ_FEDERATION_EXECUTION_LAB=1 for the disposable local k3s lab");
 const toolsRoot = process.env.KQ_FABRIC_TOOLS;
 if (!toolsRoot) throw new Error("Set KQ_FABRIC_TOOLS to a verified Fabric 3.1.5 release directory");
@@ -68,7 +71,8 @@ const environment = {
 const channel = "kq-evidence-test";
 const attested = execution && process.env.KQ_FEDERATION_LAB_MODE === "bilateral_attested";
 const gate = (execution && !attested) || process.argv.includes("--gate");
-const cases = process.argv.includes("--cases");
+const casePlatforms = process.argv.includes("--cases-live");
+const cases = casePlatforms || process.argv.includes("--cases");
 if (
   cases &&
   (execution || gate || process.argv.includes("--database") || process.argv.includes("--market"))
@@ -1020,7 +1024,8 @@ try {
     });
     process.stdin.pause();
   } else {
-    if (cases) await verifyCaseNetwork(root, controls);
+    if (casePlatforms) await verifyLiveExecution(root, controls, true);
+    else if (cases) await verifyCaseNetwork(root, controls);
     else if (execution) await verifyLiveExecution(root, controls);
     else if (gate) await verifyExecutionGateNetwork(root, controls);
     else if (market) await verifyMarketNetwork(root, controls);

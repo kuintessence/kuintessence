@@ -27,7 +27,9 @@ assert not refund_scenario if coordinated else scenario in ("success", "refund",
 assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto", "media", "task-media")
 native_dispute = os.environ.get("KQ_FEDERATION_LAB_DISPUTE") == "1"
 assert not native_dispute or (coordinated and scenario in ("success", "workflow")), "Native dispute requires coordinated success/workflow"
-disclosure_scenario = os.environ.get("KQ_FEDERATION_LAB_DISCLOSURE") == "1"
+case_scenario = os.environ.get("KQ_FEDERATION_LAB_CASES") == "1"
+assert not case_scenario or (mode == "bilateral_direct" and scenario == "success")
+disclosure_scenario = case_scenario or os.environ.get("KQ_FEDERATION_LAB_DISCLOSURE") == "1"
 assert not disclosure_scenario or (mode == "bilateral_direct" and scenario == "success"), "Disclosure lab requires direct success"
 media_scenario = scenario == "media"
 task_media = scenario == "task-media"
@@ -82,14 +84,28 @@ if os.environ.get("KQ_FEDERATION_PG_LIB"):
 env["LAB_SCENARIO"] = scenario
 env["LAB_MODE"] = mode
 env["LAB_FIXTURE_ROOT"] = os.environ["LAB_FIXTURE_ROOT"]
-if coordinated or attested:
+if coordinated or attested or case_scenario:
     env["LAB_FABRIC_ROOT"] = os.environ["LAB_FABRIC_ROOT"]
 
 
+allocated_ports = set()
+
+
 def port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    while True:
+        # Keep lab listeners below this node's ephemeral client port range.
+        candidate = 10000 + secrets.randbelow(20000)
+        if candidate in allocated_ports:
+            continue
+        try:
+            with socket.socket() as s:
+                s.bind(("127.0.0.1", candidate))
+        except OSError as error:
+            if error.errno == errno.EADDRINUSE:
+                continue
+            raise
+        allocated_ports.add(candidate)
+        return candidate
 
 
 pgport, httpport, grpcport, sourcegatewayport = port(), port(), port(), port()
@@ -122,10 +138,14 @@ if media_execution:
     env["LAB_MEDIA_EXECUTION"] = media_execution
 if self_account:
     env["LAB_SELF_ACCOUNT"] = "1"
-networkroot = pathlib.Path(os.environ["LAB_FABRIC_ROOT"]) if coordinated or attested else None
+networkroot = pathlib.Path(os.environ["LAB_FABRIC_ROOT"]) if coordinated or attested or case_scenario else None
 fixture = json.loads((pathlib.Path(env["LAB_FIXTURE_ROOT"]) / "execution-fixture.json").read_text())
 siteb = next(site for site in fixture["sites"] if site["name"] == "B")
 env.update(FEDERATION_SITE_ID=siteb["siteId"], FEDERATION_SIGNING_KEY_ID="batch-1")
+if case_scenario:
+    env["LAB_CASES"] = "1"
+    env["FEDERATION_CASE_TRUST_FILE"] = str(networkroot / "case-trust.json")
+    env["FEDERATION_CASE_SOCKET_PATH"] = str(networkroot / "live-B-case/case.sock")
 if coordinated or attested:
     env["FEDERATION_COMMERCIAL_SOCKET_PATH"] = str(networkroot / "live-B-commercial/commercial.sock")
 if coordinated:
@@ -1093,7 +1113,7 @@ def verify_billing():
             assert statuses["provider"]["record"]["ledger"] is None
         assert statuses["source"]["record"]["ledger"] is None
         (logs / "billing-offline-evidence.json").write_text(json.dumps({"usage": usage, "received": received, **({"slurm": pods} if self_account else {"pods": pods}), "draft": draft, "statuses": statuses}, indent=2) + "\n")
-        print("REAL BILL EXCHANGE PASSED: measured " + ("Slurm sacct runtime" if self_account else "Kubernetes runtime") + " -> signed usage over mTLS -> independent institution policies -> automatic draft, approvals and original signatures; " + ("Orderer stopped" if coordinated or attested else "no ledger configured"), flush=True)
+        print("REAL BILL EXCHANGE PASSED: measured " + ("Slurm sacct runtime" if self_account else "Kubernetes runtime") + " -> signed usage over mTLS -> independent institution policies -> automatic draft, approvals and original signatures; " + ("Orderer stopped" if coordinated or attested else "no commercial ledger configured"), flush=True)
     finally:
         if coordinated:
             orderer("start")
@@ -1207,7 +1227,7 @@ def verify_bilateral_finance():
         replay = read(path + "/settlements/approve", draft, auth)["data"]
         assert replay == statuses[name]["record"]["settlement"]
     if disclosure_scenario:
-        print("REAL DISCLOSURE BILLING READY: measured job, bilateral bill and applied settlement; no ledger configured", flush=True)
+        print("REAL DISCLOSURE BILLING READY: measured job, bilateral bill and applied settlement; no commercial ledger configured", flush=True)
         return
     previous = None
     for number, amount in enumerate(("0", draft["chargedAmount"]), 1):
@@ -1556,7 +1576,7 @@ def verify_refund():
         else:
             raise AssertionError("Capacity worker did not verify the pending original refund ledger")
     (logs / "refund-evidence.json").write_text(json.dumps({"draft": draft, "cancellation": cancelled["cancellation"], "records": records}, indent=2) + "\n")
-    print(("REAL AUTOMATIC REFUND PASSED: " if automatic_refund else "REAL BILATERAL REFUND PASSED: ") + " material waiting -> permanent cancellation over mTLS -> independent approvals -> automatic original signatures; reservation returned exactly once; replay safe; no Workflow or Jobs; " + ("Orderer remains stopped" if attested else "no ledger configured"), flush=True)
+    print(("REAL AUTOMATIC REFUND PASSED: " if automatic_refund else "REAL BILATERAL REFUND PASSED: ") + " material waiting -> permanent cancellation over mTLS -> independent approvals -> automatic original signatures; reservation returned exactly once; replay safe; no Workflow or Jobs; " + ("Orderer remains stopped" if attested else "no commercial ledger configured"), flush=True)
 
 
 def verify_attested_recovery():
@@ -1738,8 +1758,8 @@ def restart_commercial_servers():
         assert process.wait(timeout=15) == -signal.SIGKILL
         crashed.append({"site": name, "oldPid": process.pid, "exitCode": process.returncode})
     request_id = str(uuid.uuid4())
-    acknowledgement = networkroot / "execution-commercial-restart.ack"
-    (networkroot / "execution-commercial-restart").write_text(request_id)
+    acknowledgement = networkroot / ("execution-case-restart.ack" if case_scenario else "execution-commercial-restart.ack")
+    (networkroot / ("execution-case-restart" if case_scenario else "execution-commercial-restart")).write_text(request_id)
     deadline = time.monotonic() + 45
     while True:
         try:
@@ -1750,7 +1770,7 @@ def restart_commercial_servers():
             break
         assert time.monotonic() < deadline, "Commercial Adapter restart timeout"
         time.sleep(0.3)
-    assert len(reply["restarts"]) == 2 and {r["site"] for r in reply["restarts"]} == {"A", "B"}
+    assert len(reply["restarts"]) == (3 if case_scenario else 2) and {r["site"] for r in reply["restarts"]} == ({"A", "B", "R"} if case_scenario else {"A", "B"})
     for row in reply["restarts"]:
         assert row["oldPid"] != row["newPid"] and row["exitCode"] != 0
     command = ["bun", "--no-env-file", "run", "scripts/federation-live/server.ts"]
@@ -2825,6 +2845,8 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     sourcehttp, sourcegrpc = port(), port()
     env["LAB_SOURCE_HTTP"] = f"http://127.0.0.1:{sourcehttp}"
     sourceenv = env.copy()
+    if case_scenario:
+        sourceenv["FEDERATION_CASE_SOCKET_PATH"] = str(networkroot / "live-A-case/case.sock")
     if uses_media:
         sourceenv.update(FEDERATION_MEDIA_WRAPPING_KEY=secrets.token_hex(32), LAB_MEDIA_ROOT_ID=media_source_root)
     if coordinated or attested:
@@ -3174,7 +3196,9 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
                     verify_disclosure(root, logs, env,
                                       lambda path, body=None: sourceapi(path, body, sourcetoken),
                                       lambda path, body=None: api(path, body, token),
-                                      pg, port, inspect_ledgers, provider_gateway)
+                                      pg, port, inspect_ledgers, provider_gateway,
+                                      orderer if case_scenario else None,
+                                      restart_commercial_servers if case_scenario else None)
                 else:
                     verify_payments()
                 if attested:

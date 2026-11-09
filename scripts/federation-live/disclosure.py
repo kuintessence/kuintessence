@@ -5,6 +5,8 @@ import json
 import os
 import pathlib
 import signal
+import shutil
+import socket
 import subprocess
 import time
 import urllib.error
@@ -14,27 +16,37 @@ import uuid
 
 
 def verify_disclosure(root, logs, env, sourceapi, providerapi, pg, port,
-                      inspect_ledgers, provider_gateway):
+                      inspect_ledgers, provider_gateway, orderer=None, restart_parties=None):
     repo = pathlib.Path(__file__).resolve().parents[2]
     config = json.loads((root / "source-init.json").read_text())
-    recipient_id = str(uuid.uuid4())
-    (root / "disclosure-recipient.json").write_text(json.dumps({"siteId": recipient_id}))
-    http_port, grpc_port = port(), port()
+    cases = env.get("LAB_CASES") == "1"
+    network_root = pathlib.Path(env["LAB_FABRIC_ROOT"]) if cases else None
+    member = next(site for site in json.loads((network_root / "network.json").read_text())["sites"] if site["name"] == "R") if cases else None
+    recipient_id = member["siteId"] if member else str(uuid.uuid4())
+    recipient_key = "batch-1" if cases else "recipient-1"
+    (root / "disclosure-recipient.json").write_text(json.dumps({"siteId": recipient_id, "keyId": recipient_key}))
+    http_port, grpc_port, gateway_port = port(), port(), port()
     recipient_url = env["DATABASE_URL"].rsplit("/", 1)[0] + "/kuintessence_unit_federation_recipient"
     settings = {**env, "LAB_RECIPIENT_DATABASE_URL": recipient_url}
+    if cases:
+        settings["LAB_RECIPIENT_ORIGIN"] = f"https://127.0.0.1:{gateway_port}"
     recipient_env = {key: value for key, value in env.items()
                      if not key.startswith(("NETDRIVE_", "DATA_MARKET_", "FEDERATION_"))}
     recipient_env.update(
         DATABASE_URL=recipient_url, SERVER_PORT=str(http_port), SERVER_GRPC_PORT=str(grpc_port),
         JWT_SECRET=os.urandom(32).hex(), NETDRIVE_ENABLED="false", FEDERATION_ENABLED="true",
-        FEDERATION_SITE_ID=recipient_id, FEDERATION_SIGNING_KEY_ID="recipient-1",
+        FEDERATION_SITE_ID=recipient_id, FEDERATION_SIGNING_KEY_ID=recipient_key,
         FEDERATION_SIGNING_KEY_FILE=str(root / "recipient-signing.pem"),
         FEDERATION_SOCKET_PATH=str(root / "recipient/ingress.sock"),
         FEDERATION_CLIENT_CERT_FILE=str(root / "recipient-client.crt"),
         FEDERATION_CLIENT_KEY_FILE=str(root / "recipient-client.key"),
         FEDERATION_CLIENT_CA_FILE=str(root / "ca/ca.crt"),
     )
+    if cases:
+        recipient_env.update(FEDERATION_CASE_TRUST_FILE=str(network_root / "case-trust.json"),
+                             FEDERATION_CASE_SOCKET_PATH=str(network_root / "live-R-case/case.sock"))
     server = None
+    gateway = None
     handle = open(logs / "recipient-server.log", "w")
 
     def run(args, setting=settings):
@@ -98,11 +110,25 @@ def verify_disclosure(root, logs, env, sourceapi, providerapi, pg, port,
     try:
         pg("createdb", "-h", "127.0.0.1", "-p", str(urllib.parse.urlparse(recipient_url).port), "-U", "kq", "kuintessence_unit_federation_recipient")
         run(["bun", "--no-env-file", "run", "packages/db/src/pg/migrate.ts"], recipient_env)
-        run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(root / "recipient-signing.pem")])
+        if cases:
+            shutil.copyfile(member["businessKeyFile"], root / "recipient-signing.pem")
+        else:
+            run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(root / "recipient-signing.pem")])
         run(["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", str(root / "recipient-client.key"), "-out", str(root / "recipient-client.csr"), "-subj", "/CN=evidence-recipient"])
         run(["openssl", "x509", "-req", "-in", str(root / "recipient-client.csr"), "-CA", str(root / "ca/ca.crt"), "-CAkey", str(root / "ca/ca.key"), "-CAcreateserial", "-out", str(root / "recipient-client.crt"), "-days", "1", "-extfile", str(root / "target-client.ext")])
         run(["bun", "--no-env-file", "scripts/federation-live/disclosure.ts", "setup"])
         server = start()
+        if cases:
+            gateway_env = {**recipient_env, "FEDERATION_TLS_HOST": "127.0.0.1", "FEDERATION_TLS_PORT": str(gateway_port),
+                           "FEDERATION_TLS_CA_FILE": str(root / "ca/ca.crt"), "FEDERATION_TLS_CERT_FILE": str(root / "tls.crt"),
+                           "FEDERATION_TLS_KEY_FILE": str(root / "tls.key")}
+            gateway = subprocess.Popen(["node", str(root / "gateway.mjs")], cwd=repo, env=gateway_env, stdout=handle, stderr=handle)
+            for _ in range(40):
+                assert gateway.poll() is None, "R gateway exited"
+                try:
+                    with socket.create_connection(("127.0.0.1", gateway_port), timeout=1): break
+                except OSError: time.sleep(0.2)
+            else: raise AssertionError("R gateway readiness timed out")
         token = request("auth/login", {"email": "recipient-admin@test.invalid", "role": "platform_admin"})["token"]
         api = lambda path, body=None: request(path, body, token)
         inspect_ledgers("disclosure-before")
@@ -167,6 +193,10 @@ def verify_disclosure(root, logs, env, sourceapi, providerapi, pg, port,
                 finally:
                     provider_gateway(True)
                 assert api(read_path)["disclosure"] == material
+            if cases and index == 0:
+                from cases import verify_cases
+                verify_cases(root, logs, settings, sourceapi, providerapi,
+                             lambda: api(read_path), scope, draft, orderer, restart_parties)
             revoke(path + "/disclosures/" + scope["grantId"] + "/revoke", {})
             result["revoked"] = denied(lambda: api(read_path))
             result["reimportRevoked"] = denied(lambda: api(evidence_path + "/disclosures", scope))
@@ -183,6 +213,12 @@ def verify_disclosure(root, logs, env, sourceapi, providerapi, pg, port,
         (logs / "three-server-disclosure.json").write_text(json.dumps({"outcomes": outcomes, "field": "dueAmount", "independentDatabases": 3, "recipientCommercialStateEmpty": True}, indent=2) + "\n")
         print("REAL THREE-SERVER DISCLOSURE PASSED: actual bill field over mTLS, four original signatures, R SIGKILL recovery, offline cache refused, A/B independent revocation, original finances unchanged", flush=True)
     finally:
+        if gateway and gateway.poll() is None:
+            gateway.terminate()
+            try: gateway.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                gateway.kill()
+                gateway.wait(timeout=10)
         if server and server.poll() is None:
             os.killpg(server.pid, signal.SIGTERM)
             try:

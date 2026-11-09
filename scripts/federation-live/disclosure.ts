@@ -30,8 +30,9 @@ const config = z
   })
   .parse(await Bun.file(`${root}/source-init.json`).json());
 const recipient = z
-  .object({ siteId: z.uuid() })
+  .object({ siteId: z.uuid(), keyId: z.string().default("recipient-1") })
   .parse(await Bun.file(`${root}/disclosure-recipient.json`).json());
+const cases = process.env.LAB_CASES === "1";
 const urls = [
   process.env.SOURCE_DATABASE_URL,
   process.env.DATABASE_URL,
@@ -58,6 +59,14 @@ try {
       "commercial-disclosure-read-query",
       "commercial-disclosure-read-authorization",
       "commercial-disclosure-download-query",
+      ...(cases
+        ? ([
+            "case-evidence-publication",
+            "case-publication-revocation",
+            "case-revocation-notice",
+            "case-revocation-receipt",
+          ] as const)
+        : []),
     ] as const;
     const receiverActor = { userId: randomUUID(), orgId: randomUUID() };
     await receiver.insert(orgs).values({ id: receiverActor.orgId, name: "Evidence recipient" });
@@ -77,7 +86,7 @@ try {
       config.target,
       {
         siteId: recipient.siteId,
-        keyId: "recipient-1",
+        keyId: recipient.keyId,
         publicKeyPem: createPublicKey(await Bun.file(`${root}/recipient-signing.pem`).text())
           .export({ type: "spki", format: "pem" })
           .toString(),
@@ -114,7 +123,7 @@ try {
               ? process.env.LAB_SOURCE_ORIGIN
               : peer.siteId === config.target.siteId
                 ? process.env.LAB_TARGET_ORIGIN
-                : "https://recipient.test.invalid";
+                : (process.env.LAB_RECIPIENT_ORIGIN ?? "https://recipient.test.invalid");
           await trust.addSite(
             { id: peer.siteId, name: peer.keyId, endpoint: z.string().parse(endpoint) },
             actor.userId,
@@ -138,11 +147,28 @@ try {
           { certificatePem: await Bun.file(`${root}/recipient-client.crt`).text() },
           actor.userId,
         );
+        if (cases)
+          await new FederationPermissionService(db).set(
+            { ...actor, capability: "case.publish", enabled: true },
+            actor.userId,
+          );
         await new FederationPermissionService(db).set(
           { ...actor, capability: "disclosure.approve", enabled: true },
           actor.userId,
         );
       }
+    }
+    if (cases) {
+      const trust = new FederationTrustRegistry(receiver);
+      for (const [siteId, file] of [
+        [config.source.siteId, "peer.crt"],
+        [config.target.siteId, "target-client.crt"],
+      ] as const)
+        await trust.addCertificate(
+          siteId,
+          { certificatePem: await Bun.file(`${root}/${file}`).text() },
+          receiverActor.userId,
+        );
     }
     await Bun.write(`${root}/recipient-actor.json`, JSON.stringify(receiverActor));
   } else {
