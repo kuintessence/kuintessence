@@ -106,7 +106,10 @@
       "dataset-use-query": "Dataset use query",
       "dataset-use-grant": "Dataset use grant",
       "media-import-receipt": "Media import receipt",
-      "media-import-receipt-ack": "Media import receipt acknowledgement"
+      "media-import-receipt-ack": "Media import receipt acknowledgement",
+      "commercial-payment": "External payment receipt",
+      "commercial-disclosure-policy": "Evidence disclosure policy",
+      "commercial-disclosure": "Evidence disclosure approval"
     },
     "storage": {
       "title": "Input storage reconciliation",

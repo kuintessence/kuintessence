@@ -100,6 +100,11 @@
       "bun": "./src/federation/disclosure.ts",
       "types": "./src/federation/disclosure.ts",
       "default": "./src/federation/disclosure.ts"
+    },
+    "./federation/disclosure-authorization": {
+      "bun": "./src/federation/disclosure-authorization.ts",
+      "types": "./src/federation/disclosure-authorization.ts",
+      "default": "./src/federation/disclosure-authorization.ts"
     }
   },
   "scripts": {

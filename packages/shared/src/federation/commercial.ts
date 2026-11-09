@@ -34,6 +34,8 @@ export const CommercialSigningKindSchema = z.enum([
   "commercial-adjustment",
   "commercial-refund",
   "commercial-payment",
+  "commercial-disclosure-policy",
+  "commercial-disclosure",
   "cancellation-receipt",
 ]);
 
