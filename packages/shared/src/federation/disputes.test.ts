@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { CommercialDisputeDraftSchema, CommercialDisputeSchema } from "./disputes";
+import {
+  CommercialDisputeDraftSchema,
+  CommercialDisputeReceiptSchema,
+  CommercialDisputeSchema,
+} from "./disputes";
 import { federationCapabilitySources } from "./permissions";
 import { FederationKeyInput } from "./trust";
 
@@ -69,4 +73,29 @@ test("case read/open and signing purposes are independent of commercial approval
   expect(federationCapabilitySources("agreement.read")).not.toContain("dispute.read");
   expect(federationCapabilitySources("agreement.read")).not.toContain("dispute.open");
   expect(FederationKeyInput.shape.allowedKinds.element.options).toContain("commercial-dispute");
+});
+
+test("dispute receipt acknowledges an exact case without agreeing a financial head or award", () => {
+  const value = dispute();
+  const receipt = {
+    protocolVersion: 1,
+    kind: "commercial-dispute-receipt",
+    caseId: value.caseId,
+    caseDigest: `sha256:${"d".repeat(64)}`,
+    openingSiteId: value.openingSiteId,
+    receivingSiteId: value.targetSiteId,
+    recordedAt: new Date().toISOString(),
+  };
+  expect(CommercialDisputeReceiptSchema.parse(receipt).caseId).toBe(value.caseId);
+  expect(
+    CommercialDisputeReceiptSchema.safeParse({ ...receipt, receivingSiteId: value.openingSiteId })
+      .success,
+  ).toBe(false);
+  expect(
+    CommercialDisputeReceiptSchema.safeParse({ ...receipt, frozenHead: "approved", award: "10" })
+      .success,
+  ).toBe(false);
+  expect(FederationKeyInput.shape.allowedKinds.element.options).toContain(
+    "commercial-dispute-receipt",
+  );
 });

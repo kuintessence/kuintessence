@@ -9,6 +9,7 @@ import { FederationCancellationReceiver } from "./cancellation";
 import { FederationClosingAutomation } from "./closing-automation";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationDatasetUseResponder } from "./dataset-use-exchange";
+import { FederationDisputeService } from "./disputes";
 import type { FederationDownloadStorage } from "./download-credential";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { FederationTerminalExchange } from "./execution-terminal-exchange";
@@ -64,6 +65,19 @@ export function createFederationIngress(
       "Federation admission failed; inspect database and signing-key availability",
     );
     return c.json({ error: { code: "TEMPORARILY_UNAVAILABLE", incidentId } }, 503);
+  });
+  const disputes = new FederationDisputeService(db, signingKey);
+  r.post("/federation/v1/disputes", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const receipt = await disputes.receive(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(receipt, 200, {
+      "content-type": "application/jose",
+      "cache-control": "no-store",
+    });
   });
   r.post("/federation/v1/delegations", async (c) => {
     if (c.req.header("content-type") !== "application/jose")

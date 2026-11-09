@@ -110,7 +110,8 @@
       "commercial-payment": "External payment receipt",
       "commercial-disclosure-policy": "Evidence disclosure policy",
       "commercial-disclosure": "Evidence disclosure approval",
-      "commercial-dispute": "Dispute opening"
+      "commercial-dispute": "Dispute opening",
+      "commercial-dispute-receipt": "Dispute receipt"
     },
     "storage": {
       "title": "Input storage reconciliation",

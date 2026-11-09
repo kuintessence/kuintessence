@@ -1247,6 +1247,13 @@
       "when": 1794221062255,
       "tag": "0177_careless_bloodstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 178,
+      "version": "7",
+      "when": 1794222295506,
+      "tag": "0178_curvy_surge",
+      "breakpoints": true
     }
   ]
 }

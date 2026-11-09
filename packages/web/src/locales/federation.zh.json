@@ -110,7 +110,8 @@
       "commercial-payment": "外部付款凭证",
       "commercial-disclosure-policy": "证据披露政策",
       "commercial-disclosure": "证据披露批准",
-      "commercial-dispute": "争议开案"
+      "commercial-dispute": "争议开案",
+      "commercial-dispute-receipt": "争议接收回执"
     },
     "storage": {
       "title": "输入存储核对",

@@ -141,6 +141,7 @@ export const federationSigningKeys = pgTable(
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
           | "commercial-dispute"
+          | "commercial-dispute-receipt"
           | "terminal-query"
           | "terminal-chunk"
           | "terminal-delivery"
@@ -1379,9 +1380,9 @@ export const federationDisputes = pgTable(
     payload: jsonb("payload").$type<CommercialDispute>().notNull(),
     digest: varchar("digest", { length: 71 }).notNull(),
     openingJws: text("opening_jws").notNull(),
-    openedBy: uuid("opened_by")
-      .notNull()
-      .references(() => users.id),
+    openedBy: uuid("opened_by").references(() => users.id),
+    acceptanceJws: text("acceptance_jws"),
+    receivedAt: timestamp("received_at", { withTimezone: true }),
     state: varchar("state", { length: 32 })
       .$type<CommercialDisputeState>()
       .notNull()
@@ -1412,6 +1413,13 @@ export const federationDisputes = pgTable(
       AND ${t.payload}->>'sourceSiteId' <> ${t.payload}->>'targetSiteId'
       AND ${t.localSiteId}::text IN (${t.payload}->>'sourceSiteId', ${t.payload}->>'targetSiteId')
       AND ${t.payload}->>'openingSiteId' IN (${t.payload}->>'sourceSiteId', ${t.payload}->>'targetSiteId')
+    ) IS TRUE`,
+    ),
+    check(
+      "federation_dispute_origin",
+      sql`(
+      (${t.payload}->>'openingSiteId' = ${t.localSiteId}::text AND ${t.openedBy} IS NOT NULL AND ${t.acceptanceJws} IS NULL AND ${t.receivedAt} IS NULL)
+      OR (${t.payload}->>'openingSiteId' <> ${t.localSiteId}::text AND ${t.openedBy} IS NULL AND ${t.acceptanceJws} IS NOT NULL AND ${t.receivedAt} IS NOT NULL)
     ) IS TRUE`,
     ),
     check(

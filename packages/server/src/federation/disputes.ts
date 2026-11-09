@@ -27,6 +27,7 @@ import {
 import {
   type CommercialDispute,
   CommercialDisputeDraftSchema,
+  CommercialDisputeReceiptSchema,
   CommercialDisputeSchema,
 } from "@kuintessence/shared/federation/disputes";
 import { and, desc, eq, sql } from "drizzle-orm";
@@ -94,7 +95,7 @@ export class FederationDisputeService {
   }
   private async bill(
     tx: PgTransaction,
-    actor: FederationActor,
+    actor: Pick<FederationActor, "orgId">,
     revisionId: string,
     billId: string,
     other: string,
@@ -110,14 +111,14 @@ export class FederationDisputeService {
           eq(bills.billId, billId),
         ),
       );
-    if (!row) throw new FederationError("POLICY_DENIED");
+    if (!row) throw new FederationError("DATA_WAITING");
     const value = await this.stored(tx, CommercialBillSchema, row, other);
     if (value.billId !== billId) throw new FederationError("OPERATION_CONFLICT");
     return { value, digest: row.digest };
   }
   private async subject(
     tx: PgTransaction,
-    actor: FederationActor,
+    actor: Pick<FederationActor, "orgId">,
     revisionId: string,
     subject: Subject,
     other: string,
@@ -173,7 +174,7 @@ export class FederationDisputeService {
                   ),
                 )
             )[0];
-      if (!row) throw new FederationError("POLICY_DENIED");
+      if (!row) throw new FederationError("DATA_WAITING");
       const signed = await this.verify(tx, CommercialUsageSchema, row.jws, targetSiteId),
         v = signed.payload;
       if (
@@ -245,7 +246,8 @@ export class FederationDisputeService {
           )[0];
       }
     })();
-    if (!row || row.localOrgId !== actor.orgId || row.agreementRevisionId !== revisionId)
+    if (!row) throw new FederationError("DATA_WAITING");
+    if (row.localOrgId !== actor.orgId || row.agreementRevisionId !== revisionId)
       throw new FederationError("POLICY_DENIED");
     if (row.digest !== subject.recordDigest) throw new FederationError("OPERATION_CONFLICT");
     const v = await this.stored(tx, FinancialOriginal, row, other);
@@ -287,7 +289,7 @@ export class FederationDisputeService {
   }
   private async originals(
     tx: PgTransaction,
-    actor: FederationActor,
+    actor: Pick<FederationActor, "orgId">,
     revisionId: string,
     subject: Subject,
   ) {
@@ -329,6 +331,26 @@ export class FederationDisputeService {
       ).toISOString(),
     };
   }
+  private check(
+    value: CommercialDispute,
+    original: Awaited<ReturnType<FederationDisputeService["originals"]>>,
+    openingSiteId: string,
+  ) {
+    const { issuedAt, ...scope } = original;
+    if (
+      value.openingSiteId !== openingSiteId ||
+      Date.parse(value.issuedAt) > Date.now() ||
+      Date.parse(value.issuedAt) < Date.parse(issuedAt) ||
+      value.domainId !== scope.domainId ||
+      value.agreementRevisionId !== scope.agreementRevisionId ||
+      value.agreementDigest !== scope.agreementDigest ||
+      value.sourceSiteId !== scope.sourceSiteId ||
+      value.targetSiteId !== scope.targetSiteId ||
+      value.taskId !== scope.taskId ||
+      value.attempt !== scope.attempt
+    )
+      throw new FederationError("POLICY_DENIED");
+  }
   async draft(
     actor: FederationActor,
     revisionId: string,
@@ -356,20 +378,7 @@ export class FederationDisputeService {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "dispute.open");
       const original = await this.originals(tx, actor, revisionId, value.subject);
-      const { issuedAt, ...scope } = original;
-      if (
-        value.openingSiteId !== this.signing.siteId ||
-        Date.parse(value.issuedAt) > Date.now() ||
-        Date.parse(value.issuedAt) < Date.parse(issuedAt) ||
-        value.domainId !== scope.domainId ||
-        value.agreementRevisionId !== scope.agreementRevisionId ||
-        value.agreementDigest !== scope.agreementDigest ||
-        value.sourceSiteId !== scope.sourceSiteId ||
-        value.targetSiteId !== scope.targetSiteId ||
-        value.taskId !== scope.taskId ||
-        value.attempt !== scope.attempt
-      )
-        throw new FederationError("POLICY_DENIED");
+      this.check(value, original, this.signing.siteId);
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`dispute-case:${this.signing.siteId}:${value.caseId}`}, 0))`,
       );
@@ -419,6 +428,117 @@ export class FederationDisputeService {
         diff: { after: { digest: saved.digest, subject: value.subject, state: saved.state } },
       });
       return saved;
+    });
+  }
+  /** Called only by the private, certificate-authenticated institutional listener. */
+  async receive(jws: string, fingerprint: string) {
+    const sender = await this.trust.resolvePeer(
+      fingerprint,
+      federationMessageKeyId(jws),
+      new Date(),
+    );
+    const initial = await verifyFederationMessage(CommercialDisputeSchema, jws, sender, new Date());
+    if (
+      initial.payload.openingSiteId !== sender.siteId ||
+      sender.siteId === this.signing.siteId ||
+      ![initial.payload.sourceSiteId, initial.payload.targetSiteId].includes(this.signing.siteId)
+    )
+      throw new FederationError("UNTRUSTED_IDENTITY");
+    return this.db.transaction(async (tx) => {
+      for (const siteId of [sender.siteId, this.signing.siteId].sort()) {
+        if (siteId === sender.siteId)
+          await this.trust.assertPeer(tx, fingerprint, siteId, sender.keyId, new Date());
+        else await this.trust.assertKey(tx, siteId, this.signing.keyId, new Date());
+      }
+      const signed = await this.verify(tx, CommercialDisputeSchema, jws, sender.siteId),
+        value = signed.payload;
+      const [contract] = await tx
+        .select()
+        .from(contracts)
+        .where(
+          and(
+            eq(contracts.localSiteId, this.signing.siteId),
+            eq(contracts.revisionId, value.agreementRevisionId),
+          ),
+        );
+      if (!contract) throw new FederationError("AGREEMENT_UNAVAILABLE");
+      const original = await this.originals(
+        tx,
+        { orgId: contract.localOrgId },
+        value.agreementRevisionId,
+        value.subject,
+      );
+      this.check(value, original, sender.siteId);
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`dispute-case:${this.signing.siteId}:${value.caseId}`}, 0))`,
+      );
+      const [prior] = await tx
+        .select()
+        .from(cases)
+        .where(and(eq(cases.localSiteId, this.signing.siteId), eq(cases.caseId, value.caseId)));
+      if (prior) {
+        if (
+          prior.digest !== signed.digest ||
+          prior.openingJws !== jws ||
+          prior.localOrgId !== contract.localOrgId ||
+          !prior.acceptanceJws
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        const receipt = await this.verify(
+          tx,
+          CommercialDisputeReceiptSchema,
+          prior.acceptanceJws,
+          this.signing.siteId,
+        );
+        if (
+          receipt.payload.caseId !== value.caseId ||
+          receipt.payload.caseDigest !== signed.digest ||
+          receipt.payload.openingSiteId !== sender.siteId ||
+          receipt.payload.receivingSiteId !== this.signing.siteId
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        return prior.acceptanceJws;
+      }
+      await lockFederationDisputeTask(tx, this.signing.siteId, value);
+      const receipt = CommercialDisputeReceiptSchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-dispute-receipt",
+        caseId: value.caseId,
+        caseDigest: signed.digest,
+        openingSiteId: sender.siteId,
+        receivingSiteId: this.signing.siteId,
+        recordedAt: new Date().toISOString(),
+      });
+      const acceptanceJws = await signFederationMessage(
+        CommercialDisputeReceiptSchema,
+        receipt,
+        this.signing,
+      );
+      await this.verify(tx, CommercialDisputeReceiptSchema, acceptanceJws, this.signing.siteId);
+      await tx.insert(cases).values({
+        localSiteId: this.signing.siteId,
+        localOrgId: contract.localOrgId,
+        caseId: value.caseId,
+        agreementRevisionId: value.agreementRevisionId,
+        taskId: value.taskId,
+        attempt: value.attempt,
+        payload: value,
+        digest: signed.digest,
+        openingJws: jws,
+        openedBy: null,
+        acceptanceJws,
+        receivedAt: new Date(receipt.recordedAt),
+      });
+      await tx.insert(auditLog).values({
+        actor: `dispute-inbox:${sender.siteId}`,
+        orgId: contract.localOrgId,
+        action: "federation.dispute.receive",
+        target: value.caseId,
+        diff: {
+          after: { digest: signed.digest, openingSiteId: sender.siteId, state: "FREEZE_PENDING" },
+        },
+      });
+      return acceptanceJws;
     });
   }
   async list(actor: FederationActor, revisionId: string, limit = 50, offset = 0, caseId?: string) {
