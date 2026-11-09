@@ -402,6 +402,70 @@ export class FederationMediaImportOperations {
       return { ...s, grant, authorizedUntil: Date.parse(grant.expiresAt) };
     };
   }
+  async uploadForImport(input: {
+    kind: "task-input" | "task-result";
+    importId: string;
+    claimId?: string;
+    agentId?: string;
+    refresh?: boolean;
+  }) {
+    const column =
+      input.kind === "task-input" ? claims.taskInputImportId : claims.taskResultImportId;
+    const [selected] = await this.db
+      .select({
+        claim: claims,
+        operation: operations,
+        authorization: authorizations,
+        package: packages,
+      })
+      .from(claims)
+      .innerJoin(operations, eq(operations.authorizationId, claims.authorizationId))
+      .innerJoin(authorizations, eq(authorizations.authorizationId, claims.authorizationId))
+      .innerJoin(
+        packages,
+        and(
+          eq(packages.localSiteId, authorizations.localSiteId),
+          eq(packages.packageId, authorizations.packageId),
+        ),
+      )
+      .where(
+        and(
+          eq(column, input.importId),
+          isNull(claims.releasedAt),
+          eq(authorizations.localSiteId, this.siteId),
+        ),
+      );
+    if (!selected) throw new FederationError("DATA_WAITING");
+    if (
+      (input.claimId !== undefined && selected.claim.id !== input.claimId) ||
+      (input.agentId !== undefined && selected.authorization.agentId !== input.agentId)
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    const agentId = selected.authorization.agentId;
+    const binding = FederationMediaImportBindingSchema.parse({
+      authorizationId: selected.claim.authorizationId,
+      generation: selected.claim.generation,
+      packageId: selected.package.packageId,
+      manifestDigest: selected.package.manifestDigest,
+    });
+    if (input.refresh) {
+      const recipientKey = selected.operation.latestGrant?.query.recipientKey;
+      if (!recipientKey) throw new FederationError("DATA_WAITING");
+      // Only the public wrapping key is reused; the private-import receipt remains immutable.
+      await this.grant(agentId, { ...binding, purpose: "task-upload", recipientKey });
+    }
+    const authorize = await this.uploadAuthorization(agentId, binding);
+    return async (tx: PgTransaction) => {
+      const scope = await authorize(tx);
+      const importId =
+        input.kind === "task-input"
+          ? scope.claim?.taskInputImportId
+          : scope.claim?.taskResultImportId;
+      if (!scope.claim || scope.claim.id !== selected.claim.id || importId !== input.importId)
+        throw new FederationError("OPERATION_CONFLICT");
+      return { claimId: scope.claim.id, authorizedUntil: scope.authorizedUntil };
+    };
+  }
   private async assertSourceGrant(
     tx: PgTransaction,
     grant: ReturnType<typeof FederationMediaImportGrantSchema.parse>,

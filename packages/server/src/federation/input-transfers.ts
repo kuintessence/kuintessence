@@ -29,6 +29,7 @@ import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
 import { readFederationExecutionStopState } from "./cancellation-state";
 import { type FederationInputImports, finishCancelledInputImport } from "./input-imports";
+import type { FederationMediaImportOperations } from "./media-import-operations";
 import type { FederationPreparationService } from "./preparation";
 import { lockFederationTransferAgent, lockFederationTransferSlot } from "./transfer-agent";
 
@@ -38,7 +39,10 @@ type Attempt = typeof federationInputAttempts.$inferSelect;
 type Rows = { parent: Parent; transfer: Transfer; attempt: Attempt };
 const activeStates = ["preparing", "copying", "assembling", "verifying"];
 
-type Scope = Awaited<ReturnType<FederationPreparationService["materialScope"]>>;
+type Scope = Awaited<ReturnType<FederationPreparationService["materialScope"]>> & {
+  importId: string;
+  media?: Awaited<ReturnType<FederationMediaImportOperations["uploadForImport"]>>;
+};
 
 /** Receiver-owned input attempts; all storage I/O must happen outside these transactions. */
 export class FederationInputTransfers {
@@ -47,6 +51,7 @@ export class FederationInputTransfers {
     private readonly preparation: FederationPreparationService,
     private readonly imports: FederationInputImports,
     private readonly clock: () => Date = () => new Date(),
+    private readonly media?: FederationMediaImportOperations,
   ) {}
 
   async pending(onlineAgentIds: readonly string[], limit = 20) {
@@ -111,13 +116,12 @@ export class FederationInputTransfers {
     });
   }
 
-  async begin(transferId: string, agentId: string) {
-    const scope = await this.scope(transferId);
+  async begin(transferId: string, agentId: string, mediaClaimId?: string) {
+    const scope = await this.scope(transferId, agentId, mediaClaimId);
     return this.db.transaction(async (tx) => {
-      await this.imports.lock(tx, scope);
+      const media = await this.lockScope(tx, scope);
       const { parent, transfer } = await this.lockTransfer(tx, transferId);
-      if (parent.delivery !== "network") throw new FederationError("POLICY_DENIED");
-      if (parent.reservationId !== scope.saved.reservation.id)
+      if (parent.id !== scope.importId || parent.reservationId !== scope.saved.reservation.id)
         throw new FederationError("OPERATION_CONFLICT");
       await this.agent(tx, agentId, parent);
       await lockFederationTransferAgent(tx, agentId, this.clock());
@@ -133,16 +137,19 @@ export class FederationInputTransfers {
         )
         .limit(1);
       if (prior) throw new FederationError("OPERATION_CONFLICT");
+      if (media && media.authorizedUntil <= this.clock().getTime())
+        throw new FederationError("AUTHORIZATION_EXPIRED");
       const generation = crypto.randomUUID();
       const [attempt] = await tx
         .insert(federationInputAttempts)
         .values({
           generation,
+          mediaClaimId: media?.claimId,
           transferId,
           agentId,
           state: "preparing",
           storageKey: `federation-inputs/${parent.id}/${generation}`,
-          leaseUntil: this.lease(parent),
+          leaseUntil: this.lease(parent, media?.authorizedUntil),
           createdAt: this.clock(),
           updatedAt: this.clock(),
         })
@@ -170,13 +177,9 @@ export class FederationInputTransfers {
 
   /** One durable permit per generation, before issuing CreateMultipartUpload. Never re-issue after a crash. */
   async preparing(agentId: string, generation: string) {
-    const scope = await this.attemptScope(generation);
+    const scope = await this.attemptScope(generation, agentId);
     return this.db.transaction(async (tx) => {
-      await this.imports.lock(tx, scope);
-      const rows = await this.lockAttempt(tx, generation);
-      if (rows.parent.reservationId !== scope.saved.reservation.id)
-        throw new FederationError("OPERATION_CONFLICT");
-      await this.assertAttempt(tx, rows, agentId, "preparing");
+      const rows = await this.authorizedAttempt(tx, scope, generation, agentId, ["preparing"]);
       if (rows.attempt.allocationStartedAt) throw new FederationError("OPERATION_CONFLICT");
       await tx
         .update(federationInputAttempts)
@@ -233,17 +236,21 @@ export class FederationInputTransfers {
   /** Lets a remote grant reader hold transfer and trust locks together for its final disclosure check. */
   async copyAuthorization(agentId: string, input: FederationInputCopyBinding, renew = false) {
     const binding = FederationInputCopyBindingSchema.parse(input);
-    const scope = await this.attemptScope(binding.generation);
+    const scope = await this.attemptScope(binding.generation, agentId);
     const authorize = async (tx: PgTransaction) => {
-      await this.imports.lock(tx, scope);
-      const rows = await this.lockAttempt(tx, binding.generation);
-      if (rows.parent.reservationId !== scope.saved.reservation.id)
-        throw new FederationError("OPERATION_CONFLICT");
-      if (renew) await lockFederationTransferSlot(tx, agentId);
-      await this.assertAttempt(tx, rows, agentId, "copying");
+      const rows = await this.authorizedAttempt(
+        tx,
+        scope,
+        binding.generation,
+        agentId,
+        ["copying"],
+        renew,
+      );
       if (federationMaterialDigest(this.binding(rows, scope)) !== federationMaterialDigest(binding))
         throw new FederationError("OPERATION_CONFLICT");
-      const leaseUntil = renew ? this.lease(rows.parent) : rows.attempt.leaseUntil;
+      const leaseUntil = renew
+        ? this.lease(rows.parent, rows.authorizedUntil)
+        : rows.attempt.leaseUntil;
       if (renew)
         await tx
           .update(federationInputAttempts)
@@ -262,7 +269,7 @@ export class FederationInputTransfers {
 
   async copied(agentId: string, input: z.infer<typeof FederationInputCopiedSchema>) {
     const receipt = FederationInputCopiedSchema.parse(input);
-    const scope = await this.attemptScope(receipt.binding.generation);
+    const scope = await this.attemptScope(receipt.binding.generation, agentId);
     return this.db.transaction(async (tx) => {
       const rows = await this.authorizedAttempt(tx, scope, receipt.binding.generation, agentId, [
         "copying",
@@ -302,7 +309,7 @@ export class FederationInputTransfers {
   }
 
   async assembling(agentId: string, generation: string) {
-    const scope = await this.attemptScope(generation);
+    const scope = await this.attemptScope(generation, agentId);
     return this.db.transaction(async (tx) => {
       const rows = await this.authorizedAttempt(tx, scope, generation, agentId, [
         "assembling",
@@ -315,7 +322,7 @@ export class FederationInputTransfers {
   /** One CompleteMultipart request per generation; retries inspect its object instead of reissuing it. */
   async startCompletion(agentId: string, generation: string) {
     // Unobserved outcomes need explicit operator reconciliation before cleanup can release quota.
-    const scope = await this.attemptScope(generation);
+    const scope = await this.attemptScope(generation, agentId);
     return this.db.transaction(async (tx) => {
       const rows = await this.authorizedAttempt(tx, scope, generation, agentId, [
         "assembling",
@@ -361,7 +368,7 @@ export class FederationInputTransfers {
   }
 
   async assembled(agentId: string, generation: string) {
-    const scope = await this.attemptScope(generation);
+    const scope = await this.attemptScope(generation, agentId, true);
     return this.db.transaction(async (tx) => {
       const rows = await this.authorizedAttempt(
         tx,
@@ -375,7 +382,7 @@ export class FederationInputTransfers {
       const task = this.verificationTask(rows, scope);
       if (rows.attempt.state === "verifying")
         return { task, leaseExpiresAt: rows.attempt.leaseUntil.toISOString() };
-      const leaseUntil = this.lease(rows.parent);
+      const leaseUntil = this.lease(rows.parent, rows.authorizedUntil);
       await tx
         .update(federationInputAttempts)
         .set({ state: "verifying", leaseUntil, updatedAt: this.clock() })
@@ -391,7 +398,7 @@ export class FederationInputTransfers {
 
   async verification(agentId: string, input: FederationInputVerifyTask, renew = false) {
     const task = FederationInputVerifyTaskSchema.parse(input);
-    const scope = await this.attemptScope(task.binding.generation);
+    const scope = await this.attemptScope(task.binding.generation, agentId, renew);
     return this.db.transaction(async (tx) => {
       const rows = await this.authorizedAttempt(
         tx,
@@ -406,7 +413,9 @@ export class FederationInputTransfers {
         federationMaterialDigest(task)
       )
         throw new FederationError("OPERATION_CONFLICT");
-      const leaseUntil = renew ? this.lease(rows.parent) : rows.attempt.leaseUntil;
+      const leaseUntil = renew
+        ? this.lease(rows.parent, rows.authorizedUntil)
+        : rows.attempt.leaseUntil;
       if (renew)
         await tx
           .update(federationInputAttempts)
@@ -418,7 +427,7 @@ export class FederationInputTransfers {
 
   async verified(agentId: string, input: FederationInputVerified) {
     const receipt = FederationInputVerifiedSchema.parse(input);
-    const scope = await this.attemptScope(receipt.binding.generation);
+    const scope = await this.attemptScope(receipt.binding.generation, agentId, true);
     await this.db.transaction(async (tx) => {
       const rows = await this.authorizedAttempt(tx, scope, receipt.binding.generation, agentId, [
         "verifying",
@@ -503,16 +512,37 @@ export class FederationInputTransfers {
     states: readonly string[],
     renewing = false,
   ) {
-    await this.imports.lock(tx, scope);
+    const media = await this.lockScope(tx, scope);
     const rows = await this.lockAttempt(tx, generation);
     if (
+      rows.parent.id !== scope.importId ||
+      rows.attempt.mediaClaimId !== (media?.claimId ?? null) ||
       rows.parent.reservationId !== scope.saved.reservation.id ||
       !states.includes(rows.attempt.state)
     )
       throw new FederationError("OPERATION_CONFLICT");
     if (renewing) await lockFederationTransferSlot(tx, agentId);
     await this.assertAttempt(tx, rows, agentId, rows.attempt.state);
-    return rows;
+    if (media && media.authorizedUntil <= this.clock().getTime())
+      throw new FederationError("AUTHORIZATION_EXPIRED");
+    return {
+      ...rows,
+      attempt: {
+        ...rows.attempt,
+        leaseUntil: new Date(
+          Math.min(rows.attempt.leaseUntil.getTime(), media?.authorizedUntil ?? Infinity),
+        ),
+      },
+      authorizedUntil: media?.authorizedUntil,
+    };
+  }
+
+  private async lockScope(tx: PgTransaction, scope: Scope) {
+    const media = await scope.media?.(tx);
+    const parent = await this.imports.lock(tx, scope);
+    if (parent.id !== scope.importId || (parent.delivery === "media") !== !!media)
+      throw new FederationError("OPERATION_CONFLICT");
+    return media;
   }
 
   private verificationTask(rows: Rows, scope: Scope) {
@@ -882,7 +912,12 @@ export class FederationInputTransfers {
     });
   }
 
-  private async scope(transferId: string) {
+  private async scope(
+    transferId: string,
+    agentId: string,
+    mediaClaimId?: string | null,
+    refresh = false,
+  ): Promise<Scope> {
     const [row] = await this.db
       .select({ parent: federationInputImports })
       .from(federationInputTransfers)
@@ -893,15 +928,32 @@ export class FederationInputTransfers {
       .where(eq(federationInputTransfers.id, transferId));
     if (!row || row.parent.localSiteId !== this.preparation.localSiteId)
       throw new FederationError("POLICY_DENIED");
-    return this.preparation.materialScope(row.parent.reservationId);
+    if (row.parent.delivery === "media" ? !mediaClaimId || !this.media : !!mediaClaimId)
+      throw new FederationError("POLICY_DENIED");
+    const media =
+      row.parent.delivery === "media" && this.media
+        ? await this.media.uploadForImport({
+            kind: "task-input",
+            importId: row.parent.id,
+            claimId: mediaClaimId ?? undefined,
+            agentId,
+            refresh,
+          })
+        : undefined;
+    return {
+      ...(await this.preparation.materialScope(row.parent.reservationId)),
+      importId: row.parent.id,
+      media,
+    };
   }
-  private async attemptScope(generation: string) {
+  private async attemptScope(generation: string, agentId: string, refresh = false) {
     const [attempt] = await this.db
       .select()
       .from(federationInputAttempts)
       .where(eq(federationInputAttempts.generation, generation));
     if (!attempt) throw new FederationError("POLICY_DENIED");
-    return this.scope(attempt.transferId);
+    if (attempt.agentId !== agentId) throw new FederationError("OPERATION_CONFLICT");
+    return this.scope(attempt.transferId, agentId, attempt.mediaClaimId, refresh);
   }
   private async lockTransfer(tx: PgTransaction, transferId: string) {
     const [lookup] = await tx
@@ -955,8 +1007,10 @@ export class FederationInputTransfers {
       throw new FederationError("OPERATION_CONFLICT");
     await this.agent(tx, agentId, rows.parent);
   }
-  private lease(parent: Parent) {
-    return new Date(Math.min(this.clock().getTime() + 120_000, parent.expiresAt.getTime()));
+  private lease(parent: Parent, authorizedUntil = Infinity) {
+    return new Date(
+      Math.min(this.clock().getTime() + 120_000, parent.expiresAt.getTime(), authorizedUntil),
+    );
   }
   private binding(rows: Rows, scope: Scope): FederationInputCopyBinding {
     return {

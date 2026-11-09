@@ -1205,6 +1205,13 @@
       "when": 1794193332464,
       "tag": "0171_quiet_hemingway",
       "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1794194650483,
+      "tag": "0172_new_stark_industries",
+      "breakpoints": true
     }
   ]
 }

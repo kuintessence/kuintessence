@@ -41,7 +41,8 @@ export class FederationInputReader {
     const current = await this.transfers.copyAuthorization(agentId, input);
     const { scope, binding } = current;
     const { request, saved } = scope;
-    if (request.recipientSiteId !== this.signing.siteId) throw new FederationError("POLICY_DENIED");
+    if (request.inputDelivery === "media" || request.recipientSiteId !== this.signing.siteId)
+      throw new FederationError("POLICY_DENIED");
     const origins = new Set(
       allowedOrigins.map((value) => new URL(FederationDataOriginSchema.parse(value)).origin),
     );

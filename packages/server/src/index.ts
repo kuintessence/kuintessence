@@ -2514,7 +2514,13 @@ protectedApi.route(
 
 const federationInputTransfers =
   federationPreparation && federationInputImports
-    ? new FederationInputTransfers(db, federationPreparation, federationInputImports)
+    ? new FederationInputTransfers(
+        db,
+        federationPreparation,
+        federationInputImports,
+        undefined,
+        federationMediaImportOperations,
+      )
     : undefined;
 const federationInputReader =
   federationInputTransfers && federationSigningKey && federationSender
@@ -2564,6 +2570,8 @@ const federationInputWorker =
           federationInputImports,
           federationMaterialExchange,
           federationInputStorageBackend,
+          undefined,
+          federationMediaImportOperations,
         ),
       )
     : undefined;

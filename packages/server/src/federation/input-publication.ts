@@ -14,6 +14,7 @@ import type { MinioBackend } from "../storage/minio-client";
 import { federationMaterialDigest } from "./assets";
 import type { FederationInputImports } from "./input-imports";
 import type { FederationMaterialExchange } from "./material-exchange";
+import type { FederationMediaImportOperations } from "./media-import-operations";
 import type { FederationPreparationService } from "./preparation";
 
 type Inventory = typeof federationInputImports.$inferSelect;
@@ -27,14 +28,34 @@ export class FederationInputPublication {
     private readonly exchange: FederationMaterialExchange,
     private readonly storage: Pick<MinioBackend, "head">,
     private readonly clock: () => Date = () => new Date(),
+    private readonly media?: FederationMediaImportOperations,
   ) {}
 
   async publish(reservationId: string) {
     const scope = await this.preparation.materialScope(reservationId);
+    const [selected] = await this.db
+      .select()
+      .from(federationInputImports)
+      .where(
+        and(
+          eq(federationInputImports.reservationId, reservationId),
+          eq(federationInputImports.localSiteId, this.preparation.localSiteId),
+        ),
+      );
+    if (!selected) throw new FederationError("DATA_WAITING");
+    const media =
+      selected.delivery === "media" && selected.state !== "available"
+        ? await this.mediaAuthorization(selected.id)
+        : undefined;
     const snapshot = await this.db.transaction(async (tx) => {
+      const permit = await media?.(tx);
       const inventory = await this.imports.lock(tx, scope);
       if (inventory.state === "available") return { inventory, files: null };
-      return { inventory, files: await this.files(tx, inventory) };
+      return {
+        inventory,
+        files: await this.files(tx, inventory, permit?.claimId),
+        claimId: permit?.claimId,
+      };
     });
     if (snapshot.files === null) return this.summary(snapshot.inventory);
     for (const file of snapshot.files) {
@@ -61,7 +82,11 @@ export class FederationInputPublication {
       }
     }
     const received = await this.exchange.inputFiles(reservationId);
+    const finalMedia = media
+      ? await this.mediaAuthorization(snapshot.inventory.id, snapshot.claimId)
+      : undefined;
     return this.db.transaction(async (tx) => {
+      const permit = await finalMedia?.(tx);
       await received.authorize(tx);
       const inventory = await this.imports.lock(tx, received.scope);
       if (inventory.state === "available") return this.summary(inventory);
@@ -71,7 +96,7 @@ export class FederationInputPublication {
         federationMaterialDigest(received.manifest) !== inventory.manifestDigest
       )
         throw new FederationError("OPERATION_CONFLICT");
-      const files = await this.files(tx, inventory);
+      const files = await this.files(tx, inventory, permit?.claimId);
       if (federationMaterialDigest(files) !== federationMaterialDigest(snapshot.files))
         throw new FederationError("OPERATION_CONFLICT");
       await lockCloudWrites(tx, inventory.ownerId);
@@ -129,8 +154,10 @@ export class FederationInputPublication {
           .set({ state: "available", updatedAt: this.clock() })
           .where(eq(federationInputTransfers.importId, inventory.id));
       }
-      // A lock wait must not outlive the source's signed disclosure window.
+      // Policy rows remain locked; do not let storage/quota work outlive either signed window.
       await received.authorize(tx);
+      if (permit && this.clock().getTime() >= permit.authorizedUntil)
+        throw new FederationError("AUTHORIZATION_EXPIRED");
       const [published] = await tx
         .update(federationInputImports)
         .set({
@@ -168,7 +195,14 @@ export class FederationInputPublication {
     };
   }
 
-  private async files(tx: PgTransaction, inventory: Inventory) {
+  private async mediaAuthorization(importId: string, claimId?: string) {
+    if (!this.media) throw new FederationError("POLICY_DENIED");
+    return this.media.uploadForImport({ kind: "task-input", importId, claimId, refresh: true });
+  }
+
+  private async files(tx: PgTransaction, inventory: Inventory, claimId?: string) {
+    if ((inventory.delivery === "media") !== !!claimId)
+      throw new FederationError("OPERATION_CONFLICT");
     const members = await tx
       .select()
       .from(federationInputTransfers)
@@ -193,6 +227,7 @@ export class FederationInputPublication {
       if (member.state !== "verified" || !attempt?.verifiedAt)
         throw new FederationError("DATA_WAITING");
       if (
+        attempt.mediaClaimId !== (claimId ?? null) ||
         !attempt.destinationVersionId ||
         attempt.destinationVersionId === "null" ||
         !attempt.destinationEtag ||

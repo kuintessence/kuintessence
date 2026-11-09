@@ -56,6 +56,7 @@ import type { MarketRequest } from "@kuintessence/shared/federation/market-reque
 import type { FederationTerminalProposal } from "@kuintessence/shared/federation/terminal-proposal";
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
   check,
@@ -837,6 +838,9 @@ export const federationInputAttempts = pgTable(
   "federation_input_attempts",
   {
     generation: uuid("generation").primaryKey(),
+    mediaClaimId: uuid("media_claim_id").references(
+      (): AnyPgColumn => federationTaskMediaClaims.id,
+    ),
     transferId: uuid("transfer_id")
       .notNull()
       .references(() => federationInputTransfers.id),
@@ -1034,6 +1038,9 @@ export const federationResultAttempts = pgTable(
   "federation_result_attempts",
   {
     generation: uuid("generation").primaryKey(),
+    mediaClaimId: uuid("media_claim_id").references(
+      (): AnyPgColumn => federationTaskMediaClaims.id,
+    ),
     transferId: uuid("transfer_id")
       .notNull()
       .references(() => federationResultTransfers.id),

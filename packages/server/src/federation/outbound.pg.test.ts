@@ -192,6 +192,16 @@ afterEach(async () => {
         b.signing.siteId,
       ]),
     );
+  const mediaClaimIds = db
+    .select({ id: federationTaskMediaClaims.id })
+    .from(federationTaskMediaClaims)
+    .where(inArray(federationTaskMediaClaims.authorizationId, mediaAuthorizationIds));
+  await db
+    .delete(federationInputAttempts)
+    .where(inArray(federationInputAttempts.mediaClaimId, mediaClaimIds));
+  await db
+    .delete(federationResultAttempts)
+    .where(inArray(federationResultAttempts.mediaClaimId, mediaClaimIds));
   await db
     .delete(federationTaskMediaClaims)
     .where(inArray(federationTaskMediaClaims.authorizationId, mediaAuthorizationIds));
@@ -9371,6 +9381,8 @@ async function taskTargetFixture(
     importId,
     ensure,
     inputs,
+    preparation,
+    exchange,
     resultImports,
     targets,
     service,
@@ -10417,6 +10429,412 @@ taskMediaTest.each(["task-input", "task-result"] as const)(
           .update(federationSigningKeys)
           .set({ validUntil: original.validUntil })
           .where(condition);
+      await t.source.release();
+    }
+  },
+);
+
+async function taskInputUploadFixture() {
+  const t = await verifiedTaskMedia("task-input");
+  if (!t.importId) throw new Error("Expected original input import");
+  const [parent] = await db
+    .select()
+    .from(federationInputImports)
+    .where(eq(federationInputImports.id, t.importId));
+  const members = await db
+    .select()
+    .from(federationInputTransfers)
+    .where(eq(federationInputTransfers.importId, t.importId));
+  const member = members[0];
+  if (!parent || !member) throw new Error("Expected input members");
+  const ready = await t.operations().uploadTask(t.approval.agentId, t.approval.authorizationId);
+  const service = () =>
+    new FederationInputTransfers(db, t.preparation, t.inputs, clock, t.operations());
+  const transfers = service();
+  const agentId = t.approval.agentId;
+  const start = async (member = members[0]) => {
+    if (!member) throw new Error("Expected member");
+    await t.uploadGrant();
+    return transfers.begin(member.id, agentId, ready.claimId);
+  };
+  const copy = async (member = members[0]) => {
+    if (!member) throw new Error("Expected member");
+    const started = await start(member);
+    const generation = started.attempt.generation;
+    await transfers.preparing(agentId, generation);
+    await transfers.allocated(generation, "task-media-upload");
+    const receipt = {
+      binding: started.task.binding,
+      sizeBytes: member.sizeBytes,
+      sha256: member.sha256,
+      parts: [{ partNumber: 1, etag: "task-media-part" }],
+    };
+    await transfers.copied(agentId, receipt);
+    await transfers.startCompletion(agentId, generation);
+    await transfers.completed(generation, {
+      versionId: "task-media-version",
+      etag: "task-media-object",
+    });
+    const verification = await transfers.assembled(agentId, generation);
+    return { ...started, receipt, verification };
+  };
+  const verify = async () => {
+    let first: Awaited<ReturnType<typeof copy>> | undefined;
+    for (const member of members) {
+      const copied = await copy(member);
+      await transfers.verified(agentId, {
+        ...copied.verification.task,
+        sizeBytes: member.sizeBytes,
+        sha256: member.sha256,
+      });
+      first ??= copied;
+    }
+    if (!first) throw new Error("Expected verification");
+    return first;
+  };
+  const stat = {
+    size: member.sizeBytes,
+    versionId: "task-media-version",
+    etag: "task-media-object",
+    lastModified: clock(),
+    contentType: "application/octet-stream",
+  };
+  const publisher = (
+    head = async (storageKey: string) => {
+      const [attempt] = await db
+        .select()
+        .from(federationInputAttempts)
+        .where(eq(federationInputAttempts.storageKey, storageKey));
+      const member = members.find((member) => member.id === attempt?.transferId);
+      if (!member) throw new Error("Expected object member");
+      return { ...stat, size: member.sizeBytes };
+    },
+  ) =>
+    new FederationInputPublication(
+      db,
+      t.preparation,
+      t.inputs,
+      t.exchange,
+      { head },
+      clock,
+      t.operations(),
+    );
+  const files = () =>
+    db
+      .select()
+      .from(netdriveFiles)
+      .where(
+        inArray(
+          netdriveFiles.id,
+          members.map((member) => member.id),
+        ),
+      );
+  const revoke = () =>
+    t
+      .service()
+      .revoke(
+        t.local,
+        t.exported.packageId,
+        { reason: "Stop task upload" },
+        t.approval.authorizationId,
+      );
+  return {
+    ...t,
+    parent,
+    members,
+    member,
+    agentId,
+    claimId: ready.claimId,
+    transfers,
+    transferService: service,
+    start,
+    copy,
+    verify,
+    publisher,
+    files,
+    stat,
+    revoke,
+  };
+}
+
+taskMediaTest(
+  "task input upload pins the claim and preserves the original quota through verification and publication",
+  async () => {
+    const t = await taskInputUploadFixture();
+    try {
+      await expect(t.transfers.begin(t.member.id, t.agentId)).rejects.toThrow("POLICY_DENIED");
+      await expect(t.transfers.begin(t.member.id, t.agentId, crypto.randomUUID())).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+      await expect(t.transfers.begin(t.member.id, "foreign-agent", t.claimId)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+      await expect(t.transfers.begin(t.member.id, t.agentId, t.claimId)).rejects.toThrow(
+        "DATA_WAITING",
+      );
+      expect(await t.transfers.pending([t.agentId])).toHaveLength(0);
+      const copied = await t.verify();
+      expect(copied.attempt.mediaClaimId).toBe(t.claimId);
+      expect(copied.attempt.leaseUntil.getTime()).toBeLessThanOrEqual(
+        (await t.read()).authorizedUntil,
+      );
+      const [before] = await db
+        .select()
+        .from(federationInputImports)
+        .where(eq(federationInputImports.id, t.parent.id));
+      expect(before).toMatchObject({
+        reservedBytes: t.parent.reservedBytes,
+        state: "transferring",
+      });
+      expect(await t.files()).toHaveLength(0);
+      const result = await t.publisher().publish(t.parent.reservationId);
+      expect(result.state).toBe("available");
+      expect(
+        await t
+          .publisher(async () => {
+            throw new Error("No repeated storage check");
+          })
+          .publish(t.parent.reservationId),
+      ).toEqual(result);
+      const published = await t.files();
+      expect(published).toHaveLength(t.members.length);
+      for (const member of t.members)
+        expect(published.find((file) => file.id === member.id)).toMatchObject({
+          size: member.sizeBytes,
+          sha256: member.sha256,
+          storageVersionId: "task-media-version",
+        });
+      const [after] = await db
+        .select()
+        .from(federationInputImports)
+        .where(eq(federationInputImports.id, t.parent.id));
+      expect(after).toMatchObject({ reservedBytes: 0, state: "available" });
+      const [privateOperation] = await db
+        .select()
+        .from(federationMediaImportOperations)
+        .where(eq(federationMediaImportOperations.authorizationId, t.approval.authorizationId));
+      expect(privateOperation).toEqual(t.original);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["preparing", "copying", "assembling", "verifying"] as const)(
+  "task input upload rejects revoked authority at %s while retaining late storage outcomes for cleanup",
+  async (stage) => {
+    const t = await taskInputUploadFixture();
+    try {
+      const verified = stage === "verifying" ? await t.copy() : undefined;
+      const started = verified ?? (await t.start());
+      const generation = started.attempt.generation;
+      const copied = {
+        binding: started.task.binding,
+        sizeBytes: t.member.sizeBytes,
+        sha256: t.member.sha256,
+        parts: [{ partNumber: 1, etag: "part" }],
+      };
+      if (stage === "copying" || stage === "assembling") {
+        await t.transfers.preparing(t.agentId, generation);
+        await t.transfers.allocated(generation, "allocated-before-revoke");
+      }
+      if (stage === "assembling") {
+        await t.transfers.copied(t.agentId, copied);
+        await t.transfers.startCompletion(t.agentId, generation);
+      }
+      await t.revoke();
+      if (stage === "preparing")
+        await expect(t.transferService().preparing(t.agentId, generation)).rejects.toThrow(
+          "POLICY_DENIED",
+        );
+      if (stage === "copying") {
+        await expect(
+          t.transferService().assertCopyLease(t.agentId, started.task.binding, true),
+        ).rejects.toThrow("POLICY_DENIED");
+        await expect(t.transfers.copied(t.agentId, copied)).rejects.toThrow("POLICY_DENIED");
+      }
+      if (stage === "assembling") {
+        await expect(t.transfers.assembling(t.agentId, generation)).rejects.toThrow(
+          "POLICY_DENIED",
+        );
+        await expect(t.transfers.startCompletion(t.agentId, generation)).rejects.toThrow(
+          "POLICY_DENIED",
+        );
+        await t.transfers.completed(generation, { versionId: "late-version", etag: "late-etag" });
+        await expect(t.transfers.assembled(t.agentId, generation)).rejects.toThrow("POLICY_DENIED");
+      }
+      if (verified) {
+        await expect(
+          t.transfers.verification(t.agentId, verified.verification.task, true),
+        ).rejects.toThrow("POLICY_DENIED");
+        await expect(
+          t.transfers.verified(t.agentId, {
+            ...verified.verification.task,
+            sizeBytes: t.member.sizeBytes,
+            sha256: t.member.sha256,
+          }),
+        ).rejects.toThrow("POLICY_DENIED");
+      }
+      await t.transfers.failed(t.agentId, generation);
+      time = new Date(started.attempt.leaseUntil.getTime() + 1);
+      const cleanup = await t.transferService().beginCleanup(generation);
+      await t.transferService().storageCleaned(generation, cleanup.token);
+      const [attempt] = await db
+        .select()
+        .from(federationInputAttempts)
+        .where(eq(federationInputAttempts.generation, generation));
+      expect(attempt).toMatchObject({ state: "cleaned", mediaClaimId: t.claimId });
+      if (stage === "assembling") expect(attempt?.destinationVersionId).toBe("late-version");
+      expect(await t.files()).toHaveLength(0);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task input upload retains an allocation arriving after revocation and denies dispatch",
+  async () => {
+    const t = await taskInputUploadFixture();
+    try {
+      await t.uploadGrant();
+      const storage = new FederationInputStorage(
+        t.transfers,
+        {
+          ...unassembledInputStorage,
+          createMultipartUpload: async () => {
+            await t.revoke();
+            return { uploadId: "late-task-upload" };
+          },
+          cleanupFederationInput: async () => {},
+          presignUploadPart: async () => {
+            throw new Error("No grant expected");
+          },
+        },
+        { clock },
+      );
+      await expect(storage.allocate(t.member.id, t.agentId, t.claimId)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+      const [attempt] = await db
+        .select()
+        .from(federationInputAttempts)
+        .where(eq(federationInputAttempts.transferId, t.member.id));
+      expect(attempt).toMatchObject({
+        uploadId: "late-task-upload",
+        state: "cleanup_pending",
+        mediaClaimId: t.claimId,
+      });
+      if (!attempt) throw new Error("Expected attempt");
+      time = new Date(attempt.leaseUntil.getTime() + 1);
+      expect(await storage.cleanup()).toBe(1);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["source", "receiver", "claim"] as const)(
+  "task input upload publication rejects %s changes during object checks",
+  async (change) => {
+    const t = await taskInputUploadFixture();
+    try {
+      const copied = await t.verify();
+      const publisher = t.publisher(async () => {
+        if (change === "source")
+          await t.source
+            .service()
+            .revoke(t.source.local, t.exported.packageId, { reason: "Revoke during HEAD" });
+        if (change === "receiver") await t.revoke();
+        if (change === "claim")
+          await db
+            .update(federationInputAttempts)
+            .set({ mediaClaimId: null })
+            .where(eq(federationInputAttempts.generation, copied.attempt.generation));
+        return t.stat;
+      });
+      await expect(publisher.publish(t.parent.reservationId)).rejects.toThrow();
+      expect(await t.files()).toHaveLength(0);
+      const [parent] = await db
+        .select()
+        .from(federationInputImports)
+        .where(eq(federationInputImports.id, t.parent.id));
+      expect(parent).toMatchObject({
+        reservedBytes: t.parent.reservedBytes,
+        state: "transferring",
+      });
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task input upload rechecks a pinned claim and caps a renewed lease without reviving an expired attempt",
+  async () => {
+    const t = await taskInputUploadFixture();
+    try {
+      const started = await t.start();
+      await t.transfers.preparing(t.agentId, started.attempt.generation);
+      await t.transfers.allocated(started.attempt.generation, "task-upload");
+      const authorize = await t.transfers.copyAuthorization(t.agentId, started.task.binding, true);
+      await db
+        .update(federationInputAttempts)
+        .set({ mediaClaimId: null })
+        .where(eq(federationInputAttempts.generation, started.attempt.generation));
+      await expect(db.transaction(authorize.authorize)).rejects.toThrow("OPERATION_CONFLICT");
+      await db
+        .update(federationInputAttempts)
+        .set({ mediaClaimId: t.claimId })
+        .where(eq(federationInputAttempts.generation, started.attempt.generation));
+      time = new Date(clock().getTime() + 5_000);
+      await t.uploadGrant();
+      const renewed = await t
+        .transferService()
+        .assertCopyLease(t.agentId, started.task.binding, true);
+      expect(renewed.leaseUntil.getTime()).toBe((await t.read()).authorizedUntil);
+      expect(renewed.leaseUntil.getTime()).toBeGreaterThan(started.attempt.leaseUntil.getTime());
+      time = new Date(renewed.leaseUntil.getTime() + 1);
+      await t.uploadGrant();
+      await expect(
+        t.transferService().assertCopyLease(t.agentId, started.task.binding, true),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "task input upload verification refreshes source consent and rejects remote revocation",
+  async () => {
+    const t = await taskInputUploadFixture();
+    try {
+      const copied = await t.copy();
+      const before = (await t.read()).grant.queryDigest;
+      await expect(
+        t.transfers.verification("foreign-agent", copied.verification.task, true),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+      expect((await t.read()).grant.queryDigest).toBe(before);
+      time = new Date(clock().getTime() + 5_000);
+      const renewed = await t.transfers.verification(t.agentId, copied.verification.task, true);
+      expect((await t.read()).grant.queryDigest).not.toBe(before);
+      expect(renewed.leaseUntil.getTime()).toBe((await t.read()).authorizedUntil);
+      await t.source
+        .service()
+        .revoke(t.source.local, t.exported.packageId, { reason: "Stop verification" });
+      await expect(
+        t.transfers.verification(t.agentId, copied.verification.task, true),
+      ).rejects.toThrow();
+      await expect(
+        t.transfers.verified(t.agentId, {
+          ...copied.verification.task,
+          sizeBytes: t.member.sizeBytes,
+          sha256: t.member.sha256,
+        }),
+      ).rejects.toThrow();
+      expect(await t.files()).toHaveLength(0);
+    } finally {
       await t.source.release();
     }
   },

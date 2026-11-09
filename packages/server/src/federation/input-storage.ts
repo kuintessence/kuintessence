@@ -61,8 +61,8 @@ export class FederationInputStorage {
       throw new Error("FEDERATION_INPUT_STORAGE_UNAVAILABLE");
   }
 
-  async allocate(transferId: string, agentId: string) {
-    const started = await this.transfers.begin(transferId, agentId);
+  async allocate(transferId: string, agentId: string, mediaClaimId?: string) {
+    const started = await this.transfers.begin(transferId, agentId, mediaClaimId);
     const generation = started.attempt.generation;
     try {
       const permit = await this.transfers.preparing(agentId, generation);
