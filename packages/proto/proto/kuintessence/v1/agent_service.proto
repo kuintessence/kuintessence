@@ -168,6 +168,7 @@ message ServerMessage {
     FederationMediaExportLeaseResponse federation_media_export_lease_response = 32;
     FederationMediaImport federation_media_import = 33;
     FederationMediaImportGrantResponse federation_media_import_grant_response = 34;
+    FederationMediaUpload federation_media_upload = 35;
   }
 }
 
@@ -258,6 +259,7 @@ message RegisterRequest {
   bool federation_media_import_v1 = 37;
   bool federation_sandbox_local_input_v1 = 38;
   bool federation_media_object_export_v1 = 39;
+  bool federation_media_upload_v1 = 40;
 }
 
 message RegisterResponse {
@@ -282,6 +284,7 @@ message RegisterResponse {
   bool federation_media_export_v1_supported = 12;
   bool federation_media_import_v1_supported = 13;
   bool federation_media_object_export_v1_supported = 14;
+  bool federation_media_upload_v1_supported = 15;
 }
 
 // tags 7–10 carry extended monitoring + installed-software
@@ -1177,4 +1180,10 @@ message FederationMediaImportGrantResponse {
 }
 message FederationMediaImportReport {
   string report_json = 1; // Private verification result or failure, at most 8 KiB.
+}
+
+// Upload one verified private task member; source and destination generations remain distinct.
+message FederationMediaUpload {
+  string task_json = 1; // Shared FederationMediaUploadTask, at most 512 KiB.
+  int64 lease_expires_at_unix_ms = 2;
 }

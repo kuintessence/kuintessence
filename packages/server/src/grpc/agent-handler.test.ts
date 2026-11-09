@@ -703,6 +703,90 @@ describe("agent-handler", () => {
     );
   });
 
+  test.each([
+    "input",
+    "result",
+    "legacy",
+    "no-import",
+    "no-source",
+    "no-target",
+    "no-verify",
+    "unverified",
+  ] as const)("media upload RPC negotiates complete capabilities: %s", async (mode) => {
+    const { router, handlers } = createMockRouter();
+    const dispatcher = new AgentDispatcher();
+    const done = Promise.withResolvers<void>();
+    registerAgentHandler(router, {
+      agentManager,
+      jobService,
+      logger: testLogger,
+      dispatcher,
+      federationMediaImports:
+        mode === "no-source"
+          ? undefined
+          : {
+              grant: async (_id, request) =>
+                create(FederationMediaImportGrantResponseSchema, { requestId: request.requestId }),
+              report: async () => {},
+            },
+      federationInputs:
+        mode === "no-target" || mode === "result"
+          ? undefined
+          : {
+              grant: async (_id, request) =>
+                create(FederationInputGrantResponseSchema, { requestId: request.requestId }),
+              report: async () => {},
+            },
+      federationResults:
+        mode === "result"
+          ? {
+              grant: async (_id, request) =>
+                create(FederationResultGrantResponseSchema, { requestId: request.requestId }),
+              report: async () => {},
+            }
+          : undefined,
+    });
+    await agentManager.register({
+      agentId: "grpc-test-agent-1",
+      siteName: "test",
+      schedulerType: "slurm",
+      schedulerVersion: "test",
+    });
+    const frame = registerFrame();
+    if (frame.payload.case !== "register") throw new Error("Missing registration");
+    Object.assign(frame.payload.value, {
+      federationMediaImportV1: mode !== "no-import",
+      federationMediaUploadV1: mode !== "legacy",
+      federationInputCopyV1: mode !== "result",
+      federationInputVerifyV1: mode !== "result" && mode !== "no-verify",
+      federationResultCopyV1: mode === "result",
+      federationResultVerifyV1: mode === "result",
+    });
+    async function* messages() {
+      yield frame;
+      await done.promise;
+    }
+    const connect = handlers.connect;
+    if (!connect) throw new Error("Missing handler");
+    await runWithMtlsContext(
+      {
+        agentId: mode === "unverified" ? null : "grpc-test-agent-1",
+        fingerprintSha256: mode === "unverified" ? null : "verified",
+      },
+      async () => {
+        for await (const raw of connect(messages())) {
+          const message = raw as ServerMessage;
+          if (message.payload.case === "registerResponse") {
+            expect(message.payload.value.federationMediaUploadV1Supported).toBe(
+              mode === "input" || mode === "result",
+            );
+            done.resolve();
+          }
+        }
+      },
+    );
+  });
+
   for (const installation of [false, true]) {
     test.each([
       "grant",

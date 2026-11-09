@@ -433,6 +433,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         federationMediaExportV1: false,
         federationMediaObjectExportV1: false,
         federationMediaImportV1: false,
+        federationMediaUploadV1: false,
         federationInputCopyV1: false,
         federationInputVerifyV1: false,
         federationResultCopyV1: false,
@@ -565,6 +566,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.federationMediaObjectExportV1 =
                 reg.federationMediaExportV1 && reg.federationMediaObjectExportV1;
               channel.federationMediaImportV1 = reg.federationMediaImportV1;
+              channel.federationMediaUploadV1 =
+                reg.federationMediaImportV1 && reg.federationMediaUploadV1;
               channel.federationInputCopyV1 = reg.federationInputCopyV1;
               channel.federationInputVerifyV1 = reg.federationInputVerifyV1;
               channel.federationResultCopyV1 = reg.federationResultCopyV1;
@@ -607,6 +610,16 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                         !!deps.federationMediaExports &&
                         reg.federationMediaExportV1 &&
                         !!channel.verifiedCertFingerprint,
+                      federationMediaUploadV1Supported:
+                        !!deps.federationMediaImports &&
+                        channel.federationMediaUploadV1 &&
+                        !!channel.verifiedCertFingerprint &&
+                        ((!!deps.federationInputs &&
+                          reg.federationInputCopyV1 &&
+                          reg.federationInputVerifyV1) ||
+                          (!!deps.federationResults &&
+                            reg.federationResultCopyV1 &&
+                            reg.federationResultVerifyV1)),
                       federationMediaImportV1Supported:
                         !!deps.federationMediaImports &&
                         reg.federationMediaImportV1 &&

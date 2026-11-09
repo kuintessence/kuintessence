@@ -64,7 +64,7 @@ export async function mediaImportFixture() {
     authorizationId: task.authorizationId,
     manifestDigest: task.manifestDigest,
   };
-  const authorize = async () => {
+  const authorizeForKey = async (requestKey = recipientKey) => {
     const query = FederationMediaKeyQuerySchema.parse({
       protocolVersion: 1,
       kind: "media-key-query",
@@ -77,7 +77,7 @@ export async function mediaImportFixture() {
       authorizationId: task.authorizationId,
       agentId: task.agentId,
       managedRootId: task.managedRootId,
-      recipientKey,
+      recipientKey: requestKey,
       maxBytes: task.maxBytes,
       authorizationExpiresAt: task.expiresAt,
       issuedAt: new Date().toISOString(),
@@ -101,7 +101,7 @@ export async function mediaImportFixture() {
       expiresAt: query.expiresAt,
       encryptedIdentity: await encryptFederationMediaIdentity(
         f.identity.identity,
-        recipientKey,
+        requestKey,
         queryDigest,
       ),
     });
@@ -127,11 +127,12 @@ export async function mediaImportFixture() {
     privateKey: keys.privateKey,
     recipientKey,
     signal: f.options.signal,
-    authorize,
+    authorize: () => authorizeForKey(),
   };
   return {
     ...f,
     options,
+    authorizeForKey,
     cipher,
     parent: join(data, ".federation-media"),
     target: join(data, ".federation-media", task.packageId),

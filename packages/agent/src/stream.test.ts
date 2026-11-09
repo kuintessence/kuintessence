@@ -18,6 +18,7 @@ import {
   DispatchJobSchema,
   FederationExecutionDecision,
   FederationExecutionResponseSchema,
+  FederationMediaUploadSchema,
   FileTransferCancelSchema,
   HeartbeatAckSchema,
   JobLogsRequestSchema,
@@ -63,7 +64,9 @@ import {
   type SchedulerAdapter,
   type Spawner,
 } from "./adapters/base";
+import { AgentDataRoots } from "./data-market/local-data-security";
 import type { JobStatusReport } from "./embedded/job-executor";
+import { mediaUploadClientTask } from "./federation/media-upload-client-test-fixture";
 import { ActiveRemoteJobs } from "./queue/active-remote-jobs";
 import { federationDispatchReceipt } from "./queue/federation-dispatch";
 import { InboundAcks, type PersistInboundInput } from "./queue/inbound-acks";
@@ -10012,3 +10015,94 @@ test.each([
     await running;
   }
 });
+
+for (const kind of ["task-input", "task-result"] as const) {
+  test.each([
+    false,
+    true,
+  ])(`media upload stream ${kind} gates commands on negotiated support (%s)`, async (supported) => {
+    const task = mediaUploadClientTask(kind);
+    const command = create(ServerMessageSchema, {
+      payload: {
+        case: "federationMediaUpload",
+        value: create(FederationMediaUploadSchema, {
+          taskJson: JSON.stringify(task),
+          leaseExpiresAtUnixMs: BigInt(Date.now() + 30_000),
+        }),
+      },
+    });
+    const accepted = create(ServerMessageSchema, {
+      payload: {
+        case: "registerResponse",
+        value: create(RegisterResponseSchema, {
+          accepted: true,
+          federationMediaImportV1Supported: true,
+          federationMediaUploadV1Supported: supported,
+          federationInputCopyV1Supported: kind === "task-input",
+          federationResultCopyV1Supported: kind === "task-result",
+        }),
+      },
+    });
+    const { client, sent } = makeMockClient([accepted, command], 1000);
+    const transfer = {
+      stagingRoot: "/unused/transfer",
+      maxStagingBytes: 1024,
+      allowedSourceOrigins: ["https://source.test.invalid"],
+      allowedDestinationOrigins: ["https://target.test.invalid"],
+    };
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter(),
+      agentId: task.media.agentId,
+      siteName: "test",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      reconnectBackoffMs: 1000,
+      fileTransferMaxRetries: 3,
+      fileTransferRetryBackoffSec: 0,
+      federationMediaImport: {
+        agentId: task.media.agentId,
+        mediaDirectory: "/unused/media",
+        ageDirectory: "/unused/age",
+        roots: new AgentDataRoots({
+          datasetRoot: "/unused/data",
+          jobWorkRoot: "/unused/jobs",
+          managedRoots: {},
+        }),
+      },
+      ...(kind === "task-input"
+        ? { federationInputCopy: transfer }
+        : { federationResultCopy: transfer }),
+    });
+    activeStreams.push(stream);
+    const running = stream.start();
+    const reports = () =>
+      (sent as AgentMessage[]).filter(
+        (message) =>
+          message.payload.case === "federationInputCopyReport" ||
+          message.payload.case === "federationResultCopyReport",
+      );
+    try {
+      await waitForCondition(() => sent.length > 0);
+      await settle(20);
+      expect(sent[0]).toMatchObject({
+        payload: { case: "register", value: { federationMediaUploadV1: true } },
+      });
+      if (supported) {
+        await waitForCondition(() => reports().length > 0, 2000);
+        expect(reports()).toMatchObject([
+          {
+            payload: {
+              case:
+                kind === "task-input" ? "federationInputCopyReport" : "federationResultCopyReport",
+              value: { generation: task.target.binding.generation, failed: true },
+            },
+          },
+        ]);
+      } else expect(reports()).toEqual([]);
+    } finally {
+      await stream.stop();
+      await running;
+    }
+  });
+}

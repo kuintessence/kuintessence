@@ -159,6 +159,7 @@ export interface AgentChannel {
   federationMediaExportV1?: boolean;
   federationMediaObjectExportV1?: boolean;
   federationMediaImportV1?: boolean;
+  federationMediaUploadV1?: boolean;
   federationInputCopyV1?: boolean;
   federationInputVerifyV1?: boolean;
   federationResultCopyV1?: boolean;

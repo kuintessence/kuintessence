@@ -13,8 +13,18 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { create } from "@bufbuild/protobuf";
+import {
+  type FederationInputCopyReport,
+  FederationInputGrantResponseSchema,
+  FederationMediaImportGrantResponseSchema,
+  FederationMediaUploadSchema,
+  type FederationResultCopyReport,
+  FederationResultGrantResponseSchema,
+} from "@kuintessence/proto";
 import {
   FederationInputCopyGrantSchema,
+  FederationMediaImportKeyRequestSchema,
   FederationMediaManifestSchema,
   FederationMediaUploadTaskSchema,
   FederationResultCopyGrantSchema,
@@ -26,6 +36,7 @@ import { importFederationMedia } from "../data-market/media-import";
 import { mediaImportFixture } from "../data-market/media-import-test-fixture";
 import { withMediaWorkspace } from "../data-market/media-workspace";
 import { uploadFederationMediaFile } from "./media-upload";
+import { FederationMediaUploadClient } from "./media-upload-client";
 
 const live = process.env.KQ_MEDIA_AGE_TEST_BIN ? test : test.skip;
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -401,4 +412,100 @@ live.each(["complete", "revoke-second"] as const)(
     }
   },
   30_000,
+);
+
+live.each(["task-input", "task-result"] as const)(
+  "media upload command %s sends real quarantined bytes over TLS and keeps generations separate",
+  async (kind) => {
+    const f = await fixture(kind);
+    let client: FederationMediaUploadClient;
+    const finished = Promise.withResolvers<
+      FederationInputCopyReport | FederationResultCopyReport
+    >();
+    let sourceUntil = 0;
+    const destination = (request: {
+      requestId: string;
+      bindingJson: string;
+      partNumber?: number;
+      upload: boolean;
+    }) => {
+      expect(request.upload).toBe(true);
+      const binding = JSON.parse(request.bindingJson);
+      const grant = {
+        binding,
+        direction: "upload",
+        partNumber: request.partNumber,
+        url: `${target.url}part/${request.partNumber}`,
+        expiresAt: new Date(sourceUntil - 10).toISOString(),
+      };
+      queueMicrotask(() => {
+        const response = {
+          requestId: request.requestId,
+          grantJson: JSON.stringify(grant),
+          leaseExpiresAtUnixMs: BigInt(sourceUntil),
+        };
+        if (kind === "task-input")
+          client.receive("input", create(FederationInputGrantResponseSchema, response));
+        else client.receive("result", create(FederationResultGrantResponseSchema, response));
+      });
+      return true;
+    };
+    client = new FederationMediaUploadClient(
+      {
+        agentId: f.upload.task.media.agentId,
+        roots: f.options.roots,
+        inputOrigins: [target.url.origin],
+        resultOrigins: [target.url.origin],
+      },
+      {
+        media: (request) => {
+          const parsed = FederationMediaImportKeyRequestSchema.parse(
+            JSON.parse(request.bindingJson),
+          );
+          expect(parsed.purpose).toBe("task-upload");
+          void f
+            .authorizeForKey(parsed.recipientKey)
+            .then((grant) => {
+              grant.binding.manifestDigest = f.upload.task.media.manifestDigest;
+              sourceUntil = Date.parse(grant.expiresAt);
+              client.receive(
+                "media",
+                create(FederationMediaImportGrantResponseSchema, {
+                  requestId: request.requestId,
+                  grantJson: JSON.stringify(grant),
+                  leaseExpiresAtUnixMs: BigInt(sourceUntil),
+                }),
+              );
+            })
+            .catch(() => client.disconnect());
+          return true;
+        },
+        input: destination,
+        result: destination,
+        inputReport: (report) => finished.resolve(report),
+        resultReport: (report) => finished.resolve(report),
+      },
+      undefined,
+      (options) => uploadFederationMediaFile({ ...options, fetcher: f.upload.fetcher }),
+    );
+    try {
+      client.start(
+        create(FederationMediaUploadSchema, {
+          taskJson: JSON.stringify(f.upload.task),
+          leaseExpiresAtUnixMs: BigInt(Date.now() + 30_000),
+        }),
+      );
+      const report = await finished.promise;
+      expect(report.failed).toBe(false);
+      expect(report.generation).toBe(f.upload.task.target.binding.generation);
+      expect(report.generation).not.toBe(f.upload.task.media.generation);
+      expect(JSON.parse(report.copiedJson).binding).toEqual(f.upload.task.target.binding);
+      expect(hash(Buffer.concat(received))).toBe(hash(f.bytes));
+      expect(received).toHaveLength(1);
+      expect(await readFile(f.file)).toEqual(f.bytes);
+    } finally {
+      await client.disconnect();
+      await f.cleanup();
+    }
+  },
 );
