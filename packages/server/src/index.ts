@@ -75,6 +75,7 @@ import { FederationDatasetUseResponder } from "./federation/dataset-use-exchange
 import { FederationDatasetUsePolicies } from "./federation/dataset-use-policies";
 import { FederationDatasetUseWorker } from "./federation/dataset-use-worker";
 import { FederationDisclosureService } from "./federation/disclosure";
+import { FederationEvidenceService } from "./federation/disclosure-delivery";
 import { FederationDisclosurePolicyService } from "./federation/disclosure-policy";
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
 import { FederationDisputeDelivery } from "./federation/dispute-delivery";
@@ -192,6 +193,7 @@ import { dslRoutes } from "./routes/dsl";
 import { createFederationAgreementRoutes } from "./routes/federation-agreements";
 import { createFederationAssetRoutes } from "./routes/federation-assets";
 import { createFederationCommercialRoutes } from "./routes/federation-commercial";
+import { createFederationEvidenceRoutes } from "./routes/federation-evidence";
 import { createFederationMarketRoutes } from "./routes/federation-market";
 import { createFederationMediaRoutes } from "./routes/federation-media";
 import { createFederationOutboundRoutes } from "./routes/federation-outbound";
@@ -1882,6 +1884,13 @@ const federationTerminalExchange = federationSigningKey
 const federationUsageExchange = federationSigningKey
   ? new FederationUsageExchange(db, federationSigningKey, federationSender, federationStorageGuard)
   : undefined;
+if (federationSigningKey)
+  protectedApi.route(
+    "/",
+    createFederationEvidenceRoutes(
+      new FederationEvidenceService(db, federationSigningKey, federationSender),
+    ),
+  );
 if (federationSigningKey && federationCommercial)
   protectedApi.route(
     "/",

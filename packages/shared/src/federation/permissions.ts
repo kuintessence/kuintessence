@@ -8,6 +8,7 @@ export const FederationCapabilitySchema = z.enum([
   "adjustment.approve",
   "payment.approve",
   "disclosure.approve",
+  "disclosure.receive",
   "dispute.read",
   "dispute.open",
   "asset.read",

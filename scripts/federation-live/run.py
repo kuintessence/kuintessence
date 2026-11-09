@@ -27,6 +27,8 @@ assert not refund_scenario if coordinated else scenario in ("success", "refund",
 assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto", "media", "task-media")
 native_dispute = os.environ.get("KQ_FEDERATION_LAB_DISPUTE") == "1"
 assert not native_dispute or (coordinated and scenario in ("success", "workflow")), "Native dispute requires coordinated success/workflow"
+disclosure_scenario = os.environ.get("KQ_FEDERATION_LAB_DISCLOSURE") == "1"
+assert not disclosure_scenario or (mode == "bilateral_direct" and scenario == "success"), "Disclosure lab requires direct success"
 media_scenario = scenario == "media"
 task_media = scenario == "task-media"
 uses_media = media_scenario or task_media
@@ -1204,6 +1206,9 @@ def verify_bilateral_finance():
     for name, read, auth in parties:
         replay = read(path + "/settlements/approve", draft, auth)["data"]
         assert replay == statuses[name]["record"]["settlement"]
+    if disclosure_scenario:
+        print("REAL DISCLOSURE BILLING READY: measured job, bilateral bill and applied settlement; no ledger configured", flush=True)
+        return
     previous = None
     for number, amount in enumerate(("0", draft["chargedAmount"]), 1):
         adjustment = api(path + "/adjustments/draft", {"settlementId": draft["settlementId"], "adjustmentId": str(uuid.uuid4()), "chargedAmount": amount, "reason": "Isolated bilateral accounting " + str(number), "supportingEvidenceDigest": None}, token)["data"]
@@ -3146,7 +3151,32 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
                     verify_payments()
             else:
                 verify_bilateral_finance()
-                verify_payments()
+                if disclosure_scenario:
+                    from disclosure import verify_disclosure
+
+                    def provider_gateway(running):
+                        global gateway
+                        if not running:
+                            assert gateway.poll() is None
+                            gateway.terminate()
+                            assert gateway.wait(timeout=15) == 0
+                            return
+                        gateway = subprocess.Popen(["node", str(root / "gateway.mjs")], cwd=repo, env=env, stdout=serverlog, stderr=serverlog)
+                        for _ in range(30):
+                            assert gateway.poll() is None, "Provider gateway restart failed"
+                            try:
+                                with socket.create_connection(("127.0.0.1", gatewayport), timeout=1):
+                                    return
+                            except OSError:
+                                time.sleep(0.2)
+                        raise AssertionError("Provider gateway restart timeout")
+
+                    verify_disclosure(root, logs, env,
+                                      lambda path, body=None: sourceapi(path, body, sourcetoken),
+                                      lambda path, body=None: api(path, body, token),
+                                      pg, port, inspect_ledgers, provider_gateway)
+                else:
+                    verify_payments()
                 if attested:
                     verify_attested_recovery()
         inspect_ledgers("after")

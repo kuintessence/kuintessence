@@ -304,3 +304,50 @@ export function assertCommercialDisclosureReadAuthorization(
   )
     throw new FederationError("INVALID_MESSAGE");
 }
+
+const readPairEntry = z.strictObject({
+  queryJws: z.string().min(1).max(524288),
+  authorizationJws: z.string().min(1).max(524288),
+});
+export const CommercialDisclosureReadPairSchema = z.tuple([readPairEntry, readPairEntry]);
+export type CommercialDisclosureReadPair = z.infer<typeof CommercialDisclosureReadPairSchema>;
+export const CommercialDisclosurePartSchema = z.enum([
+  "policy-source",
+  "policy-target",
+  "disclosure-source",
+  "disclosure-target",
+]);
+export const CommercialDisclosureDownloadQuerySchema = z
+  .strictObject({
+    ...readIdentity,
+    kind: z.literal("commercial-disclosure-download-query"),
+    part: CommercialDisclosurePartSchema,
+    authorizations: CommercialDisclosureReadPairSchema,
+  })
+  .refine(
+    (v) =>
+      readWindow(v) &&
+      v.senderSiteId === v.scope.evidenceRecipientSiteId &&
+      [v.scope.sourceSiteId, v.scope.targetSiteId].includes(v.recipientSiteId),
+  );
+export type CommercialDisclosureDownloadQuery = z.infer<
+  typeof CommercialDisclosureDownloadQuerySchema
+>;
+
+export const CommercialEvidenceCaseInputSchema = z
+  .strictObject({
+    caseId: z.uuid(),
+    domainId: z.uuid(),
+    agreementRevisionId: z.uuid(),
+    agreementDigest: FederationDigestSchema,
+    sourceSiteId: z.uuid(),
+    targetSiteId: z.uuid(),
+    evidenceRecipientSiteId: z.uuid(),
+  })
+  .refine((v) => new Set([v.sourceSiteId, v.targetSiteId, v.evidenceRecipientSiteId]).size === 3);
+export type CommercialEvidenceCaseInput = z.infer<typeof CommercialEvidenceCaseInputSchema>;
+export const CommercialDisclosureEvidenceSchema = z.strictObject({
+  policy: CommercialAgreementEnvelopeSchema,
+  disclosure: CommercialAgreementEnvelopeSchema,
+});
+export type CommercialDisclosureEvidence = z.infer<typeof CommercialDisclosureEvidenceSchema>;

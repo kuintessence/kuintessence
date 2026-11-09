@@ -31,13 +31,16 @@ import {
   federationCommercialRefunds,
   federationCommercialSettlements,
   federationCommercialSubmissions,
+  federationDisclosureDownloads,
   federationDisclosurePolicies,
   federationDisclosureReadAuthorizations,
   federationDisclosures,
   federationDisputeDeliveries,
   federationDisputeFreezes,
   federationDisputes,
+  federationEvidenceCases,
   federationOutbound,
+  federationReceivedDisclosures,
   federationReceivedUsage,
   federationReservations,
   federationSigningKeys,
@@ -84,8 +87,11 @@ import {
   CommercialDisclosureSchema,
 } from "@kuintessence/shared/federation/disclosure";
 import {
+  CommercialDisclosureDownloadQuerySchema,
+  CommercialDisclosureReadPairSchema,
   CommercialDisclosureReadQuerySchema,
   CommercialDisclosureReadScopeSchema,
+  CommercialEvidenceCaseInputSchema,
 } from "@kuintessence/shared/federation/disclosure-authorization";
 import {
   CommercialDisputeFinancialViewSchema,
@@ -107,6 +113,7 @@ import { createErrorHandler } from "../middleware/error-handler";
 import { federationOrganizationContext } from "../middleware/federation-organization";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
+import { createFederationEvidenceRoutes } from "../routes/federation-evidence";
 import { revokeDataDeliveryJobs } from "../services/data-delivery";
 import { DataGrantRevocationCoordinator } from "../services/data-delivery-revocations";
 import { JobService } from "../services/job-service";
@@ -123,6 +130,10 @@ import type { CommercialClient } from "./commercial-client";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
 import { FederationDisclosureService } from "./disclosure";
+import {
+  FederationDisclosureDownloadResponder,
+  FederationEvidenceService,
+} from "./disclosure-delivery";
 import { FederationDisclosurePolicyService } from "./disclosure-policy";
 import {
   FederationDisclosureReadClient,
@@ -11213,4 +11224,465 @@ test("disclosure read production ingress requires certificate identity and dedic
     .set({ allowedKinds: ["commercial-disclosure"] })
     .where(eq(federationSigningKeys.siteId, f.recipient));
   expect((await post(f.fingerprint)).status).toBe(401);
+});
+
+async function disclosureDeliveryFixture() {
+  const f = await disclosureReadFixture(),
+    receiverActor = { userId: randomUUID(), orgId: randomUUID() };
+  cleanup.push(async () => {
+    await db
+      .delete(federationReceivedDisclosures)
+      .where(eq(federationReceivedDisclosures.localSiteId, f.recipient));
+    await db
+      .delete(federationEvidenceCases)
+      .where(eq(federationEvidenceCases.localSiteId, f.recipient));
+    await db
+      .delete(federationDisclosureDownloads)
+      .where(eq(federationDisclosureDownloads.grantId, f.scope.grantId));
+    await db
+      .delete(auditLog)
+      .where(
+        inArray(auditLog.actor, [
+          receiverActor.userId,
+          `disclosure-download:${f.source.signing.siteId}`,
+        ]),
+      );
+    await db
+      .delete(federationCapabilities)
+      .where(eq(federationCapabilities.orgId, receiverActor.orgId));
+    await db.delete(userOrgMemberships).where(eq(userOrgMemberships.orgId, receiverActor.orgId));
+    await db.delete(users).where(eq(users.id, receiverActor.userId));
+    await db.delete(orgs).where(eq(orgs.id, receiverActor.orgId));
+  });
+  await db.insert(orgs).values({ id: receiverActor.orgId, name: "Recipient institution" });
+  await db.insert(users).values({
+    id: receiverActor.userId,
+    orgId: receiverActor.orgId,
+    email: `${receiverActor.userId}@test.invalid`,
+    role: "platform_admin",
+  });
+  await db.insert(userOrgMemberships).values({ ...receiverActor, role: "owner" });
+  await new FederationPermissionService(db).set(
+    { ...receiverActor, capability: "disclosure.receive", enabled: true },
+    receiverActor.userId,
+  );
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: ["commercial-disclosure-read-query", "commercial-disclosure-download-query"],
+    })
+    .where(eq(federationSigningKeys.siteId, f.recipient));
+  const responder = new FederationDisclosureDownloadResponder(db, f.source.signing);
+  const io: {
+    calls: number;
+    before?: () => Promise<void>;
+    after?: (jws: string) => Promise<string>;
+  } = { calls: 0 };
+  const send: FederationSend = async (endpoint, jws, path) => {
+    if (path === "/federation/v1/disclosure-authorizations") return f.send(endpoint, jws, path);
+    expect(path).toBe("/federation/v1/disclosure-downloads");
+    io.calls++;
+    await io.before?.();
+    const response = await responder.receive(jws, f.fingerprint);
+    return io.after ? io.after(response) : response;
+  };
+  const receiver = new FederationEvidenceService(db, f.keys.signing, send);
+  const {
+    caseId,
+    domainId,
+    agreementRevisionId,
+    agreementDigest,
+    sourceSiteId,
+    targetSiteId,
+    evidenceRecipientSiteId,
+  } = f.scope;
+  const context = CommercialEvidenceCaseInputSchema.parse({
+    caseId,
+    domainId,
+    agreementRevisionId,
+    agreementDigest,
+    sourceSiteId,
+    targetSiteId,
+    evidenceRecipientSiteId,
+  });
+  await receiver.register(receiverActor, context);
+  const imported = () =>
+    db
+      .select()
+      .from(federationReceivedDisclosures)
+      .where(eq(federationReceivedDisclosures.localSiteId, f.recipient));
+  const downloadQuery = async () => {
+    const pair = await f.client.request(f.scope),
+      now = new Date();
+    const q = CommercialDisclosureDownloadQuerySchema.parse({
+      protocolVersion: 1,
+      kind: "commercial-disclosure-download-query",
+      readId: pair.readId,
+      queryId: randomUUID(),
+      senderSiteId: f.recipient,
+      recipientSiteId: f.source.signing.siteId,
+      scope: f.scope,
+      authorizations: CommercialDisclosureReadPairSchema.parse(
+        pair.authorizations.map(({ queryJws, authorizationJws }) => ({
+          queryJws,
+          authorizationJws,
+        })),
+      ),
+      part: "disclosure-source",
+      issuedAt: now.toISOString(),
+      expiresAt: new Date(
+        Math.min(...pair.authorizations.map((v) => Date.parse(v.authorization.expiresAt))),
+      ).toISOString(),
+    });
+    return {
+      q,
+      jws: await signFederationMessage(CommercialDisclosureDownloadQuerySchema, q, f.keys.signing),
+    };
+  };
+  return { ...f, receiverActor, receiver, responder, io, send, context, imported, downloadQuery };
+}
+
+test("disclosure delivery imports only complete dual-signed projections and preserves exact originals on replay", async () => {
+  const f = await disclosureDeliveryFixture(),
+    before = await f.budget();
+  const payload = await f.receiver.import(f.receiverActor, f.scope.caseId, f.scope);
+  expect(payload).toEqual(f.value);
+  expect(payload.evidence).toEqual({ recordType: "payment", values: { amount: "7" } });
+  expect(f.io.calls).toBe(4);
+  const [stored] = await f.imported();
+  expect(stored?.evidence.disclosure.sourceJws).toBe(
+    (await f.service.list(f.sourceActor, f.revisionId)).data[0]?.approvalJws,
+  );
+  expect(stored?.evidence.disclosure.targetJws).toBe(
+    (await f.peer.list(f.actor, f.revisionId)).data[0]?.approvalJws,
+  );
+  expect(await f.receiver.import(f.receiverActor, f.scope.caseId, f.scope)).toEqual(payload);
+  expect(await f.imported()).toHaveLength(1);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.action, "federation.evidence.receive"),
+          eq(auditLog.target, f.scope.grantId),
+        ),
+      ),
+  ).toHaveLength(1);
+  const restarted = new FederationEvidenceService(db, f.keys.signing, f.send);
+  expect(await restarted.read(f.receiverActor, f.scope.caseId, f.scope.grantId)).toEqual(payload);
+  expect(await f.budget()).toEqual(before);
+});
+
+for (const failure of ["partial", "wrong-part", "tamper"] as const) {
+  test(`disclosure delivery rejects ${failure} transfer without a readable stored record`, async () => {
+    const f = await disclosureDeliveryFixture();
+    let first = "";
+    f.io.after = async (response) => {
+      first ||= response;
+      if (failure === "partial" && f.io.calls === 4) throw new Error("Lost final part");
+      if (failure === "wrong-part" && f.io.calls === 4) return first;
+      if (failure === "tamper" && f.io.calls === 4) return `${response.slice(0, -10)}altered1234`;
+      return response;
+    };
+    await expect(f.receiver.import(f.receiverActor, f.scope.caseId, f.scope)).rejects.toThrow();
+    expect(await f.imported()).toHaveLength(0);
+  });
+}
+
+test("disclosure delivery checks local revocation again after collecting both read authorizations", async () => {
+  const f = await disclosureDeliveryFixture();
+  f.io.before = async () => {
+    await f.service.revoke(f.sourceActor, f.revisionId, f.scope.grantId);
+  };
+  await expect(f.receiver.import(f.receiverActor, f.scope.caseId, f.scope)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+  expect(await f.imported()).toHaveLength(0);
+  expect(
+    await db
+      .select()
+      .from(federationDisclosureDownloads)
+      .where(eq(federationDisclosureDownloads.grantId, f.scope.grantId)),
+  ).toHaveLength(0);
+});
+
+for (const changed of [
+  "permission",
+  "closed-case",
+  "download-purpose",
+  "endpoint",
+  "expiry",
+] as const) {
+  test(`disclosure delivery rechecks recipient ${changed} before publication`, async () => {
+    const f = await disclosureDeliveryFixture();
+    f.io.after = async (response) => {
+      if (f.io.calls === 4) {
+        if (changed === "permission")
+          await new FederationPermissionService(db).set(
+            { ...f.receiverActor, capability: "disclosure.receive", enabled: false },
+            f.receiverActor.userId,
+          );
+        else if (changed === "closed-case") await f.receiver.close(f.receiverActor, f.scope.caseId);
+        else if (changed === "download-purpose")
+          await db
+            .update(federationSigningKeys)
+            .set({ allowedKinds: ["commercial-disclosure-read-query"] })
+            .where(eq(federationSigningKeys.siteId, f.recipient));
+        else if (changed === "endpoint")
+          await db
+            .update(federationSites)
+            .set({ endpoint: "https://changed.test.invalid" })
+            .where(eq(federationSites.id, f.source.signing.siteId));
+        else setSystemTime(new Date(Date.now() + 31000));
+      }
+      return response;
+    };
+    try {
+      await expect(f.receiver.import(f.receiverActor, f.scope.caseId, f.scope)).rejects.toThrow();
+    } finally {
+      setSystemTime();
+    }
+    expect(await f.imported()).toHaveLength(0);
+  });
+}
+
+test("disclosure delivery stored evidence cannot bypass remote revocation or offline authorization", async () => {
+  const f = await disclosureDeliveryFixture();
+  await f.receiver.import(f.receiverActor, f.scope.caseId, f.scope);
+  const offline = new FederationEvidenceService(db, f.keys.signing, async () => {
+    throw new Error("Peer offline");
+  });
+  await expect(offline.read(f.receiverActor, f.scope.caseId, f.scope.grantId)).rejects.toThrow(
+    "Peer offline",
+  );
+  await f.providerPolicy.revoke(f.actor, f.revisionId, f.scope.policyId);
+  await expect(f.receiver.read(f.receiverActor, f.scope.caseId, f.scope.grantId)).rejects.toThrow();
+  const list = await f.receiver.materials(f.receiverActor, f.scope.caseId);
+  expect(list.data).toHaveLength(1);
+  expect(JSON.stringify(list)).not.toContain("amount");
+  expect(JSON.stringify(list)).not.toContain("Jws");
+  expect(await f.imported()).toHaveLength(1);
+});
+
+test("disclosure delivery recipient case ownership and independent permission cannot be replaced", async () => {
+  const f = await disclosureDeliveryFixture();
+  await new FederationPermissionService(db).set(
+    { ...f.sourceActor, capability: "disclosure.receive", enabled: true },
+    f.sourceActor.userId,
+  );
+  await expect(f.receiver.register(f.sourceActor, f.context)).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(f.receiver.import(f.sourceActor, f.scope.caseId, f.scope)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await expect(f.receiver.materials(f.sourceActor, f.scope.caseId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  expect((await f.receiver.list(f.sourceActor)).data).toHaveLength(0);
+  await new FederationPermissionService(db).set(
+    { ...f.receiverActor, capability: "disclosure.receive", enabled: false },
+    f.receiverActor.userId,
+  );
+  await expect(f.receiver.list(f.receiverActor)).rejects.toThrow("POLICY_DENIED");
+  await expect(f.receiver.register(f.receiverActor, f.context)).rejects.toThrow("POLICY_DENIED");
+});
+
+test("disclosure delivery local case closure retains metadata and never reopens or changes the original dispute", async () => {
+  const f = await disclosureDeliveryFixture();
+  await f.receiver.import(f.receiverActor, f.scope.caseId, f.scope);
+  const before = await db
+    .select()
+    .from(federationDisputes)
+    .where(eq(federationDisputes.caseId, f.scope.caseId));
+  await f.receiver.close(f.receiverActor, f.scope.caseId);
+  await f.receiver.close(f.receiverActor, f.scope.caseId);
+  await expect(f.receiver.read(f.receiverActor, f.scope.caseId, f.scope.grantId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await expect(f.receiver.register(f.receiverActor, f.context)).rejects.toThrow("POLICY_DENIED");
+  expect((await f.receiver.materials(f.receiverActor, f.scope.caseId)).data).toHaveLength(1);
+  expect(
+    await db.select().from(federationDisputes).where(eq(federationDisputes.caseId, f.scope.caseId)),
+  ).toEqual(before);
+});
+
+test("disclosure delivery source audit and replay are atomic and revoked old requests cannot download", async () => {
+  const f = await disclosureDeliveryFixture(),
+    { q, jws } = await f.downloadQuery();
+  await db.execute(
+    sql`ALTER TABLE audit_log ADD CONSTRAINT disclosure_download_audit_fixture CHECK (action <> 'federation.disclosure.download') NOT VALID`,
+  );
+  try {
+    await expect(f.responder.receive(jws, f.fingerprint)).rejects.toThrow();
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT disclosure_download_audit_fixture`);
+  }
+  expect(
+    await db
+      .select()
+      .from(federationDisclosureDownloads)
+      .where(eq(federationDisclosureDownloads.grantId, f.scope.grantId)),
+  ).toHaveLength(0);
+  const a = await f.responder.receive(jws, f.fingerprint);
+  expect(
+    await new FederationDisclosureDownloadResponder(db, f.source.signing).receive(
+      jws,
+      f.fingerprint,
+    ),
+  ).toBe(a);
+  const replacement = await signFederationMessage(
+    CommercialDisclosureDownloadQuerySchema,
+    { ...q, part: "disclosure-target" },
+    f.keys.signing,
+  );
+  await expect(f.responder.receive(replacement, f.fingerprint)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await f.service.revoke(f.sourceActor, f.revisionId, f.scope.grantId);
+  await expect(f.responder.receive(jws, f.fingerprint)).rejects.toThrow("AUTHORIZATION_EXPIRED");
+});
+
+test("disclosure delivery recipient audit failure rolls back storage and permits a fresh retry", async () => {
+  const f = await disclosureDeliveryFixture();
+  await db.execute(
+    sql`ALTER TABLE audit_log ADD CONSTRAINT evidence_receive_audit_fixture CHECK (action <> 'federation.evidence.receive') NOT VALID`,
+  );
+  try {
+    await expect(f.receiver.import(f.receiverActor, f.scope.caseId, f.scope)).rejects.toThrow();
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT evidence_receive_audit_fixture`);
+  }
+  expect(await f.imported()).toHaveLength(0);
+  expect(await f.receiver.import(f.receiverActor, f.scope.caseId, f.scope)).toEqual(f.value);
+});
+
+test("disclosure delivery production ingress binds both authorizations to the requested recipient and read", async () => {
+  const f = await disclosureDeliveryFixture(),
+    { q, jws } = await f.downloadQuery();
+  const ingress = createFederationIngress(db, f.source.signing);
+  const post = (body = jws, cert = f.fingerprint) =>
+    ingress.request("/federation/v1/disclosure-downloads", {
+      method: "POST",
+      body,
+      headers: { "content-type": "application/jose", "x-kq-federation-cert": cert },
+    });
+  expect((await post(jws, "")).status).toBe(401);
+  expect((await post(jws, f.providerFingerprint)).status).toBe(401);
+  const swapped = await signFederationMessage(
+    CommercialDisclosureDownloadQuerySchema,
+    { ...q, authorizations: [q.authorizations[1], q.authorizations[0]] },
+    f.keys.signing,
+  );
+  expect((await post(swapped)).status).toBe(401);
+  const otherRead = await signFederationMessage(
+    CommercialDisclosureDownloadQuerySchema,
+    { ...q, readId: randomUUID() },
+    f.keys.signing,
+  );
+  expect((await post(otherRead)).status).toBe(409);
+  const response = await post();
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const original = (await f.service.list(f.sourceActor, f.revisionId)).data[0];
+  if (!original) throw new Error("Missing approved disclosure");
+  expect(await response.text()).toBe(original.approvalJws);
+});
+
+test("disclosure delivery human API enforces organization strict inputs and no-store for actual projected values", async () => {
+  const f = await disclosureDeliveryFixture(),
+    app = new Hono();
+  let automation = false,
+    actor = f.receiverActor;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route("/", createFederationEvidenceRoutes(f.receiver));
+  const root = "/federation/evidence-cases",
+    path = `${root}/${f.scope.caseId}/disclosures`;
+  const post = (url: string, body: unknown) =>
+    app.request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await app.request(root)).status).toBe(200);
+  expect((await post(root, { ...f.context, localOrgId: randomUUID() })).status).toBe(400);
+  expect((await post(path, { ...f.scope, values: {} })).status).toBe(400);
+  const imported = await post(path, f.scope);
+  expect(imported.status).toBe(201);
+  expect(imported.headers.get("cache-control")).toBe("no-store");
+  expect(await imported.json()).toEqual({ disclosure: f.value });
+  expect((await app.request(`${path}/${f.scope.grantId}`)).status).toBe(200);
+  for (const [code, status] of [
+    ["DELIVERY_UNAVAILABLE", 503],
+    ["INVALID_RECEIPT_RESPONSE", 502],
+  ] as const) {
+    f.io.before = async () => {
+      throw new FederationDeliveryError(code);
+    };
+    const unavailable = await post(path, f.scope);
+    expect(unavailable.status).toBe(status);
+    expect(unavailable.headers.get("cache-control")).toBe("no-store");
+    expect(await unavailable.json()).toEqual({ error: { code } });
+  }
+  f.io.before = undefined;
+  automation = true;
+  expect((await app.request(root)).status).toBe(403);
+  automation = false;
+  actor = f.sourceActor;
+  expect((await app.request(`${path}/${f.scope.grantId}`)).status).toBe(403);
+});
+
+test("disclosure delivery expiration while waiting for the publication lock cannot return prior cached values", async () => {
+  const f = await disclosureDeliveryFixture();
+  await f.receiver.import(f.receiverActor, f.scope.caseId, f.scope);
+  let release: () => void = () => {},
+    locked: () => void = () => {};
+  const acquired = new Promise<void>((resolve) => {
+    locked = resolve;
+  });
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const blocker = db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`received-disclosure:${f.recipient}:${f.scope.grantId}`}, 0))`,
+    );
+    locked();
+    await hold;
+  });
+  await acquired;
+  const pending = f.receiver.import(f.receiverActor, f.scope.caseId, f.scope).then(
+    (value) => ({ value, error: null }),
+    (error) => ({ value: null, error }),
+  );
+  try {
+    let waiting = false;
+    for (let i = 0; i < 200; i++) {
+      const result = await db.execute(
+        sql`select count(*)::int as count from pg_stat_activity where datname = current_database() and wait_event = 'advisory'`,
+      );
+      if (Number(result[0]?.count) > 0) {
+        waiting = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(waiting).toBe(true);
+    setSystemTime(new Date(Date.now() + 31000));
+    release();
+    await blocker;
+    const result = await pending;
+    expect(result.value).toBeNull();
+    expect(result.error).toBeTruthy();
+  } finally {
+    release();
+    await blocker;
+    await pending;
+    setSystemTime();
+  }
+  expect(await f.imported()).toHaveLength(1);
 });

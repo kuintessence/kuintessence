@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   assertCommercialDisclosureReadAuthorization,
+  CommercialDisclosureDownloadQuerySchema,
   CommercialDisclosureReadAuthorizationSchema,
   CommercialDisclosureReadQuerySchema,
 } from "./disclosure-authorization";
@@ -99,4 +100,28 @@ test("disclosure read refuses another request, side, projection or expired obser
       new Date(f.now.getTime() + 30000),
     ),
   ).toThrow("AUTHORIZATION_EXPIRED");
+});
+
+test("disclosure downloads retain bounded originals and require exactly two authorization envelopes", () => {
+  const f = fixture();
+  const query = {
+    ...f.query,
+    kind: "commercial-disclosure-download-query",
+    part: "disclosure-source",
+    authorizations: [
+      { queryJws: "signed-query-a", authorizationJws: "signed-authorization-a" },
+      { queryJws: "signed-query-b", authorizationJws: "signed-authorization-b" },
+    ],
+  };
+  expect(CommercialDisclosureDownloadQuerySchema.safeParse(query).success).toBe(true);
+  for (const patch of [
+    { authorizations: query.authorizations.slice(0, 1) },
+    { authorizations: [...query.authorizations, query.authorizations[0]] },
+    { part: "commercial-original" },
+    { includePrices: true },
+    { senderSiteId: f.query.scope.sourceSiteId },
+  ])
+    expect(CommercialDisclosureDownloadQuerySchema.safeParse({ ...query, ...patch }).success).toBe(
+      false,
+    );
 });

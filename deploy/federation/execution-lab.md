@@ -81,6 +81,20 @@ bun run test:federation:direct
 
 私有目录为 `temp/federation-execution-direct-*`，新增 `preauthorized-closing.json` 保存提交前政策，`bilateral-settlement.json`、`bilateral-adjustment-1/2.json` 保存同文账务记录，双方对应快照保存实际额度和空链待办；`bilateral-payments.json`、`payment-evidence.txt` 和双方 `payment-before/after.json` 保存付款更正与不改账证据。仍保留原文件工作流证据，脚本退出时清理自建服务、namespace、数据库和临时身份。只有命令退出 0 且完整断言通过才算本场景验收成功；它不证明异步存证恢复、跨 Slurm/PBS 全矩阵、真实软件离线安装或 PR 预览已完成。
 
+## 三站证据字段交付验收
+
+在相同专用 k3s／PostgreSQL 条件下运行：
+
+```bash
+KQ_FEDERATION_LAB_DISCLOSURE=1 bun run test:federation:direct
+```
+
+此选项沿用轻量文件作业、真实结果回传及自动账单／结算，跳过付款和账务调整实验。随后启动第三个完整 Server R，使用独立数据库、业务密钥、mTLS 客户端证书与开发登录会话；R 不启动 Agent，也不配置 Fabric。三个数据库属于同一临时 PostgreSQL 实例，各 Server 的 `DATABASE_URL` 不同。机构信任和人员权限由夹具初始化，案件、政策、材料批准、接收与撤销全部走生产 HTTP；双方原签名通过生产 worker 自动交换，夹具不搬运业务签名。
+
+A 发起实际账单争议，A/B 分别批准只含 `dueAmount` 的披露，R 经真实 mTLS 获取双边当前许可和四份原 JWS。断言包括单方批准拒绝、精确字段值、重复导入不重复保存、R 强制退出后的原状态恢复、B 网关离线时不得返回缓存、A/B 分别撤销后拒绝读取和重新导入。独立读取三库，比较收到的原件与源端批准原件；R 不得得到原合同／账单或作业，A/B 的资金和执行状态不得因材料交付改变。
+
+私有证据新增 `three-server-disclosure.json`、`recipient-disclosure-originals.json` 和双方 `disclosure-before/after.json`。只有命令退出 0、全部断言完成且清理成功才算通过。这是同机三 Server／三数据库的生产协议验证，不是正式多机构身份、A/B/R 私有集合、主动撤权推送或仲裁验收；远端撤销仍受短期许可观察窗口约束，不能追回已交付明文。
+
 ## 异步存证断链验收
 
 使用本页真实 Fabric/PostgreSQL 工具配置，通过以下模式运行：

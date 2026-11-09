@@ -111,6 +111,7 @@
       "commercial-disclosure-policy": "Evidence disclosure policy",
       "commercial-disclosure": "Evidence disclosure approval",
       "commercial-disclosure-read-query": "Evidence read query",
+      "commercial-disclosure-download-query": "Approved evidence download query",
       "commercial-disclosure-read-authorization": "Evidence read authorization",
       "commercial-dispute": "Dispute opening",
       "commercial-dispute-receipt": "Dispute receipt",
@@ -242,7 +243,8 @@
           "approve": "Approve external payment receipts"
         },
         "disclosure": {
-          "approve": "Approve evidence disclosure"
+          "approve": "Approve evidence disclosure",
+          "receive": "Receive approved evidence"
         },
         "dispute": {
           "read": "View disputes",
@@ -294,7 +296,8 @@
           "approve": "Confirm external payment facts and corrections, exchange signatures and retry evidence; includes agreement reading, not bank transfers or credit issuance."
         },
         "disclosure": {
-          "approve": "Approve or revoke this institution’s evidence disclosure policies, including contract viewing. Does not grant arbitration, billing, settlement or payment authority."
+          "approve": "Approve or revoke this institution’s evidence disclosure policies, including contract viewing. Does not grant arbitration, billing, settlement or payment authority.",
+          "receive": "Register local evidence cases and receive or read fields approved by both institutions. Does not authorize source disclosure, arbitration or financial actions."
         },
         "dispute": {
           "read": "View this institution’s cases and progress. Does not include contract contents or arbitration authority.",

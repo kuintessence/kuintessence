@@ -50,8 +50,11 @@ import type {
 } from "@kuintessence/shared/federation/commercial";
 import type { CommercialDisclosure } from "@kuintessence/shared/federation/disclosure";
 import type {
+  CommercialDisclosureEvidence,
   CommercialDisclosurePolicy,
   CommercialDisclosureReadQuery,
+  CommercialDisclosureReadScope,
+  CommercialEvidenceCaseInput,
 } from "@kuintessence/shared/federation/disclosure-authorization";
 import type {
   CommercialDispute,
@@ -147,6 +150,7 @@ export const federationSigningKeys = pgTable(
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
           | "commercial-disclosure-read-query"
+          | "commercial-disclosure-download-query"
           | "commercial-disclosure-read-authorization"
           | "commercial-dispute"
           | "commercial-dispute-receipt"
@@ -230,7 +234,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'disclosure.approve', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'disclosure.approve', 'disclosure.receive', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -3505,6 +3509,85 @@ export const federationDisclosureReadAuthorizations = pgTable(
       sql`(${t.query}->>'kind' = 'commercial-disclosure-read-query'
     AND ${t.query}->>'recipientSiteId' = ${t.localSiteId}::text AND ${t.query}->>'queryId' = ${t.queryId}::text
     AND ${t.query}->'scope'->>'grantId' = ${t.grantId}::text) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationDisclosureDownloads = pgTable(
+  "federation_disclosure_downloads",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    queryId: uuid("query_id").notNull(),
+    grantId: uuid("grant_id").notNull(),
+    readId: uuid("read_id").notNull(),
+    part: varchar("part", { length: 24 }).notNull(),
+    requestDigest: varchar("request_digest", { length: 71 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.queryId] }),
+    foreignKey({
+      name: "federation_disclosure_download_grant_fk",
+      columns: [t.localSiteId, t.grantId],
+      foreignColumns: [federationDisclosures.localSiteId, federationDisclosures.grantId],
+    }),
+    check(
+      "federation_disclosure_download_part",
+      sql`${t.part} IN ('policy-source','policy-target','disclosure-source','disclosure-target')`,
+    ),
+  ],
+);
+
+/** Recipient-local evidence registry, not an arbitration mandate or the source dispute state. */
+export const federationEvidenceCases = pgTable(
+  "federation_evidence_cases",
+  {
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    caseId: uuid("case_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    context: jsonb("context").$type<CommercialEvidenceCaseInput>().notNull(),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.caseId] }),
+    check(
+      "federation_evidence_case_identity",
+      sql`(${t.context}->>'caseId' = ${t.caseId}::text AND ${t.context}->>'evidenceRecipientSiteId' = ${t.localSiteId}::text) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationReceivedDisclosures = pgTable(
+  "federation_received_disclosures",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    grantId: uuid("grant_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    scope: jsonb("scope").$type<CommercialDisclosureReadScope>().notNull(),
+    evidence: jsonb("evidence").$type<CommercialDisclosureEvidence>().notNull(),
+    receivedBy: uuid("received_by")
+      .notNull()
+      .references(() => users.id),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.grantId] }),
+    foreignKey({
+      name: "federation_received_disclosure_case_fk",
+      columns: [t.localSiteId, t.caseId],
+      foreignColumns: [federationEvidenceCases.localSiteId, federationEvidenceCases.caseId],
+    }),
+    check(
+      "federation_received_disclosure_identity",
+      sql`(${t.scope}->>'caseId' = ${t.caseId}::text AND ${t.scope}->>'grantId' = ${t.grantId}::text AND ${t.scope}->>'evidenceRecipientSiteId' = ${t.localSiteId}::text) IS TRUE`,
     ),
   ],
 );

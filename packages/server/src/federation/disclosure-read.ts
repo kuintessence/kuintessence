@@ -16,6 +16,7 @@ import {
 import {
   assertCommercialDisclosureReadAuthorization,
   CommercialDisclosureReadAuthorizationSchema,
+  type CommercialDisclosureReadPair,
   type CommercialDisclosureReadQuery,
   CommercialDisclosureReadQuerySchema,
   type CommercialDisclosureReadScope,
@@ -46,7 +47,10 @@ export class FederationDisclosureReadResponder {
     this.disclosures = new FederationDisclosureService(db, signing);
     this.policies = new FederationDisclosurePolicyService(db, signing);
   }
-  private async scope(tx: PgTransaction, query: CommercialDisclosureReadQuery) {
+  async scope(
+    tx: PgTransaction,
+    query: Pick<CommercialDisclosureReadQuery, "scope" | "senderSiteId">,
+  ) {
     const scope = query.scope;
     const [local] = await tx
       .select()
@@ -114,7 +118,7 @@ export class FederationDisclosureReadResponder {
       const key = await this.trust.resolveKey(siteId, federationMessageKeyId(jws), new Date(), tx);
       until = Math.min(until, key.validUntil.getTime());
     }
-    return { orgId: local.localOrgId, until };
+    return { orgId: local.localOrgId, until, record: record.row, policy: policy.row };
   }
   async receive(jws: string, fingerprint: string) {
     const peer = await this.trust.resolvePeer(fingerprint, federationMessageKeyId(jws), new Date());
@@ -348,4 +352,58 @@ export class FederationDisclosureReadClient {
       return { readId: prepared.readId, scope, authorizations: results };
     });
   }
+}
+
+/** Current trust and both original query bindings, reused at download and recipient publication. */
+export async function verifyDisclosureReadPair(
+  tx: PgTransaction,
+  trust: FederationTrustRegistry,
+  scope: CommercialDisclosureReadScope,
+  readId: string,
+  pair: CommercialDisclosureReadPair,
+) {
+  let until = Number.POSITIVE_INFINITY;
+  for (const [index, siteId] of [scope.sourceSiteId, scope.targetSiteId].entries()) {
+    const entry = pair[index];
+    if (!entry) throw new FederationError("POLICY_DENIED");
+    const now = new Date();
+    const queryKeyId = federationMessageKeyId(entry.queryJws),
+      keyId = federationMessageKeyId(entry.authorizationJws);
+    await trust.assertKey(tx, scope.evidenceRecipientSiteId, queryKeyId, now);
+    await trust.assertKey(tx, siteId, keyId, now);
+    const queryKey = await trust.resolveKey(scope.evidenceRecipientSiteId, queryKeyId, now, tx);
+    const key = await trust.resolveKey(siteId, keyId, now, tx);
+    const query = await verifyFederationMessage(
+      CommercialDisclosureReadQuerySchema,
+      entry.queryJws,
+      queryKey,
+      now,
+    );
+    const authorization = await verifyFederationMessage(
+      CommercialDisclosureReadAuthorizationSchema,
+      entry.authorizationJws,
+      key,
+      now,
+    );
+    if (
+      query.payload.recipientSiteId !== siteId ||
+      query.payload.readId !== readId ||
+      federationCanonicalJson(query.payload.scope) !== federationCanonicalJson(scope)
+    )
+      throw new FederationError("POLICY_DENIED");
+    assertCommercialDisclosureReadAuthorization(
+      query.payload,
+      query.digest,
+      authorization.payload,
+      now,
+    );
+    if (
+      Date.parse(authorization.payload.expiresAt) >
+      Math.min(queryKey.validUntil.getTime(), key.validUntil.getTime())
+    )
+      throw new FederationError("AUTHORIZATION_EXPIRED");
+    until = Math.min(until, Date.parse(authorization.payload.expiresAt));
+  }
+  if (until <= Date.now()) throw new FederationError("AUTHORIZATION_EXPIRED");
+  return until;
 }

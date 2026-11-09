@@ -111,6 +111,7 @@
       "commercial-disclosure-policy": "证据披露政策",
       "commercial-disclosure": "证据披露批准",
       "commercial-disclosure-read-query": "证据读取查询",
+      "commercial-disclosure-download-query": "获批证据下载查询",
       "commercial-disclosure-read-authorization": "证据读取许可",
       "commercial-dispute": "争议开案",
       "commercial-dispute-receipt": "争议接收回执",
@@ -242,7 +243,8 @@
           "approve": "审批外部付款凭证"
         },
         "disclosure": {
-          "approve": "批准证据披露"
+          "approve": "批准证据披露",
+          "receive": "接收获批证据"
         },
         "dispute": {
           "read": "查看争议案件",
@@ -294,7 +296,8 @@
           "approve": "确认外部付款事实与更正、交换双方签名并重试存证；包含合同查看，不授予转账或额度发行权限。"
         },
         "disclosure": {
-          "approve": "批准或撤销本机构的证据披露政策；包含合同查看，不授予仲裁、账单、结算或付款权限。"
+          "approve": "批准或撤销本机构的证据披露政策；包含合同查看，不授予仲裁、账单、结算或付款权限。",
+          "receive": "登记本站证据案件，接收或读取双方批准的字段；不授予来源披露、仲裁或财务操作权限。"
         },
         "dispute": {
           "read": "查看本机构案件及处理状态；不包含合同正文或仲裁权限。",

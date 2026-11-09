@@ -75,6 +75,7 @@ export interface FederationVerificationKey {
     | "commercial-disclosure-policy"
     | "commercial-disclosure"
     | "commercial-disclosure-read-query"
+    | "commercial-disclosure-download-query"
     | "commercial-disclosure-read-authorization"
     | "commercial-dispute"
     | "commercial-dispute-receipt"
