@@ -596,6 +596,7 @@ async function setup() {
       rootcert: { file: join(site.tls, "ca.crt") },
       clientRootCAs: { files: tlsRoots },
     });
+    section(section(config, "ledger"), "snapshots").rootDir = join(root, `${site.name}-snapshots`);
     section(config, "operations").listenAddress = "127.0.0.1:0";
     section(config, "vm").endpoint = "";
     section(config, "chaincode").externalBuilders = [
