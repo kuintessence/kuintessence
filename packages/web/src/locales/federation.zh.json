@@ -119,7 +119,8 @@
       "commercial-disclosure-read-authorization": "证据读取许可",
       "commercial-dispute": "争议开案",
       "commercial-dispute-receipt": "争议接收回执",
-      "commercial-dispute-freeze": "争议财务冻结确认"
+      "commercial-dispute-freeze": "争议财务冻结确认",
+      "commercial-arbitration-policy": "仲裁预授权政策"
     },
     "storage": {
       "title": "输入存储核对",
@@ -246,7 +247,9 @@
         "payment": {
           "approve": "审批外部付款凭证"
         },
-        "case": { "publish": "批准案件存证" },
+        "case": {
+          "publish": "批准案件存证"
+        },
         "disclosure": {
           "approve": "批准证据披露",
           "receive": "接收获批证据"
@@ -254,6 +257,9 @@
         "dispute": {
           "read": "查看争议案件",
           "open": "发起争议"
+        },
+        "arbitration": {
+          "approve": "批准仲裁预授权"
         }
       },
       "effects": {
@@ -310,6 +316,9 @@
         "dispute": {
           "read": "查看本机构案件及处理状态；不包含合同正文或仲裁权限。",
           "open": "针对本机构原记录开案并停止相关任务的新财务批准；包含案件查看，不授予裁决或改账权限。"
+        },
+        "arbitration": {
+          "approve": "批准或撤销本机构的仲裁预授权政策，包含合同查看；不授予裁决、任务接单、扣款或付款权限。"
         }
       }
     },

@@ -1,0 +1,102 @@
+import { expect, test } from "bun:test";
+import {
+  CommercialArbitrationPolicyDraftSchema,
+  CommercialArbitrationPolicySchema,
+} from "./arbitration-policy";
+import { federationCapabilitySources } from "./permissions";
+import { FederationKeyInput } from "./trust";
+
+const draft = CommercialArbitrationPolicyDraftSchema.parse({
+  policyId: crypto.randomUUID(),
+  arbitratorSiteId: crypto.randomUUID(),
+  subjectTypes: ["bill", "settlement"],
+  disclosures: [{ recordType: "bill", fields: ["dueAmount", "grossAmount"] }],
+  requiredEvidence: [{ recordType: "bill", fields: ["dueAmount"] }],
+  decisionRule: "designated-arbitrator",
+  actions: ["settle", "adjust"],
+  maxChargedAmount: "9007199254740993",
+  validUntil: "2028-01-01T00:00:00Z",
+});
+const policy = {
+  ...draft,
+  protocolVersion: 1,
+  kind: "commercial-arbitration-policy",
+  domainId: crypto.randomUUID(),
+  agreementRevisionId: crypto.randomUUID(),
+  agreementDigest: `sha256:${"a".repeat(64)}`,
+  sourceSiteId: crypto.randomUUID(),
+  targetSiteId: crypto.randomUUID(),
+  unit: "credit",
+  issuedAt: "2027-01-01T00:00:00Z",
+  validFrom: "2027-01-01T00:00:00Z",
+  salt: "b".repeat(64),
+};
+
+test("arbitration authority preserves exact caps, named parties and required evidence", () => {
+  expect(CommercialArbitrationPolicySchema.parse(policy).maxChargedAmount).toBe("9007199254740993");
+  expect(CommercialArbitrationPolicyDraftSchema.parse(draft).requiredEvidence).toEqual(
+    draft.requiredEvidence,
+  );
+  for (const patch of [
+    { arbitratorSiteId: policy.sourceSiteId },
+    { targetSiteId: policy.sourceSiteId },
+    { issuedAt: "2027-01-02T00:00:00Z" },
+    { validUntil: policy.validFrom },
+    { unit: "" },
+    { agreementDigest: "unknown" },
+    { maxChargedAmount: 9007199254740992 },
+    { maxChargedAmount: "-1" },
+    { maxChargedAmount: "01" },
+    { maxChargedAmount: "1.1" },
+    { sourceJws: "private contract" },
+  ])
+    expect(CommercialArbitrationPolicySchema.safeParse({ ...policy, ...patch }).success).toBe(
+      false,
+    );
+});
+
+test("evidence requirements cannot exceed disclosure consent or use arbitrary selectors", () => {
+  for (const patch of [
+    { requiredEvidence: [{ recordType: "bill", fields: ["lines"] }] },
+    { requiredEvidence: [{ recordType: "payment", fields: ["amount"] }] },
+    { requiredEvidence: [] },
+    { requiredEvidence: [draft.requiredEvidence[0], draft.requiredEvidence[0]] },
+    { disclosures: [draft.disclosures[0], draft.disclosures[0]] },
+    { disclosures: [{ recordType: "bill", fields: ["dueAmount", "dueAmount"] }] },
+    { requiredEvidence: [{ recordType: "bill", fields: ["dueAmount", "dueAmount"] }] },
+    { disclosures: [{ recordType: "bill", fields: ["$.calculation.*"] }] },
+  ])
+    expect(CommercialArbitrationPolicyDraftSchema.safeParse({ ...draft, ...patch }).success).toBe(
+      false,
+    );
+});
+
+test("a policy cannot add payment, minting or generic governance authority", () => {
+  for (const patch of [
+    { actions: ["pay"] },
+    { actions: ["mint"] },
+    { actions: ["adjust", "adjust"] },
+    { subjectTypes: ["bill", "bill"] },
+    { subjectTypes: ["wallet"] },
+    { decisionRule: "any-two-signers" },
+    { actions: ["resolve-without-financial-change"] },
+    { policyDigest: `sha256:${"c".repeat(64)}` },
+  ])
+    expect(CommercialArbitrationPolicyDraftSchema.safeParse({ ...draft, ...patch }).success).toBe(
+      false,
+    );
+  expect(
+    CommercialArbitrationPolicyDraftSchema.safeParse({
+      ...draft,
+      actions: ["resolve-without-financial-change"],
+      maxChargedAmount: "0",
+    }).success,
+  ).toBe(true);
+  expect(federationCapabilitySources("arbitration.approve")).toEqual(["arbitration.approve"]);
+  expect(federationCapabilitySources("agreement.read")).toContain("arbitration.approve");
+  for (const capability of ["disclosure.approve", "settlement.approve", "payment.approve"] as const)
+    expect(federationCapabilitySources(capability)).not.toContain("arbitration.approve");
+  const kinds = FederationKeyInput.shape.allowedKinds.element.options;
+  expect(kinds).toContain("commercial-arbitration-policy");
+  expect(FederationKeyInput.shape.allowedKinds.safeParse(kinds).success).toBe(true);
+});

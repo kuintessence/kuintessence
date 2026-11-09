@@ -116,6 +116,11 @@
       "types": "./src/federation/case-ledger.ts",
       "default": "./src/federation/case-ledger.ts"
     },
+    "./federation/arbitration-policy": {
+      "bun": "./src/federation/arbitration-policy.ts",
+      "types": "./src/federation/arbitration-policy.ts",
+      "default": "./src/federation/arbitration-policy.ts"
+    },
     "./federation/case-revocation": {
       "bun": "./src/federation/case-revocation.ts",
       "types": "./src/federation/case-revocation.ts",

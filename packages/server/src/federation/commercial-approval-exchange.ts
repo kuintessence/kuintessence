@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   federationCommercialAdjustments as adjustments,
   federationCommercialExecutionApprovals as approvals,
+  federationArbitrationPolicies as arbitrationPolicies,
   auditLog,
   federationCommercialBills as bills,
   federationCommercialAgreements as contracts,
@@ -17,6 +18,7 @@ import {
   federationCommercialApprovalSyncs as syncs,
 } from "@kuintessence/db";
 import { assertFederationStatusQueryFresh, FederationError } from "@kuintessence/shared/federation";
+import { CommercialArbitrationPolicySchema } from "@kuintessence/shared/federation/arbitration-policy";
 import { CasePublicationSchema } from "@kuintessence/shared/federation/case-ledger";
 import {
   CommercialAdjustmentSchema,
@@ -36,6 +38,7 @@ import { CommercialDisclosurePolicySchema } from "@kuintessence/shared/federatio
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { FederationAdjustmentService } from "./adjustment";
+import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { federationMaterialDigest } from "./assets";
 import { FederationBillingService } from "./billing";
 import type { FederationCasePublicationService } from "./case-publications";
@@ -69,6 +72,7 @@ const businessSchema = z.union([
   CommercialPaymentSchema,
   CommercialRefundSchema,
   CommercialDisclosurePolicySchema,
+  CommercialArbitrationPolicySchema,
   CommercialDisclosureSchema,
   CasePublicationSchema,
 ]);
@@ -148,11 +152,17 @@ export class FederationCommercialApprovalExchange {
         counterpartyJws: record.row.counterpartyJws,
       };
     }
-    if (identity.recordKind === "disclosure-policy" || identity.recordKind === "disclosure") {
+    if (
+      identity.recordKind === "arbitration-policy" ||
+      identity.recordKind === "disclosure-policy" ||
+      identity.recordKind === "disclosure"
+    ) {
       const service =
-        identity.recordKind === "disclosure-policy"
-          ? new FederationDisclosurePolicyService(this.db, this.signing)
-          : new FederationDisclosureService(this.db, this.signing);
+        identity.recordKind === "arbitration-policy"
+          ? new FederationArbitrationPolicyService(this.db, this.signing)
+          : identity.recordKind === "disclosure-policy"
+            ? new FederationDisclosurePolicyService(this.db, this.signing)
+            : new FederationDisclosureService(this.db, this.signing);
       const record = await service.exchangeRecord(
         tx,
         contract.localOrgId,
@@ -640,6 +650,42 @@ export class FederationCommercialApprovalExchange {
           .insert(syncs)
           .values(pendingAdjustments.map((v) => ({ ...v, recordKind: "adjustment" as const })))
           .onConflictDoNothing();
+      const pendingArbitrationPolicies = await tx
+        .select({
+          localSiteId: arbitrationPolicies.localSiteId,
+          agreementRevisionId: arbitrationPolicies.agreementRevisionId,
+          recordId: arbitrationPolicies.policyId,
+        })
+        .from(arbitrationPolicies)
+        .leftJoin(
+          syncs,
+          and(
+            eq(syncs.localSiteId, arbitrationPolicies.localSiteId),
+            eq(syncs.recordKind, "arbitration-policy"),
+            eq(syncs.recordId, arbitrationPolicies.policyId),
+          ),
+        )
+        .where(
+          and(
+            eq(arbitrationPolicies.localSiteId, this.signing.siteId),
+            isNull(arbitrationPolicies.counterpartyJws),
+            isNull(arbitrationPolicies.revokedAt),
+            isNull(syncs.recordId),
+          ),
+        )
+        .orderBy(asc(arbitrationPolicies.policyId))
+        .limit(8)
+        .for("update", { of: arbitrationPolicies, skipLocked: true });
+      if (pendingArbitrationPolicies.length)
+        await tx
+          .insert(syncs)
+          .values(
+            pendingArbitrationPolicies.map((v) => ({
+              ...v,
+              recordKind: "arbitration-policy" as const,
+            })),
+          )
+          .onConflictDoNothing();
       const pendingPolicies = await tx
         .select({
           localSiteId: policies.localSiteId,
@@ -926,11 +972,17 @@ export class FederationCommercialApprovalExchange {
       await this.cases.attachExchanged(claim.agreementRevisionId, claim.recordId, response, (tx) =>
         authorize(tx, true),
       );
-    } else if (claim.recordKind === "disclosure-policy" || claim.recordKind === "disclosure") {
+    } else if (
+      claim.recordKind === "arbitration-policy" ||
+      claim.recordKind === "disclosure-policy" ||
+      claim.recordKind === "disclosure"
+    ) {
       const service =
-        claim.recordKind === "disclosure-policy"
-          ? new FederationDisclosurePolicyService(this.db, this.signing)
-          : new FederationDisclosureService(this.db, this.signing);
+        claim.recordKind === "arbitration-policy"
+          ? new FederationArbitrationPolicyService(this.db, this.signing)
+          : claim.recordKind === "disclosure-policy"
+            ? new FederationDisclosurePolicyService(this.db, this.signing)
+            : new FederationDisclosureService(this.db, this.signing);
       await service.attachExchanged(claim.agreementRevisionId, claim.recordId, response, (tx) =>
         authorize(tx, true),
       );
@@ -1089,19 +1141,21 @@ export class FederationCommercialApprovalExchange {
       await requireFederationCapability(
         tx,
         actor,
-        identity.recordKind === "case-publication"
-          ? "case.publish"
-          : identity.recordKind === "disclosure-policy" || identity.recordKind === "disclosure"
-            ? "disclosure.approve"
-            : identity.recordKind === "payment"
-              ? "payment.approve"
-              : identity.recordKind === "adjustment"
-                ? "adjustment.approve"
-                : identity.recordKind === "settlement" || identity.recordKind === "refund"
-                  ? "settlement.approve"
-                  : identity.recordKind === "bill"
-                    ? "billing.approve"
-                    : "agreement.approve",
+        identity.recordKind === "arbitration-policy"
+          ? "arbitration.approve"
+          : identity.recordKind === "case-publication"
+            ? "case.publish"
+            : identity.recordKind === "disclosure-policy" || identity.recordKind === "disclosure"
+              ? "disclosure.approve"
+              : identity.recordKind === "payment"
+                ? "payment.approve"
+                : identity.recordKind === "adjustment"
+                  ? "adjustment.approve"
+                  : identity.recordKind === "settlement" || identity.recordKind === "refund"
+                    ? "settlement.approve"
+                    : identity.recordKind === "bill"
+                      ? "billing.approve"
+                      : "agreement.approve",
       );
       const [existing] = await tx
         .select()

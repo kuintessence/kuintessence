@@ -119,7 +119,8 @@
       "commercial-disclosure-read-authorization": "Evidence read authorization",
       "commercial-dispute": "Dispute opening",
       "commercial-dispute-receipt": "Dispute receipt",
-      "commercial-dispute-freeze": "Dispute financial freeze"
+      "commercial-dispute-freeze": "Dispute financial freeze",
+      "commercial-arbitration-policy": "Arbitration preauthorization policy"
     },
     "storage": {
       "title": "Input storage reconciliation",
@@ -246,7 +247,9 @@
         "payment": {
           "approve": "Approve external payment receipts"
         },
-        "case": { "publish": "Approve case publication" },
+        "case": {
+          "publish": "Approve case publication"
+        },
         "disclosure": {
           "approve": "Approve evidence disclosure",
           "receive": "Receive approved evidence"
@@ -254,6 +257,9 @@
         "dispute": {
           "read": "View disputes",
           "open": "Open disputes"
+        },
+        "arbitration": {
+          "approve": "Approve arbitration policies"
         }
       },
       "effects": {
@@ -310,6 +316,9 @@
         "dispute": {
           "read": "View this institution’s cases and progress. Does not include contract contents or arbitration authority.",
           "open": "Open cases on this institution’s original records and stop new financial approvals for the task. Includes case viewing, without award or accounting authority."
+        },
+        "arbitration": {
+          "approve": "Approve or revoke arbitration policies, including contract viewing. Grants no award, admission, debit or payment authority."
         }
       }
     },

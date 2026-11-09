@@ -39,6 +39,7 @@ test("commercial approval exchange binds record kind, digest, distinct parties a
     "adjustment",
     "refund",
     "payment",
+    "arbitration-policy",
     "disclosure-policy",
     "disclosure",
     "case-publication",

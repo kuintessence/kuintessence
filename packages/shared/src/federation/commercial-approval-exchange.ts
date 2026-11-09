@@ -11,6 +11,7 @@ export const CommercialApprovalRecordKindSchema = z.enum([
   "adjustment",
   "refund",
   "payment",
+  "arbitration-policy",
   "disclosure-policy",
   "disclosure",
   "case-publication",

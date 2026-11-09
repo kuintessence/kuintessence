@@ -1,6 +1,10 @@
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
 import {
+  CommercialArbitrationPolicyDraftSchema,
+  CommercialArbitrationPolicySchema,
+} from "@kuintessence/shared/federation/arbitration-policy";
+import {
   CommercialAdjustmentDraftInputSchema,
   CommercialAdjustmentSchema,
   CommercialAgreementSchema,
@@ -34,6 +38,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationAdjustmentService } from "../federation/adjustment";
+import type { FederationArbitrationPolicyService } from "../federation/arbitration-policy";
 import type { FederationBillingService } from "../federation/billing";
 import type { FederationClosingAutomation } from "../federation/closing-automation";
 import {
@@ -102,6 +107,7 @@ export function createFederationCommercialRoutes(
   disputeDelivery?: FederationDisputeDelivery,
   disputeFreezes?: FederationDisputeFreezeExchange,
   disclosures?: FederationDisclosureService,
+  arbitrationPolicies?: FederationArbitrationPolicyService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -310,6 +316,80 @@ export function createFederationCommercialRoutes(
             c.get("federationActor"),
             c.req.valid("param").revisionId,
             c.req.valid("param").grantId,
+          ),
+        }),
+    );
+  }
+  if (arbitrationPolicies) {
+    const path = "/federation/commercial-agreements/:revisionId/arbitration-policies";
+    const policyId = id.extend({ policyId: z.uuid() });
+    r.get(
+      path,
+      kqValidator("param", id),
+      kqValidator("query", page.extend({ policyId: z.uuid().optional() })),
+      async (c) => {
+        const { limit, offset, policyId } = c.req.valid("query");
+        return c.json({
+          data: await arbitrationPolicies.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+            policyId,
+          ),
+        });
+      },
+    );
+    r.post(
+      `${path}/draft`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialArbitrationPolicyDraftSchema),
+      async (c) =>
+        c.json({
+          data: await arbitrationPolicies.draft(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("json"),
+          ),
+        }),
+    );
+    r.post(
+      `${path}/approve`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialArbitrationPolicySchema),
+      async (c) =>
+        c.json({
+          data: await arbitrationPolicies.approve(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("json"),
+          ),
+        }),
+    );
+    r.post(
+      `${path}/:policyId/counterparty`,
+      kqValidator("param", policyId),
+      kqValidator("json", z.strictObject({ approvalJws: z.string().min(1).max(524288) })),
+      async (c) =>
+        c.json({
+          data: await arbitrationPolicies.attachCounterparty(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").policyId,
+            c.req.valid("json").approvalJws,
+          ),
+        }),
+    );
+    r.post(
+      `${path}/:policyId/revoke`,
+      kqValidator("param", policyId),
+      kqValidator("json", z.strictObject({})),
+      async (c) =>
+        c.json({
+          data: await arbitrationPolicies.revoke(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").policyId,
           ),
         }),
     );

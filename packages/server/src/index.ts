@@ -52,6 +52,7 @@ import { FederationAccountingCollection } from "./federation/accounting-collecti
 import { FederationAdjustmentService } from "./federation/adjustment";
 import { FederationAgreementExchange } from "./federation/agreement-exchange";
 import { FederationAgreementService } from "./federation/agreements";
+import { FederationArbitrationPolicyService } from "./federation/arbitration-policy";
 import { FederationAssetService } from "./federation/assets";
 import { FederationAttestationService } from "./federation/attestation";
 import { UnixAttestationClient } from "./federation/attestation-client";
@@ -1975,6 +1976,7 @@ if (federationSigningKey && federationCommercial)
       federationDisputeDelivery,
       federationDisputeFreezes,
       new FederationDisclosureService(db, federationSigningKey),
+      new FederationArbitrationPolicyService(db, federationSigningKey),
     ),
   );
 const federationPreparation = federationSigningKey

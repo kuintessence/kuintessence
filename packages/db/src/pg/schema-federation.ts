@@ -31,6 +31,7 @@ import type {
   MediaShipmentPackage,
   MediaShipmentState,
 } from "@kuintessence/shared/federation";
+import type { CommercialArbitrationPolicy } from "@kuintessence/shared/federation/arbitration-policy";
 import type {
   CaseProposal,
   CasePublication,
@@ -153,6 +154,7 @@ export const federationSigningKeys = pgTable(
           | "commercial-adjustment"
           | "commercial-refund"
           | "commercial-payment"
+          | "commercial-arbitration-policy"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
           | "case-evidence-publication"
@@ -244,7 +246,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -1557,6 +1559,64 @@ export const federationDisputeFreezes = pgTable(
   ],
 );
 
+/** Policy originals and signatures survive revocation; use still requires an original task admission binding. */
+export const federationArbitrationPolicies = pgTable(
+  "federation_arbitration_policies",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    policyId: uuid("policy_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    arbitratorSiteId: uuid("arbitrator_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    payload: jsonb("payload").$type<CommercialArbitrationPolicy>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedBy: uuid("revoked_by").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.policyId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    index("federation_arbitration_policy_org").on(
+      t.localSiteId,
+      t.localOrgId,
+      t.agreementRevisionId,
+      t.createdAt,
+    ),
+    check(
+      "federation_arbitration_policy_identity",
+      sql`(
+      ${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.payload}->>'kind' = 'commercial-arbitration-policy'
+      AND ${t.payload}->>'policyId' = ${t.policyId}::text
+      AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND ${t.payload}->>'arbitratorSiteId' = ${t.arbitratorSiteId}::text
+      AND (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text)
+      AND ${t.payload}->>'sourceSiteId' <> ${t.payload}->>'targetSiteId'
+      AND ${t.arbitratorSiteId}::text NOT IN (${t.payload}->>'sourceSiteId', ${t.payload}->>'targetSiteId')
+      AND (${t.counterpartyJws} IS NULL) = (${t.confirmedAt} IS NULL)
+      AND (${t.revokedAt} IS NULL) = (${t.revokedBy} IS NULL)
+    ) IS TRUE`,
+    ),
+  ],
+);
+
 /** Policy originals and signatures survive revocation; this table conveys no money authority. */
 export const federationDisclosurePolicies = pgTable(
   "federation_disclosure_policies",
@@ -2825,6 +2885,7 @@ export const federationCommercialApprovalSyncs = pgTable(
         | "adjustment"
         | "refund"
         | "payment"
+        | "arbitration-policy"
         | "disclosure-policy"
         | "disclosure"
         | "case-publication"
@@ -2851,7 +2912,7 @@ export const federationCommercialApprovalSyncs = pgTable(
     index("federation_approval_sync_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
     check(
       "federation_approval_sync_identity",
-      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment','refund','payment','disclosure-policy','disclosure','case-publication') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
+      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment','refund','payment','arbitration-policy','disclosure-policy','disclosure','case-publication') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
     ),
     check(
       "federation_approval_sync_state",
