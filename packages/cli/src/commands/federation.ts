@@ -2,6 +2,18 @@ import { writeFile } from "node:fs/promises";
 import {
   FederationCurrentCapabilitiesSchema,
   federationCanonicalJson,
+  MediaDeviceListSchema,
+  MediaDeviceRegistrationSchema,
+  MediaDeviceSchema,
+  MediaDeviceUpdateSchema,
+  MediaHandoffRecordSchema,
+  MediaHandoffSchema,
+  MediaLogisticsContextSchema,
+  MediaShipmentDetailSchema,
+  MediaShipmentListSchema,
+  MediaShipmentRegistrationSchema,
+  MediaShipmentSchema,
+  MediaTransportPackagesSchema,
 } from "@kuintessence/shared/federation";
 import {
   ClosingPolicyInputSchema,
@@ -335,6 +347,208 @@ export function registerFederationCommand(
         throw error;
       }
     });
+  const media = root
+    .command("media")
+    .description("Physical media inventory and custody (not data authorization)");
+  const mediaBase = "/federation/media";
+  const mediaContext = async (s: Session) => {
+    const context = await get(s, `${mediaBase}/logistics-context`, MediaLogisticsContextSchema);
+    if (context.localOrgId !== s.org) throw new Error(s.t("scope"));
+    return context;
+  };
+  const mediaScope = <T extends { localOrgId: string; localSiteId: string }>(
+    row: T,
+    context: z.infer<typeof MediaLogisticsContextSchema>,
+  ) => {
+    if (row.localOrgId !== context.localOrgId || row.localSiteId !== context.localSiteId)
+      throw new Error("Media response scope mismatch");
+    return row;
+  };
+  const devices = media.command("devices").description("Device inventory");
+  const deviceList = page(devices.command("list"));
+  action(deviceList, async () => {
+    const s = scoped(),
+      pagination = query(deviceList.opts()),
+      context = await mediaContext(s);
+    const value = MediaDeviceListSchema.parse(
+      await s.client.get(`${mediaBase}/devices?${pagination}`),
+    );
+    for (const row of value.data) mediaScope(row.device, context);
+    output(s, value, [
+      ...value.data.map(
+        ({ device, activeShipmentId }) =>
+          `${device.deviceId}\t${device.name}\t${device.assetTag}\t${device.state}\t${device.capacityBytes} B${activeShipmentId ? `\t${activeShipmentId}` : ""}`,
+      ),
+      ...(value.hasMore
+        ? [s.lang === "zh" ? "还有下一页；使用 --offset" : "More records; use --offset"]
+        : []),
+    ]);
+  });
+  action(devices.command("register <file>"), async (file) => {
+    const s = scoped(),
+      input = MediaDeviceRegistrationSchema.parse(JSON.parse(await readInput(file))),
+      context = await mediaContext(s);
+    try {
+      const row = mediaScope(
+        await post(s, `${mediaBase}/devices`, input, MediaDeviceSchema),
+        context,
+      );
+      if (
+        row.deviceId !== input.deviceId ||
+        row.name !== input.name ||
+        row.assetTag !== input.assetTag ||
+        row.capacityBytes !== input.capacityBytes
+      )
+        throw new Error("Device mismatch");
+      output(s, row, [`${s.t("saved")}: ${row.deviceId}`]);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new Error(s.t("unknown"));
+    }
+  });
+  action(devices.command("update <deviceId> <file>"), async (deviceId, file) => {
+    z.uuid().parse(deviceId);
+    const s = scoped(),
+      input = MediaDeviceUpdateSchema.parse(JSON.parse(await readInput(file))),
+      context = await mediaContext(s);
+    try {
+      const row = mediaScope(
+        MediaDeviceSchema.parse(
+          z
+            .object({ data: z.unknown() })
+            .parse(await s.client.patch(`${mediaBase}/devices/${deviceId}`, input)).data,
+        ),
+        context,
+      );
+      if (
+        row.deviceId !== deviceId ||
+        row.version !== input.expectedVersion + 1 ||
+        row.name !== input.name ||
+        row.state !== input.state
+      )
+        throw new Error("Device update mismatch");
+      output(s, row, [`${s.t("saved")}: ${row.deviceId}`]);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new Error(s.t("unknown"));
+    }
+  });
+  const packages = page(media.command("packages").description("List transport package summaries"));
+  action(packages, async () => {
+    const s = scoped(),
+      pagination = query(packages.opts()),
+      context = await mediaContext(s);
+    const value = mediaScope(
+      MediaTransportPackagesSchema.parse(
+        await s.client.get(`${mediaBase}/transport-packages?${pagination}`),
+      ),
+      context,
+    );
+    output(s, value, [
+      ...value.data.map(
+        (row) =>
+          `${row.packageId}\t${row.senderName ?? row.senderSiteId} → ${row.recipientName ?? row.recipientSiteId}\t${row.subjectKind}\t${row.manifestDigest}${row.revokedAt ? `\t${s.t("revokedState")}` : ""}`,
+      ),
+      ...(value.hasMore
+        ? [s.lang === "zh" ? "还有下一页；使用 --offset" : "More records; use --offset"]
+        : []),
+    ]);
+  });
+  const shipments = media
+    .command("shipments")
+    .description("Shipment registration and custody history");
+  const shipmentList = page(shipments.command("list"));
+  action(shipmentList, async () => {
+    const s = scoped(),
+      pagination = query(shipmentList.opts()),
+      context = await mediaContext(s);
+    const value = MediaShipmentListSchema.parse(
+      await s.client.get(`${mediaBase}/shipments?${pagination}`),
+    );
+    for (const row of value.data) mediaScope(row, context);
+    output(s, value, [
+      ...value.data.map(
+        (row) =>
+          `${row.shipmentId}\t${row.name}\t${row.state}\t${row.senderName ?? row.senderSiteId} → ${row.recipientName ?? row.recipientSiteId}`,
+      ),
+      ...(value.hasMore
+        ? [s.lang === "zh" ? "还有下一页；使用 --offset" : "More records; use --offset"]
+        : []),
+    ]);
+  });
+  const shipmentShow = page(shipments.command("show <shipmentId>"));
+  action(shipmentShow, async (shipmentId) => {
+    z.uuid().parse(shipmentId);
+    const s = scoped(),
+      pagination = query(shipmentShow.opts()),
+      context = await mediaContext(s);
+    const value = await get(
+      s,
+      `${mediaBase}/shipments/${shipmentId}?${pagination}`,
+      MediaShipmentDetailSchema,
+    );
+    mediaScope(value.shipment, context);
+    if (value.shipment.shipmentId !== shipmentId) throw new Error(s.t("scope"));
+    output(s, value, [
+      `${value.shipment.name}\t${value.shipment.state}\tv${value.shipment.version}`,
+      ...value.devices.map(({ device }) => `${device.deviceId}\t${device.assetTag}`),
+      ...value.shipment.packages.map((row) => `${row.packageId}\t${row.manifestDigest}`),
+      ...value.events.map(
+        (row) =>
+          `${row.eventId}\t${row.payload.state}\t${row.payload.occurredAt}\t${row.payload.note}`,
+      ),
+      ...(value.hasMore
+        ? [s.lang === "zh" ? "还有下一页；使用 --offset" : "More records; use --offset"]
+        : []),
+    ]);
+  });
+  action(shipments.command("register <file>"), async (file) => {
+    const s = scoped(),
+      input = MediaShipmentRegistrationSchema.parse(JSON.parse(await readInput(file))),
+      context = await mediaContext(s);
+    try {
+      const row = mediaScope(
+        await post(s, `${mediaBase}/shipments`, input, MediaShipmentSchema),
+        context,
+      );
+      if (
+        row.shipmentId !== input.shipmentId ||
+        row.name !== input.name ||
+        federationCanonicalJson(row.packages.map((item) => item.packageId).sort()) !==
+          federationCanonicalJson([...input.packageIds].sort())
+      )
+        throw new Error("Shipment mismatch");
+      output(s, row, [`${s.t("saved")}: ${row.shipmentId}`]);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new Error(s.t("unknown"));
+    }
+  });
+  action(shipments.command("handoff <shipmentId> <file>"), async (shipmentId, file) => {
+    z.uuid().parse(shipmentId);
+    const s = scoped(),
+      input = MediaHandoffSchema.parse(JSON.parse(await readInput(file))),
+      context = await mediaContext(s);
+    try {
+      const row = await post(
+        s,
+        `${mediaBase}/shipments/${shipmentId}/handoffs`,
+        input,
+        MediaHandoffRecordSchema,
+      );
+      if (
+        row.localSiteId !== context.localSiteId ||
+        row.shipmentId !== shipmentId ||
+        federationCanonicalJson(row.payload) !== federationCanonicalJson(input)
+      )
+        throw new Error("Handoff mismatch");
+      output(s, row, [`${s.t("saved")}: ${row.eventId}`]);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new Error(s.t("unknown"));
+    }
+  });
+
   const organizations = z.object({
     activeOrganizationId: z.uuid().nullable(),
     organizations: z.array(z.object({ orgId: z.uuid(), name: z.string(), role: z.string() })),

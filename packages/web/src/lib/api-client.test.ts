@@ -309,12 +309,15 @@ describe("organization-bound requests", () => {
     return { organizationId, authRevision: getAuthState().revision };
   }
 
-  test("rejects a stale organization before sending a write", async () => {
+  test.each([
+    "post",
+    "patch",
+  ] as const)("rejects a stale organization before sending a %s write", async (method) => {
     const bound = scope();
     const spy = makeFetchSpy("{}", { status: 200 });
     vi.stubGlobal("fetch", spy);
     localStorage.setItem("kq_active_organization_id", "another-org");
-    await expect(api.post("/federation/agreements/approve", {}, bound)).rejects.toMatchObject({
+    await expect(api[method]("/federation/agreements/approve", {}, bound)).rejects.toMatchObject({
       code: "ORGANIZATION_CONTEXT_CHANGED",
     });
     expect(spy).not.toHaveBeenCalled();

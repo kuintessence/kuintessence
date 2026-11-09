@@ -73,3 +73,101 @@ export const MediaShipmentPackageSchema = z.strictObject({
   agreementRevisionId: z.uuid(),
 });
 export type MediaShipmentPackage = z.infer<typeof MediaShipmentPackageSchema>;
+
+export const MediaLogisticsContextSchema = z.object({
+  localSiteId: z.uuid(),
+  localOrgId: z.uuid(),
+});
+const Recorded = {
+  createdBy: z.uuid(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+  registrationDigest: FederationDigestSchema,
+  version: z.number().int().positive(),
+};
+export const MediaDeviceSchema = MediaDeviceRegistrationSchema.extend({
+  ...MediaLogisticsContextSchema.shape,
+  ...Recorded,
+  state: MediaDeviceStateSchema,
+});
+export type MediaDevice = z.infer<typeof MediaDeviceSchema>;
+export const MediaDeviceListSchema = z.object({
+  data: z.array(z.object({ device: MediaDeviceSchema, activeShipmentId: z.uuid().nullable() })),
+  hasMore: z.boolean(),
+});
+export const MediaShipmentSchema = z
+  .object({
+    ...MediaLogisticsContextSchema.shape,
+    ...Recorded,
+    shipmentId: z.uuid(),
+    name: Name,
+    senderSiteId: z.uuid(),
+    recipientSiteId: z.uuid(),
+    senderName: z.string().nullable().optional(),
+    recipientName: z.string().nullable().optional(),
+    packages: z.array(MediaShipmentPackageSchema).min(1).max(100),
+    state: MediaShipmentStateSchema,
+  })
+  .refine(
+    (row) =>
+      row.senderSiteId !== row.recipientSiteId &&
+      [row.senderSiteId, row.recipientSiteId].includes(row.localSiteId),
+  );
+export type MediaShipment = z.infer<typeof MediaShipmentSchema>;
+export const MediaShipmentListSchema = z.object({
+  data: z.array(MediaShipmentSchema),
+  hasMore: z.boolean(),
+});
+export const MediaHandoffRecordSchema = z
+  .object({
+    localSiteId: z.uuid(),
+    shipmentId: z.uuid(),
+    eventId: z.uuid(),
+    payload: MediaHandoffSchema,
+    version: z.number().int().positive(),
+    recordedBy: z.uuid(),
+    recordedAt: z.iso.datetime(),
+  })
+  .refine(
+    (row) => row.eventId === row.payload.eventId && row.version === row.payload.expectedVersion + 1,
+  );
+export const MediaShipmentDetailSchema = z
+  .object({
+    shipment: MediaShipmentSchema,
+    devices: z.array(z.object({ device: MediaDeviceSchema, active: z.boolean() })),
+    events: z.array(MediaHandoffRecordSchema),
+    hasMore: z.boolean(),
+  })
+  .refine(
+    (row) =>
+      row.devices.every(
+        ({ device }) =>
+          device.localSiteId === row.shipment.localSiteId &&
+          device.localOrgId === row.shipment.localOrgId,
+      ) &&
+      row.events.every(
+        (event) =>
+          event.localSiteId === row.shipment.localSiteId &&
+          event.shipmentId === row.shipment.shipmentId,
+      ),
+  );
+export const MediaTransportPackageSchema = MediaShipmentPackageSchema.extend({
+  senderSiteId: z.uuid(),
+  recipientSiteId: z.uuid(),
+  senderName: z.string().nullable(),
+  recipientName: z.string().nullable(),
+  subjectKind: z.enum(["dataset", "task-input", "task-result"]),
+  createdAt: z.iso.datetime(),
+  revokedAt: z.iso.datetime().nullable(),
+});
+export type MediaTransportPackage = z.infer<typeof MediaTransportPackageSchema>;
+export const MediaTransportPackagesSchema = MediaLogisticsContextSchema.extend({
+  data: z.array(MediaTransportPackageSchema),
+  hasMore: z.boolean(),
+}).refine((row) =>
+  row.data.every(
+    (item) =>
+      item.senderSiteId !== item.recipientSiteId &&
+      [item.senderSiteId, item.recipientSiteId].includes(row.localSiteId),
+  ),
+);

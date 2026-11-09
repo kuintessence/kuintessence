@@ -36,6 +36,8 @@
 
 | 方法与路径 | 内容 |
 | --- | --- |
+| `GET /api/federation/media/logistics-context` | 当前组织与本站 ID；返回 data |
+| `GET /api/federation/media/transport-packages?limit=50&offset=0` | 当前组织已有导出/接收包摘要、两端站点名称、类型与撤销状态；返回 localSiteId / localOrgId / data / hasMore |
 | `POST /api/federation/media/devices` | `{deviceId,name,assetTag,capacityBytes}` |
 | `GET /api/federation/media/devices?limit=50&offset=0` | 当前组织介质和活动批次；返回 data / hasMore |
 | `PATCH /api/federation/media/devices/:id` | `{expectedVersion,name,state,reason}`，state 为 active / retired / destroyed |
@@ -46,10 +48,42 @@
 
 部署须先运行由 Drizzle 生成的迁移 0166，再使用新 Server。无需 Fabric、链码或 Agent 升级；直接模式不创建链待办。旧 Server 不认识新增权限。回滚前先停止物流写入，备份授权名册并通过新版本权限管理撤销 media.logistics，再切换旧 Server；保留新表和历史，不能降级删表。恢复新版本后由管理员按原授权记录重新授予权限。
 
+## Web 操作
+
+“机构合作 → 介质运输”按当前登录机构展示“运输批次”和“介质”。需要管理员明确授予当前人员 `media.logistics`；没有权限时不读取清单。切换机构或登录会话会清空未提交表单；请求同时绑定机构与登录版本。
+
+1. 在介质清单登记名称、资产编号和容量（GiB）。空闲且未销毁的介质可以修改名称或状态，并填写原因。
+2. 新建批次时勾选已有介质和数据包。支持分页并保留跨页选择；已占用/停用介质不可选择，同一批次只能选择相同收发双方的数据包。已撤销包仍可用于补录保管事实，页面明确显示撤销状态。
+3. 批次详情展示两端机构、介质、包摘要及交接时间线。交接只列出当前允许的后续状态；来源方不能从待发运直接跳到已收到。填写发生时间、说明及可选凭证摘要，留空时间按提交时刻记录。
+4. 提交结果不确定时，表单保留原 UUID、时间及正文，重试发送原请求。可根据显示的记录 ID 查询；介质版本冲突需返回刷新后重新修改。请求在当前页面保留，离开页面或关闭浏览器不保证恢复未确认表单。
+
+页面验证响应格式、机构、站点和记录身份，错误响应不会被当作保存成功。后台更新不因切回标签页清空正常内容；读取失败时隐藏旧清单。手工刷新可获得最新状态。
+
+## CLI
+
+先通过 `kq login` 登录，用 `federation organizations` 查看机构，必要时通过 `federation use` 显式切换。下列命令的 `--org` 只核对当前会话，不替用户切换机构。写操作从本地 JSON 文件读取原请求，不自动生成或更新 ID。
+
+```bash
+kq federation --org <orgId> media devices list --limit 20 --offset 0
+kq federation --org <orgId> media devices register device.json
+kq federation --org <orgId> media devices update <deviceId> device-update.json
+kq federation --org <orgId> media packages --limit 20 --offset 0
+kq federation --org <orgId> media shipments register shipment.json
+kq federation --org <orgId> media shipments list
+kq federation --org <orgId> media shipments show <shipmentId> --limit 20 --offset 0
+kq federation --org <orgId> media shipments handoff <shipmentId> handoff.json
+```
+
+文件字段与上述 HTTP 表一致。`device.json` 的 capacityBytes 使用整数**字节**；`shipment.json` 引用查询所得原 deviceIds/packageIds；`handoff.json` 包含固定 eventId、最新 expectedVersion、ISO UTC occurredAt 和可空 evidenceDigest。首次创建 UUID 后保存原文件，重试不要替换 ID 或正文。介质更新是版本条件写入，不保证重复 PATCH 返回成功：原更新已经成功时，后续重试可能返回版本冲突，应查询确认。
+
+根命令支持 `--lang zh|en` 和 `--json`。JSON 清单保留 hasMore；普通输出提示下一页，介质容量使用字节。CLI 核对本站/组织和写入确认；网络或确认内容异常会报告结果未确认，不自动重试。输入上限 600000 字节，响应中的密文私钥和原签名不会通过物流摘要接口提供。
+
 ## 验证与剩余工作
 
-两个隔离 PostgreSQL 从空库迁移，22 项测试通过，覆盖接收方真实签名包关联、并发排他与重放、组织/当前权限隔离、返还与销毁分离、历史分页、审计失败回滚，以及不修改原导入许可和数据位置。来源方另复用真实 age 的签名清单准备验证多包/多介质登记；测试注入已绑定的人员身份，未覆盖正式登录；这不代表实际运输或跨主机交接已经验收。
+2026-11-09：两个临时 PostgreSQL 从空库迁移。接收侧 22 项通过，覆盖包登记、当前权限和组织隔离、并发排他、版本重放、返还/销毁分离、历史分页、审计回滚、摘要字段及实际响应 schema。来源侧真实 age 导出多包/多介质专项 1 项通过，验证导出摘要分页查询，不重跑未变化的 65 项出口用例。
 
-Web 运输操作页、CLI、跨站交接签名交换与副本删除生命周期尚未接通。现有权限管理中的新权限不是完整物流界面。完整蓝图和 PR 预览目标保持不变，W07/W08/O05 不据此标记整体完成。
+CLI HTTP 40 项通过（含新增物流的分页、机构固定、PATCH、原事件重试和不一致响应）。Web/API 客户端 32 项通过，覆盖原请求重试、非法响应、机构权限、切换登录、分页保留选择及阻止误提交。浏览器使用真实 React 组件和受控 HTTP 响应，完成勾选→创建→查看交接；7 张桌面/手机、中英文/深色截图无页面异常或横向溢出。截图和日志保存在本机 temp/media-logistics-ui 与 temp/media-logistics-*.log，不纳入版本控制。
 
-最终全仓 lint/typecheck、352 个本地文档目标与 diff 检查通过。测试日志保存在本机 temp/media-logistics-pg.log 与 temp/media-logistics-source-pg.log，不纳入版本控制；临时数据库均已关闭并删除。
+这轮页面和 CLI 已接通本站物流记录；跨站签名交接、完整导出/导入操作界面、任务私有包及副本删除生命周期仍待交付。测试注入绑定人员身份，不等于正式登录或 PR 预览验收，也不等于实际物理运输或跨主机交接。完整蓝图和 PR 预览目标保持不变，W07/W08/O05 不据此标记整体完成。
+
+全仓 lint 通过（保留既有警告）；类型检查中新增测试代码的问题已修正，Web/Server 重查通过，其余包及 Fabric 实验脚本通过。178 个本地文档目标和差异格式检查通过；临时数据库与本轮浏览器测试服务已清理。

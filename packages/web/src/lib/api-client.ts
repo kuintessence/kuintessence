@@ -105,11 +105,11 @@ export const api = {
       headers: { "Content-Type": "application/json", ...authHeaders(scope) },
       body: body ? JSON.stringify(body) : undefined,
     })),
-  patch: <T>(path: string, body?: unknown) =>
+  patch: <T>(path: string, body?: unknown, scope?: ApiOrganizationScope) =>
     mutationRequest<T>(path, () => ({
       credentials: "same-origin",
       method: "PATCH",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
+      headers: { "Content-Type": "application/json", ...authHeaders(scope) },
       body: body ? JSON.stringify(body) : undefined,
     })),
   put: <T>(path: string, body?: unknown) =>

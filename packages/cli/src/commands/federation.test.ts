@@ -894,3 +894,99 @@ test.each(["en", "zh"])("CLI refund policy and task lists name the kind in %s", 
   expect(text).toContain(label);
   expect(text).toContain(refund.refundId);
 });
+
+const mediaDevice = {
+  localSiteId: target,
+  localOrgId: orgId,
+  deviceId: billId,
+  name: "Research drive",
+  assetTag: "D-1",
+  capacityBytes: 1073741824,
+  state: "active",
+  version: 1,
+  registrationDigest: digest,
+  createdBy: userId,
+  createdAt: bill.issuedAt,
+  updatedAt: bill.issuedAt,
+};
+function mediaRespond(handler: typeof respond) {
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/logistics-context")
+      ? Response.json({ data: { localSiteId: target, localOrgId: orgId } })
+      : handler(request, body);
+}
+test("CLI media lists preserve pagination and pin every request to the organization", async () => {
+  mediaRespond(() =>
+    Response.json({ data: [{ device: mediaDevice, activeShipmentId: null }], hasMore: true }),
+  );
+  const value = JSON.parse(
+    await run(["--json", "media", "devices", "list", "--limit", "1", "--offset", "2"]),
+  );
+  expect(value.hasMore).toBe(true);
+  expect(requests.at(-1)?.path).toBe("/api/federation/media/devices?limit=1&offset=2");
+  expect(requests.every((request) => request.org === orgId)).toBe(true);
+});
+test("CLI media rejects foreign records and invalid input without writing", async () => {
+  mediaRespond(() =>
+    Response.json({
+      data: [{ device: { ...mediaDevice, localOrgId: source }, activeShipmentId: null }],
+      hasMore: false,
+    }),
+  );
+  await expect(run(["media", "devices", "list"])).rejects.toThrow("scope mismatch");
+  requests = [];
+  await expect(
+    run(["media", "devices", "register", await inputFile({ name: "No ID" })]),
+  ).rejects.toThrow("Invalid federation");
+  expect(requests).toHaveLength(0);
+});
+test("CLI media PATCH checks version and scope and warns about unconfirmed results", async () => {
+  const input = {
+    expectedVersion: 1,
+    name: "Retired drive",
+    state: "retired",
+    reason: "Service life reached",
+  };
+  const file = await inputFile(input);
+  mediaRespond(() =>
+    Response.json({ data: { ...mediaDevice, name: input.name, state: input.state, version: 2 } }),
+  );
+  await run(["media", "devices", "update", billId, file]);
+  expect(requests.at(-1)).toMatchObject({ method: "PATCH", org: orgId, body: input });
+  mediaRespond(() =>
+    Response.json({ data: { ...mediaDevice, name: input.name, state: input.state, version: 3 } }),
+  );
+  await expect(run(["media", "devices", "update", billId, file])).rejects.toThrow(
+    "Write outcome unconfirmed",
+  );
+});
+test("CLI media handoff sends the original event on retry and rejects altered confirmations", async () => {
+  const input = {
+    eventId: reportId,
+    expectedVersion: 1,
+    state: "received",
+    occurredAt: bill.issuedAt,
+    note: "Seal checked",
+    evidenceDigest: null,
+  };
+  const file = await inputFile(input);
+  const record = {
+    localSiteId: target,
+    shipmentId: billId,
+    eventId: reportId,
+    payload: input,
+    version: 2,
+    recordedBy: userId,
+    recordedAt: bill.issuedAt,
+  };
+  mediaRespond(() => Response.json({ data: record }));
+  await run(["media", "shipments", "handoff", billId, file]);
+  await run(["media", "shipments", "handoff", billId, file]);
+  const writes = requests.filter((row) => row.method === "POST");
+  expect(writes).toHaveLength(2);
+  expect(writes[0]?.body).toEqual(writes[1]?.body);
+  mediaRespond(() => Response.json({ data: { ...record, shipmentId: reportId } }));
+  await expect(run(["media", "shipments", "handoff", billId, file])).rejects.toThrow(
+    "Write outcome unconfirmed",
+  );
+});

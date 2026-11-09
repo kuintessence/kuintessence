@@ -15,6 +15,7 @@ import { PageHeader, PageShell } from "../ui/page";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { AgreementPanel } from "./AgreementPanel";
 import { CommercialPanel } from "./CommercialPanel";
+import { MediaLogisticsPanel } from "./MediaLogisticsPanel";
 
 export function FederationPage() {
   const { t } = useTranslation();
@@ -100,6 +101,7 @@ function OrganizationAgreements({ revision }: { revision: string | null }) {
           <TabsList aria-label={t("federation.agreements.title")}>
             <TabsTrigger value="execution">{t("federation.agreements.agreements")}</TabsTrigger>
             <TabsTrigger value="commercial">{t("federation.commercial.title")}</TabsTrigger>
+            <TabsTrigger value="media">{t("federation.logistics.title")}</TabsTrigger>
           </TabsList>
           <TabsContent value="execution">
             <AgreementPanel
@@ -109,6 +111,12 @@ function OrganizationAgreements({ revision }: { revision: string | null }) {
           </TabsContent>
           <TabsContent value="commercial">
             <CommercialPanel
+              scope={{ organizationId, authRevision: revision }}
+              switching={change.isPending || context.isFetching}
+            />
+          </TabsContent>
+          <TabsContent value="media">
+            <MediaLogisticsPanel
               scope={{ organizationId, authRevision: revision }}
               switching={change.isPending || context.isFetching}
             />

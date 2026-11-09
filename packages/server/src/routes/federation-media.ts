@@ -77,6 +77,13 @@ export function createFederationMediaRoutes(
     offset: z.coerce.number().int().nonnegative().default(0),
   });
   const id = z.object({ id: z.uuid() });
+  r.get("/federation/media/logistics-context", async (c) =>
+    c.json({ data: await transport().context(c.get("federationActor")) }),
+  );
+  r.get("/federation/media/transport-packages", kqValidator("query", page), async (c) => {
+    const { limit, offset } = c.req.valid("query");
+    return c.json(await transport().transportPackages(c.get("federationActor"), limit, offset));
+  });
   r.get("/federation/media/devices", kqValidator("query", page), async (c) => {
     const { limit, offset } = c.req.valid("query");
     return c.json(await transport().listDevices(c.get("federationActor"), limit, offset));

@@ -760,6 +760,55 @@
         "retry": "Retry refund evidence"
       },
       "retryBoundary": "Retry only the original refund evidence. No additional funds are returned."
+    },
+    "logistics": {
+      "title": "Media transport",
+      "shipments": "Shipments",
+      "devices": "Devices",
+      "packages": "Data packages",
+      "newDevice": "Register device",
+      "newShipment": "New shipment",
+      "back": "Back",
+      "history": "Custody history",
+      "recordHandoff": "Record handoff",
+      "noHistory": "No handoffs yet",
+      "empty": "No records",
+      "assigned": "Assigned to shipment",
+      "edit": "Edit device",
+      "name": "Name",
+      "assetTag": "Asset tag",
+      "capacity": "Registered capacity (GiB)",
+      "state": "State",
+      "note": "Handoff note",
+      "occurredAt": "Occurred at (blank for now)",
+      "evidence": "Evidence SHA-256 (optional, sha256:…)",
+      "remove": "Remove {{name}}",
+      "revoked": "Authorization revoked",
+      "invalid": "Check required fields, capacity and evidence format.",
+      "uncertain": "Write outcome unconfirmed. The form is preserved. Query the original record; retry sends the same request. For version conflicts, go back and refresh.",
+      "retry": "Retry original request",
+      "save": "Save",
+      "denied": "Media transport permission is not granted in this organization.",
+      "states": {
+        "active": "Available",
+        "retired": "Retired",
+        "destroyed": "Destroyed",
+        "prepared": "Prepared",
+        "dispatched": "Dispatched",
+        "received": "Received",
+        "returning": "Returning",
+        "returned": "Returned",
+        "closed": "Custody closed",
+        "cancelled": "Cancelled",
+        "lost": "Lost",
+        "damaged": "Damaged"
+      },
+      "kinds": {
+        "dataset": "Dataset",
+        "task-input": "Task input",
+        "task-result": "Task result"
+      },
+      "reason": "Reason for change"
     }
   }
 }

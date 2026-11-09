@@ -479,6 +479,15 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       packageIds: [first.packageId, second.packageId],
     };
     const registered = await logistics.registerShipment(actor, input);
+    const transport = await logistics.transportPackages(actor);
+    expect(transport.data.map((row) => row.packageId).sort()).toEqual([...input.packageIds].sort());
+    expect(
+      transport.data.every(
+        (row) => row.senderSiteId === source.signing.siteId && row.subjectKind === "dataset",
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(transport)).not.toContain("identityEncrypted");
+
     expect(registered.senderSiteId).toBe(source.signing.siteId);
     expect(registered.recipientSiteId).toBe(target.signing.siteId);
     expect(registered.packages).toHaveLength(2);

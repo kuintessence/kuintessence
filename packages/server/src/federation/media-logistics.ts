@@ -5,6 +5,7 @@ import {
   federationMediaDevices as devices,
   federationMediaExports,
   federationMediaPackages,
+  federationSites,
   federationMediaHandoffs as handoffs,
   type PgDb,
   type PgTransaction,
@@ -21,7 +22,7 @@ import {
   MediaShipmentRegistrationSchema,
   mediaShipmentTerminal,
 } from "@kuintessence/shared/federation";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 
@@ -56,6 +57,80 @@ export class FederationMediaLogistics {
       action: `federation.media.logistics.${action}`,
       target,
       diff: { after },
+    });
+  }
+
+  async context(actor: FederationActor) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "media.logistics");
+      return { localSiteId: this.localSiteId, localOrgId: actor.orgId };
+    });
+  }
+
+  private async names<T extends { senderSiteId: string; recipientSiteId: string }>(
+    tx: PgTransaction,
+    rows: T[],
+  ) {
+    if (!rows.length) return [];
+    const ids = [...new Set(rows.flatMap((row) => [row.senderSiteId, row.recipientSiteId]))];
+    const sites = await tx
+      .select({ id: federationSites.id, name: federationSites.name })
+      .from(federationSites)
+      .where(inArray(federationSites.id, ids));
+    const names = new Map(sites.map((site) => [site.id, site.name]));
+    return rows.map((row) => ({
+      ...row,
+      senderName: names.get(row.senderSiteId) ?? null,
+      recipientName: names.get(row.recipientSiteId) ?? null,
+    }));
+  }
+
+  async transportPackages(actor: FederationActor, limit = 50, offset = 0) {
+    Page.parse({ limit, offset });
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "media.logistics");
+      const columns = (table: typeof federationMediaExports | typeof federationMediaPackages) => ({
+        packageId: table.packageId,
+        manifestDigest: table.manifestDigest,
+        agreementRevisionId: table.agreementRevisionId,
+        senderSiteId: sql<string>`${table.manifest}->>'senderSiteId'`.as("sender_site_id"),
+        recipientSiteId: sql<string>`${table.manifest}->>'recipientSiteId'`.as("recipient_site_id"),
+        subjectKind: sql<
+          "dataset" | "task-input" | "task-result"
+        >`${table.manifest}->'subject'->>'kind'`.as("subject_kind"),
+        createdAt: sql<string>`${table.manifest}->>'createdAt'`.as("created_at"),
+        revokedAt: table.revokedAt,
+      });
+      const rows = await tx
+        .select(columns(federationMediaExports))
+        .from(federationMediaExports)
+        .where(
+          and(
+            eq(federationMediaExports.localSiteId, this.localSiteId),
+            eq(federationMediaExports.localOrgId, actor.orgId),
+          ),
+        )
+        .unionAll(
+          tx
+            .select(columns(federationMediaPackages))
+            .from(federationMediaPackages)
+            .where(
+              and(
+                eq(federationMediaPackages.localSiteId, this.localSiteId),
+                eq(federationMediaPackages.localOrgId, actor.orgId),
+              ),
+            ),
+        )
+        .orderBy(asc(federationMediaExports.packageId))
+        .limit(limit + 1)
+        .offset(offset);
+      const summaries = rows.slice(0, limit);
+      return {
+        localSiteId: this.localSiteId,
+        localOrgId: actor.orgId,
+        data: await this.names(tx, summaries),
+        hasMore: rows.length > limit,
+      };
     });
   }
 
@@ -317,7 +392,7 @@ export class FederationMediaLogistics {
         .orderBy(desc(shipments.createdAt), asc(shipments.shipmentId))
         .limit(limit + 1)
         .offset(offset);
-      return { data: rows.slice(0, limit), hasMore: rows.length > limit };
+      return { data: await this.names(tx, rows.slice(0, limit)), hasMore: rows.length > limit };
     });
   }
 
@@ -362,8 +437,10 @@ export class FederationMediaLogistics {
         .orderBy(desc(handoffs.version))
         .limit(limit + 1)
         .offset(offset);
+      const [named] = await this.names(tx, [shipment]);
+      if (!named) throw new FederationError("OPERATION_CONFLICT");
       return {
-        shipment,
+        shipment: named,
         devices: deviceRows,
         events: events.slice(0, limit),
         hasMore: events.length > limit,

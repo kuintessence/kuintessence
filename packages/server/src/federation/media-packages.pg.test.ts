@@ -20,6 +20,9 @@ import {
 import {
   FederationAgreementSchema,
   FederationMediaManifestSchema,
+  MediaDeviceListSchema,
+  MediaShipmentDetailSchema,
+  MediaTransportPackagesSchema,
 } from "@kuintessence/shared/federation";
 import { and, count, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -634,7 +637,10 @@ test("logistics: HTTP enforces human permission, organization, validation and no
   const result = await app().request(path);
   expect(result.status).toBe(200);
   expect(result.headers.get("cache-control")).toBe("no-store");
-  const body = JSON.stringify(await result.json());
+  const raw = await result.json();
+  MediaShipmentDetailSchema.parse(z.object({ data: z.unknown() }).parse(raw).data);
+  MediaDeviceListSchema.parse(await (await app().request("/api/federation/media/devices")).json());
+  const body = JSON.stringify(raw);
   expect(body).toContain(device.deviceId);
   expect(body).not.toContain("signedManifest");
   expect(body).not.toContain("identityEncrypted");
@@ -891,4 +897,46 @@ test("logistics: unknown packages, duplicate IDs, future timestamps and permissi
     await permissions.set({ ...actor, capability: "media.logistics", enabled: true }, actor.userId);
   }
   expect((await logistics().shipmentDetails(actor, input.shipmentId)).shipment.version).toBe(1);
+});
+
+test("logistics: picker is paged, organization-scoped and contains only transport summaries", async () => {
+  const { manifest } = await registered();
+  const contextResponse = await app().request("/api/federation/media/logistics-context");
+  expect(await contextResponse.json()).toEqual({
+    data: { localSiteId: target.signing.siteId, localOrgId: actor.orgId },
+  });
+  const all = await logistics().transportPackages(actor, 100, 0);
+  const item = all.data.find((row) => row.packageId === manifest.packageId);
+  expect(item).toMatchObject({
+    senderName: "Test site",
+    recipientName: "Test site",
+    subjectKind: "dataset",
+    manifestDigest: expect.stringMatching(/^sha256:/),
+  });
+  expect(Object.keys(item ?? {}).sort()).toEqual([
+    "agreementRevisionId",
+    "createdAt",
+    "manifestDigest",
+    "packageId",
+    "recipientName",
+    "recipientSiteId",
+    "revokedAt",
+    "senderName",
+    "senderSiteId",
+    "subjectKind",
+  ]);
+  const first = await logistics().transportPackages(actor, 1, 0);
+  expect(first.hasMore).toBe(true);
+  const second = await logistics().transportPackages(actor, 1, 1);
+  expect(first.data[0]?.packageId).not.toBe(second.data[0]?.packageId);
+  const http = await app().request("/api/federation/media/transport-packages?limit=1&offset=1");
+  expect(http.headers.get("cache-control")).toBe("no-store");
+  expect(MediaTransportPackagesSchema.parse(await http.json())).toEqual(
+    JSON.parse(JSON.stringify(second)),
+  );
+  for (const caller of [reader, worker])
+    expect((await app(caller).request("/api/federation/media/transport-packages")).status).toBe(
+      403,
+    );
+  expect((await logistics().transportPackages(outsider)).data).toEqual([]);
 });

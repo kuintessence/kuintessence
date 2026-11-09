@@ -760,6 +760,55 @@
         "retry": "重试退款存证"
       },
       "retryBoundary": "仅重试原退款存证，不再次归还额度。"
+    },
+    "logistics": {
+      "title": "介质运输",
+      "shipments": "运输批次",
+      "devices": "介质",
+      "packages": "数据包",
+      "newDevice": "登记介质",
+      "newShipment": "新建批次",
+      "back": "返回",
+      "history": "交接记录",
+      "recordHandoff": "记录交接",
+      "noHistory": "尚无交接记录",
+      "empty": "暂无记录",
+      "assigned": "已分配批次",
+      "edit": "修改介质",
+      "name": "名称",
+      "assetTag": "资产编号",
+      "capacity": "登记容量（GiB）",
+      "state": "状态",
+      "note": "交接说明",
+      "occurredAt": "发生时间（留空为当前时间）",
+      "evidence": "凭证 SHA-256（可选，sha256:…）",
+      "remove": "移除 {{name}}",
+      "revoked": "授权已撤销",
+      "invalid": "请检查必填项、容量和凭证格式。",
+      "uncertain": "提交结果未确认，表单已保留。请查询原记录；重试会发送同一请求。版本冲突请返回并刷新。",
+      "retry": "重试原请求",
+      "save": "保存",
+      "denied": "当前机构未授予介质运输权限。",
+      "states": {
+        "active": "可用",
+        "retired": "停用",
+        "destroyed": "已销毁",
+        "prepared": "待发运",
+        "dispatched": "已发运",
+        "received": "已收到",
+        "returning": "返还中",
+        "returned": "已返还",
+        "closed": "已结束保管",
+        "cancelled": "已取消",
+        "lost": "遗失",
+        "damaged": "损坏"
+      },
+      "kinds": {
+        "dataset": "数据集",
+        "task-input": "作业输入",
+        "task-result": "作业结果"
+      },
+      "reason": "变更原因"
     }
   }
 }
