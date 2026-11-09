@@ -7,8 +7,14 @@ import {
   type PgTransaction,
   federationArbitrationPolicies as policies,
 } from "@kuintessence/db";
-import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
 import {
+  type FederationDelegation,
+  FederationError,
+  federationCanonicalJson,
+} from "@kuintessence/shared/federation";
+import {
+  type ArbitrationRequestScope,
+  assertArbitrationRequest,
   type CommercialArbitrationPolicy,
   CommercialArbitrationPolicyDraftSchema,
   CommercialArbitrationPolicySchema,
@@ -33,6 +39,35 @@ export class FederationArbitrationPolicyService {
     private readonly signing: FederationSigningKey,
   ) {
     this.trust = new FederationTrustRegistry(db);
+  }
+  /** Called only while creating the original workflow intent; replays keep its saved request. */
+  async bindingForRequest(tx: PgTransaction, orgId: string, request: ArbitrationRequestScope) {
+    if (!request.arbitration) return undefined;
+    const { row } = await this.verified(
+      tx,
+      { orgId },
+      request.agreementRevisionId,
+      request.arbitration.policyId,
+    );
+    assertArbitrationRequest(row.payload, row.digest, request, new Date());
+    if (!row.counterpartyJws) throw new FederationError("POLICY_DENIED");
+    const source = this.signing.siteId === row.payload.sourceSiteId;
+    return {
+      policyId: row.policyId,
+      policyDigest: row.digest,
+      sourceJws: source ? row.approvalJws : row.counterpartyJws,
+      targetJws: source ? row.counterpartyJws : row.approvalJws,
+    };
+  }
+  /** Binding is checked inside the original admission transaction, before its request is persisted. */
+  async authorizeRequest(tx: PgTransaction, orgId: string, request: FederationDelegation) {
+    if (!request.arbitration) return;
+    const binding = await this.bindingForRequest(tx, orgId, request);
+    if (
+      binding?.sourceJws !== request.arbitration.sourceJws ||
+      binding?.targetJws !== request.arbitration.targetJws
+    )
+      throw new FederationError("OPERATION_CONFLICT");
   }
   private key(actor: Pick<FederationActor, "orgId">, revisionId: string, policyId: string) {
     return and(

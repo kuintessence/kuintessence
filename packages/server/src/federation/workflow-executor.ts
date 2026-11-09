@@ -91,6 +91,7 @@ export class FederationWorkflowExecutor {
           ...(node.inputDelivery ? { inputDelivery: node.inputDelivery } : {}),
           ...(node.resultDelivery ? { resultDelivery: node.resultDelivery } : {}),
           environmentLockDigest: node.environmentLockDigest,
+          ...(node.arbitration ? { arbitration: node.arbitration } : {}),
           resources: node.resources,
           maxAmount: node.maxAmount,
           executionExpiresAt: node.executionExpiresAt ?? terms.validUntil,

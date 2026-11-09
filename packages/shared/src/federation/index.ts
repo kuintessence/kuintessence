@@ -154,6 +154,16 @@ const OperationFields = {
 
 export const FederationFileDeliverySchema = z.enum(["network", "media"]);
 
+export const FederationArbitrationReferenceSchema = z.strictObject({
+  policyId: Id,
+  policyDigest: FederationDigestSchema,
+});
+export type FederationArbitrationReference = z.infer<typeof FederationArbitrationReferenceSchema>;
+export const FederationArbitrationBindingSchema = FederationArbitrationReferenceSchema.extend({
+  sourceJws: z.string().min(1).max(524288),
+  targetJws: z.string().min(1).max(524288),
+});
+
 export const FederationDelegationSchema = z
   .strictObject({
     ...OperationFields,
@@ -173,6 +183,8 @@ export const FederationDelegationSchema = z
     resources: FederationResourcesSchema,
     maxAmount: FederationAmountSchema,
     unit: Unit,
+    // Original policy signatures are part of the immutable request, never filled in after acceptance.
+    arbitration: FederationArbitrationBindingSchema.optional(),
   })
   .superRefine((value, ctx) => {
     const lifetime = Date.parse(value.expiresAt) - Date.parse(value.issuedAt);

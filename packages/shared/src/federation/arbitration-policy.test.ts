@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import {
+  assertArbitrationRequest,
   CommercialArbitrationPolicyDraftSchema,
   CommercialArbitrationPolicySchema,
 } from "./arbitration-policy";
+import { FederationArbitrationBindingSchema } from "./index";
 import { federationCapabilitySources } from "./permissions";
 import { FederationKeyInput } from "./trust";
 
@@ -31,6 +33,42 @@ const policy = {
   validFrom: "2027-01-01T00:00:00Z",
   salt: "b".repeat(64),
 };
+
+test("original delegation binds policy identity, parties, contract, unit and current validity", () => {
+  const value = CommercialArbitrationPolicySchema.parse(policy);
+  const digest = `sha256:${"d".repeat(64)}`;
+  const request = {
+    arbitration: { policyId: value.policyId, policyDigest: digest },
+    agreementRevisionId: value.agreementRevisionId,
+    senderSiteId: value.sourceSiteId,
+    recipientSiteId: value.targetSiteId,
+    unit: value.unit,
+  };
+  const now = new Date(value.validFrom);
+  expect(() => assertArbitrationRequest(value, digest, request, now)).not.toThrow();
+  for (const patch of [
+    { arbitration: undefined },
+    { arbitration: { ...request.arbitration, policyId: crypto.randomUUID() } },
+    { arbitration: { ...request.arbitration, policyDigest: value.agreementDigest } },
+    { agreementRevisionId: crypto.randomUUID() },
+    { senderSiteId: value.targetSiteId },
+    { recipientSiteId: value.sourceSiteId },
+    { unit: "other" },
+  ])
+    expect(() => assertArbitrationRequest(value, digest, { ...request, ...patch }, now)).toThrow(
+      "POLICY_DENIED",
+    );
+  for (const time of [new Date(+now - 1), new Date(value.validUntil), new Date(Number.NaN)])
+    expect(() => assertArbitrationRequest(value, digest, request, time)).toThrow(
+      "AUTHORIZATION_EXPIRED",
+    );
+  const binding = { ...request.arbitration, sourceJws: "source", targetJws: "target" };
+  expect(FederationArbitrationBindingSchema.safeParse(binding).success).toBe(true);
+  for (const patch of [{ sourceJws: undefined }, { targetJws: "" }, { autoApprove: true }])
+    expect(FederationArbitrationBindingSchema.safeParse({ ...binding, ...patch }).success).toBe(
+      false,
+    );
+});
 
 test("arbitration authority preserves exact caps, named parties and required evidence", () => {
   expect(CommercialArbitrationPolicySchema.parse(policy).maxChargedAmount).toBe("9007199254740993");

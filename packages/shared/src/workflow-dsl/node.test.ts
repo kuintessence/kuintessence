@@ -212,6 +212,17 @@ test("Federation market selection is optional and only allows explicit public co
     false,
   );
   const market = { policyId: id, title: "Shared task", description: "" };
+  const arbitration = { policyId: id, policyDigest: `sha256:${"d".repeat(64)}` };
+  expect(WorkflowNodeSchema.parse({ ...node, arbitration })).toMatchObject({ arbitration });
+  for (const patch of [
+    { policyId: "unknown" },
+    { policyDigest: "unknown" },
+    { sourceJws: "private" },
+    { targetJws: "private" },
+  ])
+    expect(
+      WorkflowNodeSchema.safeParse({ ...node, arbitration: { ...arbitration, ...patch } }).success,
+    ).toBe(false);
   expect(WorkflowNodeSchema.safeParse({ ...node, market }).success).toBe(true);
   for (const patch of [
     { policyId: "unknown" },

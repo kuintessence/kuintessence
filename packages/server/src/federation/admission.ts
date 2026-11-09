@@ -15,6 +15,7 @@ import {
   FederationError,
 } from "@kuintessence/shared/federation";
 import { and, count, eq, sql } from "drizzle-orm";
+import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { assertAttestationCapacity } from "./attestation-backlog";
 import { assertFederationNotCancelled } from "./cancellation-fence";
 import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
@@ -282,6 +283,11 @@ export class FederationAdmission {
       await allocateTaskCompletion(tx, request.recipientSiteId, request, this.storageGuard);
       // Recheck after blocking locks and storage observation I/O.
       await input.authorize?.(tx, this.clock());
+      await new FederationArbitrationPolicyService(this.db, this.signingKey).authorizeRequest(
+        tx,
+        agreement.localOrgId,
+        request,
+      );
       const confirmation = coordinatedOrgId
         ? await this.confirmations?.authorize(tx, coordinatedOrgId, request, "admission")
         : undefined;

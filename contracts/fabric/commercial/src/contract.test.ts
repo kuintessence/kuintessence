@@ -5,6 +5,7 @@ import {
   FederationDelegationSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
+import { CommercialArbitrationPolicySchema } from "@kuintessence/shared/federation/arbitration-policy";
 import {
   assertCommercialPayment,
   calculateCommercialBill,
@@ -78,6 +79,7 @@ beforeAll(async () => {
       keyId: key.keyId,
       kinds: [
         "commercial-agreement",
+        "commercial-arbitration-policy",
         "commercial-usage",
         "commercial-reservation",
         "commercial-release",
@@ -611,6 +613,102 @@ async function reservationFixture(terms = agreement()) {
   };
   return { ...f, reservation, reserve, market, budget };
 }
+test("arbitration reservation keeps both original signatures private and immutable on replay", async () => {
+  const f = await reservationFixture();
+  const policy = CommercialArbitrationPolicySchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-arbitration-policy",
+    policyId: randomUUID(),
+    domainId,
+    agreementRevisionId: f.terms.agreement.agreementRevisionId,
+    agreementDigest: f.receipt.digest,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    arbitratorSiteId: sites[2],
+    subjectTypes: ["bill"],
+    disclosures: [{ recordType: "bill", fields: ["dueAmount"] }],
+    requiredEvidence: [{ recordType: "bill", fields: ["dueAmount"] }],
+    decisionRule: "designated-arbitrator",
+    actions: ["settle"],
+    maxChargedAmount: "9007199254740993",
+    unit: f.reservation.request.unit,
+    issuedAt: now.toISOString(),
+    validFrom: now.toISOString(),
+    validUntil: "2027-02-01T00:00:00Z",
+    salt: randomBytes(32).toString("hex"),
+  });
+  const signed = await bilateral(CommercialArbitrationPolicySchema, policy);
+  const binding = {
+    policyId: policy.policyId,
+    policyDigest: `sha256:${createHash("sha256").update(JSON.stringify(policy)).digest("hex")}`,
+    sourceJws: signed.sourceJws,
+    targetJws: signed.targetJws,
+  };
+  const request = { ...f.reservation.request, arbitration: binding };
+  const reservation = { ...f.reservation, request };
+  const before = new Map(f.stub.privateState);
+  for (const patch of [
+    { sourceJws: signed.targetJws },
+    { targetJws: signed.sourceJws },
+    { policyId: randomUUID() },
+    { policyDigest: `sha256:${"0".repeat(64)}` },
+  ]) {
+    await expect(
+      f.reserve({ ...reservation, request: { ...request, arbitration: { ...binding, ...patch } } }),
+    ).rejects.toThrow();
+    expect(f.stub.privateState).toEqual(before);
+  }
+  for (const patch of [
+    { agreementDigest: `sha256:${"0".repeat(64)}` },
+    { domainId: randomUUID() },
+    { arbitratorSiteId: randomUUID() },
+    { unit: "other" },
+    { validFrom: "2027-01-02T00:00:00Z" },
+  ]) {
+    const other = CommercialArbitrationPolicySchema.parse({ ...policy, ...patch });
+    const signatures = await bilateral(CommercialArbitrationPolicySchema, other);
+    const bad = {
+      ...binding,
+      policyDigest: `sha256:${createHash("sha256").update(JSON.stringify(other)).digest("hex")}`,
+      sourceJws: signatures.sourceJws,
+      targetJws: signatures.targetJws,
+    };
+    await expect(
+      f.reserve({ ...reservation, request: { ...request, arbitration: bad } }),
+    ).rejects.toThrow();
+    expect(f.stub.privateState).toEqual(before);
+  }
+  const purpose = f.ledger.trust.keyPurposes[0];
+  if (!purpose) throw new Error("Missing purpose");
+  const kinds = purpose.kinds;
+  try {
+    purpose.kinds = kinds.filter((kind) => kind !== "commercial-arbitration-policy");
+    await expect(f.reserve(reservation)).rejects.toThrow("UNTRUSTED_IDENTITY");
+  } finally {
+    purpose.kinds = kinds;
+  }
+  expect(f.stub.privateState).toEqual(before);
+  const publicBefore = new Map(f.stub.state);
+  const receipt = await f.reserve(reservation);
+  const budget = f.budget();
+  expect(f.stub.state).toEqual(publicBefore);
+  expect(
+    [...f.stub.privateState].some(
+      ([key, bytes]) =>
+        key.startsWith("commercial_AB_v1:") &&
+        Buffer.from(bytes).toString().includes(binding.sourceJws),
+    ),
+  ).toBe(true);
+  f.stub.fcn = "GetRecordReceipt";
+  f.stub.params = [domainId, "reservation", reservation.reservationId];
+  f.stub.transient.clear();
+  await expect(f.ledger.invoke(f.stub, identity(2))).rejects.toThrow("POLICY_DENIED");
+  f.stub.timestamp = new Date("2027-03-01T00:00:00Z");
+  expect(await f.reserve(reservation)).toEqual(receipt);
+  await expect(f.reserve()).rejects.toThrow("OPERATION_CONFLICT");
+  expect(f.budget()).toEqual(budget);
+});
+
 test("commercial reservation and pre-activation release preserve exact private budget and immutable gate", async () => {
   const f = await reservationFixture(),
     receipt = await f.reserve();

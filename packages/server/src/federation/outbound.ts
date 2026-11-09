@@ -45,6 +45,7 @@ import {
 } from "@kuintessence/shared/federation/market";
 import { and, asc, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
+import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import type { FederationAssetService } from "./assets";
 import { cancellationSummary, FederationCancellationSender } from "./cancellation-outbound";
 import { allocateTaskCompletion } from "./completion-capacity";
@@ -347,6 +348,12 @@ export class FederationOutboundService {
       this.clock,
       selection,
       this.storageGuard,
+      (tx, intent) =>
+        new FederationArbitrationPolicyService(this.db, this.signingKey).bindingForRequest(
+          tx,
+          actor.orgId,
+          intent,
+        ),
     );
     return this.enqueueRequest(actor, request, lease, selection);
   }
@@ -496,8 +503,13 @@ export class FederationOutboundService {
           BigInt(held.amount) + BigInt(request.maxAmount) > BigInt(terms.budgetLimit))
       )
         throw new FederationError("BUDGET_EXHAUSTED");
-      if (confirmation) await this.confirmations?.authorize(tx, actor.orgId, request, "admission");
       await allocateTaskCompletion(tx, this.signingKey.siteId, request, this.storageGuard);
+      await new FederationArbitrationPolicyService(this.db, this.signingKey).authorizeRequest(
+        tx,
+        actor.orgId,
+        request,
+      );
+      if (confirmation) await this.confirmations?.authorize(tx, actor.orgId, request, "admission");
       (confirmation ? assertDelegationTerms : assertDelegationPolicy)(terms, request, this.clock());
       const [created] = await tx
         .insert(federationOutbound)

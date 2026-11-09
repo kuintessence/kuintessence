@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { type PgTransaction, workflowExecutionDelegations, workflowRuns } from "@kuintessence/db";
 import { type NodeInvocation, WorkflowExecutionInterrupted } from "@kuintessence/shared";
 import {
+  type FederationArbitrationReference,
   type FederationDelegation,
   FederationDelegationSchema,
   FederationError,
@@ -16,8 +17,8 @@ import type { FederationStorageGuard } from "./storage-capacity";
 
 export type WorkflowDelegationPlan = Omit<
   FederationDelegation,
-  "operationId" | "taskId" | "attempt" | "issuedAt" | "expiresAt"
->;
+  "operationId" | "taskId" | "attempt" | "issuedAt" | "expiresAt" | "arbitration"
+> & { arbitration?: FederationArbitrationReference };
 
 /** Internal runner boundary: the stored submitter and organization must match, even on replay. */
 export async function assertWorkflowDelegationOwner(
@@ -147,6 +148,10 @@ export async function bindWorkflowDelegation(
   clock: () => Date,
   market?: FederationWorkflowMarket,
   storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
+  bindArbitration?: (
+    tx: PgTransaction,
+    plan: WorkflowDelegationPlan,
+  ) => Promise<FederationDelegation["arbitration"]>,
 ) {
   const path = invocation.path;
   if (!path || Buffer.byteLength(path) > 16_384 || !nodeId || Buffer.byteLength(nodeId) > 1024)
@@ -189,9 +194,15 @@ export async function bindWorkflowDelegation(
       return existing.request;
     }
     await storageGuard?.assertAdmission(plan.mode);
+    if (snapshot.plan.arbitration && !bindArbitration) throw new FederationError("POLICY_DENIED");
+    const arbitration = snapshot.plan.arbitration
+      ? await bindArbitration?.(tx, snapshot.plan)
+      : undefined;
+    if (snapshot.plan.arbitration && !arbitration) throw new FederationError("POLICY_DENIED");
     const now = clock();
     const request = FederationDelegationSchema.parse({
       ...snapshot.plan,
+      ...(arbitration ? { arbitration } : {}),
       operationId: randomUUID(),
       taskId: randomUUID(),
       attempt: 1,

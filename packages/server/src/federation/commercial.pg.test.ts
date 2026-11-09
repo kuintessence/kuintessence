@@ -10,6 +10,7 @@ import {
   federationCommercialExecutionApprovals as executionApprovals,
   federationAgreementApprovals,
   federationAgreements,
+  federationArbitrationPolicies,
   federationAssetMappings,
   federationAttestationOutbox,
   federationBudgets,
@@ -129,6 +130,7 @@ import { createWorkflowPlacementBuilder } from "../services/workflow-placement-b
 import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
+import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationClosingAutomation } from "./closing-automation";
 import { FederationClosingPolicyService } from "./closing-policy";
@@ -173,12 +175,14 @@ import { FederationTerminalPolicyService, TerminalPolicyInputSchema } from "./te
 import { testAgreement, testDelegation, testKeys } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
 import { observeUnreservedClosure, retireUnreservedIntents } from "./unreserved-closure";
+import { bindWorkflowDelegation, type WorkflowDelegationPlan } from "./workflow-delegations";
 import { FederationWorkflowExecutor } from "./workflow-executor";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
   throw new Error("Commercial PG tests require an isolated kuintessence_unit_* DATABASE_URL");
 const db = createPgDb(url, { max: 8, idle_timeout: 1 });
+const arbitrationSites: string[] = [];
 const fixtures: {
   a: Awaited<ReturnType<typeof testKeys>>;
   b: Awaited<ReturnType<typeof testKeys>>;
@@ -340,6 +344,9 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
 afterAll(async () => {
   for (const f of fixtures) {
     const siteIds = [f.a.signing.siteId, f.b.signing.siteId];
+    await db
+      .delete(federationArbitrationPolicies)
+      .where(inArray(federationArbitrationPolicies.localSiteId, siteIds));
     await db.delete(federationDisputes).where(inArray(federationDisputes.localSiteId, siteIds));
     await db
       .delete(workflowExecutionDelegations)
@@ -490,6 +497,8 @@ afterAll(async () => {
   }
   if (terminalAgentIds.length)
     await db.delete(agents).where(inArray(agents.agentId, terminalAgentIds));
+  if (arbitrationSites.length)
+    await db.delete(federationSites).where(inArray(federationSites.id, arbitrationSites));
   await db.$client.end({ timeout: 5 });
 });
 
@@ -734,8 +743,9 @@ async function executionFixture(
   withMaterials = false,
   withResults = false,
   amounts?: { budgetLimit: string; maxTaskAmount: string },
+  mode: FederationMode = "ledger_coordinated",
 ) {
-  const f = await fixture("ledger_coordinated", true, explicitPurpose);
+  const f = await fixture(mode, true, explicitPurpose);
   if (amounts) Object.assign(f.terms.agreement, amounts);
   const availability = new SoftwareAvailabilityService(db);
   const assets = new FederationAssetService(db, {
@@ -830,7 +840,7 @@ async function executionFixture(
       senderSiteId: f.a.signing.siteId,
       recipientSiteId: f.b.signing.siteId,
       agreementRevisionId: f.revisionId,
-      mode: "ledger_coordinated",
+      mode,
       budgetDomainId: f.terms.agreement.budgetDomainId,
       epoch: f.terms.agreement.epoch,
       unit: f.terms.agreement.unit,
@@ -904,6 +914,390 @@ async function executionFixture(
     },
   };
 }
+async function arbitrationForExecution(f: Awaited<ReturnType<typeof executionFixture>>) {
+  const arbitratorSiteId = randomUUID();
+  arbitrationSites.push(arbitratorSiteId);
+  await f.trust.addSite(
+    { id: arbitratorSiteId, name: "Arbitrator", endpoint: "https://arbitrator.test.invalid" },
+    f.actor.userId,
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "arbitration.approve", enabled: true },
+    f.actor.userId,
+  );
+  for (const key of [f.a, f.b]) {
+    const [row] = await db
+      .select()
+      .from(federationSigningKeys)
+      .where(eq(federationSigningKeys.siteId, key.signing.siteId));
+    if (!row) throw new Error("Missing fixture key");
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: [...row.allowedKinds, "commercial-arbitration-policy"] })
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, row.siteId),
+          eq(federationSigningKeys.keyId, row.keyId),
+        ),
+      );
+  }
+  const counterpart = new FederationCommercialAgreementService(db, f.b.signing);
+  await counterpart.approve(f.actor, f.terms);
+  await counterpart.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    (await f.approvals.get(f.actor, f.revisionId)).approvalJws,
+  );
+  const source = new FederationArbitrationPolicyService(db, f.a.signing);
+  const target = new FederationArbitrationPolicyService(db, f.b.signing);
+  const policy = await source.draft(f.actor, f.revisionId, {
+    policyId: randomUUID(),
+    arbitratorSiteId,
+    subjectTypes: ["bill"],
+    disclosures: [{ recordType: "bill", fields: ["dueAmount"] }],
+    requiredEvidence: [{ recordType: "bill", fields: ["dueAmount"] }],
+    decisionRule: "designated-arbitrator",
+    actions: ["settle"],
+    maxChargedAmount: "60",
+    validUntil: "2098-01-01T00:00:00Z",
+  });
+  const a = await source.approve(f.actor, f.revisionId, policy);
+  const b = await target.approve(f.actor, f.revisionId, policy);
+  const binding = {
+    policyId: policy.policyId,
+    policyDigest: a.digest,
+    sourceJws: a.approvalJws,
+    targetJws: b.approvalJws,
+  };
+  const confirm = async () => {
+    await source.attachCounterparty(f.actor, f.revisionId, policy.policyId, b.approvalJws);
+    await target.attachCounterparty(f.actor, f.revisionId, policy.policyId, a.approvalJws);
+  };
+  return { source, target, policy, binding, confirm };
+}
+
+async function arbitrationAdmission(mode: "bilateral_direct" | "bilateral_attested") {
+  const f = await executionFixture(true, true, false, undefined, mode);
+  const arbitration = await arbitrationForExecution(f);
+  const source = new FederationAgreementService(db, f.a.signing);
+  const target = new FederationAgreementService(db, f.b.signing);
+  const executionUserId = randomUUID();
+  await db.insert(users).values({
+    id: executionUserId,
+    orgId: f.actor.orgId,
+    email: `${executionUserId}@test.invalid`,
+    role: "user",
+    serviceAccount: true,
+  });
+  await db
+    .insert(userOrgMemberships)
+    .values({ userId: executionUserId, orgId: f.actor.orgId, role: "member" });
+  const a = await source.approve(f.actor, { terms: f.terms.agreement });
+  const b = await target.approve(f.actor, { terms: f.terms.agreement, executionUserId });
+  await source.attachCounterparty(f.actor, f.revisionId, b.approvalJws);
+  await target.attachCounterparty(f.actor, f.revisionId, a.approvalJws);
+  const admission = new FederationAdmission(db, f.b.signing, f.b.verification);
+  const outbound = new FederationOutboundService(
+    db,
+    f.a.signing,
+    async (_endpoint, requestJws) =>
+      (
+        await admission.receive({
+          requestJws,
+          authenticatedPeerSiteId: f.a.signing.siteId,
+          senderKey: f.a.verification,
+        })
+      ).receiptJws,
+    f.assets,
+  );
+  const receive = async (request: typeof f.reservation.request) =>
+    admission.receive({
+      requestJws: await signFederationMessage(FederationDelegationSchema, request, f.a.signing),
+      authenticatedPeerSiteId: f.a.signing.siteId,
+      senderKey: f.a.verification,
+    });
+  return { ...f, arbitration, outbound, receive };
+}
+
+test("arbitration original admission rejects missing or changed consent without budget effects and replays after revocation", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await arbitrationAdmission(mode);
+    const request = { ...f.reservation.request, arbitration: f.arbitration.binding };
+    const budget = () =>
+      db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, request.budgetDomainId));
+    const before = await budget();
+    for (const service of [() => f.outbound.enqueue(f.actor, request), () => f.receive(request)])
+      await expect(service()).rejects.toThrow("POLICY_DENIED");
+    await f.arbitration.confirm();
+    for (const patch of [
+      { policyId: randomUUID() },
+      { policyDigest: `sha256:${"0".repeat(64)}` },
+      { sourceJws: f.arbitration.binding.targetJws },
+      { targetJws: `${f.arbitration.binding.targetJws}x` },
+    ]) {
+      const invalid = { ...request, arbitration: { ...request.arbitration, ...patch } };
+      await expect(f.outbound.enqueue(f.actor, invalid)).rejects.toBeInstanceOf(FederationError);
+      await expect(f.receive(invalid)).rejects.toBeInstanceOf(FederationError);
+    }
+    expect(await budget()).toEqual(before);
+    expect(
+      await db
+        .select()
+        .from(federationOutbound)
+        .where(eq(federationOutbound.operationId, request.operationId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(federationReservations)
+        .where(eq(federationReservations.operationId, request.operationId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(federationCompletionClaims)
+        .where(
+          inArray(federationCompletionClaims.localSiteId, [f.a.signing.siteId, f.b.signing.siteId]),
+        ),
+    ).toHaveLength(0);
+    await f.outbound.enqueue(f.actor, request);
+    const received = await f.receive(request);
+    const after = await budget();
+    await f.arbitration.source.revoke(f.actor, f.revisionId, request.arbitration.policyId);
+    await f.arbitration.target.revoke(f.actor, f.revisionId, request.arbitration.policyId);
+    expect((await f.outbound.enqueue(f.actor, request)).operationId).toBe(request.operationId);
+    expect(await f.receive(request)).toEqual(received);
+    for (const changed of [
+      f.reservation.request,
+      { ...request, arbitration: { ...request.arbitration, policyId: randomUUID() } },
+    ]) {
+      await expect(f.outbound.enqueue(f.actor, changed)).rejects.toThrow("OPERATION_CONFLICT");
+      await expect(f.receive(changed)).rejects.toThrow("OPERATION_CONFLICT");
+    }
+    const next = { ...request, operationId: randomUUID(), taskId: randomUUID(), maxAmount: "1" };
+    await expect(f.outbound.enqueue(f.actor, next)).rejects.toThrow("AUTHORIZATION_EXPIRED");
+    await expect(f.receive(next)).rejects.toThrow("AUTHORIZATION_EXPIRED");
+    expect(await budget()).toEqual(after);
+    const [saved] = await db
+      .select()
+      .from(federationOutbound)
+      .where(eq(federationOutbound.operationId, request.operationId));
+    expect(saved?.request).toEqual(request);
+  }
+});
+
+test("arbitration cannot be attached retroactively to a legacy delegation", async () => {
+  const f = await arbitrationAdmission("bilateral_direct");
+  await f.arbitration.confirm();
+  const request = f.reservation.request;
+  const accepted = await f.outbound.enqueue(f.actor, request);
+  const receipt = await f.receive(request);
+  const changed = { ...request, arbitration: f.arbitration.binding };
+  await expect(f.outbound.enqueue(f.actor, changed)).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(f.receive(changed)).rejects.toThrow("OPERATION_CONFLICT");
+  expect(await f.outbound.enqueue(f.actor, request)).toEqual(accepted);
+  expect(await f.receive(request)).toEqual(receipt);
+  const [saved] = await db
+    .select()
+    .from(federationOutbound)
+    .where(eq(federationOutbound.operationId, request.operationId));
+  expect(saved?.request).not.toHaveProperty("arbitration");
+});
+
+test("arbitration workflow reference resolves once into the original durable signed intent", async () => {
+  const f = await arbitrationAdmission("bilateral_direct");
+  await f.arbitration.confirm();
+  const runId = randomUUID();
+  await db.insert(workflowRuns).values({
+    id: runId,
+    name: "Arbitration workflow",
+    status: "running",
+    submittedBy: f.actor.userId,
+    startedAt: new Date(),
+    input: { executionModel: "durable-v2", orgId: f.actor.orgId, role: "user", yaml: "" },
+  });
+  const journal = new WorkflowExecutionJournalStore(db);
+  const lease = await journal.acquire(runId);
+  if (!lease) throw new Error("Missing workflow lease");
+  const {
+    operationId: _op,
+    taskId: _task,
+    attempt: _attempt,
+    issuedAt: _issued,
+    expiresAt: _expires,
+    ...base
+  } = f.reservation.request;
+  const plan: WorkflowDelegationPlan = {
+    ...base,
+    arbitration: {
+      policyId: f.arbitration.binding.policyId,
+      policyDigest: f.arbitration.binding.policyDigest,
+    },
+  };
+  const invocation = { path: JSON.stringify(["node", "remote"]) };
+  try {
+    await expect(
+      bindWorkflowDelegation(lease, f.actor, "remote", invocation, plan, 600, () => new Date()),
+    ).rejects.toThrow("POLICY_DENIED");
+    expect(
+      await db
+        .select()
+        .from(workflowExecutionDelegations)
+        .where(eq(workflowExecutionDelegations.runId, runId)),
+    ).toHaveLength(0);
+    const sent = await f.outbound.enqueueForWorkflow(
+      f.actor,
+      lease,
+      "remote",
+      invocation,
+      plan,
+      600,
+    );
+    const [saved] = await db
+      .select()
+      .from(workflowExecutionDelegations)
+      .where(eq(workflowExecutionDelegations.runId, runId));
+    expect(saved?.request.arbitration).toEqual(f.arbitration.binding);
+    await f.arbitration.source.revoke(
+      f.actor,
+      f.revisionId,
+      plan.arbitration?.policyId ?? "missing",
+    );
+    expect(
+      await f.outbound.enqueueForWorkflow(f.actor, lease, "remote", invocation, plan, 600),
+    ).toEqual(sent);
+    await expect(
+      f.outbound.enqueueForWorkflow(f.actor, lease, "remote", invocation, base, 600),
+    ).rejects.toBeInstanceOf(WorkflowExecutionInterrupted);
+    expect(
+      (
+        await db
+          .select()
+          .from(workflowExecutionDelegations)
+          .where(eq(workflowExecutionDelegations.runId, runId))
+      )[0]?.request,
+    ).toEqual(saved?.request);
+  } finally {
+    await lease.release();
+  }
+});
+
+test("arbitration lock waits cannot extend original source, receiver or coordinated admission windows", async () => {
+  for (const boundary of ["source", "receiver", "coordinated"] as const) {
+    const f = await arbitrationAdmission("bilateral_direct");
+    const coordinated = boundary === "coordinated" ? await executionFixture() : undefined;
+    const active = coordinated ?? f;
+    const a = coordinated ? await arbitrationForExecution(coordinated) : f.arbitration;
+    await a.confirm();
+    const request = { ...active.reservation.request, arbitration: a.binding };
+    const siteId = boundary === "receiver" ? f.b.signing.siteId : active.a.signing.siteId;
+    const locked = Promise.withResolvers<number>();
+    const release = Promise.withResolvers<void>();
+    const blocker = db.transaction(async (tx) => {
+      await tx
+        .select()
+        .from(federationArbitrationPolicies)
+        .where(
+          and(
+            eq(federationArbitrationPolicies.localSiteId, siteId),
+            eq(federationArbitrationPolicies.policyId, a.policy.policyId),
+          ),
+        )
+        .for("update");
+      const rows = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      if (!rows[0]) throw new Error("Missing lock holder");
+      locked.resolve(rows[0].pid);
+      await release.promise;
+    });
+    const pid = await locked.promise;
+    const operation = (
+      coordinated
+        ? coordinated.execution.approve(active.actor, active.revisionId, {
+            ...active.reservation,
+            request,
+          })
+        : boundary === "source"
+          ? f.outbound.enqueue(f.actor, request)
+          : f.receive(request)
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    try {
+      let waiting = false;
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const blocked = await db.execute(
+          sql`select pid from pg_stat_activity where ${pid} = ANY(pg_blocking_pids(pid))`,
+        );
+        if (blocked.length) {
+          waiting = true;
+          break;
+        }
+        await Bun.sleep(10);
+      }
+      expect(waiting).toBe(true);
+      // Real PostgreSQL lock wait; only elapsed wall time is injected to avoid a ten-minute test.
+      setSystemTime(new Date(Date.parse(request.expiresAt) + 1));
+      release.resolve();
+      await blocker;
+      expect(await operation).toMatchObject({ code: "AUTHORIZATION_EXPIRED" });
+    } finally {
+      release.resolve();
+      await blocker;
+      await operation;
+      setSystemTime();
+    }
+    expect(
+      await db
+        .select()
+        .from(federationOutbound)
+        .where(eq(federationOutbound.operationId, request.operationId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(federationReservations)
+        .where(eq(federationReservations.operationId, request.operationId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(executionApprovals)
+        .where(eq(executionApprovals.localSiteId, active.a.signing.siteId)),
+    ).toHaveLength(0);
+  }
+});
+
+test("arbitration coordinated approval checks original consent and preserves already signed reservations", async () => {
+  const f = await executionFixture();
+  const a = await arbitrationForExecution(f);
+  f.reservation.request.arbitration = a.binding;
+  await expect(f.execution.approve(f.actor, f.revisionId, f.reservation)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  expect(
+    await db
+      .select()
+      .from(executionApprovals)
+      .where(eq(executionApprovals.localSiteId, f.a.signing.siteId)),
+  ).toHaveLength(0);
+  await a.confirm();
+  const approved = await approveReservation(f);
+  await a.source.revoke(f.actor, f.revisionId, a.policy.policyId);
+  expect((await f.execution.approve(f.actor, f.revisionId, f.reservation)).approvalJws).toBe(
+    approved.own.approvalJws,
+  );
+  await expect(
+    f.execution.approve(f.actor, f.revisionId, {
+      ...f.reservation,
+      request: { ...f.reservation.request, arbitration: undefined },
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+});
+
 async function approveReservation(f: Awaited<ReturnType<typeof executionFixture>>) {
   const own = await f.execution.approve(f.actor, f.revisionId, f.reservation);
   const other = await signFederationMessage(
@@ -1295,8 +1689,17 @@ class ActivationAdapter implements MarketClient {
     return { state: "committed", transactionId, blockNumber: "10" };
   }
 }
-async function activationFixture(withMaterials = false, withResults = false) {
+async function activationFixture(
+  withMaterials = false,
+  withResults = false,
+  withArbitration = false,
+) {
   const f = await executionFixture(true, withMaterials, withResults);
+  if (withArbitration) {
+    const arbitration = await arbitrationForExecution(f);
+    await arbitration.confirm();
+    f.reservation.request.arbitration = arbitration.binding;
+  }
   await approveReservation(f);
   for (let step = 0; step < 6; step++) expect(await f.service.advanceNext()).toBe(true);
   await new FederationPermissionService(db).set(
@@ -1312,8 +1715,13 @@ async function activationFixture(withMaterials = false, withResults = false) {
   return { ...f, market, marketAdapter, activationId: randomUUID() };
 }
 
-async function confirmationFixture(provider = false, withMaterials = false, withResults = false) {
-  const f = await activationFixture(withMaterials, withResults);
+async function confirmationFixture(
+  provider = false,
+  withMaterials = false,
+  withResults = false,
+  withArbitration = false,
+) {
+  const f = await activationFixture(withMaterials, withResults, withArbitration);
   const ordinary = new FederationAgreementService(db, f.a.signing);
   const own = await ordinary.approve(f.actor, { terms: f.terms.agreement });
   let executionUserId: string | undefined;
@@ -1414,6 +1822,76 @@ async function confirmationFixture(provider = false, withMaterials = false, with
       db.transaction((tx) => confirmation.authorize(tx, f.actor.orgId, f.reservation.request)),
   };
 }
+
+test("arbitration validation cannot extend a coordinated source or receiver execution proof", async () => {
+  for (const provider of [false, true]) {
+    const f = await confirmationFixture(provider, true, false, true);
+    const proof = await f.requestConfirmation();
+    for (let i = 0; i < 3; i++) expect(await f.market.advanceNext()).toBe(true);
+    const original = FederationArbitrationPolicyService.prototype.authorizeRequest;
+    const check = spyOn(
+      FederationArbitrationPolicyService.prototype,
+      "authorizeRequest",
+    ).mockImplementation(async function (
+      this: FederationArbitrationPolicyService,
+      ...args: Parameters<typeof original>
+    ) {
+      await original.apply(this, args);
+      f.setClock(new Date(proof.expiresAt));
+    });
+    try {
+      if (provider) {
+        const admission = new FederationAdmission(
+          db,
+          f.b.signing,
+          f.b.verification,
+          undefined,
+          f.confirmation,
+        );
+        await expect(
+          admission.receive({
+            requestJws: await signFederationMessage(
+              FederationDelegationSchema,
+              f.reservation.request,
+              f.a.signing,
+            ),
+            authenticatedPeerSiteId: f.a.signing.siteId,
+            senderKey: f.a.verification,
+          }),
+        ).rejects.toMatchObject({ code: "LEDGER_PENDING" });
+      } else {
+        const outbound = new FederationOutboundService(
+          db,
+          f.a.signing,
+          async () => {
+            throw new Error("No delivery expected");
+          },
+          f.assets,
+          undefined,
+          f.confirmation,
+        );
+        await expect(outbound.enqueue(f.actor, f.reservation.request)).rejects.toMatchObject({
+          code: "LEDGER_PENDING",
+        });
+      }
+      expect(check).toHaveBeenCalled();
+    } finally {
+      check.mockRestore();
+    }
+    expect(
+      await db
+        .select()
+        .from(federationOutbound)
+        .where(eq(federationOutbound.operationId, f.reservation.request.operationId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(federationReservations)
+        .where(eq(federationReservations.operationId, f.reservation.request.operationId)),
+    ).toHaveLength(0);
+  }
+});
 
 test("coordinated admission waits for VALID, preserves one chain reservation and creates no local budget", async () => {
   const f = await confirmationFixture(true);

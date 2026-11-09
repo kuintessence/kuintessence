@@ -24,6 +24,7 @@ export const commercialAutomaticMeters = [
 ] as const;
 export const CommercialSigningKindSchema = z.enum([
   "commercial-agreement",
+  "commercial-arbitration-policy",
   "commercial-usage",
   "commercial-reservation",
   "commercial-release",

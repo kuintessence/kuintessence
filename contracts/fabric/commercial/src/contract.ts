@@ -7,6 +7,10 @@ import {
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import {
+  assertArbitrationRequest,
+  CommercialArbitrationPolicySchema,
+} from "@kuintessence/shared/federation/arbitration-policy";
+import {
   assertCommercialAdjustment,
   assertCommercialBill,
   assertCommercialDiscount,
@@ -309,6 +313,32 @@ export class CommercialLedger {
     )
       return fail("POLICY_DENIED");
     assertDelegationTerms(agreement.terms.agreement, request, now);
+    if (request.arbitration) {
+      const sourcePolicy = await this.verify(
+        stub,
+        CommercialArbitrationPolicySchema,
+        request.arbitration.sourceJws,
+        request.senderSiteId,
+        now,
+      );
+      const targetPolicy = await this.verify(
+        stub,
+        CommercialArbitrationPolicySchema,
+        request.arbitration.targetJws,
+        request.recipientSiteId,
+        now,
+      );
+      if (
+        sourcePolicy.digest !== targetPolicy.digest ||
+        sourcePolicy.payload.agreementDigest !== agreement.receipt.digest ||
+        sourcePolicy.payload.domainId !== domain.domainId ||
+        !this.trust.organizations.some(
+          (org) => org.siteId === sourcePolicy.payload.arbitratorSiteId,
+        )
+      )
+        return fail("POLICY_DENIED");
+      assertArbitrationRequest(sourcePolicy.payload, sourcePolicy.digest, request, now);
+    }
     const market = await this.market(stub, reservation.demandId);
     if (
       market.status !== "CLAIMED" ||

@@ -26,6 +26,7 @@ import {
 } from "@kuintessence/shared/federation/market";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
+import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { federationMaterialDigest } from "./assets";
 import { allocateTaskCompletion } from "./completion-capacity";
 import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
@@ -240,6 +241,11 @@ export class FederationCommercialExecutionService {
         throw new FederationError("POLICY_DENIED");
       if (payload.agreementDigest !== contract.digest)
         throw new FederationError("OPERATION_CONFLICT");
+      await new FederationArbitrationPolicyService(this.db, this.signingKey).authorizeRequest(
+        tx,
+        actor.orgId,
+        payload.request,
+      );
       assertDelegationTerms(terms.agreement, payload.request, this.clock());
       return payload;
     }

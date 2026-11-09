@@ -1,7 +1,13 @@
 import { z } from "zod";
 import { CommercialDisclosurePolicySchema } from "./disclosure-authorization";
 import { CommercialDisputeSubjectSchema } from "./disputes";
-import { FederationAmountSchema, FederationDelegationSchema } from "./index";
+import {
+  FederationAmountSchema,
+  type FederationArbitrationReference,
+  type FederationDelegation,
+  FederationDelegationSchema,
+  FederationError,
+} from "./index";
 import { FederationDigestSchema } from "./references";
 
 const terms = {
@@ -66,6 +72,36 @@ export const CommercialArbitrationPolicySchema = z
     "Invalid arbitration parties or validity window",
   );
 export type CommercialArbitrationPolicy = z.infer<typeof CommercialArbitrationPolicySchema>;
+
+export type ArbitrationRequestScope = Pick<
+  FederationDelegation,
+  "agreementRevisionId" | "senderSiteId" | "recipientSiteId" | "unit"
+> & { arbitration?: FederationArbitrationReference };
+
+/** Caller verifies both signatures, the original commercial contract and current revocation state. */
+export function assertArbitrationRequest(
+  policy: CommercialArbitrationPolicy,
+  digest: string,
+  request: ArbitrationRequestScope,
+  now: Date,
+) {
+  if (
+    !request.arbitration ||
+    policy.policyId !== request.arbitration.policyId ||
+    digest !== request.arbitration.policyDigest ||
+    policy.agreementRevisionId !== request.agreementRevisionId ||
+    policy.sourceSiteId !== request.senderSiteId ||
+    policy.targetSiteId !== request.recipientSiteId ||
+    policy.unit !== request.unit
+  )
+    throw new FederationError("POLICY_DENIED");
+  if (
+    !Number.isFinite(now.getTime()) ||
+    now.getTime() < Date.parse(policy.validFrom) ||
+    now.getTime() >= Date.parse(policy.validUntil)
+  )
+    throw new FederationError("AUTHORIZATION_EXPIRED");
+}
 
 export const CommercialArbitrationPolicyApprovalSchema = z
   .object({
