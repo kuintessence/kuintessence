@@ -134,7 +134,8 @@ export async function verifyGateDatabase(
       const msp = join(dirname(dirname(site.userMsp)), userDomain, "msp");
       const keys = await readdir(join(msp, "keystore"));
       assert(keys.length === 1 && keys[0]);
-      const runDirectory = join(root, `gate-db-${suffix}`);
+      // Keep Unix socket paths below the OS limit even in GitHub's longer checkout path.
+      const runDirectory = join(root, `${site.name}-${kind === "commercial" ? "c" : "m"}`);
       await mkdir(runDirectory, { recursive: true, mode: 0o700 });
       const config = join(root, `gate-db-${suffix}.json`);
       await writeFile(
@@ -253,16 +254,10 @@ export async function verifyGateDatabase(
           state: "committed",
         });
     }
-    const marketClient = new UnixMarketClient(join(root, "gate-db-market", "market.sock"));
-    const providerMarketClient = new UnixMarketClient(
-      join(root, "gate-db-provider-market", "market.sock"),
-    );
-    const commercialClient = new UnixCommercialClient(
-      join(root, "gate-db-commercial", "commercial.sock"),
-    );
-    const providerCommercialClient = new UnixCommercialClient(
-      join(root, "gate-db-provider-commercial", "commercial.sock"),
-    );
+    const marketClient = new UnixMarketClient(join(root, "A-m", "market.sock"));
+    const providerMarketClient = new UnixMarketClient(join(root, "B-m", "market.sock"));
+    const commercialClient = new UnixCommercialClient(join(root, "A-c", "commercial.sock"));
+    const providerCommercialClient = new UnixCommercialClient(join(root, "B-c", "commercial.sock"));
     const sourceStorage = testCompletionStorage(),
       providerStorage = testCompletionStorage();
     const aAgreements = new FederationCommercialAgreementService(db, a.key);
