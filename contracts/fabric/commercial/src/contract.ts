@@ -36,6 +36,8 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import {
   assertDisputeAttestation,
+  type CommercialDisputeFinancialView,
+  type CommercialDisputeFreeze,
   CommercialDisputeFreezeSchema,
   CommercialDisputeSchema,
 } from "@kuintessence/shared/federation/disputes";
@@ -88,6 +90,10 @@ const StoredAdjustment = z.strictObject({
   receipt: CommercialReceiptSchema,
   envelope: CommercialAgreementEnvelopeSchema,
   terms: CommercialAdjustmentSchema,
+});
+const TaskDispute = z.strictObject({
+  activeCases: z.number().int().positive().max(2147483647),
+  salt: z.string().regex(/^[a-f0-9]{64}$/),
 });
 const StoredDisputeFreeze = z.strictObject({
   receipt: CommercialReceiptSchema,
@@ -288,6 +294,7 @@ export class CommercialLedger {
       await stub.putPrivateData(domain.collection, key, priorBytes);
       return encode(prior.receipt);
     }
+    await this.assertTaskNotDisputed(stub, domain, request);
     const agreementBytes = await this.privateValue(
       stub,
       domain.collection,
@@ -449,6 +456,7 @@ export class CommercialLedger {
       await stub.putPrivateData(domain.collection, key, bytes);
       return encode(stored.release.receipt);
     }
+    await this.assertTaskNotDisputed(stub, domain, request);
     const releaseKey = stub.createCompositeKey("release", [domain.domainId, release.releaseId]);
     if ((await this.privateValue(stub, domain.collection, releaseKey)).length)
       return fail("OPERATION_CONFLICT");
@@ -771,6 +779,7 @@ export class CommercialLedger {
       return encode(prior.receipt);
     }
     const { usage, agreement } = await this.billingOriginals(stub, domain, terms.reportId);
+    await this.assertTaskNotDisputed(stub, domain, usage.report);
     assertCommercialDiscount(
       terms,
       agreement.terms,
@@ -839,6 +848,7 @@ export class CommercialLedger {
       return encode(prior.receipt);
     }
     const { usage, agreement } = await this.billingOriginals(stub, domain, terms.reportId);
+    await this.assertTaskNotDisputed(stub, domain, terms.request);
     const scope = [
       domain.domainId,
       terms.request.agreementRevisionId,
@@ -918,10 +928,141 @@ export class CommercialLedger {
     );
     return encode(receipt);
   }
+  private disputeTaskKey(
+    stub: Stub,
+    domainId: string,
+    task: { agreementRevisionId: string; taskId: string; attempt: number },
+  ) {
+    return stub.createCompositeKey("dispute-task", [
+      domainId,
+      task.agreementRevisionId,
+      task.taskId,
+      String(task.attempt),
+    ]);
+  }
+  private async assertTaskNotDisputed(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    task: { agreementRevisionId: string; taskId: string; attempt: number },
+  ) {
+    const bytes = await this.privateValue(
+      stub,
+      domain.collection,
+      this.disputeTaskKey(stub, domain.domainId, task),
+    );
+    if (bytes.length) {
+      TaskDispute.parse(JSON.parse(Buffer.from(bytes).toString()));
+      return fail("DATA_WAITING");
+    }
+  }
+  private async nativeFinancialRecords(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    task: CommercialDisputeFreeze,
+  ) {
+    const records: CommercialDisputeFinancialView["records"] = [];
+    let size = 0;
+    const add = (
+      recordType: CommercialDisputeFinancialView["records"][number]["recordType"],
+      receipt: z.infer<typeof CommercialReceiptSchema>,
+    ) => {
+      const record = {
+        recordType,
+        recordId: receipt.recordId,
+        recordDigest: receipt.digest,
+        state: "ready" as const,
+      };
+      size += Buffer.byteLength(JSON.stringify(record)) + 1;
+      if (size > 1048576) return fail("INVALID_MESSAGE");
+      records.push(record);
+    };
+    const read = async (type: string, id: string) => {
+      const bytes = await this.privateValue(
+        stub,
+        domain.collection,
+        stub.createCompositeKey(type, [domain.domainId, id]),
+      );
+      return bytes.length ? (JSON.parse(Buffer.from(bytes).toString()) as unknown) : null;
+    };
+    const billHead = await this.privateValue(
+      stub,
+      domain.collection,
+      stub.createCompositeKey("bill-head", [
+        domain.domainId,
+        task.agreementRevisionId,
+        task.taskId,
+        String(task.attempt),
+      ]),
+    );
+    if (!billHead.length) return records;
+    const { billId } = z
+      .object({ billId: z.uuid() })
+      .parse(JSON.parse(Buffer.from(billHead).toString()));
+    const rawBill = await read("bill", billId);
+    if (!rawBill) return fail("DATA_WAITING");
+    const bill = StoredBill.parse(rawBill),
+      request = bill.terms.request;
+    if (
+      bill.receipt.recordId !== billId ||
+      bill.terms.billId !== billId ||
+      request.agreementRevisionId !== task.agreementRevisionId ||
+      request.taskId !== task.taskId ||
+      request.attempt !== task.attempt ||
+      request.mode !== "ledger_coordinated" ||
+      request.senderSiteId !== task.sourceSiteId ||
+      request.recipientSiteId !== task.targetSiteId
+    )
+      return fail("OPERATION_CONFLICT");
+    add("bill", bill.receipt);
+    const rawHead = await read("settlement-head", billId);
+    if (!rawHead) return records;
+    const { settlementId } = z.object({ settlementId: z.uuid() }).parse(rawHead);
+    const rawSettlement = await read("settlement", settlementId);
+    if (!rawSettlement) return fail("DATA_WAITING");
+    const settlement = StoredSettlement.parse(rawSettlement);
+    if (
+      settlement.receipt.recordId !== settlementId ||
+      settlement.terms.settlementId !== settlementId ||
+      settlement.terms.billId !== billId ||
+      settlement.terms.billDigest !== bill.receipt.digest ||
+      settlement.terms.agreementRevisionId !== task.agreementRevisionId
+    )
+      return fail("OPERATION_CONFLICT");
+    add("settlement", settlement.receipt);
+    const rawAdjustmentHead = await read("adjustment-head", settlementId);
+    let reference: { adjustmentId: string; digest?: string } | null = rawAdjustmentHead
+      ? z.object({ adjustmentId: z.uuid() }).parse(rawAdjustmentHead)
+      : null;
+    const seen = new Set<string>();
+    while (reference) {
+      if (seen.has(reference.adjustmentId)) return fail("OPERATION_CONFLICT");
+      seen.add(reference.adjustmentId);
+      const raw = await read("adjustment", reference.adjustmentId);
+      if (!raw) return fail("DATA_WAITING");
+      const change = StoredAdjustment.parse(raw);
+      if (
+        change.receipt.recordId !== reference.adjustmentId ||
+        change.terms.adjustmentId !== reference.adjustmentId ||
+        (reference.digest && change.receipt.digest !== reference.digest) ||
+        change.terms.settlementId !== settlementId ||
+        change.terms.settlementDigest !== settlement.receipt.digest ||
+        change.terms.billId !== billId ||
+        change.terms.billDigest !== bill.receipt.digest ||
+        change.terms.agreementRevisionId !== task.agreementRevisionId
+      )
+        return fail("OPERATION_CONFLICT");
+      add("adjustment", change.receipt);
+      reference = change.terms.previous;
+    }
+    return records.sort((a, b) =>
+      `${a.recordType}:${a.recordId}` < `${b.recordType}:${b.recordId}` ? -1 : 1,
+    );
+  }
   private async disputeAttestation(
     stub: Stub,
     domain: FabricCommercialTrust["domains"][number],
     recordId: string,
+    native = false,
   ) {
     const envelope = this.input(stub, CommercialDisputeAttestationEnvelopeSchema),
       now = stub.getDateTimestamp();
@@ -961,8 +1102,18 @@ export class CommercialLedger {
       opening.payload.openingSiteId !== envelope.openingSiteId
     )
       return fail("POLICY_DENIED");
-    assertDisputeAttestation(terms, opening, domain.domainId, recordId, now);
-    const key = stub.createCompositeKey("dispute-freeze", [domain.domainId, recordId]);
+    assertDisputeAttestation(
+      terms,
+      opening,
+      domain.domainId,
+      recordId,
+      now,
+      native ? "ledger_coordinated" : "bilateral_attested",
+    );
+    const key = stub.createCompositeKey(native ? "native-dispute-freeze" : "dispute-freeze", [
+      domain.domainId,
+      recordId,
+    ]);
     const existing = await this.privateValue(stub, domain.collection, key);
     if (existing.length) {
       const original = StoredDisputeFreeze.parse(JSON.parse(Buffer.from(existing).toString()));
@@ -979,11 +1130,71 @@ export class CommercialLedger {
     const agreement = StoredAgreement.parse(JSON.parse(Buffer.from(bytes).toString()));
     if (
       agreement.receipt.digest !== opening.payload.agreementDigest ||
-      agreement.terms.agreement.mode !== "bilateral_attested" ||
+      agreement.terms.agreement.mode !== terms.mode ||
       agreement.terms.agreement.sourceSiteId !== terms.sourceSiteId ||
       agreement.terms.agreement.targetSiteId !== terms.targetSiteId
     )
       return fail("POLICY_DENIED");
+    if (native) {
+      const records = await this.nativeFinancialRecords(stub, domain, terms);
+      const head = {
+        caseId: terms.caseId,
+        caseDigest: terms.caseDigest,
+        agreementRevisionId: terms.agreementRevisionId,
+        taskId: terms.taskId,
+        attempt: terms.attempt,
+        mode: terms.mode,
+        records,
+      };
+      if (
+        `sha256:${createHash("sha256").update(federationCanonicalJson(head)).digest("hex")}` !==
+        terms.headDigest
+      )
+        return fail("OPERATION_CONFLICT");
+      // Reading the reservation marker and row also fences concurrent reserve/release writes.
+      const marker = await this.privateValue(
+        stub,
+        domain.collection,
+        stub.createCompositeKey("reservation-task", [
+          domain.domainId,
+          terms.taskId,
+          String(terms.attempt),
+        ]),
+      );
+      if (marker.length) {
+        const { reservationId } = z
+          .object({ reservationId: z.uuid() })
+          .parse(JSON.parse(Buffer.from(marker).toString()));
+        const reservationBytes = await this.privateValue(
+          stub,
+          domain.collection,
+          stub.createCompositeKey("reservation", [domain.domainId, reservationId]),
+        );
+        if (!reservationBytes.length) return fail("DATA_WAITING");
+        const reservation = StoredReservation.parse(
+          JSON.parse(Buffer.from(reservationBytes).toString()),
+        );
+        const request = reservation.reservation.request;
+        if (
+          request.agreementRevisionId !== terms.agreementRevisionId ||
+          request.taskId !== terms.taskId ||
+          request.attempt !== terms.attempt ||
+          request.senderSiteId !== terms.sourceSiteId ||
+          request.recipientSiteId !== terms.targetSiteId
+        )
+          return fail("OPERATION_CONFLICT");
+      }
+      const taskKey = this.disputeTaskKey(stub, domain.domainId, terms);
+      const current = await this.privateValue(stub, domain.collection, taskKey);
+      const prior = current.length
+        ? TaskDispute.parse(JSON.parse(Buffer.from(current).toString()))
+        : null;
+      await stub.putPrivateData(
+        domain.collection,
+        taskKey,
+        encode(TaskDispute.parse({ activeCases: (prior?.activeCases ?? 0) + 1, salt: terms.salt })),
+      );
+    }
     const receipt = { recordId, digest: signed.digest };
     await stub.putPrivateData(
       domain.collection,
@@ -1128,6 +1339,7 @@ export class CommercialLedger {
     );
     if (!billBytes.length) return fail("ASSET_UNAVAILABLE");
     const bill = StoredBill.parse(JSON.parse(Buffer.from(billBytes).toString()));
+    await this.assertTaskNotDisputed(stub, domain, bill.terms.request);
     assertCommercialSettlement(terms, bill.terms, bill.receipt.digest);
     if (bill.terms.request.mode === "bilateral_direct") return fail("POLICY_DENIED");
     const headKey = stub.createCompositeKey("settlement-head", [domain.domainId, terms.billId]);
@@ -1298,6 +1510,7 @@ export class CommercialLedger {
       previous = StoredAdjustment.parse(JSON.parse(Buffer.from(priorBytes).toString()));
       if (previous.terms.adjustmentId !== head.adjustmentId) return fail("OPERATION_CONFLICT");
     }
+    await this.assertTaskNotDisputed(stub, domain, bill.terms.request);
     assertCommercialAdjustment(terms, {
       agreement: agreement.terms,
       bill: { terms: bill.terms, digest: bill.receipt.digest },
@@ -1453,6 +1666,7 @@ export class CommercialLedger {
         "RecordRefund",
         "RecordPayment",
         "RecordDisputeFreeze",
+        "FreezeDisputedTask",
       ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
@@ -1460,6 +1674,7 @@ export class CommercialLedger {
     const [domainId, recordId] = Args.parse(params);
     const domain = this.trust.domains.find((domain) => domain.domainId === domainId);
     if (!domain?.siteIds.includes(org.siteId)) return fail("POLICY_DENIED");
+    if (fcn === "FreezeDisputedTask") return this.disputeAttestation(stub, domain, recordId, true);
     if (fcn === "RecordDisputeFreeze") return this.disputeAttestation(stub, domain, recordId);
     if (fcn === "RecordPayment") return this.payment(stub, domain, recordId);
     if (fcn === "RecordRefund") return this.refund(stub, domain, recordId);

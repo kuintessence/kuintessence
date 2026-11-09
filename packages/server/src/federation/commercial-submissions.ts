@@ -72,6 +72,7 @@ const recordTypes = {
   "record-refund": "refund",
   "record-payment": "payment",
   "record-dispute-freeze": "dispute-freeze",
+  "freeze-disputed-task": "native-dispute-freeze",
 } as const;
 
 export class FederationCommercialSubmissionService {
@@ -664,6 +665,8 @@ export class FederationCommercialSubmissionService {
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
+    // shortcut: enable native submissions only after durable coordinated proof state and receipt reconciliation are wired.
+    if (input.operation === "freeze-disputed-task") throw new FederationError("LEDGER_REQUIRED");
     if (input.operation === "adjust-settlement") {
       const [row] = await (tx ?? this.db)
         .select()
@@ -1009,7 +1012,8 @@ export class FederationCommercialSubmissionService {
       await requireFederationCapability(
         tx,
         actor,
-        row.input.operation === "record-dispute-freeze"
+        row.input.operation === "record-dispute-freeze" ||
+          row.input.operation === "freeze-disputed-task"
           ? "dispute.open"
           : row.input.operation === "record-payment"
             ? "payment.approve"

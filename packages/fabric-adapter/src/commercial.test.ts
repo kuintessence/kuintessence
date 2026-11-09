@@ -1166,4 +1166,30 @@ test("dispute attestation adapter binds all three signatures and uses only trans
     key.kinds = key.kinds.filter((k) => k !== "commercial-dispute-freeze");
   await expect(setup({ trust }).adapter.prepare(value)).rejects.toThrow();
   expect(denied.sdk).not.toHaveBeenCalled();
+  const nativeInput = CommercialAdapterProposalInputSchema.parse({
+    ...(await input({ ...freeze, mode: "ledger_coordinated" })),
+    operation: "freeze-disputed-task",
+  });
+  const native = setup(),
+    nativePrepared = await native.adapter.prepare(nativeInput),
+    nativeStored = decode(native, nativePrepared.recovery);
+  const nativeProposed = proto.ProposedTransaction.deserializeBinary(
+    Buffer.from(nativeStored.message.bytes, "base64"),
+  );
+  const nativeSigned = nativeProposed.getProposal();
+  if (!nativeSigned) throw new Error("Missing native proposal");
+  const nativePayload = peer.ChaincodeProposalPayload.deserializeBinary(
+    peer.Proposal.deserializeBinary(nativeSigned.getProposalBytes_asU8()).getPayload_asU8(),
+  );
+  expect(
+    peer.ChaincodeInvocationSpec.deserializeBinary(nativePayload.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((b) => Buffer.from(b).toString()),
+  ).toEqual(["FreezeDisputedTask", value.domainId, value.recordId]);
+  expect(nativeProposed.getEndorsingOrganizationsList()).toEqual(["AMSP", "BMSP"]);
+  await expect(
+    setup().adapter.prepare({ ...value, operation: "freeze-disputed-task" }),
+  ).rejects.toThrow("POLICY_DENIED");
 });

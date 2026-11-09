@@ -182,7 +182,10 @@ export class FabricCommercialAdapter {
         Date.parse(receipt.recordedAt) > Date.parse(receipt.observedAt)
       )
         throw new Error("POLICY_DENIED");
-    } else if (input.operation === "record-dispute-freeze") {
+    } else if (
+      input.operation === "record-dispute-freeze" ||
+      input.operation === "freeze-disputed-task"
+    ) {
       const signed = await this.verifyPair(CommercialDisputeFreezeSchema, input.envelope, now),
         opening = await this.verify(
           CommercialDisputeSchema,
@@ -197,7 +200,14 @@ export class FabricCommercialAdapter {
         opening.payload.openingSiteId !== input.envelope.openingSiteId
       )
         throw new Error("POLICY_DENIED");
-      assertDisputeAttestation(signed.payload, opening, input.domainId, input.recordId, now);
+      assertDisputeAttestation(
+        signed.payload,
+        opening,
+        input.domainId,
+        input.recordId,
+        now,
+        input.operation === "freeze-disputed-task" ? "ledger_coordinated" : "bilateral_attested",
+      );
     } else if (input.operation === "record-payment") {
       const signed = await this.verifyPair(CommercialPaymentSchema, input.envelope, now),
         value = signed.payload;
@@ -282,6 +292,7 @@ export class FabricCommercialAdapter {
       "record-refund": "RecordRefund",
       "record-payment": "RecordPayment",
       "record-dispute-freeze": "RecordDisputeFreeze",
+      "freeze-disputed-task": "FreezeDisputedTask",
     } as const;
     const proposal = this.gateway
       .getNetwork(this.config.channel)

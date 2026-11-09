@@ -120,20 +120,33 @@ function start(name: string, argv: string[], env: NodeJS.ProcessEnv) {
 }
 
 const reservedPorts = new Set<number>();
+const portReservations = new Map<number, ReturnType<typeof createServer>>();
 async function port(): Promise<number> {
   for (;;) {
-    const server = createServer();
+    const server = createServer((socket) => socket.destroy());
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", resolve);
     });
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Cannot allocate test port");
-    await new Promise<void>((resolve) => server.close(() => resolve()));
     if (!reservedPorts.has(address.port)) {
       reservedPorts.add(address.port);
+      portReservations.set(address.port, server);
       return address.port;
     }
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+async function releasePorts(...ports: number[]) {
+  for (const port of ports) {
+    const server = portReservations.get(port);
+    if (!server) continue;
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    portReservations.delete(port);
   }
 }
 
@@ -141,7 +154,19 @@ async function listening(target: number) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const exited = children.find((c) => c.process.exitCode !== null);
-    if (exited) throw new Error(`${exited.name} exited; inspect ${exited.log}`);
+    if (exited) {
+      const details = (await readFile(exited.log, "utf8")).toLowerCase();
+      const reason =
+        [
+          "address already in use",
+          "permission denied",
+          "no space left on device",
+          "cannot allocate memory",
+        ].find((value) => details.includes(value)) ?? "unclassified startup failure";
+      throw new Error(
+        `${exited.name} exited (${exited.process.exitCode}, ${reason}); inspect ${exited.log}`,
+      );
+    }
     const open = await new Promise<boolean>((resolve) => {
       const socket = createConnection({ host: "127.0.0.1", port: target });
       socket.setTimeout(500);
@@ -177,6 +202,7 @@ async function stop(name: string) {
 
 function cleanup() {
   closing ??= (async () => {
+    await releasePorts(...portReservations.keys());
     const results = await Promise.allSettled(additionalCleanups.map((cleanup) => cleanup()));
     for (const child of [...children].reverse()) await stop(child.name);
     if (results.some((result) => result.status === "rejected"))
@@ -508,6 +534,7 @@ async function setup() {
   });
   section(orderer, "Operations").ListenAddress = "127.0.0.1:0";
   await yaml(join(root, "orderer.yaml"), orderer);
+  await releasePorts(ordererPort, ordererAdmin);
   start("orderer", [join(binaries, "orderer")], { FABRIC_CFG_PATH: root });
   await listening(ordererAdmin);
   await run("orderer-join", [
@@ -626,6 +653,7 @@ async function setup() {
       KQ_CCAAS_CERT: join(site.tls, "server.crt"),
       KQ_CCAAS_KEY: join(site.tls, "server.key"),
     };
+    await releasePorts(site.chaincodePort);
     start(
       `chaincode-${site.name}`,
       ["node", "--max-old-space-size=192", join(root, "chaincode/main.js")],
@@ -639,6 +667,7 @@ async function setup() {
         CORE_CHAINCODE_LOGGING_LEVEL: "error",
       },
     );
+    await releasePorts(site.peerPort, site.chaincodeListener);
     start(`peer-${site.name}`, [join(binaries, "peer"), "node", "start"], env);
     await listening(site.peerPort);
     await listening(site.chaincodePort);
@@ -818,6 +847,7 @@ async function setup() {
           ]),
     ];
     for (const site of sites) {
+      await releasePorts(site.gateChaincodePort);
       start(
         `gate-chaincode-${site.name}`,
         ["node", "--max-old-space-size=192", join(root, "gate-chaincode/main.js")],

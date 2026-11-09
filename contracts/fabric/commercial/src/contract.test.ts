@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   FederationCancellationReceiptSchema,
   FederationDelegationSchema,
+  federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import {
   assertCommercialPayment,
@@ -1997,4 +1998,204 @@ test("dispute attestation needs dedicated purposes and available original privat
     `commercial_AB_v1:${f.stub.createCompositeKey("agreement", [domainId, f.terms.agreement.agreementRevisionId])}`,
   );
   await expect(f.record()).rejects.toThrow("DATA_WAITING");
+});
+
+async function nativeDispute(
+  f: Awaited<ReturnType<typeof install>>,
+  task: { taskId: string; attempt: number },
+  records: {
+    recordType: "bill" | "settlement" | "adjustment";
+    recordId: string;
+    recordDigest: string;
+  }[] = [],
+) {
+  const opener = keys[0];
+  if (!opener) throw new Error("Missing opener");
+  const opening = CommercialDisputeSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute",
+    caseId: randomUUID(),
+    domainId,
+    agreementRevisionId: f.terms.agreement.agreementRevisionId,
+    agreementDigest: f.receipt.digest,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    openingSiteId: sites[0],
+    taskId: task.taskId,
+    attempt: task.attempt,
+    subject: {
+      recordType: "usage",
+      recordId: randomUUID(),
+      recordDigest: `sha256:${"a".repeat(64)}`,
+    },
+    reason: "PRIVATE-NATIVE-DISPUTE",
+    requestedResolution: "Review accounting",
+    issuedAt: f.stub.timestamp.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const openingJws = await signFederationMessage(CommercialDisputeSchema, opening, opener);
+  const headIdentity = {
+    caseId: opening.caseId,
+    caseDigest: `sha256:${createHash("sha256")
+      .update(Buffer.from(openingJws.split(".")[1] ?? "", "base64url"))
+      .digest("hex")}`,
+    agreementRevisionId: opening.agreementRevisionId,
+    taskId: task.taskId,
+    attempt: task.attempt,
+    mode: "ledger_coordinated" as const,
+  };
+  const ordered = records
+    .map((r) => ({ ...r, state: "ready" }))
+    .sort((a, b) => (`${a.recordType}:${a.recordId}` < `${b.recordType}:${b.recordId}` ? -1 : 1));
+  const freeze = CommercialDisputeFreezeSchema.parse({
+    ...headIdentity,
+    protocolVersion: 1,
+    kind: "commercial-dispute-freeze",
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    headDigest: `sha256:${createHash("sha256")
+      .update(federationCanonicalJson({ ...headIdentity, records: ordered }))
+      .digest("hex")}`,
+    issuedAt: opening.issuedAt,
+    salt: randomBytes(32).toString("hex"),
+  });
+  const envelope = async (value = freeze) => ({
+    ...(await bilateral(CommercialDisputeFreezeSchema, value)),
+    openingSiteId: sites[0],
+    openingJws,
+  });
+  const record = async (value = freeze, actor = identity()) =>
+    f.call("FreezeDisputedTask", value.caseId, await envelope(value), actor);
+  return { opening, freeze, record, envelope };
+}
+
+test("native dispute freezes new bills without changing funds, preserves multiple cases and replay", async () => {
+  const f = await billFixture(true),
+    d = await nativeDispute(f, f.bill.request),
+    before = new Map(f.stub.privateState),
+    publicBefore = new Map(f.stub.state);
+  await d.record();
+  await expect(f.confirm()).rejects.toThrow("DATA_WAITING");
+  for (const [key, value] of before) expect(f.stub.privateState.get(key)).toEqual(value);
+  expect(f.stub.state).toEqual(publicBefore);
+  expect(f.stub.privateState.size).toBe(before.size + 2);
+  const marker = `commercial_AB_v1:${f.stub.createCompositeKey("dispute-task", [domainId, f.bill.request.agreementRevisionId, f.bill.request.taskId, String(f.bill.request.attempt)])}`;
+  expect(
+    JSON.parse(Buffer.from(f.stub.privateState.get(marker) ?? []).toString()).activeCases,
+  ).toBe(1);
+  await d.record();
+  expect(
+    JSON.parse(Buffer.from(f.stub.privateState.get(marker) ?? []).toString()).activeCases,
+  ).toBe(1);
+  const second = await nativeDispute(f, f.bill.request);
+  await second.record();
+  expect(
+    JSON.parse(Buffer.from(f.stub.privateState.get(marker) ?? []).toString()).activeCases,
+  ).toBe(2);
+  await expect(d.record({ ...d.freeze, headDigest: `sha256:${"e".repeat(64)}` })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(d.record(d.freeze, identity(2))).rejects.toThrow("POLICY_DENIED");
+});
+
+test("native dispute requires the complete financial history and blocks new settlement adjustments while allowing original replay", async () => {
+  const f = await adjustmentFixture(),
+    receipt = CommercialReceiptSchema.parse(JSON.parse((await f.adjust()).toString()));
+  const entries = [
+    { recordType: "bill" as const, recordId: f.bill.billId, recordDigest: f.value.billDigest },
+    {
+      recordType: "settlement" as const,
+      recordId: f.value.settlementId,
+      recordDigest: f.adjustment.settlementDigest,
+    },
+    {
+      recordType: "adjustment" as const,
+      recordId: f.adjustment.adjustmentId,
+      recordDigest: receipt.digest,
+    },
+  ];
+  const incomplete = await nativeDispute(f, f.bill.request, entries.slice(0, 2));
+  await expect(incomplete.record()).rejects.toThrow("OPERATION_CONFLICT");
+  const d = await nativeDispute(f, f.bill.request, entries),
+    before = new Map(f.stub.privateState),
+    budget = f.stub.privateState.get(f.budgetKey);
+  await d.record();
+  await expect(
+    f.adjust({
+      ...f.adjustment,
+      adjustmentId: randomUUID(),
+      previous: { adjustmentId: receipt.recordId, digest: receipt.digest },
+      previousChargedAmount: "0",
+      chargedAmount: "1",
+    }),
+  ).rejects.toThrow("DATA_WAITING");
+  expect(f.stub.privateState.get(f.budgetKey)).toEqual(budget);
+  await f.adjust();
+  await f.settle();
+  for (const [key, value] of before) expect(f.stub.privateState.get(key)).toEqual(value);
+  const missing = `commercial_AB_v1:${f.stub.createCompositeKey("adjustment", [domainId, receipt.recordId])}`;
+  f.stub.privateState.delete(missing);
+  const other = await nativeDispute(f, f.bill.request, entries);
+  await expect(other.record()).rejects.toThrow("DATA_WAITING");
+});
+
+test("native dispute rejects a new settlement after bill freeze and never rewrites the bill", async () => {
+  const f = await settlementFixture(),
+    d = await nativeDispute(f, f.bill.request, [
+      { recordType: "bill", recordId: f.bill.billId, recordDigest: f.value.billDigest },
+    ]);
+  await d.record();
+  await expect(f.settle()).rejects.toThrow("DATA_WAITING");
+  await f.confirm();
+  const before = new Map(f.stub.privateState);
+  await expect(f.call("RecordDisputeFreeze", d.freeze.caseId, await d.envelope())).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  expect(f.stub.privateState).toEqual(before);
+});
+
+test("native dispute fences reserve and release but permits terminal evidence and unaffected tasks", async () => {
+  const f = await reservationFixture(),
+    d = await nativeDispute(f, f.reservation.request);
+  await d.record();
+  await expect(f.reserve()).rejects.toThrow("DATA_WAITING");
+  const other = {
+    ...f.reservation,
+    reservationId: randomUUID(),
+    request: { ...f.reservation.request, taskId: randomUUID(), operationId: randomUUID() },
+  };
+  f.stub.market = { ...f.market, claim: { ...f.market.claim, claimId: other.reservationId } };
+  await f.reserve(other);
+  const g = await reservationFixture(),
+    receipt = await g.reserve(),
+    freeze = await nativeDispute(g, g.reservation.request);
+  await freeze.record();
+  expect(await g.reserve()).toEqual(receipt);
+  const release = CommercialReleaseSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-release",
+    releaseId: randomUUID(),
+    domainId,
+    reservationId: g.reservation.reservationId,
+    reservationDigest: receipt.digest,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    expectedGateVersion: 1,
+    reason: "cancelled",
+    issuedAt: now.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  await expect(
+    g.call(
+      "ReleaseExecution",
+      release.releaseId,
+      await bilateral(CommercialReleaseSchema, release),
+    ),
+  ).rejects.toThrow("DATA_WAITING");
+  const terminal = await terminalFixture(),
+    opening = await nativeDispute(terminal, terminal.reservation.request),
+    budget = terminal.budget();
+  await opening.record();
+  await terminal.record();
+  expect(terminal.budget()).toEqual(budget);
 });

@@ -150,17 +150,18 @@ export const CommercialDisputeFreezeSchema = z
 export type CommercialDisputeFreeze = z.infer<typeof CommercialDisputeFreezeSchema>;
 export type CommercialDisputeFinancialView = z.infer<typeof CommercialDisputeFinancialViewSchema>;
 
-/** The ledger records the bilateral proof; it does not validate the allegation or enact a freeze. */
+/** Bind the signed boundary to its original case; the ledger operation must check actual state separately. */
 export function assertDisputeAttestation(
   freeze: CommercialDisputeFreeze,
   opening: { payload: CommercialDispute; digest: string },
   domainId: string,
   recordId: string,
   now: Date,
+  mode: "bilateral_attested" | "ledger_coordinated" = "bilateral_attested",
 ) {
   const value = opening.payload;
   if (
-    freeze.mode !== "bilateral_attested" ||
+    freeze.mode !== mode ||
     freeze.caseId !== recordId ||
     value.caseId !== recordId ||
     freeze.caseDigest !== opening.digest ||

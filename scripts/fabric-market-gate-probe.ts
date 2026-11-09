@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { Client, credentials } from "@grpc/grpc-js";
 import { connect, EndorseError, signers, type Transaction } from "@hyperledger/fabric-gateway";
 import { common, ledger, msp, peer, gateway as proto } from "@hyperledger/fabric-protos";
+import { federationCanonicalJson } from "@kuintessence/shared/federation";
 import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
   CommercialAdjustmentSchema,
@@ -24,6 +25,10 @@ import {
   CommercialUsageSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
+import {
+  CommercialDisputeFreezeSchema,
+  CommercialDisputeSchema,
+} from "@kuintessence/shared/federation/disputes";
 import {
   MarketActivationSchema,
   MarketClosureSchema,
@@ -1415,6 +1420,179 @@ async function run() {
   passed.push(
     "private bilateral adjustments change spent 7 → 4 → 5, require both organizational endorsements and native MVCC head serialization; historical replay does not refund again or reopen execution",
   );
+  const nativeOpening = CommercialDisputeSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute",
+    caseId: randomUUID(),
+    domainId: domain.domainId,
+    agreementRevisionId: settlementTerms.agreement.agreementRevisionId,
+    agreementDigest: settlementAgreementReceipt.digest,
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    openingSiteId: source.siteId,
+    taskId: settlementTask.reservation.request.taskId,
+    attempt: 1,
+    subject: {
+      recordType: "settlement",
+      recordId: settlement.settlementId,
+      recordDigest: settledReceipt.digest,
+    },
+    reason: `PRIVATE-NATIVE-CASE-${randomUUID()}`,
+    requestedResolution: "Review settled charge",
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const nativeOpeningJws = await signFederationMessage(
+    CommercialDisputeSchema,
+    nativeOpening,
+    source,
+  );
+  const nativeIdentity = {
+    caseId: nativeOpening.caseId,
+    caseDigest: `sha256:${createHash("sha256")
+      .update(Buffer.from(nativeOpeningJws.split(".")[1] ?? "", "base64url"))
+      .digest("hex")}`,
+    agreementRevisionId: nativeOpening.agreementRevisionId,
+    taskId: nativeOpening.taskId,
+    attempt: 1,
+    mode: "ledger_coordinated" as const,
+  };
+  const debitReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(debitTx.getResult()).toString()),
+  );
+  const nativeRecords = [
+    {
+      recordType: "bill",
+      recordId: settlementBill.billId,
+      recordDigest: settlement.billDigest,
+      state: "ready",
+    },
+    {
+      recordType: "settlement",
+      recordId: settlement.settlementId,
+      recordDigest: settledReceipt.digest,
+      state: "ready",
+    },
+    {
+      recordType: "adjustment",
+      recordId: creditReceipt.recordId,
+      recordDigest: creditReceipt.digest,
+      state: "ready",
+    },
+    {
+      recordType: "adjustment",
+      recordId: debitReceipt.recordId,
+      recordDigest: debitReceipt.digest,
+      state: "ready",
+    },
+  ];
+  const nativeProof = async () => {
+    const terms = CommercialDisputeFreezeSchema.parse({
+      ...nativeIdentity,
+      protocolVersion: 1,
+      kind: "commercial-dispute-freeze",
+      sourceSiteId: source.siteId,
+      targetSiteId: target.siteId,
+      headDigest: `sha256:${createHash("sha256")
+        .update(
+          federationCanonicalJson({
+            ...nativeIdentity,
+            records: [...nativeRecords].sort((a, b) =>
+              `${a.recordType}:${a.recordId}` < `${b.recordType}:${b.recordId}` ? -1 : 1,
+            ),
+          }),
+        )
+        .digest("hex")}`,
+      issuedAt: new Date().toISOString(),
+      salt: randomBytes(32).toString("hex"),
+    });
+    const envelope = {
+      ...(await bilateral(CommercialDisputeFreezeSchema, terms)),
+      openingSiteId: source.siteId,
+      openingJws: nativeOpeningJws,
+    };
+    probes.push(terms.salt, envelope.sourceJws, envelope.targetJws);
+    return { terms, envelope };
+  };
+  probes.push(nativeOpening.reason, nativeOpening.salt, nativeOpeningJws);
+  const staleFreeze = await nativeProof();
+  const concurrentChange = CommercialAdjustmentSchema.parse({
+    ...debit,
+    adjustmentId: randomUUID(),
+    previous: { adjustmentId: debitReceipt.recordId, digest: debitReceipt.digest },
+    previousChargedAmount: "5",
+    chargedAmount: "4",
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const concurrentEnvelope = await bilateral(CommercialAdjustmentSchema, concurrentChange);
+  const [staleTx, changeTx] = await Promise.all([
+    commercial(a, "FreezeDisputedTask", nativeOpening.caseId, staleFreeze.envelope).endorse(),
+    commercial(b, "AdjustSettlement", concurrentChange.adjustmentId, concurrentEnvelope).endorse(),
+  ]);
+  assert.equal((await commit(changeTx)).successful, true);
+  assert.equal((await commit(staleTx)).code, peer.TxValidationCode.MVCC_READ_CONFLICT);
+  await assert.rejects(
+    commercial(a, "FreezeDisputedTask", nativeOpening.caseId, staleFreeze.envelope).endorse(),
+  );
+  const changeReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(changeTx.getResult()).toString()),
+  );
+  nativeRecords.push({
+    recordType: "adjustment",
+    recordId: changeReceipt.recordId,
+    recordDigest: changeReceipt.digest,
+    state: "ready",
+  });
+  const currentFreeze = await nativeProof(),
+    blockedChange = {
+      ...concurrentChange,
+      previousChargedAmount: "4",
+      chargedAmount: "5",
+      adjustmentId: randomUUID(),
+      previous: { adjustmentId: changeReceipt.recordId, digest: changeReceipt.digest },
+    };
+  const blockedEnvelope = await bilateral(CommercialAdjustmentSchema, blockedChange);
+  const [freezeTx, blockedTx] = await Promise.all([
+    commercial(a, "FreezeDisputedTask", nativeOpening.caseId, currentFreeze.envelope).endorse(),
+    commercial(b, "AdjustSettlement", blockedChange.adjustmentId, blockedEnvelope).endorse(),
+  ]);
+  const frozen = await commit(freezeTx);
+  assert.equal(frozen.successful, true);
+  assert.equal((await commit(blockedTx)).code, peer.TxValidationCode.MVCC_READ_CONFLICT);
+  await assert.rejects(
+    commercial(b, "AdjustSettlement", blockedChange.adjustmentId, blockedEnvelope).endorse(),
+  );
+  const freezeReplay = await commercial(
+    b,
+    "FreezeDisputedTask",
+    nativeOpening.caseId,
+    currentFreeze.envelope,
+  ).endorse();
+  assert.deepEqual(freezeReplay.getResult(), freezeTx.getResult());
+  assert.equal((await commit(freezeReplay)).successful, true);
+  const changeReplay = await commercial(
+    a,
+    "AdjustSettlement",
+    concurrentChange.adjustmentId,
+    concurrentEnvelope,
+  ).endorse();
+  assert.deepEqual(changeReplay.getResult(), changeTx.getResult());
+  assert.equal((await commit(changeReplay)).successful, true);
+  await assert.rejects(
+    c
+      .getNetwork(network.channel)
+      .getContract(network.chaincode)
+      .newProposal("GetRecordReceipt", {
+        arguments: [domain.domainId, "native-dispute-freeze", nativeOpening.caseId],
+        endorsingOrganizations: ["CMSP"],
+      })
+      .endorse(),
+  );
+  assert.equal(await hash(settlementTask.reservation.reservationId), closedSettlementGateHash);
+  passed.push(
+    "native dispute freeze and adjustment conflict in both commit orders; stale heads and new financial writes fail, historical replay and execution gate remain intact",
+  );
   // Read actual committed PDC writes, independently of application projections.
   const outsiders = [c, await connection("C", false, "A"), await connection("A", false, "C")];
   let latestBudget: { locked: string; spent: string; reservations: number } | undefined;
@@ -1450,6 +1628,17 @@ async function run() {
           if (outsiders.includes(gateway))
             assert.equal(writes.length, 0, "Outsider cannot receive private gate/budget/contract");
           else {
+            if (block === frozen.blockNumber) {
+              assert.deepEqual(writes.map((w) => w.key.split("\u0000")[1]).sort(), [
+                "dispute-task",
+                "native-dispute-freeze",
+              ]);
+              assert(
+                writes.some((w) =>
+                  Buffer.from(w.value).includes(Buffer.from(nativeOpening.reason)),
+                ),
+              );
+            }
             const metadata = publicBlock.getMetadata()?.getMetadataList_asU8()[
               common.BlockMetadataIndex.TRANSACTIONS_FILTER
             ];
@@ -1475,7 +1664,7 @@ async function run() {
       assert(received);
     }
   }
-  assert.deepEqual(settlementBudget, { locked: "0", spent: "5", reservations: 0 });
+  assert.deepEqual(settlementBudget, { locked: "0", spent: "4", reservations: 0 });
   for (const amount of ["7", "4", "5"]) assert(settlementSpending.includes(amount));
   assert.deepEqual(latestBudget, {
     locked: (BigInt(amount) * 2n).toString(),

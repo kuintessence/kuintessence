@@ -627,6 +627,7 @@ export const CommercialRecordTypeSchema = z.enum([
   "refund",
   "payment",
   "dispute-freeze",
+  "native-dispute-freeze",
 ]);
 export const CommercialReceiptQuerySchema = z.strictObject({
   operation: z.literal("get-commercial-receipt"),
@@ -737,6 +738,11 @@ export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operat
   z.strictObject({
     ...ProposalIdentity,
     operation: z.literal("record-dispute-freeze"),
+    envelope: CommercialDisputeAttestationEnvelopeSchema,
+  }),
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("freeze-disputed-task"),
     envelope: CommercialDisputeAttestationEnvelopeSchema,
   }),
   z.strictObject({
