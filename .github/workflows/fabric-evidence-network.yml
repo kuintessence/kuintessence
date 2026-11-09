@@ -30,7 +30,7 @@ concurrency:
 jobs:
   evidence:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine
@@ -90,6 +90,11 @@ jobs:
           KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
           KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-market-result.json
         run: bun run test:fabric:market
+      - name: Verify isolated case privacy, three-party endorsement and crash recovery
+        env:
+          KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
+          KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-case-result.json
+        run: bun run test:fabric:cases
       - name: Verify private budget, execution gate races and database activation recovery
         env:
           KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
@@ -115,6 +120,13 @@ jobs:
         with:
           name: fabric-commercial-result
           path: ${{ runner.temp }}/fabric-commercial-result.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve case assertion summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-case-result
+          path: ${{ runner.temp }}/fabric-case-result.json
           if-no-files-found: error
           retention-days: 14
       - name: Preserve assertion summary

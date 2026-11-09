@@ -4,6 +4,11 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs
 import { createConnection, createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import {
+  CaseSigningKindSchema,
+  FabricCaseTrustSchema,
+  fabricCaseCollections,
+} from "@kuintessence/shared/federation/case-ledger";
+import {
   FabricCommercialTrustSchema,
   fabricCommercialCollections,
 } from "@kuintessence/shared/federation/commercial";
@@ -16,6 +21,7 @@ import { FabricMarketTrustSchema } from "@kuintessence/shared/federation/market"
 import { exportPKCS8, exportSPKI, generateKeyPair } from "jose";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
+import { verifyCaseNetwork } from "./fabric-case-assertions";
 import { verifyCommercialNetwork } from "./fabric-commercial-assertions";
 import { verifyEvidenceNetwork } from "./fabric-evidence-assertions";
 import { verifyMarketNetwork } from "./fabric-market-assertions";
@@ -62,8 +68,14 @@ const environment = {
 const channel = "kq-evidence-test";
 const attested = execution && process.env.KQ_FEDERATION_LAB_MODE === "bilateral_attested";
 const gate = (execution && !attested) || process.argv.includes("--gate");
-const commercial = execution || gate || process.argv.includes("--commercial");
-const secondaryKind = gate ? "market" : attested ? "evidence" : undefined;
+const cases = process.argv.includes("--cases");
+if (
+  cases &&
+  (execution || gate || process.argv.includes("--database") || process.argv.includes("--market"))
+)
+  throw new Error("Case probe is independent of execution/market/database checks");
+const commercial = execution || gate || cases || process.argv.includes("--commercial");
+const secondaryKind = cases ? "case" : gate ? "market" : attested ? "evidence" : undefined;
 const market = process.argv.includes("--market");
 if (market && (commercial || process.argv.includes("--database")))
   throw new Error("Market probe is independent of commercial/database checks");
@@ -233,7 +245,7 @@ async function setup() {
   const ordererPort = await port();
   const ordererAdmin = await port();
   const members = await Promise.all(
-    ["A", "B", "C"].map(async (name) => ({
+    (cases ? ["A", "B", "R", "D"] : ["A", "B", "C"]).map(async (name) => ({
       name,
       siteId: randomUUID(),
       peerPort: await port(),
@@ -278,7 +290,9 @@ async function setup() {
     for (const [identity, role, ou] of [
       ["Admin", "trust-admin", "admin"],
       ["User1", market ? "market" : commercial ? "commercial" : "attestor", "client"],
-      ...(secondaryKind ? [["User2", gate ? "market" : "attestor", "client"]] : []),
+      ...(secondaryKind
+        ? [["User2", cases ? "case" : gate ? "market" : "attestor", "client"]]
+        : []),
     ] as const) {
       const msp = join(directory, "users", `${identity}@${domain}`, "msp");
       const key = await onlyKey(join(msp, "keystore"));
@@ -560,7 +574,7 @@ async function setup() {
   await mkdir(builder, { recursive: true });
   const scripts = {
     detect: `import json,sys\nsys.exit(0 if json.load(open(sys.argv[2]+'/metadata.json'))['type']=='kq-evidence-ccaas' else 1)\n`,
-    build: `import json,sys,os\nvalue={'address':(os.environ['KQ_SECONDARY_CCAAS_ADDRESS'] if json.load(open(sys.argv[2]+'/metadata.json'))['label'] in ('kq-market-gate','kq-evidence-live') else os.environ['KQ_CCAAS_ADDRESS']),'dial_timeout':'10s','tls_required':True,'client_auth_required':True,'root_cert':open(os.environ['KQ_CCAAS_CA']).read(),'client_cert':open(os.environ['KQ_CCAAS_CERT']).read(),'client_key':open(os.environ['KQ_CCAAS_KEY']).read()}\nwith open(sys.argv[3]+'/connection.json','w') as f:json.dump(value,f)\n`,
+    build: `import json,sys,os\nvalue={'address':(os.environ['KQ_SECONDARY_CCAAS_ADDRESS'] if json.load(open(sys.argv[2]+'/metadata.json'))['label'] in ('kq-market-gate','kq-evidence-live','kq-cases-test') else os.environ['KQ_CCAAS_ADDRESS']),'dial_timeout':'10s','tls_required':True,'client_auth_required':True,'root_cert':open(os.environ['KQ_CCAAS_CA']).read(),'client_cert':open(os.environ['KQ_CCAAS_CERT']).read(),'client_key':open(os.environ['KQ_CCAAS_KEY']).read()}\nwith open(sys.argv[3]+'/connection.json','w') as f:json.dump(value,f)\n`,
     release: `import sys,os,shutil\np=sys.argv[2]+'/chaincode/server'\nos.makedirs(p,exist_ok=True)\nshutil.copyfile(sys.argv[1]+'/connection.json',p+'/connection.json')\n`,
   };
   for (const [name, source] of Object.entries(scripts)) {
@@ -689,7 +703,7 @@ async function setup() {
       cli,
     );
   }
-  console.log("Three peers and TLS chaincode services are running");
+  console.log(`${sites.length} peers and TLS chaincode services are running`);
   const ordererOptions = [
     "-o",
     `127.0.0.1:${ordererPort}`,
@@ -716,7 +730,7 @@ async function setup() {
       ? ["--channel-config-policy", "/Channel/Application/Endorsement"]
       : [
           "--signature-policy",
-          "AND('AMSP.peer','BMSP.peer','CMSP.peer')",
+          `AND(${sites.map((site) => `'${site.name}MSP.peer'`).join(",")})`,
           "--collections-config",
           join(root, "collections.json"),
         ]),
@@ -775,26 +789,57 @@ async function setup() {
     peerEnvironments.A,
   );
   if (secondaryKind) {
-    const secondaryTrust = gate
-      ? FabricMarketTrustSchema.parse({
+    const secondaryTrust = cases
+      ? FabricCaseTrustSchema.parse({
           version: 1,
           generationId: randomUUID(),
-          organizations: organizations.map(({ siteId, mspId }) => ({ siteId, mspId })),
+          organizations,
+          domains: [
+            {
+              domainId: randomUUID(),
+              commercialDomainId: evidenceTrust.domains[0]?.domainId,
+              sourceSiteId: a.siteId,
+              targetSiteId: b.siteId,
+              recipientSiteId: sites.find((site) => site.name === "R")?.siteId,
+              collection: "case_ABR_v1",
+            },
+          ],
+          keyPurposes: organizations.flatMap((org) =>
+            org.keys.map((key) => ({
+              siteId: org.siteId,
+              keyId: key.keyId,
+              kinds: [...CaseSigningKindSchema.options],
+            })),
+          ),
         })
-      : {
-          ...evidenceTrust,
-          domains: evidenceTrust.domains.map((domain) => ({
-            ...domain,
-            collection: "evidence_AB_v1",
-          })),
-        };
-    const trustFile = join(root, gate ? "gate-market-trust.json" : "execution-evidence-trust.json");
-    const label = gate ? "kq-market-gate" : "kq-evidence-live";
+      : gate
+        ? FabricMarketTrustSchema.parse({
+            version: 1,
+            generationId: randomUUID(),
+            organizations: organizations.map(({ siteId, mspId }) => ({ siteId, mspId })),
+          })
+        : {
+            ...evidenceTrust,
+            domains: evidenceTrust.domains.map((domain) => ({
+              ...domain,
+              collection: "evidence_AB_v1",
+            })),
+          };
+    const trustFile = join(
+      root,
+      cases ? "case-trust.json" : gate ? "gate-market-trust.json" : "execution-evidence-trust.json",
+    );
+    const label = cases ? "kq-cases-test" : gate ? "kq-market-gate" : "kq-evidence-live";
     await json(trustFile, secondaryTrust);
     if (attested)
       await json(
         join(root, "execution-evidence-collections.json"),
         fabricEvidenceCollections(FabricEvidenceTrustSchema.parse(secondaryTrust)),
+      );
+    if (cases)
+      await json(
+        join(root, "case-collections.json"),
+        fabricCaseCollections(FabricCaseTrustSchema.parse(secondaryTrust)),
       );
     const gateDir = join(root, "gate-package");
     await mkdir(gateDir);
@@ -820,7 +865,14 @@ async function setup() {
       .update(await readFile(gateArchive))
       .digest("hex")}`;
     const gateBuild = await Bun.build({
-      entrypoints: [join(repo, `contracts/fabric/${secondaryKind}/src/main.ts`)],
+      entrypoints: [
+        join(
+          repo,
+          cases
+            ? "contracts/fabric/commercial/src/case-main.ts"
+            : `contracts/fabric/${secondaryKind}/src/main.ts`,
+        ),
+      ],
       outdir: join(root, "gate-chaincode"),
       target: "node",
       format: "esm",
@@ -831,7 +883,7 @@ async function setup() {
       "--channelID",
       channel,
       "--name",
-      `kq-${secondaryKind}`,
+      cases ? "kq-cases" : `kq-${secondaryKind}`,
       "--version",
       "1",
       "--sequence",
@@ -841,16 +893,20 @@ async function setup() {
         ? ["--channel-config-policy", "/Channel/Application/Endorsement"]
         : [
             "--signature-policy",
-            "AND('AMSP.peer','BMSP.peer','CMSP.peer')",
+            `AND(${sites.map((site) => `'${site.name}MSP.peer'`).join(",")})`,
             "--collections-config",
-            join(root, "execution-evidence-collections.json"),
+            join(root, cases ? "case-collections.json" : "execution-evidence-collections.json"),
           ]),
     ];
     for (const site of sites) {
       await releasePorts(site.gateChaincodePort);
       start(
         `gate-chaincode-${site.name}`,
-        ["node", "--max-old-space-size=192", join(root, "gate-chaincode/main.js")],
+        [
+          "node",
+          "--max-old-space-size=192",
+          join(root, cases ? "gate-chaincode/case-main.js" : "gate-chaincode/main.js"),
+        ],
         {
           [`KQ_${secondaryKind.toUpperCase()}_TRUST_FILE`]: trustFile,
           CHAINCODE_ID: gatePackageId,
@@ -904,7 +960,7 @@ async function setup() {
         "-C",
         channel,
         "-n",
-        `kq-${secondaryKind}`,
+        cases ? "kq-cases" : `kq-${secondaryKind}`,
         "--isInit",
         "-c",
         JSON.stringify({ Args: ["Init"] }),
@@ -964,7 +1020,8 @@ try {
     });
     process.stdin.pause();
   } else {
-    if (execution) await verifyLiveExecution(root, controls);
+    if (cases) await verifyCaseNetwork(root, controls);
+    else if (execution) await verifyLiveExecution(root, controls);
     else if (gate) await verifyExecutionGateNetwork(root, controls);
     else if (market) await verifyMarketNetwork(root, controls);
     else if (commercial) await verifyCommercialNetwork(root, controls);

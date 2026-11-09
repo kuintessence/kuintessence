@@ -1019,4 +1019,4 @@ R 真人 API 使用独立 disclosure.receive，登记本机构案件后，复用
 
 ### 案件独立账本
 
-`kq-cases` 复用现有 Fabric shim 构建依赖，独立链码入口／信任配置／集合；case Adapter 复用现有私有 Unix runtime 与加密交易恢复，不新增 SDK 或钱包。读取、存证、仲裁权限分开：入链需要双方独立存证签名，撤回为 A/B 任一方的独立签名。现有 Server 材料接收不会自动上链；人员审批、持久队列、远端撤回、真实 Peer 联合验收及裁决仍待接通。接口、集合及限制见[案件链配置](../../../deploy/federation/fabric-cases.md)。
+`kq-cases` 复用现有 Fabric shim 构建依赖，独立链码入口／信任配置／集合；case Adapter 复用现有私有 Unix runtime 与加密交易恢复，不新增 SDK 或钱包。读取、存证、仲裁权限分开：入链需要双方独立存证签名，撤回为 A/B 任一方的独立签名。现有 Server 材料接收不会自动上链；同机四 Peer 的原生权限／背书／MVCC／进程恢复已通过；人员审批、持久队列、远端撤回、Server/Fabric 联合验收及裁决仍待接通。接口、集合及限制见[案件链配置](../../../deploy/federation/fabric-cases.md)。
