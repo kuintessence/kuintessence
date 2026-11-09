@@ -95,6 +95,11 @@
       "bun": "./src/federation/media-key-crypto.ts",
       "types": "./src/federation/media-key-crypto.ts",
       "default": "./src/federation/media-key-crypto.ts"
+    },
+    "./federation/disclosure": {
+      "bun": "./src/federation/disclosure.ts",
+      "types": "./src/federation/disclosure.ts",
+      "default": "./src/federation/disclosure.ts"
     }
   },
   "scripts": {
