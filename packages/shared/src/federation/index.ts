@@ -272,6 +272,7 @@ export * from "./media-export-task";
 export * from "./media-import-task";
 export * from "./media-keys";
 export * from "./media-logistics";
+export * from "./media-object";
 export * from "./media-receipts";
 export * from "./permissions";
 export * from "./result-receipts";

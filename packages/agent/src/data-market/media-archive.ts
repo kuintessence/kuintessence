@@ -46,22 +46,70 @@ export function mediaTarHeader(name: string, size: number): Buffer {
   return header;
 }
 
-export async function* exportMediaArchive(options: {
+type ArchiveSource = {
   signedManifest: string;
   verifyManifest: ManifestVerifier;
-  roots: AgentDataRoots;
-  managedRootId: string;
-  relativePath: string;
   signal?: AbortSignal;
-}): AsyncGenerator<Uint8Array> {
+};
+type MediaFile = FederationMediaManifest["files"][number];
+
+export async function* exportMediaArchive(
+  options: ArchiveSource & {
+    roots: AgentDataRoots;
+    managedRootId: string;
+    relativePath: string;
+  },
+): AsyncGenerator<Uint8Array> {
+  let source: string | undefined;
+  yield* exportMediaArchiveFromFiles({
+    ...options,
+    readFile: async function* (file) {
+      source ??= await options.roots.resolveManagedDataPath(
+        options.managedRootId,
+        options.relativePath,
+      );
+      const path = await regularSource(source, file.path);
+      const handle = await open(
+        path,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      try {
+        const stat = await handle.stat();
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size !== file.sizeBytes)
+          throw new Error("MEDIA_SOURCE_CHANGED");
+        let offset = 0;
+        while (offset < file.sizeBytes) {
+          options.signal?.throwIfAborted();
+          const buffer = Buffer.allocUnsafe(Math.min(CHUNK, file.sizeBytes - offset));
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+          if (!bytesRead) throw new Error("MEDIA_SOURCE_CHANGED");
+          offset += bytesRead;
+          yield buffer.subarray(0, bytesRead);
+        }
+        const after = await handle.stat();
+        if (
+          after.size !== stat.size ||
+          after.mtimeMs !== stat.mtimeMs ||
+          after.ctimeMs !== stat.ctimeMs
+        )
+          throw new Error("MEDIA_SOURCE_CHANGED");
+      } finally {
+        await handle.close();
+      }
+    },
+  });
+}
+
+/** Reader receives only the verified inventory member; it must independently enforce current authority. */
+export async function* exportMediaArchiveFromFiles(
+  options: ArchiveSource & {
+    readFile(file: MediaFile, index: number): AsyncIterable<Uint8Array>;
+  },
+): AsyncGenerator<Uint8Array> {
   const signed = Buffer.from(options.signedManifest, "utf8");
   if (!signed.length || signed.length > MAX_MANIFEST) throw new Error("MEDIA_MANIFEST_TOO_LARGE");
   const manifest = FederationMediaManifestSchema.parse(
     await options.verifyManifest(options.signedManifest),
-  );
-  const source = await options.roots.resolveManagedDataPath(
-    options.managedRootId,
-    options.relativePath,
   );
   options.signal?.throwIfAborted();
   yield mediaTarHeader("manifest.jws", signed.length);
@@ -69,40 +117,19 @@ export async function* exportMediaArchive(options: {
   yield zeros.subarray(0, padding(signed.length));
   for (const [index, file] of manifest.files.entries()) {
     options.signal?.throwIfAborted();
-    const path = await regularSource(source, file.path);
-    const handle = await open(
-      path,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
-    try {
-      const stat = await handle.stat();
-      if (!stat.isFile() || stat.nlink !== 1 || stat.size !== file.sizeBytes)
-        throw new Error("MEDIA_SOURCE_CHANGED");
-      yield mediaTarHeader(entryName(index), file.sizeBytes);
-      const hash = createHash("sha256");
-      let offset = 0;
-      while (offset < file.sizeBytes) {
-        options.signal?.throwIfAborted();
-        const buffer = Buffer.allocUnsafe(Math.min(CHUNK, file.sizeBytes - offset));
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
-        if (!bytesRead) throw new Error("MEDIA_SOURCE_CHANGED");
-        const bytes = buffer.subarray(0, bytesRead);
-        offset += bytesRead;
-        hash.update(bytes);
-        yield bytes;
-      }
-      const after = await handle.stat();
-      if (
-        after.size !== stat.size ||
-        after.mtimeMs !== stat.mtimeMs ||
-        after.ctimeMs !== stat.ctimeMs ||
-        hash.digest("hex") !== file.sha256
-      )
-        throw new Error("MEDIA_SOURCE_CHANGED");
-      yield zeros.subarray(0, padding(file.sizeBytes));
-    } finally {
-      await handle.close();
+    yield mediaTarHeader(entryName(index), file.sizeBytes);
+    const hash = createHash("sha256");
+    let size = 0;
+    for await (const chunk of options.readFile(structuredClone(file), index)) {
+      options.signal?.throwIfAborted();
+      size += chunk.byteLength;
+      if (size > file.sizeBytes) throw new Error("MEDIA_SOURCE_CHANGED");
+      hash.update(chunk);
+      yield chunk;
     }
+    if (size !== file.sizeBytes || hash.digest("hex") !== file.sha256)
+      throw new Error("MEDIA_SOURCE_CHANGED");
+    yield zeros.subarray(0, padding(file.sizeBytes));
   }
   options.signal?.throwIfAborted();
   yield zeros;
