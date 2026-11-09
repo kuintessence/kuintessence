@@ -71,6 +71,7 @@ export interface FederationVerificationKey {
     | "commercial-settlement"
     | "commercial-adjustment"
     | "commercial-refund"
+    | "commercial-payment"
     | "commercial-usage-query"
     | "commercial-usage-page"
     | "status-query"

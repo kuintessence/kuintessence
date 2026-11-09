@@ -362,6 +362,7 @@ async function setup() {
                 "commercial-settlement",
                 "commercial-adjustment",
                 "commercial-refund",
+                "commercial-payment",
                 "cancellation-receipt",
                 ...(gate
                   ? ["commercial-reservation", "commercial-release", "commercial-terminal"]

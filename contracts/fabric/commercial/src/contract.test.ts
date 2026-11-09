@@ -4,13 +4,17 @@ import {
   FederationCancellationReceiptSchema,
   FederationDelegationSchema,
 } from "@kuintessence/shared/federation";
-import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
+import {
+  assertCommercialPayment,
+  calculateCommercialBill,
+} from "@kuintessence/shared/federation/billing";
 import {
   CommercialAdjustmentSchema,
   type CommercialAgreement,
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialDiscountSchema,
+  CommercialPaymentSchema,
   CommercialReceiptSchema,
   CommercialRefundSchema,
   CommercialReleaseSchema,
@@ -78,6 +82,7 @@ beforeAll(async () => {
         "commercial-settlement",
         "commercial-adjustment",
         "commercial-refund",
+        "commercial-payment",
         "cancellation-receipt",
       ],
     })),
@@ -1715,4 +1720,152 @@ test("refund attestation refuses recorded usage, wrong cancellation and missing 
   await expect(g.call("RecordRefund", g.value.refundId, await g.envelope())).rejects.toThrow(
     "UNTRUSTED_IDENTITY",
   );
+});
+
+async function paymentFixture(coordinated = false) {
+  const f = await billFixture(coordinated);
+  if (f.chain) {
+    f.chain.terminal.observedAt = f.stub.timestamp.toISOString();
+    f.chain.terminal.issuedAt = f.stub.timestamp.toISOString();
+    await f.chain.record();
+  }
+  const billReceipt = CommercialReceiptSchema.parse(JSON.parse((await f.confirm()).toString()));
+  const payment = CommercialPaymentSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-payment",
+    receiptId: randomUUID(),
+    paymentId: randomUUID(),
+    domainId,
+    agreementRevisionId: f.terms.agreement.agreementRevisionId,
+    agreementDigest: f.receipt.digest,
+    billId: f.bill.billId,
+    billDigest: billReceipt.digest,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    amount: "9007199254740993",
+    unit: f.bill.request.unit,
+    occurredAt: f.bill.issuedAt,
+    issuedAt: f.bill.issuedAt,
+    evidenceDigest: `sha256:${"f".repeat(64)}`,
+    previous: null,
+    reason: "PRIVATE-BANK-RECEIPT",
+    salt: randomBytes(32).toString("hex"),
+  });
+  const record = async (value = payment, actor = identity()) =>
+    f.call(
+      "RecordPayment",
+      value.receiptId,
+      await bilateral(CommercialPaymentSchema, value),
+      actor,
+    );
+  return { ...f, payment, billReceipt, record };
+}
+test.each([
+  false,
+  true,
+])("external payment receipts preserve budgets and originals, coordinated=%s", async (coordinated) => {
+  const f = await paymentFixture(coordinated),
+    original = new Map(f.stub.privateState),
+    publicState = new Map(f.stub.state);
+  const receipt = CommercialReceiptSchema.parse(JSON.parse((await f.record()).toString()));
+  expect(receipt.recordId).toBe(f.payment.receiptId);
+  expect(f.stub.privateState.size).toBe(original.size + 2);
+  for (const [key, value] of original) expect(f.stub.privateState.get(key)).toEqual(value);
+  expect(f.stub.state).toEqual(publicState);
+  expect(JSON.stringify(receipt)).not.toContain("PRIVATE-BANK-RECEIPT");
+  const after = new Map(f.stub.privateState);
+  expect(CommercialReceiptSchema.parse(JSON.parse((await f.record()).toString()))).toEqual(receipt);
+  expect(f.stub.privateState).toEqual(after);
+  await expect(f.record({ ...f.payment, amount: "1" })).rejects.toThrow("OPERATION_CONFLICT");
+  const correction = CommercialPaymentSchema.parse({
+    ...f.payment,
+    receiptId: randomUUID(),
+    amount: "0",
+    previous: { receiptId: receipt.recordId, digest: receipt.digest },
+    reason: "Incorrect external payment report",
+    salt: randomBytes(32).toString("hex"),
+  });
+  const changed = CommercialReceiptSchema.parse(
+    JSON.parse((await f.record(correction)).toString()),
+  );
+  expect(f.stub.privateState.size).toBe(original.size + 3);
+  for (const [key, value] of original) expect(f.stub.privateState.get(key)).toEqual(value);
+  await f.record();
+  const head = f.stub.privateState.get(
+    `commercial_AB_v1:${f.stub.createCompositeKey("payment-head", [domainId, f.payment.paymentId])}`,
+  );
+  expect(head).toBeDefined();
+  expect(JSON.parse(Buffer.from(head ?? []).toString())).toEqual(changed);
+  await expect(f.record({ ...correction, receiptId: randomUUID() })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+});
+test("payment receipts require matching two signatures, a confirmed paid bill and original scope", async () => {
+  const f = await paymentFixture(),
+    before = new Map(f.stub.privateState);
+  const envelope = await bilateral(CommercialPaymentSchema, f.payment);
+  await expect(
+    f.call("RecordPayment", f.payment.receiptId, { ...envelope, targetJws: envelope.sourceJws }),
+  ).rejects.toThrow();
+  await expect(f.record(f.payment, identity(2))).rejects.toThrow("POLICY_DENIED");
+  await expect(f.record(f.payment, identity(0, "trust-admin"))).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  for (const patch of [
+    { agreementDigest: `sha256:${"a".repeat(64)}` },
+    { billDigest: `sha256:${"a".repeat(64)}` },
+    { unit: "another-unit" },
+    { billId: randomUUID() },
+    { agreementRevisionId: randomUUID() },
+    { previous: { receiptId: randomUUID(), digest: `sha256:${"a".repeat(64)}` } },
+    { issuedAt: new Date(+f.stub.timestamp + 120000).toISOString() },
+  ])
+    await expect(f.record({ ...f.payment, ...patch })).rejects.toThrow();
+  expect(f.stub.privateState).toEqual(before);
+  for (const consideration of ["charity", "exchange"] as const) {
+    const agreement = {
+      ...f.terms,
+      consideration,
+      prices: f.terms.prices.map((p) => ({ ...p, amount: "0" })),
+    };
+    expect(() =>
+      assertCommercialPayment(f.payment, {
+        agreement,
+        agreementDigest: f.receipt.digest,
+        bill: { terms: f.bill, digest: f.billReceipt.digest },
+      }),
+    ).toThrow("POLICY_DENIED");
+  }
+  for (const patch of [
+    { amount: "0" },
+    { amount: "-1" },
+    { amount: "1.2" },
+    { amount: "01" },
+    { occurredAt: new Date(+f.stub.timestamp + 1).toISOString() },
+    { sourceSiteId: sites[1] },
+  ])
+    expect(CommercialPaymentSchema.safeParse({ ...f.payment, ...patch }).success).toBe(false);
+});
+test("payment receipts fail closed on missing private predecessors and dedicated signing authority", async () => {
+  const f = await paymentFixture();
+  const configured = structuredClone(trust);
+  for (const key of configured.keyPurposes)
+    key.kinds = key.kinds.filter((kind) => kind !== "commercial-payment");
+  const denied = await setup(configured);
+  await expect(
+    denied.call(
+      "RecordPayment",
+      f.payment.receiptId,
+      await bilateral(CommercialPaymentSchema, f.payment),
+    ),
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+  const receipt = CommercialReceiptSchema.parse(JSON.parse((await f.record()).toString()));
+  const key = `commercial_AB_v1:${f.stub.createCompositeKey("payment", [domainId, f.payment.receiptId])}`;
+  f.stub.privateState.delete(key);
+  const correction = {
+    ...f.payment,
+    receiptId: randomUUID(),
+    previous: { receiptId: receipt.recordId, digest: receipt.digest },
+  };
+  await expect(f.record(correction)).rejects.toThrow("DATA_WAITING");
 });

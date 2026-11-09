@@ -8,6 +8,8 @@ import {
   CommercialBillSchema,
   type CommercialDiscount,
   CommercialDiscountSchema,
+  type CommercialPayment,
+  CommercialPaymentSchema,
   type CommercialRefund,
   CommercialRefundSchema,
   type CommercialSettlement,
@@ -255,4 +257,59 @@ export function assertCommercialRefund(
     Date.parse(value.issuedAt) < Date.parse(receipt.observedAt)
   )
     throw new FederationError("POLICY_DENIED");
+}
+
+/** Original signatures and the current receipt head must be checked by the caller. */
+export function assertCommercialPayment(
+  raw: CommercialPayment,
+  originals: {
+    agreement: CommercialAgreement;
+    agreementDigest: string;
+    bill: { terms: CommercialBill; digest: string };
+    previous?: { terms: CommercialPayment; digest: string };
+  },
+) {
+  const value = CommercialPaymentSchema.parse(raw);
+  const agreement = CommercialAgreementSchema.parse(originals.agreement);
+  const bill = CommercialBillSchema.parse(originals.bill.terms);
+  if (
+    agreement.consideration !== "paid" ||
+    value.domainId !== agreement.domainId ||
+    value.domainId !== bill.domainId ||
+    value.agreementRevisionId !== agreement.agreement.agreementRevisionId ||
+    value.agreementRevisionId !== bill.request.agreementRevisionId ||
+    value.agreementDigest !== originals.agreementDigest ||
+    value.agreementDigest !== bill.agreementDigest ||
+    value.billId !== bill.billId ||
+    value.billDigest !== originals.bill.digest ||
+    value.sourceSiteId !== agreement.agreement.sourceSiteId ||
+    value.sourceSiteId !== bill.request.senderSiteId ||
+    value.targetSiteId !== agreement.agreement.targetSiteId ||
+    value.targetSiteId !== bill.request.recipientSiteId ||
+    value.unit !== agreement.agreement.unit ||
+    value.unit !== bill.request.unit ||
+    Date.parse(value.issuedAt) < Date.parse(bill.issuedAt)
+  )
+    throw new FederationError("POLICY_DENIED");
+  const previous = originals.previous;
+  if (Boolean(value.previous) !== Boolean(previous))
+    throw new FederationError("OPERATION_CONFLICT");
+  if (previous) {
+    const prior = CommercialPaymentSchema.parse(previous.terms);
+    if (
+      value.previous?.receiptId !== prior.receiptId ||
+      value.previous.digest !== previous.digest ||
+      value.paymentId !== prior.paymentId ||
+      value.domainId !== prior.domainId ||
+      value.agreementRevisionId !== prior.agreementRevisionId ||
+      value.agreementDigest !== prior.agreementDigest ||
+      value.billId !== prior.billId ||
+      value.billDigest !== prior.billDigest ||
+      value.sourceSiteId !== prior.sourceSiteId ||
+      value.targetSiteId !== prior.targetSiteId ||
+      value.unit !== prior.unit ||
+      Date.parse(value.issuedAt) < Date.parse(prior.issuedAt)
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+  }
 }

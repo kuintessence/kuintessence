@@ -20,6 +20,7 @@ import {
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialDiscountSchema,
+  CommercialPaymentSchema,
   CommercialReceiptSchema,
   CommercialRefundSchema,
   CommercialUsageSchema,
@@ -447,6 +448,97 @@ async function run() {
     }).endorse(),
     chainRejection("OPERATION_CONFLICT"),
   );
+  const paymentProbe = `PRIVATE-PAYMENT-${randomUUID()}`;
+  const payment = CommercialPaymentSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-payment",
+    receiptId: randomUUID(),
+    paymentId: randomUUID(),
+    domainId: domain.domainId,
+    agreementRevisionId: bill.request.agreementRevisionId,
+    agreementDigest: billingReceipt.digest,
+    billId: bill.billId,
+    billDigest: billReceipt.digest,
+    sourceSiteId: sourceKey.siteId,
+    targetSiteId: targetKey.siteId,
+    amount: "41",
+    unit: bill.request.unit,
+    occurredAt: bill.issuedAt,
+    issuedAt: bill.issuedAt,
+    evidenceDigest: `sha256:${randomBytes(32).toString("hex")}`,
+    previous: null,
+    reason: paymentProbe,
+    salt: randomBytes(32).toString("hex"),
+  });
+  const paymentEnvelope = async (value: z.infer<typeof CommercialPaymentSchema>) => ({
+    sourceSiteId: sourceKey.siteId,
+    targetSiteId: targetKey.siteId,
+    sourceJws: await signFederationMessage(CommercialPaymentSchema, value, sourceKey),
+    targetJws: await signFederationMessage(CommercialPaymentSchema, value, targetKey),
+  });
+  const paymentSigned = await paymentEnvelope(payment);
+  await assert.rejects(
+    proposal(a, "RecordPayment", payment.receiptId, {
+      ...paymentSigned,
+      targetJws: paymentSigned.sourceJws,
+    }).endorse(),
+    chainRejection("INVALID_MESSAGE"),
+  );
+  const paymentTx = await proposal(a, "RecordPayment", payment.receiptId, paymentSigned).endorse();
+  const paymentStatus = await (await paymentTx.submit()).getStatus();
+  assert(paymentStatus.successful);
+  const paymentReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(paymentTx.getResult()).toString()),
+  );
+  const correction = CommercialPaymentSchema.parse({
+    ...payment,
+    receiptId: randomUUID(),
+    amount: "0",
+    previous: { receiptId: paymentReceipt.recordId, digest: paymentReceipt.digest },
+    salt: randomBytes(32).toString("hex"),
+  });
+  const correctionSigned = await paymentEnvelope(correction);
+  const competingPayment = {
+    ...correction,
+    receiptId: randomUUID(),
+    amount: "40",
+    salt: randomBytes(32).toString("hex"),
+  };
+  const paymentCorrections = await Promise.all([
+    proposal(a, "RecordPayment", correction.receiptId, correctionSigned).endorse(),
+    proposal(
+      b,
+      "RecordPayment",
+      competingPayment.receiptId,
+      await paymentEnvelope(competingPayment),
+    ).endorse(),
+  ]);
+  assert(paymentCorrections[0] && paymentCorrections[1]);
+  const paymentCorrectionStatus = await (await paymentCorrections[0].submit()).getStatus();
+  const paymentLostStatus = await (await paymentCorrections[1].submit()).getStatus();
+  assert(paymentCorrectionStatus.successful);
+  assert.equal(paymentLostStatus.successful, false);
+  assert.equal(paymentLostStatus.code, 11);
+  const paymentReplay = await proposal(
+    b,
+    "RecordPayment",
+    payment.receiptId,
+    paymentSigned,
+  ).endorse();
+  assert.deepEqual(JSON.parse(Buffer.from(paymentReplay.getResult()).toString()), paymentReceipt);
+  assert((await (await paymentReplay.submit()).getStatus()).successful);
+  await assert.rejects(
+    proposal(
+      a,
+      "RecordPayment",
+      competingPayment.receiptId,
+      await paymentEnvelope(competingPayment),
+    ).endorse(),
+    chainRejection("OPERATION_CONFLICT"),
+  );
+  passed.push(
+    "external payment receipt and correction commit privately; concurrent corrections have one VALID and one MVCC INVALID; old replay does not reset the head",
+  );
   const refundProbe = `REFUND-${randomUUID()}`;
   let refundBlock: bigint | undefined;
   let refundRecordId = "";
@@ -542,6 +634,7 @@ async function run() {
     ["bill", bill.billId],
     ["discount", discount.discountId],
     ["refund", refundRecordId],
+    ["payment", payment.receiptId],
   ] as const)
     await assert.rejects(
       contract(c)
@@ -637,6 +730,13 @@ async function run() {
   );
   const probes = [
     ...refundProbes,
+    paymentProbe,
+    paymentSigned.sourceJws,
+    paymentSigned.targetJws,
+    correctionSigned.sourceJws,
+    correctionSigned.targetJws,
+    payment.salt,
+    correction.salt,
     contractProbe,
     priceProbe,
     usageProbe,
@@ -657,6 +757,9 @@ async function run() {
     discountStatus.blockNumber,
     billStatus.blockNumber,
     refundBlock,
+    paymentStatus.blockNumber,
+    paymentCorrectionStatus.blockNumber,
+    paymentLostStatus.blockNumber,
   ]) {
     for (const [name, endpoint, expected] of [
       ["A", "A", true],
@@ -690,6 +793,16 @@ async function run() {
                   for (const write of ledger.rwset.kvrwset.KVRWSet.deserializeBinary(
                     collection.getRwset_asU8(),
                   ).getWritesList()) {
+                    if (
+                      blockNumber === paymentStatus.blockNumber ||
+                      blockNumber === paymentCorrectionStatus.blockNumber
+                    )
+                      assert(
+                        ["payment", "payment-head"].includes(
+                          write.getKey().split("\u0000")[1] ?? "",
+                        ),
+                        "Payment evidence must not modify balances, bills, or execution state",
+                      );
                     if (blockNumber === refundBlock)
                       assert(
                         ["refund", "refund-head", "refund-operation"].includes(
@@ -700,7 +813,11 @@ async function run() {
                     writes.push(Buffer.from(write.getValue_asU8()));
                   }
           if (!expected) assert.equal(writes.length, 0);
-          else if (blockNumber !== invalid.blockNumber && blockNumber !== lost.blockNumber) {
+          else if (
+            blockNumber !== invalid.blockNumber &&
+            blockNumber !== lost.blockNumber &&
+            blockNumber !== paymentLostStatus.blockNumber
+          ) {
             assert.equal(
               writes.length,
               blockNumber === valid.blockNumber || blockNumber === discountStatus.blockNumber
@@ -713,13 +830,16 @@ async function run() {
               writes.some((bytes) =>
                 bytes.includes(
                   Buffer.from(
-                    blockNumber === valid.blockNumber
-                      ? contractProbe
-                      : blockNumber === discountStatus.blockNumber
-                        ? discountProbe
-                        : blockNumber === refundBlock
-                          ? refundProbe
-                          : usageProbe,
+                    blockNumber === paymentStatus.blockNumber ||
+                      blockNumber === paymentCorrectionStatus.blockNumber
+                      ? paymentProbe
+                      : blockNumber === valid.blockNumber
+                        ? contractProbe
+                        : blockNumber === discountStatus.blockNumber
+                          ? discountProbe
+                          : blockNumber === refundBlock
+                            ? refundProbe
+                            : usageProbe,
                   ),
                 ),
               ),

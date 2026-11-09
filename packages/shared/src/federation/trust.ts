@@ -47,6 +47,7 @@ export const FederationKeyInput = z
           "commercial-settlement",
           "commercial-adjustment",
           "commercial-refund",
+          "commercial-payment",
           "terminal-query",
           "terminal-chunk",
           "terminal-delivery",

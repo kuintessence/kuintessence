@@ -33,6 +33,7 @@ export const CommercialSigningKindSchema = z.enum([
   "commercial-settlement",
   "commercial-adjustment",
   "commercial-refund",
+  "commercial-payment",
   "cancellation-receipt",
 ]);
 
@@ -243,6 +244,39 @@ export const CommercialBillSchema = z
     "Coordinated bills require the original chain reservation",
   );
 export type CommercialBill = z.infer<typeof CommercialBillSchema>;
+
+/** A jointly acknowledged external receipt; it never moves cooperation credit or money. */
+export const CommercialPaymentSchema = z
+  .strictObject({
+    protocolVersion: z.literal(1),
+    kind: z.literal("commercial-payment"),
+    receiptId: Id,
+    paymentId: Id,
+    domainId: Id,
+    agreementRevisionId: Id,
+    agreementDigest: FederationDigestSchema,
+    billId: Id,
+    billDigest: FederationDigestSchema,
+    sourceSiteId: Id,
+    targetSiteId: Id,
+    amount: FederationAmountSchema,
+    unit: z.string().min(1).max(64),
+    occurredAt: z.iso.datetime(),
+    issuedAt: z.iso.datetime(),
+    evidenceDigest: FederationDigestSchema,
+    previous: z.strictObject({ receiptId: Id, digest: FederationDigestSchema }).nullable(),
+    reason: z.string().trim().min(1).max(4096),
+    salt: Salt,
+  })
+  .refine(
+    (v) =>
+      v.sourceSiteId !== v.targetSiteId &&
+      Date.parse(v.occurredAt) <= Date.parse(v.issuedAt) &&
+      (v.amount !== "0" || v.previous !== null) &&
+      v.previous?.receiptId !== v.receiptId,
+    "Invalid payment receipt",
+  );
+export type CommercialPayment = z.infer<typeof CommercialPaymentSchema>;
 
 /** A separate financial approval for a permanently cancelled task that never created a workflow. */
 export const CommercialRefundSchema = z
@@ -544,6 +578,7 @@ export const CommercialRecordTypeSchema = z.enum([
   "settlement",
   "adjustment",
   "refund",
+  "payment",
 ]);
 export const CommercialReceiptQuerySchema = z.strictObject({
   operation: z.literal("get-commercial-receipt"),
