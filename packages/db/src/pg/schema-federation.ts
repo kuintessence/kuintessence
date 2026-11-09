@@ -31,6 +31,10 @@ import type {
   MediaShipmentPackage,
   MediaShipmentState,
 } from "@kuintessence/shared/federation";
+import type {
+  ArbitrationDecision,
+  ArbitrationDecisionBasis,
+} from "@kuintessence/shared/federation/arbitration-decision";
 import type { CommercialArbitrationPolicy } from "@kuintessence/shared/federation/arbitration-policy";
 import type { CommercialArbitrationRevocation } from "@kuintessence/shared/federation/arbitration-revocation";
 import type { ArbitrationRevocationNotice } from "@kuintessence/shared/federation/arbitration-revocation-notice";
@@ -162,6 +166,7 @@ export const federationSigningKeys = pgTable(
           | "arbitration-revocation-receipt"
           | "arbitration-context-query"
           | "arbitration-context"
+          | "arbitration-decision"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
           | "case-evidence-publication"
@@ -253,7 +258,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'arbitration.decide', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -3972,6 +3977,40 @@ export const federationReceivedDisclosures = pgTable(
     check(
       "federation_received_disclosure_identity",
       sql`(${t.scope}->>'caseId' = ${t.caseId}::text AND ${t.scope}->>'grantId' = ${t.grantId}::text AND ${t.scope}->>'evidenceRecipientSiteId' = ${t.localSiteId}::text) IS TRUE`,
+    ),
+  ],
+);
+
+/** Immutable R original. This is not an authorization to mutate either party's finances. */
+export const federationArbitrationDecisions = pgTable(
+  "federation_arbitration_decisions",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    decisionId: uuid("decision_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    payload: jsonb("payload").$type<ArbitrationDecision>().notNull(),
+    digest: text("digest").notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    basis: jsonb("basis").$type<ArbitrationDecisionBasis>().notNull(),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    approvedAt: timestamp("approved_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.decisionId] }),
+    uniqueIndex("federation_arbitration_decision_case").on(t.localSiteId, t.caseId),
+    foreignKey({
+      name: "federation_arbitration_decision_case_fk",
+      columns: [t.localSiteId, t.caseId],
+      foreignColumns: [federationEvidenceCases.localSiteId, federationEvidenceCases.caseId],
+    }),
+    check(
+      "federation_arbitration_decision_identity",
+      sql`(${t.payload}->'intent'->>'decisionId' = ${t.decisionId}::text AND ${t.payload}->'intent'->'binding'->>'caseId' = ${t.caseId}::text AND ${t.payload}->'intent'->'binding'->>'arbitratorSiteId' = ${t.localSiteId}::text) IS TRUE`,
     ),
   ],
 );

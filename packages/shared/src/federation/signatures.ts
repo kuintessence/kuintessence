@@ -82,6 +82,7 @@ export interface FederationVerificationKey {
     | "arbitration-revocation-receipt"
     | "arbitration-context-query"
     | "arbitration-context"
+    | "arbitration-decision"
     | "commercial-disclosure-policy"
     | "commercial-disclosure"
     | "commercial-disclosure-read-query"

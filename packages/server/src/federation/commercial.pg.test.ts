@@ -10,6 +10,7 @@ import {
   federationCommercialExecutionApprovals as executionApprovals,
   federationAgreementApprovals,
   federationAgreements,
+  federationArbitrationDecisions,
   federationArbitrationPolicies,
   federationArbitrationRevocationDeliveries,
   federationArbitrationRevocationNotices,
@@ -94,6 +95,12 @@ import {
   ArbitrationContextViewSchema,
   ArbitrationReviewSchema,
 } from "@kuintessence/shared/federation/arbitration-context";
+import {
+  ArbitrationDecisionIntentSchema,
+  ArbitrationDecisionSchema,
+  ArbitrationOutcomeSchema,
+  arbitrationDecisionIntent,
+} from "@kuintessence/shared/federation/arbitration-decision";
 import { CommercialArbitrationTaskBindingSchema } from "@kuintessence/shared/federation/arbitration-policy";
 import { ArbitrationRevocationNoticeSchema } from "@kuintessence/shared/federation/arbitration-revocation-notice";
 import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
@@ -156,6 +163,7 @@ import {
   FederationArbitrationContextResponder,
   FederationArbitrationContextService,
 } from "./arbitration-context";
+import { FederationArbitrationDecisionService } from "./arbitration-decision";
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { FederationArbitrationReviewService } from "./arbitration-review";
 import { FederationArbitrationRevocationDelivery } from "./arbitration-revocations";
@@ -376,6 +384,10 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
     .where(eq(submissions.id, row.id));
 }
 afterAll(async () => {
+  if (arbitrationSites.length)
+    await db
+      .delete(federationArbitrationDecisions)
+      .where(inArray(federationArbitrationDecisions.localSiteId, arbitrationSites));
   if (arbitrationSites.length)
     await db
       .delete(federationReceivedDisclosures)
@@ -13075,6 +13087,348 @@ test("arbitration review rejects signed but unauthorized subject types and futur
     );
     if (!context.financial) throw new Error("Missing signed financial context");
     context.financial = { ...context.financial, sourceJws, targetJws, freezeDigest: digest };
+    return signFederationMessage(ArbitrationContextSchema, context, key.signing);
+  });
+  await expect(f.inspect()).rejects.toThrow("POLICY_DENIED");
+});
+
+async function arbitrationDecisionFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await arbitrationReviewFixture(mode);
+  await new FederationPermissionService(db).set(
+    { ...f.owner.actor, capability: "arbitration.decide", enabled: true },
+    f.owner.actor.userId,
+  );
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["arbitration-decision"]'::jsonb`,
+    })
+    .where(eq(federationSigningKeys.siteId, f.r.signing.siteId));
+  const decisions = new FederationArbitrationDecisionService(db, f.r.signing, f.review);
+  const input = {
+    decisionId: randomUUID(),
+    grantIds: [f.material.draft.grant.grantId],
+    outcome: {
+      action: "settle" as const,
+      bill: { recordId: f.draft.subject.recordId, recordDigest: f.draft.subject.recordDigest },
+      chargedAmount: "50",
+    },
+    reason: "Accepted charge after reviewing disclosed evidence",
+  };
+  return {
+    ...f,
+    decisions,
+    input,
+    decisionDraft: () => decisions.draft(f.owner.actor, f.scope.caseId, input),
+  };
+}
+
+test("arbitration decision stores a signed immutable basis without money changes and recovers offline after expiry", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await arbitrationDecisionFixture(mode);
+    const before = await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.request.budgetDomainId));
+    const queued = await db
+      .select()
+      .from(submissions)
+      .where(eq(submissions.agreementRevisionId, f.revisionId));
+    const intent = await f.decisionDraft();
+    expect(intent.financial.targets).toEqual([
+      { bill: f.input.outcome.bill, settlement: null, previousAdjustment: null },
+    ]);
+    // Human review can outlive the old 30-second observation window.
+    setSystemTime(new Date(Date.now() + 31000));
+    try {
+      const approved = await f.decisions.approve(f.owner.actor, f.scope.caseId, intent);
+      const [row] = await db
+        .select()
+        .from(federationArbitrationDecisions)
+        .where(eq(federationArbitrationDecisions.decisionId, intent.decisionId));
+      if (!row) throw new Error("Missing decision");
+      const signed = await verifyFederationMessage(
+        ArbitrationDecisionSchema,
+        row.approvalJws,
+        await f.trust.resolveKey(f.r.signing.siteId, f.r.signing.keyId, new Date()),
+        new Date(),
+      );
+      expect(signed.digest).toBe(row.digest);
+      expect(signed.payload.basisDigest).toBe(federationMaterialDigest(row.basis));
+      expect(row.basis.contexts).toHaveLength(2);
+      expect(row.basis.evidence).toHaveLength(1);
+      for (const secret of ["Jws", '"values"', '"basis":', f.original.requestJws])
+        expect(JSON.stringify(approved)).not.toContain(secret);
+      expect(
+        await db
+          .select()
+          .from(federationBudgets)
+          .where(eq(federationBudgets.domainId, f.request.budgetDomainId)),
+      ).toEqual(before);
+      expect(
+        await db
+          .select()
+          .from(submissions)
+          .where(eq(submissions.agreementRevisionId, f.revisionId)),
+      ).toEqual(queued);
+      f.offline();
+      await f.arbitration.source.revoke(f.actor, f.revisionId, f.arbitration.policy.policyId);
+      await f.evidence.close(f.owner.actor, f.scope.caseId);
+      await db
+        .update(federationSigningKeys)
+        .set({ revokedAt: new Date() })
+        .where(eq(federationSigningKeys.siteId, f.r.signing.siteId));
+      setSystemTime(new Date(Date.now() + 31000));
+      expect(
+        await new FederationArbitrationDecisionService(db, f.r.signing, f.review).approve(
+          f.owner.actor,
+          f.scope.caseId,
+          intent,
+        ),
+      ).toEqual(approved);
+      expect(await f.decisions.read(f.owner.actor, f.scope.caseId)).toEqual(approved);
+      expect(
+        await db
+          .select()
+          .from(auditLog)
+          .where(
+            and(
+              eq(auditLog.action, "federation.arbitration_decision.approve"),
+              eq(auditLog.target, intent.decisionId),
+            ),
+          ),
+      ).toHaveLength(1);
+    } finally {
+      setSystemTime();
+    }
+  }
+});
+
+test("arbitration decision requires separate signer capability, current evidence and exact approved intent", async () => {
+  const f = await arbitrationDecisionFixture();
+  const intent = await f.decisionDraft();
+  const permissions = new FederationPermissionService(db);
+  await permissions.set(
+    { ...f.owner.actor, capability: "arbitration.decide", enabled: false },
+    f.owner.actor.userId,
+  );
+  await expect(f.decisionDraft()).rejects.toThrow("POLICY_DENIED");
+  await expect(f.decisions.approve(f.owner.actor, f.scope.caseId, intent)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await permissions.set(
+    { ...f.owner.actor, capability: "arbitration.decide", enabled: true },
+    f.owner.actor.userId,
+  );
+  await permissions.set(
+    { ...f.owner.actor, capability: "disclosure.receive", enabled: false },
+    f.owner.actor.userId,
+  );
+  await expect(f.decisions.approve(f.owner.actor, f.scope.caseId, intent)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await permissions.set(
+    { ...f.owner.actor, capability: "disclosure.receive", enabled: true },
+    f.owner.actor.userId,
+  );
+  await expect(f.decisions.approve(f.actor, f.scope.caseId, intent)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await expect(
+    f.decisions.approve(f.owner.actor, f.scope.caseId, {
+      ...intent,
+      financial: { ...intent.financial, headDigest: `sha256:${"f".repeat(64)}` },
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(
+    f.decisions.approve(f.owner.actor, f.scope.caseId, {
+      ...intent,
+      outcome: { ...f.input.outcome, chargedAmount: "61" },
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.decisions.approve(f.owner.actor, f.scope.caseId, {
+      ...intent,
+      outcome: { action: "resolve-without-financial-change" },
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'arbitration-decision'` })
+    .where(eq(federationSigningKeys.siteId, f.r.signing.siteId));
+  await expect(f.decisions.approve(f.owner.actor, f.scope.caseId, intent)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  expect(await f.decisions.read(f.owner.actor, f.scope.caseId)).toBeNull();
+});
+
+test("arbitration decision concurrent approvals save once and reject a second decision for the case", async () => {
+  const f = await arbitrationDecisionFixture();
+  const intent = await f.decisionDraft();
+  const outcomes = await Promise.all([
+    f.decisions.approve(f.owner.actor, f.scope.caseId, intent),
+    f.decisions.approve(f.owner.actor, f.scope.caseId, intent),
+  ]);
+  expect(outcomes[0]).toEqual(outcomes[1]);
+  expect(
+    await db
+      .select()
+      .from(federationArbitrationDecisions)
+      .where(eq(federationArbitrationDecisions.caseId, f.scope.caseId)),
+  ).toHaveLength(1);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.action, "federation.arbitration_decision.approve"),
+          eq(auditLog.target, intent.decisionId),
+        ),
+      ),
+  ).toHaveLength(1);
+  await expect(
+    f.decisions.approve(f.owner.actor, f.scope.caseId, { ...intent, decisionId: randomUUID() }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(
+    f.decisions.approve(f.owner.actor, f.scope.caseId, { ...intent, reason: "Changed" }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("arbitration decision audit failure rolls back both original and basis", async () => {
+  const f = await arbitrationDecisionFixture();
+  const intent = await f.decisionDraft();
+  await db.execute(
+    sql`CREATE FUNCTION decision_test_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.arbitration_decision.approve' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER decision_test_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION decision_test_audit_fail()`,
+  );
+  try {
+    await expect(f.decisions.approve(f.owner.actor, f.scope.caseId, intent)).rejects.toThrow();
+  } finally {
+    await db.execute(sql`DROP TRIGGER decision_test_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION decision_test_audit_fail()`);
+  }
+  expect(await f.decisions.read(f.owner.actor, f.scope.caseId)).toBeNull();
+  expect((await f.decisions.approve(f.owner.actor, f.scope.caseId, intent)).payload.intent).toEqual(
+    intent,
+  );
+});
+
+test("arbitration decision rechecks signer revocation after remote responses", async () => {
+  const f = await arbitrationDecisionFixture();
+  const intent = await f.decisionDraft();
+  f.after(async () => {
+    await new FederationPermissionService(db).set(
+      { ...f.owner.actor, capability: "arbitration.decide", enabled: false },
+      f.owner.actor.userId,
+    );
+  });
+  await expect(f.decisions.approve(f.owner.actor, f.scope.caseId, intent)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  expect(await f.decisions.read(f.owner.actor, f.scope.caseId)).toBeNull();
+});
+
+test("arbitration decision HTTP preserves strict intent, human session and private basis boundary", async () => {
+  const f = await arbitrationDecisionFixture();
+  const app = new Hono();
+  let automation = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.owner.actor as never);
+    c.set("automation" as never, automation as never);
+    await next();
+  });
+  app.route("/", createFederationEvidenceRoutes(f.evidence, f.service, f.review, f.decisions));
+  const path = `/federation/evidence-cases/${f.scope.caseId}/arbitration-decision`;
+  const post = (suffix: string, body: unknown) =>
+    app.request(path + suffix, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const draft = await post("/draft", f.input);
+  expect(draft.status).toBe(200);
+  const { data: intent } = z
+    .object({ data: ArbitrationDecisionIntentSchema })
+    .parse(await draft.json());
+  expect((await post("", { ...intent, execute: true })).status).toBe(400);
+  const approved = await post("", intent);
+  expect(approved.status).toBe(200);
+  expect(approved.headers.get("cache-control")).toBe("no-store");
+  const body = await approved.text();
+  expect(body).not.toContain("Jws");
+  expect(body).not.toContain('"basis":');
+  const read = await app.request(path);
+  expect(await read.text()).toBe(body);
+  automation = true;
+  expect((await post("", intent)).status).toBe(403);
+});
+
+test("arbitration decision outcome checks exact financial relationships and final charge ceiling", async () => {
+  const f = await arbitrationDecisionFixture();
+  const review = await f.inspect();
+  if (!review.context.financial) throw new Error("Missing financial view");
+  const target = review.context.financial.targets[0];
+  if (!target) throw new Error("Missing financial target");
+  review.context.policy.actions = ["settle", "adjust", "resolve-without-financial-change"];
+  const salt = "a".repeat(64);
+  expect(
+    arbitrationDecisionIntent(
+      review,
+      { ...f.input, outcome: { action: "resolve-without-financial-change" } },
+      salt,
+    ).outcome.action,
+  ).toBe("resolve-without-financial-change");
+  expect(
+    ArbitrationOutcomeSchema.safeParse({
+      action: "resolve-without-financial-change",
+      chargedAmount: "0",
+    }).success,
+  ).toBe(false);
+  target.settlement = { recordId: randomUUID(), recordDigest: `sha256:${"a".repeat(64)}` };
+  target.previousAdjustment = { recordId: randomUUID(), recordDigest: `sha256:${"b".repeat(64)}` };
+  const outcome = {
+    action: "adjust" as const,
+    bill: target.bill,
+    settlement: target.settlement,
+    previousAdjustment: target.previousAdjustment,
+    chargedAmount: "60",
+  };
+  expect(arbitrationDecisionIntent(review, { ...f.input, outcome }, salt).outcome).toEqual(outcome);
+  expect(() => arbitrationDecisionIntent(review, f.input, salt)).toThrow("OPERATION_CONFLICT");
+  expect(() =>
+    arbitrationDecisionIntent(
+      review,
+      { ...f.input, outcome: { ...outcome, previousAdjustment: null } },
+      salt,
+    ),
+  ).toThrow("OPERATION_CONFLICT");
+  expect(() =>
+    arbitrationDecisionIntent(
+      review,
+      { ...f.input, outcome: { ...outcome, chargedAmount: "9007199254740993" } },
+      salt,
+    ),
+  ).toThrow("POLICY_DENIED");
+  const firstEvidence = review.evidence[0];
+  if (!firstEvidence) throw new Error("Missing selected evidence");
+  review.evidence[0] = { ...firstEvidence, recordId: randomUUID() };
+  expect(() => arbitrationDecisionIntent(review, { ...f.input, outcome }, salt)).toThrow(
+    "DATA_WAITING",
+  );
+  f.change(async (jws, key) => {
+    const context = ArbitrationContextSchema.parse(
+      JSON.parse(Buffer.from(jws.split(".")[1] ?? "", "base64url").toString()),
+    );
+    if (!context.financial) throw new Error("Missing signed financial context");
+    const first = context.financial.targets[0];
+    if (!first) throw new Error("Missing financial target");
+    first.bill.recordId = randomUUID();
     return signFederationMessage(ArbitrationContextSchema, context, key.signing);
   });
   await expect(f.inspect()).rejects.toThrow("POLICY_DENIED");

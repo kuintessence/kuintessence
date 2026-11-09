@@ -140,6 +140,11 @@
       "bun": "./src/federation/case-revocation.ts",
       "types": "./src/federation/case-revocation.ts",
       "default": "./src/federation/case-revocation.ts"
+    },
+    "./federation/arbitration-decision": {
+      "bun": "./src/federation/arbitration-decision.ts",
+      "types": "./src/federation/arbitration-decision.ts",
+      "default": "./src/federation/arbitration-decision.ts"
     }
   },
   "scripts": {

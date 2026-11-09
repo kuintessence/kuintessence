@@ -64,6 +64,12 @@ const response = ArbitrationContextSchema.parse({
 
 test("arbitration context has independent human authority and signing purposes", () => {
   expect(federationCapabilitySources("arbitration.read")).toEqual(["arbitration.read"]);
+  expect(federationCapabilitySources("arbitration.decide")).toEqual(["arbitration.decide"]);
+  for (const capability of FederationCapabilitySchema.options.filter(
+    (c) => c !== "arbitration.decide",
+  ))
+    expect(federationCapabilitySources(capability)).not.toContain("arbitration.decide");
+  expect(FederationKeyInput.shape.allowedKinds.element.options).toContain("arbitration-decision");
   for (const capability of FederationCapabilitySchema.options.filter(
     (c) => c !== "arbitration.read",
   ))

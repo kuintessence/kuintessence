@@ -2,6 +2,10 @@ import { AppError, ErrorCode } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
 import { ArbitrationReviewInputSchema } from "@kuintessence/shared/federation/arbitration-context";
 import {
+  ArbitrationDecisionInputSchema,
+  ArbitrationDecisionIntentSchema,
+} from "@kuintessence/shared/federation/arbitration-decision";
+import {
   CommercialDisclosureReadScopeSchema,
   CommercialEvidenceCaseInputSchema,
 } from "@kuintessence/shared/federation/disclosure-authorization";
@@ -9,6 +13,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationArbitrationContextService } from "../federation/arbitration-context";
+import type { FederationArbitrationDecisionService } from "../federation/arbitration-decision";
 import type { FederationArbitrationReviewService } from "../federation/arbitration-review";
 import type { FederationEvidenceService } from "../federation/disclosure-delivery";
 import { FederationDeliveryError } from "../federation/outbound-client";
@@ -20,6 +25,7 @@ export function createFederationEvidenceRoutes(
   service: FederationEvidenceService,
   arbitration?: FederationArbitrationContextService,
   review?: FederationArbitrationReviewService,
+  decisions?: FederationArbitrationDecisionService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   const path = "/federation/evidence-cases";
@@ -121,6 +127,42 @@ export function createFederationEvidenceRoutes(
       if (!review) throw new FederationError("ASSET_UNAVAILABLE");
       return c.json({
         data: await review.review(
+          c.get("federationActor"),
+          c.req.valid("param").caseId,
+          c.req.valid("json"),
+        ),
+      });
+    },
+  );
+  r.get(`${path}/:caseId/arbitration-decision`, kqValidator("param", id), async (c) => {
+    if (!decisions) throw new FederationError("ASSET_UNAVAILABLE");
+    return c.json({
+      data: await decisions.read(c.get("federationActor"), c.req.valid("param").caseId),
+    });
+  });
+  r.post(
+    `${path}/:caseId/arbitration-decision/draft`,
+    kqValidator("param", id),
+    kqValidator("json", ArbitrationDecisionInputSchema),
+    async (c) => {
+      if (!decisions) throw new FederationError("ASSET_UNAVAILABLE");
+      return c.json({
+        data: await decisions.draft(
+          c.get("federationActor"),
+          c.req.valid("param").caseId,
+          c.req.valid("json"),
+        ),
+      });
+    },
+  );
+  r.post(
+    `${path}/:caseId/arbitration-decision`,
+    kqValidator("param", id),
+    kqValidator("json", ArbitrationDecisionIntentSchema),
+    async (c) => {
+      if (!decisions) throw new FederationError("ASSET_UNAVAILABLE");
+      return c.json({
+        data: await decisions.approve(
           c.get("federationActor"),
           c.req.valid("param").caseId,
           c.req.valid("json"),

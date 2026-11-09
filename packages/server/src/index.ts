@@ -53,6 +53,7 @@ import { FederationAdjustmentService } from "./federation/adjustment";
 import { FederationAgreementExchange } from "./federation/agreement-exchange";
 import { FederationAgreementService } from "./federation/agreements";
 import { FederationArbitrationContextService } from "./federation/arbitration-context";
+import { FederationArbitrationDecisionService } from "./federation/arbitration-decision";
 import { FederationArbitrationPolicyService } from "./federation/arbitration-policy";
 import { FederationArbitrationReviewService } from "./federation/arbitration-review";
 import { FederationArbitrationRevocationDelivery } from "./federation/arbitration-revocations";
@@ -1938,12 +1939,14 @@ if (federationSigningKey) {
     federationSigningKey,
     federationSender,
   );
+  const review = new FederationArbitrationReviewService(db, contexts, evidence);
   protectedApi.route(
     "/",
     createFederationEvidenceRoutes(
       evidence,
       contexts,
-      new FederationArbitrationReviewService(db, contexts, evidence),
+      review,
+      new FederationArbitrationDecisionService(db, federationSigningKey, review),
     ),
   );
 }

@@ -125,7 +125,8 @@
       "arbitration-revocation-notice": "仲裁预授权撤销通知",
       "arbitration-revocation-receipt": "仲裁预授权撤销回执",
       "arbitration-context-query": "仲裁上下文查询",
-      "arbitration-context": "仲裁上下文"
+      "arbitration-context": "仲裁上下文",
+      "arbitration-decision": "仲裁裁决原件"
     },
     "storage": {
       "title": "输入存储核对",
@@ -265,7 +266,8 @@
         },
         "arbitration": {
           "read": "查询仲裁上下文",
-          "approve": "批准仲裁预授权"
+          "approve": "批准仲裁预授权",
+          "decide": "签署仲裁裁决"
         }
       },
       "effects": {
@@ -325,7 +327,8 @@
         },
         "arbitration": {
           "read": "查询已登记案件的当前双边授权，不授予合同、材料、裁决或资金操作权限。",
-          "approve": "批准或撤销本机构的仲裁预授权政策，包含合同查看；不授予裁决、任务接单、扣款或付款权限。"
+          "approve": "批准或撤销本机构的仲裁预授权政策，包含合同查看；不授予裁决、任务接单、扣款或付款权限。",
+          "decide": "独立签署本站仲裁裁决；新签署另需查询与材料权限，不授予扣款或解冻权限。"
         }
       }
     },

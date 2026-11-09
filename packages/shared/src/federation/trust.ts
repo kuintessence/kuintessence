@@ -54,6 +54,7 @@ export const FederationKeyInput = z
           "arbitration-revocation-receipt",
           "arbitration-context-query",
           "arbitration-context",
+          "arbitration-decision",
           "commercial-disclosure-policy",
           "commercial-disclosure",
           "case-evidence-publication",
@@ -96,7 +97,7 @@ export const FederationKeyInput = z
         ]),
       )
       .min(1)
-      .max(67),
+      .max(68),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

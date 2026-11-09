@@ -125,7 +125,8 @@
       "arbitration-revocation-notice": "Arbitration withdrawal notice",
       "arbitration-revocation-receipt": "Arbitration withdrawal receipt",
       "arbitration-context-query": "Arbitration context query",
-      "arbitration-context": "Arbitration context"
+      "arbitration-context": "Arbitration context",
+      "arbitration-decision": "Arbitration decision"
     },
     "storage": {
       "title": "Input storage reconciliation",
@@ -265,7 +266,8 @@
         },
         "arbitration": {
           "read": "Read arbitration context",
-          "approve": "Approve arbitration policies"
+          "approve": "Approve arbitration policies",
+          "decide": "Sign arbitration decisions"
         }
       },
       "effects": {
@@ -325,7 +327,8 @@
         },
         "arbitration": {
           "read": "Read current bilateral authority for registered cases. Grants no contract, evidence, award or financial access.",
-          "approve": "Approve or revoke arbitration policies, including contract viewing. Grants no award, admission, debit or payment authority."
+          "approve": "Approve or revoke arbitration policies, including contract viewing. Grants no award, admission, debit or payment authority.",
+          "decide": "Sign this site’s arbitration decisions. New decisions also require context and evidence access; this grants no debit or unfreeze authority."
         }
       }
     },

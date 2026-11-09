@@ -45,11 +45,23 @@ export const ArbitrationEvidenceReferenceSchema = z.strictObject({
   recordId: z.uuid(),
   recordDigest: FederationDigestSchema,
 });
+export const ArbitrationFinancialTargetSchema = z
+  .strictObject({
+    bill: z.strictObject({ recordId: z.uuid(), recordDigest: FederationDigestSchema }),
+    settlement: z
+      .strictObject({ recordId: z.uuid(), recordDigest: FederationDigestSchema })
+      .nullable(),
+    previousAdjustment: z
+      .strictObject({ recordId: z.uuid(), recordDigest: FederationDigestSchema })
+      .nullable(),
+  })
+  .refine((v) => v.settlement !== null || v.previousAdjustment === null);
 export const ArbitrationFinancialViewSchema = z.strictObject({
   headDigest: FederationDigestSchema,
   freezeDigest: FederationDigestSchema,
   records: CommercialDisputeFinancialViewSchema.shape.records,
   evidenceReferences: ArbitrationEvidenceReferenceSchema.array(),
+  targets: ArbitrationFinancialTargetSchema.array(),
   ledgerReceipt: CommercialReceiptSchema.nullable(),
 });
 export const ArbitrationFinancialContextSchema = ArbitrationFinancialViewSchema.extend({

@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
+  federationCommercialAdjustments as adjustments,
   federationEvidenceCases as cases,
   federationSites,
   federationArbitrationRevocationNotices as notices,
   type PgDb,
   type PgTransaction,
   federationCommercialPayments as payments,
+  federationCommercialSettlements as settlements,
 } from "@kuintessence/db";
 import {
   assertFederationStatusQueryFresh,
@@ -18,6 +20,7 @@ import {
   ArbitrationContextViewSchema,
   type ArbitrationEvidenceReferenceSchema,
   ArbitrationFinancialContextSchema,
+  type ArbitrationFinancialTargetSchema,
   ArbitrationFinancialViewSchema,
   assertArbitrationContext,
 } from "@kuintessence/shared/federation/arbitration-context";
@@ -25,7 +28,7 @@ import { CommercialArbitrationPolicySchema } from "@kuintessence/shared/federati
 import { CommercialBillSchema } from "@kuintessence/shared/federation/commercial";
 import { CommercialEvidenceCaseInputSchema } from "@kuintessence/shared/federation/disclosure-authorization";
 import { CommercialDisputeFreezeSchema } from "@kuintessence/shared/federation/disputes";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { federationMaterialDigest } from "./assets";
 import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
@@ -61,6 +64,7 @@ export class FederationArbitrationContextResponder {
     ).arbitrationSnapshot(tx, caseId);
     if (!freeze) return null;
     const refs: z.infer<typeof ArbitrationEvidenceReferenceSchema>[] = [];
+    const targets: z.infer<typeof ArbitrationFinancialTargetSchema>[] = [];
     const needed = new Set<string>(policy.disclosures.map((e) => e.recordType));
     const { record } = freeze.current;
     const add = (ref: z.infer<typeof ArbitrationEvidenceReferenceSchema>) => {
@@ -85,6 +89,37 @@ export class FederationArbitrationContextResponder {
       if (ref.recordType !== "refund")
         add({ recordType: ref.recordType, recordId: ref.recordId, recordDigest: ref.recordDigest });
       if (ref.recordType !== "bill") continue;
+      const [settlement] = await tx
+        .select()
+        .from(settlements)
+        .where(
+          and(
+            eq(settlements.localSiteId, this.signing.siteId),
+            eq(settlements.billId, ref.recordId),
+          ),
+        );
+      const [previous] = settlement
+        ? await tx
+            .select()
+            .from(adjustments)
+            .where(
+              and(
+                eq(adjustments.localSiteId, this.signing.siteId),
+                eq(adjustments.settlementId, settlement.settlementId),
+              ),
+            )
+            .orderBy(desc(adjustments.number))
+            .limit(1)
+        : [];
+      targets.push({
+        bill: { recordId: ref.recordId, recordDigest: ref.recordDigest },
+        settlement: settlement
+          ? { recordId: settlement.settlementId, recordDigest: settlement.digest }
+          : null,
+        previousAdjustment: previous
+          ? { recordId: previous.adjustmentId, recordDigest: previous.digest }
+          : null,
+      });
       if (needed.has("usage")) {
         const original = await this.disputes.disclosureOriginal(
           tx,
@@ -141,6 +176,7 @@ export class FederationArbitrationContextResponder {
     return ArbitrationFinancialContextSchema.parse({
       ...freeze.financial,
       evidenceReferences: refs,
+      targets,
     });
   }
   async receive(jws: string, fingerprint: string) {
@@ -417,6 +453,29 @@ export class FederationArbitrationContextService {
             : financial.ledgerReceipt !== null)
         )
           throw new FederationError("POLICY_DENIED");
+        const bills = financial.records.filter((r) => r.recordType === "bill");
+        if (
+          financial.targets.length !== bills.length ||
+          new Set(financial.targets.map((t) => t.bill.recordId)).size !== bills.length
+        )
+          throw new FederationError("POLICY_DENIED");
+        for (const target of financial.targets) {
+          for (const [recordType, ref] of [
+            ["bill", target.bill],
+            ["settlement", target.settlement],
+            ["adjustment", target.previousAdjustment],
+          ] as const)
+            if (
+              ref &&
+              !financial.records.some(
+                (r) =>
+                  r.recordType === recordType &&
+                  r.recordId === ref.recordId &&
+                  r.recordDigest === ref.recordDigest,
+              )
+            )
+              throw new FederationError("POLICY_DENIED");
+        }
         for (const [siteId, jws] of [
           [scope.sourceSiteId, financial.sourceJws],
           [scope.targetSiteId, financial.targetJws],
@@ -497,6 +556,7 @@ export class FederationArbitrationContextService {
             freezeDigest: source.context.financial.freezeDigest,
             records: source.context.financial.records,
             evidenceReferences: source.context.financial.evidenceReferences,
+            targets: source.context.financial.targets,
             ledgerReceipt: source.context.financial.ledgerReceipt,
           })
         : null,

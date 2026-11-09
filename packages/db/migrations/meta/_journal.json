@@ -1373,6 +1373,13 @@
       "when": 1794263595021,
       "tag": "0195_sudden_satana",
       "breakpoints": true
+    },
+    {
+      "idx": 196,
+      "version": "7",
+      "when": 1794266126206,
+      "tag": "0196_sour_blue_blade",
+      "breakpoints": true
     }
   ]
 }
