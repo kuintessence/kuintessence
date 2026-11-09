@@ -55,6 +55,14 @@ bun run test:fabric:execution
 
 此处的费用调整是账面净额变更，不是银行付款或退款。调整须经双方独立人员批准；本用例不将原签名自动交换称为自动商务批准。只有整条命令成功、上述证据均存在且断言通过，才能记为该场景通过；仍不代表长期无人值守、Slurm/PBS、旧链升级或完整 PR 预览已验收。
 
+## 链协调付款恢复证据
+
+协调模式 success／workflow 财务验收使用 paid 合同，在真实执行终态、原账单／结算和账务调整之后追加付款与零额更正。每次付款前停止 Orderer，两端独立审批及原签名交换后，确认时间和 current 必须已保存，只有提供方创建待存证记录；付款不等待链，也不代表另一次额度结算。
+
+每条付款待办需保存已背书的 transaction 检查点。第一笔再 SIGKILL 两端 Server 和商业 Adapter，以原状态恢复，确认原付款事实、待办编号、交易 ID、检查点摘要及执行 gate 不变。恢复 Orderer 后等待原提供方记录 VALID，然后才进入下一条更正；客户端不手工附签、换业务编号或清租约。
+
+两端 `payment-1/2-offline.json`、`payment-1/2-committed.json` 与 `payment-crash-recovery.json` 保存恢复核对；`payment-1/2-committed-evidence.json`、`payment-1/2-private-ledger.json` 保存原付款和独立区块检查。每笔付款只有一笔提供方 VALID，A/B 只能出现对应 receipt/head 写入，预算、原账单、结算、预留和 gate 不得改变；C 不得收到私有正文。整体声明原件保存在 `coordinated-payments.json`，仍使用合成外部证明，不执行银行转账。只有完整入口及 Node Gateway 私有写集断言均通过，才能记为本场景验收完成。
+
 ## 无链双边合作验收
 
 设置本页的 `KQ_FEDERATION_EXECUTION_LAB` 与 PostgreSQL 工具路径后，运行：
@@ -85,11 +93,11 @@ bun run test:fabric:execution
 
 该场景部署商业与证据链码及相应 Adapter，不部署市场链码，不签发链协调执行许可。两种私有集合各自限制 A/B 成员访问并要求 A/B 原生背书，C 保留为非成员观测者。商业域与接单证据域在夹具中显式对齐；一般部署仍应按双方认可的域配置，不临时扩大集合。
 
-Orderer 在启动 Server 前停止。双方此时完成执行/商业协议交换、提交前账单和结算预授权，再运行真实轻量文件工作流、返回结果、交换用量、自动账单/结算及两笔人工调整。工作和本地额度不得等待链，商业待办和接单证据必须保持 pending，不能伪造 anchored。检查实际本地金额及原不可变签名，不调用复核重试 API、不清租约或改数据库时间。
+Orderer 在启动 Server 前停止。双方此时完成执行/商业协议交换、提交前账单和结算预授权，再运行真实轻量文件工作流、返回结果、交换用量、自动账单/结算、两笔人工调整及付款／零额更正。成功财务场景显式使用 paid 合同，其他场景仍默认 exchange。工作和本地额度不得等待链，商业待办和接单证据必须保持 pending，不能伪造 anchored。检查实际本地金额及原不可变签名，不调用复核重试 API、不清租约或改数据库时间。
 
-恢复 Orderer 后核对原七条商业提交（双方合同、提供方用量/账单/结算/两次调整）及两条接单凭证。待办编号、已保存的交易检查点、所有本地账务及已完成 Job 均保持；批次序号连续、重复记录不能入链两次。独立 Node Gateway 再检查 A/B/C 的实际区块与 PDC：原记录正文/签名对应、交易 VALID、C 无私有内容，商业链上没有预算、预留或执行 gate 写入，避免把异步存证变成第二套可花费余额。
+付款双签完成后，在排序服务仍停止时强制终止两端 Server 和商业 Adapter，以原数据库、配置与恢复密钥启动。恢复 Orderer 后核对原九条商业提交（双方合同、提供方用量/账单/结算/两次调整/付款及更正）及两条接单凭证。待办编号、已保存的交易检查点、所有本地账务及已完成 Job 均保持；批次序号连续、重复记录不能入链两次。独立 Node Gateway 再检查 A/B/C 的实际区块与 PDC：原记录正文/签名对应、交易 VALID、C 无私有内容，商业链上没有预算、预留或执行 gate 写入，避免把异步存证变成第二套可花费余额。
 
-证据目录为 `temp/federation-execution-attested-*`。`attested-offline-api.json` 与双方 `attested-offline.json` 保存链停止期间状态；`attested-recovered-api.json` 与双方 `attested-recovered.json` 保存恢复结果；`attested-private-ledger.json` 保存独立区块检查摘要。签名和内部日志仍只放受限忽略目录，不能上传公共 CI artifact。只有整条命令退出 0 且所有断言通过才记为此场景完成；其他中断、容量、归档与正式预览仍按各自验收项检查。
+证据目录为 `temp/federation-execution-attested-*`。`attested-offline-api.json` 与双方 `attested-offline.json` 保存链停止期间状态；`attested-recovered-api.json` 与双方 `attested-recovered.json` 保存恢复结果；`attested-private-ledger.json` 保存独立区块检查摘要；`bilateral-payments.json` 保存付款原件，`payment-crash-recovery.json` 保存自建进程的恢复证据。付款交易仅能写入对应的 payment／payment-head，不得修改其他私有业务记录。签名和内部日志仍只放受限忽略目录，不能上传公共 CI artifact。只有整条命令退出 0 且所有断言通过才记为此场景完成；其他中断、容量、归档与正式预览仍按各自验收项检查。
 
 ## 执行前取消与退款验收
 

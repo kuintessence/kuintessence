@@ -1244,8 +1244,7 @@ def verify_bilateral_finance():
 
 
 
-def verify_direct_payments():
-    assert mode == "bilateral_direct"
+def verify_payments():
     config = json.loads((root / "source-init.json").read_text())
     path = "federation/commercial-agreements/" + config["request"]["agreementRevisionId"]
     bill = json.loads((logs / "billing-offline-evidence.json").read_text())["draft"]
@@ -1258,6 +1257,8 @@ def verify_direct_payments():
     assert config["commercial"]["consideration"] == "paid", "Payment acceptance requires a paid contract"
     payment_id, previous, originals = str(uuid.uuid4()), None, []
     for number, amount in enumerate((bill["calculation"]["dueAmount"], "0"), 1):
+        if coordinated:
+            orderer("stop")
         body = {
             "receiptId": str(uuid.uuid4()), "paymentId": payment_id, "billId": bill["billId"],
             "amount": amount, "occurredAt": bill["issuedAt"], "evidenceDigest": evidence_digest,
@@ -1275,7 +1276,11 @@ def verify_direct_payments():
                 history = read(path + "/payments?recordId=" + draft["receiptId"], token=auth)["data"]
                 assert len(history["data"]) == 1 and not history["hasMore"]
                 records[name] = history["data"][0]
-                assert records[name]["payment"]["payload"] == draft and records[name]["ledger"] is None
+                assert records[name]["payment"]["payload"] == draft
+                if mode != "bilateral_direct" and name == "provider":
+                    assert records[name]["ledger"] is None or records[name]["ledger"]["state"] == "pending"
+                else:
+                    assert records[name]["ledger"] is None
             if all(row["payment"]["confirmedAt"] and row["payment"]["current"] for row in records.values()):
                 break
             time.sleep(2)
@@ -1285,7 +1290,11 @@ def verify_direct_payments():
             row = records[name]["payment"]
             other = records["source" if name == "provider" else "provider"]["payment"]
             assert row["counterpartyJws"] == other["approvalJws"]
+            if mode != "bilateral_direct" and name == "provider":
+                assert records[name]["ledger"]["state"] == "pending"
             assert read(path + "/payments/approve", draft, auth)["data"] == row
+        if coordinated:
+            verify_payment_recovery(path, draft, records, number, config)
         previous = {"receiptId": draft["receiptId"], "digest": records["provider"]["payment"]["digest"]}
         originals.append({"draft": draft, "records": records})
     for name, read, auth in parties:
@@ -1301,9 +1310,80 @@ def verify_direct_payments():
         for key in ("budgets", "bills", "settlements", "adjustments", "execution"):
             assert after[key] == before[name][key], "Payment changed accounting or execution: " + key
         assert len(after["payments"]) == 2
-        assert not after["commercial"] and not after["commercialTransactions"]
-    (logs / "bilateral-payments.json").write_text(json.dumps(originals, indent=2) + "\n")
-    print("REAL DIRECT PAYMENTS PASSED: independent approvals, automatic original-signature exchange, zero correction, old replay, unchanged accounting/execution and no ledger", flush=True)
+        if mode != "bilateral_direct":
+            assert len(after["commercial"]) == len(before[name]["commercial"]) + (2 if name == "provider" else 0)
+            assert all(row["state"] == ("committed" if coordinated else "pending") for row in after["commercial"])
+        else:
+            assert not after["commercial"] and not after["commercialTransactions"]
+    (logs / ("coordinated-payments.json" if coordinated else "bilateral-payments.json")).write_text(json.dumps(originals, indent=2) + "\n")
+    print("REAL PAYMENTS PASSED: independent approvals, automatic original-signature exchange, zero correction, old replay, unchanged accounting/execution; " + ("Orderer remains stopped" if attested else "original VALID after recovery" if coordinated else "no ledger"), flush=True)
+
+
+def verify_payment_recovery(path, draft, records, number, config):
+    assert coordinated
+    label = "payment-" + str(number)
+    submission_id = records["provider"]["ledger"]["id"]
+    parties = (("provider", api, token), ("source", sourceapi, sourcetoken))
+
+    def refresh():
+        for name, read, auth in parties:
+            value = read(path + "/payments?recordId=" + draft["receiptId"], token=auth)["data"]
+            assert len(value["data"]) == 1 and not value["hasMore"]
+            record = value["data"][0]
+            assert record["payment"] == records[name]["payment"], "Ledger recovery changed acknowledged payment"
+            if name == "source":
+                assert record["ledger"] is None
+            else:
+                assert record["ledger"]["id"] == submission_id and record["ledger"]["state"] != "needs_review"
+            records[name] = record
+
+    try:
+        for _ in range(60):
+            inspect_ledgers(label + "-offline")
+            offline = {name: json.loads((logs / (name + "-" + label + "-offline.json")).read_text()) for name, _, _ in parties}
+            checkpoints = [row for row in offline["provider"]["commercialTransactions"] if row["submissionId"] == submission_id]
+            if len(checkpoints) == 1 and checkpoints[0]["stage"] == "transaction" and checkpoints[0]["recoveryDigest"]:
+                break
+            time.sleep(3)
+        else:
+            raise AssertionError("Payment did not persist original endorsed transaction")
+        if number == 1:
+            recovery = restart_commercial_servers()
+            refresh()
+            inspect_ledgers(label + "-restarted")
+            for name, _, _ in parties:
+                restarted = json.loads((logs / (name + "-" + label + "-restarted.json")).read_text())
+                for key in ("budgets", "reservations", "outbound", "payments", "bills", "settlements", "adjustments", "execution", "gate", "demand"):
+                    assert restarted[key] == offline[name][key], "Payment restart changed " + key
+                if name == "provider":
+                    assert [row for row in restarted["commercialTransactions"] if row["submissionId"] == submission_id] == checkpoints
+            assert records["provider"]["ledger"]["state"] == "pending"
+            (logs / "payment-crash-recovery.json").write_text(json.dumps({**recovery, "checkpoints": checkpoints}, indent=2) + "\n")
+    finally:
+        orderer("start")
+    for _ in range(100):
+        refresh()
+        if records["provider"]["ledger"]["state"] == "committed":
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError("Payment original transaction did not recover to VALID")
+    inspect_ledgers(label + "-committed")
+    for name, _, _ in parties:
+        local = json.loads((logs / (name + "-" + label + "-committed.json")).read_text())
+        for key in ("budgets", "reservations", "outbound", "payments", "bills", "settlements", "adjustments", "execution", "gate", "demand"):
+            assert local[key] == offline[name][key], "Payment evidence changed " + key
+        if name == "provider":
+            attempts = [row for row in local["commercialTransactions"] if row["submissionId"] == submission_id]
+            valid = [row for row in attempts if row["stage"] == "committed" and row["validationCode"] == 0 and row["blockNumber"] is not None]
+            assert len(valid) == 1
+            recovered = next(row for row in attempts if row["transactionId"] == checkpoints[0]["transactionId"])
+            assert recovered in valid, "Payment replaced its original transaction instead of recovering it"
+            assert recovered["recoveryDigest"] == checkpoints[0]["recoveryDigest"]
+    evidence = {"draft": draft, "statuses": {name: {"record": row} for name, row in records.items()}, "transactions": {"provider": attempts}, "budgetDomainId": config["request"]["budgetDomainId"], "epoch": config["request"]["epoch"], "evidenceDirectory": str(logs)}
+    (logs / (label + "-committed-evidence.json")).write_text(json.dumps(evidence, indent=2) + "\n")
+    (networkroot / ("live-" + label + "-proof.json")).write_text(json.dumps(evidence, indent=2) + "\n")
+    print("REAL COORDINATED PAYMENT RECOVERY PASSED: " + label + " acknowledged offline; original transaction VALID after recovery; local money facts and execution gate unchanged", flush=True)
 
 
 def verify_refund():
@@ -1478,7 +1558,7 @@ def verify_attested_recovery():
         offline = {name: json.loads((logs / (name + "-attested-offline.json")).read_text()) for name in ("source", "provider")}
         provider = offline["provider"]
         assert len(provider["attestationOutbox"]) == 2
-        assert len(provider["commercial"]) == (2 if refund_scenario else 6) and len(offline["source"]["commercial"]) == 1
+        assert len(provider["commercial"]) == (2 if refund_scenario else 8) and len(offline["source"]["commercial"]) == 1
         for state in offline.values():
             assert all(row["state"] == "pending" for row in state["commercial"])
             assert all(row["state"] == "pending" for row in state["evidenceBatches"])
@@ -1494,9 +1574,9 @@ def verify_attested_recovery():
     assert view["enabled"] and view["batches"] and all(row["state"] == "pending" for row in view["batches"])
     (logs / "attested-offline-api.json").write_text(json.dumps(view, indent=2) + "\n")
     print("REAL ATTESTED OFFLINE PASSED: " + scenario + " finished locally while Orderer stopped; original commercial and admission evidence remains pending", flush=True)
-    if refund_scenario:
+    if refund_scenario or scenario == "success":
         recovery = restart_commercial_servers()
-        (logs / "refund-crash-recovery.json").write_text(json.dumps(recovery, indent=2) + "\n")
+        (logs / ("refund-crash-recovery.json" if refund_scenario else "payment-crash-recovery.json")).write_text(json.dumps(recovery, indent=2) + "\n")
     orderer("start")
     for _ in range(160):
         inspect_ledgers("attested-recovered")
@@ -1505,7 +1585,7 @@ def verify_attested_recovery():
             assert all(row["state"] != "needs_review" for row in state["commercial"]), "Commercial recovery needs review: " + json.dumps([{ "id": row["id"], "operation": row["input"]["operation"], "state": row["state"], "lastError": row["lastError"] } for row in state["commercial"]])
             assert all(row["state"] != "needs_review" for row in state["evidenceBatches"]), "Admission evidence needs review"
             assert {(row["id"], json.dumps(row["input"], sort_keys=True)) for row in state["commercial"]} == {(row["id"], json.dumps(row["input"], sort_keys=True)) for row in offline[name]["commercial"]}
-            for key in ("budgets", "reservations", "outbound", "bills", "settlements", "adjustments", "refunds", "execution"):
+            for key in ("budgets", "reservations", "outbound", "bills", "settlements", "adjustments", "refunds", "payments", "execution"):
                 assert state[key] == offline[name][key], "Attestation changed local accounting or execution: " + key
             assert {row["evidenceId"] for row in state["attestationOutbox"]} == {row["evidenceId"] for row in offline[name]["attestationOutbox"]}
             for original in offline[name]["evidenceBatches"]:
@@ -2777,7 +2857,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         for name, setting in [("source", sourceenv), ("provider", env)]:
             subprocess.run(
                 ["bun", "--no-env-file", "scripts/federation-live/inspect.ts"]
-                + (["--closed"] if scenario in ("success", "workflow") and (suffix in ("after", "settlement-offline", "settlement-committed") or suffix.startswith("adjustment-")) else []),
+                + (["--closed"] if scenario in ("success", "workflow") and (suffix in ("after", "settlement-offline", "settlement-committed") or suffix.startswith(("adjustment-", "payment-"))) else []),
                 cwd=repo,
                 env={
                     **setting,
@@ -2948,10 +3028,10 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             if coordinated:
                 verify_settlement()
                 verify_adjustments()
+                verify_payments()
             else:
                 verify_bilateral_finance()
-                if mode == "bilateral_direct":
-                    verify_direct_payments()
+                verify_payments()
                 if attested:
                     verify_attested_recovery()
         inspect_ledgers("after")

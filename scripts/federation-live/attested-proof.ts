@@ -60,6 +60,7 @@ const recordTypes = {
   "settle-bill": "settlement",
   "adjust-settlement": "adjustment",
   "record-refund": "refund",
+  "record-payment": "payment",
 } as const;
 const expected: {
   chaincode: string;
@@ -79,7 +80,7 @@ for (const name of ["source", "provider"]) {
       await readFile(join(proof.evidenceDirectory, `${name}-attested-recovered.json`), "utf8"),
     ),
   );
-  assert.equal(state.commercial.length, name === "source" ? 1 : refund ? 2 : 6);
+  assert.equal(state.commercial.length, name === "source" ? 1 : refund ? 2 : 8);
   for (const row of state.commercial) {
     const operation = z
       .enum([
@@ -89,6 +90,7 @@ for (const name of ["source", "provider"]) {
         "settle-bill",
         "adjust-settlement",
         "record-refund",
+        "record-payment",
       ])
       .parse(row.input.operation);
     const domain = network.trust.domains.find((v) => v.domainId === row.input.domainId);
@@ -141,7 +143,7 @@ for (const name of ["source", "provider"]) {
     });
   }
 }
-assert.equal(expected.filter((v) => v.chaincode === "kq-commercial").length, refund ? 3 : 7);
+assert.equal(expected.filter((v) => v.chaincode === "kq-commercial").length, refund ? 3 : 9);
 const batches = expected.filter((v) => v.manifest);
 assert(batches.length >= 1 && batches.length <= 2);
 assert.equal(
@@ -158,6 +160,7 @@ const results: Record<
     cursors: number;
     adjustmentHeads: number;
     refundIndexes: number;
+    paymentHeads: number;
   }
 > = {};
 for (const name of ["A", "B", "C"]) {
@@ -195,6 +198,7 @@ for (const name of ["A", "B", "C"]) {
     cursors: 0,
     adjustmentHeads: 0,
     refundIndexes: 0,
+    paymentHeads: 0,
   };
   try {
     for (const number of new Set(expected.map((v) => v.blockNumber))) {
@@ -278,6 +282,20 @@ for (const name of ["A", "B", "C"]) {
                       assert.deepEqual(record.terms ?? record.report, wanted.body);
                     originals++;
                   }
+                  if (wanted.body.kind === "commercial-payment") {
+                    const headKey = `\u0000payment-head\u0000${wanted.body.domainId}\u0000${wanted.body.paymentId}\u0000`;
+                    assert(
+                      [wanted.key, headKey].includes(write.getKey()),
+                      "Payment changed unrelated ledger state",
+                    );
+                    if (write.getKey() === headKey) {
+                      assert.deepEqual(JSON.parse(Buffer.from(write.getValue_asU8()).toString()), {
+                        recordId: wanted.recordId,
+                        digest: wanted.digest,
+                      });
+                      result.paymentHeads++;
+                    }
+                  }
                   if (wanted.manifest) {
                     if (
                       write.getKey() === `\u0000cursor\u0000${wanted.manifest.issuerSiteId}\u0000`
@@ -340,6 +358,7 @@ for (const name of ["A", "B", "C"]) {
     assert.equal(result.transactions, expected.length);
     assert.equal(result.adjustmentHeads, name === "C" || refund ? 0 : 2);
     assert.equal(result.refundIndexes, name !== "C" && refund ? 2 : 0);
+    assert.equal(result.paymentHeads, name === "C" || refund ? 0 : 2);
     assert.equal(result.admissionRecords, name === "C" ? 0 : 2);
     results[name] = result;
   } finally {

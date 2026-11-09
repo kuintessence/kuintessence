@@ -16,20 +16,21 @@ export async function verifyLiveExecution(
     "1",
     "Explicit disposable local k3s opt-in required",
   );
+  const attested = process.env.KQ_FEDERATION_LAB_MODE === "bilateral_attested";
+  const selection = process.env.KQ_FEDERATION_LAB_SCENARIO ?? (attested ? "success" : "both");
   const network = await Bun.file(join(root, "network.json")).json();
   await Bun.write(
     join(root, "execution-fixture.json"),
     JSON.stringify(
       ExecutionFixtureSchema.parse({
         domainId: network.trust.domains[0].domainId,
+        consideration: ["success", "workflow", "both"].includes(selection) ? "paid" : "exchange",
         sites: network.sites.filter((site: { name: string }) => ["A", "B"].includes(site.name)),
       }),
     ),
   );
-  const attested = process.env.KQ_FEDERATION_LAB_MODE === "bilateral_attested";
   const adapters = await startAdapters(root, attested);
   controls.onCleanup(adapters.cleanup);
-  const selection = process.env.KQ_FEDERATION_LAB_SCENARIO ?? (attested ? "success" : "both");
   assert(
     attested
       ? ["success", "refund", "refund-auto"].includes(selection)
@@ -115,7 +116,7 @@ export async function verifyLiveExecution(
         await Bun.write(entry, await build.outputs[0].text());
         for (const record of attested
           ? ["attested"]
-          : ["settlement", "adjustment-1", "adjustment-2"]) {
+          : ["settlement", "adjustment-1", "adjustment-2", "payment-1", "payment-2"]) {
           const probe = Bun.spawn(["node", entry, root, record], {
             stdout: "inherit",
             stderr: "inherit",

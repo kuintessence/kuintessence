@@ -7,6 +7,8 @@ import { connect, signers } from "@hyperledger/fabric-gateway";
 import { common, ledger, peer } from "@hyperledger/fabric-protos";
 import {
   CommercialAdjustmentSchema,
+  CommercialPaymentApprovalSchema,
+  CommercialPaymentSchema,
   CommercialSettlementSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
@@ -15,14 +17,18 @@ import { Site } from "../fabric-evidence-fixture";
 
 const root = z.string().min(1).parse(process.argv[2]);
 const recordName = z
-  .enum(["settlement", "adjustment-1", "adjustment-2"])
+  .enum(["settlement", "adjustment-1", "adjustment-2", "payment-1", "payment-2"])
   .parse(process.argv[3] ?? "settlement");
 const network = z
   .object({ channel: z.string(), sites: z.array(Site), trust: FabricCommercialTrustSchema })
   .parse(JSON.parse(await readFile(join(root, "network.json"), "utf8")));
 const proof = z
   .object({
-    draft: z.union([CommercialSettlementSchema, CommercialAdjustmentSchema]),
+    draft: z.union([
+      CommercialSettlementSchema,
+      CommercialAdjustmentSchema,
+      CommercialPaymentSchema,
+    ]),
     budgetDomainId: z.uuid(),
     epoch: z.uuid(),
     evidenceDirectory: z.string(),
@@ -32,7 +38,8 @@ const proof = z
         record: z.object({
           settlement: z.object({ digest: z.string() }).optional(),
           adjustment: z.object({ digest: z.string() }).optional(),
-          ledger: z.object({ id: z.uuid() }),
+          payment: CommercialPaymentApprovalSchema.optional(),
+          ledger: z.object({ id: z.uuid() }).nullable(),
         }),
       }),
     ),
@@ -50,12 +57,27 @@ const proof = z
   })
   .parse(JSON.parse(await readFile(join(root, `live-${recordName}-proof.json`), "utf8")));
 const isAdjustment = proof.draft.kind === "commercial-adjustment";
-assert.equal(isAdjustment, recordName !== "settlement");
-const receipt = isAdjustment
-  ? proof.statuses.provider?.record.adjustment
-  : proof.statuses.provider?.record.settlement;
+const isPayment = proof.draft.kind === "commercial-payment";
+assert.equal(isAdjustment, recordName.startsWith("adjustment-"));
+assert.equal(isPayment, recordName.startsWith("payment-"));
+const receipt = isPayment
+  ? proof.statuses.provider?.record.payment
+  : isAdjustment
+    ? proof.statuses.provider?.record.adjustment
+    : proof.statuses.provider?.record.settlement;
 assert(receipt);
-for (const name of ["source", "provider"]) {
+if (isPayment) {
+  const source = proof.statuses.source?.record;
+  const provider = proof.statuses.provider?.record;
+  assert.equal(source?.ledger, null);
+  assert(source?.payment && provider?.payment);
+  assert.deepEqual(source.payment.payload, proof.draft);
+  assert.deepEqual(provider.payment.payload, proof.draft);
+  assert.equal(source.payment.digest, provider.payment.digest);
+  assert.equal(source.payment.counterpartyJws, provider.payment.approvalJws);
+  assert.equal(provider.payment.counterpartyJws, source.payment.approvalJws);
+}
+for (const name of isPayment ? ["provider"] : ["source", "provider"]) {
   const state = z
     .object({
       commercialTransactions: z.array(
@@ -67,7 +89,7 @@ for (const name of ["source", "provider"]) {
         await readFile(join(proof.evidenceDirectory, `${name}-${recordName}-offline.json`), "utf8"),
       ),
     );
-  const id = proof.statuses[name]?.record.ledger.id;
+  const id = proof.statuses[name]?.record.ledger?.id;
   assert(id);
   for (const attempt of state.commercialTransactions.filter((v) => v.submissionId === id)) {
     assert(
@@ -81,7 +103,7 @@ assert(domain);
 const expected = Object.values(proof.transactions)
   .flat()
   .filter((v) => v.stage === "committed" && v.validationCode === 0);
-assert.equal(expected.length, 2);
+assert.equal(expected.length, isPayment ? 1 : 2);
 const blocks = [...new Set(expected.map((v) => v.blockNumber))];
 const results: Record<
   string,
@@ -92,6 +114,7 @@ const results: Record<
     reservationWrites: number;
     adjustmentWrites: number;
     headWrites: number;
+    paymentWrites: number;
   }
 > = {};
 for (const name of ["A", "B", "C"]) {
@@ -129,6 +152,7 @@ for (const name of ["A", "B", "C"]) {
     reservationWrites: 0,
     adjustmentWrites: 0,
     headWrites: 0,
+    paymentWrites: 0,
   };
   try {
     for (const number of blocks) {
@@ -147,6 +171,20 @@ for (const name of ["A", "B", "C"]) {
             !Buffer.from(block.serializeBinary()).includes(Buffer.from(proof.draft.salt)),
             "Commercial plaintext leaked into public block",
           );
+          if (isPayment) {
+            for (const value of Object.values(proof.statuses)) {
+              assert(value.record.payment?.counterpartyJws);
+              for (const jws of [
+                value.record.payment.approvalJws,
+                value.record.payment.counterpartyJws,
+              ]) {
+                assert(
+                  !Buffer.from(block.serializeBinary()).includes(Buffer.from(jws)),
+                  "Public block leaked payment signature",
+                );
+              }
+            }
+          }
           const codes = block.getMetadata()?.getMetadataList_asU8()[
             common.BlockMetadataIndex.TRANSACTIONS_FILTER
           ];
@@ -182,6 +220,38 @@ for (const name of ["A", "B", "C"]) {
                 }
                 assert.equal(collection.getCollectionName(), domain.collection);
                 for (const write of writes) {
+                  if (proof.draft.kind === "commercial-payment") {
+                    const key = `\u0000payment\u0000${proof.draft.domainId}\u0000${proof.draft.receiptId}\u0000`;
+                    const head = `\u0000payment-head\u0000${proof.draft.domainId}\u0000${proof.draft.paymentId}\u0000`;
+                    assert(!write.getIsDelete());
+                    assert(
+                      [key, head].includes(write.getKey()),
+                      "Payment changed accounting or execution state",
+                    );
+                    const value = JSON.parse(Buffer.from(write.getValue_asU8()).toString());
+                    if (write.getKey() === key) {
+                      assert.deepEqual(value.terms, proof.draft);
+                      assert.equal(value.receipt.digest, receipt.digest);
+                      assert.equal(value.receipt.recordId, proof.draft.receiptId);
+                      const signed = proof.statuses.provider?.record.payment;
+                      assert(signed);
+                      assert.equal(signed.localSiteId, proof.draft.targetSiteId);
+                      assert.deepEqual(value.envelope, {
+                        sourceSiteId: proof.draft.sourceSiteId,
+                        targetSiteId: proof.draft.targetSiteId,
+                        sourceJws: signed.counterpartyJws,
+                        targetJws: signed.approvalJws,
+                      });
+                      result.paymentWrites++;
+                    } else {
+                      assert.deepEqual(value, {
+                        recordId: proof.draft.receiptId,
+                        digest: receipt.digest,
+                      });
+                      result.headWrites++;
+                    }
+                    continue;
+                  }
                   if (
                     write.getKey() ===
                     `\u0000budget\u0000${proof.draft.domainId}\u0000${proof.budgetDomainId}\u0000${proof.epoch}\u0000`
@@ -262,20 +332,21 @@ for (const name of ["A", "B", "C"]) {
       }
       assert(received);
     }
-    assert.equal(result.transactions.length, 2);
+    assert.equal(result.transactions.length, isPayment ? 1 : 2);
     assert.equal(
       result.budgetWrites,
-      name === "C" ? 0 : 1,
-      "Budget must change exactly once per commercial record",
+      name === "C" || isPayment ? 0 : 1,
+      "Only settlement/adjustment changes budget, never payment",
     );
     assert.equal(
       result.settlementWrites,
-      name === "C" || isAdjustment ? 0 : 2,
+      name === "C" || isAdjustment || isPayment ? 0 : 2,
       "Only settlement transactions write the original settlement",
     );
-    assert.equal(result.reservationWrites, name === "C" || isAdjustment ? 0 : 1);
+    assert.equal(result.reservationWrites, name === "C" || isAdjustment || isPayment ? 0 : 1);
     assert.equal(result.adjustmentWrites, name !== "C" && isAdjustment ? 2 : 0);
-    assert.equal(result.headWrites, name !== "C" && isAdjustment ? 1 : 0);
+    assert.equal(result.headWrites, name !== "C" && (isAdjustment || isPayment) ? 1 : 0);
+    assert.equal(result.paymentWrites, name !== "C" && isPayment ? 1 : 0);
     results[name] = result;
   } finally {
     gateway.close();
@@ -286,8 +357,15 @@ await writeFile(
   join(proof.evidenceDirectory, `${recordName}-private-ledger.json`),
   `${JSON.stringify(
     {
-      settlementId: proof.draft.settlementId,
-      chargedAmount: proof.draft.chargedAmount,
+      ...(proof.draft.kind === "commercial-payment"
+        ? {
+            receiptId: proof.draft.receiptId,
+            amount: proof.draft.amount,
+          }
+        : {
+            settlementId: proof.draft.settlementId,
+            chargedAmount: proof.draft.chargedAmount,
+          }),
       recordName,
       adjustmentId: proof.draft.kind === "commercial-adjustment" ? proof.draft.adjustmentId : null,
       results,
@@ -298,5 +376,7 @@ await writeFile(
   { mode: 0o600 },
 );
 console.log(
-  `REAL ${recordName.toUpperCase()} PDC PASSED: both platform transactions VALID; exactly one private budget change, immutable replay, unchanged terminal gate and no third-party private writes`,
+  isPayment
+    ? `REAL ${recordName.toUpperCase()} PDC PASSED: provider transaction VALID; only private receipt/head changed; no accounting/permit writes or third-party private data`
+    : `REAL ${recordName.toUpperCase()} PDC PASSED: both platform transactions VALID; exactly one private budget change, immutable replay, unchanged terminal gate and no third-party private writes`,
 );

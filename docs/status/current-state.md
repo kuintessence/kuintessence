@@ -889,3 +889,9 @@ SelfAccount 实验还发现首次启动的 watchdog/Agent 建表竞态。watchdo
 
 
 付款直接模式已通过真实双平台闭环：独立 Server／数据库、两端 Agent／版本化存储、mTLS 和轻量 Kubernetes 任务生成原账单，双方独立批准付款、自动交换原签名，1 → 0 更正及旧重放不回退，合作额度和原财务／作业记录均不变。初次 exchange 夹具被正确拒绝，改用 paid 合同后通过，生产校验未放宽。真实银行支付、跨主机信任、异步／协调付款及 PR 预览仍未完成，见[付款验收](../design/federation/payment.md#真实双平台直接合作验收)。
+
+
+付款异步模式已通过真实双平台／三机构 Fabric 的停链和进程恢复：任务与付款确认不等链，重启两端 Server／商业 Adapter 后补交原九条商业待办及接单批次；10 笔实际 VALID 和 PDC 写集核验通过，付款仅更新私有原件／head，C 无私有内容，原账务与 Job 不变。协调付款及正式预览仍待验收，见[异步付款](../design/federation/payment.md#异步付款的停链与进程恢复)。
+
+
+付款链协调模式也已通过真实双平台／三 Peer 验收：实际作业与财务收尾后断链，双方确认付款及零额更正，首笔强制重启两端 Server／Adapter 后恢复原交易；两笔原 transactionId／检查点摘要取得 VALID。独立 PDC 检查仅 receipt/head 更新、第三机构无正文，原账务与 Job/gate 不变。至此三模式付款真实路径分别通过；仍非银行支付、正式身份或 PR 预览验收，详见[协调付款恢复](../design/federation/payment.md#链协调付款的原交易恢复)。
