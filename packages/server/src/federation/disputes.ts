@@ -37,6 +37,7 @@ import {
   CommercialSettlementSchema,
   CommercialUsageSchema,
 } from "@kuintessence/shared/federation/commercial";
+import type { CommercialDisclosureGrant } from "@kuintessence/shared/federation/disclosure";
 import {
   type CommercialDispute,
   CommercialDisputeDraftSchema,
@@ -202,14 +203,17 @@ export class FederationDisputeService {
       )
         throw new FederationError("OPERATION_CONFLICT");
       return {
-        domainId: v.domainId,
-        agreementRevisionId: v.agreementRevisionId,
-        agreementDigest: v.agreementDigest,
-        sourceSiteId: v.sourceSiteId,
-        targetSiteId: v.targetSiteId,
-        taskId: v.taskId,
-        attempt: v.attempt,
-        issuedAt: v.reportedAt,
+        original: { payload: v, digest: signed.digest },
+        scope: {
+          domainId: v.domainId,
+          agreementRevisionId: v.agreementRevisionId,
+          agreementDigest: v.agreementDigest,
+          sourceSiteId: v.sourceSiteId,
+          targetSiteId: v.targetSiteId,
+          taskId: v.taskId,
+          attempt: v.attempt,
+          issuedAt: v.reportedAt,
+        },
       };
     }
     const row = await (async () => {
@@ -292,14 +296,17 @@ export class FederationDisputeService {
       throw new FederationError("OPERATION_CONFLICT");
     const b = bill.value;
     return {
-      domainId: b.domainId,
-      agreementRevisionId: b.request.agreementRevisionId,
-      agreementDigest: b.agreementDigest,
-      sourceSiteId: b.request.senderSiteId,
-      targetSiteId: b.request.recipientSiteId,
-      taskId: b.request.taskId,
-      attempt: b.request.attempt,
-      issuedAt: v.issuedAt,
+      original: { payload: v, digest: row.digest },
+      scope: {
+        domainId: b.domainId,
+        agreementRevisionId: b.request.agreementRevisionId,
+        agreementDigest: b.agreementDigest,
+        sourceSiteId: b.request.senderSiteId,
+        targetSiteId: b.request.recipientSiteId,
+        taskId: b.request.taskId,
+        attempt: b.request.attempt,
+        issuedAt: v.issuedAt,
+      },
     };
   }
   private async originals(
@@ -330,7 +337,14 @@ export class FederationDisputeService {
       { ...contract, payload: contract.terms },
       other,
     );
-    const original = await this.subject(tx, actor, revisionId, subject, other, targetSiteId);
+    const { scope: original } = await this.subject(
+      tx,
+      actor,
+      revisionId,
+      subject,
+      other,
+      targetSiteId,
+    );
     if (
       original.domainId !== terms.domainId ||
       original.agreementRevisionId !== revisionId ||
@@ -598,6 +612,86 @@ export class FederationDisputeService {
     if (!row.openedBy || row.payload.openingSiteId !== this.signing.siteId)
       throw new FederationError("POLICY_DENIED");
     return row;
+  }
+  /** The caller holds disclosure authority; return only a verified original from this case's scope. */
+  async disclosureOriginal(
+    tx: PgTransaction,
+    actor: FederationActor,
+    revisionId: string,
+    reference: Pick<
+      CommercialDisclosureGrant,
+      "caseId" | "recordType" | "recordId" | "recordDigest"
+    >,
+  ) {
+    const [visible] = await tx
+      .select()
+      .from(cases)
+      .where(
+        and(
+          eq(cases.localSiteId, this.signing.siteId),
+          eq(cases.localOrgId, actor.orgId),
+          eq(cases.agreementRevisionId, revisionId),
+          eq(cases.caseId, reference.caseId),
+        ),
+      )
+      .for("share");
+    if (!visible) throw new FederationError("POLICY_DENIED");
+    if (!["FREEZE_PENDING", "DISPUTED", "EVIDENCE_WAITING"].includes(visible.state))
+      throw new FederationError("POLICY_DENIED");
+    const record = await this.verifiedCase(tx, reference.caseId),
+      c = record.payload;
+    if (reference.recordType === "agreement") {
+      const [contract] = await tx
+        .select()
+        .from(contracts)
+        .where(
+          and(
+            eq(contracts.localSiteId, this.signing.siteId),
+            eq(contracts.localOrgId, actor.orgId),
+            eq(contracts.revisionId, revisionId),
+          ),
+        );
+      if (
+        !contract?.counterpartyJws ||
+        reference.recordId !== revisionId ||
+        reference.recordDigest !== c.agreementDigest ||
+        contract.digest !== c.agreementDigest
+      )
+        throw new FederationError("POLICY_DENIED");
+      return {
+        payload: await this.stored(
+          tx,
+          CommercialAgreementSchema,
+          { ...contract, payload: contract.terms },
+          record.other,
+        ),
+        digest: contract.digest,
+      };
+    }
+    const result = await this.subject(
+      tx,
+      actor,
+      revisionId,
+      {
+        recordType: reference.recordType,
+        recordId: reference.recordId,
+        recordDigest: reference.recordDigest,
+      },
+      record.other,
+      c.targetSiteId,
+    );
+    const s = result.scope;
+    if (
+      s.domainId !== c.domainId ||
+      s.agreementRevisionId !== revisionId ||
+      s.agreementDigest !== c.agreementDigest ||
+      s.sourceSiteId !== c.sourceSiteId ||
+      s.targetSiteId !== c.targetSiteId ||
+      s.taskId !== c.taskId ||
+      s.attempt !== c.attempt
+    )
+      throw new FederationError("POLICY_DENIED");
+    return result.original;
   }
   async financialView(actor: FederationActor, revisionId: string, caseId: string) {
     return this.db.transaction(

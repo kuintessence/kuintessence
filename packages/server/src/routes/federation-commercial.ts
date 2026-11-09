@@ -17,6 +17,10 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import { CommercialApprovalRecordKindSchema } from "@kuintessence/shared/federation/commercial-approval-exchange";
 import {
+  CommercialDisclosureDraftSchema,
+  CommercialDisclosureSchema,
+} from "@kuintessence/shared/federation/disclosure";
+import {
   CommercialDisclosurePolicyDraftSchema,
   CommercialDisclosurePolicySchema,
 } from "@kuintessence/shared/federation/disclosure-authorization";
@@ -40,6 +44,7 @@ import type { FederationCommercialAgreementService } from "../federation/commerc
 import type { FederationCommercialApprovalExchange } from "../federation/commercial-approval-exchange";
 import type { FederationCommercialExecutionService } from "../federation/commercial-execution";
 import type { FederationCommercialSubmissionService } from "../federation/commercial-submissions";
+import type { FederationDisclosureService } from "../federation/disclosure";
 import type { FederationDisclosurePolicyService } from "../federation/disclosure-policy";
 import type { FederationDisputeDelivery } from "../federation/dispute-delivery";
 import type { FederationDisputeFreezeExchange } from "../federation/dispute-freeze-exchange";
@@ -96,6 +101,7 @@ export function createFederationCommercialRoutes(
   disputes?: FederationDisputeService,
   disputeDelivery?: FederationDisputeDelivery,
   disputeFreezes?: FederationDisputeFreezeExchange,
+  disclosures?: FederationDisclosureService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -224,6 +230,86 @@ export function createFederationCommercialRoutes(
             c.get("federationActor"),
             c.req.valid("param").revisionId,
             c.req.valid("json"),
+          ),
+        }),
+    );
+  }
+  if (disclosures) {
+    const path = "/federation/commercial-agreements/:revisionId/disclosures";
+    const grant = id.extend({ grantId: z.uuid() });
+    r.get(
+      path,
+      kqValidator("param", id),
+      kqValidator(
+        "query",
+        page.extend({
+          caseId: z.uuid().optional(),
+          grantId: z.uuid().optional(),
+        }),
+      ),
+      async (c) => {
+        const { limit, offset, caseId, grantId } = c.req.valid("query");
+        return c.json({
+          data: await disclosures.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+            { caseId, grantId },
+          ),
+        });
+      },
+    );
+    r.post(
+      `${path}/draft`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialDisclosureDraftSchema),
+      async (c) =>
+        c.json({
+          data: await disclosures.draft(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("json"),
+          ),
+        }),
+    );
+    r.post(
+      `${path}/approve`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialDisclosureSchema),
+      async (c) =>
+        c.json({
+          data: await disclosures.approve(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("json"),
+          ),
+        }),
+    );
+    r.post(
+      `${path}/:grantId/counterparty`,
+      kqValidator("param", grant),
+      kqValidator("json", z.object({ approvalJws: z.string().min(1).max(524288) }).strict()),
+      async (c) =>
+        c.json({
+          data: await disclosures.attachCounterparty(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").grantId,
+            c.req.valid("json").approvalJws,
+          ),
+        }),
+    );
+    r.post(
+      `${path}/:grantId/revoke`,
+      kqValidator("param", grant),
+      kqValidator("json", z.object({}).strict()),
+      async (c) =>
+        c.json({
+          data: await disclosures.revoke(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").grantId,
           ),
         }),
     );

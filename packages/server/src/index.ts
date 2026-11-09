@@ -74,6 +74,7 @@ import { FederationDatasetUseClient } from "./federation/dataset-use-client";
 import { FederationDatasetUseResponder } from "./federation/dataset-use-exchange";
 import { FederationDatasetUsePolicies } from "./federation/dataset-use-policies";
 import { FederationDatasetUseWorker } from "./federation/dataset-use-worker";
+import { FederationDisclosureService } from "./federation/disclosure";
 import { FederationDisclosurePolicyService } from "./federation/disclosure-policy";
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
 import { FederationDisputeDelivery } from "./federation/dispute-delivery";
@@ -1919,6 +1920,7 @@ if (federationSigningKey && federationCommercial)
       new FederationDisputeService(db, federationSigningKey),
       federationDisputeDelivery,
       federationDisputeFreezes,
+      new FederationDisclosureService(db, federationSigningKey),
     ),
   );
 const federationPreparation = federationSigningKey

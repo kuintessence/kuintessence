@@ -48,6 +48,7 @@ import type {
   CommercialUsageEvidenceSet,
   CommercialUsageGap,
 } from "@kuintessence/shared/federation/commercial";
+import type { CommercialDisclosure } from "@kuintessence/shared/federation/disclosure";
 import type { CommercialDisclosurePolicy } from "@kuintessence/shared/federation/disclosure-authorization";
 import type {
   CommercialDispute,
@@ -1588,6 +1589,79 @@ export const federationDisclosurePolicies = pgTable(
       AND (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text)
       AND ${t.payload}->>'sourceSiteId' <> ${t.payload}->>'targetSiteId'
       AND ${t.recipientSiteId}::text NOT IN (${t.payload}->>'sourceSiteId', ${t.payload}->>'targetSiteId')
+      AND (${t.counterpartyJws} IS NULL) = (${t.confirmedAt} IS NULL)
+      AND (${t.revokedAt} IS NULL) = (${t.revokedBy} IS NULL)
+    ) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationDisclosures = pgTable(
+  "federation_disclosures",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    grantId: uuid("grant_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    policyId: uuid("policy_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    recipientSiteId: uuid("recipient_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    payload: jsonb("payload").$type<CommercialDisclosure>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedBy: uuid("revoked_by").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.grantId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.caseId],
+      foreignColumns: [federationDisputes.localSiteId, federationDisputes.caseId],
+    }),
+    foreignKey({
+      columns: [t.localSiteId, t.policyId],
+      foreignColumns: [
+        federationDisclosurePolicies.localSiteId,
+        federationDisclosurePolicies.policyId,
+      ],
+    }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    index("federation_disclosure_case").on(
+      t.localSiteId,
+      t.localOrgId,
+      t.agreementRevisionId,
+      t.caseId,
+      t.createdAt,
+    ),
+    check(
+      "federation_disclosure_identity",
+      sql`(
+      ${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.payload}->>'kind' = 'commercial-disclosure'
+      AND ${t.payload}->'grant'->>'grantId' = ${t.grantId}::text
+      AND ${t.payload}->'grant'->>'caseId' = ${t.caseId}::text
+      AND ${t.payload}->'grant'->>'policyId' = ${t.policyId}::text
+      AND ${t.payload}->'grant'->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND ${t.payload}->'grant'->>'recipientSiteId' = ${t.recipientSiteId}::text
+      AND ${t.localSiteId}::text IN (${t.payload}->'grant'->>'sourceSiteId', ${t.payload}->'grant'->>'targetSiteId')
+      AND ${t.payload}->'grant'->>'sourceSiteId' <> ${t.payload}->'grant'->>'targetSiteId'
+      AND ${t.recipientSiteId}::text NOT IN (${t.payload}->'grant'->>'sourceSiteId', ${t.payload}->'grant'->>'targetSiteId')
       AND (${t.counterpartyJws} IS NULL) = (${t.confirmedAt} IS NULL)
       AND (${t.revokedAt} IS NULL) = (${t.revokedBy} IS NULL)
     ) IS TRUE`,

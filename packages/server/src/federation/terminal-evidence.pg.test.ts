@@ -31,6 +31,8 @@ import {
   federationCommercialRefunds,
   federationCommercialSettlements,
   federationCommercialSubmissions,
+  federationDisclosurePolicies,
+  federationDisclosures,
   federationDisputeDeliveries,
   federationDisputeFreezes,
   federationDisputes,
@@ -76,6 +78,11 @@ import {
   commercialAutomaticMeters,
 } from "@kuintessence/shared/federation/commercial";
 import {
+  CommercialDisclosureDraftSchema,
+  CommercialDisclosureListSchema,
+  CommercialDisclosureSchema,
+} from "@kuintessence/shared/federation/disclosure";
+import {
   CommercialDisputeFinancialViewSchema,
   CommercialDisputeFreezeSchema,
   CommercialDisputeListSchema,
@@ -110,6 +117,8 @@ import { FederationCommercialApprovalExchange } from "./commercial-approval-exch
 import type { CommercialClient } from "./commercial-client";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
+import { FederationDisclosureService } from "./disclosure";
+import { FederationDisclosurePolicyService } from "./disclosure-policy";
 import { FederationDisputeDelivery } from "./dispute-delivery";
 import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
 import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
@@ -9788,4 +9797,745 @@ test("native dispute freeze supports provider opening while preserving original 
   await f.receiver.advanceNext();
   expect((await f.read())?.state).toBe("confirmed");
   expect((await f.read(f.provider.signing.siteId))?.state).toBe("confirmed");
+});
+
+async function disclosureAccess(
+  f: Pick<
+    Awaited<ReturnType<typeof billingExchangeFixture>>,
+    | "source"
+    | "provider"
+    | "actor"
+    | "sourceActor"
+    | "report"
+    | "revisionId"
+    | "trust"
+    | "fingerprint"
+  >,
+  existingCase?: string,
+) {
+  const recipient = randomUUID();
+  await f.trust.addSite(
+    {
+      id: recipient,
+      name: "Authorized evidence recipient",
+      endpoint: "https://evidence.test.invalid",
+    },
+    f.actor.userId,
+  );
+  let caseId = existingCase;
+  if (!caseId) {
+    const c = await disputeAccess(f);
+    for (const site of [f.source.signing.siteId, f.provider.signing.siteId])
+      await db
+        .update(federationSigningKeys)
+        .set({
+          allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-dispute-receipt"]'::jsonb`,
+        })
+        .where(eq(federationSigningKeys.siteId, site));
+    const draft = await c.sourceCases.draft(f.sourceActor, f.revisionId, c.input);
+    const opened = await c.sourceCases.open(f.sourceActor, f.revisionId, draft);
+    await c.providerCases.receive(opened.openingJws, f.fingerprint);
+    caseId = draft.caseId;
+  }
+  cleanup.push(async () => {
+    const sites = [f.source.signing.siteId, f.provider.signing.siteId];
+    await db.delete(federationDisclosures).where(inArray(federationDisclosures.localSiteId, sites));
+    await db
+      .delete(federationDisclosurePolicies)
+      .where(inArray(federationDisclosurePolicies.localSiteId, sites));
+    await db.delete(federationSites).where(eq(federationSites.id, recipient));
+  });
+  for (const [keys, actor] of [
+    [f.source, f.sourceActor],
+    [f.provider, f.actor],
+  ] as const) {
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-disclosure-policy","commercial-disclosure"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, keys.signing.siteId));
+    await new FederationPermissionService(db).set(
+      { ...actor, capability: "disclosure.approve", enabled: true },
+      actor.userId,
+    );
+  }
+  const sourcePolicy = new FederationDisclosurePolicyService(db, f.source.signing);
+  const providerPolicy = new FederationDisclosurePolicyService(db, f.provider.signing);
+  const policy = await sourcePolicy.draft(f.sourceActor, f.revisionId, {
+    policyId: randomUUID(),
+    recipientSiteId: recipient,
+    validUntil: new Date(Date.now() + 3600000).toISOString(),
+    disclosures: [
+      { recordType: "agreement", fields: ["unit"] },
+      { recordType: "usage", fields: ["measurements"] },
+      { recordType: "bill", fields: ["dueAmount"] },
+      { recordType: "settlement", fields: ["chargedAmount"] },
+      { recordType: "adjustment", fields: ["reason"] },
+      { recordType: "payment", fields: ["amount"] },
+    ],
+  });
+  const a = await sourcePolicy.approve(f.sourceActor, f.revisionId, policy);
+  const b = await providerPolicy.approve(f.actor, f.revisionId, policy);
+  await sourcePolicy.attachCounterparty(
+    f.sourceActor,
+    f.revisionId,
+    policy.policyId,
+    b.approvalJws,
+  );
+  await providerPolicy.attachCounterparty(f.actor, f.revisionId, policy.policyId, a.approvalJws);
+  const service = new FederationDisclosureService(db, f.source.signing);
+  const peer = new FederationDisclosureService(db, f.provider.signing);
+  const draft = (
+    record: Pick<
+      z.infer<typeof CommercialDisclosureDraftSchema>,
+      "recordType" | "recordId" | "recordDigest" | "fields"
+    >,
+  ) =>
+    service.draft(
+      f.sourceActor,
+      f.revisionId,
+      CommercialDisclosureDraftSchema.parse({
+        ...record,
+        grantId: randomUUID(),
+        caseId,
+        policyId: policy.policyId,
+        validUntil: policy.validUntil,
+      }),
+    );
+  const approve = async (value: z.infer<typeof CommercialDisclosureSchema>) => ({
+    source: await service.approve(f.sourceActor, f.revisionId, value),
+    provider: await peer.approve(f.actor, f.revisionId, value),
+  });
+  const confirm = async (value: z.infer<typeof CommercialDisclosureSchema>) => {
+    const both = await approve(value);
+    await service.attachCounterparty(
+      f.sourceActor,
+      f.revisionId,
+      value.grant.grantId,
+      both.provider.approvalJws,
+    );
+    await peer.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      value.grant.grantId,
+      both.source.approvalJws,
+    );
+    return both;
+  };
+  return {
+    caseId,
+    recipient,
+    policy,
+    sourcePolicy,
+    providerPolicy,
+    service,
+    peer,
+    draft,
+    approve,
+    confirm,
+  };
+}
+
+async function disclosureFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await paymentFixture(mode),
+    receipt = await f.confirm(),
+    d = await disclosureAccess(f);
+  const value = await d.draft({
+    recordType: "payment",
+    recordId: receipt.receiptId,
+    recordDigest: receipt.digest,
+    fields: ["amount"],
+  });
+  return { ...f, ...d, value, receipt };
+}
+
+test("disclosure approvals bind exact projections and independent institutions without changing finances or outboxes", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await disclosureFixture(mode);
+    const budget = await f.budget();
+    const before = await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .orderBy(federationCommercialSubmissions.id);
+    expect(f.value.evidence).toEqual({ recordType: "payment", values: { amount: "7" } });
+    const both = await f.approve(f.value);
+    expect(both.source.confirmedAt).toBeNull();
+    expect(both.provider.approvalJws).not.toBe(both.source.approvalJws);
+    await f.confirm(f.value);
+    const rows = await f.service.list(f.sourceActor, f.revisionId, 10, 0, { caseId: f.caseId });
+    expect(
+      CommercialDisclosureListSchema.parse(JSON.parse(JSON.stringify(rows))).data,
+    ).toHaveLength(1);
+    expect(rows.data[0]?.counterpartyJws).toBe(both.provider.approvalJws);
+    const decoded = JSON.parse(
+      Buffer.from(both.source.approvalJws.split(".")[1] ?? "", "base64url").toString(),
+    );
+    expect(decoded).toEqual(f.value);
+    expect(JSON.stringify(decoded)).not.toContain(f.receipt.approvalJws);
+    expect(JSON.stringify(decoded)).not.toContain(f.receipt.payload.reason);
+    const audit = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.target, f.value.grant.grantId));
+    expect(audit.filter((r) => r.action === "federation.disclosure.approve")).toHaveLength(2);
+    expect(audit.filter((r) => r.action === "federation.disclosure.confirm")).toHaveLength(2);
+    expect(JSON.stringify(audit.map((r) => r.diff))).not.toContain('"amount":"7"');
+    expect(await f.budget()).toEqual(budget);
+    expect(
+      await db
+        .select()
+        .from(federationCommercialSubmissions)
+        .orderBy(federationCommercialSubmissions.id),
+    ).toEqual(before);
+  }
+});
+
+test("disclosure resolves agreement usage bill and payment only through verified case originals", async () => {
+  const f = await disclosureFixture();
+  const [contract] = await db
+    .select()
+    .from(federationCommercialAgreements)
+    .where(
+      and(
+        eq(federationCommercialAgreements.localSiteId, f.source.signing.siteId),
+        eq(federationCommercialAgreements.revisionId, f.revisionId),
+      ),
+    );
+  const [bill] = await db
+    .select()
+    .from(federationCommercialBills)
+    .where(
+      and(
+        eq(federationCommercialBills.localSiteId, f.source.signing.siteId),
+        eq(federationCommercialBills.billId, f.receipt.billId),
+      ),
+    );
+  if (!contract || !bill) throw new Error("Missing disclosure fixture originals");
+  const records: Parameters<typeof f.draft>[0][] = [
+    {
+      recordType: "agreement",
+      recordId: f.revisionId,
+      recordDigest: contract.digest,
+      fields: ["unit"],
+    },
+    {
+      recordType: "usage",
+      recordId: f.report.reportId,
+      recordDigest: f.report.digest,
+      fields: ["measurements"],
+    },
+    { recordType: "bill", recordId: bill.billId, recordDigest: bill.digest, fields: ["dueAmount"] },
+  ];
+  for (const record of records) {
+    const value = await f.draft(record);
+    expect(Object.keys(value.evidence.values)).toEqual(record.fields);
+    await f.confirm(value);
+  }
+  expect(
+    (await f.service.list(f.sourceActor, f.revisionId, 2, 0, { caseId: f.caseId })).hasMore,
+  ).toBe(true);
+  expect(
+    (await f.service.list(f.sourceActor, f.revisionId, 2, 2, { caseId: f.caseId })).data,
+  ).toHaveLength(1);
+  expect(
+    (await f.service.list(f.sourceActor, f.revisionId, 10, 0, { caseId: randomUUID() })).data,
+  ).toHaveLength(0);
+});
+
+test("disclosure verifies settlement and adjustment projections against the original bill and task", async () => {
+  const f = await adjustmentServiceFixture(),
+    adjusted = await f.make("0"),
+    approvals = await f.approveAdjustment(adjusted);
+  await f.attachAdjustment(approvals);
+  const d = await disclosureAccess(f);
+  const [settlement] = await db
+    .select()
+    .from(federationCommercialSettlements)
+    .where(
+      and(
+        eq(federationCommercialSettlements.localSiteId, f.source.signing.siteId),
+        eq(federationCommercialSettlements.settlementId, adjusted.settlementId),
+      ),
+    );
+  if (!settlement) throw new Error("Missing original settlement");
+  const values = [
+    await d.draft({
+      recordType: "settlement",
+      recordId: settlement.settlementId,
+      recordDigest: settlement.digest,
+      fields: ["chargedAmount"],
+    }),
+    await d.draft({
+      recordType: "adjustment",
+      recordId: adjusted.adjustmentId,
+      recordDigest: approvals.source.digest,
+      fields: ["reason"],
+    }),
+  ];
+  for (const value of values) await d.confirm(value);
+  expect(values[0]?.evidence.values).toEqual({ chargedAmount: settlement.payload.chargedAmount });
+  expect(values[1]?.evidence.values).toEqual({ reason: adjusted.reason });
+});
+
+test("disclosure refuses altered values field escalation policy substitution and foreign case scope", async () => {
+  const f = await disclosureFixture();
+  const badValues = CommercialDisclosureSchema.parse({
+    ...f.value,
+    evidence: { recordType: "payment", values: { amount: "8" } },
+  });
+  await expect(f.service.approve(f.sourceActor, f.revisionId, badValues)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  for (const grant of [
+    { ...f.value.grant, recipientSiteId: randomUUID() },
+    { ...f.value.grant, policyDigest: `sha256:${"f".repeat(64)}` },
+    { ...f.value.grant, caseId: randomUUID() },
+    { ...f.value.grant, validUntil: "2099-01-01T00:00:00Z" },
+  ])
+    await expect(
+      f.service.approve(
+        f.sourceActor,
+        f.revisionId,
+        CommercialDisclosureSchema.parse({ ...f.value, grant }),
+      ),
+    ).rejects.toThrow("POLICY_DENIED");
+  await expect(f.service.approve(f.actor, f.revisionId, f.value)).rejects.toThrow(
+    "AGREEMENT_UNAVAILABLE",
+  );
+  await expect(
+    f.service.approve(
+      f.sourceActor,
+      f.revisionId,
+      CommercialDisclosureSchema.parse({
+        ...f.value,
+        grant: { ...f.value.grant, fields: ["amount", "unit"] },
+        evidence: { recordType: "payment", values: { amount: "7", unit: f.receipt.payload.unit } },
+      }),
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+  await db
+    .update(federationCommercialPayments)
+    .set({ payload: { ...f.receipt.payload, amount: "8" } })
+    .where(
+      and(
+        eq(federationCommercialPayments.localSiteId, f.source.signing.siteId),
+        eq(federationCommercialPayments.receiptId, f.receipt.receiptId),
+      ),
+    );
+  await expect(f.service.approve(f.sourceActor, f.revisionId, f.value)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  expect((await f.service.list(f.sourceActor, f.revisionId)).data).toHaveLength(0);
+});
+
+test("disclosure enforces dedicated human and signing authority and rejects mismatched countersignatures", async () => {
+  const f = await disclosureFixture(),
+    permissions = new FederationPermissionService(db);
+  await permissions.set(
+    { ...f.sourceActor, capability: "disclosure.approve", enabled: false },
+    f.sourceActor.userId,
+  );
+  await expect(f.service.approve(f.sourceActor, f.revisionId, f.value)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await expect(f.service.list(f.sourceActor, f.revisionId)).rejects.toThrow("POLICY_DENIED");
+  await permissions.set(
+    { ...f.sourceActor, capability: "disclosure.approve", enabled: true },
+    f.sourceActor.userId,
+  );
+  const own = await f.service.approve(f.sourceActor, f.revisionId, f.value);
+  await expect(
+    f.service.attachCounterparty(
+      f.sourceActor,
+      f.revisionId,
+      f.value.grant.grantId,
+      own.approvalJws,
+    ),
+  ).rejects.toThrow();
+  const changed = CommercialDisclosureSchema.parse({
+    ...f.value,
+    grant: { ...f.value.grant, salt: "f".repeat(64) },
+  });
+  const peer = await f.peer.approve(f.actor, f.revisionId, changed);
+  await expect(
+    f.service.attachCounterparty(
+      f.sourceActor,
+      f.revisionId,
+      f.value.grant.grantId,
+      peer.approvalJws,
+    ),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'commercial-disclosure'` })
+    .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+  await expect(f.service.approve(f.sourceActor, f.revisionId, f.value)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+});
+
+test("disclosure preserves one original under concurrent replay and rejects same-id replacement", async () => {
+  const f = await disclosureFixture();
+  const rows = await Promise.all([
+    f.service.approve(f.sourceActor, f.revisionId, f.value),
+    f.service.approve(f.sourceActor, f.revisionId, f.value),
+  ]);
+  expect(rows[0]?.approvalJws).toBe(rows[1]?.approvalJws);
+  const changed = CommercialDisclosureSchema.parse({
+    ...f.value,
+    grant: { ...f.value.grant, salt: "f".repeat(64) },
+  });
+  await expect(f.service.approve(f.sourceActor, f.revisionId, changed)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  expect(
+    (await f.service.list(f.sourceActor, f.revisionId, 10, 0, { grantId: f.value.grant.grantId }))
+      .data,
+  ).toHaveLength(1);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, f.value.grant.grantId),
+          eq(auditLog.action, "federation.disclosure.approve"),
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+test("disclosure local revoke survives untrusted keys and cannot be revived by approval or counterparty replay", async () => {
+  const f = await disclosureFixture(),
+    both = await f.confirm(f.value);
+  const revoked = await f.service.revoke(f.sourceActor, f.revisionId, f.value.grant.grantId);
+  expect(revoked.revokedAt).not.toBeNull();
+  await expect(f.service.approve(f.sourceActor, f.revisionId, f.value)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+  await expect(
+    f.service.attachCounterparty(
+      f.sourceActor,
+      f.revisionId,
+      f.value.grant.grantId,
+      both.provider.approvalJws,
+    ),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  await db
+    .update(federationSigningKeys)
+    .set({ revokedAt: new Date() })
+    .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+  expect(
+    (await f.service.revoke(f.sourceActor, f.revisionId, f.value.grant.grantId)).revokedAt,
+  ).toEqual(revoked.revokedAt);
+  expect((await f.service.list(f.sourceActor, f.revisionId)).data[0]?.approvalJws).toBe(
+    both.source.approvalJws,
+  );
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, f.value.grant.grantId),
+          eq(auditLog.action, "federation.disclosure.revoke"),
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+test("disclosure policy expiry and revocation stop new approval and attachment but preserve history", async () => {
+  const f = await disclosureFixture(),
+    both = await f.approve(f.value);
+  setSystemTime(new Date(Date.parse(f.policy.validUntil) + 1));
+  try {
+    await expect(f.service.approve(f.sourceActor, f.revisionId, f.value)).rejects.toThrow(
+      "AUTHORIZATION_EXPIRED",
+    );
+  } finally {
+    setSystemTime();
+  }
+  await f.sourcePolicy.revoke(f.sourceActor, f.revisionId, f.policy.policyId);
+  await expect(
+    f.service.attachCounterparty(
+      f.sourceActor,
+      f.revisionId,
+      f.value.grant.grantId,
+      both.provider.approvalJws,
+    ),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  expect((await f.service.list(f.sourceActor, f.revisionId)).data[0]?.confirmedAt).toBeNull();
+  expect(
+    (await f.service.revoke(f.sourceActor, f.revisionId, f.value.grant.grantId)).revokedAt,
+  ).not.toBeNull();
+});
+
+test("disclosure audit failure rolls back approval confirmation and revocation", async () => {
+  const f = await disclosureFixture();
+  const stages = {
+    approve: sql`alter table audit_log add constraint disclosure_audit_failure check (action <> 'federation.disclosure.approve') NOT VALID`,
+    confirm: sql`alter table audit_log add constraint disclosure_audit_failure check (action <> 'federation.disclosure.confirm') NOT VALID`,
+    revoke: sql`alter table audit_log add constraint disclosure_audit_failure check (action <> 'federation.disclosure.revoke') NOT VALID`,
+  };
+  await db.execute(stages.approve);
+  try {
+    await expect(f.service.approve(f.sourceActor, f.revisionId, f.value)).rejects.toThrow();
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint disclosure_audit_failure`);
+  }
+  expect((await f.service.list(f.sourceActor, f.revisionId)).data).toHaveLength(0);
+  const both = await f.approve(f.value);
+  await db.execute(stages.confirm);
+  try {
+    await expect(
+      f.service.attachCounterparty(
+        f.sourceActor,
+        f.revisionId,
+        f.value.grant.grantId,
+        both.provider.approvalJws,
+      ),
+    ).rejects.toThrow();
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint disclosure_audit_failure`);
+  }
+  expect((await f.service.list(f.sourceActor, f.revisionId)).data[0]?.confirmedAt).toBeNull();
+  await db.execute(stages.revoke);
+  try {
+    await expect(
+      f.service.revoke(f.sourceActor, f.revisionId, f.value.grant.grantId),
+    ).rejects.toThrow();
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint disclosure_audit_failure`);
+  }
+  expect((await f.service.list(f.sourceActor, f.revisionId)).data[0]?.revokedAt).toBeNull();
+});
+
+test("disclosure policy revocation serializes with a signing transaction", async () => {
+  const f = await disclosureFixture();
+  let release: () => void = () => {},
+    acquired: () => void = () => {};
+  const locked = new Promise<void>((r) => {
+      acquired = r;
+    }),
+    resume = new Promise<void>((r) => {
+      release = r;
+    });
+  const original = FederationDisclosurePolicyService.prototype.verified;
+  let held = false;
+  const hook = spyOn(FederationDisclosurePolicyService.prototype, "verified").mockImplementation(
+    async function (this: FederationDisclosurePolicyService, ...args) {
+      const value = await original.apply(this, args);
+      if (!held) {
+        held = true;
+        acquired();
+        await resume;
+      }
+      return value;
+    },
+  );
+  const approval = f.service.approve(f.sourceActor, f.revisionId, f.value);
+  await locked;
+  const revoke = f.sourcePolicy.revoke(f.sourceActor, f.revisionId, f.policy.policyId);
+  let waited = false;
+  try {
+    for (let i = 0; i < 100; i++) {
+      const [row] = await db.execute<{ waiting: boolean }>(
+        sql`select exists(select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock') as waiting`,
+      );
+      if (row?.waiting) {
+        waited = true;
+        break;
+      }
+      await Bun.sleep(10);
+    }
+  } finally {
+    release();
+    hook.mockRestore();
+  }
+  await Promise.all([approval, revoke]);
+  expect(waited).toBe(true);
+  await expect(f.service.approve(f.sourceActor, f.revisionId, f.value)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+});
+
+test("disclosure human HTTP validates strict bodies organization and dedicated authority", async () => {
+  const f = await disclosureFixture();
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.source.signing),
+    new FederationCommercialSubmissionService(db, f.source.signing.siteId),
+  ];
+  deps[26] = f.service;
+  let actor = f.sourceActor,
+    automation = false;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...deps));
+  const path = `/federation/commercial-agreements/${f.revisionId}/disclosures`;
+  const post = (suffix: string, body: unknown) =>
+    app.request(path + suffix, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await post("/approve", { ...f.value, originalJws: f.receipt.approvalJws })).status).toBe(
+    400,
+  );
+  const approved = await post("/approve", f.value);
+  expect(approved.status).toBe(200);
+  expect(approved.headers.get("cache-control")).toBe("no-store");
+  expect((await post(`/${f.value.grant.grantId}/revoke`, { reason: "unexpected" })).status).toBe(
+    400,
+  );
+  const list = await app.request(`${path}?caseId=${f.caseId}&grantId=${f.value.grant.grantId}`);
+  const response = z.object({ data: CommercialDisclosureListSchema });
+  expect(response.parse(await list.json()).data.data).toHaveLength(1);
+  actor = f.actor;
+  expect(response.parse(await (await app.request(path)).json()).data.data).toHaveLength(0);
+  actor = f.sourceActor;
+  automation = true;
+  expect((await post("/approve", f.value)).status).toBe(403);
+  automation = false;
+  await new FederationPermissionService(db).set(
+    { ...f.sourceActor, capability: "disclosure.approve", enabled: false },
+    f.sourceActor.userId,
+  );
+  expect((await app.request(path)).status).toBe(403);
+});
+
+test("disclosure rejects another signed task in the same commercial agreement", async () => {
+  const f = await disclosureFixture();
+  const [original] = await db
+    .select()
+    .from(federationCommercialBills)
+    .where(
+      and(
+        eq(federationCommercialBills.localSiteId, f.source.signing.siteId),
+        eq(federationCommercialBills.billId, f.receipt.billId),
+      ),
+    );
+  if (!original) throw new Error("Missing original bill");
+  const bill = CommercialBillSchema.parse({
+    ...original.payload,
+    billId: randomUUID(),
+    request: { ...original.payload.request, taskId: randomUUID() },
+  });
+  const a = await signFederationMessage(CommercialBillSchema, bill, f.source.signing),
+    b = await signFederationMessage(CommercialBillSchema, bill, f.provider.signing);
+  const signed = await verifyFederationMessage(
+    CommercialBillSchema,
+    a,
+    await f.trust.resolveKey(f.source.signing.siteId, f.source.signing.keyId, new Date()),
+    new Date(),
+  );
+  await db.insert(federationCommercialBills).values({
+    ...original,
+    billId: bill.billId,
+    taskId: bill.request.taskId,
+    payload: bill,
+    digest: signed.digest,
+    approvalJws: a,
+    counterpartyJws: b,
+  });
+  await expect(
+    f.draft({
+      recordType: "bill",
+      recordId: bill.billId,
+      recordDigest: signed.digest,
+      fields: ["dueAmount"],
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  expect((await f.service.list(f.sourceActor, f.revisionId)).data).toHaveLength(0);
+});
+
+test("disclosure native consent creates no ledger operation and later case states prevent new evidence approvals", async () => {
+  const f = await nativeFreezeFixture(),
+    d = await disclosureAccess(f, f.original.caseId);
+  const [bill] = await db
+    .select()
+    .from(federationCommercialBills)
+    .where(
+      and(
+        eq(federationCommercialBills.localSiteId, f.source.signing.siteId),
+        eq(federationCommercialBills.billId, f.bill.billId),
+      ),
+    );
+  if (!bill) throw new Error("Missing native bill");
+  const value = await d.draft({
+    recordType: "bill",
+    recordId: bill.billId,
+    recordDigest: bill.digest,
+    fields: ["dueAmount"],
+  });
+  const before = await db
+    .select()
+    .from(federationCommercialSubmissions)
+    .orderBy(federationCommercialSubmissions.id);
+  await d.confirm(value);
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .orderBy(federationCommercialSubmissions.id),
+  ).toEqual(before);
+  await db
+    .update(federationDisputes)
+    .set({ state: "DECIDED" })
+    .where(
+      and(
+        eq(federationDisputes.localSiteId, f.source.signing.siteId),
+        eq(federationDisputes.caseId, d.caseId),
+      ),
+    );
+  await expect(d.service.approve(f.sourceActor, f.revisionId, value)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  expect(
+    (await d.service.revoke(f.sourceActor, f.revisionId, value.grant.grantId)).revokedAt,
+  ).not.toBeNull();
+});
+
+test("disclosure rechecks expiry before persistence and database identity cannot be replaced", async () => {
+  const f = await disclosureFixture();
+  const original = FederationDisclosurePolicyService.prototype.verified;
+  let calls = 0;
+  const hook = spyOn(FederationDisclosurePolicyService.prototype, "verified").mockImplementation(
+    async function (this: FederationDisclosurePolicyService, ...args) {
+      if (++calls === 2) setSystemTime(new Date(Date.parse(f.policy.validUntil) + 1));
+      return original.apply(this, args);
+    },
+  );
+  try {
+    await expect(f.service.approve(f.sourceActor, f.revisionId, f.value)).rejects.toThrow(
+      "AUTHORIZATION_EXPIRED",
+    );
+  } finally {
+    hook.mockRestore();
+    setSystemTime();
+  }
+  expect((await f.service.list(f.sourceActor, f.revisionId)).data).toHaveLength(0);
+  const saved = await f.service.approve(f.sourceActor, f.revisionId, f.value);
+  await expect(
+    db
+      .update(federationDisclosures)
+      .set({ caseId: randomUUID() })
+      .where(eq(federationDisclosures.grantId, saved.grantId))
+      .execute(),
+  ).rejects.toThrow();
+  await expect(
+    db
+      .update(federationDisclosures)
+      .set({ confirmedAt: new Date() })
+      .where(eq(federationDisclosures.grantId, saved.grantId))
+      .execute(),
+  ).rejects.toThrow();
+  expect((await f.service.list(f.sourceActor, f.revisionId)).data[0]?.payload).toEqual(f.value);
 });

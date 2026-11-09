@@ -137,6 +137,65 @@ export const CommercialDisclosureSchema = z
   );
 export type CommercialDisclosure = z.infer<typeof CommercialDisclosureSchema>;
 
+const draftFields = {
+  grantId: true,
+  caseId: true,
+  policyId: true,
+  recordType: true,
+  recordId: true,
+  recordDigest: true,
+  fields: true,
+  validUntil: true,
+} as const;
+const grants = CommercialDisclosureGrantSchema.options;
+export const CommercialDisclosureDraftSchema = z
+  .discriminatedUnion("recordType", [
+    grants[0].pick(draftFields),
+    grants[1].pick(draftFields),
+    grants[2].pick(draftFields),
+    grants[3].pick(draftFields),
+    grants[4].pick(draftFields),
+    grants[5].pick(draftFields),
+  ])
+  .refine((v) => new Set(v.fields).size === v.fields.length, "Duplicate disclosure field");
+
+export const CommercialDisclosureApprovalSchema = z
+  .object({
+    localSiteId: z.uuid(),
+    localOrgId: z.uuid(),
+    agreementRevisionId: z.uuid(),
+    grantId: z.uuid(),
+    caseId: z.uuid(),
+    policyId: z.uuid(),
+    recipientSiteId: z.uuid(),
+    payload: CommercialDisclosureSchema,
+    digest: FederationDigestSchema,
+    approvalJws: z.string().min(1).max(524288),
+    counterpartyJws: z.string().min(1).max(524288).nullable(),
+    approvedBy: z.uuid(),
+    confirmedAt: z.iso.datetime().nullable(),
+    revokedAt: z.iso.datetime().nullable(),
+    revokedBy: z.uuid().nullable(),
+    createdAt: z.iso.datetime(),
+  })
+  .refine((v) => {
+    const g = v.payload.grant;
+    return (
+      v.grantId === g.grantId &&
+      v.caseId === g.caseId &&
+      v.policyId === g.policyId &&
+      v.agreementRevisionId === g.agreementRevisionId &&
+      v.recipientSiteId === g.recipientSiteId &&
+      [g.sourceSiteId, g.targetSiteId].includes(v.localSiteId) &&
+      (v.counterpartyJws === null) === (v.confirmedAt === null) &&
+      (v.revokedAt === null) === (v.revokedBy === null)
+    );
+  }, "Inconsistent disclosure approval");
+export const CommercialDisclosureListSchema = z.object({
+  data: CommercialDisclosureApprovalSchema.array(),
+  hasMore: z.boolean(),
+});
+
 function original(recordType: CommercialDisclosureGrant["recordType"], raw: unknown) {
   switch (recordType) {
     case "agreement": {

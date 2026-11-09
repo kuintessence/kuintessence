@@ -123,6 +123,45 @@ export class FederationDisclosurePolicyService {
     )
       throw new FederationError("POLICY_DENIED");
   }
+  /** Hold the current policy against revocation while its caller approves a concrete projection. */
+  async verified(tx: PgTransaction, actor: FederationActor, revisionId: string, policyId: string) {
+    const { row: contract, other } = await this.original(tx, actor, revisionId);
+    const [row] = await tx
+      .select()
+      .from(policies)
+      .where(this.key(actor, revisionId, policyId))
+      .for("share");
+    if (!row?.counterpartyJws) throw new FederationError("POLICY_DENIED");
+    if (row.revokedAt) throw new FederationError("AUTHORIZATION_EXPIRED");
+    this.check(row.payload, contract);
+    if (Date.parse(row.payload.validFrom) > Date.now())
+      throw new FederationError("AUTHORIZATION_EXPIRED");
+    await this.recipient(
+      tx,
+      row.recipientSiteId,
+      row.payload.sourceSiteId,
+      row.payload.targetSiteId,
+    );
+    const own = await this.verify(
+      tx,
+      CommercialDisclosurePolicySchema,
+      row.approvalJws,
+      this.signing.siteId,
+    );
+    const peer = await this.verify(
+      tx,
+      CommercialDisclosurePolicySchema,
+      row.counterpartyJws,
+      other,
+    );
+    if (
+      own.digest !== row.digest ||
+      peer.digest !== row.digest ||
+      federationCanonicalJson(own.payload) !== federationCanonicalJson(row.payload)
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    return { row, other };
+  }
   async draft(
     actor: FederationActor,
     revisionId: string,
