@@ -7,6 +7,8 @@ import {
 } from "@kuintessence/db";
 import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
 import {
+  type CaseProposal,
+  CaseProposalSchema,
   type CasePublication,
   CasePublicationDraftSchema,
   CasePublicationSchema,
@@ -310,6 +312,105 @@ export class FederationCasePublicationService {
     await this.saved(tx, row, record.other);
     await this.validate(tx, actor, revisionId, row.payload);
     return { row, other: record.other };
+  }
+  async ledgerProposal(
+    tx: PgTransaction,
+    publicationId: string,
+    operation: CaseProposal["operation"],
+  ) {
+    const [row] = await tx
+      .select()
+      .from(publications)
+      .where(
+        and(
+          eq(publications.localSiteId, this.signing.siteId),
+          eq(publications.publicationId, publicationId),
+        ),
+      );
+    if (!row) throw new FederationError("ASSET_UNAVAILABLE");
+    if (operation === "revoke-case-publication") {
+      const [current] = await tx
+        .select()
+        .from(publications)
+        .where(this.key({ orgId: row.localOrgId }, row.agreementRevisionId, publicationId))
+        .for("share");
+      if (!current?.revocationJws || !current.revocationPayload)
+        throw new FederationError("POLICY_DENIED");
+      const signed = await this.verify(
+        tx,
+        CaseRevocationSchema,
+        current.revocationJws,
+        this.signing.siteId,
+      );
+      if (
+        signed.payload.publicationId !== publicationId ||
+        signed.payload.publicationDigest !== current.digest ||
+        signed.payload.caseDomainId !== current.payload.caseDomainId ||
+        signed.payload.issuerSiteId !== this.signing.siteId ||
+        federationCanonicalJson(signed.payload) !==
+          federationCanonicalJson(current.revocationPayload)
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      const domain = this.ledger.domains.find(
+        (value) => value.domainId === signed.payload.caseDomainId,
+      );
+      if (
+        !domain ||
+        domain.commercialDomainId !== current.payload.scope.domainId ||
+        domain.sourceSiteId !== current.payload.scope.sourceSiteId ||
+        domain.targetSiteId !== current.payload.scope.targetSiteId ||
+        domain.recipientSiteId !== current.payload.scope.evidenceRecipientSiteId ||
+        ![domain.sourceSiteId, domain.targetSiteId].includes(this.signing.siteId)
+      )
+        throw new FederationError("POLICY_DENIED");
+      if (Date.parse(signed.payload.issuedAt) > Date.now())
+        throw new FederationError("AUTHORIZATION_EXPIRED");
+      return CaseProposalSchema.parse({
+        operation,
+        domainId: signed.payload.caseDomainId,
+        recordId: signed.payload.revocationId,
+        digest: signed.digest,
+        envelope: { issuerSiteId: this.signing.siteId, jws: current.revocationJws },
+      });
+    }
+    const record = await this.exchangeRecord(
+      tx,
+      row.localOrgId,
+      row.agreementRevisionId,
+      publicationId,
+    );
+    if (!record?.row.counterpartyJws) throw new FederationError("POLICY_DENIED");
+    const { policy, record: disclosure } = await this.original(
+      tx,
+      { orgId: row.localOrgId },
+      row.agreementRevisionId,
+      row.grantId,
+    );
+    if (Date.parse(record.row.payload.validUntil) <= Date.now())
+      throw new FederationError("AUTHORIZATION_EXPIRED");
+    const { sourceSiteId, targetSiteId } = record.row.payload.scope;
+    const pair = (own: string, other: string | null) => {
+      if (!other) throw new FederationError("POLICY_DENIED");
+      return {
+        sourceSiteId,
+        targetSiteId,
+        sourceJws: this.signing.siteId === sourceSiteId ? own : other,
+        targetJws: this.signing.siteId === targetSiteId ? own : other,
+      };
+    };
+    return CaseProposalSchema.parse({
+      operation,
+      domainId: record.row.payload.caseDomainId,
+      recordId: publicationId,
+      digest: record.row.digest,
+      envelope: {
+        publication: pair(record.row.approvalJws, record.row.counterpartyJws),
+        evidence: {
+          policy: pair(policy.approvalJws, policy.counterpartyJws),
+          disclosure: pair(disclosure.row.approvalJws, disclosure.row.counterpartyJws),
+        },
+      },
+    });
   }
   async attachExchanged(
     revisionId: string,

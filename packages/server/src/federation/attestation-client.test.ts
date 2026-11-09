@@ -4,11 +4,13 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UnixAttestationClient } from "./attestation-client";
+import { UnixCaseClient } from "./case-client";
 import { UnixCommercialClient } from "./commercial-client";
 
 test.each([
   "evidence",
   "commercial",
+  "case",
 ] as const)("%s Unix client enforces private socket and strict replies without leaking adapter errors", async (kind) => {
   const directory = await mkdtemp(join(tmpdir(), "kq-attestation-client-"));
   const socket = join(directory, `${kind}.sock`);
@@ -43,7 +45,11 @@ test.each([
     });
     await chmod(socket, 0o600);
     const client =
-      kind === "evidence" ? new UnixAttestationClient(socket) : new UnixCommercialClient(socket);
+      kind === "evidence"
+        ? new UnixAttestationClient(socket)
+        : kind === "case"
+          ? new UnixCaseClient(socket)
+          : new UnixCommercialClient(socket);
     expect(await client.advance(recovery)).toEqual({ state: "pending", transactionId, recovery });
     const committedState = kind === "evidence" ? "anchored" : "committed";
     mode = committedState;
@@ -80,6 +86,56 @@ test.each([
       needsReview: true,
     });
     expect(calls).toBe(before);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("case Unix client uses separate proposal and private receipt paths with strict data", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kq-case-client-")),
+    socket = join(directory, "case.sock");
+  const input = {
+    operation: "revoke-case-publication" as const,
+    domainId: crypto.randomUUID(),
+    recordId: crypto.randomUUID(),
+    digest: `sha256:${"a".repeat(64)}`,
+    envelope: { issuerSiteId: crypto.randomUUID(), jws: "original" },
+  };
+  const checkpoint = {
+    transactionId: "b".repeat(64),
+    recovery: Buffer.from("private-checkpoint").toString("base64"),
+  };
+  const query = {
+    domainId: input.domainId,
+    recordId: input.recordId,
+    recordType: "case-revocation" as const,
+  };
+  const server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    const body: unknown = JSON.parse(Buffer.concat(chunks).toString());
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/v1/case/proposal") {
+      expect(body).toEqual(input);
+      res.end(JSON.stringify(checkpoint));
+    } else {
+      expect(req.url).toBe("/v1/case/query");
+      expect(body).toEqual(query);
+      res.end(JSON.stringify({ receipt: { recordId: input.recordId, digest: input.digest } }));
+    }
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socket, resolve);
+    });
+    await chmod(socket, 0o600);
+    const client = new UnixCaseClient(socket);
+    expect(await client.prepare(input)).toEqual(checkpoint);
+    expect(await client.receipt(query)).toEqual({
+      receipt: { recordId: input.recordId, digest: input.digest },
+    });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });

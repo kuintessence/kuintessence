@@ -66,6 +66,7 @@ const ServerConfigSchema = z.object({
   FEDERATION_CLIENT_KEY_FILE: z.string().startsWith("/").optional(),
   FEDERATION_CLIENT_CA_FILE: z.string().startsWith("/").optional(),
   FEDERATION_MARKET_SOCKET_PATH: z.string().startsWith("/").optional(),
+  FEDERATION_CASE_SOCKET_PATH: z.string().startsWith("/").optional(),
   FEDERATION_CASE_TRUST_FILE: z.string().startsWith("/").optional(),
   FEDERATION_COMMERCIAL_SOCKET_PATH: z.string().startsWith("/").optional(),
   FEDERATION_STORAGE_GUARD_FILE: z.string().startsWith("/").optional(),
@@ -363,6 +364,15 @@ const ServerConfigSchema = z.object({
 });
 
 const ValidatedServerConfigSchema = ServerConfigSchema.superRefine((cfg, ctx) => {
+  if (
+    cfg.FEDERATION_CASE_SOCKET_PATH &&
+    (!cfg.FEDERATION_ENABLED || !cfg.FEDERATION_CASE_TRUST_FILE)
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["FEDERATION_CASE_SOCKET_PATH"],
+      message: "Case ledger requires federation and case trust",
+    });
   if (cfg.FEDERATION_CASE_TRUST_FILE && !cfg.FEDERATION_ENABLED)
     ctx.addIssue({
       code: "custom",

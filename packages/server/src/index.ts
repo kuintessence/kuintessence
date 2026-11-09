@@ -58,6 +58,8 @@ import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
 import { FederationBillingService } from "./federation/billing";
 import { FederationCancellationMonitor } from "./federation/cancellation-monitor";
+import { UnixCaseClient } from "./federation/case-client";
+import { FederationCaseSubmissionService } from "./federation/case-submissions";
 import { FederationClosingAutomation } from "./federation/closing-automation";
 import { FederationClosingPolicyService } from "./federation/closing-policy";
 import { FederationCommercialAgreementService } from "./federation/commercial-agreements";
@@ -1882,6 +1884,17 @@ const federationCasePublications = await loadFederationCasePublications(
   config,
   federationSigningKey,
 );
+const federationCaseSubmissions =
+  federationSigningKey && federationCasePublications
+    ? new FederationCaseSubmissionService(
+        db,
+        federationSigningKey.siteId,
+        federationCasePublications,
+        config.FEDERATION_CASE_SOCKET_PATH
+          ? new UnixCaseClient(config.FEDERATION_CASE_SOCKET_PATH)
+          : undefined,
+      )
+    : undefined;
 const federationApprovalExchange = federationSigningKey
   ? new FederationCommercialApprovalExchange(
       db,
@@ -1906,7 +1919,11 @@ if (federationSigningKey)
 if (federationCasePublications)
   protectedApi.route(
     "/",
-    createFederationCasePublicationRoutes(federationCasePublications, federationApprovalExchange),
+    createFederationCasePublicationRoutes(
+      federationCasePublications,
+      federationApprovalExchange,
+      federationCaseSubmissions,
+    ),
   );
 if (federationSigningKey && federationCommercial)
   protectedApi.route(
@@ -2851,6 +2868,7 @@ const federationCommercialWorker = federationCommercial
       federationCompletion,
       federationDisputeDelivery,
       federationDisputeFreezes,
+      federationCaseSubmissions,
     )
   : undefined;
 federationCommercialWorker?.start();

@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationCasePublicationService } from "../federation/case-publications";
+import type { FederationCaseSubmissionService } from "../federation/case-submissions";
 import type { FederationCommercialApprovalExchange } from "../federation/commercial-approval-exchange";
 import type { FederationActor } from "../federation/permissions";
 import type { BoundPrincipal } from "../middleware/principal-binder";
@@ -16,6 +17,7 @@ import { kqValidator } from "../middleware/validator";
 export function createFederationCasePublicationRoutes(
   service: FederationCasePublicationService,
   exchange?: FederationCommercialApprovalExchange,
+  ledger?: FederationCaseSubmissionService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   const root = "/federation/case-publications",
@@ -43,6 +45,40 @@ export function createFederationCasePublicationRoutes(
   });
   const id = z.object({ revisionId: z.uuid() }),
     publication = id.extend({ publicationId: z.uuid() });
+  if (ledger) {
+    r.get(
+      `${path}/ledger`,
+      kqValidator("param", id),
+      kqValidator(
+        "query",
+        z.strictObject({
+          limit: z.coerce.number().int().min(1).max(100).default(50),
+          offset: z.coerce.number().int().min(0).default(0),
+        }),
+      ),
+      async (c) => {
+        const { limit, offset } = c.req.valid("query");
+        return c.json(
+          await ledger.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+          ),
+        );
+      },
+    );
+    r.post(
+      `${path}/:publicationId/ledger/:submissionId/retry`,
+      kqValidator("param", publication.extend({ submissionId: z.uuid() })),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        const { revisionId, publicationId, submissionId } = c.req.valid("param");
+        await ledger.retry(c.get("federationActor"), revisionId, publicationId, submissionId);
+        return c.json({ ok: true });
+      },
+    );
+  }
   if (exchange) {
     r.get(
       `${path}/exchange`,

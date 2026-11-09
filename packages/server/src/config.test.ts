@@ -492,3 +492,28 @@ test("case publication trust is opt-in and requires an absolute path and federat
     loadServerConfig({ ...enabled, FEDERATION_CASE_TRUST_FILE: "cases.json" }),
   ).toThrow();
 });
+
+test("case ledger socket requires federation and case trust with an absolute path", () => {
+  const enabled = {
+    ...VALID_BASE,
+    FEDERATION_ENABLED: "true",
+    FEDERATION_SITE_ID: crypto.randomUUID(),
+    FEDERATION_SOCKET_PATH: "/run/private/ingress.sock",
+    FEDERATION_SIGNING_KEY_ID: "local",
+    FEDERATION_SIGNING_KEY_FILE: "/run/private/signing.key",
+  };
+  expect(() =>
+    loadServerConfig({ ...VALID_BASE, FEDERATION_CASE_SOCKET_PATH: "/run/private/case.sock" }),
+  ).toThrow();
+  expect(() =>
+    loadServerConfig({ ...enabled, FEDERATION_CASE_SOCKET_PATH: "/run/private/case.sock" }),
+  ).toThrow();
+  const configured = { ...enabled, FEDERATION_CASE_TRUST_FILE: "/run/case.json" };
+  expect(() =>
+    loadServerConfig({ ...configured, FEDERATION_CASE_SOCKET_PATH: "case.sock" }),
+  ).toThrow();
+  expect(
+    loadServerConfig({ ...configured, FEDERATION_CASE_SOCKET_PATH: "/run/private/case.sock" })
+      .FEDERATION_CASE_SOCKET_PATH,
+  ).toBe("/run/private/case.sock");
+});

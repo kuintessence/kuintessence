@@ -17,7 +17,9 @@ import {
   federationAgreements,
   federationBudgets,
   federationCapabilities,
+  federationCaseAttempts,
   federationCasePublications,
+  federationCaseSubmissions,
   federationCertificates,
   federationClosingPolicies,
   federationClosingTasks,
@@ -68,12 +70,15 @@ import {
   FederationCancellationReceiptSchema,
 } from "@kuintessence/shared/federation";
 import {
+  type CaseProposal,
   CasePublicationApprovalSchema,
   CasePublicationListSchema,
   CasePublicationSchema,
   CaseRevocationSchema,
   CaseSigningKindSchema,
+  caseVerificationKeys,
   FabricCaseTrustSchema,
+  verifyCasePublication,
 } from "@kuintessence/shared/federation/case-ledger";
 import {
   CommercialAdjustmentListSchema,
@@ -113,7 +118,7 @@ import {
   CommercialUsagePageSchema,
   CommercialUsageQuerySchema,
 } from "@kuintessence/shared/federation/usage-exchange";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
@@ -132,7 +137,9 @@ import { FederationAdjustmentService } from "./adjustment";
 import { federationMaterialDigest } from "./assets";
 import { readAttestationBacklog } from "./attestation-backlog";
 import { FederationBillingService } from "./billing";
+import type { CaseClient } from "./case-client";
 import { FederationCasePublicationService } from "./case-publications";
+import { FederationCaseSubmissionService } from "./case-submissions";
 import { FederationClosingAutomation } from "./closing-automation";
 import { ClosingPolicyInputSchema, FederationClosingPolicyService } from "./closing-policy";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
@@ -12712,4 +12719,467 @@ test("case publication exchange rechecks configured case key purposes after rest
   });
   expect((await f.view())?.counterpartyJws).toBeNull();
   expect(f.transport.calls).toBe(0);
+});
+
+async function caseLedgerFixture() {
+  const f = await casePublicationFixture();
+  const pair = await f.approvePublication();
+  await f.sourceCases.attachCounterparty(
+    f.sourceActor,
+    f.revisionId,
+    f.publication.publicationId,
+    pair.b.approvalJws,
+  );
+  cleanup.push(async () => {
+    const rows = await db
+      .select({ id: federationCaseSubmissions.id })
+      .from(federationCaseSubmissions)
+      .where(eq(federationCaseSubmissions.localSiteId, f.source.signing.siteId));
+    if (rows.length)
+      await db.delete(federationCaseAttempts).where(
+        inArray(
+          federationCaseAttempts.submissionId,
+          rows.map((row) => row.id),
+        ),
+      );
+    await db
+      .delete(federationCaseSubmissions)
+      .where(eq(federationCaseSubmissions.localSiteId, f.source.signing.siteId));
+    await db.delete(auditLog).where(eq(auditLog.actor, `case-ledger:${f.source.signing.siteId}`));
+  });
+  const proposals: CaseProposal[] = [],
+    tokens: string[] = [];
+  const checkpoints = new Map<
+    string,
+    { id: string; input: CaseProposal; stage: "proposal" | "transaction" }
+  >();
+  const receipts = new Map<string, { recordId: string; digest: string }>();
+  const transport: {
+    afterAdvance?: () => Promise<void>;
+    invalid?: boolean;
+    missingReceipt?: boolean;
+    wrongReceipt?: boolean;
+  } = {};
+  const client: CaseClient = {
+    prepare: async (input) => {
+      proposals.push(input);
+      const id = createHash("sha256").update(randomUUID()).digest("hex"),
+        recovery = Buffer.from(`proposal:${id}`).toString("base64");
+      checkpoints.set(recovery, { id, input, stage: "proposal" });
+      return { transactionId: id, recovery };
+    },
+    advance: async (recovery) => {
+      tokens.push(recovery);
+      const value = checkpoints.get(recovery);
+      if (!value) throw new Error("Unknown checkpoint");
+      if (value.stage === "proposal") {
+        const next = Buffer.from(`transaction:${value.id}`).toString("base64");
+        checkpoints.set(next, { ...value, stage: "transaction" });
+        await transport.afterAdvance?.();
+        return { state: "prepared", transactionId: value.id, recovery: next };
+      }
+      if (transport.invalid)
+        return { state: "invalid", transactionId: value.id, validationCode: 11, blockNumber: "1" };
+      receipts.set(value.input.recordId, {
+        recordId: value.input.recordId,
+        digest: value.input.digest,
+      });
+      await transport.afterAdvance?.();
+      return { state: "committed", transactionId: value.id, blockNumber: "1" };
+    },
+    receipt: async (input) => ({
+      receipt: transport.missingReceipt
+        ? null
+        : transport.wrongReceipt
+          ? { recordId: input.recordId, digest: `sha256:${"f".repeat(64)}` }
+          : (receipts.get(input.recordId) ?? null),
+    }),
+  };
+  const service = new FederationCaseSubmissionService(
+    db,
+    f.source.signing.siteId,
+    f.sourceCases,
+    client,
+  );
+  const rows = () =>
+    db
+      .select()
+      .from(federationCaseSubmissions)
+      .where(eq(federationCaseSubmissions.localSiteId, f.source.signing.siteId))
+      .orderBy(asc(federationCaseSubmissions.createdAt));
+  const row = async (operation: CaseProposal["operation"] = "record-case-evidence") =>
+    (await rows()).find((value) => value.operation === operation);
+  const history = async () =>
+    db
+      .select()
+      .from(federationCaseAttempts)
+      .where(
+        inArray(
+          federationCaseAttempts.submissionId,
+          (await rows()).map((value) => value.id),
+        ),
+      )
+      .orderBy(asc(federationCaseAttempts.number));
+  const due = () =>
+    db
+      .update(federationCaseSubmissions)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(federationCaseSubmissions.localSiteId, f.source.signing.siteId));
+  const drive = async (worker = service) => {
+    for (let i = 0; i < 8; i++) if (!(await worker.advanceNext())) break;
+  };
+  return {
+    ...f,
+    pair,
+    client,
+    service,
+    proposals,
+    tokens,
+    transport,
+    row,
+    rows,
+    history,
+    due,
+    drive,
+  };
+}
+
+test("case ledger saves each checkpoint before dispatch and confirms only a matching private receipt", async () => {
+  const f = await caseLedgerFixture(),
+    before = await f.budget();
+  await f.service.discover();
+  await f.service.discover();
+  expect(await f.rows()).toHaveLength(1);
+  await f.service.advanceNext();
+  expect(f.tokens).toHaveLength(0);
+  expect((await f.history())[0]).toMatchObject({ stage: "proposal", dispatchAuthorizedAt: null });
+  const input = f.proposals[0];
+  if (!input || input.operation !== "record-case-evidence") throw new Error("Missing proposal");
+  expect(input.envelope.publication.sourceJws).toBe(f.pair.a.approvalJws);
+  expect(input.envelope.publication.targetJws).toBe(f.pair.b.approvalJws);
+  await f.service.advanceNext();
+  expect((await f.history())[0]).toMatchObject({
+    stage: "transaction",
+    dispatchAuthorizedAt: null,
+  });
+  await f.service.advanceNext();
+  expect((await f.row())?.state).toBe("pending");
+  expect((await f.history())[0]?.dispatchAuthorizedAt).not.toBeNull();
+  f.transport.missingReceipt = true;
+  await f.service.advanceNext();
+  expect(await f.row()).toMatchObject({
+    state: "pending",
+    lastError: "LEDGER_RECEIPT_PENDING",
+    receipt: null,
+  });
+  delete f.transport.missingReceipt;
+  await f.due();
+  await f.drive();
+  expect(await f.row()).toMatchObject({
+    state: "committed",
+    receipt: { recordId: f.publication.publicationId, digest: f.pair.a.digest },
+  });
+  expect(f.proposals).toHaveLength(1);
+  expect(await f.budget()).toEqual(before);
+});
+
+test("case ledger has no implicit dispatch without adapter configuration or the other publication signature", async () => {
+  const f = await caseLedgerFixture();
+  const disabled = new FederationCaseSubmissionService(db, f.source.signing.siteId, f.sourceCases);
+  await disabled.discover();
+  expect(await disabled.advanceNext()).toBe(false);
+  expect(await f.rows()).toHaveLength(0);
+  await db
+    .update(federationCasePublications)
+    .set({ counterpartyJws: null, confirmedAt: null })
+    .where(eq(federationCasePublications.localSiteId, f.source.signing.siteId));
+  await f.service.discover();
+  expect(await f.rows()).toHaveLength(0);
+  await f.sourceCases.revoke(f.sourceActor, f.revisionId, f.publication.publicationId);
+  await f.service.discover();
+  await f.drive();
+  expect(await f.row("revoke-case-publication")).toMatchObject({ state: "committed" });
+  expect(await f.row()).toBeUndefined();
+  expect(f.proposals[0]?.operation).toBe("revoke-case-publication");
+});
+
+for (const stage of ["unprepared", "proposal", "transaction"] as const) {
+  test(`case ledger withdrawal closes ${stage} evidence before dispatch and preserves the independent revocation`, async () => {
+    const f = await caseLedgerFixture();
+    await f.service.discover();
+    if (stage !== "unprepared") await f.service.advanceNext();
+    if (stage === "transaction") await f.service.advanceNext();
+    const sent = f.tokens.length;
+    await f.sourceCases.revoke(f.sourceActor, f.revisionId, f.publication.publicationId);
+    await f.service.advanceNext();
+    expect(await f.row()).toMatchObject({ state: "closed", lastError: "AUTHORIZATION_EXPIRED" });
+    expect(f.tokens).toHaveLength(sent);
+    if (stage !== "unprepared") expect((await f.history())[0]?.stage).toBe("abandoned");
+    await f.service.discover();
+    await f.drive();
+    expect(await f.row("revoke-case-publication")).toMatchObject({ state: "committed" });
+  });
+}
+
+test("case ledger resolves an already authorized unknown transaction after withdrawal and process reconstruction", async () => {
+  const f = await caseLedgerFixture();
+  await f.service.discover();
+  await f.service.advanceNext();
+  await f.service.advanceNext();
+  f.transport.afterAdvance = async () => {
+    throw new Error("Reply lost after commit");
+  };
+  await f.service.advanceNext();
+  const original = (await f.history())[0];
+  expect(original?.dispatchAuthorizedAt).not.toBeNull();
+  await f.sourceCases.revoke(f.sourceActor, f.revisionId, f.publication.publicationId);
+  delete f.transport.afterAdvance;
+  await f.due();
+  const restarted = new FederationCaseSubmissionService(
+    db,
+    f.source.signing.siteId,
+    f.sourceCases,
+    f.client,
+  );
+  await f.drive(restarted);
+  expect(await f.row()).toMatchObject({ state: "committed" });
+  expect(f.proposals).toHaveLength(1);
+  expect((await f.history())[0]?.transactionId).toBe(original?.transactionId);
+  expect(f.tokens.at(-1)).toBe(original?.recovery);
+  await restarted.discover();
+  await f.drive(restarted);
+  expect(await f.row("revoke-case-publication")).toMatchObject({ state: "committed" });
+});
+
+test("case ledger rechecks withdrawal during endorsement before authorizing broadcast", async () => {
+  const f = await caseLedgerFixture();
+  await f.service.discover();
+  await f.service.advanceNext();
+  f.transport.afterAdvance = async () => {
+    await f.sourceCases.revoke(f.sourceActor, f.revisionId, f.publication.publicationId);
+  };
+  await f.service.advanceNext();
+  delete f.transport.afterAdvance;
+  await f.service.advanceNext();
+  expect(await f.row()).toMatchObject({ state: "closed" });
+  expect((await f.history())[0]).toMatchObject({ stage: "abandoned", dispatchAuthorizedAt: null });
+  expect(f.tokens).toHaveLength(1);
+});
+
+test("case ledger invalid transactions require an explicit retry and retain every original checkpoint", async () => {
+  const f = await caseLedgerFixture();
+  await f.service.discover();
+  f.transport.invalid = true;
+  await f.drive();
+  expect(await f.row()).toMatchObject({ state: "needs_review", lastError: "LEDGER_INVALID" });
+  const first = (await f.history())[0],
+    row = await f.row();
+  if (!row || !first) throw new Error("Missing invalid attempt");
+  await f.due();
+  expect(await f.service.advanceNext()).toBe(false);
+  delete f.transport.invalid;
+  await f.service.retry(f.sourceActor, f.revisionId, f.publication.publicationId, row.id);
+  await f.drive();
+  expect(await f.row()).toMatchObject({ state: "committed" });
+  expect(await f.history()).toHaveLength(2);
+  expect((await f.history())[0]).toEqual(first);
+  expect(f.proposals).toHaveLength(2);
+});
+
+test("case ledger refuses a wrong private receipt and retries observation without a new transaction", async () => {
+  const f = await caseLedgerFixture();
+  await f.service.discover();
+  f.transport.wrongReceipt = true;
+  await f.drive();
+  const row = await f.row();
+  expect(row).toMatchObject({
+    state: "needs_review",
+    receipt: null,
+    lastError: "INVALID_LEDGER_RESPONSE",
+  });
+  if (!row) throw new Error("Missing submission");
+  delete f.transport.wrongReceipt;
+  await f.service.retry(f.sourceActor, f.revisionId, f.publication.publicationId, row.id);
+  await f.drive();
+  expect(await f.row()).toMatchObject({ state: "committed" });
+  expect(f.proposals).toHaveLength(1);
+});
+
+test("case ledger confirmation and institutional audit roll back together", async () => {
+  const f = await caseLedgerFixture();
+  await f.service.discover();
+  await db.execute(
+    sql`ALTER TABLE audit_log ADD CONSTRAINT case_ledger_audit_fixture CHECK (action <> 'federation.case_ledger.confirm') NOT VALID`,
+  );
+  try {
+    await f.drive();
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT case_ledger_audit_fixture`);
+  }
+  expect(await f.row()).toMatchObject({
+    state: "pending",
+    receipt: null,
+    lastError: "CASE_LEDGER_RETRY",
+  });
+  await f.due();
+  await f.drive();
+  expect(await f.row()).toMatchObject({ state: "committed" });
+  expect(f.proposals).toHaveLength(1);
+});
+
+test("case ledger late worker cannot overwrite a replacement lease or persist its checkpoint", async () => {
+  const f = await caseLedgerFixture();
+  await f.service.discover();
+  await f.service.advanceNext();
+  const token = randomUUID();
+  f.transport.afterAdvance = async () => {
+    await db
+      .update(federationCaseSubmissions)
+      .set({ leaseToken: token, leaseUntil: sql`clock_timestamp() + interval '60 seconds'` })
+      .where(eq(federationCaseSubmissions.localSiteId, f.source.signing.siteId));
+  };
+  await f.service.advanceNext();
+  expect(await f.row()).toMatchObject({ state: "pending", leaseToken: token });
+  expect((await f.history())[0]?.stage).toBe("proposal");
+});
+
+test("case ledger revocation does not require a valid original disclosure or old publication key", async () => {
+  const f = await caseLedgerFixture();
+  await f.service.discover();
+  await f.service.advanceNext();
+  await f.sourceCases.revoke(f.sourceActor, f.revisionId, f.publication.publicationId);
+  await f.sourcePolicy.revoke(f.sourceActor, f.revisionId, f.policy.policyId);
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'case-evidence-publication'` })
+    .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+  await f.service.discover();
+  await f.drive();
+  expect(await f.row("revoke-case-publication")).toMatchObject({ state: "committed" });
+  expect((await f.row())?.state).not.toBe("committed");
+});
+
+test("case ledger human routes expose organization-scoped status without recovery or material and require separate retry authority", async () => {
+  const f = await caseLedgerFixture();
+  await f.service.discover();
+  const row = await f.row();
+  if (!row) throw new Error("Missing queue");
+  let actor = f.sourceActor;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    await next();
+  });
+  app.route("/", createFederationCasePublicationRoutes(f.sourceCases, undefined, f.service));
+  const path = `/federation/case-publications/${f.revisionId}`;
+  const retry = (body: unknown = {}) =>
+    app.request(`${path}/${f.publication.publicationId}/ledger/${row.id}/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const result = await app.request(`${path}/ledger`);
+  expect(result.status).toBe(200);
+  expect(result.headers.get("cache-control")).toBe("no-store");
+  const text = await result.text();
+  expect(text).toContain(row.id);
+  for (const field of ["recovery", "approvalJws", "sourceJws", "envelope"])
+    expect(text).not.toContain(field);
+  expect((await app.request(`${path}/ledger?extra=true`)).status).toBe(400);
+  expect((await retry({ extra: true })).status).toBe(400);
+  expect((await retry()).status).toBe(200);
+  actor = f.actor;
+  expect(await (await app.request(`${path}/ledger`)).json()).toMatchObject({ data: [] });
+  expect((await retry()).status).toBe(403);
+  actor = f.sourceActor;
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "case.publish", enabled: false },
+    actor.userId,
+  );
+  expect((await retry()).status).toBe(403);
+  expect((await app.request(`${path}/ledger`)).status).toBe(403);
+});
+
+test("case ledger expiry before dispatch closes evidence without transmitting it", async () => {
+  const f = await caseLedgerFixture();
+  await f.service.discover();
+  await f.service.advanceNext();
+  await f.service.advanceNext();
+  setSystemTime(new Date(Date.parse(f.publication.validUntil) + 1));
+  try {
+    await f.service.advanceNext();
+  } finally {
+    setSystemTime();
+  }
+  expect(await f.row()).toMatchObject({ state: "closed", lastError: "AUTHORIZATION_EXPIRED" });
+  expect((await f.history())[0]).toMatchObject({ stage: "abandoned", dispatchAuthorizedAt: null });
+  expect(f.tokens).toHaveLength(1);
+});
+
+test("case ledger rejects altered durable input before endorsement", async () => {
+  const f = await caseLedgerFixture();
+  await f.service.discover();
+  await f.service.advanceNext();
+  const row = await f.row();
+  if (!row?.input) throw new Error("Missing original");
+  await db
+    .update(federationCaseSubmissions)
+    .set({ input: { ...row.input, digest: `sha256:${"f".repeat(64)}` } })
+    .where(eq(federationCaseSubmissions.id, row.id));
+  await f.service.advanceNext();
+  expect(await f.row()).toMatchObject({ state: "needs_review", lastError: "OPERATION_CONFLICT" });
+  expect(f.tokens).toHaveLength(0);
+});
+
+test("case ledger invalid publication cannot acquire a new transaction after withdrawal", async () => {
+  const f = await caseLedgerFixture();
+  await f.service.discover();
+  f.transport.invalid = true;
+  await f.drive();
+  const row = await f.row();
+  if (!row) throw new Error("Missing original");
+  await f.sourceCases.revoke(f.sourceActor, f.revisionId, f.publication.publicationId);
+  await expect(
+    f.service.retry(f.sourceActor, f.revisionId, f.publication.publicationId, row.id),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  expect(await f.service.advanceNext()).toBe(false);
+  expect(f.proposals).toHaveLength(1);
+});
+
+test("case ledger both institutions assemble the same six originals accepted by the case verifier", async () => {
+  const f = await caseLedgerFixture();
+  await f.providerCases.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.publication.publicationId,
+    f.pair.a.approvalJws,
+  );
+  const source = await db.transaction((tx) =>
+    f.sourceCases.ledgerProposal(tx, f.publication.publicationId, "record-case-evidence"),
+  );
+  const provider = await db.transaction((tx) =>
+    f.providerCases.ledgerProposal(tx, f.publication.publicationId, "record-case-evidence"),
+  );
+  expect(provider).toEqual(source);
+  const domain = f.ledger.domains[0];
+  if (!domain || source.operation !== "record-case-evidence")
+    throw new Error("Missing case domain");
+  const keys = await caseVerificationKeys(f.ledger, source, async () => false);
+  expect((await verifyCasePublication(source.envelope, domain, keys, new Date())).digest).toBe(
+    f.pair.a.digest,
+  );
+});
+
+test("case ledger existing commercial worker discovers and completes the independent case queue", async () => {
+  const f = await caseLedgerFixture();
+  const args: ConstructorParameters<typeof FederationCommercialWorker> = [
+    new FederationCommercialSubmissionService(db, f.source.signing.siteId),
+  ];
+  args[17] = f.service;
+  const worker = new FederationCommercialWorker(...args);
+  await worker.tick();
+  await worker.stop();
+  expect(await f.row()).toMatchObject({ state: "committed" });
+  expect(f.proposals).toHaveLength(1);
 });

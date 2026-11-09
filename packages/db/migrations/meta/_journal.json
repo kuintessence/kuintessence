@@ -1331,6 +1331,13 @@
       "when": 1794245640795,
       "tag": "0189_sticky_korath",
       "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "7",
+      "when": 1794246686211,
+      "tag": "0190_mature_grandmaster",
+      "breakpoints": true
     }
   ]
 }

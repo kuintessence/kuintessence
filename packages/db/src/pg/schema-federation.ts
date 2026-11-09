@@ -31,7 +31,11 @@ import type {
   MediaShipmentPackage,
   MediaShipmentState,
 } from "@kuintessence/shared/federation";
-import type { CasePublication, CaseRevocation } from "@kuintessence/shared/federation/case-ledger";
+import type {
+  CaseProposal,
+  CasePublication,
+  CaseRevocation,
+} from "@kuintessence/shared/federation/case-ledger";
 import type {
   CommercialAdapterProposalInput,
   CommercialAdjustment,
@@ -1748,6 +1752,91 @@ export const federationCasePublications = pgTable(
         AND ${t.revocationPayload}->>'issuerSiteId' = ${t.localSiteId}::text
       ))
     ) IS TRUE`,
+    ),
+  ],
+);
+
+/** Separate case ledger intents never enter the original commercial collection. */
+export const federationCaseSubmissions = pgTable(
+  "federation_case_submissions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    localSiteId: uuid("local_site_id").notNull(),
+    publicationId: uuid("publication_id").notNull(),
+    operation: varchar("operation", { length: 32 }).$type<CaseProposal["operation"]>().notNull(),
+    input: jsonb("input").$type<CaseProposal>(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    receipt: jsonb("receipt").$type<{ recordId: string; digest: string }>(),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: "federation_case_submission_publication_fk",
+      columns: [t.localSiteId, t.publicationId],
+      foreignColumns: [
+        federationCasePublications.localSiteId,
+        federationCasePublications.publicationId,
+      ],
+    }),
+    uniqueIndex("federation_case_submission_record").on(
+      t.localSiteId,
+      t.publicationId,
+      t.operation,
+    ),
+    index("federation_case_submission_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "federation_case_submission_state",
+      sql`${t.state} IN ('pending','committed','needs_review','closed')
+    AND (${t.state} = 'committed') = (${t.receipt} IS NOT NULL)
+    AND (${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
+    ),
+    check(
+      "federation_case_submission_input",
+      sql`(${t.operation} IN ('record-case-evidence','revoke-case-publication')
+    AND (${t.input} IS NULL OR (${t.input}->>'operation' = ${t.operation}
+      AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL
+      AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$'))
+    AND (${t.receipt} IS NULL OR (${t.input} IS NOT NULL
+      AND ${t.receipt}->>'recordId' = ${t.input}->>'recordId'
+      AND ${t.receipt}->>'digest' = ${t.input}->>'digest'))) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationCaseAttempts = pgTable(
+  "federation_case_attempts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    submissionId: uuid("submission_id")
+      .notNull()
+      .references(() => federationCaseSubmissions.id),
+    number: integer("number").notNull(),
+    transactionId: varchar("transaction_id", { length: 64 }).notNull(),
+    recovery: text("recovery").notNull(),
+    stage: varchar("stage", { length: 24 }).notNull().default("proposal"),
+    dispatchAuthorizedAt: timestamp("dispatch_authorized_at", { withTimezone: true }),
+    validationCode: integer("validation_code"),
+    blockNumber: varchar("block_number", { length: 20 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_case_attempt_number").on(t.submissionId, t.number),
+    uniqueIndex("federation_case_attempt_transaction").on(t.transactionId),
+    check(
+      "federation_case_attempt_state",
+      sql`(${t.number} > 0 AND ${t.transactionId} ~ '^[a-f0-9]{64}$'
+    AND ${t.stage} IN ('proposal','transaction','committed','invalid','abandoned')
+    AND (${t.dispatchAuthorizedAt} IS NULL OR ${t.stage} IN ('transaction','committed','invalid'))
+    AND ((${t.stage} IN ('committed','invalid')) = (${t.validationCode} IS NOT NULL))
+    AND ((${t.stage} IN ('committed','invalid')) = (${t.blockNumber} IS NOT NULL))
+    AND (${t.stage} <> 'committed' OR ${t.validationCode} = 0)
+    AND (${t.stage} <> 'invalid' OR ${t.validationCode} BETWEEN 1 AND 255)) IS TRUE`,
     ),
   ],
 );

@@ -1,6 +1,7 @@
 import { createLogger } from "@kuintessence/shared";
 import type { FederationAccountingCollection } from "./accounting-collection";
 import type { FederationAgreementExchange } from "./agreement-exchange";
+import type { FederationCaseSubmissionService } from "./case-submissions";
 import type { FederationClosingAutomation } from "./closing-automation";
 import type { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
@@ -40,6 +41,7 @@ export class FederationCommercialWorker {
     private readonly completion?: FederationCompletionCapacity,
     private readonly disputes?: FederationDisputeDelivery,
     private readonly disputeFreezes?: FederationDisputeFreezeExchange,
+    private readonly cases?: FederationCaseSubmissionService,
   ) {}
 
   start() {
@@ -190,6 +192,16 @@ export class FederationCommercialWorker {
         } catch {
           logger.error(
             "Dispute freeze exchange failed; original proofs and pending local freezes remain durable",
+          );
+        }
+      }
+      if (this.cases) {
+        try {
+          await this.cases.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++) if (!(await this.cases.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Case ledger scan failed; original signatures and recovery checkpoints remain durable",
           );
         }
       }

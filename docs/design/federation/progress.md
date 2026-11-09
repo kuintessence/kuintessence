@@ -3440,3 +3440,17 @@ R 无权读取原账目时，也不能替原商业集合完成仿真背书。设
 
 
 全仓 lint 退出 0（既有 47 warnings／1 info）；typecheck 首次仅发现新增测试的可选路径／unknown JSON 类型错误，修正后 Server 定向检查退出 0，并补完未执行的 Fabric 脚本检查。protobuf 和其余所有包已在首轮通过，不重复运行，最终全仓类型检查范围均通过。1025 个本地文档目标与 diff 检查通过。上一提交 c565c45 的 GitHub CI、bundle、Fabric 已全部 success；本轮继续原草稿 PR，迁移未应用部署库，没有重跑旧四机构网络或科研任务。
+
+
+## 案件持久投递、私有收据与独立撤回待办
+
+2026-11-10：增加独立案件待办／尝试历史（生成迁移 0190）、私有 Unix case 客户端及可选 Server socket 配置；复用现有商业后台 worker，没有新进程或依赖。双方原签名组装六签原件，已签撤回独立优先投递；未配置 socket 不访问链，已有双签存证决定在启用后被发现，普通双边计算不等链。
+
+准备、背书和广播分步保存；当前授权检查与 dispatchAuthorizedAt 同事务。未授权发送时撤回／到期关闭待办并保留 abandoned 检查点；已授权发送的未知结果继续恢复同一 transactionId，独立撤回与原写入由链决定最终顺序。VALID 后还须本站私有收据匹配才确认，审计整体回滚；INVALID 显式重试保留旧尝试，不放弃未知 transaction。新增状态／重试 API 要求本组织真人 case.publish，不暴露材料或恢复密文。
+
+18 项不同隔离数据库／人员 API 检查及 4 项配置／真实 Unix 客户端检查通过；原商业 worker tick 接线和两端六签验证均覆盖。首轮夹具缺 asc 导入，修正后 13 项通过，再补 5 项边界检查；本轮未运行真实 Peer、科研计算或独立 Server 进程恢复，不将可控 Adapter／对象重建算作真实链或 SIGKILL 验收。隔离 PG 均清理，迁移未应用部署库。
+
+完整目标仍 active：后续先补远端撤回通知与实际三 Server/Fabric 案件流程，再继续仲裁授权／裁决／窄执行、合法解冻、二取三、治理归档／Peer 恢复／保留删除、容量收尾、真实离线软件 Slurm/PBS 矩阵及剩余 Web/CLI 和可信预览。没有合并或部署 main。
+
+
+完整 lint（既有 47 warnings／1 info）和 typecheck（protobuf、全部包及 Fabric 独立脚本）通过；最后补充测试时重复导入已有 worker，修正后 Server 类型复查退出 0。1030 个本地文档目标和 diff 检查通过，未重复旧业务／四 Peer 网络测试。前一提交 13c3bdd 的 CI、bundle 已 success，Fabric 各步骤均 success，工作流聚合状态另行跟进；草稿预览 skipped 不计通过。本轮迁移仍未应用部署库，继续同一草稿 PR。
