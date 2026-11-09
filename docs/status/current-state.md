@@ -895,3 +895,5 @@ SelfAccount 实验还发现首次启动的 watchdog/Agent 建表竞态。watchdo
 
 
 付款链协调模式也已通过真实双平台／三 Peer 验收：实际作业与财务收尾后断链，双方确认付款及零额更正，首笔强制重启两端 Server／Adapter 后恢复原交易；两笔原 transactionId／检查点摘要取得 VALID。独立 PDC 检查仅 receipt/head 更新、第三机构无正文，原账务与 Job/gate 不变。至此三模式付款真实路径分别通过；仍非银行支付、正式身份或 PR 预览验收，详见[协调付款恢复](../design/federation/payment.md#链协调付款的原交易恢复)。
+
+争议仲裁仍未接通。已明确[案件与字段授权实现契约](../design/federation/disputes.md)：原商业正文限 A/B，R 只读取另行批准的案件字段；裁决与实际记账分离，原商业背书缺失时保持等待，不以治理角色绕过。协议、链码、平台和真实 L09 验收是后续必做项。

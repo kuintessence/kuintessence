@@ -456,6 +456,8 @@ raw transaction args、chaincode response、events、trace 均不能携带私有
 
 公共交易 MAJORITY、合作域 AND、关键治理 ALL 及指定仲裁模板由部署/lifecycle 策略表达。ALL 导致成员离线时升级受阻，这属于明确选择的治理边界，不由平台管理员绕过。
 
+争议的具体对象、字段披露、冻结竞争及裁决执行约束见[争议与授权披露](disputes.md)。案件采用独立 A/B/R 集合，原 A/B 商业集合不扩员；R 的裁决与依赖原私有账目的记账分开，不能通过修改原背书政策绕过缺席机构。该部分尚待实现与联合验收。
+
 公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 已增加私有双签预留/gate 约束的链码激活和激活前释放；Server 公开激活审批与待办已接通，实际执行入口必须再取得有期限的 VALID 执行确认。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/本机客户端和 Server 持久操作 API 已连接，公共目录查询已接通，私有锁额/gate 已有链码实现，应用执行入口已接入有期限的确认，真实双平台与 Kubernetes Agent 轻量文件工作流已通过；Web 联合验收仍待完成，缺少确认时保留拒绝门槛。
 
 ## 10. UI 与配置
