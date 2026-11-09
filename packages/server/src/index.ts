@@ -109,6 +109,7 @@ import {
   FederationMediaKeyRequester,
   FederationMediaKeyResponder,
 } from "./federation/media-key-exchange";
+import { FederationMediaLogistics } from "./federation/media-logistics";
 import { FederationMediaPackageService } from "./federation/media-packages";
 import {
   FederationMediaReceiptReceiver,
@@ -2373,6 +2374,9 @@ if (federationMediaInventory)
       federationDatasetUsePolicies,
       federationDatasetPublication,
       { sender: federationMediaReceiptSender, receiver: federationMediaReceiptReceiver },
+      config.FEDERATION_SITE_ID
+        ? new FederationMediaLogistics(db, config.FEDERATION_SITE_ID)
+        : undefined,
     ),
   );
 protectedApi.route("/", createDataMarketRoutes({ service: dataMarketService }));

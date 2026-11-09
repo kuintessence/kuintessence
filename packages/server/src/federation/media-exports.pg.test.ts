@@ -95,6 +95,7 @@ import { FederationMediaExportService, mediaIdentityDomain } from "./media-expor
 import { FederationMediaImportOperations } from "./media-import-operations";
 import { FederationMediaImportTransport } from "./media-import-transport";
 import { FederationMediaKeyRequester, FederationMediaKeyResponder } from "./media-key-exchange";
+import { FederationMediaLogistics } from "./media-logistics";
 import { FederationMediaPackageService } from "./media-packages";
 import { FederationMediaReceiptReceiver, FederationMediaReceiptSender } from "./media-receipts";
 import { FederationPermissionService } from "./permissions";
@@ -457,6 +458,69 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     );
     return r;
   }
+
+  test("logistics source: signed exports share one batch without disclosing keys or changing data permissions", async () => {
+    await permissions.set({ ...actor, capability: "media.logistics", enabled: true }, actor.userId);
+    const logistics = new FederationMediaLogistics(db, source.signing.siteId, () => now);
+    const first = await service.prepare(actor, request());
+    const second = await service.prepare(actor, request());
+    const devices = [crypto.randomUUID(), crypto.randomUUID()];
+    for (const deviceId of devices)
+      await logistics.registerDevice(actor, {
+        deviceId,
+        name: "Source encrypted drive",
+        assetTag: deviceId,
+        capacityBytes: 1000,
+      });
+    const input = {
+      shipmentId: crypto.randomUUID(),
+      name: "Source daily batch",
+      deviceIds: devices,
+      packageIds: [first.packageId, second.packageId],
+    };
+    const registered = await logistics.registerShipment(actor, input);
+    expect(registered.senderSiteId).toBe(source.signing.siteId);
+    expect(registered.recipientSiteId).toBe(target.signing.siteId);
+    expect(registered.packages).toHaveLength(2);
+    expect(
+      await logistics.registerShipment(actor, {
+        ...input,
+        deviceIds: [...devices].reverse(),
+        packageIds: [...input.packageIds].reverse(),
+      }),
+    ).toEqual(registered);
+    const event = {
+      eventId: crypto.randomUUID(),
+      expectedVersion: 1,
+      state: "received",
+      occurredAt: now.toISOString(),
+      note: "Source cannot skip dispatch",
+      evidenceDigest: null,
+    };
+    await expect(logistics.recordHandoff(actor, input.shipmentId, event)).rejects.toMatchObject({
+      code: "POLICY_DENIED",
+    });
+    await logistics.recordHandoff(actor, input.shipmentId, { ...event, state: "dispatched" });
+    await logistics.recordHandoff(actor, input.shipmentId, {
+      ...event,
+      eventId: crypto.randomUUID(),
+      expectedVersion: 2,
+      state: "received",
+    });
+    await logistics.recordHandoff(actor, input.shipmentId, {
+      ...event,
+      eventId: crypto.randomUUID(),
+      expectedVersion: 3,
+      state: "closed",
+    });
+    const details = await logistics.shipmentDetails(actor, input.shipmentId);
+    expect(details.devices).toHaveLength(2);
+    expect(details.devices.every((entry) => !entry.active)).toBe(true);
+    expect(details.events).toHaveLength(3);
+    expect(JSON.stringify(details)).not.toContain("identityEncrypted");
+    expect(JSON.stringify(details)).not.toContain("manifestJws");
+    expect((await service.details(actor, first.packageId)).revokedAt).toBeNull();
+  });
 
   test("HTTP preparation signs actual immutable entries, keeps full provenance, and hides encrypted identities", async () => {
     const input = request();

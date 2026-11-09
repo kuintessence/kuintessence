@@ -7,6 +7,10 @@ import {
   FederationMediaImportApprovalSchema,
   FederationMediaRegistrationSchema,
   FederationMediaRevocationSchema,
+  MediaDeviceRegistrationSchema,
+  MediaDeviceUpdateSchema,
+  MediaHandoffSchema,
+  MediaShipmentRegistrationSchema,
 } from "@kuintessence/shared/federation";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -16,6 +20,7 @@ import type { FederationDatasetUsePolicies } from "../federation/dataset-use-pol
 import type { FederationMediaExportOperations } from "../federation/media-export-operations";
 import type { FederationMediaExportService } from "../federation/media-exports";
 import type { FederationMediaImportOperations } from "../federation/media-import-operations";
+import type { FederationMediaLogistics } from "../federation/media-logistics";
 import type { FederationMediaPackageService } from "../federation/media-packages";
 import type {
   FederationMediaReceiptReceiver,
@@ -33,6 +38,7 @@ export function createFederationMediaRoutes(
   datasetUse?: FederationDatasetUsePolicies,
   publication?: FederationDatasetPublicationService,
   receipts?: { sender?: FederationMediaReceiptSender; receiver?: FederationMediaReceiptReceiver },
+  logistics?: FederationMediaLogistics,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/media/*", async (c, next) => {
@@ -61,6 +67,87 @@ export function createFederationMediaRoutes(
       throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_RECEIPT_UNAVAILABLE", 503);
     return receipts.sender;
   };
+  const transport = () => {
+    if (!logistics)
+      throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_LOGISTICS_UNAVAILABLE", 503);
+    return logistics;
+  };
+  const page = z.object({
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    offset: z.coerce.number().int().nonnegative().default(0),
+  });
+  const id = z.object({ id: z.uuid() });
+  r.get("/federation/media/devices", kqValidator("query", page), async (c) => {
+    const { limit, offset } = c.req.valid("query");
+    return c.json(await transport().listDevices(c.get("federationActor"), limit, offset));
+  });
+  r.post(
+    "/federation/media/devices",
+    kqValidator("json", MediaDeviceRegistrationSchema),
+    async (c) =>
+      c.json(
+        { data: await transport().registerDevice(c.get("federationActor"), c.req.valid("json")) },
+        201,
+      ),
+  );
+  r.patch(
+    "/federation/media/devices/:id",
+    kqValidator("param", id),
+    kqValidator("json", MediaDeviceUpdateSchema),
+    async (c) =>
+      c.json({
+        data: await transport().updateDevice(
+          c.get("federationActor"),
+          c.req.valid("param").id,
+          c.req.valid("json"),
+        ),
+      }),
+  );
+  r.get("/federation/media/shipments", kqValidator("query", page), async (c) => {
+    const { limit, offset } = c.req.valid("query");
+    return c.json(await transport().listShipments(c.get("federationActor"), limit, offset));
+  });
+  r.post(
+    "/federation/media/shipments",
+    kqValidator("json", MediaShipmentRegistrationSchema),
+    async (c) =>
+      c.json(
+        { data: await transport().registerShipment(c.get("federationActor"), c.req.valid("json")) },
+        201,
+      ),
+  );
+  r.get(
+    "/federation/media/shipments/:id",
+    kqValidator("param", id),
+    kqValidator("query", page),
+    async (c) => {
+      const { limit, offset } = c.req.valid("query");
+      return c.json({
+        data: await transport().shipmentDetails(
+          c.get("federationActor"),
+          c.req.valid("param").id,
+          limit,
+          offset,
+        ),
+      });
+    },
+  );
+  r.post(
+    "/federation/media/shipments/:id/handoffs",
+    kqValidator("param", id),
+    kqValidator("json", MediaHandoffSchema),
+    async (c) =>
+      c.json(
+        {
+          data: await transport().recordHandoff(
+            c.get("federationActor"),
+            c.req.valid("param").id,
+            c.req.valid("json"),
+          ),
+        },
+        201,
+      ),
+  );
   r.get(
     "/federation/media/packages/:id/import-authorizations/:authorizationId/receipt",
     kqValidator("param", z.object({ id: z.uuid(), authorizationId: z.uuid() })),

@@ -25,6 +25,9 @@ import type {
   FederationStorageReconciliationRecord,
   FederationTerminalEvidence,
   FederationTerminalSourceReview,
+  MediaHandoff,
+  MediaShipmentPackage,
+  MediaShipmentState,
 } from "@kuintessence/shared/federation";
 import type {
   CommercialAdapterProposalInput,
@@ -204,7 +207,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'asset.read', 'asset.map', 'media.import', 'media.export', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -2874,6 +2877,133 @@ export const federationMediaReceipts = pgTable(
     ${t.receipt}->>'receiptId' = ${t.receiptId}::text AND ${t.receipt}->>'packageId' = ${t.packageId}::text AND
     ${t.receipt}->>'senderSiteId' = ${t.senderSiteId}::text AND ${t.receipt}->>'recipientSiteId' = ${t.localSiteId}::text AND
     ${t.acknowledgement}->>'receiptDigest' = ${t.digest}) IS TRUE`,
+    ),
+  ],
+);
+
+/** Institution-local physical inventory; never a data authorization or deletion command. */
+export const federationMediaDevices = pgTable(
+  "federation_media_devices",
+  {
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    deviceId: uuid("device_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    name: varchar("name", { length: 128 }).notNull(),
+    assetTag: varchar("asset_tag", { length: 128 }).notNull(),
+    capacityBytes: bigint("capacity_bytes", { mode: "number" }).notNull(),
+    registrationDigest: varchar("registration_digest", { length: 71 }).notNull(),
+    state: varchar("state", { length: 16 })
+      .$type<"active" | "retired" | "destroyed">()
+      .notNull()
+      .default("active"),
+    version: integer("version").notNull().default(1),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.deviceId] }),
+    uniqueIndex("federation_media_device_tag").on(t.localSiteId, t.localOrgId, t.assetTag),
+    check(
+      "federation_media_device_state",
+      sql`${t.state} IN ('active','retired','destroyed') AND ${t.version} > 0 AND ${t.capacityBytes} BETWEEN 1 AND 9007199254740991 AND ${t.registrationDigest} ~ '^sha256:[a-f0-9]{64}$'`,
+    ),
+  ],
+);
+
+export const federationMediaShipments = pgTable(
+  "federation_media_shipments",
+  {
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    shipmentId: uuid("shipment_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    name: varchar("name", { length: 128 }).notNull(),
+    senderSiteId: uuid("sender_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    recipientSiteId: uuid("recipient_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    packages: jsonb("packages").$type<MediaShipmentPackage[]>().notNull(),
+    registrationDigest: varchar("registration_digest", { length: 71 }).notNull(),
+    state: varchar("state", { length: 16 })
+      .$type<MediaShipmentState>()
+      .notNull()
+      .default("prepared"),
+    version: integer("version").notNull().default(1),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.shipmentId] }),
+    index("federation_media_shipment_org").on(t.localSiteId, t.localOrgId, t.createdAt),
+    check(
+      "federation_media_shipment_identity",
+      sql`(${t.senderSiteId} <> ${t.recipientSiteId} AND ${t.localSiteId} IN (${t.senderSiteId},${t.recipientSiteId}) AND ${t.version} > 0 AND ${t.registrationDigest} ~ '^sha256:[a-f0-9]{64}$' AND jsonb_typeof(${t.packages}) = 'array' AND jsonb_array_length(${t.packages}) BETWEEN 1 AND 100 AND ${t.state} IN ('prepared','dispatched','received','returning','returned','closed','cancelled','lost','damaged')) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationMediaShipmentDevices = pgTable(
+  "federation_media_shipment_devices",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    shipmentId: uuid("shipment_id").notNull(),
+    deviceId: uuid("device_id").notNull(),
+    active: boolean("active").notNull().default(true),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.shipmentId, t.deviceId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.shipmentId],
+      foreignColumns: [federationMediaShipments.localSiteId, federationMediaShipments.shipmentId],
+    }),
+    foreignKey({
+      columns: [t.localSiteId, t.deviceId],
+      foreignColumns: [federationMediaDevices.localSiteId, federationMediaDevices.deviceId],
+    }),
+    uniqueIndex("federation_media_device_active_shipment")
+      .on(t.localSiteId, t.deviceId)
+      .where(sql`${t.active}`),
+  ],
+);
+
+export const federationMediaHandoffs = pgTable(
+  "federation_media_handoffs",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    eventId: uuid("event_id").notNull(),
+    shipmentId: uuid("shipment_id").notNull(),
+    payload: jsonb("payload").$type<MediaHandoff>().notNull(),
+    version: integer("version").notNull(),
+    recordedBy: uuid("recorded_by")
+      .notNull()
+      .references(() => users.id),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.eventId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.shipmentId],
+      foreignColumns: [federationMediaShipments.localSiteId, federationMediaShipments.shipmentId],
+    }),
+    uniqueIndex("federation_media_handoff_version").on(t.localSiteId, t.shipmentId, t.version),
+    check(
+      "federation_media_handoff_identity",
+      sql`(${t.version} > 1 AND ${t.payload}->>'eventId' = ${t.eventId}::text AND (${t.payload}->>'expectedVersion')::int = ${t.version} - 1 AND ${t.payload}->>'state' IN ('dispatched','received','returning','returned','closed','cancelled','lost','damaged')) IS TRUE`,
     ),
   ],
 );

@@ -6,8 +6,12 @@ import {
   createPgDb,
   dataLocations,
   federationAgreements,
+  federationMediaDevices,
+  federationMediaHandoffs,
   federationMediaImportAuthorizations,
   federationMediaPackages,
+  federationMediaShipmentDevices,
+  federationMediaShipments,
   federationSigningKeys,
   orgs,
   userOrgMemberships,
@@ -17,7 +21,7 @@ import {
   FederationAgreementSchema,
   FederationMediaManifestSchema,
 } from "@kuintessence/shared/federation";
-import { and, count, eq, sql } from "drizzle-orm";
+import { and, count, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
@@ -25,6 +29,7 @@ import { z } from "zod";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationMediaRoutes } from "../routes/federation-media";
 import { FederationAdmission } from "./admission";
+import { FederationMediaLogistics } from "./media-logistics";
 import { FederationMediaPackageService } from "./media-packages";
 import { FederationPermissionService } from "./permissions";
 import { signFederationMessage } from "./signatures";
@@ -64,7 +69,7 @@ beforeAll(async () => {
     .insert(userOrgMemberships)
     .values([actor, outsider, worker, reader].map((a) => ({ ...a, role: "member" })));
   for (const a of [actor, outsider])
-    for (const capability of ["asset.map", "media.import"] as const)
+    for (const capability of ["asset.map", "media.import", "media.logistics"] as const)
       await permissions.set({ ...a, capability, enabled: true }, actor.userId);
   await permissions.set({ ...reader, capability: "asset.read", enabled: true }, actor.userId);
   [source, target] = await Promise.all([testKeys(), testKeys()]);
@@ -193,7 +198,19 @@ function app(a: typeof actor | undefined = actor, automation = false) {
     if (automation) c.set("automation" as never, true as never);
     await next();
   });
-  r.route("/api", createFederationMediaRoutes(service));
+  r.route(
+    "/api",
+    createFederationMediaRoutes(
+      service,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      logistics(),
+    ),
+  );
   return r;
 }
 
@@ -535,4 +552,343 @@ test("authorization history remains pageable and readonly sessions cannot approv
     },
   );
   expect(response.status).toBe(403);
+});
+
+function logistics() {
+  return new FederationMediaLogistics(db, target.signing.siteId, () => testNow);
+}
+function deviceInput() {
+  return {
+    deviceId: crypto.randomUUID(),
+    name: "Encrypted research drive",
+    assetTag: crypto.randomUUID(),
+    capacityBytes: 1_000_000,
+  };
+}
+async function shipmentFixture(device = deviceInput()) {
+  await logistics().registerDevice(actor, device);
+  const { manifest } = await registered();
+  const input = {
+    shipmentId: crypto.randomUUID(),
+    name: "Daily research transfer",
+    deviceIds: [device.deviceId],
+    packageIds: [manifest.packageId],
+  };
+  const shipment = await logistics().registerShipment(actor, input);
+  return { device, manifest, input, shipment };
+}
+function handoff(
+  state:
+    | "dispatched"
+    | "received"
+    | "returning"
+    | "returned"
+    | "closed"
+    | "cancelled"
+    | "lost"
+    | "damaged",
+  expectedVersion: number,
+) {
+  return {
+    eventId: crypto.randomUUID(),
+    state,
+    expectedVersion,
+    occurredAt: testNow.toISOString(),
+    note: "Recorded by authorized logistics operator",
+    evidenceDigest: null,
+  };
+}
+
+test("logistics: device registration is idempotent and duplicate asset tags do not alias devices", async () => {
+  const input = deviceInput();
+  const rows = await Promise.all([
+    logistics().registerDevice(actor, input),
+    logistics().registerDevice(actor, input),
+  ]);
+  expect(rows[0]).toEqual(rows[1]);
+  await expect(
+    logistics().registerDevice(actor, { ...input, name: "Changed request" }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await expect(
+    logistics().registerDevice(actor, { ...input, deviceId: crypto.randomUUID() }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  const events = await db
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.target, input.deviceId),
+        eq(auditLog.action, "federation.media.logistics.device.register"),
+      ),
+    );
+  expect(events).toHaveLength(1);
+});
+
+test("logistics: HTTP enforces human permission, organization, validation and no-store", async () => {
+  const { input, device } = await shipmentFixture();
+  const path = `/api/federation/media/shipments/${input.shipmentId}`;
+  expect((await app(reader).request(path)).status).toBe(403);
+  expect((await app(worker).request(path)).status).toBe(403);
+  expect((await app(outsider).request(path)).status).toBe(403);
+  expect((await app(actor, true).request(path)).status).toBe(403);
+  const result = await app().request(path);
+  expect(result.status).toBe(200);
+  expect(result.headers.get("cache-control")).toBe("no-store");
+  const body = JSON.stringify(await result.json());
+  expect(body).toContain(device.deviceId);
+  expect(body).not.toContain("signedManifest");
+  expect(body).not.toContain("identityEncrypted");
+  expect((await app().request("/api/federation/media/devices?limit=0")).status).toBe(400);
+  expect(
+    (
+      await app().request("/api/federation/media/devices", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...deviceInput(), privateKey: "forbidden" }),
+      })
+    ).status,
+  ).toBe(400);
+  await expect(
+    logistics().updateDevice(outsider, device.deviceId, {
+      expectedVersion: 1,
+      name: "Foreign drive",
+      state: "destroyed",
+      reason: "Forbidden",
+    }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+
+test("logistics: shipment replay preserves immutable package digests and never grants import", async () => {
+  const before = await db.select({ count: count() }).from(federationMediaImportAuthorizations);
+  const beforeLocations = await db.select({ count: count() }).from(dataLocations);
+  const { input, shipment, manifest } = await shipmentFixture();
+  expect(await logistics().registerShipment(actor, input)).toEqual(shipment);
+  await expect(
+    logistics().registerShipment(actor, { ...input, name: "Different content" }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  expect(shipment.packages).toEqual([
+    {
+      packageId: manifest.packageId,
+      manifestDigest: (await service.details(actor, manifest.packageId)).manifestDigest,
+      agreementRevisionId: manifest.agreementRevisionId,
+    },
+  ]);
+  await service.revoke(actor, manifest.packageId, { reason: "Data authority revoked" });
+  const event = handoff("received", 1);
+  await logistics().recordHandoff(actor, input.shipmentId, event);
+  expect(await logistics().recordHandoff(actor, input.shipmentId, event)).toMatchObject({
+    payload: event,
+    version: 2,
+  });
+  expect(await db.select({ count: count() }).from(federationMediaImportAuthorizations)).toEqual(
+    before,
+  );
+  expect(await db.select({ count: count() }).from(dataLocations)).toEqual(beforeLocations);
+  expect((await service.details(actor, manifest.packageId)).revokedAt).not.toBeNull();
+});
+
+test("logistics: one device cannot be assigned to concurrent active shipments", async () => {
+  const device = deviceInput();
+  await logistics().registerDevice(actor, device);
+  const { manifest } = await registered();
+  const base = {
+    name: "Concurrent batch",
+    deviceIds: [device.deviceId],
+    packageIds: [manifest.packageId],
+  };
+  const requests = [1, 2].map(() => ({ ...base, shipmentId: crypto.randomUUID() }));
+  const outcomes = await Promise.allSettled(
+    requests.map((input) => logistics().registerShipment(actor, input)),
+  );
+  expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+  const winner = outcomes.find((outcome) => outcome.status === "fulfilled");
+  if (!winner || winner.status !== "fulfilled") throw new Error("Missing shipment");
+  expect(
+    await db
+      .select()
+      .from(federationMediaShipments)
+      .where(
+        inArray(
+          federationMediaShipments.shipmentId,
+          requests.map((input) => input.shipmentId),
+        ),
+      ),
+  ).toHaveLength(1);
+  await logistics().recordHandoff(actor, winner.value.shipmentId, handoff("cancelled", 1));
+  const next = await logistics().registerShipment(actor, {
+    ...base,
+    shipmentId: crypto.randomUUID(),
+  });
+  expect(next.state).toBe("prepared");
+});
+
+test("logistics: parallel handoffs advance once and original retries remain idempotent", async () => {
+  const { input } = await shipmentFixture();
+  const first = handoff("dispatched", 1);
+  const replies = await Promise.all([
+    logistics().recordHandoff(actor, input.shipmentId, first),
+    logistics().recordHandoff(actor, input.shipmentId, first),
+  ]);
+  expect(replies[0]).toEqual(replies[1]);
+  await expect(
+    logistics().recordHandoff(actor, input.shipmentId, {
+      ...first,
+      note: "Changed custody statement",
+    }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  const outcomes = await Promise.allSettled([
+    logistics().recordHandoff(actor, input.shipmentId, handoff("received", 2)),
+    logistics().recordHandoff(actor, input.shipmentId, handoff("lost", 2)),
+  ]);
+  expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+  expect(await logistics().recordHandoff(actor, input.shipmentId, first)).toEqual(replies[0]);
+  expect((await logistics().shipmentDetails(actor, input.shipmentId)).events).toHaveLength(2);
+});
+
+test("logistics: return history is pageable, terminal replays do not reclaim a reused device", async () => {
+  const { input, device } = await shipmentFixture();
+  const events = [handoff("received", 1), handoff("returning", 2), handoff("returned", 3)];
+  for (const event of events) await logistics().recordHandoff(actor, input.shipmentId, event);
+  const page = await logistics().shipmentDetails(actor, input.shipmentId, 2, 0);
+  expect(page.shipment.state).toBe("returned");
+  expect(page.hasMore).toBe(true);
+  expect(page.events.map((event) => event.version)).toEqual([4, 3]);
+  expect(
+    (await logistics().shipmentDetails(actor, input.shipmentId, 2, 2)).events.map(
+      (event) => event.version,
+    ),
+  ).toEqual([2]);
+  const next = await logistics().registerShipment(actor, {
+    ...input,
+    shipmentId: crypto.randomUUID(),
+  });
+  const last = events[2];
+  if (!last) throw new Error("Missing return event");
+  await logistics().recordHandoff(actor, input.shipmentId, last);
+  expect(
+    (
+      await db
+        .select()
+        .from(federationMediaShipmentDevices)
+        .where(
+          and(
+            eq(federationMediaShipmentDevices.deviceId, device.deviceId),
+            eq(federationMediaShipmentDevices.active, true),
+          ),
+        )
+    ).map((row) => row.shipmentId),
+  ).toEqual([next.shipmentId]);
+  await expect(
+    logistics().recordHandoff(actor, input.shipmentId, handoff("dispatched", 4)),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+});
+
+test.each([
+  "lost",
+  "damaged",
+] as const)("logistics: %s retires devices without deleting packages or replicas", async (state) => {
+  const { input, device, manifest } = await shipmentFixture();
+  await logistics().recordHandoff(actor, input.shipmentId, handoff("dispatched", 1));
+  await logistics().recordHandoff(actor, input.shipmentId, handoff(state, 2));
+  const [row] = await db
+    .select()
+    .from(federationMediaDevices)
+    .where(eq(federationMediaDevices.deviceId, device.deviceId));
+  expect(row?.state).toBe("retired");
+  await expect(
+    logistics().registerShipment(actor, { ...input, shipmentId: crypto.randomUUID() }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  expect((await service.details(actor, manifest.packageId)).manifest).toEqual(manifest);
+});
+
+test("logistics: custody updates rollback together with audit failure", async () => {
+  const { input, device } = await shipmentFixture();
+  const event = handoff("cancelled", 1);
+  await db.execute(
+    sql`CREATE FUNCTION media_logistics_reject_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.media.logistics.handoff' THEN RAISE EXCEPTION 'test logistics audit failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER media_logistics_reject_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION media_logistics_reject_audit()`,
+  );
+  try {
+    await expect(logistics().recordHandoff(actor, input.shipmentId, event)).rejects.toThrow();
+    expect((await logistics().shipmentDetails(actor, input.shipmentId)).shipment.state).toBe(
+      "prepared",
+    );
+    expect(
+      await db
+        .select()
+        .from(federationMediaHandoffs)
+        .where(eq(federationMediaHandoffs.eventId, event.eventId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(federationMediaShipmentDevices)
+        .where(
+          and(
+            eq(federationMediaShipmentDevices.deviceId, device.deviceId),
+            eq(federationMediaShipmentDevices.active, true),
+          ),
+        ),
+    ).toHaveLength(1);
+  } finally {
+    await db.execute(sql`DROP TRIGGER media_logistics_reject_audit ON audit_log`);
+    await db.execute(sql`DROP FUNCTION media_logistics_reject_audit()`);
+  }
+  await logistics().recordHandoff(actor, input.shipmentId, event);
+});
+
+test("logistics: active assignments prevent destruction; stale edits and destroyed device reuse fail", async () => {
+  const { input, device } = await shipmentFixture();
+  const change = {
+    expectedVersion: 1,
+    name: "Disposed drive",
+    state: "destroyed",
+    reason: "Physical destruction recorded separately from data replicas",
+  };
+  await expect(logistics().updateDevice(actor, device.deviceId, change)).rejects.toMatchObject({
+    code: "OPERATION_CONFLICT",
+  });
+  await logistics().recordHandoff(actor, input.shipmentId, handoff("cancelled", 1));
+  expect((await logistics().updateDevice(actor, device.deviceId, change)).state).toBe("destroyed");
+  await expect(
+    logistics().updateDevice(actor, device.deviceId, {
+      ...change,
+      expectedVersion: 2,
+      state: "active",
+    }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await expect(
+    logistics().registerShipment(actor, { ...input, shipmentId: crypto.randomUUID() }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+});
+
+test("logistics: unknown packages, duplicate IDs, future timestamps and permission revocation fail", async () => {
+  const { input, device } = await shipmentFixture();
+  await expect(
+    logistics().registerShipment(actor, { ...input, packageIds: [crypto.randomUUID()] }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    logistics().registerShipment(actor, {
+      ...input,
+      deviceIds: [device.deviceId, device.deviceId],
+    }),
+  ).rejects.toThrow();
+  await expect(
+    logistics().recordHandoff(actor, input.shipmentId, {
+      ...handoff("received", 1),
+      occurredAt: new Date(testNow.getTime() + 1).toISOString(),
+    }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await permissions.set({ ...actor, capability: "media.logistics", enabled: false }, actor.userId);
+  try {
+    await expect(
+      logistics().recordHandoff(actor, input.shipmentId, handoff("received", 1)),
+    ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+    await expect(logistics().listDevices(actor)).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  } finally {
+    await permissions.set({ ...actor, capability: "media.logistics", enabled: true }, actor.userId);
+  }
+  expect((await logistics().shipmentDetails(actor, input.shipmentId)).shipment.version).toBe(1);
 });

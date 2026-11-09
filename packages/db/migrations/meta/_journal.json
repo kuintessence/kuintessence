@@ -1163,6 +1163,13 @@
       "when": 1794158958578,
       "tag": "0165_luxuriant_monster_badoon",
       "breakpoints": true
+    },
+    {
+      "idx": 166,
+      "version": "7",
+      "when": 1794182446309,
+      "tag": "0166_old_black_panther",
+      "breakpoints": true
     }
   ]
 }

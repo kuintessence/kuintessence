@@ -204,6 +204,7 @@
           "approve": "Approve agreements"
         },
         "media": {
+          "logistics": "Manage media transport",
           "export": "Approve media exports",
           "import": "Approve media imports"
         },
@@ -245,6 +246,7 @@
           "approve": "Sign for this organization, attach counterparty signatures and change local agreement state; includes agreement reading. Platform roles do not automatically grant this authority."
         },
         "media": {
+          "logistics": "Record this organization’s devices, shipments and handoffs; does not grant export, decryption, import, use or data deletion.",
           "export": "Approve or revoke dataset delivery to another institution; active data policy must also allow download, redistribution and cross-center replication.",
           "import": "Approve or revoke media imports into this organization’s selected Agent and managed root; source authorization and data use permissions remain separate."
         },
