@@ -28,6 +28,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
 import { allocateTaskCompletion } from "./completion-capacity";
+import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -374,8 +375,7 @@ export class FederationCommercialExecutionService {
       }
       return policies.authorize(tx, automatic.policyId, actor.orgId, payload);
     };
-    const snapshot = await this.db.transaction(async (tx) => {
-      await authorize(tx);
+    const existingApproval = async (tx: PgTransaction) => {
       const [existing] = await tx
         .select()
         .from(approvals)
@@ -385,8 +385,13 @@ export class FederationCommercialExecutionService {
       if (existing) {
         if (existing.digest !== expectedDigest) throw new FederationError("OPERATION_CONFLICT");
         await automatic?.guard?.complete(tx, existing);
-        return { existing, reserve: null };
       }
+      return existing;
+    };
+    const snapshot = await this.db.transaction(async (tx) => {
+      await authorize(tx);
+      const existing = await existingApproval(tx);
+      if (existing) return { existing, reserve: null };
       if (payload.kind === "commercial-reservation")
         await assertReservationCapacity(
           tx,
@@ -395,7 +400,12 @@ export class FederationCommercialExecutionService {
           payload,
           this.storageGuard,
         );
-      return { existing: null, reserve: await this.validate(tx, actor, revisionId, payload) };
+      const reserve = await this.validate(tx, actor, revisionId, payload);
+      await lockFederationDisputeTask(tx, this.signingKey.siteId, reserve.request);
+      const concurrent = await existingApproval(tx);
+      if (concurrent) return { existing: concurrent, reserve: null };
+      await assertFederationTaskNotDisputed(tx, this.signingKey.siteId, reserve.request);
+      return { existing: null, reserve };
     });
     if (snapshot.existing) return snapshot.existing;
     if (!snapshot.reserve) throw new FederationError("INVALID_MESSAGE");
@@ -442,7 +452,12 @@ export class FederationCommercialExecutionService {
         currentKey,
         this.clock(),
       );
-      await this.validate(tx, actor, revisionId, payload);
+      // Serialize the saved signature with opening a case; market I/O must not hold this lock.
+      const reserve = await this.validate(tx, actor, revisionId, payload);
+      await lockFederationDisputeTask(tx, this.signingKey.siteId, reserve.request);
+      const existing = await existingApproval(tx);
+      if (existing) return existing;
+      await assertFederationTaskNotDisputed(tx, this.signingKey.siteId, reserve.request);
       const { recordId } = identity(payload);
       const [created] = await tx
         .insert(approvals)

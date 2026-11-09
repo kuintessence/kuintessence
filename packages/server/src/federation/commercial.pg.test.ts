@@ -21,6 +21,8 @@ import {
   federationCommercialApprovalSyncs,
   federationCommercialBills,
   federationCommercialRefunds,
+  federationCompletionClaims,
+  federationDisputes,
   federationEvidence,
   federationExecutionTerminals,
   federationMarketRequests,
@@ -92,6 +94,7 @@ import {
   CommercialApprovalQuerySchema,
   CommercialApprovalWaitingSchema,
 } from "@kuintessence/shared/federation/commercial-approval-exchange";
+import { CommercialDisputeSchema } from "@kuintessence/shared/federation/disputes";
 import {
   type MarketAdapterProposalInput,
   type MarketAdvanceResult,
@@ -136,6 +139,7 @@ import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
 import { FederationDispatchAuthorization } from "./dispatch-authorization";
+import { lockFederationDisputeTask } from "./dispute-freeze";
 import { FederationExecutionAutomation } from "./execution-automation";
 import { FederationExecutionBindingService } from "./execution-binding";
 import { FederationExecutionConfirmationService } from "./execution-confirmation";
@@ -336,6 +340,7 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
 afterAll(async () => {
   for (const f of fixtures) {
     const siteIds = [f.a.signing.siteId, f.b.signing.siteId];
+    await db.delete(federationDisputes).where(inArray(federationDisputes.localSiteId, siteIds));
     await db
       .delete(workflowExecutionDelegations)
       .where(inArray(workflowExecutionDelegations.localSiteId, siteIds));
@@ -11091,4 +11096,305 @@ test("automatic refund revoked authority cannot sign but explicit replacement ca
   expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data[0]?.authorizationPolicyId).toBe(
     replacement.id,
   );
+});
+
+// Stored-case fixtures exercise approval fencing; opening/subject verification has its own PG suite.
+async function executionDisputeRow(
+  f: Awaited<ReturnType<typeof executionFixture>>,
+  signing = f.a.signing,
+  task = f.reservation.request,
+) {
+  const payload = CommercialDisputeSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute",
+    caseId: randomUUID(),
+    domainId: f.reservation.domainId,
+    agreementRevisionId: f.revisionId,
+    agreementDigest: f.reservation.agreementDigest,
+    sourceSiteId: f.a.signing.siteId,
+    targetSiteId: f.b.signing.siteId,
+    openingSiteId: signing.siteId,
+    taskId: task.taskId,
+    attempt: task.attempt,
+    subject: {
+      recordType: "usage",
+      recordId: randomUUID(),
+      recordDigest: `sha256:${"a".repeat(64)}`,
+    },
+    reason: "Disputed original usage",
+    requestedResolution: "Review the original measurement",
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const openingJws = await signFederationMessage(CommercialDisputeSchema, payload, signing);
+  const digest = `sha256:${createHash("sha256").update(JSON.stringify(payload)).digest("hex")}`;
+  return {
+    localSiteId: signing.siteId,
+    caseId: payload.caseId,
+    localOrgId: f.actor.orgId,
+    agreementRevisionId: f.revisionId,
+    taskId: payload.taskId,
+    attempt: payload.attempt,
+    payload,
+    digest,
+    openingJws,
+    openedBy: f.actor.userId,
+  };
+}
+async function insertExecutionDispute(row: Awaited<ReturnType<typeof executionDisputeRow>>) {
+  await db.transaction(async (tx) => {
+    await lockFederationDisputeTask(tx, row.localSiteId, row);
+    await tx.insert(federationDisputes).values(row);
+  });
+}
+
+test("execution dispute blocks fresh reservations before market I/O and scopes the fence to task and attempt", async () => {
+  const f = await executionFixture();
+  const row = await executionDisputeRow(f);
+  await insertExecutionDispute(row);
+  await expect(f.execution.approve(f.actor, f.revisionId, f.reservation)).rejects.toThrow(
+    "DATA_WAITING",
+  );
+  expect(f.queries()).toBe(0);
+  expect(
+    await db
+      .select()
+      .from(executionApprovals)
+      .where(eq(executionApprovals.localSiteId, row.localSiteId)),
+  ).toHaveLength(0);
+  for (const state of ["DISPUTED", "EVIDENCE_WAITING", "DECIDED", "APPLICATION_WAITING"] as const) {
+    await db
+      .update(federationDisputes)
+      .set({ state })
+      .where(eq(federationDisputes.caseId, row.caseId));
+    await expect(f.execution.approve(f.actor, f.revisionId, f.reservation)).rejects.toThrow(
+      "DATA_WAITING",
+    );
+  }
+  // A later attempt and a different task must not inherit this case's fence.
+  for (const request of [
+    { ...f.reservation.request, attempt: 2 },
+    { ...f.reservation.request, taskId: randomUUID() },
+  ]) {
+    const approved = await f.execution
+      .approve(f.actor, f.revisionId, {
+        ...f.reservation,
+        reservationId: randomUUID(),
+        request,
+      })
+      .catch((error: unknown) => error);
+    // The public claim still names the original reservation; it must reach that independent check.
+    expect(approved).toMatchObject({ code: "OPERATION_CONFLICT" });
+  }
+  expect(f.queries()).toBe(2);
+  await db
+    .update(federationDisputes)
+    .set({ state: "RESOLVED" })
+    .where(eq(federationDisputes.caseId, row.caseId));
+  expect((await f.execution.approve(f.actor, f.revisionId, f.reservation)).recordId).toBe(
+    f.reservation.reservationId,
+  );
+});
+
+test("execution dispute rechecks reservation and release after market I/O without saving a new commitment", async () => {
+  for (const release of [false, true]) {
+    const f = await executionFixture();
+    if (release) await approveReservation(f);
+    const payload = release ? await releasePayload(f) : f.reservation;
+    const before = await db
+      .select()
+      .from(executionApprovals)
+      .where(eq(executionApprovals.localSiteId, f.a.signing.siteId));
+    const capacity = await db
+      .select()
+      .from(federationCompletionClaims)
+      .where(eq(federationCompletionClaims.localSiteId, f.a.signing.siteId));
+    f.onQuery(async () => insertExecutionDispute(await executionDisputeRow(f)));
+    await expect(f.execution.approve(f.actor, f.revisionId, payload)).rejects.toThrow(
+      "DATA_WAITING",
+    );
+    expect(
+      await db
+        .select()
+        .from(executionApprovals)
+        .where(eq(executionApprovals.localSiteId, f.a.signing.siteId)),
+    ).toEqual(before);
+    expect(
+      await db
+        .select()
+        .from(federationCompletionClaims)
+        .where(eq(federationCompletionClaims.localSiteId, f.a.signing.siteId)),
+    ).toEqual(capacity);
+    const id =
+      payload.kind === "commercial-reservation" ? payload.reservationId : payload.releaseId;
+    expect(
+      await db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.target, id),
+            eq(auditLog.action, "federation.commercial.execution.approve"),
+          ),
+        ),
+    ).toHaveLength(0);
+  }
+});
+
+test("execution dispute preserves original reservation and release replay and counterparty completion", async () => {
+  const f = await executionFixture();
+  const reserve = await approveReservation(f);
+  const release = await releasePayload(f);
+  const first = await f.execution.approve(f.actor, f.revisionId, release);
+  await insertExecutionDispute(await executionDisputeRow(f));
+  const queries = f.queries();
+  expect((await f.execution.approve(f.actor, f.revisionId, f.reservation)).approvalJws).toBe(
+    reserve.own.approvalJws,
+  );
+  expect((await f.execution.approve(f.actor, f.revisionId, release)).approvalJws).toBe(
+    first.approvalJws,
+  );
+  expect(f.queries()).toBe(queries);
+  await expect(
+    f.execution.approve(f.actor, f.revisionId, { ...release, salt: "f".repeat(64) }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(
+    f.execution.approve(f.actor, f.revisionId, { ...release, releaseId: randomUUID() }),
+  ).rejects.toThrow("DATA_WAITING");
+  const other = await signFederationMessage(
+    CommercialExecutionApprovalSchema,
+    release,
+    f.b.signing,
+  );
+  for (let i = 0; i < 2; i++)
+    await f.execution.attachCounterparty(f.actor, f.revisionId, release.releaseId, other);
+  const queued = await db
+    .select()
+    .from(submissions)
+    .where(
+      and(
+        eq(submissions.localSiteId, f.a.signing.siteId),
+        sql`${submissions.input}->>'recordId' = ${release.releaseId}`,
+      ),
+    );
+  expect(queued).toHaveLength(1);
+});
+
+test("execution dispute blocks automatic source and provider commitments without consuming authorization", async () => {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  for (const provider of [false, true]) {
+    const f = await reservationPolicyFixture(provider);
+    const policy = await f.grant();
+    const sourceJws = provider ? await f.sourceJws() : undefined;
+    const before = await f.view();
+    const storage = testCompletionStorage();
+    const capacity = new FederationCompletionCapacity(db, f.signing.siteId, storage.guard);
+    await capacity.configure(
+      { reserveId: storage.reserveId, capacityBytes: "80", taskBytes: "60", marketBytes: "20" },
+      f.actor.userId,
+    );
+    expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "20", obligations: 1 });
+    const execution = new FederationCommercialExecutionService(
+      db,
+      f.signing,
+      {
+        query: async () => {
+          await insertExecutionDispute(await executionDisputeRow(f, f.signing));
+          return { operation: "get-demand", demand: f.state };
+        },
+      },
+      undefined,
+      storage.guard,
+    );
+    let completed = 0;
+    await expect(
+      execution.approvePreauthorized(policy.id, f.reservation, sourceJws, {
+        authorize: async () => {},
+        complete: async () => {
+          completed++;
+        },
+      }),
+    ).rejects.toThrow("DATA_WAITING");
+    expect(completed).toBe(0);
+    expect(await f.rows()).toHaveLength(0);
+    expect(await f.view()).toEqual(before);
+    expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "20", obligations: 1 });
+  }
+});
+
+test("execution dispute returns an approval saved by a concurrent caller before opening the case", async () => {
+  const f = await reservationPolicyFixture();
+  const policy = await f.grant();
+  const arrived = Promise.withResolvers<void>(),
+    proceed = Promise.withResolvers<void>();
+  f.beforeQuery(async () => {
+    arrived.resolve();
+    await proceed.promise;
+  });
+  const slow = f.execution.approvePreauthorized(policy.id, f.reservation);
+  let original: Awaited<typeof slow> | undefined;
+  try {
+    await arrived.promise;
+    const concurrent = new FederationCommercialExecutionService(db, f.a.signing, {
+      query: async () => ({ operation: "get-demand", demand: f.state }),
+    });
+    original = await concurrent.approvePreauthorized(policy.id, f.reservation);
+    await insertExecutionDispute(await executionDisputeRow(f));
+  } finally {
+    proceed.resolve();
+  }
+  const recovered = await slow;
+  expect(recovered.approvalJws).toBe(original?.approvalJws);
+  expect(await f.view()).toMatchObject({ authorizedTasks: 1, authorizedAmount: "60" });
+  expect(await f.rows()).toHaveLength(1);
+  expect((await f.execution.approvePreauthorized(policy.id, f.reservation)).approvalJws).toBe(
+    recovered.approvalJws,
+  );
+});
+
+test("execution dispute approval waits for a concurrent case transaction and observes its committed fence", async () => {
+  const f = await executionFixture();
+  const row = await executionDisputeRow(f);
+  const arrived = Promise.withResolvers<void>(),
+    proceed = Promise.withResolvers<void>();
+  let opening: Promise<void> | undefined;
+  f.onQuery(async () => {
+    opening = db.transaction(async (tx) => {
+      await lockFederationDisputeTask(tx, row.localSiteId, row);
+      await tx.insert(federationDisputes).values(row);
+      arrived.resolve();
+      await proceed.promise;
+    });
+    await arrived.promise;
+  });
+  const result = f.execution.approve(f.actor, f.revisionId, f.reservation).then(
+    () => "approved",
+    (error: unknown) => error,
+  );
+  try {
+    await arrived.promise;
+    let waiting = false;
+    for (let n = 0; n < 200; n++) {
+      const rows = await db.execute(
+        sql`select 1 from pg_locks where locktype = 'advisory' and not granted`,
+      );
+      if (rows.length) {
+        waiting = true;
+        break;
+      }
+      await Bun.sleep(10);
+    }
+    expect(waiting).toBe(true);
+  } finally {
+    proceed.resolve();
+    await opening;
+  }
+  expect(await result).toMatchObject({ code: "DATA_WAITING" });
+  expect(
+    await db
+      .select()
+      .from(executionApprovals)
+      .where(eq(executionApprovals.localSiteId, row.localSiteId)),
+  ).toHaveLength(0);
 });
