@@ -20,6 +20,7 @@ import {
   type WorkflowPlacementConfig,
   WorkflowPlacementConfigSchema,
 } from "@kuintessence/shared";
+import { FabricCaseTrustSchema } from "@kuintessence/shared/federation/case-ledger";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
@@ -58,6 +59,7 @@ import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
 import { FederationBillingService } from "./federation/billing";
 import { FederationCancellationMonitor } from "./federation/cancellation-monitor";
+import { FederationCasePublicationService } from "./federation/case-publications";
 import { FederationClosingAutomation } from "./federation/closing-automation";
 import { FederationClosingPolicyService } from "./federation/closing-policy";
 import { FederationCommercialAgreementService } from "./federation/commercial-agreements";
@@ -192,6 +194,7 @@ import { createDataMarketRoutes } from "./routes/data-market";
 import { dslRoutes } from "./routes/dsl";
 import { createFederationAgreementRoutes } from "./routes/federation-agreements";
 import { createFederationAssetRoutes } from "./routes/federation-assets";
+import { createFederationCasePublicationRoutes } from "./routes/federation-case-publications";
 import { createFederationCommercialRoutes } from "./routes/federation-commercial";
 import { createFederationEvidenceRoutes } from "./routes/federation-evidence";
 import { createFederationMarketRoutes } from "./routes/federation-market";
@@ -1889,6 +1892,19 @@ if (federationSigningKey)
     "/",
     createFederationEvidenceRoutes(
       new FederationEvidenceService(db, federationSigningKey, federationSender),
+    ),
+  );
+if (federationSigningKey && config.FEDERATION_CASE_TRUST_FILE)
+  protectedApi.route(
+    "/",
+    createFederationCasePublicationRoutes(
+      new FederationCasePublicationService(
+        db,
+        federationSigningKey,
+        FabricCaseTrustSchema.parse(
+          JSON.parse(await readFile(config.FEDERATION_CASE_TRUST_FILE, "utf8")),
+        ),
+      ),
     ),
   );
 if (federationSigningKey && federationCommercial)

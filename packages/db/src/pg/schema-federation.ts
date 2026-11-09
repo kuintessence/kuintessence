@@ -31,6 +31,7 @@ import type {
   MediaShipmentPackage,
   MediaShipmentState,
 } from "@kuintessence/shared/federation";
+import type { CasePublication, CaseRevocation } from "@kuintessence/shared/federation/case-ledger";
 import type {
   CommercialAdapterProposalInput,
   CommercialAdjustment,
@@ -149,6 +150,8 @@ export const federationSigningKeys = pgTable(
           | "commercial-payment"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
+          | "case-evidence-publication"
+          | "case-publication-revocation"
           | "commercial-disclosure-read-query"
           | "commercial-disclosure-download-query"
           | "commercial-disclosure-read-authorization"
@@ -234,7 +237,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'disclosure.approve', 'disclosure.receive', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -1673,6 +1676,77 @@ export const federationDisclosures = pgTable(
       AND ${t.recipientSiteId}::text NOT IN (${t.payload}->'grant'->>'sourceSiteId', ${t.payload}->'grant'->>'targetSiteId')
       AND (${t.counterpartyJws} IS NULL) = (${t.confirmedAt} IS NULL)
       AND (${t.revokedAt} IS NULL) = (${t.revokedBy} IS NULL)
+    ) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationCasePublications = pgTable(
+  "federation_case_publications",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    publicationId: uuid("publication_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    grantId: uuid("grant_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    payload: jsonb("payload").$type<CasePublication>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedBy: uuid("revoked_by").references(() => users.id),
+    revocationPayload: jsonb("revocation_payload").$type<CaseRevocation>(),
+    revocationJws: text("revocation_jws"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.publicationId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.grantId],
+      foreignColumns: [federationDisclosures.localSiteId, federationDisclosures.grantId],
+    }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    index("federation_case_publication_org").on(
+      t.localSiteId,
+      t.localOrgId,
+      t.agreementRevisionId,
+      t.caseId,
+      t.createdAt,
+    ),
+    check(
+      "federation_case_publication_identity",
+      sql`(
+      ${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.payload}->>'kind' = 'case-evidence-publication'
+      AND ${t.payload}->>'publicationId' = ${t.publicationId}::text
+      AND ${t.payload}->'scope'->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND ${t.payload}->'scope'->>'grantId' = ${t.grantId}::text
+      AND ${t.payload}->'scope'->>'caseId' = ${t.caseId}::text
+      AND ${t.localSiteId}::text IN (${t.payload}->'scope'->>'sourceSiteId', ${t.payload}->'scope'->>'targetSiteId')
+      AND (${t.counterpartyJws} IS NULL) = (${t.confirmedAt} IS NULL)
+      AND (${t.revokedAt} IS NULL) = (${t.revokedBy} IS NULL)
+      AND (${t.revokedAt} IS NULL) = (${t.revocationPayload} IS NULL)
+      AND (${t.revokedAt} IS NULL) = (${t.revocationJws} IS NULL)
+      AND (${t.revocationPayload} IS NULL OR (
+        ${t.revocationPayload}->>'kind' = 'case-publication-revocation'
+        AND ${t.revocationPayload}->>'publicationId' = ${t.publicationId}::text
+        AND ${t.revocationPayload}->>'publicationDigest' = ${t.digest}
+        AND ${t.revocationPayload}->>'caseDomainId' = ${t.payload}->>'caseDomainId'
+        AND ${t.revocationPayload}->>'issuerSiteId' = ${t.localSiteId}::text
+      ))
     ) IS TRUE`,
     ),
   ],

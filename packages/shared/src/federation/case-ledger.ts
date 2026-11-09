@@ -124,6 +124,13 @@ export const CasePublicationSchema = z
     salt: z.string().regex(/^[a-f0-9]{64}$/),
   })
   .refine((value) => Date.parse(value.issuedAt) < Date.parse(value.validUntil));
+export type CasePublication = z.infer<typeof CasePublicationSchema>;
+export const CasePublicationDraftSchema = z.strictObject({
+  publicationId: z.uuid(),
+  caseDomainId: z.uuid(),
+  grantId: z.uuid(),
+  validUntil: z.iso.datetime(),
+});
 export const CaseEvidenceEnvelopeSchema = z.strictObject({
   publication: CommercialAgreementEnvelopeSchema,
   evidence: CommercialDisclosureEvidenceSchema,
@@ -138,6 +145,30 @@ export const CaseRevocationSchema = z.strictObject({
   issuerSiteId: z.uuid(),
   issuedAt: z.iso.datetime(),
   salt: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type CaseRevocation = z.infer<typeof CaseRevocationSchema>;
+export const CasePublicationApprovalSchema = z.object({
+  localSiteId: z.uuid(),
+  publicationId: z.uuid(),
+  agreementRevisionId: z.uuid(),
+  grantId: z.uuid(),
+  caseId: z.uuid(),
+  localOrgId: z.uuid(),
+  payload: CasePublicationSchema,
+  digest: FederationDigestSchema,
+  approvalJws: z.string(),
+  counterpartyJws: z.string().nullable(),
+  approvedBy: z.uuid(),
+  confirmedAt: z.iso.datetime().nullable(),
+  revokedAt: z.iso.datetime().nullable(),
+  revokedBy: z.uuid().nullable(),
+  revocationPayload: CaseRevocationSchema.nullable(),
+  revocationJws: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export const CasePublicationListSchema = z.object({
+  data: CasePublicationApprovalSchema.array(),
+  hasMore: z.boolean(),
 });
 export const CaseRevocationEnvelopeSchema = z.strictObject({
   issuerSiteId: z.uuid(),

@@ -17,6 +17,7 @@ import {
   federationAgreements,
   federationBudgets,
   federationCapabilities,
+  federationCasePublications,
   federationCertificates,
   federationClosingPolicies,
   federationClosingTasks,
@@ -67,6 +68,14 @@ import {
   FederationCancellationReceiptSchema,
 } from "@kuintessence/shared/federation";
 import {
+  CasePublicationApprovalSchema,
+  CasePublicationListSchema,
+  CasePublicationSchema,
+  CaseRevocationSchema,
+  CaseSigningKindSchema,
+  FabricCaseTrustSchema,
+} from "@kuintessence/shared/federation/case-ledger";
+import {
   CommercialAdjustmentListSchema,
   CommercialAdjustmentSchema,
   CommercialAgreementSchema,
@@ -112,6 +121,7 @@ import { z } from "zod";
 import { createErrorHandler } from "../middleware/error-handler";
 import { federationOrganizationContext } from "../middleware/federation-organization";
 import type { BoundPrincipal } from "../middleware/principal-binder";
+import { createFederationCasePublicationRoutes } from "../routes/federation-case-publications";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
 import { createFederationEvidenceRoutes } from "../routes/federation-evidence";
 import { revokeDataDeliveryJobs } from "../services/data-delivery";
@@ -122,6 +132,7 @@ import { FederationAdjustmentService } from "./adjustment";
 import { federationMaterialDigest } from "./assets";
 import { readAttestationBacklog } from "./attestation-backlog";
 import { FederationBillingService } from "./billing";
+import { FederationCasePublicationService } from "./case-publications";
 import { FederationClosingAutomation } from "./closing-automation";
 import { ClosingPolicyInputSchema, FederationClosingPolicyService } from "./closing-policy";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
@@ -11685,4 +11696,594 @@ test("disclosure delivery expiration while waiting for the publication lock cann
     setSystemTime();
   }
   expect(await f.imported()).toHaveLength(1);
+});
+
+async function casePublicationFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await disclosureFixture(mode);
+  await f.confirm(f.value);
+  const recipient = await testKeys(f.recipient);
+  const parties = [f.source, f.provider, recipient];
+  const ledger = FabricCaseTrustSchema.parse({
+    version: 1,
+    generationId: randomUUID(),
+    organizations: await Promise.all(
+      parties.map(async (key, i) => ({
+        siteId: key.signing.siteId,
+        mspId: ["AMSP", "BMSP", "RMSP"][i],
+        keys: [
+          {
+            keyId: key.signing.keyId,
+            publicKeyPem: await exportSPKI(key.verification.publicKey),
+            validFrom: "2020-01-01T00:00:00Z",
+            validUntil: "2099-01-01T00:00:00Z",
+          },
+        ],
+      })),
+    ),
+    domains: [
+      {
+        domainId: randomUUID(),
+        commercialDomainId: f.value.grant.domainId,
+        sourceSiteId: f.source.signing.siteId,
+        targetSiteId: f.provider.signing.siteId,
+        recipientSiteId: f.recipient,
+        collection: "case_ABR_v1",
+      },
+    ],
+    keyPurposes: parties.map((key) => ({
+      siteId: key.signing.siteId,
+      keyId: key.signing.keyId,
+      kinds: [...CaseSigningKindSchema.options],
+    })),
+  });
+  cleanup.push(async () => {
+    await db
+      .delete(federationCasePublications)
+      .where(
+        inArray(federationCasePublications.localSiteId, [
+          f.source.signing.siteId,
+          f.provider.signing.siteId,
+        ]),
+      );
+  });
+  for (const [key, actor] of [
+    [f.source, f.sourceActor],
+    [f.provider, f.actor],
+  ] as const) {
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["case-evidence-publication","case-publication-revocation"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, key.signing.siteId));
+    await new FederationPermissionService(db).set(
+      { ...actor, capability: "case.publish", enabled: true },
+      actor.userId,
+    );
+  }
+  const sourceCases = new FederationCasePublicationService(db, f.source.signing, ledger),
+    providerCases = new FederationCasePublicationService(db, f.provider.signing, ledger);
+  const input = {
+    publicationId: randomUUID(),
+    caseDomainId: ledger.domains[0]?.domainId ?? "",
+    grantId: f.value.grant.grantId,
+    validUntil: f.value.grant.validUntil,
+  };
+  const publication = await sourceCases.draft(f.sourceActor, f.revisionId, input);
+  const read = async () =>
+    (
+      await sourceCases.list(f.sourceActor, f.revisionId, 50, 0, {
+        publicationId: input.publicationId,
+      })
+    ).data[0];
+  const approve = async () => ({
+    a: await sourceCases.approve(f.sourceActor, f.revisionId, publication),
+    b: await providerCases.approve(f.actor, f.revisionId, publication),
+  });
+  return {
+    ...f,
+    ledger,
+    recipientKeys: recipient,
+    sourceCases,
+    providerCases,
+    publication,
+    input,
+    readPublication: read,
+    approvePublication: approve,
+  };
+}
+
+test("case publication preserves independent original signatures in direct and attested modes without financial or ledger writes", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await casePublicationFixture(mode),
+      budget = await f.budget(),
+      prior = await db.select().from(federationCommercialSubmissions);
+    expect(await f.readPublication()).toBeUndefined();
+    const { a, b } = await f.approvePublication();
+    expect(a.confirmedAt).toBeNull();
+    expect(a.counterpartyJws).toBeNull();
+    expect(a.revocationJws).toBeNull();
+    const confirmed = await f.sourceCases.attachCounterparty(
+      f.sourceActor,
+      f.revisionId,
+      f.publication.publicationId,
+      b.approvalJws,
+    );
+    expect(confirmed.approvalJws).toBe(a.approvalJws);
+    expect(confirmed.counterpartyJws).toBe(b.approvalJws);
+    const restart = new FederationCasePublicationService(db, f.source.signing, f.ledger);
+    expect((await restart.approve(f.sourceActor, f.revisionId, f.publication)).approvalJws).toBe(
+      a.approvalJws,
+    );
+    expect(
+      await restart.attachCounterparty(
+        f.sourceActor,
+        f.revisionId,
+        f.publication.publicationId,
+        b.approvalJws,
+      ),
+    ).toEqual(confirmed);
+    expect(await f.budget()).toEqual(budget);
+    expect(await db.select().from(federationCommercialSubmissions)).toEqual(prior);
+    expect(confirmed.payload.scope).toMatchObject({
+      grantId: f.value.grant.grantId,
+      caseId: f.caseId,
+      evidenceRecipientSiteId: f.recipient,
+    });
+  }
+});
+
+test("case publication requires dedicated current human authority and cannot be granted by platform role or disclosure authority", async () => {
+  const f = await casePublicationFixture();
+  await new FederationPermissionService(db).set(
+    { ...f.sourceActor, capability: "case.publish", enabled: false },
+    f.sourceActor.userId,
+  );
+  await expect(f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.sourceActor, capability: "case.publish", enabled: true },
+    f.sourceActor.userId,
+  );
+  await db.update(users).set({ serviceAccount: true }).where(eq(users.id, f.sourceActor.userId));
+  await expect(f.sourceCases.draft(f.sourceActor, f.revisionId, f.input)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await db.update(users).set({ serviceAccount: false }).where(eq(users.id, f.sourceActor.userId));
+  await expect(f.sourceCases.approve(f.actor, f.revisionId, f.publication)).rejects.toThrow();
+  expect((await f.sourceCases.list(f.actor, f.revisionId)).data).toHaveLength(0);
+});
+
+test("case publication binds exact current disclosure digest recipient commercial domain and configured case domain", async () => {
+  const f = await casePublicationFixture();
+  for (const patch of [
+    { caseId: randomUUID() },
+    { disclosureDigest: `sha256:${"f".repeat(64)}` },
+    { evidenceRecipientSiteId: randomUUID() },
+    { domainId: randomUUID() },
+  ])
+    await expect(
+      f.sourceCases.approve(f.sourceActor, f.revisionId, {
+        ...f.publication,
+        scope: { ...f.publication.scope, ...patch },
+      }),
+    ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.sourceCases.approve(f.sourceActor, f.revisionId, {
+      ...f.publication,
+      caseDomainId: randomUUID(),
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.sourceCases.approve(f.sourceActor, f.revisionId, {
+      ...f.publication,
+      validUntil: "2099-01-01T00:00:00Z",
+    }),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  expect(await f.readPublication()).toBeUndefined();
+});
+
+test("case publication rejects a single disclosure signature and later source disclosure revocation", async () => {
+  const f = await casePublicationFixture();
+  await db
+    .update(federationDisclosures)
+    .set({ counterpartyJws: null, confirmedAt: null })
+    .where(
+      and(
+        eq(federationDisclosures.localSiteId, f.source.signing.siteId),
+        eq(federationDisclosures.grantId, f.value.grant.grantId),
+      ),
+    );
+  await expect(f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  const other = (await f.peer.list(f.actor, f.revisionId)).data[0];
+  expect(other).toBeDefined();
+  if (!other) throw new Error("Missing disclosure");
+  await f.service.attachCounterparty(
+    f.sourceActor,
+    f.revisionId,
+    f.value.grant.grantId,
+    other.approvalJws,
+  );
+  const pair = await f.approvePublication();
+  await f.service.revoke(f.sourceActor, f.revisionId, f.value.grant.grantId);
+  await expect(
+    f.sourceCases.attachCounterparty(
+      f.sourceActor,
+      f.revisionId,
+      f.publication.publicationId,
+      pair.b.approvalJws,
+    ),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  expect(
+    (await f.sourceCases.revoke(f.sourceActor, f.revisionId, f.publication.publicationId))
+      .revocationJws,
+  ).not.toBeNull();
+});
+
+test("case publication signs an immutable independent revocation for either party even before countersignature", async () => {
+  const f = await casePublicationFixture(),
+    pair = await f.approvePublication();
+  for (const [service, actor, key, original] of [
+    [f.sourceCases, f.sourceActor, f.source, pair.a],
+    [f.providerCases, f.actor, f.provider, pair.b],
+  ] as const) {
+    const row = await service.revoke(actor, f.revisionId, f.publication.publicationId);
+    expect(row.approvalJws).toBe(original.approvalJws);
+    expect(row.counterpartyJws).toBeNull();
+    expect(row.revocationJws).toBeTruthy();
+    if (!row.revocationJws) throw new Error("Missing revocation");
+    const signed = await verifyFederationMessage(
+      CaseRevocationSchema,
+      row.revocationJws,
+      await f.trust.resolveKey(key.signing.siteId, key.signing.keyId, new Date()),
+      new Date(),
+    );
+    expect(signed.payload).toMatchObject({
+      publicationId: row.publicationId,
+      publicationDigest: row.digest,
+      issuerSiteId: key.signing.siteId,
+    });
+    expect(await service.revoke(actor, f.revisionId, f.publication.publicationId)).toEqual(row);
+    await expect(service.approve(actor, f.revisionId, f.publication)).rejects.toThrow(
+      "AUTHORIZATION_EXPIRED",
+    );
+  }
+});
+
+test("case publication verifies both platform and configured chain signing purposes", async () => {
+  const f = await casePublicationFixture();
+  const disabled = structuredClone(f.ledger);
+  for (const key of disabled.keyPurposes)
+    key.kinds = key.kinds.filter((kind) => kind !== "case-evidence-publication");
+  await expect(
+    new FederationCasePublicationService(db, f.source.signing, disabled).approve(
+      f.sourceActor,
+      f.revisionId,
+      f.publication,
+    ),
+  ).rejects.toThrow();
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'case-evidence-publication'` })
+    .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+  await expect(f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication)).rejects.toThrow();
+  expect(await f.readPublication()).toBeUndefined();
+});
+
+test("case publication rejects an altered underlying signed original after draft creation", async () => {
+  const f = await casePublicationFixture();
+  await db
+    .update(federationCommercialPayments)
+    .set({ payload: { ...f.receipt.payload, amount: "999" } })
+    .where(
+      and(
+        eq(federationCommercialPayments.localSiteId, f.source.signing.siteId),
+        eq(federationCommercialPayments.receiptId, f.receipt.receiptId),
+      ),
+    );
+  await expect(f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication)).rejects.toThrow();
+  expect(await f.readPublication()).toBeUndefined();
+});
+
+test("case publication concurrent retries keep one approval signature and reject reuse with different content", async () => {
+  const f = await casePublicationFixture();
+  const [a, b] = await Promise.all([
+    f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication),
+    f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication),
+  ]);
+  expect(a.approvalJws).toBe(b.approvalJws);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.action, "federation.case_publication.approve"),
+          eq(auditLog.target, a.publicationId),
+        ),
+      ),
+  ).toHaveLength(1);
+  await expect(
+    f.sourceCases.approve(f.sourceActor, f.revisionId, { ...f.publication, salt: "f".repeat(64) }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  const changed = await signFederationMessage(
+    CasePublicationSchema,
+    { ...f.publication, salt: "e".repeat(64) },
+    f.provider.signing,
+  );
+  await expect(
+    f.sourceCases.attachCounterparty(f.sourceActor, f.revisionId, a.publicationId, changed),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("case publication audits roll back approval attachment and signed revocation atomically", async () => {
+  const f = await casePublicationFixture();
+  const stages = {
+    approve: sql`alter table audit_log add constraint case_publication_audit_test check (action <> 'federation.case_publication.approve') NOT VALID`,
+    confirm: sql`alter table audit_log add constraint case_publication_audit_test check (action <> 'federation.case_publication.confirm') NOT VALID`,
+    revoke: sql`alter table audit_log add constraint case_publication_audit_test check (action <> 'federation.case_publication.revoke') NOT VALID`,
+  };
+  await db.execute(stages.approve);
+  try {
+    await expect(
+      f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication),
+    ).rejects.toThrow();
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint case_publication_audit_test`);
+  }
+  expect(await f.readPublication()).toBeUndefined();
+  const pair = await f.approvePublication();
+  await db.execute(stages.confirm);
+  try {
+    await expect(
+      f.sourceCases.attachCounterparty(
+        f.sourceActor,
+        f.revisionId,
+        f.publication.publicationId,
+        pair.b.approvalJws,
+      ),
+    ).rejects.toThrow();
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint case_publication_audit_test`);
+  }
+  expect((await f.readPublication())?.confirmedAt).toBeNull();
+  await db.execute(stages.revoke);
+  try {
+    await expect(
+      f.sourceCases.revoke(f.sourceActor, f.revisionId, f.publication.publicationId),
+    ).rejects.toThrow();
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint case_publication_audit_test`);
+  }
+  expect((await f.readPublication())?.revocationJws).toBeNull();
+  expect((await f.readPublication())?.revocationPayload).toBeNull();
+});
+
+test("case publication waits on real policy locks and rechecks withdrawal before replay", async () => {
+  const f = await casePublicationFixture();
+  let release: () => void = () => {},
+    acquired: () => void = () => {};
+  const locked = new Promise<void>((r) => {
+      acquired = r;
+    }),
+    resume = new Promise<void>((r) => {
+      release = r;
+    });
+  const original = FederationDisclosurePolicyService.prototype.verified;
+  let held = false;
+  const hook = spyOn(FederationDisclosurePolicyService.prototype, "verified").mockImplementation(
+    async function (this: FederationDisclosurePolicyService, ...args) {
+      const value = await original.apply(this, args);
+      if (!held) {
+        held = true;
+        acquired();
+        await resume;
+      }
+      return value;
+    },
+  );
+  const approving = f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication);
+  await locked;
+  const revoking = f.sourcePolicy.revoke(f.sourceActor, f.revisionId, f.policy.policyId);
+  let waited = false;
+  try {
+    for (let i = 0; i < 100; i++) {
+      const [row] = await db.execute<{ waiting: boolean }>(
+        sql`select exists(select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock') as waiting`,
+      );
+      if (row?.waiting) {
+        waited = true;
+        break;
+      }
+      await Bun.sleep(10);
+    }
+  } finally {
+    release();
+    hook.mockRestore();
+  }
+  await Promise.all([approving, revoking]);
+  expect(waited).toBe(true);
+  await expect(f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+});
+
+test("case publication rechecks expiry after a real publication-row lock wait", async () => {
+  const f = await casePublicationFixture();
+  const value = { ...f.publication, validUntil: new Date(Date.now() + 1800).toISOString() };
+  await f.sourceCases.approve(f.sourceActor, f.revisionId, value);
+  let release: () => void = () => {},
+    acquired: () => void = () => {};
+  const locked = new Promise<void>((r) => {
+      acquired = r;
+    }),
+    resume = new Promise<void>((r) => {
+      release = r;
+    });
+  const holder = db.transaction(async (tx) => {
+    await tx
+      .select()
+      .from(federationCasePublications)
+      .where(eq(federationCasePublications.publicationId, value.publicationId))
+      .for("update");
+    acquired();
+    await resume;
+  });
+  await locked;
+  const replay = f.sourceCases.approve(f.sourceActor, f.revisionId, value).then(
+    () => null,
+    (error: unknown) => error,
+  );
+  let waited = false;
+  try {
+    for (let i = 0; i < 100; i++) {
+      const [row] = await db.execute<{ waiting: boolean }>(
+        sql`select exists(select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock') as waiting`,
+      );
+      if (row?.waiting) {
+        waited = true;
+        break;
+      }
+      await Bun.sleep(10);
+    }
+    await Bun.sleep(Math.max(1, Date.parse(value.validUntil) - Date.now() + 50));
+  } finally {
+    release();
+  }
+  await holder;
+  expect(waited).toBe(true);
+  expect(await replay).toMatchObject({ message: "AUTHORIZATION_EXPIRED" });
+  expect(
+    (await f.sourceCases.revoke(f.sourceActor, f.revisionId, value.publicationId)).revocationJws,
+  ).toBeTruthy();
+});
+
+test("case publication human routes enforce strict input roles organization and no-store", async () => {
+  const f = await casePublicationFixture();
+  let actor = f.sourceActor,
+    automation = false;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route("/", createFederationCasePublicationRoutes(f.sourceCases));
+  const path = `/federation/case-publications/${f.revisionId}`;
+  const post = (suffix: string, body: unknown) =>
+    app.request(path + suffix, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await post("/approve", { ...f.publication, evidence: f.value })).status).toBe(400);
+  expect((await post("/draft", f.input)).status).toBe(200);
+  const approved = await post("/approve", f.publication);
+  expect(approved.status).toBe(200);
+  expect(approved.headers.get("cache-control")).toBe("no-store");
+  expect(CasePublicationApprovalSchema.parse(await approved.json()).payload).toEqual(f.publication);
+  const b = await f.providerCases.approve(f.actor, f.revisionId, f.publication);
+  expect(
+    (await post(`/${f.publication.publicationId}/counterparty`, { approvalJws: b.approvalJws }))
+      .status,
+  ).toBe(200);
+  const list = await app.request(
+    `${path}?caseId=${f.caseId}&publicationId=${f.publication.publicationId}`,
+  );
+  expect(CasePublicationListSchema.parse(await list.json()).data).toHaveLength(1);
+  expect((await post(`/${f.publication.publicationId}/revoke`, { unrequested: true })).status).toBe(
+    400,
+  );
+  expect((await post(`/${f.publication.publicationId}/revoke`, {})).status).toBe(200);
+  actor = f.actor;
+  expect(CasePublicationListSchema.parse(await (await app.request(path)).json()).data).toHaveLength(
+    0,
+  );
+  expect((await post(`/${f.publication.publicationId}/revoke`, {})).status).toBe(403);
+  actor = f.sourceActor;
+  automation = true;
+  expect((await post("/approve", f.publication)).status).toBe(403);
+});
+
+test("case publication rejects a configured key mismatch and a counterparty signature from the wrong institution", async () => {
+  const f = await casePublicationFixture();
+  const changed = structuredClone(f.ledger);
+  const key = changed.organizations.find((org) => org.siteId === f.source.signing.siteId)?.keys[0];
+  if (!key) throw new Error("Missing configured key");
+  key.publicKeyPem = await exportSPKI(f.provider.verification.publicKey);
+  await expect(
+    new FederationCasePublicationService(db, f.source.signing, changed).approve(
+      f.sourceActor,
+      f.revisionId,
+      f.publication,
+    ),
+  ).rejects.toThrow();
+  expect(await f.readPublication()).toBeUndefined();
+  const own = await f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication);
+  await expect(
+    f.sourceCases.attachCounterparty(
+      f.sourceActor,
+      f.revisionId,
+      own.publicationId,
+      own.approvalJws,
+    ),
+  ).rejects.toThrow();
+  expect((await f.readPublication())?.counterpartyJws).toBeNull();
+});
+
+test("case publication permits a new authorized key to revoke after the original approval key is revoked", async () => {
+  const f = await casePublicationFixture();
+  const own = await f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication);
+  const fresh = await testKeys(f.source.signing.siteId);
+  fresh.signing.keyId = `${fresh.signing.keyId}-rotated`;
+  const key = {
+    keyId: fresh.signing.keyId,
+    publicKeyPem: await exportSPKI(fresh.verification.publicKey),
+    validFrom: "2020-01-01T00:00:00Z",
+    validUntil: "2099-01-01T00:00:00Z",
+  };
+  await f.trust.addKey(
+    f.source.signing.siteId,
+    { ...key, allowedKinds: ["case-publication-revocation"] },
+    f.sourceActor.userId,
+  );
+  await db
+    .update(federationSigningKeys)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(federationSigningKeys.siteId, f.source.signing.siteId),
+        eq(federationSigningKeys.keyId, f.source.signing.keyId),
+      ),
+    );
+  const configured = structuredClone(f.ledger),
+    org = configured.organizations.find((org) => org.siteId === f.source.signing.siteId);
+  if (!org) throw new Error("Missing organization");
+  org.keys.push(key);
+  configured.keyPurposes.push({
+    siteId: fresh.signing.siteId,
+    keyId: fresh.signing.keyId,
+    kinds: ["case-publication-revocation"],
+  });
+  const service = new FederationCasePublicationService(db, fresh.signing, configured);
+  const row = await service.revoke(f.sourceActor, f.revisionId, own.publicationId);
+  expect(row.approvalJws).toBe(own.approvalJws);
+  expect(row.digest).toBe(own.digest);
+  if (!row.revocationJws) throw new Error("Missing new-key revocation");
+  expect(
+    (
+      await verifyFederationMessage(
+        CaseRevocationSchema,
+        row.revocationJws,
+        await f.trust.resolveKey(fresh.signing.siteId, fresh.signing.keyId, new Date()),
+        new Date(),
+      )
+    ).payload.publicationDigest,
+  ).toBe(own.digest);
 });

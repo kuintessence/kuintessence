@@ -108,6 +108,8 @@
       "media-import-receipt": "Media import receipt",
       "media-import-receipt-ack": "Media import receipt acknowledgement",
       "commercial-payment": "External payment receipt",
+      "case-evidence-publication": "Case evidence publication consent",
+      "case-publication-revocation": "Case publication revocation",
       "commercial-disclosure-policy": "Evidence disclosure policy",
       "commercial-disclosure": "Evidence disclosure approval",
       "commercial-disclosure-read-query": "Evidence read query",
@@ -242,6 +244,7 @@
         "payment": {
           "approve": "Approve external payment receipts"
         },
+        "case": { "publish": "Approve case publication" },
         "disclosure": {
           "approve": "Approve evidence disclosure",
           "receive": "Receive approved evidence"
@@ -294,6 +297,9 @@
         },
         "payment": {
           "approve": "Confirm external payment facts and corrections, exchange signatures and retry evidence; includes agreement reading, not bank transfers or credit issuance."
+        },
+        "case": {
+          "publish": "Independently approve or revoke durable private-ledger storage of this institution’s case evidence. Grants no disclosure, arbitration or financial authority."
         },
         "disclosure": {
           "approve": "Approve or revoke this institution’s evidence disclosure policies, including contract viewing. Does not grant arbitration, billing, settlement or payment authority.",

@@ -66,6 +66,7 @@ const ServerConfigSchema = z.object({
   FEDERATION_CLIENT_KEY_FILE: z.string().startsWith("/").optional(),
   FEDERATION_CLIENT_CA_FILE: z.string().startsWith("/").optional(),
   FEDERATION_MARKET_SOCKET_PATH: z.string().startsWith("/").optional(),
+  FEDERATION_CASE_TRUST_FILE: z.string().startsWith("/").optional(),
   FEDERATION_COMMERCIAL_SOCKET_PATH: z.string().startsWith("/").optional(),
   FEDERATION_STORAGE_GUARD_FILE: z.string().startsWith("/").optional(),
   FEDERATION_ATTESTATION_SOCKET_PATH: z.string().startsWith("/").optional(),
@@ -362,6 +363,12 @@ const ServerConfigSchema = z.object({
 });
 
 const ValidatedServerConfigSchema = ServerConfigSchema.superRefine((cfg, ctx) => {
+  if (cfg.FEDERATION_CASE_TRUST_FILE && !cfg.FEDERATION_ENABLED)
+    ctx.addIssue({
+      code: "custom",
+      path: ["FEDERATION_CASE_TRUST_FILE"],
+      message: "Case approval requires federation",
+    });
   if (cfg.FEDERATION_MEDIA_AGE_DIRECTORY || cfg.FEDERATION_MEDIA_WRAPPING_KEY) {
     if (
       cfg.FEDERATION_MEDIA_WRAPPING_KEY &&

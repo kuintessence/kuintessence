@@ -108,6 +108,8 @@
       "media-import-receipt": "介质导入回执",
       "media-import-receipt-ack": "介质导入回执确认",
       "commercial-payment": "外部付款凭证",
+      "case-evidence-publication": "案件材料存证许可",
+      "case-publication-revocation": "案件存证撤回",
       "commercial-disclosure-policy": "证据披露政策",
       "commercial-disclosure": "证据披露批准",
       "commercial-disclosure-read-query": "证据读取查询",
@@ -242,6 +244,7 @@
         "payment": {
           "approve": "审批外部付款凭证"
         },
+        "case": { "publish": "批准案件存证" },
         "disclosure": {
           "approve": "批准证据披露",
           "receive": "接收获批证据"
@@ -294,6 +297,9 @@
         },
         "payment": {
           "approve": "确认外部付款事实与更正、交换双方签名并重试存证；包含合同查看，不授予转账或额度发行权限。"
+        },
+        "case": {
+          "publish": "独立批准或撤回本机构案件材料的长期私有链存证；不授予材料披露、仲裁或财务操作权限。"
         },
         "disclosure": {
           "approve": "批准或撤销本机构的证据披露政策；包含合同查看，不授予仲裁、账单、结算或付款权限。",

@@ -28,6 +28,7 @@ Server 设置：
 | `FEDERATION_SITE_ID` | 本机构 UUID，必须与信任登记一致 |
 | `FEDERATION_SIGNING_KEY_ID` | 本地登记中的签名公钥 ID |
 | `FEDERATION_SIGNING_KEY_FILE` | 专用 RSA PKCS#8 PEM 私钥路径，至少 2048 位，文件 0600 |
+| `FEDERATION_CASE_TRUST_FILE` | 可选，案件链公开信任配置的绝对路径；启用[独立存证审批](fabric-cases.md#平台独立存证审批)，不会自动投递上链 |
 | `FEDERATION_SOCKET_PATH` | 私有 Unix socket 绝对路径 |
 | `FEDERATION_RESULT_DOWNLOAD_ORIGINS` | 本机构存储的 HTTPS origin，逗号分隔；用于结果下载和本端上传地址验证，默认空 |
 | `FEDERATION_INPUT_DOWNLOAD_ORIGINS` | 本机构输入文件存储的 HTTPS origin，逗号分隔；独立于结果授权，默认空（关闭） |

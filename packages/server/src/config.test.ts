@@ -470,3 +470,25 @@ test("storage guard configuration is explicit, absolute and cannot be silently i
     loadServerConfig({ ...enabled, FEDERATION_STORAGE_GUARD_FILE: "storage.json" }),
   ).toThrow();
 });
+
+test("case publication trust is opt-in and requires an absolute path and federation", () => {
+  expect(loadServerConfig(VALID_BASE).FEDERATION_CASE_TRUST_FILE).toBeUndefined();
+  expect(() =>
+    loadServerConfig({ ...VALID_BASE, FEDERATION_CASE_TRUST_FILE: "/run/cases.json" }),
+  ).toThrow();
+  const enabled = {
+    ...VALID_BASE,
+    FEDERATION_ENABLED: "true",
+    FEDERATION_SITE_ID: crypto.randomUUID(),
+    FEDERATION_SOCKET_PATH: "/run/private/ingress.sock",
+    FEDERATION_SIGNING_KEY_ID: "local",
+    FEDERATION_SIGNING_KEY_FILE: "/run/private/signing.key",
+  };
+  expect(
+    loadServerConfig({ ...enabled, FEDERATION_CASE_TRUST_FILE: "/run/cases.json" })
+      .FEDERATION_CASE_TRUST_FILE,
+  ).toBe("/run/cases.json");
+  expect(() =>
+    loadServerConfig({ ...enabled, FEDERATION_CASE_TRUST_FILE: "cases.json" }),
+  ).toThrow();
+});
