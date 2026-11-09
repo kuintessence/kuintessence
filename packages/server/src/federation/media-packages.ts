@@ -24,6 +24,7 @@ import {
 import { and, asc, desc, eq, isNotNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import { mediaTaskOptions, mediaWorkflowFilter } from "./media-task-options";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
 import type {
@@ -47,6 +48,10 @@ export class FederationMediaPackageService {
   ) {
     z.uuid().parse(localSiteId);
     this.trust = new FederationTrustRegistry(db);
+  }
+
+  tasks(actor: FederationActor, raw: unknown) {
+    return mediaTaskOptions(this.db, this.localSiteId, actor, raw);
   }
 
   async options(actor: FederationActor, raw: unknown) {
@@ -130,7 +135,8 @@ export class FederationMediaPackageService {
     });
   }
 
-  async register(actor: FederationActor, raw: unknown) {
+  async register(actor: FederationActor, raw: unknown, workflowRunId?: string) {
+    z.uuid().optional().parse(workflowRunId);
     const input = FederationMediaRegistrationSchema.parse(raw);
     const { manifest, digest } = await this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "asset.map");
@@ -157,6 +163,17 @@ export class FederationMediaPackageService {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "asset.map");
       await this.manifestKey(tx, manifest.senderSiteId, input.signedManifest);
+      if (workflowRunId) {
+        const [scope] = await tx.execute<{ allowed: boolean }>(
+          sql`select ${mediaWorkflowFilter(
+            actor,
+            this.localSiteId,
+            workflowRunId,
+            sql`incoming.manifest`,
+          )} as allowed from (select ${JSON.stringify(manifest)}::jsonb as manifest) incoming`,
+        );
+        if (scope?.allowed !== true) throw new FederationError("POLICY_DENIED");
+      }
       const target = read ? await read(tx) : undefined;
       if (!target) await this.agreement(tx, manifest, actor.orgId, false);
       else if (target.authorizedUntil <= this.clock().getTime())
@@ -197,7 +214,8 @@ export class FederationMediaPackageService {
     });
   }
 
-  async list(actor: FederationActor, limit = 50, offset = 0) {
+  async list(actor: FederationActor, limit = 50, offset = 0, workflowRunId?: string) {
+    z.uuid().optional().parse(workflowRunId);
     z.number().int().min(1).max(100).parse(limit);
     z.number().int().nonnegative().parse(offset);
     return this.db.transaction(async (tx) => {
@@ -226,6 +244,9 @@ export class FederationMediaPackageService {
           and(
             eq(federationMediaPackages.localSiteId, this.localSiteId),
             eq(federationMediaPackages.localOrgId, actor.orgId),
+            workflowRunId
+              ? mediaWorkflowFilter(actor, this.localSiteId, workflowRunId, t.manifest)
+              : undefined,
             or(
               sql`${t.manifest}->'subject'->>'kind' = 'dataset'`,
               eq(t.registeredBy, actor.userId),

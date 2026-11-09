@@ -19,12 +19,21 @@ import {
 } from "./MediaDeliveryForm";
 import { MediaPagination, type MediaScope } from "./MediaLogisticsShared";
 
-export function MediaDeliveryPanel(props: { scope: ApiOrganizationScope; switching: boolean }) {
+export type MediaWorkflowExport = { workflowRunId: string; taskKind: "task-input" | "task-result" };
+type MediaDeliveryProps = {
+  scope: ApiOrganizationScope;
+  switching: boolean;
+  exportFrom?: MediaWorkflowExport;
+};
+export function MediaDeliveryPanel(props: MediaDeliveryProps) {
   return (
-    <MediaAccess key={`${props.scope.organizationId}:${props.scope.authRevision}`} {...props} />
+    <MediaAccess
+      key={`${props.scope.organizationId}:${props.scope.authRevision}:${props.exportFrom?.workflowRunId ?? ""}:${props.exportFrom?.taskKind ?? ""}`}
+      {...props}
+    />
   );
 }
-function MediaAccess({ scope, switching }: { scope: ApiOrganizationScope; switching: boolean }) {
+function MediaAccess({ scope, switching, exportFrom }: MediaDeliveryProps) {
   const { t } = useTranslation();
   const capabilities = useQuery({
     queryKey: ["federation", "current-capabilities", scope.organizationId, scope.authRevision],
@@ -81,6 +90,7 @@ function MediaAccess({ scope, switching }: { scope: ApiOrganizationScope; switch
     <MediaInventory
       scope={{ ...scope, localSiteId: context.data.localSiteId }}
       capabilities={capabilities.data?.effectiveCapabilities ?? []}
+      exportFrom={exportFrom}
       busy={switching || capabilities.isFetching || context.isFetching}
     />
   );
@@ -89,8 +99,10 @@ function MediaInventory({
   scope,
   capabilities,
   busy,
+  exportFrom,
 }: {
   scope: MediaScope;
+  exportFrom?: MediaWorkflowExport;
   capabilities: readonly string[];
   busy: boolean;
 }) {
@@ -102,11 +114,11 @@ function MediaInventory({
   const [action, setAction] = useState<MediaDeliveryAction | null>(null);
   const key = ["federation", "media", scope.organizationId, scope.authRevision];
   const list = useQuery({
-    queryKey: [...key, direction, "list", page],
+    queryKey: [...key, direction, "list", page, exportFrom?.workflowRunId],
     queryFn: async () => {
       const raw = (
         await api.get<{ data: unknown }>(
-          `/federation/media/${direction}?limit=20&offset=${page * 20}`,
+          `/federation/media/${direction}?limit=20&offset=${page * 20}${exportFrom ? `&workflowRunId=${encodeURIComponent(exportFrom.workflowRunId)}` : ""}`,
           scope,
         )
       ).data;
@@ -125,9 +137,22 @@ function MediaInventory({
   const reload = async () => {
     await client.invalidateQueries({ queryKey: key });
   };
-  const next: MediaDeliveryAction = { kind: direction === "exports" ? "export" : "register" };
+  const next: MediaDeliveryAction =
+    direction === "exports"
+      ? { kind: "export", ...exportFrom }
+      : { kind: "register", workflowRunId: exportFrom?.workflowRunId };
   return (
     <section className="space-y-5" aria-label={t("federation.delivery.title")}>
+      {exportFrom ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="font-semibold">{t("federation.delivery.workflowMaterials")}</h3>
+          <Button asChild variant="ghost">
+            <a href={`/workflows/${encodeURIComponent(exportFrom.workflowRunId)}`}>
+              {t("federation.delivery.backToWorkflow")}
+            </a>
+          </Button>
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Tabs
           value={direction}

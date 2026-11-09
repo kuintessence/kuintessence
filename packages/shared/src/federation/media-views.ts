@@ -221,3 +221,41 @@ export const MediaRecordedReceiptSchema = z
       receipt.recipientSiteId === ack.senderSiteId,
     "Mismatched media receipt acknowledgement",
   );
+
+export const MediaTaskOptionsQuerySchema = z.object({
+  kind: z.enum(["task-input", "task-result"]),
+  workflowRunId: z.uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().nonnegative().default(0),
+});
+export const MediaTaskOptionSchema = z.object({
+  operationId: z.uuid(),
+  agreementRevisionId: z.uuid(),
+  recipientSiteId: z.uuid(),
+  workflowRunId: z.uuid(),
+  workflowName: z.string(),
+  nodeId: z.string().nullable(),
+  invocationPath: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export const MediaTaskOptionsSchema = z
+  .object({
+    localSiteId: z.uuid(),
+    localOrgId: z.uuid(),
+    kind: z.enum(["task-input", "task-result"]),
+    workflowRunId: z.uuid().nullable(),
+    data: z.array(MediaTaskOptionSchema).max(100),
+    hasMore: z.boolean(),
+  })
+  .refine(
+    (value) =>
+      value.data.every(
+        (row) =>
+          row.recipientSiteId !== value.localSiteId &&
+          (!value.workflowRunId || row.workflowRunId === value.workflowRunId) &&
+          (value.kind === "task-input"
+            ? row.nodeId !== null && row.invocationPath !== null
+            : row.nodeId === null && row.invocationPath === null),
+      ),
+    "Mismatched media task scope",
+  );

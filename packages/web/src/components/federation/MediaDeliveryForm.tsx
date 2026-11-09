@@ -18,11 +18,11 @@ import { api } from "../../lib/api-client";
 import { Button } from "../ui/button";
 import { Input, Textarea } from "../ui/input";
 import type { MediaScope } from "./MediaLogisticsShared";
-import { type MediaOption, MediaOptionPicker } from "./MediaOptionPicker";
+import { type MediaOption, MediaOptionPicker, type MediaTaskOption } from "./MediaOptionPicker";
 
 export type MediaDeliveryAction =
-  | { kind: "export" }
-  | { kind: "register" }
+  | { kind: "export"; workflowRunId?: string; taskKind?: "task-input" | "task-result" }
+  | { kind: "register"; workflowRunId?: string }
   | { kind: "approve"; packageId: string; sizeBytes: number }
   | {
       kind: "run" | "revoke";
@@ -56,7 +56,11 @@ export function MediaDeliveryForm({
   const { t } = useTranslation();
   const id = useId();
   const client = useQueryClient();
-  const [subject, setSubject] = useState("task-input");
+  const [subject, setSubject] = useState<"task-input" | "task-result" | "dataset">(
+    action.kind === "export" ? (action.taskKind ?? "task-input") : "task-input",
+  );
+  const [task, setTask] = useState<MediaTaskOption | null>(null);
+  const [tasksReady, setTasksReady] = useState(false);
   const [agreement, setAgreement] = useState<
     Extract<MediaOption, { kind: "agreements" }>["value"] | null
   >(null);
@@ -65,7 +69,6 @@ export function MediaDeliveryForm({
   const [agentsReady, setAgentsReady] = useState(false);
   const [rootsReady, setRootsReady] = useState(false);
   const [root, setRoot] = useState("");
-  const [operation, setOperation] = useState("");
   const [version, setVersion] = useState("");
   const [location, setLocation] = useState("");
   const [expiry, setExpiry] = useState("");
@@ -79,7 +82,9 @@ export function MediaDeliveryForm({
   const [intent, setIntent] = useState<Intent | null>(null);
   const optionsReady =
     action.kind === "export"
-      ? agreementsReady && (subject === "dataset" || agentsReady)
+      ? subject === "dataset"
+        ? agreementsReady
+        : tasksReady && agentsReady
       : action.kind === "approve"
         ? agentsReady && rootsReady
         : true;
@@ -171,7 +176,7 @@ export function MediaDeliveryForm({
     const base = "/federation/media";
     if (action.kind === "register")
       return {
-        path: `${base}/packages`,
+        path: `${base}/packages${action.workflowRunId ? `?workflowRunId=${encodeURIComponent(action.workflowRunId)}` : ""}`,
         body: FederationMediaRegistrationSchema.parse(registration),
       };
     if (action.kind === "export")
@@ -179,12 +184,13 @@ export function MediaDeliveryForm({
         path: `${base}/exports`,
         body: FederationAnyMediaExportApprovalSchema.parse({
           packageId: crypto.randomUUID(),
-          agreementRevisionId: agreement?.revisionId,
-          recipientSiteId: agreement?.peerSiteId,
+          agreementRevisionId:
+            subject === "dataset" ? agreement?.revisionId : task?.agreementRevisionId,
+          recipientSiteId: subject === "dataset" ? agreement?.peerSiteId : task?.recipientSiteId,
           expiresAt: new Date(expiry).toISOString(),
           ...(subject === "dataset"
             ? { versionId: version, locationId: location }
-            : { kind: subject, operationId: operation, agentId: agent }),
+            : { kind: subject, operationId: task?.operationId, agentId: agent }),
         }),
       };
     if (action.kind === "approve")
@@ -255,7 +261,15 @@ export function MediaDeliveryForm({
                 id={`${id}-subject`}
                 className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 value={subject}
-                onChange={(event) => setSubject(event.target.value)}
+                disabled={!!action.taskKind}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (value !== "task-input" && value !== "task-result" && value !== "dataset")
+                    return;
+                  setSubject(value);
+                  setTask(null);
+                  setTasksReady(false);
+                }}
               >
                 {["task-input", "task-result", "dataset"].map((kind) => (
                   <option key={kind} value={kind}>
@@ -264,24 +278,37 @@ export function MediaDeliveryForm({
                 ))}
               </select>
             </div>
-            <MediaOptionPicker
-              scope={scope}
-              kind="agreements"
-              onAvailable={setAgreementsReady}
-              selected={agreement?.revisionId ?? ""}
-              disabled={locked}
-              onChange={(option) => {
-                if (option.kind === "agreements") setAgreement(option.value);
-              }}
-            />
+            {subject === "dataset" ? (
+              <MediaOptionPicker
+                scope={scope}
+                kind="agreements"
+                onAvailable={setAgreementsReady}
+                selected={agreement?.revisionId ?? ""}
+                disabled={locked}
+                onChange={(option) => {
+                  if (option.kind === "agreements") setAgreement(option.value);
+                }}
+              />
+            ) : (
+              <MediaOptionPicker
+                key={`${subject}:${action.workflowRunId ?? ""}`}
+                scope={scope}
+                kind={subject}
+                workflowRunId={action.workflowRunId}
+                disabled={locked}
+                selected={task ? `${task.agreementRevisionId}:${task.operationId}` : ""}
+                onAvailable={setTasksReady}
+                onChange={(option) => {
+                  if (option.kind === subject) setTask(option.value);
+                }}
+              />
+            )}
             {subject === "dataset" ? (
               <>
                 {field("versionId", version, setVersion)}
                 {field("locationId", location, setLocation)}
               </>
-            ) : (
-              field("operationId", operation, setOperation)
-            )}
+            ) : null}
           </>
         ) : null}
         {action.kind === "approve" || (action.kind === "export" && subject !== "dataset") ? (

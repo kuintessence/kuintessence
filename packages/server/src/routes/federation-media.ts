@@ -12,6 +12,7 @@ import {
   MediaHandoffSchema,
   MediaOptionsQuerySchema,
   MediaShipmentRegistrationSchema,
+  MediaTaskOptionsQuerySchema,
 } from "@kuintessence/shared/federation";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -80,6 +81,9 @@ export function createFederationMediaRoutes(
   const id = z.object({ id: z.uuid() });
   r.get("/federation/media/options", kqValidator("query", MediaOptionsQuerySchema), async (c) =>
     c.json(await service.options(c.get("federationActor"), c.req.valid("query"))),
+  );
+  r.get("/federation/media/tasks", kqValidator("query", MediaTaskOptionsQuerySchema), async (c) =>
+    c.json(await service.tasks(c.get("federationActor"), c.req.valid("query"))),
   );
   r.get("/federation/media/logistics-context", async (c) =>
     c.json({ data: await transport().context(c.get("federationActor")) }),
@@ -382,6 +386,7 @@ export function createFederationMediaRoutes(
       z.object({
         limit: z.coerce.number().int().min(1).max(100).default(50),
         offset: z.coerce.number().int().nonnegative().default(0),
+        workflowRunId: z.uuid().optional(),
       }),
     ),
     async (c) =>
@@ -391,6 +396,7 @@ export function createFederationMediaRoutes(
           c.get("federationActor"),
           c.req.valid("query").limit,
           c.req.valid("query").offset,
+          c.req.valid("query").workflowRunId,
         ),
       }),
   );
@@ -419,24 +425,30 @@ export function createFederationMediaRoutes(
       z.object({
         limit: z.coerce.number().int().min(1).max(100).default(50),
         offset: z.coerce.number().int().nonnegative().default(0),
+        workflowRunId: z.uuid().optional(),
       }),
     ),
     async (c) => {
-      const { limit, offset } = c.req.valid("query");
+      const { limit, offset, workflowRunId } = c.req.valid("query");
       return c.json({
         success: true,
-        data: await service.list(c.get("federationActor"), limit, offset),
+        data: await service.list(c.get("federationActor"), limit, offset, workflowRunId),
       });
     },
   );
   r.post(
     "/federation/media/packages",
     kqValidator("json", FederationMediaRegistrationSchema),
+    kqValidator("query", z.object({ workflowRunId: z.uuid().optional() })),
     async (c) =>
       c.json(
         {
           success: true,
-          data: await service.register(c.get("federationActor"), c.req.valid("json")),
+          data: await service.register(
+            c.get("federationActor"),
+            c.req.valid("json"),
+            c.req.valid("query").workflowRunId,
+          ),
         },
         201,
       ),

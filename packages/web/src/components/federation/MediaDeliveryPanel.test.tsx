@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api-client";
 import i18n from "../../lib/i18n";
-import { MediaDeliveryPanel } from "./MediaDeliveryPanel";
+import { MediaDeliveryPanel, type MediaWorkflowExport } from "./MediaDeliveryPanel";
 
 vi.mock("../../lib/api-client", async (original) => ({
   ...(await original<typeof import("../../lib/api-client")>()),
@@ -113,13 +113,13 @@ let grants: string[],
   receivedOperation: object | null,
   expiresAt: string,
   moreOptions: boolean;
-function mount() {
+function mount(exportFrom?: MediaWorkflowExport) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  const view = (nextScope = scope) => (
+  const view = (nextScope = scope, origin = exportFrom) => (
     <QueryClientProvider client={client}>
-      <MediaDeliveryPanel scope={nextScope} switching={false} />
+      <MediaDeliveryPanel scope={nextScope} switching={false} exportFrom={origin} />
     </QueryClientProvider>
   );
   return { client, view, ...render(view()) };
@@ -154,6 +154,29 @@ beforeEach(async () => {
   vi.mocked(api.get).mockImplementation(async (path) => {
     if (path.endsWith("/capabilities"))
       return { data: { orgId: org, userId: user, grants, effectiveCapabilities: grants } };
+    if (path.includes("/tasks?")) {
+      const params = new URLSearchParams(path.split("?")[1]),
+        kind = params.get("kind");
+      return {
+        localSiteId: site,
+        localOrgId: org,
+        kind,
+        workflowRunId: params.get("workflowRunId"),
+        hasMore: moreOptions,
+        data: [
+          {
+            workflowRunId: params.get("workflowRunId") ?? id,
+            workflowName: "Climate workflow",
+            operationId: user,
+            agreementRevisionId: user,
+            recipientSiteId: peer,
+            nodeId: kind === "task-input" ? "remote" : null,
+            invocationPath: kind === "task-input" ? "root/remote/0" : null,
+            createdAt: date,
+          },
+        ],
+      };
+    }
     if (path.includes("/options?")) {
       const params = new URLSearchParams(path.split("?")[1]),
         kind = params.get("kind");
@@ -230,13 +253,14 @@ test("refresh failure removes stale records and disables creation", async () => 
     (screen.getByRole("button", { name: "Approve export" }) as HTMLButtonElement).disabled,
   ).toBe(true);
 });
-test("export selects agreement and Agent, and preserves original intent after unknown write", async () => {
+test("export selects the original task and Agent, and preserves original intent after unknown write", async () => {
   mount();
   await clickReady("Approve export");
-  await screen.findByRole("option", { name: /Institution B/ });
-  fireEvent.change(screen.getByLabelText("Cooperation agreement"), { target: { value: user } });
+  await screen.findByRole("option", { name: /Climate workflow/ });
+  fireEvent.change(screen.getByLabelText("Original task"), {
+    target: { value: `${user}:${user}` },
+  });
   fireEvent.change(screen.getByLabelText("Execution Agent"), { target: { value: "agent-one" } });
-  fireEvent.change(screen.getByLabelText("Delegation ID"), { target: { value: user } });
   fireEvent.change(screen.getByLabelText("Expires at"), { target: { value: "2099-01-01T12:00" } });
   vi.mocked(api.post).mockRejectedValue(new Error("lost response"));
   fireEvent.submit(form());
@@ -388,8 +412,8 @@ test("option pagination is scoped and bounded", async () => {
   moreOptions = true;
   mount();
   await clickReady("Approve export");
-  await screen.findByRole("option", { name: /Institution B/ });
-  const picker = screen.getByLabelText("Cooperation agreement").parentElement;
+  await screen.findByRole("option", { name: /Climate workflow/ });
+  const picker = screen.getByLabelText("Original task").parentElement;
   if (!picker) throw new Error("Missing agreement picker");
   fireEvent.click(within(picker).getByRole("button", { name: "Next" }));
   await waitFor(() =>
@@ -398,7 +422,7 @@ test("option pagination is scoped and bounded", async () => {
         .mocked(api.get)
         .mock.calls.some(
           ([path, requestScope]) =>
-            path.includes("kind=agreements&limit=20&offset=20") &&
+            path.includes("kind=task-input&limit=20&offset=20") &&
             requestScope?.organizationId === org,
         ),
     ).toBe(true),
@@ -535,22 +559,23 @@ test("failed option refresh blocks stale selections and can recover without losi
   if (!get) throw new Error("Missing API fixture");
   let failed = false;
   vi.mocked(api.get).mockImplementation(async (...args) => {
-    if (failed && args[0].includes("kind=agreements")) throw new Error("option read failed");
+    if (failed && args[0].includes("kind=task-input")) throw new Error("option read failed");
     return get(...args);
   });
   const { client } = mount();
   await clickReady("Approve export");
-  await screen.findByRole("option", { name: /Institution B/ });
-  fireEvent.change(screen.getByLabelText("Cooperation agreement"), { target: { value: user } });
+  await screen.findByRole("option", { name: /Climate workflow/ });
+  fireEvent.change(screen.getByLabelText("Original task"), {
+    target: { value: `${user}:${user}` },
+  });
   fireEvent.change(screen.getByLabelText("Execution Agent"), { target: { value: "agent-one" } });
-  fireEvent.change(screen.getByLabelText("Delegation ID"), { target: { value: user } });
   fireEvent.change(screen.getByLabelText("Expires at"), { target: { value: "2099-01-01T12:00" } });
   vi.mocked(api.post).mockRejectedValue(new Error("lost response"));
   fireEvent.submit(form());
   await screen.findByRole("button", { name: "Retry original request" });
   failed = true;
   await client.invalidateQueries({
-    queryKey: ["federation", "media", org, "login-1", "options", "agreements"],
+    queryKey: ["federation", "media", org, "login-1", "options", "task-input"],
   });
   await waitFor(() =>
     expect(
@@ -558,7 +583,7 @@ test("failed option refresh blocks stale selections and can recover without losi
         .disabled,
     ).toBe(true),
   );
-  expect(screen.queryByRole("option", { name: /Institution B/ })).toBeNull();
+  expect(screen.queryByRole("option", { name: /Climate workflow/ })).toBeNull();
   failed = false;
   const refresh = within(form())
     .getAllByRole("button", { name: "Refresh" })
@@ -574,4 +599,125 @@ test("failed option refresh blocks stale selections and can recover without losi
   fireEvent.click(screen.getByRole("button", { name: "Retry original request" }));
   await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2));
   expect(vi.mocked(api.post).mock.calls[0]).toEqual(vi.mocked(api.post).mock.calls[1]);
+});
+
+test("workflow entry pins task discovery and resets drafts when the workflow changes", async () => {
+  const view = mount({ workflowRunId: id, taskKind: "task-input" });
+  await clickReady("Approve export");
+  await screen.findByRole("option", { name: /Climate workflow/ });
+  expect((screen.getByLabelText("Material purpose") as HTMLSelectElement).disabled).toBe(true);
+  expect(screen.queryByLabelText("Delegation ID")).toBeNull();
+  expect(screen.queryByLabelText("Cooperation agreement")).toBeNull();
+  expect(
+    vi
+      .mocked(api.get)
+      .mock.calls.some(([path]) =>
+        path.includes(`/tasks?kind=task-input&limit=20&offset=0&workflowRunId=${id}`),
+      ),
+  ).toBe(true);
+  fireEvent.change(screen.getByLabelText("Original task"), {
+    target: { value: `${user}:${user}` },
+  });
+  view.rerender(view.view(scope, { workflowRunId: authId, taskKind: "task-result" }));
+  await clickReady("Approve export");
+  await screen.findByRole("option", { name: /Climate workflow/ });
+  expect((screen.getByLabelText("Original task") as HTMLSelectElement).value).toBe("");
+  expect((screen.getByLabelText("Material purpose") as HTMLSelectElement).value).toBe(
+    "task-result",
+  );
+  expect(
+    vi.mocked(api.get).mock.calls.some(([path]) => path.includes(`workflowRunId=${authId}`)),
+  ).toBe(true);
+});
+
+test("changing task purpose clears the old binding before export", async () => {
+  mount();
+  await clickReady("Approve export");
+  await screen.findByRole("option", { name: /Climate workflow/ });
+  fireEvent.change(screen.getByLabelText("Original task"), {
+    target: { value: `${user}:${user}` },
+  });
+  fireEvent.change(screen.getByLabelText("Execution Agent"), { target: { value: "agent-one" } });
+  fireEvent.change(screen.getByLabelText("Expires at"), { target: { value: "2099-01-01T12:00" } });
+  fireEvent.change(screen.getByLabelText("Material purpose"), { target: { value: "task-result" } });
+  await screen.findByRole("option", { name: /Climate workflow/ });
+  fireEvent.submit(form());
+  await screen.findByRole("alert");
+  expect(api.post).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("Original task"), {
+    target: { value: `${user}:${user}` },
+  });
+  vi.mocked(api.post).mockRejectedValue(new Error("unknown response"));
+  fireEvent.submit(form());
+  await screen.findByRole("button", { name: "Retry original request" });
+  expect(vi.mocked(api.post).mock.calls[0]?.[1]).toMatchObject({
+    kind: "task-result",
+    operationId: user,
+    recipientSiteId: peer,
+    agreementRevisionId: user,
+  });
+});
+
+test("foreign workflow candidates cannot populate a pinned export form", async () => {
+  const get = vi.mocked(api.get).getMockImplementation();
+  if (!get) throw new Error("Missing fixture");
+  vi.mocked(api.get).mockImplementation(async (...args) => {
+    const result = await get(...args);
+    if (!result || typeof result !== "object") throw new Error("Invalid task fixture");
+    return args[0].includes("/tasks?") ? { ...result, workflowRunId: authId } : result;
+  });
+  mount({ workflowRunId: id, taskKind: "task-input" });
+  await clickReady("Approve export");
+  await screen.findByRole("alert");
+  expect(screen.queryByRole("option", { name: /Climate workflow/ })).toBeNull();
+  expect(
+    (within(form()).getByRole("button", { name: "Approve export" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  fireEvent.submit(form());
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test("workflow history pins both list directions and registration to the original workflow", async () => {
+  mount({ workflowRunId: id, taskKind: "task-input" });
+  await screen.findByText("Workflow materials");
+  expect(screen.getByRole("link", { name: "Back to workflow" }).getAttribute("href")).toBe(
+    `/workflows/${id}`,
+  );
+  await screen.findByText(id);
+  expect(
+    vi
+      .mocked(api.get)
+      .mock.calls.some(
+        ([path]) => path === `/federation/media/exports?limit=20&offset=0&workflowRunId=${id}`,
+      ),
+  ).toBe(true);
+  await incomingTab();
+  await clickReady("Register received package");
+  expect(
+    vi
+      .mocked(api.get)
+      .mock.calls.some(
+        ([path]) => path === `/federation/media/packages?limit=20&offset=0&workflowRunId=${id}`,
+      ),
+  ).toBe(true);
+  const file = new File(
+    [JSON.stringify({ senderSiteId: peer, signedManifest: "signature" })],
+    "manifest.json",
+  );
+  fireEvent.change(screen.getByLabelText("Signed manifest file"), { target: { files: [file] } });
+  await waitFor(() =>
+    expect(
+      (
+        within(form()).getByRole("button", {
+          name: "Register received package",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false),
+  );
+  vi.mocked(api.post).mockRejectedValue(new Error("unconfirmed"));
+  fireEvent.submit(form());
+  await screen.findByRole("button", { name: "Retry original request" });
+  expect(vi.mocked(api.post).mock.calls[0]?.[0]).toBe(
+    `/federation/media/packages?workflowRunId=${id}`,
+  );
 });

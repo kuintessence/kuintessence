@@ -23,6 +23,7 @@ import { z } from "zod";
 import { decryptSecret, encryptSecret } from "../auth/secret-cipher";
 import { requireMediaAgreement } from "./media-agreement";
 import { readMediaExportDataset } from "./media-export-data";
+import { mediaWorkflowFilter } from "./media-task-options";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -237,7 +238,8 @@ export class FederationMediaExportService {
     });
   }
 
-  async list(actor: FederationActor, limit = 50, offset = 0) {
+  async list(actor: FederationActor, limit = 50, offset = 0, workflowRunId?: string) {
+    z.uuid().optional().parse(workflowRunId);
     z.number().int().min(1).max(100).parse(limit);
     z.number().int().nonnegative().parse(offset);
     return this.db.transaction(async (tx) => {
@@ -259,7 +261,15 @@ export class FederationMediaExportService {
           revocationReason: t.revocationReason,
         })
         .from(t)
-        .where(and(eq(t.localSiteId, this.signing.siteId), eq(t.localOrgId, actor.orgId)))
+        .where(
+          and(
+            eq(t.localSiteId, this.signing.siteId),
+            eq(t.localOrgId, actor.orgId),
+            workflowRunId
+              ? mediaWorkflowFilter(actor, this.signing.siteId, workflowRunId, t.manifest)
+              : undefined,
+          ),
+        )
         .orderBy(desc(t.approvedAt), desc(t.packageId))
         .limit(limit)
         .offset(offset);

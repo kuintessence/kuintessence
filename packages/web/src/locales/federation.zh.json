@@ -873,7 +873,11 @@
         "awaiting-import": "等待导入",
         "pending": "回执待确认",
         "recorded": "回执已确认"
-      }
+      },
+      "task": "原任务",
+      "prepareFromWorkflow": "介质交付",
+      "workflowMaterials": "工作流材料",
+      "backToWorkflow": "返回工作流"
     }
   }
 }

@@ -90,6 +90,8 @@ import {
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
   federationCanonicalJson,
+  MediaPackageSummarySchema,
+  MediaTaskOptionsSchema,
 } from "@kuintessence/shared/federation";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
@@ -135,6 +137,7 @@ import { FederationMediaImportOperations } from "./media-import-operations";
 import { FederationMediaImportTransport } from "./media-import-transport";
 import { FederationMediaKeyRequester, FederationMediaKeyResponder } from "./media-key-exchange";
 import { FederationMediaPackageService } from "./media-packages";
+import { mediaTaskOptions } from "./media-task-options";
 import { FederationMediaUploadTransport } from "./media-upload-transport";
 import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -8484,11 +8487,14 @@ test("completion renewal preserves an accepted intent cancellation under physica
 
 const taskMediaTest = process.env.KQ_MEDIA_AGE_TEST_BIN ? test : test.skip;
 
-async function taskMediaFixture(kind: "task-input" | "task-result" = "task-input") {
+async function taskMediaFixture(
+  kind: "task-input" | "task-result" = "task-input",
+  workflowSource = false,
+) {
   const f =
     kind === "task-input"
       ? await acceptedInputInventory(true, true, "media")
-      : await resultFixture(resultPolicy, false, "media");
+      : await resultFixture(resultPolicy, workflowSource, "media");
   const local = kind === "task-input" ? actor : receiver;
   const signing = kind === "task-input" ? a.signing : b.signing;
   await permission.set({ ...local, capability: "media.export", enabled: true }, actor.userId);
@@ -9316,8 +9322,9 @@ async function taskTargetFixture(
   kind: "task-input" | "task-result",
   imported = true,
   expiredExecution = false,
+  workflowSource = false,
 ) {
-  const source = await taskMediaFixture(kind);
+  const source = await taskMediaFixture(kind, workflowSource);
   const f = source.f;
   const local = kind === "task-input" ? receiver : actor;
   const signing = kind === "task-input" ? b.signing : a.signing;
@@ -11814,6 +11821,252 @@ taskMediaTest(
       });
       await storage.publish(t.local, t.importId);
       expect(await t.files()).toHaveLength(1);
+    } finally {
+      await t.source.release();
+    }
+  },
+);
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "media task picker %s returns original workflow bindings within the local institution",
+  async (kind) => {
+    const t = await taskMediaFixture(kind);
+    try {
+      const query = { kind, workflowRunId: t.f.runId };
+      const response = await mediaTaskOptions(db, t.signing.siteId, t.local, query);
+      expect(response).toMatchObject({
+        localSiteId: t.signing.siteId,
+        localOrgId: t.local.orgId,
+        kind,
+        workflowRunId: t.f.runId,
+        hasMore: false,
+      });
+      expect(response.data).toHaveLength(1);
+      expect(response.data[0]).toMatchObject({
+        workflowRunId: t.f.runId,
+        operationId: t.input.operationId,
+        agreementRevisionId: t.input.agreementRevisionId,
+        recipientSiteId: t.input.recipientSiteId,
+      });
+      expect(response.data[0]?.nodeId === null).toBe(kind === "task-result");
+      for (const secret of [
+        "requestJws",
+        "maxAmount",
+        "storageKey",
+        "executionUserId",
+        "inputManifestDigest",
+      ])
+        expect(JSON.stringify(response)).not.toContain(secret);
+      expect(
+        (
+          await mediaTaskOptions(db, t.signing.siteId, t.local, {
+            ...query,
+            workflowRunId: crypto.randomUUID(),
+          })
+        ).data,
+      ).toEqual([]);
+      const foreign = kind === "task-input" ? receiver : actor;
+      expect((await mediaTaskOptions(db, t.signing.siteId, foreign, query)).data).toEqual([]);
+      const wrongSite = kind === "task-input" ? b.signing.siteId : a.signing.siteId;
+      expect((await mediaTaskOptions(db, wrongSite, t.local, query)).data).toEqual([]);
+    } finally {
+      await t.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "media task picker input requires the original user, binding and active run",
+  async () => {
+    const t = await taskMediaFixture();
+    const shadow = { orgId: actor.orgId, userId: receiver.userId };
+    await db.insert(userOrgMemberships).values({ ...shadow, role: "member" });
+    await permission.set({ ...shadow, capability: "asset.read", enabled: true }, actor.userId);
+    try {
+      const query = { kind: "task-input", workflowRunId: t.f.runId };
+      expect((await mediaTaskOptions(db, t.signing.siteId, shadow, query)).data).toEqual([]);
+      await db
+        .update(workflowRuns)
+        .set({ status: "cancelled" })
+        .where(eq(workflowRuns.id, t.f.runId));
+      expect((await mediaTaskOptions(db, t.signing.siteId, actor, query)).data).toEqual([]);
+      await db
+        .update(workflowRuns)
+        .set({ status: "running" })
+        .where(eq(workflowRuns.id, t.f.runId));
+      const [original] = await db
+        .select()
+        .from(workflowExecutionDelegations)
+        .where(eq(workflowExecutionDelegations.runId, t.f.runId));
+      if (!original) throw new Error("Missing original delegation");
+      await db
+        .update(workflowExecutionDelegations)
+        .set({ request: { ...original.request, inputDelivery: "network" } })
+        .where(eq(workflowExecutionDelegations.runId, t.f.runId));
+      expect((await mediaTaskOptions(db, t.signing.siteId, actor, query)).data).toEqual([]);
+      await db
+        .update(workflowExecutionDelegations)
+        .set({ request: original.request })
+        .where(eq(workflowExecutionDelegations.runId, t.f.runId));
+      expect((await mediaTaskOptions(db, t.signing.siteId, actor, query)).data).toHaveLength(1);
+    } finally {
+      await permission.set({ ...shadow, capability: "asset.read", enabled: false }, actor.userId);
+      await db
+        .delete(userOrgMemberships)
+        .where(
+          and(
+            eq(userOrgMemberships.orgId, shadow.orgId),
+            eq(userOrgMemberships.userId, shadow.userId),
+          ),
+        );
+      await t.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "media task picker results require the execution institution and completed original workflow",
+  async () => {
+    const t = await taskMediaFixture("task-result");
+    try {
+      const query = { kind: "task-result", workflowRunId: t.f.runId };
+      await db
+        .update(workflowRuns)
+        .set({ status: "running" })
+        .where(eq(workflowRuns.id, t.f.runId));
+      expect((await mediaTaskOptions(db, t.signing.siteId, t.local, query)).data).toEqual([]);
+      await db
+        .update(workflowRuns)
+        .set({ status: "completed" })
+        .where(eq(workflowRuns.id, t.f.runId));
+      const [binding] = await db
+        .select()
+        .from(federationWorkflowBindings)
+        .where(eq(federationWorkflowBindings.workflowRunId, t.f.runId));
+      if (!binding) throw new Error("Missing execution binding");
+      await db
+        .update(federationWorkflowBindings)
+        .set({ snapshot: { ...binding.snapshot, identity: actor } })
+        .where(eq(federationWorkflowBindings.workflowRunId, t.f.runId));
+      expect((await mediaTaskOptions(db, t.signing.siteId, t.local, query)).data).toEqual([]);
+      await db
+        .update(federationWorkflowBindings)
+        .set({ snapshot: binding.snapshot })
+        .where(eq(federationWorkflowBindings.workflowRunId, t.f.runId));
+      expect((await mediaTaskOptions(db, t.signing.siteId, t.local, query)).data).toHaveLength(1);
+    } finally {
+      await t.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "media task picker HTTP is bounded, paginated and requires current read capability",
+  async () => {
+    const t = await taskMediaFixture();
+    const second = await taskMediaFixture();
+    try {
+      const app = new Hono();
+      app.onError(createErrorHandler(pino({ level: "silent" })));
+      app.use("*", async (c, next) => {
+        c.set("principal" as never, actor as never);
+        await next();
+      });
+      app.route(
+        "/api",
+        createFederationMediaRoutes(new FederationMediaPackageService(db, t.signing.siteId, clock)),
+      );
+      const response = await app.request("/api/federation/media/tasks?kind=task-input&limit=1");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const first = MediaTaskOptionsSchema.parse(await response.json());
+      expect(first.hasMore).toBe(true);
+      expect(first.data).toHaveLength(1);
+      const next = await mediaTaskOptions(db, t.signing.siteId, actor, {
+        kind: "task-input",
+        limit: 1,
+        offset: 1,
+      });
+      expect(next.data).toHaveLength(1);
+      expect(next.data[0]?.operationId).not.toBe(first.data[0]?.operationId);
+      for (const suffix of [
+        "kind=dataset",
+        "kind=task-input&limit=101",
+        "kind=task-input&offset=-1",
+        "kind=task-input&workflowRunId=bad",
+      ])
+        expect((await app.request(`/api/federation/media/tasks?${suffix}`)).status).toBe(400);
+      await permission.set({ ...actor, capability: "asset.read", enabled: false }, actor.userId);
+      await permission.set({ ...actor, capability: "asset.map", enabled: false }, actor.userId);
+      expect((await app.request("/api/federation/media/tasks?kind=task-input")).status).toBe(403);
+    } finally {
+      await permission.set({ ...actor, capability: "asset.map", enabled: true }, actor.userId);
+      await permission.set({ ...actor, capability: "asset.read", enabled: true }, actor.userId);
+      await t.release();
+      await second.release();
+    }
+  },
+);
+
+taskMediaTest(
+  "media task workflow history joins both original workflows without requiring active execution",
+  async () => {
+    const t = await taskTargetFixture("task-result", true, false, true);
+    try {
+      if (!("sourceWorkflow" in t.f) || !t.f.sourceWorkflow)
+        throw new Error("Expected source workflow");
+      const sourceRunId = t.f.sourceWorkflow.runId;
+      const exports = t.source.service();
+      const app = new Hono();
+      app.onError(createErrorHandler(pino({ level: "silent" })));
+      app.use("*", async (c, next) => {
+        c.set("principal" as never, t.local as never);
+        await next();
+      });
+      app.route("/api", createFederationMediaRoutes(t.service(), exports));
+      const register = (workflowRunId: string) =>
+        app.request(`/api/federation/media/packages?workflowRunId=${workflowRunId}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(t.registration),
+        });
+      expect((await register(t.f.runId)).status).toBe(403);
+      expect(
+        (await t.service().list(t.local)).some((row) => row.packageId === t.exported.packageId),
+      ).toBe(false);
+      expect((await register(sourceRunId)).status).toBe(201);
+      expect(
+        (await exports.list(t.source.local, 20, 0, t.f.runId)).map((row) => row.packageId),
+      ).toEqual([t.exported.packageId]);
+      expect(await exports.list(t.source.local, 20, 0, sourceRunId)).toEqual([]);
+      expect(
+        (await t.service().list(t.local, 20, 0, sourceRunId)).map((row) => row.packageId),
+      ).toEqual([t.exported.packageId]);
+      expect(await t.service().list(t.local, 20, 0, t.f.runId)).toEqual([]);
+      expect(await t.service().list(t.local, 20, 0, crypto.randomUUID())).toEqual([]);
+      await db
+        .update(workflowRuns)
+        .set({ status: "completed" })
+        .where(eq(workflowRuns.id, sourceRunId));
+      expect(await t.service().list(t.local, 20, 0, sourceRunId)).toHaveLength(1);
+      const response = await app.request(
+        `/api/federation/media/packages?workflowRunId=${sourceRunId}`,
+      );
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      if (!body || typeof body !== "object" || !("data" in body))
+        throw new Error("Missing package response");
+      expect(
+        MediaPackageSummarySchema.array()
+          .parse(body.data)
+          .map((row) => row.packageId),
+      ).toEqual([t.exported.packageId]);
+      expect((await app.request("/api/federation/media/packages?workflowRunId=bad")).status).toBe(
+        400,
+      );
+      expect((await app.request("/api/federation/media/exports?workflowRunId=bad")).status).toBe(
+        400,
+      );
     } finally {
       await t.source.release();
     }

@@ -873,7 +873,11 @@
         "awaiting-import": "Awaiting import",
         "pending": "Receipt pending",
         "recorded": "Receipt acknowledged"
-      }
+      },
+      "task": "Original task",
+      "prepareFromWorkflow": "Media delivery",
+      "workflowMaterials": "Workflow materials",
+      "backToWorkflow": "Back to workflow"
     }
   }
 }

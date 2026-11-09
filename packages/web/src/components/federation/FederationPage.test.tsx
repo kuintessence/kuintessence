@@ -121,3 +121,39 @@ test("commercial drafts are discarded with an institution change", async () => {
   });
   expect(((await screen.findByLabelText("Commercial draft")) as HTMLInputElement).value).toBe("");
 });
+
+vi.mock("./MediaDeliveryPanel", () => ({
+  MediaDeliveryPanel: ({
+    exportFrom,
+  }: {
+    exportFrom?: { workflowRunId: string; taskKind: string };
+  }) => (
+    <div>
+      <output aria-label="Workflow selection">
+        {exportFrom ? `${exportFrom.workflowRunId}:${exportFrom.taskKind}` : "all"}
+      </output>
+      <input aria-label="Media draft" />
+    </div>
+  ),
+}));
+
+test("workflow navigation opens scoped delivery and replaces drafts on the next workflow", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = (workflowRunId: string) => (
+    <QueryClientProvider client={client}>
+      <FederationPage mediaExport={{ workflowRunId, taskKind: "task-input" }} />
+    </QueryClientProvider>
+  );
+  const rendered = render(view(orgA));
+  await screen.findByLabelText("Workflow selection");
+  expect(screen.getByRole("tab", { name: "Media delivery" }).getAttribute("data-state")).toBe(
+    "active",
+  );
+  expect(screen.getByLabelText("Workflow selection").textContent).toBe(`${orgA}:task-input`);
+  fireEvent.change(screen.getByLabelText("Media draft"), { target: { value: "old draft" } });
+  rendered.rerender(view(orgB));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Workflow selection").textContent).toBe(`${orgB}:task-input`),
+  );
+  expect((screen.getByLabelText("Media draft") as HTMLInputElement).value).toBe("");
+});

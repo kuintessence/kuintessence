@@ -15,10 +15,10 @@ import { PageHeader, PageShell } from "../ui/page";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { AgreementPanel } from "./AgreementPanel";
 import { CommercialPanel } from "./CommercialPanel";
-import { MediaDeliveryPanel } from "./MediaDeliveryPanel";
+import { MediaDeliveryPanel, type MediaWorkflowExport } from "./MediaDeliveryPanel";
 import { MediaLogisticsPanel } from "./MediaLogisticsPanel";
 
-export function FederationPage() {
+export function FederationPage({ mediaExport }: { mediaExport?: MediaWorkflowExport } = {}) {
   const { t } = useTranslation();
   const revision = useSyncExternalStore(
     subscribeAuthState,
@@ -28,12 +28,22 @@ export function FederationPage() {
   return (
     <PageShell>
       <PageHeader title={t("federation.agreements.title")} />
-      <OrganizationAgreements key={revision} revision={revision} />
+      <OrganizationAgreements
+        key={`${revision}:${mediaExport?.workflowRunId ?? ""}:${mediaExport?.taskKind ?? ""}`}
+        revision={revision}
+        mediaExport={mediaExport}
+      />
     </PageShell>
   );
 }
 
-function OrganizationAgreements({ revision }: { revision: string | null }) {
+function OrganizationAgreements({
+  revision,
+  mediaExport,
+}: {
+  revision: string | null;
+  mediaExport?: MediaWorkflowExport;
+}) {
   const { t } = useTranslation();
   const client = useQueryClient();
   const organizationId = useActiveOrganizationId();
@@ -98,7 +108,10 @@ function OrganizationAgreements({ revision }: { revision: string | null }) {
         ) : null}
       </div>
       {organizationId && context.data.organizations.some((org) => org.orgId === organizationId) ? (
-        <Tabs key={`${organizationId}:${revision}`} defaultValue="execution">
+        <Tabs
+          key={`${organizationId}:${revision}`}
+          defaultValue={mediaExport ? "delivery" : "execution"}
+        >
           <TabsList aria-label={t("federation.agreements.title")}>
             <TabsTrigger value="execution">{t("federation.agreements.agreements")}</TabsTrigger>
             <TabsTrigger value="commercial">{t("federation.commercial.title")}</TabsTrigger>
@@ -119,6 +132,7 @@ function OrganizationAgreements({ revision }: { revision: string | null }) {
           </TabsContent>
           <TabsContent value="delivery">
             <MediaDeliveryPanel
+              exportFrom={mediaExport}
               scope={{ organizationId, authRevision: revision }}
               switching={change.isPending || context.isFetching}
             />
