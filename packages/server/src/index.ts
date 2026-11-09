@@ -59,6 +59,7 @@ import { FederationAttestationWorker } from "./federation/attestation-worker";
 import { FederationBillingService } from "./federation/billing";
 import { FederationCancellationMonitor } from "./federation/cancellation-monitor";
 import { UnixCaseClient } from "./federation/case-client";
+import { FederationCaseRevocationDelivery } from "./federation/case-revocations";
 import { FederationCaseSubmissionService } from "./federation/case-submissions";
 import { FederationClosingAutomation } from "./federation/closing-automation";
 import { FederationClosingPolicyService } from "./federation/closing-policy";
@@ -1884,6 +1885,15 @@ const federationCasePublications = await loadFederationCasePublications(
   config,
   federationSigningKey,
 );
+const federationCaseRevocations =
+  federationSigningKey && federationCasePublications
+    ? new FederationCaseRevocationDelivery(
+        db,
+        federationSigningKey,
+        federationCasePublications,
+        federationSender,
+      )
+    : undefined;
 const federationCaseSubmissions =
   federationSigningKey && federationCasePublications
     ? new FederationCaseSubmissionService(
@@ -1923,6 +1933,7 @@ if (federationCasePublications)
       federationCasePublications,
       federationApprovalExchange,
       federationCaseSubmissions,
+      federationCaseRevocations,
     ),
   );
 if (federationSigningKey && federationCommercial)
@@ -2869,6 +2880,7 @@ const federationCommercialWorker = federationCommercial
       federationDisputeDelivery,
       federationDisputeFreezes,
       federationCaseSubmissions,
+      federationCaseRevocations,
     )
   : undefined;
 federationCommercialWorker?.start();

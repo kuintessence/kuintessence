@@ -1,6 +1,7 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   auditLog,
+  federationCaseRevocationNotices as notices,
   type PgDb,
   type PgTransaction,
   federationCasePublications as publications,
@@ -16,6 +17,7 @@ import {
   type FabricCaseTrust,
   FabricCaseTrustSchema,
 } from "@kuintessence/shared/federation/case-ledger";
+import type { CaseRevocationNotice } from "@kuintessence/shared/federation/case-revocation";
 import { CommercialDisclosureSchema } from "@kuintessence/shared/federation/disclosure";
 import { CommercialDisclosurePolicySchema } from "@kuintessence/shared/federation/disclosure-authorization";
 import { parseFederationPublicKey } from "@kuintessence/shared/federation/signatures";
@@ -180,7 +182,83 @@ export class FederationCasePublicationService {
         )
     )
       throw new FederationError("AUTHORIZATION_EXPIRED");
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`case-publication:${this.signing.siteId}:${value.publicationId}`}, 0))`,
+    );
+    const received = await tx
+      .select()
+      .from(notices)
+      .where(
+        and(
+          eq(notices.localSiteId, this.signing.siteId),
+          eq(notices.publicationId, value.publicationId),
+        ),
+      );
+    if (
+      received.some(
+        (row) =>
+          federationCanonicalJson(row.payload.publication) !== federationCanonicalJson(value),
+      )
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    if (received.length) throw new FederationError("AUTHORIZATION_EXPIRED");
     return original;
+  }
+  async verifyWithdrawal(tx: PgTransaction, notice: CaseRevocationNotice) {
+    const publication = CasePublicationSchema.parse(notice.publication),
+      scope = publication.scope;
+    const domain = this.ledger.domains.find((value) => value.domainId === publication.caseDomainId);
+    if (
+      !domain ||
+      domain.commercialDomainId !== scope.domainId ||
+      domain.sourceSiteId !== scope.sourceSiteId ||
+      domain.targetSiteId !== scope.targetSiteId ||
+      domain.recipientSiteId !== scope.evidenceRecipientSiteId ||
+      ![domain.sourceSiteId, domain.targetSiteId].includes(notice.issuerSiteId) ||
+      ![domain.sourceSiteId, domain.targetSiteId, domain.recipientSiteId].includes(
+        notice.receivingSiteId,
+      ) ||
+      ![domain.sourceSiteId, domain.targetSiteId, domain.recipientSiteId].includes(
+        this.signing.siteId,
+      ) ||
+      notice.issuerSiteId === notice.receivingSiteId
+    )
+      throw new FederationError("POLICY_DENIED");
+    // Authenticate these bytes through the new withdrawal, not the expired original approval key.
+    federationMessageKeyId(notice.publicationJws);
+    const bytes = Buffer.from(notice.publicationJws.split(".")[1] ?? "", "base64url");
+    let original: unknown;
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      original = JSON.parse(text);
+      if (JSON.stringify(original) !== text) throw new Error("Noncanonical wire JSON");
+      original = CasePublicationSchema.parse(original);
+    } catch {
+      throw new FederationError("INVALID_MESSAGE");
+    }
+    if (federationCanonicalJson(original) !== federationCanonicalJson(publication))
+      throw new FederationError("OPERATION_CONFLICT");
+    const publicationDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    const signed = await this.verify(
+      tx,
+      CaseRevocationSchema,
+      notice.revocationJws,
+      notice.issuerSiteId,
+    );
+    if (
+      signed.payload.publicationId !== publication.publicationId ||
+      signed.payload.publicationDigest !== publicationDigest ||
+      signed.payload.caseDomainId !== domain.domainId ||
+      signed.payload.issuerSiteId !== notice.issuerSiteId
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    if (
+      Date.parse(signed.payload.issuedAt) > Date.now() ||
+      Date.parse(notice.issuedAt) < Date.parse(signed.payload.issuedAt) ||
+      Date.parse(notice.issuedAt) > Date.now() + 60000
+    )
+      throw new FederationError("AUTHORIZATION_EXPIRED");
+    return signed;
   }
   async draft(
     actor: FederationActor,

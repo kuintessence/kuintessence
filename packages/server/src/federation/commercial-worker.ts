@@ -1,6 +1,7 @@
 import { createLogger } from "@kuintessence/shared";
 import type { FederationAccountingCollection } from "./accounting-collection";
 import type { FederationAgreementExchange } from "./agreement-exchange";
+import type { FederationCaseRevocationDelivery } from "./case-revocations";
 import type { FederationCaseSubmissionService } from "./case-submissions";
 import type { FederationClosingAutomation } from "./closing-automation";
 import type { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
@@ -42,6 +43,7 @@ export class FederationCommercialWorker {
     private readonly disputes?: FederationDisputeDelivery,
     private readonly disputeFreezes?: FederationDisputeFreezeExchange,
     private readonly cases?: FederationCaseSubmissionService,
+    private readonly caseRevocations?: FederationCaseRevocationDelivery,
   ) {}
 
   start() {
@@ -192,6 +194,17 @@ export class FederationCommercialWorker {
         } catch {
           logger.error(
             "Dispute freeze exchange failed; original proofs and pending local freezes remain durable",
+          );
+        }
+      }
+      if (this.caseRevocations) {
+        try {
+          await this.caseRevocations.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.caseRevocations.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Case withdrawal delivery failed; signed notices and receipts remain durable",
           );
         }
       }

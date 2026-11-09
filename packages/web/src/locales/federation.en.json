@@ -110,6 +110,8 @@
       "commercial-payment": "External payment receipt",
       "case-evidence-publication": "Case evidence publication consent",
       "case-publication-revocation": "Case publication revocation",
+      "case-revocation-notice": "Case revocation notice",
+      "case-revocation-receipt": "Case revocation receipt",
       "commercial-disclosure-policy": "Evidence disclosure policy",
       "commercial-disclosure": "Evidence disclosure approval",
       "commercial-disclosure-read-query": "Evidence read query",

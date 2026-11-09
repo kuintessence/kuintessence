@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationCasePublicationService } from "../federation/case-publications";
+import type { FederationCaseRevocationDelivery } from "../federation/case-revocations";
 import type { FederationCaseSubmissionService } from "../federation/case-submissions";
 import type { FederationCommercialApprovalExchange } from "../federation/commercial-approval-exchange";
 import type { FederationActor } from "../federation/permissions";
@@ -18,6 +19,7 @@ export function createFederationCasePublicationRoutes(
   service: FederationCasePublicationService,
   exchange?: FederationCommercialApprovalExchange,
   ledger?: FederationCaseSubmissionService,
+  revocations?: FederationCaseRevocationDelivery,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   const root = "/federation/case-publications",
@@ -45,6 +47,27 @@ export function createFederationCasePublicationRoutes(
   });
   const id = z.object({ revisionId: z.uuid() }),
     publication = id.extend({ publicationId: z.uuid() });
+  if (revocations) {
+    r.get(`${path}/:publicationId/revocations`, kqValidator("param", publication), async (c) => {
+      const { revisionId, publicationId } = c.req.valid("param");
+      return c.json(await revocations.status(c.get("federationActor"), revisionId, publicationId));
+    });
+    r.post(
+      `${path}/:publicationId/revocations/:receivingSiteId/retry`,
+      kqValidator("param", publication.extend({ receivingSiteId: z.uuid() })),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        const { revisionId, publicationId, receivingSiteId } = c.req.valid("param");
+        await revocations.retry(
+          c.get("federationActor"),
+          revisionId,
+          publicationId,
+          receivingSiteId,
+        );
+        return c.json({ ok: true });
+      },
+    );
+  }
   if (ledger) {
     r.get(
       `${path}/ledger`,

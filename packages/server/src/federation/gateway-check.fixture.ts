@@ -97,6 +97,7 @@ try {
         "/federation/v1/commercial-approvals",
         "/federation/v1/commercial-closing",
         "/federation/v1/disputes",
+        "/federation/v1/case-revocations",
         "/federation/v1/dispute-freezes",
         "/federation/v1/market-requests",
         "/federation/v1/reservation-proposals",
@@ -188,7 +189,11 @@ try {
     );
     assert.equal((await call({ cert, key }, "/federation/v1/commercial-approvals")).status, 200);
     assert.equal((await call({ cert, key }, "/federation/v1/commercial-closing")).status, 200);
-    for (const path of ["/federation/v1/disputes", "/federation/v1/dispute-freezes"]) {
+    for (const path of [
+      "/federation/v1/disputes",
+      "/federation/v1/dispute-freezes",
+      "/federation/v1/case-revocations",
+    ]) {
       assert.deepEqual(await call({ cert, key }, path), {
         status: 200,
         body: "signed.receipt.bytes",
@@ -266,7 +271,7 @@ try {
       (await call({ cert, key }, "/federation/v1/input-downloads?identity=forged")).status,
       404,
     );
-    assert.equal(calls, 23);
+    assert.equal(calls, 24);
     await new Promise<void>((resolve, reject) =>
       backend.close((error) => (error ? reject(error) : resolve())),
     );

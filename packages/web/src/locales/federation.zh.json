@@ -110,6 +110,8 @@
       "commercial-payment": "外部付款凭证",
       "case-evidence-publication": "案件材料存证许可",
       "case-publication-revocation": "案件存证撤回",
+      "case-revocation-notice": "案件存证撤回通知",
+      "case-revocation-receipt": "案件存证撤回接收回执",
       "commercial-disclosure-policy": "证据披露政策",
       "commercial-disclosure": "证据披露批准",
       "commercial-disclosure-read-query": "证据读取查询",

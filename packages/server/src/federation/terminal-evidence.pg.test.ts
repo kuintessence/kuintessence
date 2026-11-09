@@ -19,6 +19,8 @@ import {
   federationCapabilities,
   federationCaseAttempts,
   federationCasePublications,
+  federationCaseRevocationDeliveries,
+  federationCaseRevocationNotices,
   federationCaseSubmissions,
   federationCertificates,
   federationClosingPolicies,
@@ -63,11 +65,12 @@ import {
   workflowRuns,
 } from "@kuintessence/db";
 import type { SchedulerAccounting } from "@kuintessence/shared";
-import type { FederationAccountingRequest } from "@kuintessence/shared/federation";
 import {
   FederationAcceptanceSchema,
+  type FederationAccountingRequest,
   type FederationAgreement,
   FederationCancellationReceiptSchema,
+  FederationError,
 } from "@kuintessence/shared/federation";
 import {
   type CaseProposal,
@@ -80,6 +83,10 @@ import {
   FabricCaseTrustSchema,
   verifyCasePublication,
 } from "@kuintessence/shared/federation/case-ledger";
+import {
+  CaseRevocationNoticeSchema,
+  CaseRevocationReceiptSchema,
+} from "@kuintessence/shared/federation/case-revocation";
 import {
   CommercialAdjustmentListSchema,
   CommercialAdjustmentSchema,
@@ -139,6 +146,7 @@ import { readAttestationBacklog } from "./attestation-backlog";
 import { FederationBillingService } from "./billing";
 import type { CaseClient } from "./case-client";
 import { FederationCasePublicationService } from "./case-publications";
+import { FederationCaseRevocationDelivery } from "./case-revocations";
 import { FederationCaseSubmissionService } from "./case-submissions";
 import { FederationClosingAutomation } from "./closing-automation";
 import { ClosingPolicyInputSchema, FederationClosingPolicyService } from "./closing-policy";
@@ -13182,4 +13190,688 @@ test("case ledger existing commercial worker discovers and completes the indepen
   await worker.stop();
   expect(await f.row()).toMatchObject({ state: "committed" });
   expect(f.proposals).toHaveLength(1);
+});
+
+async function caseRevocationFixture() {
+  const f = await casePublicationFixture();
+  const sites = [f.source.signing.siteId, f.provider.signing.siteId, f.recipient];
+  cleanup.push(async () => {
+    const queued = await db
+      .select({ id: federationCaseSubmissions.id })
+      .from(federationCaseSubmissions)
+      .where(inArray(federationCaseSubmissions.localSiteId, sites));
+    if (queued.length)
+      await db.delete(federationCaseAttempts).where(
+        inArray(
+          federationCaseAttempts.submissionId,
+          queued.map((row) => row.id),
+        ),
+      );
+    await db
+      .delete(federationCaseSubmissions)
+      .where(inArray(federationCaseSubmissions.localSiteId, sites));
+    await db
+      .delete(federationCaseRevocationDeliveries)
+      .where(inArray(federationCaseRevocationDeliveries.localSiteId, sites));
+    await db
+      .delete(federationCaseRevocationNotices)
+      .where(inArray(federationCaseRevocationNotices.localSiteId, sites));
+    await db.delete(auditLog).where(
+      inArray(
+        auditLog.actor,
+        sites.flatMap((site) => [`case-revocation:${site}`, `case-ledger:${site}`]),
+      ),
+    );
+    await db.delete(federationSigningKeys).where(eq(federationSigningKeys.siteId, f.recipient));
+  });
+  for (const site of sites.slice(0, 2))
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["case-revocation-notice","case-revocation-receipt"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, site));
+  await f.trust.addKey(
+    f.recipient,
+    {
+      keyId: f.recipientKeys.signing.keyId,
+      publicKeyPem: await exportSPKI(f.recipientKeys.verification.publicKey),
+      allowedKinds: [
+        "case-revocation-notice",
+        "case-revocation-receipt",
+        "case-publication-revocation",
+      ],
+      validFrom: "2020-01-01T00:00:00Z",
+      validUntil: "2099-01-01T00:00:00Z",
+    },
+    f.sourceActor.userId,
+  );
+  const receiverCases = new FederationCasePublicationService(db, f.recipientKeys.signing, f.ledger);
+  const provider = new FederationCaseRevocationDelivery(db, f.provider.signing, f.providerCases);
+  const receiver = new FederationCaseRevocationDelivery(db, f.recipientKeys.signing, receiverCases);
+  const transport: { calls: number; afterResponse?: (response: string) => Promise<string> } = {
+    calls: 0,
+  };
+  const send: FederationSend = async (endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/case-revocations");
+    const key = await f.trust.resolveKey(
+      f.source.signing.siteId,
+      f.source.signing.keyId,
+      new Date(),
+    );
+    const { payload } = await verifyFederationMessage(
+      CaseRevocationNoticeSchema,
+      jws,
+      key,
+      new Date(),
+    );
+    transport.calls++;
+    const [site] = await db
+      .select()
+      .from(federationSites)
+      .where(eq(federationSites.id, payload.receivingSiteId));
+    if (!site) throw new Error("Missing target institution");
+    expect(endpoint).toBe(site.endpoint);
+    const response = await (payload.receivingSiteId === f.recipient ? receiver : provider).receive(
+      jws,
+      f.fingerprint,
+    );
+    return transport.afterResponse ? transport.afterResponse(response) : response;
+  };
+  const source = new FederationCaseRevocationDelivery(db, f.source.signing, f.sourceCases, send);
+  const rows = () =>
+    db
+      .select()
+      .from(federationCaseRevocationDeliveries)
+      .where(eq(federationCaseRevocationDeliveries.localSiteId, f.source.signing.siteId));
+  const received = (site = f.provider.signing.siteId) =>
+    db
+      .select()
+      .from(federationCaseRevocationNotices)
+      .where(eq(federationCaseRevocationNotices.localSiteId, site));
+  const due = () =>
+    db
+      .update(federationCaseRevocationDeliveries)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(federationCaseRevocationDeliveries.localSiteId, f.source.signing.siteId));
+  const revoke = async () => {
+    await f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication);
+    const row = await f.sourceCases.revoke(
+      f.sourceActor,
+      f.revisionId,
+      f.publication.publicationId,
+    );
+    await source.discover();
+    return row;
+  };
+  const drive = async (service = source) => {
+    for (let i = 0; i < 8; i++) if (!(await service.advanceNext())) break;
+  };
+  return {
+    ...f,
+    sourceRevocations: source,
+    providerRevocations: provider,
+    recipientRevocations: receiver,
+    receiverCases,
+    sendRevocation: send,
+    transport,
+    deliveryRows: rows,
+    received,
+    dueRevocations: due,
+    revokePublication: revoke,
+    driveRevocations: drive,
+  };
+}
+
+test("case revocation delivers exact immutable notices to the peer and R without disclosing material", async () => {
+  const f = await caseRevocationFixture();
+  await f.approvePublication();
+  const before = await f.budget(),
+    revoked = await f.revokePublication();
+  await f.sourceRevocations.discover();
+  expect(await f.deliveryRows()).toHaveLength(2);
+  await f.driveRevocations();
+  for (const row of await f.deliveryRows())
+    expect(row).toMatchObject({ state: "received", lastError: null });
+  for (const site of [f.provider.signing.siteId, f.recipient]) {
+    const [notice] = await f.received(site);
+    if (!notice || !revoked.revocationJws) throw new Error("Missing saved revocation");
+    expect(notice.payload.publication).toEqual(f.publication);
+    expect(notice.payload.revocationJws).toBe(revoked.revocationJws);
+    expect(notice?.payload).not.toHaveProperty("evidence");
+  }
+  await expect(f.providerCases.approve(f.actor, f.revisionId, f.publication)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+  expect(await f.budget()).toEqual(before);
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(eq(federationCommercialSubmissions.localSiteId, f.recipient)),
+  ).toHaveLength(0);
+});
+
+test("case revocation arriving before local consent prevents later approval and identifier reuse", async () => {
+  const f = await caseRevocationFixture();
+  await f.revokePublication();
+  await f.driveRevocations();
+  await expect(f.providerCases.approve(f.actor, f.revisionId, f.publication)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+  await expect(
+    f.providerCases.approve(f.actor, f.revisionId, { ...f.publication, salt: "f".repeat(64) }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect((await f.providerCases.list(f.actor, f.revisionId)).data).toHaveLength(0);
+});
+
+test("case revocation loss and service reconstruction replay the same notice receipt and audit", async () => {
+  const f = await caseRevocationFixture();
+  await f.revokePublication();
+  f.transport.afterResponse = async () => {
+    throw new Error("Reply lost");
+  };
+  await f.driveRevocations();
+  expect((await f.deliveryRows()).every((row) => row.state === "pending")).toBe(true);
+  const originals = await f.deliveryRows(),
+    receipts = [...(await f.received()), ...(await f.received(f.recipient))];
+  delete f.transport.afterResponse;
+  await f.dueRevocations();
+  await f.driveRevocations(
+    new FederationCaseRevocationDelivery(db, f.source.signing, f.sourceCases, f.sendRevocation),
+  );
+  for (const row of await f.deliveryRows()) {
+    expect(row.state).toBe("received");
+    const original = originals.find((value) => value.receivingSiteId === row.receivingSiteId),
+      receipt = receipts.find((value) => value.localSiteId === row.receivingSiteId);
+    if (!original || !receipt) throw new Error("Missing original notice or receipt");
+    expect(row.noticeJws).toBe(original.noticeJws);
+    expect(row.receiptJws).toBe(receipt.receiptJws);
+  }
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.action, "federation.case_revocation.receive"),
+          eq(auditLog.target, f.publication.publicationId),
+        ),
+      ),
+  ).toHaveLength(2);
+});
+
+test("case revocation original approval purpose removal or disclosure closure does not invalidate a fresh withdrawal", async () => {
+  const f = await caseRevocationFixture();
+  await f.revokePublication();
+  await f.sourcePolicy.revoke(f.sourceActor, f.revisionId, f.policy.policyId);
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'case-evidence-publication'` })
+    .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+  await f.driveRevocations();
+  expect((await f.deliveryRows()).every((row) => row.state === "received")).toBe(true);
+});
+
+test("case revocation changed material digest and wrong receiving institution are rejected", async () => {
+  const f = await caseRevocationFixture(),
+    revoked = await f.revokePublication();
+  if (!revoked.revocationJws) throw new Error("Missing withdrawal");
+  const value = CaseRevocationNoticeSchema.parse({
+    protocolVersion: 1,
+    kind: "case-revocation-notice",
+    noticeId: randomUUID(),
+    issuerSiteId: f.source.signing.siteId,
+    receivingSiteId: f.provider.signing.siteId,
+    publication: f.publication,
+    revocationJws: revoked.revocationJws,
+    publicationJws: revoked.approvalJws,
+    issuedAt: new Date().toISOString(),
+  });
+  for (const patch of [
+    { publication: { ...value.publication, salt: "e".repeat(64) } },
+    { receivingSiteId: f.recipient },
+  ]) {
+    const jws = await signFederationMessage(
+      CaseRevocationNoticeSchema,
+      { ...value, ...patch },
+      f.source.signing,
+    );
+    await expect(f.providerRevocations.receive(jws, f.fingerprint)).rejects.toThrow();
+  }
+  expect(await f.received()).toHaveLength(0);
+});
+
+test("case revocation receipt purpose changes after transport cannot mark delivery complete", async () => {
+  const f = await caseRevocationFixture();
+  await f.revokePublication();
+  f.transport.afterResponse = async (response) => {
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'case-revocation-receipt'` })
+      .where(inArray(federationSigningKeys.siteId, [f.provider.signing.siteId, f.recipient]));
+    return response;
+  };
+  await f.sourceRevocations.advanceNext();
+  expect(f.transport.calls).toBe(1);
+  expect((await f.deliveryRows()).some((row) => row.state === "needs_review")).toBe(true);
+  expect((await f.deliveryRows()).some((row) => row.state === "received")).toBe(false);
+});
+
+test("case revocation receiver audit failure rolls back the stop record and retries safely", async () => {
+  const f = await caseRevocationFixture();
+  await f.revokePublication();
+  await db.execute(
+    sql`ALTER TABLE audit_log ADD CONSTRAINT case_revocation_receive_test CHECK (action <> 'federation.case_revocation.receive') NOT VALID`,
+  );
+  try {
+    await f.driveRevocations();
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT case_revocation_receive_test`);
+  }
+  expect(await f.received()).toHaveLength(0);
+  expect(await f.received(f.recipient)).toHaveLength(0);
+  await f.dueRevocations();
+  await f.driveRevocations();
+  expect((await f.deliveryRows()).every((row) => row.state === "received")).toBe(true);
+});
+
+test("case revocation sender audit failure preserves the receiver stop and original receipt for retry", async () => {
+  const f = await caseRevocationFixture();
+  await f.revokePublication();
+  await db.execute(
+    sql`ALTER TABLE audit_log ADD CONSTRAINT case_revocation_send_test CHECK (action <> 'federation.case_revocation.delivered') NOT VALID`,
+  );
+  try {
+    await f.driveRevocations();
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT case_revocation_send_test`);
+  }
+  expect((await f.deliveryRows()).every((row) => row.state === "pending")).toBe(true);
+  expect(await f.received()).toHaveLength(1);
+  await f.dueRevocations();
+  await f.driveRevocations();
+  expect((await f.deliveryRows()).every((row) => row.state === "received")).toBe(true);
+});
+
+test("case revocation production ingress requires peer identity and configured case trust", async () => {
+  const f = await caseRevocationFixture();
+  await f.revokePublication();
+  const args: Parameters<typeof createFederationIngress> = [db, f.provider.signing];
+  args[10] = f.providerCases;
+  const ingress = createFederationIngress(...args);
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    if (path !== "/federation/v1/case-revocations") throw new Error("Wrong private path");
+    const key = await f.trust.resolveKey(
+      f.source.signing.siteId,
+      f.source.signing.keyId,
+      new Date(),
+    );
+    const { payload } = await verifyFederationMessage(
+      CaseRevocationNoticeSchema,
+      jws,
+      key,
+      new Date(),
+    );
+    if (payload.receivingSiteId === f.recipient)
+      return f.recipientRevocations.receive(jws, f.fingerprint);
+    const disabled = createFederationIngress(db, f.provider.signing);
+    expect(
+      (
+        await disabled.request(path, {
+          method: "POST",
+          body: jws,
+          headers: { "content-type": "application/jose", "x-kq-federation-cert": f.fingerprint },
+        })
+      ).status,
+    ).toBe(409);
+    const request = (fingerprint?: string) =>
+      ingress.request(path, {
+        method: "POST",
+        body: jws,
+        headers: {
+          "content-type": "application/jose",
+          ...(fingerprint ? { "x-kq-federation-cert": fingerprint } : {}),
+        },
+      });
+    expect((await request()).status).toBe(401);
+    expect((await request(f.providerFingerprint)).status).toBe(401);
+    const result = await request(f.fingerprint);
+    expect(result.status).toBe(200);
+    expect(result.headers.get("cache-control")).toBe("no-store");
+    const response = await result.text();
+    const own = await f.trust.resolveKey(
+      f.provider.signing.siteId,
+      f.provider.signing.keyId,
+      new Date(),
+    );
+    expect(
+      (await verifyFederationMessage(CaseRevocationReceiptSchema, response, own, new Date()))
+        .payload.publicationId,
+    ).toBe(f.publication.publicationId);
+    return response;
+  };
+  await f.driveRevocations(
+    new FederationCaseRevocationDelivery(db, f.source.signing, f.sourceCases, send),
+  );
+  expect((await f.deliveryRows()).every((row) => row.state === "received")).toBe(true);
+});
+
+for (const dispatched of [false, true]) {
+  test(`case revocation peer stops unsent evidence and preserves unknown transaction recovery dispatched=${dispatched}`, async () => {
+    const f = await caseRevocationFixture(),
+      pair = await f.approvePublication();
+    await f.providerCases.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      f.publication.publicationId,
+      pair.a.approvalJws,
+    );
+    let prepares = 0,
+      lost = true;
+    const transactionId = "a".repeat(64),
+      proposal = Buffer.from("proposal").toString("base64"),
+      transaction = Buffer.from("transaction").toString("base64");
+    const client: CaseClient = {
+      prepare: async () => {
+        prepares++;
+        return { transactionId, recovery: proposal };
+      },
+      advance: async (recovery) => {
+        if (recovery === proposal)
+          return { state: "prepared", transactionId, recovery: transaction };
+        expect(recovery).toBe(transaction);
+        if (lost) {
+          lost = false;
+          throw new Error("Unknown submit");
+        }
+        return { state: "committed", transactionId, blockNumber: "1" };
+      },
+      receipt: async () => ({
+        receipt: { recordId: f.publication.publicationId, digest: pair.a.digest },
+      }),
+    };
+    const ledger = new FederationCaseSubmissionService(
+      db,
+      f.provider.signing.siteId,
+      f.providerCases,
+      client,
+    );
+    await ledger.discover();
+    if (dispatched) for (let i = 0; i < 3; i++) await ledger.advanceNext();
+    await f.revokePublication();
+    await f.driveRevocations();
+    await db
+      .update(federationCaseSubmissions)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(federationCaseSubmissions.localSiteId, f.provider.signing.siteId));
+    for (let i = 0; i < 4; i++) if (!(await ledger.advanceNext())) break;
+    const [row] = await db
+      .select()
+      .from(federationCaseSubmissions)
+      .where(eq(federationCaseSubmissions.localSiteId, f.provider.signing.siteId));
+    expect(row?.state).toBe(dispatched ? "committed" : "closed");
+    expect(prepares).toBe(dispatched ? 1 : 0);
+  });
+}
+
+test("case revocation changed peer endpoint after response requires review", async () => {
+  const f = await caseRevocationFixture();
+  await f.revokePublication();
+  f.transport.afterResponse = async (response) => {
+    await db
+      .update(federationSites)
+      .set({ endpoint: "https://changed.example.test" })
+      .where(inArray(federationSites.id, [f.provider.signing.siteId, f.recipient]));
+    return response;
+  };
+  await f.sourceRevocations.advanceNext();
+  expect(f.transport.calls).toBe(1);
+  expect((await f.deliveryRows()).find((row) => row.state === "needs_review")?.lastError).toBe(
+    "UNTRUSTED_IDENTITY",
+  );
+});
+
+test("case revocation late worker cannot overwrite a replaced delivery lease", async () => {
+  const f = await caseRevocationFixture();
+  await f.revokePublication();
+  const token = randomUUID();
+  f.transport.afterResponse = async (response) => {
+    await db
+      .update(federationCaseRevocationDeliveries)
+      .set({ leaseToken: token, leaseUntil: sql`clock_timestamp() + interval '60 seconds'` })
+      .where(eq(federationCaseRevocationDeliveries.localSiteId, f.source.signing.siteId));
+    return response;
+  };
+  await f.sourceRevocations.advanceNext();
+  expect(
+    (await f.deliveryRows()).every((row) => row.state === "pending" && row.leaseToken === token),
+  ).toBe(true);
+});
+
+test("case revocation recipient R cannot withdraw another institution's consent", async () => {
+  const f = await caseRevocationFixture(),
+    revoked = await f.revokePublication();
+  if (!revoked.revocationPayload) throw new Error("Missing revocation");
+  const revocationJws = await signFederationMessage(
+    CaseRevocationSchema,
+    { ...revoked.revocationPayload, issuerSiteId: f.recipient },
+    f.recipientKeys.signing,
+  );
+  const value = CaseRevocationNoticeSchema.parse({
+    protocolVersion: 1,
+    kind: "case-revocation-notice",
+    noticeId: randomUUID(),
+    issuerSiteId: f.recipient,
+    receivingSiteId: f.provider.signing.siteId,
+    publication: f.publication,
+    publicationJws: revoked.approvalJws,
+    revocationJws,
+    issuedAt: new Date().toISOString(),
+  });
+  await expect(db.transaction((tx) => f.providerCases.verifyWithdrawal(tx, value))).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+});
+
+test("case revocation human delivery status and retry enforce current permission organization and strict input", async () => {
+  const f = await caseRevocationFixture();
+  await f.revokePublication();
+  let actor = f.sourceActor;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCasePublicationRoutes(f.sourceCases, undefined, undefined, f.sourceRevocations),
+  );
+  const path = `/federation/case-publications/${f.revisionId}/${f.publication.publicationId}/revocations`;
+  const retry = (body: unknown = {}) =>
+    app.request(`${path}/${f.provider.signing.siteId}/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const value = await response.text();
+  expect(value).not.toContain("Jws");
+  expect(value).not.toContain("publicationDigest");
+  expect((await retry({ extra: true })).status).toBe(400);
+  expect((await retry()).status).toBe(200);
+  actor = f.actor;
+  expect((await app.request(path)).status).toBe(403);
+  expect((await retry()).status).toBe(403);
+  actor = f.sourceActor;
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "case.publish", enabled: false },
+    actor.userId,
+  );
+  expect((await retry()).status).toBe(403);
+  expect((await app.request(path)).status).toBe(403);
+});
+
+test("case revocation committed under the publication lock prevents a concurrent first approval", async () => {
+  const f = await caseRevocationFixture();
+  const revoked = await f.revokePublication();
+  if (!revoked.revocationJws) throw new Error("Missing signed withdrawal");
+  const jws = await signFederationMessage(
+    CaseRevocationNoticeSchema,
+    {
+      protocolVersion: 1,
+      kind: "case-revocation-notice",
+      noticeId: randomUUID(),
+      issuerSiteId: f.source.signing.siteId,
+      receivingSiteId: f.provider.signing.siteId,
+      publication: f.publication,
+      publicationJws: revoked.approvalJws,
+      revocationJws: revoked.revocationJws,
+      issuedAt: new Date().toISOString(),
+    },
+    f.source.signing,
+  );
+  let release = () => {},
+    acquired = () => {},
+    calls = 0;
+  const locked = new Promise<void>((resolve) => {
+    acquired = resolve;
+  });
+  const resume = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const original = f.providerCases.verifyWithdrawal.bind(f.providerCases);
+  const hook = spyOn(f.providerCases, "verifyWithdrawal").mockImplementation(async (...args) => {
+    const result = await original(...args);
+    if (++calls === 2) {
+      acquired();
+      await resume;
+    }
+    return result;
+  });
+  const receiving = f.providerRevocations.receive(jws, f.fingerprint);
+  await locked;
+  const approving = f.providerCases.approve(f.actor, f.revisionId, f.publication).then(
+    () => null,
+    (error: unknown) => error,
+  );
+  let waited = false;
+  try {
+    for (let i = 0; i < 100; i++) {
+      const [row] = await db.execute<{ waiting: boolean }>(
+        sql`select exists(select 1 from pg_stat_activity where datname=current_database() and wait_event='advisory') as waiting`,
+      );
+      if (row?.waiting) {
+        waited = true;
+        break;
+      }
+      await Bun.sleep(10);
+    }
+  } finally {
+    release();
+  }
+  try {
+    await receiving;
+    expect(await approving).toMatchObject({ message: "AUTHORIZATION_EXPIRED" });
+    expect(waited).toBe(true);
+    expect(await f.received()).toHaveLength(1);
+    expect((await f.providerCases.list(f.actor, f.revisionId)).data).toHaveLength(0);
+  } finally {
+    hook.mockRestore();
+  }
+});
+
+test("case revocation commercial worker discovers and delivers both independent notices", async () => {
+  const f = await caseRevocationFixture();
+  await f.revokePublication();
+  await db
+    .delete(federationCaseRevocationDeliveries)
+    .where(eq(federationCaseRevocationDeliveries.localSiteId, f.source.signing.siteId));
+  const args: ConstructorParameters<typeof FederationCommercialWorker> = [
+    new FederationCommercialSubmissionService(db, f.source.signing.siteId),
+  ];
+  args[18] = f.sourceRevocations;
+  const worker = new FederationCommercialWorker(...args);
+  await worker.tick();
+  await worker.stop();
+  expect(f.transport.calls).toBe(2);
+  expect(await f.deliveryRows()).toHaveLength(2);
+  for (const row of await f.deliveryRows()) expect(row.state).toBe("received");
+});
+
+test("case revocation rechecks the independent envelope key after a real publication lock wait", async () => {
+  const f = await caseRevocationFixture();
+  const revoked = await f.revokePublication();
+  if (!revoked.revocationJws) throw new Error("Missing signed withdrawal");
+  const expires = new Date(Date.now() + 1800);
+  const signing = { ...f.source.signing, keyId: "notice-only" };
+  await f.trust.addKey(
+    signing.siteId,
+    {
+      keyId: signing.keyId,
+      publicKeyPem: await exportSPKI(f.source.verification.publicKey),
+      allowedKinds: ["case-revocation-notice"],
+      validFrom: "2020-01-01T00:00:00Z",
+      validUntil: expires.toISOString(),
+    },
+    f.sourceActor.userId,
+  );
+  const jws = await signFederationMessage(
+    CaseRevocationNoticeSchema,
+    {
+      protocolVersion: 1,
+      kind: "case-revocation-notice",
+      noticeId: randomUUID(),
+      issuerSiteId: signing.siteId,
+      receivingSiteId: f.provider.signing.siteId,
+      publication: f.publication,
+      publicationJws: revoked.approvalJws,
+      revocationJws: revoked.revocationJws,
+      issuedAt: new Date().toISOString(),
+    },
+    signing,
+  );
+  let release = () => {},
+    acquired = () => {};
+  const locked = new Promise<void>((resolve) => {
+    acquired = resolve;
+  });
+  const resume = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const holder = db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`case-publication:${f.provider.signing.siteId}:${f.publication.publicationId}`}, 0))`,
+    );
+    acquired();
+    await resume;
+  });
+  await locked;
+  const receiving = f.providerRevocations.receive(jws, f.fingerprint).then(
+    () => null,
+    (error: unknown) => error,
+  );
+  let waited = false;
+  try {
+    for (let i = 0; i < 100; i++) {
+      const [row] = await db.execute<{ waiting: boolean }>(
+        sql`select exists(select 1 from pg_stat_activity where datname=current_database() and wait_event='advisory') as waiting`,
+      );
+      if (row?.waiting) {
+        waited = true;
+        break;
+      }
+      await Bun.sleep(10);
+    }
+    await Bun.sleep(Math.max(1, expires.getTime() - Date.now() + 30));
+  } finally {
+    release();
+  }
+  await holder;
+  expect(waited).toBe(true);
+  expect(await receiving).toBeInstanceOf(FederationError);
+  expect(await f.received()).toHaveLength(0);
 });

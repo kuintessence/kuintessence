@@ -115,6 +115,11 @@
       "bun": "./src/federation/case-ledger.ts",
       "types": "./src/federation/case-ledger.ts",
       "default": "./src/federation/case-ledger.ts"
+    },
+    "./federation/case-revocation": {
+      "bun": "./src/federation/case-revocation.ts",
+      "types": "./src/federation/case-revocation.ts",
+      "default": "./src/federation/case-revocation.ts"
     }
   },
   "scripts": {

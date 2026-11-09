@@ -36,6 +36,7 @@ import type {
   CasePublication,
   CaseRevocation,
 } from "@kuintessence/shared/federation/case-ledger";
+import type { CaseRevocationNotice } from "@kuintessence/shared/federation/case-revocation";
 import type {
   CommercialAdapterProposalInput,
   CommercialAdjustment,
@@ -156,6 +157,8 @@ export const federationSigningKeys = pgTable(
           | "commercial-disclosure"
           | "case-evidence-publication"
           | "case-publication-revocation"
+          | "case-revocation-notice"
+          | "case-revocation-receipt"
           | "commercial-disclosure-read-query"
           | "commercial-disclosure-download-query"
           | "commercial-disclosure-read-authorization"
@@ -1752,6 +1755,76 @@ export const federationCasePublications = pgTable(
         AND ${t.revocationPayload}->>'issuerSiteId' = ${t.localSiteId}::text
       ))
     ) IS TRUE`,
+    ),
+  ],
+);
+
+/** Notices may precede local approval and also reach R without granting commercial read access. */
+export const federationCaseRevocationNotices = pgTable(
+  "federation_case_revocation_notices",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    publicationId: uuid("publication_id").notNull(),
+    issuerSiteId: uuid("issuer_site_id").notNull(),
+    noticeId: uuid("notice_id").notNull(),
+    publicationDigest: varchar("publication_digest", { length: 71 }).notNull(),
+    noticeDigest: varchar("notice_digest", { length: 71 }).notNull(),
+    revocationDigest: varchar("revocation_digest", { length: 71 }).notNull(),
+    payload: jsonb("payload").$type<CaseRevocationNotice>().notNull(),
+    noticeJws: text("notice_jws").notNull(),
+    receiptJws: text("receipt_jws").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.publicationId, t.issuerSiteId] }),
+    uniqueIndex("federation_case_revocation_notice_id").on(t.localSiteId, t.noticeId),
+    check(
+      "federation_case_revocation_notice_identity",
+      sql`(${t.localSiteId} <> ${t.issuerSiteId}
+    AND ${t.publicationDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.noticeDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.revocationDigest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.payload}->>'kind' = 'case-revocation-notice' AND ${t.payload}->>'noticeId' = ${t.noticeId}::text
+    AND ${t.payload}->>'issuerSiteId' = ${t.issuerSiteId}::text AND ${t.payload}->>'receivingSiteId' = ${t.localSiteId}::text
+    AND ${t.payload}->'publication'->>'publicationId' = ${t.publicationId}::text) IS TRUE`,
+    ),
+  ],
+);
+export const federationCaseRevocationDeliveries = pgTable(
+  "federation_case_revocation_deliveries",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    publicationId: uuid("publication_id").notNull(),
+    receivingSiteId: uuid("receiving_site_id").notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    payload: jsonb("payload").$type<CaseRevocationNotice>(),
+    noticeJws: text("notice_jws"),
+    receiptJws: text("receipt_jws"),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.publicationId, t.receivingSiteId] }),
+    foreignKey({
+      name: "federation_case_revocation_delivery_publication_fk",
+      columns: [t.localSiteId, t.publicationId],
+      foreignColumns: [
+        federationCasePublications.localSiteId,
+        federationCasePublications.publicationId,
+      ],
+    }),
+    index("federation_case_revocation_delivery_pending").on(
+      t.localSiteId,
+      t.state,
+      t.nextAttemptAt,
+    ),
+    check(
+      "federation_case_revocation_delivery_state",
+      sql`${t.localSiteId} <> ${t.receivingSiteId}
+    AND ${t.state} IN ('pending','received','needs_review') AND (${t.state} = 'received') = (${t.receiptJws} IS NOT NULL)
+    AND (${t.receiptJws} IS NULL) = (${t.acknowledgedAt} IS NULL) AND (${t.payload} IS NULL) = (${t.noticeJws} IS NULL)
+    AND (${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
     ),
   ],
 );

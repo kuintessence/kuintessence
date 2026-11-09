@@ -52,6 +52,8 @@ export interface FederationVerificationKey {
     | "evidence-batch"
     | "case-evidence-publication"
     | "case-publication-revocation"
+    | "case-revocation-notice"
+    | "case-revocation-receipt"
     | "agreement-approval-query"
     | "agreement-approval-waiting"
     | "commercial-approval-query"
