@@ -113,13 +113,14 @@ async function fixture(mode: FederationMode = "bilateral_direct", both = true) {
   const certificates: string[] = [];
   for (const key of [a, b]) {
     key.verification.validUntil = new Date("2099-01-01");
-    key.verification.allowedKinds = [
+    const allowedKinds = [
       "agreement",
       "agreement-approval-query",
       "agreement-approval-waiting",
       "acceptance",
       "commercial-agreement",
-    ];
+    ] as const;
+    key.verification.allowedKinds = allowedKinds;
     await db
       .insert(federationSites)
       .values({ id: key.signing.siteId, name: "Exchange peer", endpoint: "https://test.invalid" });
@@ -127,7 +128,7 @@ async function fixture(mode: FederationMode = "bilateral_direct", both = true) {
       siteId: key.signing.siteId,
       keyId: key.signing.keyId,
       publicKeyPem: await exportSPKI(key.verification.publicKey),
-      allowedKinds: [...key.verification.allowedKinds],
+      allowedKinds: [...allowedKinds],
       validFrom: key.verification.validFrom,
       validUntil: key.verification.validUntil,
     });

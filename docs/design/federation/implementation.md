@@ -1015,3 +1015,8 @@ R 真人 API 使用独立 disclosure.receive，登记本机构案件后，复用
 
 
 同机三 Server／三独立数据库已完成实际作业账单字段的 mTLS 交付、R 进程恢复及 A/B 分别撤权；不是正式跨主机身份或案件 PDC 验收。复现与清理见[三站交付实验](../../../deploy/federation/execution-lab.md#三站证据字段交付验收)。
+
+
+### 案件独立账本
+
+`kq-cases` 复用现有 Fabric shim 构建依赖，独立链码入口／信任配置／集合；case Adapter 复用现有私有 Unix runtime 与加密交易恢复，不新增 SDK 或钱包。读取、存证、仲裁权限分开：入链需要双方独立存证签名，撤回为 A/B 任一方的独立签名。现有 Server 材料接收不会自动上链；人员审批、持久队列、远端撤回、真实 Peer 联合验收及裁决仍待接通。接口、集合及限制见[案件链配置](../../../deploy/federation/fabric-cases.md)。

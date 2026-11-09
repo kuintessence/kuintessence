@@ -14,6 +14,7 @@ on:
       - scripts/fabric-evidence-*.ts
       - scripts/fabric-commercial-*.ts
       - scripts/fabric-market-*.ts
+      - scripts/fabric-case-*.ts
       - scripts/test-unit.ts
       - scripts/tsconfig.fabric.json
       - package.json

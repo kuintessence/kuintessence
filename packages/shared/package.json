@@ -110,6 +110,11 @@
       "bun": "./src/federation/disclosure-authorization.ts",
       "types": "./src/federation/disclosure-authorization.ts",
       "default": "./src/federation/disclosure-authorization.ts"
+    },
+    "./federation/case-ledger": {
+      "bun": "./src/federation/case-ledger.ts",
+      "types": "./src/federation/case-ledger.ts",
+      "default": "./src/federation/case-ledger.ts"
     }
   },
   "scripts": {

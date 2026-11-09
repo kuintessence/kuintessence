@@ -50,6 +50,8 @@ export interface FederationVerificationKey {
     | "delegation"
     | "acceptance"
     | "evidence-batch"
+    | "case-evidence-publication"
+    | "case-publication-revocation"
     | "agreement-approval-query"
     | "agreement-approval-waiting"
     | "commercial-approval-query"

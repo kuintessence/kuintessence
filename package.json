@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "dev": "bun run --filter '*' dev",
-    "test": "bun test packages/{shared,proto,db,server,agent,registry,cli,fabric-adapter} contracts/fabric",
+    "test": "bun test packages/{shared,proto,db,server,agent,registry,cli,fabric-adapter} contracts/fabric scripts/fabric-case-check.test.ts",
     "test:unit": "bun scripts/test-unit.ts",
     "test:helm": "bun test scripts/helm-*.test.ts",
     "test:integration": "bun test packages/agent/test",
@@ -44,7 +44,7 @@
     "db:generate": "cd packages/db && DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bunx drizzle-kit generate",
     "db:migrate": "DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bun run packages/db/src/pg/migrate.ts",
     "db:studio": "cd packages/db && DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bunx drizzle-kit studio",
-    "test:fabric": "bun test contracts/fabric packages/fabric-adapter",
+    "test:fabric": "bun test contracts/fabric packages/fabric-adapter scripts/fabric-case-check.test.ts",
     "test:fabric:network": "bun scripts/fabric-evidence-network.ts",
     "test:fabric:integration": "bun scripts/fabric-evidence-network.ts --database",
     "typecheck:fabric-tests": "tsc --noEmit -p scripts/tsconfig.fabric.json",

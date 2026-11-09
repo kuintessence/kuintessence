@@ -15,6 +15,7 @@
     "pbs-agent-identity.test.ts",
     "fabric-market-*.ts",
     "federation-live/*.ts",
-    "federation-storage-*.ts"
+    "federation-storage-*.ts",
+    "fabric-case-*.ts"
   ]
 }
