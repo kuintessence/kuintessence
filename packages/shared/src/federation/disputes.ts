@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { FederationModeSchema } from "./index";
+import { FederationError, FederationModeSchema } from "./index";
 import { FederationDigestSchema } from "./references";
 
 export const CommercialDisputeSubjectSchema = z.strictObject({
@@ -149,3 +149,29 @@ export const CommercialDisputeFreezeSchema = z
   .refine((v) => v.sourceSiteId !== v.targetSiteId, "Invalid freeze parties");
 export type CommercialDisputeFreeze = z.infer<typeof CommercialDisputeFreezeSchema>;
 export type CommercialDisputeFinancialView = z.infer<typeof CommercialDisputeFinancialViewSchema>;
+
+/** The ledger records the bilateral proof; it does not validate the allegation or enact a freeze. */
+export function assertDisputeAttestation(
+  freeze: CommercialDisputeFreeze,
+  opening: { payload: CommercialDispute; digest: string },
+  domainId: string,
+  recordId: string,
+  now: Date,
+) {
+  const value = opening.payload;
+  if (
+    freeze.mode !== "bilateral_attested" ||
+    freeze.caseId !== recordId ||
+    value.caseId !== recordId ||
+    freeze.caseDigest !== opening.digest ||
+    value.domainId !== domainId ||
+    freeze.agreementRevisionId !== value.agreementRevisionId ||
+    freeze.sourceSiteId !== value.sourceSiteId ||
+    freeze.targetSiteId !== value.targetSiteId ||
+    freeze.taskId !== value.taskId ||
+    freeze.attempt !== value.attempt ||
+    Date.parse(freeze.issuedAt) < Date.parse(value.issuedAt) ||
+    Date.parse(freeze.issuedAt) > now.getTime() + 60000
+  )
+    throw new FederationError("POLICY_DENIED");
+}

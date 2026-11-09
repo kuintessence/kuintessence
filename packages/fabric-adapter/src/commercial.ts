@@ -28,6 +28,11 @@ import {
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
+  assertDisputeAttestation,
+  CommercialDisputeFreezeSchema,
+  CommercialDisputeSchema,
+} from "@kuintessence/shared/federation/disputes";
+import {
   federationMessageKeyId,
   parseFederationPublicKey,
   verifyFederationMessage,
@@ -177,6 +182,22 @@ export class FabricCommercialAdapter {
         Date.parse(receipt.recordedAt) > Date.parse(receipt.observedAt)
       )
         throw new Error("POLICY_DENIED");
+    } else if (input.operation === "record-dispute-freeze") {
+      const signed = await this.verifyPair(CommercialDisputeFreezeSchema, input.envelope, now),
+        opening = await this.verify(
+          CommercialDisputeSchema,
+          input.envelope.openingJws,
+          input.envelope.openingSiteId,
+          now,
+        );
+      if (
+        signed.digest !== input.digest ||
+        signed.payload.sourceSiteId !== input.envelope.sourceSiteId ||
+        signed.payload.targetSiteId !== input.envelope.targetSiteId ||
+        opening.payload.openingSiteId !== input.envelope.openingSiteId
+      )
+        throw new Error("POLICY_DENIED");
+      assertDisputeAttestation(signed.payload, opening, input.domainId, input.recordId, now);
     } else if (input.operation === "record-payment") {
       const signed = await this.verifyPair(CommercialPaymentSchema, input.envelope, now),
         value = signed.payload;
@@ -260,6 +281,7 @@ export class FabricCommercialAdapter {
       "adjust-settlement": "AdjustSettlement",
       "record-refund": "RecordRefund",
       "record-payment": "RecordPayment",
+      "record-dispute-freeze": "RecordDisputeFreeze",
     } as const;
     const proposal = this.gateway
       .getNetwork(this.config.channel)

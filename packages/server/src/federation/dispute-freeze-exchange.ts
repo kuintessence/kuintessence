@@ -7,8 +7,10 @@ import {
   type PgDb,
   type PgTransaction,
   federationSites as sites,
+  federationCommercialSubmissions as submissions,
 } from "@kuintessence/db";
 import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
+import { CommercialAdapterProposalInputSchema } from "@kuintessence/shared/federation/commercial";
 import {
   CommercialDisputeFinancialViewSchema,
   type CommercialDisputeFreeze,
@@ -118,6 +120,35 @@ export class FederationDisputeFreezeExchange {
           eq(cases.state, "FREEZE_PENDING"),
         ),
       );
+    // The opening institution publishes once, in the same transaction as its durable dual proof.
+    if (
+      current.view.mode === "bilateral_attested" &&
+      current.record.payload.openingSiteId === this.signing.siteId
+    ) {
+      const [row] = await tx.select().from(freezes).where(this.key(current.record.caseId));
+      if (!row?.approvalJws || !row.counterpartyJws || row.state !== "confirmed")
+        throw new FederationError("OPERATION_CONFLICT");
+      const source = this.signing.siteId === current.record.payload.sourceSiteId;
+      await tx.insert(submissions).values({
+        id: randomUUID(),
+        localSiteId: this.signing.siteId,
+        agreementRevisionId: current.record.agreementRevisionId,
+        input: CommercialAdapterProposalInputSchema.parse({
+          operation: "record-dispute-freeze",
+          domainId: current.record.payload.domainId,
+          recordId: current.record.caseId,
+          digest,
+          envelope: {
+            sourceSiteId: current.record.payload.sourceSiteId,
+            targetSiteId: current.record.payload.targetSiteId,
+            sourceJws: source ? row.approvalJws : row.counterpartyJws,
+            targetJws: source ? row.counterpartyJws : row.approvalJws,
+            openingSiteId: this.signing.siteId,
+            openingJws: current.record.openingJws,
+          },
+        }),
+      });
+    }
     await tx.insert(auditLog).values({
       actor: `dispute-freeze:${this.signing.siteId}`,
       orgId: current.record.localOrgId,
@@ -433,7 +464,24 @@ export class FederationDisputeFreezeExchange {
     return this.db.transaction(async (tx) => {
       await this.authorize(tx, actor, revisionId, caseId, "dispute.read");
       const [row] = await tx.select().from(freezes).where(this.key(caseId));
+      const [attestation] = await tx
+        .select({
+          id: submissions.id,
+          state: submissions.state,
+          lastError: submissions.lastError,
+          updatedAt: submissions.updatedAt,
+        })
+        .from(submissions)
+        .where(
+          and(
+            eq(submissions.localSiteId, this.signing.siteId),
+            eq(submissions.agreementRevisionId, revisionId),
+            sql`${submissions.input}->>'operation' = 'record-dispute-freeze'`,
+            sql`${submissions.input}->>'recordId' = ${caseId}`,
+          ),
+        );
       return {
+        attestation: attestation ?? null,
         enabled: !!this.send,
         sync: row
           ? {

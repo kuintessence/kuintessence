@@ -28,6 +28,10 @@ import {
   fabricCommercialCollections,
 } from "@kuintessence/shared/federation/commercial";
 import {
+  CommercialDisputeFreezeSchema,
+  CommercialDisputeSchema,
+} from "@kuintessence/shared/federation/disputes";
+import {
   MarketActivationSchema,
   MarketExecutionGateSchema,
 } from "@kuintessence/shared/federation/market";
@@ -83,6 +87,8 @@ beforeAll(async () => {
         "commercial-adjustment",
         "commercial-refund",
         "commercial-payment",
+        "commercial-dispute",
+        "commercial-dispute-freeze",
         "cancellation-receipt",
       ],
     })),
@@ -1868,4 +1874,127 @@ test("payment receipts fail closed on missing private predecessors and dedicated
     previous: { receiptId: receipt.recordId, digest: receipt.digest },
   };
   await expect(f.record(correction)).rejects.toThrow("DATA_WAITING");
+});
+
+async function disputeAttestationFixture(openingIndex = 0) {
+  const terms = agreement();
+  terms.agreement.mode = "bilateral_attested";
+  const f = await install(terms),
+    opener = keys[openingIndex];
+  if (!opener) throw new Error("Missing opener");
+  const opening = CommercialDisputeSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute",
+    caseId: randomUUID(),
+    domainId,
+    agreementRevisionId: terms.agreement.agreementRevisionId,
+    agreementDigest: f.receipt.digest,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    openingSiteId: opener.siteId,
+    taskId: randomUUID(),
+    attempt: 1,
+    issuedAt: now.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+    subject: {
+      recordType: "usage",
+      recordId: randomUUID(),
+      recordDigest: `sha256:${"a".repeat(64)}`,
+    },
+    reason: "PRIVATE-DISPUTE",
+    requestedResolution: "Review usage",
+  });
+  const openingJws = await signFederationMessage(CommercialDisputeSchema, opening, opener);
+  const freeze = CommercialDisputeFreezeSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute-freeze",
+    caseId: opening.caseId,
+    caseDigest: `sha256:${createHash("sha256")
+      .update(Buffer.from(openingJws.split(".")[1] ?? "", "base64url"))
+      .digest("hex")}`,
+    agreementRevisionId: opening.agreementRevisionId,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    taskId: opening.taskId,
+    attempt: 1,
+    mode: "bilateral_attested",
+    headDigest: `sha256:${"b".repeat(64)}`,
+    issuedAt: now.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const envelope = async (value = freeze) => ({
+    ...(await bilateral(CommercialDisputeFreezeSchema, value)),
+    openingSiteId: opener.siteId,
+    openingJws,
+  });
+  const record = async (value = freeze, actor = identity(openingIndex)) =>
+    f.call("RecordDisputeFreeze", value.caseId, await envelope(value), actor);
+  return { ...f, opening, openingJws, freeze, envelope, record };
+}
+test("dispute attestation preserves only one private dual proof without freezing or changing financial state", async () => {
+  for (const opener of [0, 1]) {
+    const f = await disputeAttestationFixture(opener),
+      before = new Map(f.stub.privateState),
+      publicBefore = new Map(f.stub.state);
+    const receipt = JSON.parse((await f.record()).toString());
+    expect(receipt.recordId).toBe(f.opening.caseId);
+    expect(JSON.parse((await f.record()).toString())).toEqual(receipt);
+    expect(f.stub.state).toEqual(publicBefore);
+    expect(f.stub.privateState.size).toBe(before.size + 1);
+    for (const [key, value] of before) expect(f.stub.privateState.get(key)).toEqual(value);
+    const stored = [...f.stub.privateState.entries()].filter(([key]) => !before.has(key));
+    expect(stored[0]?.[0]).toContain('commercial_AB_v1:["dispute-freeze"');
+    expect(Buffer.from(stored[0]?.[1] ?? []).toString()).toContain("PRIVATE-DISPUTE");
+    await expect(f.record({ ...f.freeze, headDigest: `sha256:${"c".repeat(64)}` })).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await expect(f.record(f.freeze, identity(2))).rejects.toThrow("POLICY_DENIED");
+    f.stub.fcn = "GetRecordReceipt";
+    f.stub.params = [domainId, "dispute-freeze", f.opening.caseId];
+    f.stub.transient.clear();
+    expect(JSON.parse((await f.ledger.invoke(f.stub, identity())).toString())).toEqual({ receipt });
+    await expect(f.ledger.invoke(f.stub, identity(2))).rejects.toThrow("POLICY_DENIED");
+  }
+});
+test("dispute attestation rejects wrong case binding, mode, future dates and unilateral signatures", async () => {
+  const f = await disputeAttestationFixture(),
+    before = new Map(f.stub.privateState);
+  for (const patch of [
+    { taskId: randomUUID() },
+    { attempt: 2 },
+    { caseDigest: `sha256:${"f".repeat(64)}` },
+    { agreementRevisionId: randomUUID() },
+    { mode: "bilateral_direct" as const },
+    { mode: "ledger_coordinated" as const },
+    { issuedAt: new Date(+now + 60001).toISOString() },
+    { issuedAt: new Date(+now - 1).toISOString() },
+  ])
+    await expect(f.record({ ...f.freeze, ...patch })).rejects.toThrow("POLICY_DENIED");
+  const envelope = await f.envelope();
+  await expect(
+    f.call("RecordDisputeFreeze", f.freeze.caseId, { ...envelope, targetJws: envelope.sourceJws }),
+  ).rejects.toThrow();
+  await expect(
+    f.call("RecordDisputeFreeze", f.freeze.caseId, { ...envelope, openingSiteId: sites[1] }),
+  ).rejects.toThrow();
+  expect(f.stub.privateState).toEqual(before);
+});
+test("dispute attestation needs dedicated purposes and available original private contract bytes", async () => {
+  const f = await disputeAttestationFixture();
+  for (const kind of ["commercial-dispute", "commercial-dispute-freeze"] as const) {
+    const changed = structuredClone(trust);
+    for (const purpose of changed.keyPurposes)
+      purpose.kinds = purpose.kinds.filter((x) => x !== kind);
+    const ledger = new CommercialLedger(changed);
+    f.stub.state.set("kq.commercial.trust.v1", Buffer.from(JSON.stringify(changed)));
+    f.stub.fcn = "RecordDisputeFreeze";
+    f.stub.params = [domainId, f.freeze.caseId];
+    f.stub.transient = new Map([["commercial", Buffer.from(JSON.stringify(await f.envelope()))]]);
+    await expect(ledger.invoke(f.stub, identity())).rejects.toThrow();
+  }
+  f.stub.state.set("kq.commercial.trust.v1", Buffer.from(JSON.stringify(trust)));
+  f.stub.privateState.delete(
+    `commercial_AB_v1:${f.stub.createCompositeKey("agreement", [domainId, f.terms.agreement.agreementRevisionId])}`,
+  );
+  await expect(f.record()).rejects.toThrow("DATA_WAITING");
 });

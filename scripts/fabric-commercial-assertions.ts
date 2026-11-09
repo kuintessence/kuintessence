@@ -126,29 +126,31 @@ export async function verifyCommercialNetwork(
     result.passed.push(
       "orderer outage retains the same encrypted checkpoint and transaction ID until VALID after restart",
     );
-    const paymentCheckpoint = join(root, "commercial-payment-checkpoint.json");
-    const paymentProposal = await probe("prepare", paymentCheckpoint, "payment");
-    assert.equal(paymentProposal?.state, "proposal");
-    assert.equal((await probe("advance", paymentCheckpoint, "payment"))?.state, "prepared");
-    const paymentBytes = await readFile(paymentCheckpoint);
-    await controls.stopOrderer();
-    try {
-      const waiting = await probe("advance", paymentCheckpoint, "payment");
-      assert.equal(waiting?.state, "pending");
-      assert.equal(waiting?.transactionId, paymentProposal?.transactionId);
+    for (const record of ["payment", "dispute-freeze"]) {
+      const paymentCheckpoint = join(root, `commercial-${record}-checkpoint.json`);
+      const paymentProposal = await probe("prepare", paymentCheckpoint, record);
+      assert.equal(paymentProposal?.state, "proposal");
+      assert.equal((await probe("advance", paymentCheckpoint, record))?.state, "prepared");
+      const paymentBytes = await readFile(paymentCheckpoint);
+      await controls.stopOrderer();
+      try {
+        const waiting = await probe("advance", paymentCheckpoint, record);
+        assert.equal(waiting?.state, "pending");
+        assert.equal(waiting?.transactionId, paymentProposal?.transactionId);
+        assert(paymentBytes.equals(await readFile(paymentCheckpoint)));
+      } finally {
+        await controls.startOrderer();
+      }
+      await probe("advance-then-crash", paymentCheckpoint, record);
       assert(paymentBytes.equals(await readFile(paymentCheckpoint)));
-    } finally {
-      await controls.startOrderer();
+      const paymentRecovered = await probe("advance", paymentCheckpoint, record);
+      assert.equal(paymentRecovered?.state, "committed");
+      assert.equal(paymentRecovered?.transactionId, paymentProposal?.transactionId);
+      assert.deepEqual(await probe("advance", paymentCheckpoint, record), paymentRecovered);
+      result.passed.push(
+        `production ${record} Unix client and Adapter preserve one transaction through Orderer outage, commit-before-checkpoint exit and replay`,
+      );
     }
-    await probe("advance-then-crash", paymentCheckpoint, "payment");
-    assert(paymentBytes.equals(await readFile(paymentCheckpoint)));
-    const paymentRecovered = await probe("advance", paymentCheckpoint, "payment");
-    assert.equal(paymentRecovered?.state, "committed");
-    assert.equal(paymentRecovered?.transactionId, paymentProposal?.transactionId);
-    assert.deepEqual(await probe("advance", paymentCheckpoint, "payment"), paymentRecovered);
-    result.passed.push(
-      "production payment Unix client and Adapter preserve one transaction through Orderer outage, commit-before-checkpoint exit and replay",
-    );
     if (process.argv.includes("--database")) {
       assert(process.env.KQ_FABRIC_DATABASE_URL);
       await verifyCommercialDatabase(root, process.env.KQ_FABRIC_DATABASE_URL, controls, (name) =>

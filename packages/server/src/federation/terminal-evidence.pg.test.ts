@@ -104,6 +104,7 @@ import { FederationClosingAutomation } from "./closing-automation";
 import { ClosingPolicyInputSchema, FederationClosingPolicyService } from "./closing-policy";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
+import type { CommercialClient } from "./commercial-client";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
 import { FederationDisputeDelivery } from "./dispute-delivery";
@@ -8842,6 +8843,7 @@ test("dispute freeze status and retry keep human, organization and independent c
   await disabled.discover();
   expect(await disabled.advanceNext()).toBe(false);
   expect(await disabled.status(f.sourceActor, f.revisionId, c.original.caseId)).toEqual({
+    attestation: null,
     enabled: false,
     sync: null,
   });
@@ -8967,4 +8969,185 @@ test("dispute freeze also reconciles a provider-opened case without reversing th
     targetSiteId: f.provider.signing.siteId,
   });
   expect((await c.read(f.source.signing.siteId))?.digest).toBe(proof?.digest);
+});
+
+test("dispute attestation persists while the chain is offline and resumes the original checkpoint after reconstruction", async () => {
+  const f = await adjustmentServiceFixture("bilateral_attested"),
+    c = await freezeFixture(f),
+    budget = await f.budget();
+  await c.advance();
+  const status = () => c.freeze.status(f.sourceActor, f.revisionId, c.original.caseId);
+  const first = (await status()).attestation;
+  if (!first) throw new Error("Missing attestation outbox");
+  const key = eq(federationCommercialSubmissions.id, first.id);
+  const [pending] = await db.select().from(federationCommercialSubmissions).where(key);
+  if (pending?.input.operation !== "record-dispute-freeze") throw new Error("Missing signed input");
+  expect(pending.input.envelope.openingJws).toBe(c.original.openingJws);
+  expect(pending.input.envelope.openingSiteId).toBe(f.source.signing.siteId);
+  const proof = await c.read();
+  if (!proof?.digest) throw new Error("Missing confirmed proof");
+  expect(pending.input.digest).toBe(proof.digest);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(
+      and(
+        eq(federationCommercialSubmissions.localSiteId, f.source.signing.siteId),
+        sql`${federationCommercialSubmissions.id} <> ${first.id}`,
+      ),
+    );
+  let online = false,
+    prepares = 0,
+    advances = 0;
+  const transactionId = "e".repeat(64);
+  const client: CommercialClient = {
+    prepare: async (input) => {
+      expect(input).toEqual(pending.input);
+      if (!online) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+      prepares++;
+      return { transactionId, recovery: "proposal" };
+    },
+    advance: async (recovery) => {
+      advances++;
+      if (recovery === "proposal")
+        return {
+          state: "prepared",
+          transactionId,
+          recovery: Buffer.from("original-transaction").toString("base64"),
+        };
+      expect(recovery).toBe(Buffer.from("original-transaction").toString("base64"));
+      if (!online) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+      return { state: "committed", transactionId, blockNumber: "93" };
+    },
+  };
+  const worker = () =>
+    new FederationCommercialSubmissionService(db, f.source.signing.siteId, client);
+  const due = () =>
+    db
+      .update(federationCommercialSubmissions)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(key);
+  await worker().advanceNext();
+  expect((await status()).attestation).toMatchObject({
+    state: "pending",
+    lastError: "LEDGER_UNAVAILABLE",
+  });
+  expect((await c.sourceCases.list(f.sourceActor, f.revisionId)).data[0]?.state).toBe("DISPUTED");
+  online = true;
+  await due();
+  await worker().advanceNext();
+  await worker().advanceNext();
+  online = false;
+  await worker().advanceNext();
+  expect((await status()).attestation?.state).toBe("pending");
+  online = true;
+  await due();
+  await worker().advanceNext();
+  expect((await status()).attestation).toMatchObject({ state: "committed", lastError: null });
+  expect(prepares).toBe(1);
+  expect(advances).toBe(3);
+  expect(await f.budget()).toEqual(budget);
+  expect(
+    (await c.receiver.status(f.actor, f.revisionId, c.original.caseId)).attestation,
+  ).toBeNull();
+  await c.advance();
+  expect((await db.select().from(federationCommercialSubmissions).where(key)).length).toBe(1);
+});
+
+test("dispute attestation enqueue rolls back with the opening institution's confirmation audit", async () => {
+  const f = await adjustmentServiceFixture("bilateral_attested"),
+    c = await freezeFixture(f);
+  await db.execute(
+    sql.raw(
+      `ALTER TABLE audit_log ADD CONSTRAINT attestation_audit_failure CHECK (action <> 'federation.dispute.freeze_confirm' OR actor <> 'dispute-freeze:${f.source.signing.siteId}') NOT VALID`,
+    ),
+  );
+  try {
+    await c.advance();
+  } finally {
+    await db.execute(sql.raw("ALTER TABLE audit_log DROP CONSTRAINT attestation_audit_failure"));
+  }
+  expect((await c.read())?.state).toBe("pending");
+  expect(
+    (await c.freeze.status(f.sourceActor, f.revisionId, c.original.caseId)).attestation,
+  ).toBeNull();
+  expect((await c.read(f.provider.signing.siteId))?.state).toBe("confirmed");
+  await c.due();
+  await c.advance();
+  expect(
+    (await c.freeze.status(f.sourceActor, f.revisionId, c.original.caseId)).attestation?.state,
+  ).toBe("pending");
+  expect((await c.read())?.state).toBe("confirmed");
+});
+
+test("dispute attestation checks the original case and dedicated current authority before adapter disclosure", async () => {
+  const f = await adjustmentServiceFixture("bilateral_attested"),
+    c = await freezeFixture(f);
+  await c.advance();
+  const status = () => c.freeze.status(f.sourceActor, f.revisionId, c.original.caseId);
+  const entry = (await status()).attestation;
+  if (!entry) throw new Error("Missing attestation");
+  const key = eq(federationCommercialSubmissions.id, entry.id);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(
+      and(
+        eq(federationCommercialSubmissions.localSiteId, f.source.signing.siteId),
+        sql`${federationCommercialSubmissions.id} <> ${entry.id}`,
+      ),
+    );
+  const [row] = await db.select().from(federationCommercialSubmissions).where(key);
+  if (row?.input.operation !== "record-dispute-freeze") throw new Error("Missing input");
+  let prepares = 0;
+  const worker = new FederationCommercialSubmissionService(db, f.source.signing.siteId, {
+    prepare: async () => {
+      prepares++;
+      return { transactionId: "f".repeat(64), recovery: "proposal" };
+    },
+    advance: async () => {
+      throw new Error("Unexpected advance");
+    },
+  });
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ input: { ...row.input, domainId: randomUUID() } })
+    .where(key);
+  await worker.advanceNext();
+  expect((await status()).attestation).toMatchObject({
+    state: "needs_review",
+    lastError: "POLICY_DENIED",
+  });
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ input: row.input, state: "pending", nextAttemptAt: new Date(0) })
+    .where(key);
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'commercial-dispute'` })
+    .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+  await worker.advanceNext();
+  expect((await status()).attestation?.state).toBe("needs_review");
+  expect(prepares).toBe(0);
+  expect((await c.read())?.state).toBe("confirmed");
+  const permissions = new FederationPermissionService(db);
+  await permissions.set(
+    { ...f.sourceActor, capability: "agreement.read", enabled: true },
+    f.sourceActor.userId,
+  );
+  await permissions.set(
+    { ...f.sourceActor, capability: "dispute.open", enabled: false },
+    f.sourceActor.userId,
+  );
+  await expect(worker.retry(f.sourceActor, f.revisionId, entry.id)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await permissions.set(
+    { ...f.sourceActor, capability: "dispute.open", enabled: true },
+    f.sourceActor.userId,
+  );
+  await worker.retry(f.sourceActor, f.revisionId, entry.id);
+  expect((await status()).attestation?.state).toBe("pending");
+  const [retried] = await db.select().from(federationCommercialSubmissions).where(key);
+  expect(retried?.input).toEqual(row.input);
 });

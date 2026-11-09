@@ -7,6 +7,8 @@ import {
   auditLog,
   federationCommercialBills as bills,
   federationCommercialDiscounts as discounts,
+  federationDisputes as disputes,
+  federationDisputeFreezes as freezes,
   federationMarketSubmissions as marketSubmissions,
   type PgDb,
   type PgTransaction,
@@ -34,6 +36,11 @@ import {
   CommercialUsageSchema,
   FabricCommercialAdvanceResultSchema,
 } from "@kuintessence/shared/federation/commercial";
+import {
+  assertDisputeAttestation,
+  CommercialDisputeFreezeSchema,
+  CommercialDisputeSchema,
+} from "@kuintessence/shared/federation/disputes";
 import { FabricProposalCheckpointSchema } from "@kuintessence/shared/federation/ledger";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -64,6 +71,7 @@ const recordTypes = {
   "adjust-settlement": "adjustment",
   "record-refund": "refund",
   "record-payment": "payment",
+  "record-dispute-freeze": "dispute-freeze",
 } as const;
 
 export class FederationCommercialSubmissionService {
@@ -680,6 +688,60 @@ export class FederationCommercialSubmissionService {
       )
         throw new FederationError("POLICY_DENIED");
     }
+    if (input.operation === "record-dispute-freeze") {
+      const [row] = await (tx ?? this.db)
+        .select({ proof: freezes, record: disputes, contract: agreements })
+        .from(freezes)
+        .innerJoin(
+          disputes,
+          and(eq(disputes.localSiteId, freezes.localSiteId), eq(disputes.caseId, freezes.caseId)),
+        )
+        .innerJoin(
+          agreements,
+          and(
+            eq(agreements.localSiteId, disputes.localSiteId),
+            eq(agreements.revisionId, disputes.agreementRevisionId),
+          ),
+        )
+        .where(and(eq(freezes.localSiteId, this.siteId), eq(freezes.caseId, input.recordId)));
+      if (
+        !row ||
+        row.proof.state !== "confirmed" ||
+        !row.proof.counterpartyJws ||
+        !row.proof.payload ||
+        row.proof.digest !== input.digest ||
+        row.record.payload.openingSiteId !== this.siteId ||
+        row.record.localOrgId !== row.contract.localOrgId ||
+        !row.contract.counterpartyJws ||
+        row.contract.terms.agreement.mode !== "bilateral_attested" ||
+        row.record.payload.agreementDigest !== row.contract.digest ||
+        row.record.openingJws !== input.envelope.openingJws ||
+        input.envelope.openingSiteId !== this.siteId ||
+        row.record.payload.sourceSiteId !== input.envelope.sourceSiteId ||
+        row.record.payload.targetSiteId !== input.envelope.targetSiteId ||
+        (this.siteId === input.envelope.sourceSiteId
+          ? row.proof.approvalJws !== input.envelope.sourceJws ||
+            row.proof.counterpartyJws !== input.envelope.targetJws
+          : row.proof.approvalJws !== input.envelope.targetJws ||
+            row.proof.counterpartyJws !== input.envelope.sourceJws)
+      )
+        throw new FederationError("POLICY_DENIED");
+      const kid = federationMessageKeyId(input.envelope.openingJws);
+      if (tx) await this.trust.assertKey(tx, this.siteId, kid, new Date());
+      const opening = await verifyFederationMessage(
+        CommercialDisputeSchema,
+        input.envelope.openingJws,
+        await this.trust.resolveKey(this.siteId, kid, new Date(), tx),
+        new Date(),
+      );
+      assertDisputeAttestation(
+        row.proof.payload,
+        opening,
+        input.domainId,
+        input.recordId,
+        new Date(),
+      );
+    }
     if (input.operation === "record-payment") {
       const [row] = await (tx ?? this.db)
         .select()
@@ -829,6 +891,7 @@ export class FederationCommercialSubmissionService {
         "adjust-settlement": "commercial-adjustment",
         "record-refund": "commercial-refund",
         "record-payment": "commercial-payment",
+        "record-dispute-freeze": "commercial-dispute-freeze",
       } as const;
       for (const [siteId, jws] of [
         [input.envelope.sourceSiteId, input.envelope.sourceJws],
@@ -847,6 +910,7 @@ export class FederationCommercialSubmissionService {
             CommercialSettlementSchema,
             CommercialRefundSchema,
             CommercialPaymentSchema,
+            CommercialDisputeFreezeSchema,
             CommercialAdjustmentSchema,
           ]),
           jws,
@@ -945,15 +1009,17 @@ export class FederationCommercialSubmissionService {
       await requireFederationCapability(
         tx,
         actor,
-        row.input.operation === "record-payment"
-          ? "payment.approve"
-          : row.input.operation === "adjust-settlement"
-            ? "adjustment.approve"
-            : row.input.operation === "settle-bill" || row.input.operation === "record-refund"
-              ? "settlement.approve"
-              : ["confirm-bill", "record-discount"].includes(row.input.operation)
-                ? "billing.approve"
-                : "agreement.approve",
+        row.input.operation === "record-dispute-freeze"
+          ? "dispute.open"
+          : row.input.operation === "record-payment"
+            ? "payment.approve"
+            : row.input.operation === "adjust-settlement"
+              ? "adjustment.approve"
+              : row.input.operation === "settle-bill" || row.input.operation === "record-refund"
+                ? "settlement.approve"
+                : ["confirm-bill", "record-discount"].includes(row.input.operation)
+                  ? "billing.approve"
+                  : "agreement.approve",
       );
       const [attempt] = await this.latest(tx, id);
       if (

@@ -20,6 +20,7 @@ import {
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialDiscountSchema,
+  CommercialDisputeAttestationEnvelopeSchema,
   CommercialPaymentSchema,
   CommercialReceiptSchema,
   CommercialRecordTypeSchema,
@@ -33,6 +34,11 @@ import {
   type FabricCommercialTrust,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
+import {
+  assertDisputeAttestation,
+  CommercialDisputeFreezeSchema,
+  CommercialDisputeSchema,
+} from "@kuintessence/shared/federation/disputes";
 import {
   MarketDemandStateSchema,
   MarketExecutionGateSchema,
@@ -82,6 +88,12 @@ const StoredAdjustment = z.strictObject({
   receipt: CommercialReceiptSchema,
   envelope: CommercialAgreementEnvelopeSchema,
   terms: CommercialAdjustmentSchema,
+});
+const StoredDisputeFreeze = z.strictObject({
+  receipt: CommercialReceiptSchema,
+  envelope: CommercialDisputeAttestationEnvelopeSchema,
+  terms: CommercialDisputeFreezeSchema,
+  opening: CommercialDisputeSchema,
 });
 const StoredPayment = z.strictObject({
   receipt: CommercialReceiptSchema,
@@ -906,6 +918,80 @@ export class CommercialLedger {
     );
     return encode(receipt);
   }
+  private async disputeAttestation(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    recordId: string,
+  ) {
+    const envelope = this.input(stub, CommercialDisputeAttestationEnvelopeSchema),
+      now = stub.getDateTimestamp();
+    if (
+      envelope.sourceSiteId === envelope.targetSiteId ||
+      !domain.siteIds.includes(envelope.sourceSiteId) ||
+      !domain.siteIds.includes(envelope.targetSiteId) ||
+      ![envelope.sourceSiteId, envelope.targetSiteId].includes(envelope.openingSiteId)
+    )
+      return fail("POLICY_DENIED");
+    const signed = await this.verify(
+        stub,
+        CommercialDisputeFreezeSchema,
+        envelope.sourceJws,
+        envelope.sourceSiteId,
+        now,
+      ),
+      other = await this.verify(
+        stub,
+        CommercialDisputeFreezeSchema,
+        envelope.targetJws,
+        envelope.targetSiteId,
+        now,
+      ),
+      opening = await this.verify(
+        stub,
+        CommercialDisputeSchema,
+        envelope.openingJws,
+        envelope.openingSiteId,
+        now,
+      ),
+      terms = signed.payload;
+    if (
+      signed.digest !== other.digest ||
+      terms.sourceSiteId !== envelope.sourceSiteId ||
+      terms.targetSiteId !== envelope.targetSiteId ||
+      opening.payload.openingSiteId !== envelope.openingSiteId
+    )
+      return fail("POLICY_DENIED");
+    assertDisputeAttestation(terms, opening, domain.domainId, recordId, now);
+    const key = stub.createCompositeKey("dispute-freeze", [domain.domainId, recordId]);
+    const existing = await this.privateValue(stub, domain.collection, key);
+    if (existing.length) {
+      const original = StoredDisputeFreeze.parse(JSON.parse(Buffer.from(existing).toString()));
+      if (original.receipt.digest !== signed.digest) return fail("OPERATION_CONFLICT");
+      await stub.putPrivateData(domain.collection, key, existing);
+      return encode(original.receipt);
+    }
+    const bytes = await this.privateValue(
+      stub,
+      domain.collection,
+      stub.createCompositeKey("agreement", [domain.domainId, terms.agreementRevisionId]),
+    );
+    if (!bytes.length) return fail("ASSET_UNAVAILABLE");
+    const agreement = StoredAgreement.parse(JSON.parse(Buffer.from(bytes).toString()));
+    if (
+      agreement.receipt.digest !== opening.payload.agreementDigest ||
+      agreement.terms.agreement.mode !== "bilateral_attested" ||
+      agreement.terms.agreement.sourceSiteId !== terms.sourceSiteId ||
+      agreement.terms.agreement.targetSiteId !== terms.targetSiteId
+    )
+      return fail("POLICY_DENIED");
+    const receipt = { recordId, digest: signed.digest };
+    await stub.putPrivateData(
+      domain.collection,
+      key,
+      encode({ receipt, envelope, terms, opening: opening.payload }),
+    );
+    return encode(receipt);
+  }
   private async payment(
     stub: Stub,
     domain: FabricCommercialTrust["domains"][number],
@@ -1366,6 +1452,7 @@ export class CommercialLedger {
         "AdjustSettlement",
         "RecordRefund",
         "RecordPayment",
+        "RecordDisputeFreeze",
       ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
@@ -1373,6 +1460,7 @@ export class CommercialLedger {
     const [domainId, recordId] = Args.parse(params);
     const domain = this.trust.domains.find((domain) => domain.domainId === domainId);
     if (!domain?.siteIds.includes(org.siteId)) return fail("POLICY_DENIED");
+    if (fcn === "RecordDisputeFreeze") return this.disputeAttestation(stub, domain, recordId);
     if (fcn === "RecordPayment") return this.payment(stub, domain, recordId);
     if (fcn === "RecordRefund") return this.refund(stub, domain, recordId);
     if (fcn === "RecordDiscount") return this.discount(stub, domain, recordId, org.siteId);

@@ -15,7 +15,10 @@ const root = z.string().parse(process.argv[2]);
 const action = z.enum(["prepare", "advance", "advance-then-crash"]).parse(process.argv[3]);
 const checkpointFile = z.string().parse(process.argv[4]);
 const replyFile = z.string().parse(process.argv[5]);
-const record = z.enum(["agreement", "payment"]).default("agreement").parse(process.argv[6]);
+const record = z
+  .enum(["agreement", "payment", "dispute-freeze"])
+  .default("agreement")
+  .parse(process.argv[6]);
 const network = z
   .object({
     channel: z.literal("kq-evidence-test"),
@@ -60,7 +63,9 @@ try {
         await readFile(
           join(
             root,
-            record === "payment" ? "commercial-payment-proposal.json" : "commercial-proposal.json",
+            record === "agreement"
+              ? "commercial-proposal.json"
+              : `commercial-${record}-proposal.json`,
           ),
           "utf8",
         ),

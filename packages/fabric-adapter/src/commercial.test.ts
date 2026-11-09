@@ -28,6 +28,10 @@ import {
   CommercialUsageSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
+  CommercialDisputeFreezeSchema,
+  CommercialDisputeSchema,
+} from "@kuintessence/shared/federation/disputes";
+import {
   type FederationSigningKey,
   signFederationMessage,
 } from "@kuintessence/shared/federation/signatures";
@@ -93,6 +97,8 @@ beforeAll(async () => {
           "commercial-adjustment",
           "commercial-refund",
           "commercial-payment",
+          "commercial-dispute",
+          "commercial-dispute-freeze",
           "cancellation-receipt",
         ],
       })),
@@ -1051,4 +1057,113 @@ test("refund adapter rejects changed record identity and absent receipt purpose 
   for (const item of trust.keyPurposes)
     item.kinds = item.kinds.filter((kind) => kind !== "cancellation-receipt");
   await expect(setup({ trust }).adapter.prepare(proposal)).rejects.toThrow("UNTRUSTED_IDENTITY");
+});
+
+test("dispute attestation adapter binds all three signatures and uses only transient private transport", async () => {
+  const source = keys[0],
+    target = keys[1];
+  if (!source || !target) throw new Error("Missing signers");
+  const opening = CommercialDisputeSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute",
+    caseId: randomUUID(),
+    domainId: config.trust.domains[0]?.domainId,
+    agreementRevisionId: randomUUID(),
+    agreementDigest: `sha256:${"a".repeat(64)}`,
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    openingSiteId: target.siteId,
+    taskId: randomUUID(),
+    attempt: 1,
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+    subject: {
+      recordType: "usage",
+      recordId: randomUUID(),
+      recordDigest: `sha256:${"b".repeat(64)}`,
+    },
+    reason: "PRIVATE-CASE",
+    requestedResolution: "Review",
+  });
+  const hash = (jws: string) =>
+    `sha256:${createHash("sha256")
+      .update(Buffer.from(jws.split(".")[1] ?? "", "base64url"))
+      .digest("hex")}`;
+  const openingJws = await signFederationMessage(CommercialDisputeSchema, opening, target);
+  const freeze = CommercialDisputeFreezeSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute-freeze",
+    caseId: opening.caseId,
+    caseDigest: hash(openingJws),
+    agreementRevisionId: opening.agreementRevisionId,
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    taskId: opening.taskId,
+    attempt: 1,
+    mode: "bilateral_attested",
+    headDigest: `sha256:${"c".repeat(64)}`,
+    issuedAt: opening.issuedAt,
+    salt: randomBytes(32).toString("hex"),
+  });
+  const input = async (value = freeze) => {
+    const sourceJws = await signFederationMessage(CommercialDisputeFreezeSchema, value, source);
+    return CommercialAdapterProposalInputSchema.parse({
+      operation: "record-dispute-freeze",
+      domainId: opening.domainId,
+      recordId: opening.caseId,
+      digest: hash(sourceJws),
+      envelope: {
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        sourceJws,
+        targetJws: await signFederationMessage(CommercialDisputeFreezeSchema, value, target),
+        openingSiteId: target.siteId,
+        openingJws,
+      },
+    });
+  };
+  const value = await input();
+  if (value.operation !== "record-dispute-freeze") throw new Error("Missing dispute input");
+  const f = setup(),
+    prepared = await f.adapter.prepare(value),
+    stored = decode(f, prepared.recovery);
+  const proposed = proto.ProposedTransaction.deserializeBinary(
+    Buffer.from(stored.message.bytes, "base64"),
+  );
+  expect(proposed.getEndorsingOrganizationsList()).toEqual(["AMSP", "BMSP"]);
+  const signed = proposed.getProposal();
+  if (!signed) throw new Error("Missing proposal");
+  const payload = peer.ChaincodeProposalPayload.deserializeBinary(
+    peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+  );
+  expect(Buffer.from(payload.getTransientmapMap().get("commercial") ?? []).toString()).toBe(
+    JSON.stringify(value.envelope),
+  );
+  expect(
+    peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((b) => Buffer.from(b).toString()),
+  ).toEqual(["RecordDisputeFreeze", value.domainId, value.recordId]);
+  const denied = setup();
+  for (const patch of [
+    { taskId: randomUUID() },
+    { mode: "ledger_coordinated" as const },
+    { caseDigest: `sha256:${"d".repeat(64)}` },
+  ])
+    await expect(denied.adapter.prepare(await input({ ...freeze, ...patch }))).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+  await expect(
+    denied.adapter.prepare({
+      ...value,
+      envelope: { ...value.envelope, openingSiteId: source.siteId },
+    }),
+  ).rejects.toThrow();
+  const trust = structuredClone(config.trust);
+  for (const key of trust.keyPurposes)
+    key.kinds = key.kinds.filter((k) => k !== "commercial-dispute-freeze");
+  await expect(setup({ trust }).adapter.prepare(value)).rejects.toThrow();
+  expect(denied.sdk).not.toHaveBeenCalled();
 });

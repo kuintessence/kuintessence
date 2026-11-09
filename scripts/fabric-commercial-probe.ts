@@ -26,6 +26,10 @@ import {
   CommercialUsageSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
+import {
+  CommercialDisputeFreezeSchema,
+  CommercialDisputeSchema,
+} from "@kuintessence/shared/federation/disputes";
 import { signFederationMessage } from "@kuintessence/shared/federation/signatures";
 import { importPKCS8 } from "jose";
 import { z } from "zod";
@@ -684,6 +688,123 @@ async function run() {
     }),
     { mode: 0o600 },
   );
+  const disputeProbe = `PRIVATE-DISPUTE-${randomUUID()}`;
+  const opening = CommercialDisputeSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute",
+    caseId: randomUUID(),
+    domainId: domain.domainId,
+    agreementRevisionId: billingReceipt.recordId,
+    agreementDigest: billingReceipt.digest,
+    sourceSiteId: sourceKey.siteId,
+    targetSiteId: targetKey.siteId,
+    openingSiteId: sourceKey.siteId,
+    taskId: bill.request.taskId,
+    attempt: bill.request.attempt,
+    subject: { recordType: "bill", recordId: bill.billId, recordDigest: billReceipt.digest },
+    reason: disputeProbe,
+    requestedResolution: "Review original usage",
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const openingJws = await signFederationMessage(CommercialDisputeSchema, opening, sourceKey);
+  const signedDigest = (jws: string) =>
+    `sha256:${createHash("sha256")
+      .update(Buffer.from(jws.split(".")[1] ?? "", "base64url"))
+      .digest("hex")}`;
+  const freeze = CommercialDisputeFreezeSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute-freeze",
+    caseId: opening.caseId,
+    caseDigest: signedDigest(openingJws),
+    agreementRevisionId: opening.agreementRevisionId,
+    sourceSiteId: sourceKey.siteId,
+    targetSiteId: targetKey.siteId,
+    taskId: opening.taskId,
+    attempt: opening.attempt,
+    mode: "bilateral_attested",
+    headDigest: `sha256:${randomBytes(32).toString("hex")}`,
+    issuedAt: opening.issuedAt,
+    salt: randomBytes(32).toString("hex"),
+  });
+  const freezeEnvelope = {
+    sourceSiteId: sourceKey.siteId,
+    targetSiteId: targetKey.siteId,
+    openingSiteId: sourceKey.siteId,
+    openingJws,
+    sourceJws: await signFederationMessage(CommercialDisputeFreezeSchema, freeze, sourceKey),
+    targetJws: await signFederationMessage(CommercialDisputeFreezeSchema, freeze, targetKey),
+  };
+  await assert.rejects(
+    proposal(a, "RecordDisputeFreeze", freeze.caseId, {
+      ...freezeEnvelope,
+      targetJws: freezeEnvelope.sourceJws,
+    }).endorse(),
+    chainRejection("INVALID_MESSAGE"),
+  );
+  const freezeTx = await proposal(
+    a,
+    "RecordDisputeFreeze",
+    freeze.caseId,
+    freezeEnvelope,
+  ).endorse();
+  const freezeStatus = await (await freezeTx.submit()).getStatus();
+  assert(freezeStatus.successful);
+  const freezeReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(freezeTx.getResult()).toString()),
+  );
+  assert.deepEqual(freezeReceipt, {
+    recordId: freeze.caseId,
+    digest: signedDigest(freezeEnvelope.sourceJws),
+  });
+  const freezeReplay = await proposal(
+    b,
+    "RecordDisputeFreeze",
+    freeze.caseId,
+    freezeEnvelope,
+  ).endorse();
+  assert.deepEqual(JSON.parse(Buffer.from(freezeReplay.getResult()).toString()), freezeReceipt);
+  assert((await (await freezeReplay.submit()).getStatus()).successful);
+  const changedFreeze = { ...freeze, headDigest: `sha256:${randomBytes(32).toString("hex")}` };
+  await assert.rejects(
+    proposal(a, "RecordDisputeFreeze", freeze.caseId, {
+      ...freezeEnvelope,
+      sourceJws: await signFederationMessage(
+        CommercialDisputeFreezeSchema,
+        changedFreeze,
+        sourceKey,
+      ),
+      targetJws: await signFederationMessage(
+        CommercialDisputeFreezeSchema,
+        changedFreeze,
+        targetKey,
+      ),
+    }).endorse(),
+    chainRejection("OPERATION_CONFLICT"),
+  );
+  await assert.rejects(
+    contract(c)
+      .newProposal("GetRecordReceipt", {
+        arguments: [domain.domainId, "dispute-freeze", freeze.caseId],
+        endorsingOrganizations: ["CMSP"],
+      })
+      .endorse(),
+    chainRejection("POLICY_DENIED"),
+  );
+  await writeFile(
+    join(dirname(process.argv[2] ?? ""), "commercial-dispute-freeze-proposal.json"),
+    JSON.stringify({
+      operation: "record-dispute-freeze",
+      domainId: domain.domainId,
+      recordId: freeze.caseId,
+      digest: freezeReceipt.digest,
+      envelope: freezeEnvelope,
+    }),
+    { mode: 0o600 },
+  );
+  passed.push(
+    "bilateral dispute proof commits VALID in AB private data; exact replay succeeds, changed proof and nonmember access fail",
+  );
   const taskId = randomUUID();
   const concurrent = [0, 1].map(() => ({
     ...report,
@@ -747,6 +868,11 @@ async function run() {
     { mode: 0o600 },
   );
   const probes = [
+    disputeProbe,
+    openingJws,
+    freezeEnvelope.sourceJws,
+    freezeEnvelope.targetJws,
+    freeze.salt,
     ...refundProbes,
     paymentProbe,
     paymentSigned.sourceJws,
@@ -767,6 +893,7 @@ async function run() {
     billEnvelope.targetJws,
   ];
   for (const blockNumber of [
+    freezeStatus.blockNumber,
     invalid.blockNumber,
     valid.blockNumber,
     recordedStatus.blockNumber,
@@ -821,6 +948,12 @@ async function run() {
                         ),
                         "Payment evidence must not modify balances, bills, or execution state",
                       );
+                    if (blockNumber === freezeStatus.blockNumber)
+                      assert.equal(
+                        write.getKey().split("\u0000")[1],
+                        "dispute-freeze",
+                        "Attestation may not mutate a financial head, budget, or gate",
+                      );
                     if (blockNumber === refundBlock)
                       assert(
                         ["refund", "refund-head", "refund-operation"].includes(
@@ -838,7 +971,9 @@ async function run() {
           ) {
             assert.equal(
               writes.length,
-              blockNumber === valid.blockNumber || blockNumber === discountStatus.blockNumber
+              blockNumber === valid.blockNumber ||
+                blockNumber === discountStatus.blockNumber ||
+                blockNumber === freezeStatus.blockNumber
                 ? 1
                 : blockNumber === refundBlock
                   ? 3
@@ -848,16 +983,18 @@ async function run() {
               writes.some((bytes) =>
                 bytes.includes(
                   Buffer.from(
-                    blockNumber === paymentStatus.blockNumber ||
-                      blockNumber === paymentCorrectionStatus.blockNumber
-                      ? paymentProbe
-                      : blockNumber === valid.blockNumber
-                        ? contractProbe
-                        : blockNumber === discountStatus.blockNumber
-                          ? discountProbe
-                          : blockNumber === refundBlock
-                            ? refundProbe
-                            : usageProbe,
+                    blockNumber === freezeStatus.blockNumber
+                      ? disputeProbe
+                      : blockNumber === paymentStatus.blockNumber ||
+                          blockNumber === paymentCorrectionStatus.blockNumber
+                        ? paymentProbe
+                        : blockNumber === valid.blockNumber
+                          ? contractProbe
+                          : blockNumber === discountStatus.blockNumber
+                            ? discountProbe
+                            : blockNumber === refundBlock
+                              ? refundProbe
+                              : usageProbe,
                   ),
                 ),
               ),
