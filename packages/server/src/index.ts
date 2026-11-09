@@ -54,6 +54,7 @@ import { FederationAgreementExchange } from "./federation/agreement-exchange";
 import { FederationAgreementService } from "./federation/agreements";
 import { FederationArbitrationContextService } from "./federation/arbitration-context";
 import { FederationArbitrationDecisionService } from "./federation/arbitration-decision";
+import { FederationArbitrationDecisionDelivery } from "./federation/arbitration-decision-delivery";
 import { FederationArbitrationPolicyService } from "./federation/arbitration-policy";
 import { FederationArbitrationReviewService } from "./federation/arbitration-review";
 import { FederationArbitrationRevocationDelivery } from "./federation/arbitration-revocations";
@@ -1890,6 +1891,9 @@ const federationCasePublications = await loadFederationCasePublications(
   config,
   federationSigningKey,
 );
+const federationArbitrationDecisions = federationSigningKey
+  ? new FederationArbitrationDecisionDelivery(db, federationSigningKey, federationSender)
+  : undefined;
 const federationArbitrationRevocations = federationSigningKey
   ? new FederationArbitrationRevocationDelivery(
       db,
@@ -1947,6 +1951,7 @@ if (federationSigningKey) {
       contexts,
       review,
       new FederationArbitrationDecisionService(db, federationSigningKey, review),
+      federationArbitrationDecisions,
     ),
   );
 }
@@ -2001,6 +2006,7 @@ if (federationSigningKey && federationCommercial)
       new FederationDisclosureService(db, federationSigningKey),
       new FederationArbitrationPolicyService(db, federationSigningKey),
       federationArbitrationRevocations,
+      federationArbitrationDecisions,
     ),
   );
 const federationPreparation = federationSigningKey
@@ -2908,6 +2914,7 @@ const federationCommercialWorker = federationCommercial
       federationCaseSubmissions,
       federationCaseRevocations,
       federationArbitrationRevocations,
+      federationArbitrationDecisions,
     )
   : undefined;
 federationCommercialWorker?.start();

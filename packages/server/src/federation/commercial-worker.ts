@@ -1,6 +1,7 @@
 import { createLogger } from "@kuintessence/shared";
 import type { FederationAccountingCollection } from "./accounting-collection";
 import type { FederationAgreementExchange } from "./agreement-exchange";
+import type { FederationArbitrationDecisionDelivery } from "./arbitration-decision-delivery";
 import type { FederationArbitrationRevocationDelivery } from "./arbitration-revocations";
 import type { FederationCaseRevocationDelivery } from "./case-revocations";
 import type { FederationCaseSubmissionService } from "./case-submissions";
@@ -46,6 +47,7 @@ export class FederationCommercialWorker {
     private readonly cases?: FederationCaseSubmissionService,
     private readonly caseRevocations?: FederationCaseRevocationDelivery,
     private readonly arbitrationRevocations?: FederationArbitrationRevocationDelivery,
+    private readonly arbitrationDecisions?: FederationArbitrationDecisionDelivery,
   ) {}
 
   start() {
@@ -207,6 +209,17 @@ export class FederationCommercialWorker {
         } catch {
           logger.error(
             "Arbitration withdrawal delivery failed; signed notices and receipts remain durable",
+          );
+        }
+      }
+      if (this.arbitrationDecisions) {
+        try {
+          await this.arbitrationDecisions.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.arbitrationDecisions.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Arbitration decision delivery failed; original decisions and receipts remain durable",
           );
         }
       }

@@ -16,12 +16,12 @@ const HeaderSchema = z.strictObject({
 });
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
-const maxMessageBytes = 262_144;
+export const maxFederationMessageBytes = 262_144;
 
 /** An untrusted lookup hint only. Verification still checks the exact protected header. */
 export function federationMessageKeyId(jws: string): string {
   try {
-    if (jws.length > maxMessageBytes * 2 || !/^[\w-]+\.[\w-]+\.[\w-]+$/.test(jws))
+    if (jws.length > maxFederationMessageBytes * 2 || !/^[\w-]+\.[\w-]+\.[\w-]+$/.test(jws))
       throw new FederationError("INVALID_MESSAGE");
     const header = jws.split(".")[0];
     if (!header || header.length > 1024) throw new FederationError("INVALID_MESSAGE");
@@ -83,6 +83,8 @@ export interface FederationVerificationKey {
     | "arbitration-context-query"
     | "arbitration-context"
     | "arbitration-decision"
+    | "arbitration-decision-delivery"
+    | "arbitration-decision-receipt"
     | "commercial-disclosure-policy"
     | "commercial-disclosure"
     | "commercial-disclosure-read-query"
@@ -137,7 +139,7 @@ export async function signFederationMessage<T>(
 ): Promise<string> {
   const validated = schema.parse(payload);
   const bytes = encoder.encode(JSON.stringify(validated));
-  if (bytes.length > maxMessageBytes) throw new FederationError("INVALID_MESSAGE");
+  if (bytes.length > maxFederationMessageBytes) throw new FederationError("INVALID_MESSAGE");
   const header = HeaderSchema.parse({
     alg: "RS256",
     typ: "kq-federation+jws",
@@ -165,7 +167,8 @@ export async function verifyFederationMessage<T extends { kind: string }>(
   try {
     if (federationMessageKeyId(jws) !== key.keyId) throw new FederationError("UNTRUSTED_IDENTITY");
     const result = await compactVerify(jws, key.publicKey, { algorithms: ["RS256"] });
-    if (result.payload.length > maxMessageBytes) throw new FederationError("INVALID_MESSAGE");
+    if (result.payload.length > maxFederationMessageBytes)
+      throw new FederationError("INVALID_MESSAGE");
     const payload = schema.parse(parseWireJson(result.payload));
     if (!key.allowedKinds.some((kind) => kind === payload.kind))
       throw new FederationError("UNTRUSTED_IDENTITY");

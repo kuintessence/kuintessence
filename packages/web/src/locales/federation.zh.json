@@ -126,7 +126,9 @@
       "arbitration-revocation-receipt": "仲裁预授权撤销回执",
       "arbitration-context-query": "仲裁上下文查询",
       "arbitration-context": "仲裁上下文",
-      "arbitration-decision": "仲裁裁决原件"
+      "arbitration-decision": "仲裁裁决原件",
+      "arbitration-decision-delivery": "仲裁裁决投递",
+      "arbitration-decision-receipt": "仲裁裁决收件回执"
     },
     "storage": {
       "title": "输入存储核对",

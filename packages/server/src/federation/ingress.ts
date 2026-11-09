@@ -6,6 +6,7 @@ import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementExchange } from "./agreement-exchange";
 import { FederationArbitrationContextResponder } from "./arbitration-context";
+import { FederationArbitrationDecisionDelivery } from "./arbitration-decision-delivery";
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { FederationArbitrationRevocationDelivery } from "./arbitration-revocations";
 import { FederationCancellationReceiver } from "./cancellation";
@@ -63,7 +64,11 @@ export function createFederationIngress(
         error.code === "ATTESTATION_BACKLOG" ||
         error.code === "STORAGE_PRESSURE" ||
         (error.code === "DATA_WAITING" &&
-          ["/federation/v1/disputes", "/federation/v1/dispute-freezes"].includes(c.req.path))
+          [
+            "/federation/v1/disputes",
+            "/federation/v1/dispute-freezes",
+            "/federation/v1/arbitration-decisions",
+          ].includes(c.req.path))
           ? 503
           : error.code === "INVALID_MESSAGE"
             ? 400
@@ -302,6 +307,18 @@ export function createFederationIngress(
     if (c.req.header("content-type") !== "application/jose")
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
     const response = await new FederationDisclosureReadResponder(db, signingKey).receive(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(response, 200, {
+      "content-type": "application/jose",
+      "cache-control": "no-store",
+    });
+  });
+  r.post("/federation/v1/arbitration-decisions", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const response = await new FederationArbitrationDecisionDelivery(db, signingKey).receive(
       await c.req.text(),
       c.req.header("x-kq-federation-cert") ?? "",
     );

@@ -14,6 +14,7 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationArbitrationContextService } from "../federation/arbitration-context";
 import type { FederationArbitrationDecisionService } from "../federation/arbitration-decision";
+import type { FederationArbitrationDecisionDelivery } from "../federation/arbitration-decision-delivery";
 import type { FederationArbitrationReviewService } from "../federation/arbitration-review";
 import type { FederationEvidenceService } from "../federation/disclosure-delivery";
 import { FederationDeliveryError } from "../federation/outbound-client";
@@ -26,6 +27,7 @@ export function createFederationEvidenceRoutes(
   arbitration?: FederationArbitrationContextService,
   review?: FederationArbitrationReviewService,
   decisions?: FederationArbitrationDecisionService,
+  delivery?: FederationArbitrationDecisionDelivery,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   const path = "/federation/evidence-cases";
@@ -168,6 +170,21 @@ export function createFederationEvidenceRoutes(
           c.req.valid("json"),
         ),
       });
+    },
+  );
+  r.get(`${path}/:caseId/arbitration-decision/delivery`, kqValidator("param", id), async (c) => {
+    if (!delivery) throw new FederationError("ASSET_UNAVAILABLE");
+    return c.json(await delivery.status(c.get("federationActor"), c.req.valid("param").caseId));
+  });
+  r.post(
+    `${path}/:caseId/arbitration-decision/delivery/:receivingSiteId/retry`,
+    kqValidator("param", id.extend({ receivingSiteId: z.uuid() })),
+    kqValidator("json", z.strictObject({})),
+    async (c) => {
+      if (!delivery) throw new FederationError("ASSET_UNAVAILABLE");
+      const { caseId, receivingSiteId } = c.req.valid("param");
+      await delivery.retry(c.get("federationActor"), caseId, receivingSiteId);
+      return c.json({ data: { queued: true } });
     },
   );
   return r;

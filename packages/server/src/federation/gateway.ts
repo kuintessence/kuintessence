@@ -40,6 +40,7 @@ export function createFederationGateway(options: FederationGatewayOptions) {
           req.url !== "/federation/v1/case-revocations" &&
           req.url !== "/federation/v1/arbitration-revocations" &&
           req.url !== "/federation/v1/arbitration-contexts" &&
+          req.url !== "/federation/v1/arbitration-decisions" &&
           req.url !== "/federation/v1/disclosure-authorizations" &&
           req.url !== "/federation/v1/disclosure-downloads" &&
           req.url !== "/federation/v1/dispute-freezes" &&

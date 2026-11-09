@@ -35,6 +35,10 @@ import type {
   ArbitrationDecision,
   ArbitrationDecisionBasis,
 } from "@kuintessence/shared/federation/arbitration-decision";
+import type {
+  ArbitrationDecisionDelivery,
+  ArbitrationDecisionReceipt,
+} from "@kuintessence/shared/federation/arbitration-decision-delivery";
 import type { CommercialArbitrationPolicy } from "@kuintessence/shared/federation/arbitration-policy";
 import type { CommercialArbitrationRevocation } from "@kuintessence/shared/federation/arbitration-revocation";
 import type { ArbitrationRevocationNotice } from "@kuintessence/shared/federation/arbitration-revocation-notice";
@@ -167,6 +171,8 @@ export const federationSigningKeys = pgTable(
           | "arbitration-context-query"
           | "arbitration-context"
           | "arbitration-decision"
+          | "arbitration-decision-delivery"
+          | "arbitration-decision-receipt"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
           | "case-evidence-publication"
@@ -4011,6 +4017,77 @@ export const federationArbitrationDecisions = pgTable(
     check(
       "federation_arbitration_decision_identity",
       sql`(${t.payload}->'intent'->>'decisionId' = ${t.decisionId}::text AND ${t.payload}->'intent'->'binding'->>'caseId' = ${t.caseId}::text AND ${t.payload}->'intent'->'binding'->>'arbitratorSiteId' = ${t.localSiteId}::text) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationArbitrationDecisionDeliveries = pgTable(
+  "federation_arbitration_decision_deliveries",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    decisionId: uuid("decision_id").notNull(),
+    receivingSiteId: uuid("receiving_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    deliveryId: uuid("delivery_id").notNull().unique(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    receiptJws: text("receipt_jws"),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({
+      name: "arb_decision_delivery_pk",
+      columns: [t.localSiteId, t.decisionId, t.receivingSiteId],
+    }),
+    foreignKey({
+      name: "arb_decision_delivery_original_fk",
+      columns: [t.localSiteId, t.decisionId],
+      foreignColumns: [
+        federationArbitrationDecisions.localSiteId,
+        federationArbitrationDecisions.decisionId,
+      ],
+    }),
+    index("arb_decision_delivery_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "arb_decision_delivery_state",
+      sql`${t.state} IN ('pending','received','needs_review') AND (${t.state} = 'received') = (${t.receiptJws} IS NOT NULL AND ${t.acknowledgedAt} IS NOT NULL)`,
+    ),
+    check(
+      "arb_decision_delivery_lease",
+      sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
+    ),
+  ],
+);
+/** Historical receipt is deliberately separate from dispute resolution and financial application. */
+export const federationReceivedArbitrationDecisions = pgTable(
+  "federation_received_arbitration_decisions",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    decisionId: uuid("decision_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    payload: jsonb("payload").$type<ArbitrationDecisionDelivery>().notNull(),
+    deliveryJws: text("delivery_jws").notNull(),
+    receipt: jsonb("receipt").$type<ArbitrationDecisionReceipt>().notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: "arb_received_decision_pk", columns: [t.localSiteId, t.decisionId] }),
+    uniqueIndex("arb_received_decision_case").on(t.localSiteId, t.caseId),
+    foreignKey({
+      name: "arb_received_decision_case_fk",
+      columns: [t.localSiteId, t.caseId],
+      foreignColumns: [federationDisputes.localSiteId, federationDisputes.caseId],
+    }),
+    check(
+      "arb_received_decision_identity",
+      sql`(${t.payload}->>'receivingSiteId' = ${t.localSiteId}::text AND ${t.payload}->>'decisionId' = ${t.decisionId}::text AND ${t.payload}->>'caseId' = ${t.caseId}::text) IS TRUE`,
     ),
   ],
 );

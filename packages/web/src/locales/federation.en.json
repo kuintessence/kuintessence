@@ -126,7 +126,9 @@
       "arbitration-revocation-receipt": "Arbitration withdrawal receipt",
       "arbitration-context-query": "Arbitration context query",
       "arbitration-context": "Arbitration context",
-      "arbitration-decision": "Arbitration decision"
+      "arbitration-decision": "Arbitration decision",
+      "arbitration-decision-delivery": "Arbitration decision delivery",
+      "arbitration-decision-receipt": "Arbitration decision receipt"
     },
     "storage": {
       "title": "Input storage reconciliation",

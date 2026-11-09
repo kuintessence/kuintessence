@@ -145,6 +145,11 @@
       "bun": "./src/federation/arbitration-decision.ts",
       "types": "./src/federation/arbitration-decision.ts",
       "default": "./src/federation/arbitration-decision.ts"
+    },
+    "./federation/arbitration-decision-delivery": {
+      "bun": "./src/federation/arbitration-decision-delivery.ts",
+      "types": "./src/federation/arbitration-decision-delivery.ts",
+      "default": "./src/federation/arbitration-decision-delivery.ts"
     }
   },
   "scripts": {

@@ -1380,6 +1380,13 @@
       "when": 1794266126206,
       "tag": "0196_sour_blue_blade",
       "breakpoints": true
+    },
+    {
+      "idx": 197,
+      "version": "7",
+      "when": 1794267479414,
+      "tag": "0197_tidy_pride",
+      "breakpoints": true
     }
   ]
 }

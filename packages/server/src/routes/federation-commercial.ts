@@ -38,6 +38,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationAdjustmentService } from "../federation/adjustment";
+import type { FederationArbitrationDecisionDelivery } from "../federation/arbitration-decision-delivery";
 import type { FederationArbitrationPolicyService } from "../federation/arbitration-policy";
 import type { FederationArbitrationRevocationDelivery } from "../federation/arbitration-revocations";
 import type { FederationBillingService } from "../federation/billing";
@@ -110,6 +111,7 @@ export function createFederationCommercialRoutes(
   disclosures?: FederationDisclosureService,
   arbitrationPolicies?: FederationArbitrationPolicyService,
   arbitrationRevocations?: FederationArbitrationRevocationDelivery,
+  arbitrationDecisions?: FederationArbitrationDecisionDelivery,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -186,6 +188,21 @@ export function createFederationCommercialRoutes(
       },
     );
   }
+  if (arbitrationDecisions)
+    r.get(
+      "/federation/commercial-agreements/:revisionId/disputes/:caseId/arbitration-decision",
+      kqValidator("param", id.extend({ caseId: z.uuid() })),
+      async (c) => {
+        const { revisionId, caseId } = c.req.valid("param");
+        return c.json({
+          data: await arbitrationDecisions.receivedDecision(
+            c.get("federationActor"),
+            revisionId,
+            caseId,
+          ),
+        });
+      },
+    );
   if (disputes) {
     const path = "/federation/commercial-agreements/:revisionId/disputes";
     r.get(

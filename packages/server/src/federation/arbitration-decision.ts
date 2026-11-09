@@ -15,6 +15,7 @@ import {
   ArbitrationDecisionSchema,
   arbitrationDecisionIntent,
 } from "@kuintessence/shared/federation/arbitration-decision";
+import { arbitrationDecisionDeliveryPayload } from "@kuintessence/shared/federation/arbitration-decision-delivery";
 import { and, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
 import type { FederationArbitrationReviewService } from "./arbitration-review";
@@ -22,6 +23,7 @@ import { federationMaterialDigest } from "./assets";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
+  maxFederationMessageBytes,
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
@@ -170,6 +172,14 @@ export class FederationArbitrationDecisionService {
       const jws = await signFederationMessage(ArbitrationDecisionSchema, payload, this.signing);
       const signed = await verifyFederationMessage(ArbitrationDecisionSchema, jws, key, new Date());
       if (expiresAt <= Date.now()) throw new FederationError("AUTHORIZATION_EXPIRED");
+      const delivery = arbitrationDecisionDeliveryPayload(
+        { payload, basis, approvalJws: jws, digest: signed.digest },
+        intent.decisionId,
+        intent.binding.sourceSiteId,
+        new Date().toISOString(),
+      );
+      if (new TextEncoder().encode(JSON.stringify(delivery)).length > maxFederationMessageBytes)
+        throw new FederationError("INVALID_MESSAGE");
       const [row] = await tx
         .insert(decisions)
         .values({
