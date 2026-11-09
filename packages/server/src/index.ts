@@ -20,7 +20,6 @@ import {
   type WorkflowPlacementConfig,
   WorkflowPlacementConfigSchema,
 } from "@kuintessence/shared";
-import { FabricCaseTrustSchema } from "@kuintessence/shared/federation/case-ledger";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
@@ -59,7 +58,6 @@ import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
 import { FederationBillingService } from "./federation/billing";
 import { FederationCancellationMonitor } from "./federation/cancellation-monitor";
-import { FederationCasePublicationService } from "./federation/case-publications";
 import { FederationClosingAutomation } from "./federation/closing-automation";
 import { FederationClosingPolicyService } from "./federation/closing-policy";
 import { FederationCommercialAgreementService } from "./federation/commercial-agreements";
@@ -138,6 +136,7 @@ import { FederationResultTransport } from "./federation/result-transport";
 import { FederationResultWorker } from "./federation/result-worker";
 import { FederationResultResponder } from "./federation/results";
 import {
+  loadFederationCasePublications,
   loadFederationSender,
   loadFederationSigningKey,
   loadFederationStorageGuard,
@@ -1878,8 +1877,18 @@ const federationDisputeFreezes = federationSigningKey
 const federationDisputeDelivery = federationSigningKey
   ? new FederationDisputeDelivery(db, federationSigningKey, federationSender)
   : undefined;
+const federationCasePublications = await loadFederationCasePublications(
+  db,
+  config,
+  federationSigningKey,
+);
 const federationApprovalExchange = federationSigningKey
-  ? new FederationCommercialApprovalExchange(db, federationSigningKey, federationSender)
+  ? new FederationCommercialApprovalExchange(
+      db,
+      federationSigningKey,
+      federationSender,
+      federationCasePublications,
+    )
   : undefined;
 const federationTerminalExchange = federationSigningKey
   ? new FederationTerminalExchange(db, federationSigningKey, federationSender)
@@ -1894,18 +1903,10 @@ if (federationSigningKey)
       new FederationEvidenceService(db, federationSigningKey, federationSender),
     ),
   );
-if (federationSigningKey && config.FEDERATION_CASE_TRUST_FILE)
+if (federationCasePublications)
   protectedApi.route(
     "/",
-    createFederationCasePublicationRoutes(
-      new FederationCasePublicationService(
-        db,
-        federationSigningKey,
-        FabricCaseTrustSchema.parse(
-          JSON.parse(await readFile(config.FEDERATION_CASE_TRUST_FILE, "utf8")),
-        ),
-      ),
-    ),
+    createFederationCasePublicationRoutes(federationCasePublications, federationApprovalExchange),
   );
 if (federationSigningKey && federationCommercial)
   protectedApi.route(
@@ -2754,6 +2755,7 @@ const federationIngress = await startFederationIngress(
   federationStorageGuard,
   federationMediaKeys,
   federationDatasetUse,
+  federationCasePublications,
 );
 const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(

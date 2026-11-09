@@ -1324,6 +1324,13 @@
       "when": 1794244606106,
       "tag": "0188_ambiguous_princess_powerful",
       "breakpoints": true
+    },
+    {
+      "idx": 189,
+      "version": "7",
+      "when": 1794245640795,
+      "tag": "0189_sticky_korath",
+      "breakpoints": true
     }
   ]
 }

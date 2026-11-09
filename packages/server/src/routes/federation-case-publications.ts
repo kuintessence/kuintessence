@@ -8,11 +8,15 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationCasePublicationService } from "../federation/case-publications";
+import type { FederationCommercialApprovalExchange } from "../federation/commercial-approval-exchange";
 import type { FederationActor } from "../federation/permissions";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
 
-export function createFederationCasePublicationRoutes(service: FederationCasePublicationService) {
+export function createFederationCasePublicationRoutes(
+  service: FederationCasePublicationService,
+  exchange?: FederationCommercialApprovalExchange,
+) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   const root = "/federation/case-publications",
     path = `${root}/:revisionId`;
@@ -39,6 +43,45 @@ export function createFederationCasePublicationRoutes(service: FederationCasePub
   });
   const id = z.object({ revisionId: z.uuid() }),
     publication = id.extend({ publicationId: z.uuid() });
+  if (exchange) {
+    r.get(
+      `${path}/exchange`,
+      kqValidator("param", id),
+      kqValidator(
+        "query",
+        z.strictObject({
+          limit: z.coerce.number().int().min(1).max(100).default(50),
+          offset: z.coerce.number().int().min(0).default(0),
+        }),
+      ),
+      async (c) => {
+        const { limit, offset } = c.req.valid("query");
+        return c.json(
+          await exchange.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+            "case-publication",
+          ),
+        );
+      },
+    );
+    r.post(
+      `${path}/:publicationId/exchange/retry`,
+      kqValidator("param", publication),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        const { revisionId, publicationId } = c.req.valid("param");
+        await exchange.retry(c.get("federationActor"), {
+          agreementRevisionId: revisionId,
+          recordKind: "case-publication",
+          recordId: publicationId,
+        });
+        return c.json({ ok: true });
+      },
+    );
+  }
   r.get(
     path,
     kqValidator("param", id),

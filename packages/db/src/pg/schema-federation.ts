@@ -2665,6 +2665,7 @@ export const federationCommercialApprovalSyncs = pgTable(
         | "payment"
         | "disclosure-policy"
         | "disclosure"
+        | "case-publication"
       >()
       .notNull(),
     recordId: uuid("record_id").notNull(),
@@ -2688,7 +2689,7 @@ export const federationCommercialApprovalSyncs = pgTable(
     index("federation_approval_sync_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
     check(
       "federation_approval_sync_identity",
-      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment','refund','payment','disclosure-policy','disclosure') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
+      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment','refund','payment','disclosure-policy','disclosure','case-publication') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
     ),
     check(
       "federation_approval_sync_state",

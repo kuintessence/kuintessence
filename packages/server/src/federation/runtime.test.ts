@@ -3,9 +3,13 @@ import { chmod, lstat, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPgDb } from "@kuintessence/db";
-import { exportPKCS8, generateKeyPair } from "jose";
+import { exportPKCS8, exportSPKI, generateKeyPair } from "jose";
 import { loadServerConfig } from "../config";
-import { loadFederationSender, startFederationIngress } from "./runtime";
+import {
+  loadFederationCasePublications,
+  loadFederationSender,
+  startFederationIngress,
+} from "./runtime";
 
 const base = {
   DATABASE_URL: "postgres://unused:unused@127.0.0.1:1/kuintessence_unit_unused",
@@ -161,6 +165,71 @@ test("outbound requires federation plus all three TLS files and a private client
     await expect(loadFederationSender(loadServerConfig({ ...config, ...files }))).rejects.toThrow(
       "private file",
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("case trust is opt-in and invalid or foreign configuration fails before ingress listens", async () => {
+  expect(await loadFederationCasePublications(db, loadServerConfig(base))).toBeUndefined();
+  const dir = await mkdtemp(join(tmpdir(), "kq-case-trust-"));
+  const pair = await generateKeyPair("RS256", { extractable: true });
+  const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()] as const;
+  const signing = { siteId: ids[0], keyId: "test", privateKey: pair.privateKey };
+  const path = join(dir, "case-trust.json"),
+    socket = join(dir, "ingress.sock");
+  const pem = await exportSPKI(pair.publicKey);
+  const trust = {
+    version: 1,
+    generationId: crypto.randomUUID(),
+    organizations: ids.map((siteId, i) => ({
+      siteId,
+      mspId: `Org${i}MSP`,
+      keys: [
+        {
+          keyId: "test",
+          publicKeyPem: pem,
+          validFrom: "2020-01-01T00:00:00Z",
+          validUntil: "2099-01-01T00:00:00Z",
+        },
+      ],
+    })),
+    domains: [
+      {
+        domainId: crypto.randomUUID(),
+        commercialDomainId: crypto.randomUUID(),
+        sourceSiteId: ids[0],
+        targetSiteId: ids[1],
+        recipientSiteId: ids[2],
+        collection: "case_ABR",
+      },
+    ],
+    keyPurposes: ids.map((siteId) => ({
+      siteId,
+      keyId: "test",
+      kinds: ["case-evidence-publication"],
+    })),
+  };
+  const config = loadServerConfig({
+    ...base,
+    FEDERATION_ENABLED: "true",
+    FEDERATION_SITE_ID: signing.siteId,
+    FEDERATION_SOCKET_PATH: socket,
+    FEDERATION_SIGNING_KEY_ID: signing.keyId,
+    FEDERATION_SIGNING_KEY_FILE: join(dir, "unused.key"),
+    FEDERATION_CASE_TRUST_FILE: path,
+  });
+  try {
+    await writeFile(path, JSON.stringify(trust));
+    expect(await loadFederationCasePublications(db, config, signing)).toBeDefined();
+    await expect(
+      loadFederationCasePublications(db, config, { ...signing, siteId: crypto.randomUUID() }),
+    ).rejects.toThrow("Unknown local case institution");
+    await writeFile(path, JSON.stringify({ ...trust, domains: [] }));
+    await expect(startFederationIngress(db, config, signing)).rejects.toThrow();
+    expect(await Bun.file(socket).exists()).toBe(false);
+    await writeFile(path, "invalid");
+    await expect(loadFederationCasePublications(db, config, signing)).rejects.toThrow();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

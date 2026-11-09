@@ -12287,3 +12287,429 @@ test("case publication permits a new authorized key to revoke after the original
     ).payload.publicationDigest,
   ).toBe(own.digest);
 });
+
+async function casePublicationExchangeFixture() {
+  const f = await casePublicationFixture();
+  const sourceResponder = new FederationCommercialApprovalExchange(
+    db,
+    f.source.signing,
+    undefined,
+    f.sourceCases,
+  );
+  const providerResponder = new FederationCommercialApprovalExchange(
+    db,
+    f.provider.signing,
+    undefined,
+    f.providerCases,
+  );
+  const transport: { calls: number; afterResponse?: (jws: string) => Promise<string> } = {
+    calls: 0,
+  };
+  const sendSource: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/commercial-approvals");
+    transport.calls++;
+    const response = await providerResponder.receive(jws, f.fingerprint);
+    return transport.afterResponse ? transport.afterResponse(response) : response;
+  };
+  const sendProvider: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/commercial-approvals");
+    transport.calls++;
+    return sourceResponder.receive(jws, f.providerFingerprint);
+  };
+  const sourceAuto = new FederationCommercialApprovalExchange(
+    db,
+    f.source.signing,
+    sendSource,
+    f.sourceCases,
+  );
+  const providerAuto = new FederationCommercialApprovalExchange(
+    db,
+    f.provider.signing,
+    sendProvider,
+    f.providerCases,
+  );
+  const syncKey = and(
+    eq(federationCommercialApprovalSyncs.localSiteId, f.source.signing.siteId),
+    eq(federationCommercialApprovalSyncs.recordKind, "case-publication"),
+    eq(federationCommercialApprovalSyncs.recordId, f.publication.publicationId),
+  );
+  const status = async () =>
+    (await db.select().from(federationCommercialApprovalSyncs).where(syncKey))[0];
+  const view = async (provider = false) =>
+    (
+      await db
+        .select()
+        .from(federationCasePublications)
+        .where(
+          and(
+            eq(
+              federationCasePublications.localSiteId,
+              provider ? f.provider.signing.siteId : f.source.signing.siteId,
+            ),
+            eq(federationCasePublications.publicationId, f.publication.publicationId),
+          ),
+        )
+    )[0];
+  const outboxes = () =>
+    db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(
+        inArray(federationCommercialSubmissions.localSiteId, [
+          f.source.signing.siteId,
+          f.provider.signing.siteId,
+        ]),
+      );
+  cleanup.push(async () => {
+    await db.delete(auditLog).where(
+      inArray(
+        auditLog.actor,
+        [f.source.signing.siteId, f.provider.signing.siteId].map(
+          (site) => `case-publication-exchange:${site}`,
+        ),
+      ),
+    );
+  });
+  return {
+    ...f,
+    sourceAuto,
+    providerAuto,
+    sendSource,
+    transport,
+    syncKey,
+    status,
+    view,
+    outboxes,
+    identity: {
+      agreementRevisionId: f.revisionId,
+      recordKind: "case-publication" as const,
+      recordId: f.publication.publicationId,
+    },
+  };
+}
+
+test("case publication exchange waits for independent consent and preserves both originals without financial or ledger writes", async () => {
+  const f = await casePublicationExchangeFixture(),
+    before = await f.budget(),
+    outboxes = await f.outboxes();
+  const a = await f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication);
+  await f.sourceAuto.discover();
+  await f.sourceAuto.advanceNext();
+  expect(await f.status()).toMatchObject({ state: "pending", lastError: null });
+  expect(await f.view(true)).toBeUndefined();
+  const b = await f.providerCases.approve(f.actor, f.revisionId, f.publication);
+  await f.providerAuto.discover();
+  await f.due();
+  await Promise.all([f.sourceAuto.advanceNext(), f.providerAuto.advanceNext()]);
+  expect(await f.status()).toMatchObject({ state: "complete" });
+  expect(await f.view()).toMatchObject({
+    approvalJws: a.approvalJws,
+    counterpartyJws: b.approvalJws,
+  });
+  expect(await f.view(true)).toMatchObject({
+    approvalJws: b.approvalJws,
+    counterpartyJws: a.approvalJws,
+  });
+  expect(await f.budget()).toEqual(before);
+  expect(await f.outboxes()).toEqual(outboxes);
+});
+
+test("case publication exchange rejects different approved originals", async () => {
+  const f = await casePublicationExchangeFixture();
+  await f.sourceCases.approve(f.sourceActor, f.revisionId, f.publication);
+  await f.providerCases.approve(f.actor, f.revisionId, { ...f.publication, salt: "e".repeat(64) });
+  await f.sourceAuto.discover();
+  await f.sourceAuto.advanceNext();
+  expect(await f.status()).toMatchObject({
+    state: "needs_review",
+    lastError: "OPERATION_CONFLICT",
+  });
+  expect((await f.view())?.counterpartyJws).toBeNull();
+});
+
+test("case publication exchange survives lost responses restart and staff removal with institutional audit", async () => {
+  const f = await casePublicationExchangeFixture(),
+    pair = await f.approvePublication();
+  await f.sourceAuto.discover();
+  f.transport.afterResponse = async () => {
+    throw new Error("Lost response");
+  };
+  await f.sourceAuto.advanceNext();
+  expect(await f.status()).toMatchObject({ state: "pending", lastError: "EXCHANGE_RETRY" });
+  await new FederationPermissionService(db).set(
+    { ...f.sourceActor, capability: "case.publish", enabled: false },
+    f.sourceActor.userId,
+  );
+  await expect(f.sourceAuto.retry(f.sourceActor, f.identity)).rejects.toThrow("POLICY_DENIED");
+  delete f.transport.afterResponse;
+  await f.due();
+  await new FederationCommercialApprovalExchange(
+    db,
+    f.source.signing,
+    f.sendSource,
+    f.sourceCases,
+  ).advanceNext();
+  expect(await f.status()).toMatchObject({ state: "complete" });
+  expect(await f.view()).toMatchObject({
+    approvalJws: pair.a.approvalJws,
+    counterpartyJws: pair.b.approvalJws,
+  });
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, f.publication.publicationId),
+          eq(auditLog.actor, `case-publication-exchange:${f.source.signing.siteId}`),
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+for (const change of [
+  "local-revocation",
+  "disclosure-revocation",
+  "purpose",
+  "endpoint",
+  "expiry",
+] as const) {
+  test(`case publication exchange rechecks ${change} after transport`, async () => {
+    const f = await casePublicationExchangeFixture();
+    await f.approvePublication();
+    await f.sourceAuto.discover();
+    f.transport.afterResponse = async (response) => {
+      if (change === "local-revocation")
+        await f.sourceCases.revoke(f.sourceActor, f.revisionId, f.publication.publicationId);
+      else if (change === "disclosure-revocation")
+        await f.service.revoke(f.sourceActor, f.revisionId, f.value.grant.grantId);
+      else if (change === "purpose")
+        await db
+          .update(federationSigningKeys)
+          .set({
+            allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'case-evidence-publication'`,
+          })
+          .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+      else if (change === "endpoint")
+        await db
+          .update(federationSites)
+          .set({ endpoint: "https://changed.example.test" })
+          .where(eq(federationSites.id, f.provider.signing.siteId));
+      else setSystemTime(new Date(Date.parse(f.publication.validUntil) + 1));
+      return response;
+    };
+    try {
+      await f.sourceAuto.advanceNext();
+    } finally {
+      setSystemTime();
+    }
+    expect(await f.status()).toMatchObject({ state: "needs_review" });
+    expect((await f.view())?.counterpartyJws).toBeNull();
+  });
+}
+
+test("case publication exchange rejects peer revocation before releasing its approval", async () => {
+  const f = await casePublicationExchangeFixture();
+  await f.approvePublication();
+  await f.sourceAuto.discover();
+  await f.providerCases.revoke(f.actor, f.revisionId, f.publication.publicationId);
+  await f.sourceAuto.advanceNext();
+  expect(await f.status()).toMatchObject({
+    state: "needs_review",
+    lastError: "AUTHORIZATION_EXPIRED",
+  });
+  expect((await f.view())?.counterpartyJws).toBeNull();
+});
+
+test("case publication exchange fences expired workers and permits an authorized retry", async () => {
+  const f = await casePublicationExchangeFixture();
+  await f.approvePublication();
+  await f.sourceAuto.discover();
+  const token = randomUUID();
+  f.transport.afterResponse = async (response) => {
+    await db
+      .update(federationCommercialApprovalSyncs)
+      .set({ leaseToken: token, leaseUntil: sql`clock_timestamp() + interval '60 seconds'` })
+      .where(f.syncKey);
+    return response;
+  };
+  await f.sourceAuto.advanceNext();
+  expect(await f.status()).toMatchObject({ state: "pending", leaseToken: token });
+  expect((await f.view())?.counterpartyJws).toBeNull();
+  await expect(f.sourceAuto.retry(f.sourceActor, f.identity)).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationCommercialApprovalSyncs)
+    .set({ leaseUntil: new Date(0) })
+    .where(f.syncKey);
+  await f.sourceAuto.retry(f.sourceActor, f.identity);
+  delete f.transport.afterResponse;
+  await f.sourceAuto.advanceNext();
+  expect(await f.status()).toMatchObject({ state: "complete" });
+});
+
+test("case publication exchange rolls back attachment and queue completion together when audit fails", async () => {
+  const f = await casePublicationExchangeFixture();
+  await f.approvePublication();
+  await f.sourceAuto.discover();
+  await db.execute(sql`ALTER TABLE audit_log ADD CONSTRAINT case_exchange_audit_fixture
+    CHECK (actor NOT LIKE 'case-publication-exchange:%') NOT VALID`);
+  try {
+    await f.sourceAuto.advanceNext();
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT case_exchange_audit_fixture`);
+  }
+  expect(await f.status()).toMatchObject({ state: "pending", lastError: "EXCHANGE_RETRY" });
+  expect((await f.view())?.counterpartyJws).toBeNull();
+  await f.due();
+  await f.sourceAuto.advanceNext();
+  expect(await f.status()).toMatchObject({ state: "complete" });
+});
+
+test("case publication exchange reconciles manual attachment without duplicate audit or transport", async () => {
+  const f = await casePublicationExchangeFixture(),
+    pair = await f.approvePublication();
+  await f.sourceAuto.discover();
+  await f.sourceCases.attachCounterparty(
+    f.sourceActor,
+    f.revisionId,
+    f.publication.publicationId,
+    pair.b.approvalJws,
+  );
+  await f.sourceAuto.advanceNext();
+  expect(await f.status()).toMatchObject({ state: "complete" });
+  expect(f.transport.calls).toBe(0);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, f.publication.publicationId),
+          eq(auditLog.action, "federation.case_publication.confirm"),
+          eq(auditLog.orgId, f.sourceActor.orgId),
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+test("case publication exchange production ingress requires peer identity and configured case trust and returns only the original consent", async () => {
+  const f = await casePublicationExchangeFixture(),
+    pair = await f.approvePublication();
+  const args: Parameters<typeof createFederationIngress> = [db, f.provider.signing];
+  args[10] = f.providerCases;
+  const ingress = createFederationIngress(...args),
+    disabled = createFederationIngress(db, f.provider.signing);
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/commercial-approvals");
+    const request = (app: typeof ingress, fingerprint?: string) =>
+      app.request("/federation/v1/commercial-approvals", {
+        method: "POST",
+        body: jws,
+        headers: {
+          "content-type": "application/jose",
+          ...(fingerprint ? { "x-kq-federation-cert": fingerprint } : {}),
+        },
+      });
+    expect((await request(ingress)).status).toBe(401);
+    expect((await request(ingress, f.providerFingerprint)).status).toBe(401);
+    expect((await request(disabled, f.fingerprint)).status).not.toBe(200);
+    const response = await request(ingress, f.fingerprint);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-type")).toBe("application/jose");
+    expect(await response.clone().text()).toBe(pair.b.approvalJws);
+    return response.text();
+  };
+  const worker = new FederationCommercialApprovalExchange(
+    db,
+    f.source.signing,
+    send,
+    f.sourceCases,
+  );
+  await worker.discover();
+  await worker.advanceNext();
+  expect(await f.status()).toMatchObject({ state: "complete" });
+});
+
+test("case publication exchange human status and retry enforce separate capability organization strict input and no-store", async () => {
+  const f = await casePublicationExchangeFixture();
+  await f.approvePublication();
+  await f.sourceAuto.discover();
+  let actor = f.sourceActor,
+    automation = false;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route("/", createFederationCasePublicationRoutes(f.sourceCases, f.sourceAuto));
+  const path = `/federation/case-publications/${f.revisionId}`;
+  const retry = (body: unknown = {}) =>
+    app.request(`${path}/${f.publication.publicationId}/exchange/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "agreement.read", enabled: false },
+    actor.userId,
+  );
+  const response = await app.request(`${path}/exchange`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const body = await response.json();
+  expect(body).toEqual({
+    enabled: true,
+    records: [
+      {
+        recordKind: "case-publication",
+        recordId: f.publication.publicationId,
+        state: "pending",
+        lastError: null,
+        nextAttemptAt: expect.any(String),
+        verifiedAt: null,
+      },
+    ],
+  });
+  expect((await app.request(`${path}/exchange?limit=0`)).status).toBe(400);
+  expect((await app.request(`${path}/exchange?unrequested=true`)).status).toBe(400);
+  expect((await retry({ unrequested: true })).status).toBe(400);
+  expect((await retry()).status).toBe(200);
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "case.publish", enabled: false },
+    actor.userId,
+  );
+  expect((await app.request(`${path}/exchange`)).status).toBe(403);
+  expect((await retry()).status).toBe(403);
+  actor = f.actor;
+  const foreign = await app.request(`${path}/exchange`);
+  expect(foreign.status).toBe(409);
+  expect(await foreign.json()).toMatchObject({ error: { code: "AGREEMENT_UNAVAILABLE" } });
+  expect((await retry()).status).toBe(403);
+  automation = true;
+  expect((await retry()).status).toBe(403);
+});
+
+test("case publication exchange rechecks configured case key purposes after restart", async () => {
+  const f = await casePublicationExchangeFixture();
+  await f.approvePublication();
+  await f.sourceAuto.discover();
+  const changed = structuredClone(f.ledger);
+  for (const purpose of changed.keyPurposes)
+    purpose.kinds = purpose.kinds.filter((kind) => kind !== "case-evidence-publication");
+  const worker = new FederationCommercialApprovalExchange(
+    db,
+    f.source.signing,
+    f.sendSource,
+    new FederationCasePublicationService(db, f.source.signing, changed),
+  );
+  await worker.advanceNext();
+  expect(await f.status()).toMatchObject({
+    state: "needs_review",
+    lastError: "UNTRUSTED_IDENTITY",
+  });
+  expect((await f.view())?.counterpartyJws).toBeNull();
+  expect(f.transport.calls).toBe(0);
+});

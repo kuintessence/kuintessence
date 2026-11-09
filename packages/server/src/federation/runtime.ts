@@ -1,9 +1,11 @@
 import { chmod, lstat, readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { PgDb } from "@kuintessence/db";
+import { FabricCaseTrustSchema } from "@kuintessence/shared/federation/case-ledger";
 import { withPrivateUnixSocketStartup } from "@kuintessence/shared/unix-socket";
 import { importPKCS8 } from "jose";
 import type { ServerConfig } from "../config";
+import { FederationCasePublicationService } from "./case-publications";
 import { UnixCommercialClient } from "./commercial-client";
 import type { FederationDatasetUseResponder } from "./dataset-use-exchange";
 import type { FederationDownloadStorage } from "./download-credential";
@@ -27,6 +29,7 @@ export async function startFederationIngress(
   storageGuard?: FederationStorageGuard,
   mediaKeys?: Pick<FederationMediaKeyResponder, "respond">,
   datasetUse?: Pick<FederationDatasetUseResponder, "respond">,
+  cases?: FederationCasePublicationService,
 ) {
   if (!config.FEDERATION_ENABLED) return undefined;
   const socketPath = config.FEDERATION_SOCKET_PATH;
@@ -52,6 +55,7 @@ export async function startFederationIngress(
     config.FEDERATION_COMMERCIAL_SOCKET_PATH
       ? new UnixCommercialClient(config.FEDERATION_COMMERCIAL_SOCKET_PATH)
       : undefined,
+    cases ?? (await loadFederationCasePublications(db, config, signingKey)),
   );
   return withPrivateUnixSocketStartup(socketPath, async () => {
     const server = Bun.serve({ unix: socketPath, fetch: app.fetch, maxRequestBodySize: 524288 });
@@ -79,6 +83,20 @@ export async function loadFederationSigningKey(
     throw new Error("Federation signing key must be a private file owned by the Server UID");
   const privateKey = await importPKCS8(await readFile(keyFile, "utf8"), "RS256");
   return { siteId, keyId, privateKey };
+}
+
+export async function loadFederationCasePublications(
+  db: PgDb,
+  config: ServerConfig,
+  key?: FederationSigningKey,
+) {
+  if (!config.FEDERATION_ENABLED || !config.FEDERATION_CASE_TRUST_FILE) return undefined;
+  const signing = key ?? (await loadFederationSigningKey(config));
+  if (!signing) throw new Error("Case approvals require a signing identity");
+  const trust = FabricCaseTrustSchema.parse(
+    JSON.parse(await readFile(config.FEDERATION_CASE_TRUST_FILE, "utf8")),
+  );
+  return new FederationCasePublicationService(db, signing, trust);
 }
 
 export async function loadFederationSender(config: ServerConfig) {

@@ -10,12 +10,14 @@ import {
   type PgTransaction,
   federationCommercialPayments as payments,
   federationDisclosurePolicies as policies,
+  federationCasePublications as publications,
   federationCommercialRefunds as refunds,
   federationCommercialSettlements as settlements,
   federationSites as sites,
   federationCommercialApprovalSyncs as syncs,
 } from "@kuintessence/db";
 import { assertFederationStatusQueryFresh, FederationError } from "@kuintessence/shared/federation";
+import { CasePublicationSchema } from "@kuintessence/shared/federation/case-ledger";
 import {
   CommercialAdjustmentSchema,
   CommercialAgreementSchema,
@@ -36,6 +38,7 @@ import { z } from "zod";
 import { FederationAdjustmentService } from "./adjustment";
 import { federationMaterialDigest } from "./assets";
 import { FederationBillingService } from "./billing";
+import type { FederationCasePublicationService } from "./case-publications";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationDisclosureService } from "./disclosure";
@@ -67,6 +70,7 @@ const businessSchema = z.union([
   CommercialRefundSchema,
   CommercialDisclosurePolicySchema,
   CommercialDisclosureSchema,
+  CasePublicationSchema,
 ]);
 const responseSchema = z.union([businessSchema, CommercialApprovalWaitingSchema]);
 class ApprovalLeaseLost extends Error {}
@@ -78,6 +82,7 @@ export class FederationCommercialApprovalExchange {
     private readonly db: PgDb,
     private readonly signing: FederationSigningKey,
     private readonly send?: FederationSend,
+    private readonly cases?: FederationCasePublicationService,
   ) {
     this.trust = new FederationTrustRegistry(db);
   }
@@ -123,6 +128,24 @@ export class FederationCommercialApprovalExchange {
         digest: contract.digest,
         approvalJws: contract.approvalJws,
         counterpartyJws: contract.counterpartyJws,
+      };
+    }
+    if (identity.recordKind === "case-publication") {
+      if (!this.cases) throw new FederationError("ASSET_UNAVAILABLE");
+      const record = await this.cases.exchangeRecord(
+        tx,
+        contract.localOrgId,
+        identity.agreementRevisionId,
+        identity.recordId,
+      );
+      if (!record) return null;
+      return {
+        contract,
+        other: record.other,
+        payload: record.row.payload,
+        digest: record.row.digest,
+        approvalJws: record.row.approvalJws,
+        counterpartyJws: record.row.counterpartyJws,
       };
     }
     if (identity.recordKind === "disclosure-policy" || identity.recordKind === "disclosure") {
@@ -679,6 +702,39 @@ export class FederationCommercialApprovalExchange {
           .insert(syncs)
           .values(pendingDisclosures.map((v) => ({ ...v, recordKind: "disclosure" as const })))
           .onConflictDoNothing();
+      if (this.cases) {
+        const pending = await tx
+          .select({
+            localSiteId: publications.localSiteId,
+            agreementRevisionId: publications.agreementRevisionId,
+            recordId: publications.publicationId,
+          })
+          .from(publications)
+          .leftJoin(
+            syncs,
+            and(
+              eq(syncs.localSiteId, publications.localSiteId),
+              eq(syncs.recordKind, "case-publication"),
+              eq(syncs.recordId, publications.publicationId),
+            ),
+          )
+          .where(
+            and(
+              eq(publications.localSiteId, this.signing.siteId),
+              isNull(publications.counterpartyJws),
+              isNull(publications.revokedAt),
+              isNull(syncs.recordId),
+            ),
+          )
+          .orderBy(asc(publications.publicationId))
+          .limit(8)
+          .for("update", { of: publications, skipLocked: true });
+        if (pending.length)
+          await tx
+            .insert(syncs)
+            .values(pending.map((value) => ({ ...value, recordKind: "case-publication" as const })))
+            .onConflictDoNothing();
+      }
       const executions = await tx
         .select({
           localSiteId: approvals.localSiteId,
@@ -865,7 +921,12 @@ export class FederationCommercialApprovalExchange {
         response,
         (tx) => authorize(tx, true),
       );
-    else if (claim.recordKind === "disclosure-policy" || claim.recordKind === "disclosure") {
+    else if (claim.recordKind === "case-publication") {
+      if (!this.cases) throw new FederationError("ASSET_UNAVAILABLE");
+      await this.cases.attachExchanged(claim.agreementRevisionId, claim.recordId, response, (tx) =>
+        authorize(tx, true),
+      );
+    } else if (claim.recordKind === "disclosure-policy" || claim.recordKind === "disclosure") {
       const service =
         claim.recordKind === "disclosure-policy"
           ? new FederationDisclosurePolicyService(this.db, this.signing)
@@ -979,9 +1040,15 @@ export class FederationCommercialApprovalExchange {
     return true;
   }
 
-  async list(actor: FederationActor, revisionId: string, limit: number, offset: number) {
+  async list(
+    actor: FederationActor,
+    revisionId: string,
+    limit: number,
+    offset: number,
+    kind?: "case-publication",
+  ) {
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.read");
+      await requireFederationCapability(tx, actor, kind ? "case.publish" : "agreement.read");
       const [contract] = await tx
         .select()
         .from(contracts)
@@ -1007,6 +1074,7 @@ export class FederationCommercialApprovalExchange {
           and(
             eq(syncs.localSiteId, this.signing.siteId),
             eq(syncs.agreementRevisionId, revisionId),
+            kind ? eq(syncs.recordKind, kind) : undefined,
           ),
         )
         .orderBy(asc(syncs.recordKind), asc(syncs.recordId))
@@ -1021,17 +1089,19 @@ export class FederationCommercialApprovalExchange {
       await requireFederationCapability(
         tx,
         actor,
-        identity.recordKind === "disclosure-policy" || identity.recordKind === "disclosure"
-          ? "disclosure.approve"
-          : identity.recordKind === "payment"
-            ? "payment.approve"
-            : identity.recordKind === "adjustment"
-              ? "adjustment.approve"
-              : identity.recordKind === "settlement" || identity.recordKind === "refund"
-                ? "settlement.approve"
-                : identity.recordKind === "bill"
-                  ? "billing.approve"
-                  : "agreement.approve",
+        identity.recordKind === "case-publication"
+          ? "case.publish"
+          : identity.recordKind === "disclosure-policy" || identity.recordKind === "disclosure"
+            ? "disclosure.approve"
+            : identity.recordKind === "payment"
+              ? "payment.approve"
+              : identity.recordKind === "adjustment"
+                ? "adjustment.approve"
+                : identity.recordKind === "settlement" || identity.recordKind === "refund"
+                  ? "settlement.approve"
+                  : identity.recordKind === "bill"
+                    ? "billing.approve"
+                    : "agreement.approve",
       );
       const [existing] = await tx
         .select()

@@ -285,13 +285,62 @@ export class FederationCasePublicationService {
     publicationId: string,
     jws: string,
   ) {
+    return this.attach(revisionId, publicationId, jws, actor);
+  }
+  async exchangeRecord(
+    tx: PgTransaction,
+    orgId: string,
+    revisionId: string,
+    publicationId: string,
+  ) {
+    const actor = { orgId };
+    const [scope] = await tx
+      .select()
+      .from(publications)
+      .where(this.key(actor, revisionId, publicationId));
+    if (!scope) return null;
+    const { record } = await this.validate(tx, actor, revisionId, scope.payload);
+    const [row] = await tx
+      .select()
+      .from(publications)
+      .where(this.key(actor, revisionId, publicationId))
+      .for("share");
+    if (!row || row.digest !== scope.digest) throw new FederationError("OPERATION_CONFLICT");
+    if (row.revokedAt) throw new FederationError("AUTHORIZATION_EXPIRED");
+    await this.saved(tx, row, record.other);
+    await this.validate(tx, actor, revisionId, row.payload);
+    return { row, other: record.other };
+  }
+  async attachExchanged(
+    revisionId: string,
+    publicationId: string,
+    jws: string,
+    authorize: (tx: PgTransaction) => Promise<void>,
+  ) {
+    return this.attach(revisionId, publicationId, jws, undefined, authorize);
+  }
+  private async attach(
+    revisionId: string,
+    publicationId: string,
+    jws: string,
+    human?: FederationActor,
+    authorize?: (tx: PgTransaction) => Promise<void>,
+  ) {
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "case.publish");
+      if (human) await requireFederationCapability(tx, human, "case.publish");
       const [scope] = await tx
         .select()
         .from(publications)
-        .where(this.key(actor, revisionId, publicationId));
+        .where(
+          and(
+            eq(publications.localSiteId, this.signing.siteId),
+            eq(publications.publicationId, publicationId),
+            eq(publications.agreementRevisionId, revisionId),
+            human ? eq(publications.localOrgId, human.orgId) : undefined,
+          ),
+        );
       if (!scope) throw new FederationError("POLICY_DENIED");
+      const actor = { orgId: scope.localOrgId };
       const { record } = await this.validate(tx, actor, revisionId, scope.payload);
       const [row] = await tx
         .select()
@@ -304,6 +353,7 @@ export class FederationCasePublicationService {
       if ((await this.verify(tx, CasePublicationSchema, jws, record.other)).digest !== row.digest)
         throw new FederationError("OPERATION_CONFLICT");
       await this.validate(tx, actor, revisionId, row.payload);
+      await authorize?.(tx);
       if (row.counterpartyJws) {
         if (row.counterpartyJws !== jws) throw new FederationError("OPERATION_CONFLICT");
         return row;
@@ -315,7 +365,7 @@ export class FederationCasePublicationService {
         .returning();
       if (!saved) throw new FederationError("OPERATION_CONFLICT");
       await tx.insert(auditLog).values({
-        actor: actor.userId,
+        actor: human ? human.userId : `case-publication-exchange:${this.signing.siteId}`,
         orgId: actor.orgId,
         action: "federation.case_publication.confirm",
         target: publicationId,

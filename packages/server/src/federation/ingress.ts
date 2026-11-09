@@ -6,6 +6,7 @@ import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementExchange } from "./agreement-exchange";
 import { FederationCancellationReceiver } from "./cancellation";
+import type { FederationCasePublicationService } from "./case-publications";
 import { FederationClosingAutomation } from "./closing-automation";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationDatasetUseResponder } from "./dataset-use-exchange";
@@ -45,6 +46,7 @@ export function createFederationIngress(
   mediaKeys?: Pick<FederationMediaKeyResponder, "respond">,
   datasetUse?: Pick<FederationDatasetUseResponder, "respond">,
   commercial?: Pick<CommercialClient, "receipt">,
+  cases?: FederationCasePublicationService,
 ) {
   const r = new Hono();
   const trust = new FederationTrustRegistry(db);
@@ -307,10 +309,12 @@ export function createFederationIngress(
   r.post("/federation/v1/commercial-approvals", async (c) => {
     if (c.req.header("content-type") !== "application/jose")
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
-    const response = await new FederationCommercialApprovalExchange(db, signingKey).receive(
-      await c.req.text(),
-      c.req.header("x-kq-federation-cert") ?? "",
-    );
+    const response = await new FederationCommercialApprovalExchange(
+      db,
+      signingKey,
+      undefined,
+      cases,
+    ).receive(await c.req.text(), c.req.header("x-kq-federation-cert") ?? "");
     return c.body(response, 200, {
       "content-type": "application/jose",
       "cache-control": "no-store",
