@@ -31,3 +31,31 @@ test("probe diagnostics never copy arbitrary names, messages, codes or private d
       .success,
   ).toBe(false);
 });
+
+test("probe diagnostics preserve bounded Adapter failure codes without private payloads", () => {
+  const error = Object.assign(new Error("private transaction and signature"), {
+    code: "INVALID_LEDGER_RESPONSE",
+    needsReview: true,
+  });
+  expect(fabricEvidenceProbeFailure(error)).toEqual({
+    error: "Error",
+    code: null,
+    adapterCode: "INVALID_LEDGER_RESPONSE",
+  });
+  expect(fabricEvidenceProbeFailure(new Error("INVALID_RECOVERY"))).toEqual({
+    error: "Error",
+    code: null,
+    adapterCode: "INVALID_RECOVERY",
+  });
+  expect(fabricEvidenceProbeFailure(new Error("INVALID_RECOVERY private checkpoint"))).toEqual({
+    error: "Error",
+    code: null,
+  });
+  expect(
+    FabricEvidenceProbeFailureSchema.safeParse({
+      error: "Error",
+      code: null,
+      adapterCode: "private field",
+    }).success,
+  ).toBe(false);
+});

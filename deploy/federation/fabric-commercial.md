@@ -520,3 +520,20 @@ KQ_FABRIC_TOOLS=/path/to/verified/fabric-3.1.5 \
 专项复用隔离三 Peer／市场与商业链码，不启用 k3s 或科研软件，也不重复完整 Adapter 故障矩阵。只与 `--gate` 组合，拒绝 database／execution 和其他专项开关。测试政策把 C 指定为 R，原商业集合仍只有 A/B；业务密钥只在该实验增加仲裁批准与撤销用途。
 
 同时背书撤销和新预留，再分别选择两种提交顺序：撤销先提交时新预留必须 MVCC 无效；预留先提交时保留原预留且撤销仍可有效提交。后续新任务拒绝，重复撤销保留原私有回执，R 无权读取。重复写入原收据保持 AB 私有集合背书，避免空写集回落到更宽的链码策略；缺少 B 背书仍无效。成功会清理临时进程和账本，可用 `KQ_FABRIC_REPORT` 保存脱敏断言。当前验证范围见[实际 Peer 记录](../../docs/design/federation/acceptance.md#仲裁撤销真实-peer-并发与重放)，不等于三 Server 联合通知或生产共识验收。
+
+
+## 仲裁撤销三 Server 专项
+
+在本机隔离测试环境中运行（不访问已部署平台）：
+
+```sh
+KQ_FABRIC_TOOLS=/path/to/verified/fabric-3.1.5 \
+KQ_FEDERATION_PG_BIN=/path/to/postgresql/bin \
+KQ_FEDERATION_PG_SHARE=/path/to/postgresql/share \
+KQ_FEDERATION_PG_LIB=/path/to/postgresql/lib \
+  bun scripts/fabric-evidence-network.ts --gate --arbitration-live
+```
+
+需要 root 以 nobody 启动一次性 PostgreSQL；使用系统 PostgreSQL 时可省略 SHARE／LIB。生成独立 TLS 证书、数据库、开发登录账户和随机端口；原进程环境中的数据库、认证及对象存储配置不传入三个 Server。完整验证停链时通知、对端不可达、首次批准前撤销、三 Server／两 Adapter 强制重启后的原件与原交易恢复。等待真实租约自然到期，不通过直接更新数据库缩短恢复时间。
+
+`KQ_FABRIC_REPORT` 可指定仅保存脱敏验收结果。实际签名、恢复密文、证书和诊断仅写忽略的 `temp/arbitration-platforms-*`，不可当作公开 CI 附件。该专项不执行科研软件或裁决；详细证据见[三站恢复记录](../../docs/design/federation/acceptance.md#仲裁撤销三-server-联合恢复)。

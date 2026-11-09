@@ -1269,9 +1269,9 @@ export function createFederationCommercialRoutes(
   r.get(
     "/federation/commercial-agreements/:revisionId/submissions",
     kqValidator("param", id),
-    kqValidator("query", page),
+    kqValidator("query", page.extend({ arbitrationPolicyId: z.uuid().optional() })),
     async (c) => {
-      const { limit, offset } = c.req.valid("query");
+      const { limit, offset, arbitrationPolicyId } = c.req.valid("query");
       return c.json({
         success: true,
         data: await submissions.status(
@@ -1279,6 +1279,7 @@ export function createFederationCommercialRoutes(
           c.req.valid("param").revisionId,
           limit,
           offset,
+          arbitrationPolicyId,
         ),
       });
     },

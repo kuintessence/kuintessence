@@ -3547,3 +3547,16 @@ a4320dc 的 bundle 重试也已 success，Fabric 重试随后被新提交的并�
 
 
 最终类型范围全部通过：根命令已完成 protobuf 生成及其他全部 package；修正后 Server、Shared、commercial 和独立 Fabric 脚本定向检查均退出 0。类型修正仅补明确协议／SDK 类型和必需原件断言，无抑制规则。所有隔离 PostgreSQL 及本轮网络进程已清理，部署库未迁移。
+
+
+## 仲裁撤销三站联合恢复与状态查询
+
+2026-11-10：新增专用三 Server／三数据库／生产 mTLS／真实 Fabric 入口，不复跑旧科研软件或案件材料流程。已通过 A/B 原签名自动交换、停链并停止 B 网关、R 提前收件、三 Server／两 Adapter SIGKILL、原租约自然到期后的原通知／回执／单一 transactionId 恢复、B 首次批准前停止和 A/B 私有收据比对。R 不接收原合同、没有政策批准或链待办；第二份未明确请求入链的撤销保持仅通知。
+
+联调补齐 `submissions?arbitrationPolicyId=`，用独立 arbitration.approve 限制原生撤销状态读取，默认查询仍仅合同登记；1 项 PG／生产人员 HTTP 检查通过。首次测试纠正合同 API 需要 `{ terms }` 的调用形状及状态响应结构。完整新入口退出 0，所属进程／临时数据库／成功账本清理；不将开发登录等同正式身份或这一专项等同完整蓝图。见[联合恢复](acceptance.md#仲裁撤销三-server-联合恢复)。
+
+065ee1c 的普通 CI、bundle 成功；Fabric workflow 在通用存证恢复 probe-14 失败，早于新仲裁专项。已补固定枚举 Adapter 错误码诊断并通过三项脱敏检查；不输出原错误文本、签名或恢复密文，后续 CI 仍须确认。完整目标继续 active。
+
+通用存证失败路径已单独在本机复现检查，12 项真实 Fabric 断言全部通过；未复跑已通过的三 Server 或科研软件矩阵。诊断进一步覆盖 SDK 的固定 `Error.message` 错误码，仅精确白名单可公开，任意正文／后缀仍拒绝；3 项诊断检查（12 断言）通过。此结果未定位远端历史失败根因，新提交 CI 仍须确认。
+
+完整 `bun run typecheck`（protobuf、全部 package、独立 Fabric 脚本）退出 0；全仓 lint 退出 0（既有 47 warnings／1 info），诊断小修的定向 lint 通过。1059 个本地文档目标、两个新增标题、Python 语法、workflow 引用及 diff 检查通过。Fabric CI 的路径过滤补齐 `scripts/federation-live/**`，但三 Server 联合专项仍为本地独立入口，并未宣称已由 CI 执行。下一项 R 裁决、原任务证明、窄执行及同任务多案件冻结的具体接线写入 disputes；尚未开放生产裁决或财务入口。

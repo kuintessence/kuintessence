@@ -15,6 +15,7 @@ on:
       - scripts/fabric-commercial-*.ts
       - scripts/fabric-market-*.ts
       - scripts/fabric-case-*.ts
+      - scripts/federation-live/**
       - scripts/test-unit.ts
       - scripts/tsconfig.fabric.json
       - package.json

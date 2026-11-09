@@ -995,9 +995,19 @@ export class FederationCommercialSubmissionService {
         throw new FederationError("OPERATION_CONFLICT");
     }
   }
-  async status(actor: FederationActor, revisionId: string, limit: number, offset: number) {
+  async status(
+    actor: FederationActor,
+    revisionId: string,
+    limit: number,
+    offset: number,
+    arbitrationPolicyId?: string,
+  ) {
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.read");
+      await requireFederationCapability(
+        tx,
+        actor,
+        arbitrationPolicyId ? "arbitration.approve" : "agreement.read",
+      );
       await this.authorize(tx, actor, revisionId);
       const rows = await tx
         .select({
@@ -1012,7 +1022,12 @@ export class FederationCommercialSubmissionService {
           and(
             eq(submissions.localSiteId, this.siteId),
             eq(submissions.agreementRevisionId, revisionId),
-            sql`${submissions.input}->>'operation' = 'register-agreement'`,
+            arbitrationPolicyId
+              ? and(
+                  sql`${submissions.input}->>'operation' = 'revoke-arbitration-policy'`,
+                  sql`${submissions.input}->>'policyId' = ${arbitrationPolicyId}`,
+                )
+              : sql`${submissions.input}->>'operation' = 'register-agreement'`,
           ),
         )
         .orderBy(desc(submissions.createdAt), desc(submissions.id))

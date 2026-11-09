@@ -1441,3 +1441,60 @@ test("arbitration notification and first approval serialize on the same identity
   expect((result as FederationError).code).toBe("AUTHORIZATION_EXPIRED");
   expect((await f.peer.list(f.otherActor, f.revision)).data).toHaveLength(0);
 });
+
+test("arbitration ledger status scopes native withdrawal attempts and requires independent authority", async () => {
+  const f = await fixture("bilateral_attested");
+  await f.approve();
+  const second = await f.service.draft(f.actor, f.revision, { ...f.input, policyId: randomUUID() });
+  await f.service.approve(f.actor, f.revision, second);
+  for (const policy of [f.draft, second])
+    await f.service.revoke(f.actor, f.revision, policy.policyId);
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-arbitration-revocation"] })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  const queued = await f.service.submitRevocation(f.actor, f.revision, f.draft.policyId);
+  await f.service.submitRevocation(f.actor, f.revision, second.policyId);
+  const service = new FederationCommercialSubmissionService(db, f.a.signing.siteId);
+  const app = new Hono();
+  let actor = f.actor;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, { ...actor, role: "platform_admin" } as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(f.agreementsA, service));
+  const path = `/federation/commercial-agreements/${f.revision}/submissions`;
+  const response = await app.request(`${path}?arbitrationPolicyId=${f.draft.policyId}`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const body = await response.text();
+  expect(body).not.toContain("Jws");
+  expect(body).not.toContain("recovery");
+  const result = z
+    .object({
+      data: z.object({
+        submissions: z.array(z.object({ id: z.uuid(), state: z.string(), transaction: z.null() })),
+      }),
+    })
+    .parse(JSON.parse(body));
+  expect(result.data.submissions.map((r) => r.id)).toEqual([queued.id]);
+  expect(
+    (await service.status(f.actor, f.revision, 10, 0)).submissions.every(
+      (row) => row.id !== queued.id,
+    ),
+  ).toBe(true);
+  expect((await service.status(f.actor, f.revision, 10, 0, randomUUID())).submissions).toHaveLength(
+    0,
+  );
+  expect((await app.request(`${path}?arbitrationPolicyId=invalid`)).status).toBe(400);
+  actor = f.otherActor;
+  expect((await app.request(`${path}?arbitrationPolicyId=${f.draft.policyId}`)).status).toBe(409);
+  actor = f.actor;
+  await permissions.set(
+    { ...actor, capability: "arbitration.approve", enabled: false },
+    actor.userId,
+  );
+  expect((await app.request(path)).status).toBe(200);
+  expect((await app.request(`${path}?arbitrationPolicyId=${f.draft.policyId}`)).status).toBe(403);
+});

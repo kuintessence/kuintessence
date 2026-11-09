@@ -64,7 +64,7 @@ export async function verifyEvidenceNetwork(root: string, controls: NetworkContr
             .catch(() => null),
         );
         const details = failure.success
-          ? `${failure.data.error}, gRPC=${failure.data.code ?? "unknown"}`
+          ? `${failure.data.error}, gRPC=${failure.data.code ?? "unknown"}${failure.data.adapterCode ? `, adapter=${failure.data.adapterCode}` : ""}`
           : "no valid diagnostic response";
         assert.fail(
           `${name} action=${input.action}, exit=${code}: ${details}; inspect private artifacts`,

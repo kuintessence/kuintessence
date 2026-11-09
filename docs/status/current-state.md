@@ -973,3 +973,6 @@ SelfAccount 实验还发现首次启动的 watchdog/Agent 建表竞态。watchdo
 
 
 仲裁撤销真实三 Peer 专项已通过：撤销先提交使并发预留 MVCC 无效，预留先提交则保留原接单；A/B 原收据一致、R 读取拒绝。修复了重复撤销空写集使背书范围回落的问题，原样写回 AB 私有收据后重复提交 VALID。独立 CI 回归已加入；三 Server 联合恢复、指定 R 裁决和剩余完整蓝图仍待完成。见[真实 Peer 检查](../design/federation/acceptance.md#仲裁撤销真实-peer-并发与重放)。
+
+
+仲裁撤销的三 Server 联合恢复已完成：三个独立数据库、生产 mTLS、停链且对端离线、Server／Adapter SIGKILL、原租约自然到期、同一通知／回执／transactionId 恢复和 AB 私有收据匹配通过。新增按政策筛选链状态的人员 API，独立仲裁权限控制且不返回恢复密文。该实验没有执行新科研任务或 R 裁决，完整蓝图及可信预览尚未完成；见[联合验收](../design/federation/acceptance.md#仲裁撤销三-server-联合恢复)。
