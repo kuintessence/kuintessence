@@ -132,6 +132,7 @@ beforeEach(async () => {
       };
     if (path.startsWith("/federation/agreements?")) return { data: [base] };
     if (
+      path.includes("/payments?") ||
       path.includes("/bills?") ||
       path.includes("/settlements?") ||
       path.includes("/refunds?") ||
@@ -857,4 +858,28 @@ test("source closing history navigates to the original refund with its filter", 
     ),
   );
   expect(screen.getByRole("tab", { name: "Refunds" }).getAttribute("aria-selected")).toBe("true");
+});
+
+test.each([
+  {
+    capabilities: ["agreement.read", "agreement.approve", "settlement.approve"],
+    mobile: false,
+    canPay: false,
+  },
+  { capabilities: ["agreement.read", "payment.approve"], mobile: false, canPay: true },
+  { capabilities: ["agreement.read", "payment.approve"], mobile: true, canPay: false },
+])("payment tab uses its own authority and respects mobile read-only: %j", async ({
+  capabilities,
+  mobile,
+  canPay,
+}) => {
+  grants = capabilities;
+  device.readOnly = mobile;
+  listed = true;
+  row.counterpartyJws = "peer.signature";
+  mount();
+  await openDetail();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Payments" }), { button: 0, ctrlKey: false });
+  await screen.findByText("No payment receipts yet.");
+  expect(!!screen.queryByRole("button", { name: "Record payment" })).toBe(canPay);
 });

@@ -885,6 +885,50 @@
       "prepareFromWorkflow": "介质交付",
       "workflowMaterials": "工作流材料",
       "backToWorkflow": "返回工作流"
+    },
+    "payment": {
+      "title": "付款确认",
+      "amount": "付款金额",
+      "occurredAt": "付款时间（本地时间）",
+      "paymentId": "付款编号",
+      "receiptId": "确认记录编号",
+      "evidenceDigest": "付款凭据 SHA-256",
+      "previous": "上一确认记录",
+      "reason": "说明",
+      "newPayment": "新增付款确认",
+      "back": "返回付款列表",
+      "export": "导出确认记录",
+      "importJson": "导入对方确认记录",
+      "json": "付款确认 JSON",
+      "confirmation": "确认状态",
+      "correct": "更正付款记录",
+      "history": "查看更正历史",
+      "openBill": "查看原账单",
+      "openPayments": "查看付款记录",
+      "clearHistory": "显示全部付款",
+      "empty": "暂无付款确认记录。",
+      "paidOnly": "有偿协议才支持付款确认。",
+      "correctionBoundary": "填写更正后的完整金额，双方确认后替代原金额。原记录保留。",
+      "approvalBoundary": "仅确认外部付款凭据，不执行转账，也不改变账单、合作额度或作业许可。",
+      "retryBoundary": "仅重试此确认记录的链上存证，不执行转账或重新确认付款。",
+      "unknownWrite": "提交结果未确认。请先查验原记录，不要另建一笔付款。",
+      "checkOriginal": "查验原记录",
+      "unconfirmed": "尚无法确认原记录，请稍后再次查验。",
+      "draftFailed": "无法生成确认记录，请检查字段和账单状态；更正时请刷新原记录后重试。",
+      "invalid": "确认记录格式或所属账单、协议不匹配。",
+      "actionFailed": "操作未完成，请检查存证配置后重试。",
+      "states": {
+        "current": "当前有效",
+        "superseded": "历史记录（已更正）",
+        "pending": "待双方确认"
+      },
+      "actions": {
+        "approve": "批准付款确认",
+        "attach": "核验对方签名",
+        "retry": "重试付款存证"
+      },
+      "signatures": "付款签署",
+      "approvalRejected": "批准被拒绝。请取消核对字段、权限及原记录状态，再重新生成或导入。"
     }
   }
 }

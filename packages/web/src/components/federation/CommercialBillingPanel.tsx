@@ -35,6 +35,7 @@ type BillingProps = {
   busy: boolean;
   recordId?: string;
   reportId?: string;
+  onOpenPayments?: (billId: string) => void;
   onDraftSettlement?: (billId: string) => void;
 };
 
@@ -55,6 +56,7 @@ function BillingPanel({
   recordId,
   reportId,
   onDraftSettlement,
+  onOpenPayments,
 }: BillingProps) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
@@ -411,6 +413,15 @@ function BillingPanel({
           {onDraftSettlement && current.bill.counterpartyJws ? (
             <Button disabled={blocked} onClick={() => onDraftSettlement(current.bill.billId)}>
               {t("federation.settlement.newSettlement")}
+            </Button>
+          ) : null}
+          {onOpenPayments && current.bill.counterpartyJws ? (
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => onOpenPayments(current.bill.billId)}
+            >
+              {t("federation.payment.openPayments")}
             </Button>
           ) : null}
           <details className="space-y-3 border-t border-border pt-4 text-sm">

@@ -885,6 +885,50 @@
       "prepareFromWorkflow": "Media delivery",
       "workflowMaterials": "Workflow materials",
       "backToWorkflow": "Back to workflow"
+    },
+    "payment": {
+      "title": "Payments",
+      "amount": "Payment amount",
+      "occurredAt": "Payment time (local time)",
+      "paymentId": "Payment ID",
+      "receiptId": "Receipt ID",
+      "evidenceDigest": "Payment evidence SHA-256",
+      "previous": "Previous receipt",
+      "reason": "Reason",
+      "newPayment": "Record payment",
+      "back": "Back to payments",
+      "export": "Export receipt",
+      "importJson": "Import counterpart receipt",
+      "json": "Payment receipt JSON",
+      "confirmation": "Payment confirmation",
+      "correct": "Correct payment",
+      "history": "View correction history",
+      "openBill": "View original bill",
+      "openPayments": "View payments",
+      "clearHistory": "Show all payments",
+      "empty": "No payment receipts yet.",
+      "paidOnly": "Payment receipts require a paid agreement.",
+      "correctionBoundary": "Enter the full corrected amount. Once both parties confirm, it replaces the previous amount and preserves the original receipt.",
+      "approvalBoundary": "Acknowledges an external payment only. It does not transfer money or change the bill, cooperation credit, or execution permission.",
+      "retryBoundary": "Retries evidence submission only. It does not transfer money or confirm the payment again.",
+      "unknownWrite": "Write outcome unconfirmed. Check the original receipt before creating another payment.",
+      "checkOriginal": "Check original receipt",
+      "unconfirmed": "The original receipt is still unconfirmed. Check again later.",
+      "draftFailed": "Cannot prepare the receipt. Check the fields and bill status; for a correction, refresh the original receipt first.",
+      "invalid": "Receipt format, bill, or agreement does not match.",
+      "actionFailed": "The action failed. Check evidence configuration before retrying.",
+      "states": {
+        "current": "Current confirmed amount",
+        "superseded": "Superseded receipt",
+        "pending": "Awaiting both parties"
+      },
+      "actions": {
+        "approve": "Approve payment receipt",
+        "attach": "Verify counterpart signature",
+        "retry": "Retry payment evidence"
+      },
+      "signatures": "Receipt signatures",
+      "approvalRejected": "Approval rejected. Cancel to check fields, permission, and the original record, then prepare or import the receipt again."
     }
   }
 }

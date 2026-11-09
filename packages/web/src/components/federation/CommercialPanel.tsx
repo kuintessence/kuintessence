@@ -30,6 +30,7 @@ import { CommercialBillingPanel } from "./CommercialBillingPanel";
 import { CommercialClosingPanel } from "./CommercialClosingPanel";
 import { CommercialDetail } from "./CommercialDetail";
 import { CommercialEditor } from "./CommercialEditor";
+import { CommercialPaymentPanel } from "./CommercialPaymentPanel";
 import { CommercialRefundPanel } from "./CommercialRefundPanel";
 import { CommercialSettlementPanel } from "./CommercialSettlementPanel";
 import { CommercialTerms } from "./CommercialTerms";
@@ -58,6 +59,7 @@ export function CommercialPanel({
     recordId: string;
   } | null>(null);
   const [adjustmentSettlement, setAdjustmentSettlement] = useState<string | undefined>();
+  const [paymentBill, setPaymentBill] = useState<string | undefined>();
   const [settlementBill, setSettlementBill] = useState<string | undefined>();
   const [billingReport, setBillingReport] = useState<string | undefined>();
   const [page, setPage] = useState(0);
@@ -79,6 +81,7 @@ export function CommercialPanel({
   const canApprove = grants.includes("agreement.approve") && !readOnly;
   const canAdjust = grants.includes("adjustment.approve") && !readOnly;
   const canSettle = grants.includes("settlement.approve") && !readOnly;
+  const canPay = grants.includes("payment.approve") && !readOnly;
   const canBill = grants.includes("billing.approve") && !readOnly;
   const context = useQuery({
     queryKey: ["federation", "agreements", scope.organizationId, scope.authRevision, "context"],
@@ -158,6 +161,7 @@ export function CommercialPanel({
         setClosingRecord(null);
         setBillingReport(undefined);
         setSettlementBill(undefined);
+        setPaymentBill(undefined);
         setAdjustmentSettlement(undefined);
       }
       await client.invalidateQueries({ queryKey: key });
@@ -257,6 +261,7 @@ export function CommercialPanel({
                 setClosingRecord(null);
                 setBillingReport(undefined);
                 setSettlementBill(undefined);
+                setPaymentBill(undefined);
                 setAdjustmentSettlement(undefined);
               }}
             >
@@ -269,6 +274,9 @@ export function CommercialPanel({
                   <TabsTrigger value="refunds">{t("federation.refund.title")}</TabsTrigger>
                 ) : null}
                 <TabsTrigger value="adjustments">{t("federation.adjustment.title")}</TabsTrigger>
+                {detail.data.terms.consideration === "paid" ? (
+                  <TabsTrigger value="payments">{t("federation.payment.title")}</TabsTrigger>
+                ) : null}
                 <TabsTrigger value="closing">{t("federation.closing.title")}</TabsTrigger>
               </TabsList>
               <TabsContent value="terms">
@@ -312,6 +320,14 @@ export function CommercialPanel({
                   busy={busy || detail.isFetching}
                   recordId={closingRecord?.kind === "bill" ? closingRecord.recordId : undefined}
                   reportId={billingReport}
+                  onOpenPayments={
+                    detail.data.terms.consideration === "paid"
+                      ? (billId) => {
+                          setPaymentBill(billId);
+                          setSection("payments");
+                        }
+                      : undefined
+                  }
                   onDraftSettlement={
                     canSettle
                       ? (billId) => {
@@ -357,7 +373,22 @@ export function CommercialPanel({
                   onOpenSettlement={(recordId) => {
                     setClosingRecord({ kind: "settlement", recordId });
                     setSettlementBill(undefined);
+                    setPaymentBill(undefined);
                     setSection("settlements");
+                  }}
+                />
+              </TabsContent>
+              <TabsContent value="payments">
+                <CommercialPaymentPanel
+                  approval={detail.data}
+                  scope={scope}
+                  writable={canPay}
+                  busy={busy || detail.isFetching}
+                  billId={paymentBill}
+                  onOpenBill={(recordId) => {
+                    setClosingRecord({ kind: "bill", recordId });
+                    setBillingReport(undefined);
+                    setSection("bills");
                   }}
                 />
               </TabsContent>
@@ -372,6 +403,7 @@ export function CommercialPanel({
                     setClosingRecord({ kind, recordId });
                     setBillingReport(undefined);
                     setSettlementBill(undefined);
+                    setPaymentBill(undefined);
                     setAdjustmentSettlement(undefined);
                     setSection(
                       kind === "bill" ? "bills" : kind === "refund" ? "refunds" : "settlements",
@@ -401,6 +433,7 @@ export function CommercialPanel({
                       setClosingRecord(null);
                       setBillingReport(undefined);
                       setSettlementBill(undefined);
+                      setPaymentBill(undefined);
                       setAdjustmentSettlement(undefined);
                     }}
                   >
