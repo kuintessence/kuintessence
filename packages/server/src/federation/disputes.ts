@@ -616,7 +616,7 @@ export class FederationDisputeService {
   /** The caller holds disclosure authority; return only a verified original from this case's scope. */
   async disclosureOriginal(
     tx: PgTransaction,
-    actor: FederationActor,
+    actor: Pick<FederationActor, "orgId">,
     revisionId: string,
     reference: Pick<
       CommercialDisclosureGrant,

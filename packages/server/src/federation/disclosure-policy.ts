@@ -34,7 +34,7 @@ export class FederationDisclosurePolicyService {
   ) {
     this.trust = new FederationTrustRegistry(db);
   }
-  private key(actor: FederationActor, revisionId: string, policyId: string) {
+  private key(actor: Pick<FederationActor, "orgId">, revisionId: string, policyId: string) {
     return and(
       eq(policies.localSiteId, this.signing.siteId),
       eq(policies.localOrgId, actor.orgId),
@@ -42,7 +42,11 @@ export class FederationDisclosurePolicyService {
       eq(policies.policyId, policyId),
     );
   }
-  private async contract(tx: PgTransaction, actor: FederationActor, revisionId: string) {
+  private async contract(
+    tx: PgTransaction,
+    actor: Pick<FederationActor, "orgId">,
+    revisionId: string,
+  ) {
     const [row] = await tx
       .select()
       .from(contracts)
@@ -73,7 +77,11 @@ export class FederationDisclosurePolicyService {
       now,
     );
   }
-  private async original(tx: PgTransaction, actor: FederationActor, revisionId: string) {
+  private async original(
+    tx: PgTransaction,
+    actor: Pick<FederationActor, "orgId">,
+    revisionId: string,
+  ) {
     const row = await this.contract(tx, actor, revisionId);
     const { sourceSiteId, targetSiteId } = row.terms.agreement;
     if (![sourceSiteId, targetSiteId].includes(this.signing.siteId))
@@ -123,19 +131,18 @@ export class FederationDisclosurePolicyService {
     )
       throw new FederationError("POLICY_DENIED");
   }
-  /** Hold the current policy against revocation while its caller approves a concrete projection. */
-  async verified(tx: PgTransaction, actor: FederationActor, revisionId: string, policyId: string) {
+  /** Validate existing consent without requiring the peer's approval or a started validity window. */
+  async exchangeRecord(tx: PgTransaction, orgId: string, revisionId: string, policyId: string) {
+    const actor = { orgId };
     const { row: contract, other } = await this.original(tx, actor, revisionId);
     const [row] = await tx
       .select()
       .from(policies)
       .where(this.key(actor, revisionId, policyId))
       .for("share");
-    if (!row?.counterpartyJws) throw new FederationError("POLICY_DENIED");
+    if (!row) return null;
     if (row.revokedAt) throw new FederationError("AUTHORIZATION_EXPIRED");
     this.check(row.payload, contract);
-    if (Date.parse(row.payload.validFrom) > Date.now())
-      throw new FederationError("AUTHORIZATION_EXPIRED");
     await this.recipient(
       tx,
       row.recipientSiteId,
@@ -148,19 +155,28 @@ export class FederationDisclosurePolicyService {
       row.approvalJws,
       this.signing.siteId,
     );
-    const peer = await this.verify(
-      tx,
-      CommercialDisclosurePolicySchema,
-      row.counterpartyJws,
-      other,
-    );
     if (
       own.digest !== row.digest ||
-      peer.digest !== row.digest ||
-      federationCanonicalJson(own.payload) !== federationCanonicalJson(row.payload)
+      federationCanonicalJson(own.payload) !== federationCanonicalJson(row.payload) ||
+      (row.counterpartyJws &&
+        (await this.verify(tx, CommercialDisclosurePolicySchema, row.counterpartyJws, other))
+          .digest !== row.digest)
     )
       throw new FederationError("OPERATION_CONFLICT");
     return { row, other };
+  }
+  /** Hold the current policy against revocation while its caller approves a concrete projection. */
+  async verified(
+    tx: PgTransaction,
+    actor: Pick<FederationActor, "orgId">,
+    revisionId: string,
+    policyId: string,
+  ) {
+    const record = await this.exchangeRecord(tx, actor.orgId, revisionId, policyId);
+    if (!record?.row.counterpartyJws) throw new FederationError("POLICY_DENIED");
+    if (Date.parse(record.row.payload.validFrom) > Date.now())
+      throw new FederationError("AUTHORIZATION_EXPIRED");
+    return record;
   }
   async draft(
     actor: FederationActor,
@@ -262,14 +278,44 @@ export class FederationDisclosurePolicyService {
       return row;
     });
   }
+  async attachExchanged(
+    revisionId: string,
+    policyId: string,
+    jws: string,
+    authorize: (tx: PgTransaction) => Promise<void>,
+  ) {
+    return this.attach(revisionId, policyId, jws, undefined, authorize);
+  }
   async attachCounterparty(
     actor: FederationActor,
     revisionId: string,
     policyId: string,
     jws: string,
   ) {
+    return this.attach(revisionId, policyId, jws, actor);
+  }
+  private async attach(
+    revisionId: string,
+    policyId: string,
+    jws: string,
+    human?: FederationActor,
+    authorize?: (tx: PgTransaction) => Promise<void>,
+  ) {
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "disclosure.approve");
+      if (human) await requireFederationCapability(tx, human, "disclosure.approve");
+      const [scope] = await tx
+        .select()
+        .from(policies)
+        .where(
+          and(
+            eq(policies.localSiteId, this.signing.siteId),
+            eq(policies.policyId, policyId),
+            eq(policies.agreementRevisionId, revisionId),
+            human ? eq(policies.localOrgId, human.orgId) : undefined,
+          ),
+        );
+      if (!scope) throw new FederationError("POLICY_DENIED");
+      const actor = { orgId: scope.localOrgId };
       const { row: contract, other } = await this.original(tx, actor, revisionId);
       const [row] = await tx
         .select()
@@ -298,6 +344,7 @@ export class FederationDisclosurePolicyService {
         federationCanonicalJson(own.payload) !== federationCanonicalJson(row.payload)
       )
         throw new FederationError("OPERATION_CONFLICT");
+      await authorize?.(tx);
       if (row.counterpartyJws) {
         if (row.counterpartyJws !== jws) throw new FederationError("OPERATION_CONFLICT");
         return row;
@@ -310,7 +357,7 @@ export class FederationDisclosurePolicyService {
         .returning();
       if (!saved) throw new FederationError("OPERATION_CONFLICT");
       await tx.insert(auditLog).values({
-        actor: actor.userId,
+        actor: human ? human.userId : `disclosure-exchange:${this.signing.siteId}`,
         orgId: actor.orgId,
         action: "federation.disclosure_policy.confirm",
         target: policyId,

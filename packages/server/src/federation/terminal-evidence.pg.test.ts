@@ -10539,3 +10539,370 @@ test("disclosure rechecks expiry before persistence and database identity cannot
   ).rejects.toThrow();
   expect((await f.service.list(f.sourceActor, f.revisionId)).data[0]?.payload).toEqual(f.value);
 });
+
+async function disclosureExchangeFixture(kind: "disclosure-policy" | "disclosure") {
+  const f = await disclosureFixture("bilateral_attested");
+  const policy = { ...f.policy, policyId: randomUUID() };
+  const recordId = kind === "disclosure-policy" ? policy.policyId : f.value.grant.grantId;
+  const approveSource = () =>
+    kind === "disclosure-policy"
+      ? f.sourcePolicy.approve(f.sourceActor, f.revisionId, policy)
+      : f.service.approve(f.sourceActor, f.revisionId, f.value);
+  const approveProvider = (different = false) =>
+    kind === "disclosure-policy"
+      ? f.providerPolicy.approve(
+          f.actor,
+          f.revisionId,
+          different ? { ...policy, salt: "e".repeat(64) } : policy,
+        )
+      : f.peer.approve(
+          f.actor,
+          f.revisionId,
+          different ? { ...f.value, grant: { ...f.value.grant, salt: "e".repeat(64) } } : f.value,
+        );
+  const revoke = (provider = false) =>
+    kind === "disclosure-policy"
+      ? (provider ? f.providerPolicy : f.sourcePolicy).revoke(
+          provider ? f.actor : f.sourceActor,
+          f.revisionId,
+          recordId,
+        )
+      : (provider ? f.peer : f.service).revoke(
+          provider ? f.actor : f.sourceActor,
+          f.revisionId,
+          recordId,
+        );
+  const table = kind === "disclosure-policy" ? federationDisclosurePolicies : federationDisclosures;
+  const id =
+    kind === "disclosure-policy"
+      ? federationDisclosurePolicies.policyId
+      : federationDisclosures.grantId;
+  const view = async (provider = false) =>
+    (
+      await db
+        .select()
+        .from(table)
+        .where(
+          and(
+            eq(id, recordId),
+            eq(table.localSiteId, provider ? f.provider.signing.siteId : f.source.signing.siteId),
+          ),
+        )
+    )[0];
+  const syncKey = and(
+    eq(federationCommercialApprovalSyncs.localSiteId, f.source.signing.siteId),
+    eq(federationCommercialApprovalSyncs.recordKind, kind),
+    eq(federationCommercialApprovalSyncs.recordId, recordId),
+  );
+  const status = async () =>
+    (await db.select().from(federationCommercialApprovalSyncs).where(syncKey))[0];
+  const outboxes = () =>
+    db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(
+        inArray(federationCommercialSubmissions.localSiteId, [
+          f.source.signing.siteId,
+          f.provider.signing.siteId,
+        ]),
+      );
+  cleanup.push(async () => {
+    await db.delete(auditLog).where(
+      inArray(
+        auditLog.actor,
+        [f.source.signing.siteId, f.provider.signing.siteId].map(
+          (site) => `disclosure-exchange:${site}`,
+        ),
+      ),
+    );
+  });
+  return {
+    ...f,
+    policy,
+    kind,
+    recordId,
+    approveSource,
+    approveProvider,
+    revoke,
+    view,
+    syncKey,
+    status,
+    outboxes,
+    identity: { agreementRevisionId: f.revisionId, recordKind: kind, recordId },
+  };
+}
+
+for (const kind of ["disclosure-policy", "disclosure"] as const) {
+  test(`disclosure exchange ${kind} waits for independent consent and joins original signatures without money or ledger changes`, async () => {
+    const f = await disclosureExchangeFixture(kind),
+      before = await f.budget(),
+      outboxes = await f.outboxes();
+    const a = await f.approveSource();
+    await f.sourceAuto.discover();
+    await f.sourceAuto.advanceNext();
+    expect(await f.status()).toMatchObject({ state: "pending", lastError: null });
+    expect(await f.view(true)).toBeUndefined();
+    const b = await f.approveProvider();
+    await f.providerAuto.discover();
+    await f.due();
+    await f.sourceAuto.advanceNext();
+    await f.providerAuto.advanceNext();
+    expect(await f.status()).toMatchObject({ state: "complete" });
+    expect(await f.view()).toMatchObject({
+      approvalJws: a.approvalJws,
+      counterpartyJws: b.approvalJws,
+    });
+    expect(await f.view(true)).toMatchObject({
+      approvalJws: b.approvalJws,
+      counterpartyJws: a.approvalJws,
+    });
+    expect(await f.budget()).toEqual(before);
+    expect(await f.outboxes()).toEqual(outboxes);
+  });
+
+  test(`disclosure exchange ${kind} rejects differing approved originals`, async () => {
+    const f = await disclosureExchangeFixture(kind);
+    await f.approveSource();
+    await f.approveProvider(true);
+    await f.sourceAuto.discover();
+    await f.sourceAuto.advanceNext();
+    expect(await f.status()).toMatchObject({
+      state: "needs_review",
+      lastError: "OPERATION_CONFLICT",
+    });
+    expect((await f.view())?.counterpartyJws).toBeNull();
+  });
+
+  test(`disclosure exchange ${kind} survives lost responses and staff permission removal with institutional audit`, async () => {
+    const f = await disclosureExchangeFixture(kind),
+      a = await f.approveSource(),
+      b = await f.approveProvider();
+    await f.sourceAuto.discover();
+    f.transport.afterResponse = async () => {
+      throw new Error("Lost response");
+    };
+    await f.sourceAuto.advanceNext();
+    expect(await f.status()).toMatchObject({ state: "pending", lastError: "EXCHANGE_RETRY" });
+    expect((await f.view())?.counterpartyJws).toBeNull();
+    await new FederationPermissionService(db).set(
+      { ...f.sourceActor, capability: "disclosure.approve", enabled: false },
+      f.sourceActor.userId,
+    );
+    await expect(f.approveSource()).rejects.toThrow("POLICY_DENIED");
+    delete f.transport.afterResponse;
+    await f.due();
+    const restarted = new FederationCommercialApprovalExchange(db, f.source.signing, f.sendSource);
+    await restarted.advanceNext();
+    expect(await f.status()).toMatchObject({ state: "complete" });
+    expect(await f.view()).toMatchObject({
+      approvalJws: a.approvalJws,
+      counterpartyJws: b.approvalJws,
+    });
+    const audits = await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, f.recordId),
+          eq(auditLog.actor, `disclosure-exchange:${f.source.signing.siteId}`),
+        ),
+      );
+    expect(audits).toHaveLength(1);
+  });
+
+  test(`disclosure exchange ${kind} rejects a revoked peer before returning its original signature`, async () => {
+    const f = await disclosureExchangeFixture(kind);
+    await f.approveSource();
+    await f.approveProvider();
+    await f.sourceAuto.discover();
+    await f.revoke(true);
+    await f.sourceAuto.advanceNext();
+    expect(await f.status()).toMatchObject({
+      state: "needs_review",
+      lastError: "AUTHORIZATION_EXPIRED",
+    });
+    expect((await f.view())?.counterpartyJws).toBeNull();
+  });
+
+  for (const change of ["local-revocation", "purpose", "recipient"] as const) {
+    test(`disclosure exchange ${kind} rechecks ${change} after transport`, async () => {
+      const f = await disclosureExchangeFixture(kind);
+      await f.approveSource();
+      await f.approveProvider();
+      await f.sourceAuto.discover();
+      f.transport.afterResponse = async (response) => {
+        if (change === "local-revocation") await f.revoke();
+        else if (change === "purpose")
+          await db
+            .update(federationSigningKeys)
+            .set({
+              allowedKinds: sql`${federationSigningKeys.allowedKinds} - ${`commercial-${kind}`}`,
+            })
+            .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+        else
+          await db
+            .update(federationSites)
+            .set({ state: "suspended" })
+            .where(eq(federationSites.id, f.recipient));
+        return response;
+      };
+      await f.sourceAuto.advanceNext();
+      expect(await f.status()).toMatchObject({
+        state: "needs_review",
+        lastError: change === "local-revocation" ? "AUTHORIZATION_EXPIRED" : "UNTRUSTED_IDENTITY",
+      });
+      expect((await f.view())?.counterpartyJws).toBeNull();
+    });
+  }
+
+  test(`disclosure exchange ${kind} fences late writes and requires independent retry authority`, async () => {
+    const f = await disclosureExchangeFixture(kind);
+    await f.approveSource();
+    await f.approveProvider();
+    await f.sourceAuto.discover();
+    const token = randomUUID();
+    f.transport.afterResponse = async (response) => {
+      await db
+        .update(federationCommercialApprovalSyncs)
+        .set({ leaseToken: token, leaseUntil: sql`clock_timestamp() + interval '60 seconds'` })
+        .where(f.syncKey);
+      return response;
+    };
+    await f.sourceAuto.advanceNext();
+    expect(await f.status()).toMatchObject({ state: "pending", leaseToken: token });
+    expect((await f.view())?.counterpartyJws).toBeNull();
+    await new FederationPermissionService(db).set(
+      { ...f.sourceActor, capability: "disclosure.approve", enabled: false },
+      f.sourceActor.userId,
+    );
+    await expect(f.sourceAuto.retry(f.sourceActor, f.identity)).rejects.toThrow("POLICY_DENIED");
+    await new FederationPermissionService(db).set(
+      { ...f.sourceActor, capability: "disclosure.approve", enabled: true },
+      f.sourceActor.userId,
+    );
+    await expect(f.sourceAuto.retry(f.sourceActor, f.identity)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await db
+      .update(federationCommercialApprovalSyncs)
+      .set({ leaseUntil: new Date(0) })
+      .where(f.syncKey);
+    await f.sourceAuto.retry(f.sourceActor, f.identity);
+    delete f.transport.afterResponse;
+    await f.sourceAuto.advanceNext();
+    expect(await f.status()).toMatchObject({ state: "complete" });
+  });
+
+  test(`disclosure exchange ${kind} rolls back signature and queue completion when audit fails`, async () => {
+    const f = await disclosureExchangeFixture(kind);
+    await f.approveSource();
+    await f.approveProvider();
+    await f.sourceAuto.discover();
+    await db.execute(sql`ALTER TABLE audit_log ADD CONSTRAINT disclosure_exchange_audit_fixture
+      CHECK (actor NOT LIKE 'disclosure-exchange:%') NOT VALID`);
+    try {
+      await f.sourceAuto.advanceNext();
+    } finally {
+      await db.execute(
+        sql`ALTER TABLE audit_log DROP CONSTRAINT disclosure_exchange_audit_fixture`,
+      );
+    }
+    expect(await f.status()).toMatchObject({ state: "pending", lastError: "EXCHANGE_RETRY" });
+    expect((await f.view())?.counterpartyJws).toBeNull();
+    await f.due();
+    await f.sourceAuto.advanceNext();
+    expect(await f.status()).toMatchObject({ state: "complete" });
+  });
+}
+
+test("disclosure exchange policy can collect future consent without authorizing early material disclosure", async () => {
+  const f = await disclosureExchangeFixture("disclosure-policy");
+  f.policy.validFrom = new Date(Date.now() + 60000).toISOString();
+  await f.approveSource();
+  await f.approveProvider();
+  await f.sourceAuto.discover();
+  await f.sourceAuto.advanceNext();
+  expect(await f.status()).toMatchObject({ state: "complete" });
+  await expect(
+    db.transaction((tx) => f.sourcePolicy.verified(tx, f.sourceActor, f.revisionId, f.recordId)),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+});
+
+test("disclosure exchange grant rechecks its policy after transport", async () => {
+  const f = await disclosureExchangeFixture("disclosure");
+  await f.approveSource();
+  await f.approveProvider();
+  await f.sourceAuto.discover();
+  f.transport.afterResponse = async (response) => {
+    await f.sourcePolicy.revoke(f.sourceActor, f.revisionId, f.value.grant.policyId);
+    return response;
+  };
+  await f.sourceAuto.advanceNext();
+  expect(await f.status()).toMatchObject({
+    state: "needs_review",
+    lastError: "AUTHORIZATION_EXPIRED",
+  });
+  expect((await f.view())?.counterpartyJws).toBeNull();
+});
+
+for (const kind of ["disclosure-policy", "disclosure"] as const) {
+  test(`disclosure exchange ${kind} production ingress returns only peer-bound existing signatures`, async () => {
+    const f = await disclosureExchangeFixture(kind);
+    await f.approveSource();
+    const b = await f.approveProvider();
+    const ingress = createFederationIngress(db, f.provider.signing);
+    const send: FederationSend = async (_endpoint, jws, path) => {
+      expect(path).toBe("/federation/v1/commercial-approvals");
+      const request = (fingerprint?: string) =>
+        ingress.request("/federation/v1/commercial-approvals", {
+          method: "POST",
+          body: jws,
+          headers: {
+            "content-type": "application/jose",
+            ...(fingerprint ? { "x-kq-federation-cert": fingerprint } : {}),
+          },
+        });
+      expect((await request()).status).toBe(401);
+      expect((await request(f.providerFingerprint)).status).toBe(401);
+      const response = await request(f.fingerprint);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("content-type")).toBe("application/jose");
+      expect(await response.clone().text()).toBe(b.approvalJws);
+      return response.text();
+    };
+    const worker = new FederationCommercialApprovalExchange(db, f.source.signing, send);
+    await worker.discover();
+    await worker.advanceNext();
+    expect(await f.status()).toMatchObject({ state: "complete" });
+  });
+
+  test(`disclosure exchange ${kind} reconciles a manual attachment without duplicate audit or transport`, async () => {
+    const f = await disclosureExchangeFixture(kind);
+    await f.approveSource();
+    const b = await f.approveProvider();
+    await f.sourceAuto.discover();
+    const service = kind === "disclosure-policy" ? f.sourcePolicy : f.service;
+    await service.attachCounterparty(f.sourceActor, f.revisionId, f.recordId, b.approvalJws);
+    await f.sourceAuto.advanceNext();
+    expect(await f.status()).toMatchObject({ state: "complete" });
+    expect(f.transport.calls).toBe(0);
+    expect(
+      await db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.target, f.recordId),
+            eq(
+              auditLog.action,
+              kind === "disclosure-policy"
+                ? "federation.disclosure_policy.confirm"
+                : "federation.disclosure.confirm",
+            ),
+            eq(auditLog.orgId, f.sourceActor.orgId),
+          ),
+        ),
+    ).toHaveLength(1);
+  });
+}

@@ -39,6 +39,8 @@ test("commercial approval exchange binds record kind, digest, distinct parties a
     "adjustment",
     "refund",
     "payment",
+    "disclosure-policy",
+    "disclosure",
   ]) {
     expect(
       CommercialApprovalQuerySchema.safeParse({

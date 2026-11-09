@@ -2570,7 +2570,7 @@ export const federationCommercialApprovalSyncs = pgTable(
   {
     localSiteId: uuid("local_site_id").notNull(),
     agreementRevisionId: uuid("agreement_revision_id").notNull(),
-    recordKind: varchar("record_kind", { length: 16 })
+    recordKind: varchar("record_kind", { length: 24 })
       .$type<
         | "agreement"
         | "reservation"
@@ -2580,6 +2580,8 @@ export const federationCommercialApprovalSyncs = pgTable(
         | "adjustment"
         | "refund"
         | "payment"
+        | "disclosure-policy"
+        | "disclosure"
       >()
       .notNull(),
     recordId: uuid("record_id").notNull(),
@@ -2603,7 +2605,7 @@ export const federationCommercialApprovalSyncs = pgTable(
     index("federation_approval_sync_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
     check(
       "federation_approval_sync_identity",
-      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment','refund','payment') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
+      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment','refund','payment','disclosure-policy','disclosure') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
     ),
     check(
       "federation_approval_sync_state",

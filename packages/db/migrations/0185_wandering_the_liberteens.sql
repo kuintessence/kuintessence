@@ -1,0 +1,1 @@
+ALTER TABLE "federation_commercial_approval_syncs" ALTER COLUMN "record_kind" SET DATA TYPE varchar(24);

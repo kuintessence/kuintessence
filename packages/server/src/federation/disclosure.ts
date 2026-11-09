@@ -40,7 +40,7 @@ export class FederationDisclosureService {
     this.disputes = new FederationDisputeService(db, signing);
     this.trust = new FederationTrustRegistry(db);
   }
-  private key(actor: FederationActor, revisionId: string, grantId: string) {
+  private key(actor: Pick<FederationActor, "orgId">, revisionId: string, grantId: string) {
     return and(
       eq(disclosures.localSiteId, this.signing.siteId),
       eq(disclosures.localOrgId, actor.orgId),
@@ -61,7 +61,7 @@ export class FederationDisclosureService {
   }
   private async validate(
     tx: PgTransaction,
-    actor: FederationActor,
+    actor: Pick<FederationActor, "orgId">,
     revisionId: string,
     value: CommercialDisclosure,
   ) {
@@ -187,19 +187,63 @@ export class FederationDisclosureService {
     )
       throw new FederationError("OPERATION_CONFLICT");
   }
+  async exchangeRecord(tx: PgTransaction, orgId: string, revisionId: string, grantId: string) {
+    const actor = { orgId };
+    const [scope] = await tx
+      .select()
+      .from(disclosures)
+      .where(this.key(actor, revisionId, grantId));
+    if (!scope) return null;
+    const { other } = await this.validate(tx, actor, revisionId, scope.payload);
+    const [row] = await tx
+      .select()
+      .from(disclosures)
+      .where(this.key(actor, revisionId, grantId))
+      .for("share");
+    if (!row || row.digest !== scope.digest) throw new FederationError("OPERATION_CONFLICT");
+    if (row.revokedAt) throw new FederationError("AUTHORIZATION_EXPIRED");
+    await this.saved(tx, row, other);
+    await this.validate(tx, actor, revisionId, row.payload);
+    return { row, other };
+  }
+  async attachExchanged(
+    revisionId: string,
+    grantId: string,
+    jws: string,
+    authorize: (tx: PgTransaction) => Promise<void>,
+  ) {
+    return this.attach(revisionId, grantId, jws, undefined, authorize);
+  }
   async attachCounterparty(
     actor: FederationActor,
     revisionId: string,
     grantId: string,
     jws: string,
   ) {
+    return this.attach(revisionId, grantId, jws, actor);
+  }
+  private async attach(
+    revisionId: string,
+    grantId: string,
+    jws: string,
+    human?: FederationActor,
+    authorize?: (tx: PgTransaction) => Promise<void>,
+  ) {
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "disclosure.approve");
+      if (human) await requireFederationCapability(tx, human, "disclosure.approve");
       const [scope] = await tx
         .select()
         .from(disclosures)
-        .where(this.key(actor, revisionId, grantId));
+        .where(
+          and(
+            eq(disclosures.localSiteId, this.signing.siteId),
+            eq(disclosures.grantId, grantId),
+            eq(disclosures.agreementRevisionId, revisionId),
+            human ? eq(disclosures.localOrgId, human.orgId) : undefined,
+          ),
+        );
       if (!scope) throw new FederationError("POLICY_DENIED");
+      const actor = { orgId: scope.localOrgId };
       const { other } = await this.validate(tx, actor, revisionId, scope.payload);
       const [row] = await tx
         .select()
@@ -213,6 +257,7 @@ export class FederationDisclosureService {
       const peer = await this.verify(tx, jws, other);
       if (peer.digest !== row.digest) throw new FederationError("OPERATION_CONFLICT");
       await this.validate(tx, actor, revisionId, row.payload);
+      await authorize?.(tx);
       if (row.counterpartyJws) {
         if (row.counterpartyJws !== jws) throw new FederationError("OPERATION_CONFLICT");
         return row;
@@ -224,7 +269,7 @@ export class FederationDisclosureService {
         .returning();
       if (!saved) throw new FederationError("OPERATION_CONFLICT");
       await tx.insert(auditLog).values({
-        actor: actor.userId,
+        actor: human ? human.userId : `disclosure-exchange:${this.signing.siteId}`,
         orgId: actor.orgId,
         action: "federation.disclosure.confirm",
         target: grantId,
