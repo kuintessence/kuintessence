@@ -10,16 +10,21 @@ import {
   federationCommercialSubmissions as submissions,
 } from "@kuintessence/db";
 import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
-import { CommercialAdapterProposalInputSchema } from "@kuintessence/shared/federation/commercial";
+import {
+  CommercialAdapterProposalInputSchema,
+  CommercialReceiptQueryResultSchema,
+} from "@kuintessence/shared/federation/commercial";
 import {
   CommercialDisputeFinancialViewSchema,
   type CommercialDisputeFreeze,
   CommercialDisputeFreezeSchema,
 } from "@kuintessence/shared/federation/disputes";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import type { CommercialClient } from "./commercial-client";
 import { FederationDisputeService } from "./disputes";
+import { FabricClientFailure } from "./fabric-client";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
@@ -42,6 +47,7 @@ export class FederationDisputeFreezeExchange {
     private readonly db: PgDb,
     private readonly signing: FederationSigningKey,
     private readonly send?: FederationSend,
+    private readonly client?: Pick<CommercialClient, "receipt">,
   ) {
     this.trust = new FederationTrustRegistry(db);
     this.disputes = new FederationDisputeService(db, signing);
@@ -59,12 +65,8 @@ export class FederationDisputeFreezeExchange {
       new Date(),
     );
   }
-  private check(value: CommercialDisputeFreeze, current: Snapshot) {
-    const { record, view } = current;
-    if (view.requiresLedgerFreeze) throw new FederationError("LEDGER_REQUIRED");
-    if (!view.localReady || !view.headDigest) throw new FederationError("DATA_WAITING");
+  private checkIdentity(value: CommercialDisputeFreeze, record: Snapshot["record"]) {
     if (
-      !["FREEZE_PENDING", "DISPUTED"].includes(record.state) ||
       value.caseId !== record.caseId ||
       value.caseDigest !== record.digest ||
       value.agreementRevisionId !== record.agreementRevisionId ||
@@ -72,10 +74,19 @@ export class FederationDisputeFreezeExchange {
       value.attempt !== record.attempt ||
       value.sourceSiteId !== record.payload.sourceSiteId ||
       value.targetSiteId !== record.payload.targetSiteId ||
-      value.mode !== view.mode ||
-      value.headDigest !== view.headDigest ||
       Date.parse(value.issuedAt) < Date.parse(record.payload.issuedAt) ||
       Date.parse(value.issuedAt) > Date.now() + 60000
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+  }
+  private check(value: CommercialDisputeFreeze, current: Snapshot) {
+    const { record, view } = current;
+    this.checkIdentity(value, record);
+    if (!view.localReady || !view.headDigest) throw new FederationError("DATA_WAITING");
+    if (
+      !["FREEZE_PENDING", "DISPUTED"].includes(record.state) ||
+      value.mode !== view.mode ||
+      value.headDigest !== view.headDigest
     )
       throw new FederationError("OPERATION_CONFLICT");
   }
@@ -120,13 +131,35 @@ export class FederationDisputeFreezeExchange {
           eq(cases.state, "FREEZE_PENDING"),
         ),
       );
+    await tx.insert(auditLog).values({
+      actor: `dispute-freeze:${this.signing.siteId}`,
+      orgId: current.record.localOrgId,
+      action: "federation.dispute.freeze_confirm",
+      target: current.record.caseId,
+      diff: { after: { digest, headDigest: current.view.headDigest } },
+    });
+  }
+  private async finishProof(tx: PgTransaction, current: Snapshot, digest: string) {
+    if (!current.view.requiresLedgerFreeze) await this.confirm(tx, current, digest);
+    else
+      await tx.insert(auditLog).values({
+        actor: `dispute-freeze:${this.signing.siteId}`,
+        orgId: current.record.localOrgId,
+        action: "federation.dispute.freeze_sign",
+        target: current.record.caseId,
+        diff: { after: { digest, headDigest: current.view.headDigest } },
+      });
     // The opening institution publishes once, in the same transaction as its durable dual proof.
     if (
-      current.view.mode === "bilateral_attested" &&
+      current.view.mode !== "bilateral_direct" &&
       current.record.payload.openingSiteId === this.signing.siteId
     ) {
       const [row] = await tx.select().from(freezes).where(this.key(current.record.caseId));
-      if (!row?.approvalJws || !row.counterpartyJws || row.state !== "confirmed")
+      if (
+        !row?.approvalJws ||
+        !row.counterpartyJws ||
+        !["confirmed", "ledger_pending"].includes(row.state)
+      )
         throw new FederationError("OPERATION_CONFLICT");
       const source = this.signing.siteId === current.record.payload.sourceSiteId;
       await tx.insert(submissions).values({
@@ -134,7 +167,9 @@ export class FederationDisputeFreezeExchange {
         localSiteId: this.signing.siteId,
         agreementRevisionId: current.record.agreementRevisionId,
         input: CommercialAdapterProposalInputSchema.parse({
-          operation: "record-dispute-freeze",
+          operation: current.view.requiresLedgerFreeze
+            ? "freeze-disputed-task"
+            : "record-dispute-freeze",
           domainId: current.record.payload.domainId,
           recordId: current.record.caseId,
           digest,
@@ -149,13 +184,56 @@ export class FederationDisputeFreezeExchange {
         }),
       });
     }
-    await tx.insert(auditLog).values({
-      actor: `dispute-freeze:${this.signing.siteId}`,
-      orgId: current.record.localOrgId,
-      action: "federation.dispute.freeze_confirm",
-      target: current.record.caseId,
-      diff: { after: { digest, headDigest: current.view.headDigest } },
-    });
+  }
+  private async readiness(tx: PgTransaction, current: Snapshot) {
+    if (!current.view.requiresLedgerFreeze) return null;
+    const refs = await this.disputes.nativeReferences(tx, current);
+    return {
+      refs,
+      digest: federationMaterialDigest({ headDigest: current.view.headDigest, refs }),
+    };
+  }
+  private async nativeReady(caseId: string, openingPeer?: string) {
+    const snapshot = await this.db.transaction(
+      async (tx) => {
+        const current = await this.disputes.financialSnapshot(tx, caseId);
+        if (
+          openingPeer &&
+          (current.record.other !== openingPeer ||
+            current.record.payload.openingSiteId !== openingPeer ||
+            current.record.openedBy !== null)
+        )
+          throw new FederationError("UNTRUSTED_IDENTITY");
+        return {
+          domainId: current.record.payload.domainId,
+          ready: await this.readiness(tx, current),
+        };
+      },
+      { isolationLevel: "repeatable read" },
+    );
+    if (!snapshot.ready) return null;
+    if (!this.client?.receipt) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+    for (const ref of snapshot.ready.refs) {
+      const { receipt } = CommercialReceiptQueryResultSchema.parse(
+        await this.client.receipt({
+          operation: "get-commercial-receipt",
+          domainId: snapshot.domainId,
+          recordType: ref.recordType,
+          recordId: ref.recordId,
+        }),
+      );
+      if (!receipt) throw new FederationError("DATA_WAITING");
+      if (receipt.recordId !== ref.recordId || receipt.digest !== ref.digest)
+        throw new FederationError("OPERATION_CONFLICT");
+    }
+    return snapshot.ready.digest;
+  }
+  private async checkReadiness(tx: PgTransaction, current: Snapshot, ready: string | null) {
+    if (
+      current.view.requiresLedgerFreeze &&
+      (!ready || (await this.readiness(tx, current))?.digest !== ready)
+    )
+      throw new FederationError("DATA_WAITING");
   }
   /** The private listener authenticates the original opening institution, never a human identity header. */
   async receive(jws: string, fingerprint: string) {
@@ -166,6 +244,11 @@ export class FederationDisputeFreezeExchange {
       peer,
       new Date(),
     );
+    const [existing] = await this.db.select().from(freezes).where(this.key(first.payload.caseId));
+    const ready =
+      first.payload.mode === "ledger_coordinated" && !existing
+        ? await this.nativeReady(first.payload.caseId, peer.siteId)
+        : null;
     return this.db.transaction(
       async (tx) => {
         await tx.execute(
@@ -188,7 +271,7 @@ export class FederationDisputeFreezeExchange {
         if (prior) {
           const original = await this.saved(tx, prior, peer.siteId);
           if (
-            original.state !== "confirmed" ||
+            !["confirmed", "ledger_pending", "needs_review"].includes(original.state) ||
             original.digest !== verified.digest ||
             original.counterpartyJws !== jws
           )
@@ -198,6 +281,7 @@ export class FederationDisputeFreezeExchange {
         }
         const current = await this.disputes.financialSnapshot(tx, value.caseId);
         this.check(value, current);
+        await this.checkReadiness(tx, current, ready);
         const approvalJws = await signFederationMessage(
           CommercialDisputeFreezeSchema,
           value,
@@ -208,15 +292,15 @@ export class FederationDisputeFreezeExchange {
         await tx.insert(freezes).values({
           localSiteId: this.signing.siteId,
           caseId: value.caseId,
-          state: "confirmed",
+          state: current.view.requiresLedgerFreeze ? "ledger_pending" : "confirmed",
           payload: value,
           financialView: current.view,
           digest: own.digest,
           approvalJws,
           counterpartyJws: jws,
-          confirmedAt: new Date(),
+          confirmedAt: current.view.requiresLedgerFreeze ? null : new Date(),
         });
-        await this.confirm(tx, current, own.digest);
+        await this.finishProof(tx, current, own.digest);
         return approvalJws;
       },
       { isolationLevel: "repeatable read" },
@@ -259,7 +343,7 @@ export class FederationDisputeFreezeExchange {
       .where(
         and(
           this.key(claim.caseId),
-          eq(freezes.state, "pending"),
+          eq(freezes.state, claim.state),
           eq(freezes.leaseToken, claim.leaseToken),
           sql`${freezes.leaseUntil} > clock_timestamp()`,
         ),
@@ -288,11 +372,12 @@ export class FederationDisputeFreezeExchange {
   }
   private async advance(claim: Freeze) {
     if (!this.send) return;
+    const ready = await this.nativeReady(claim.caseId);
     const scope = await this.db.transaction(
       async (tx) => {
         const row = await this.lock(tx, claim),
           current = await this.source(tx, claim.caseId);
-        if (current.view.requiresLedgerFreeze) throw new FederationError("LEDGER_REQUIRED");
+        await this.checkReadiness(tx, current, ready);
         if (!current.view.localReady || !current.view.headDigest)
           throw new FederationError("DATA_WAITING");
         if (row.approvalJws) {
@@ -358,26 +443,79 @@ export class FederationDisputeFreezeExchange {
         )
           throw new FederationError("OPERATION_CONFLICT");
         this.check(original.payload, current);
+        await this.checkReadiness(tx, current, ready);
         const peer = await this.verify(tx, response, current.record.other);
         if (peer.digest !== original.digest) throw new FederationError("OPERATION_CONFLICT");
         await tx
           .update(freezes)
           .set({
-            state: "confirmed",
+            state: current.view.requiresLedgerFreeze ? "ledger_pending" : "confirmed",
             counterpartyJws: response,
-            confirmedAt: new Date(),
+            confirmedAt: current.view.requiresLedgerFreeze ? null : new Date(),
             leaseToken: null,
             leaseUntil: null,
             lastError: null,
           })
           .where(this.key(claim.caseId));
-        await this.confirm(tx, current, original.digest);
+        await this.finishProof(tx, current, original.digest);
       },
       { isolationLevel: "repeatable read" },
     );
   }
+  private async reconcile(claim: Freeze) {
+    if (!this.client?.receipt) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+    const before = await this.db.transaction(async (tx) => {
+      const row = await this.lock(tx, claim);
+      const record = await this.disputes.verifiedCase(tx, claim.caseId);
+      const original = await this.saved(tx, row, record.other);
+      this.checkIdentity(original.payload, record);
+      if (!original.counterpartyJws || original.payload.mode !== "ledger_coordinated")
+        throw new FederationError("OPERATION_CONFLICT");
+      return { record, original };
+    });
+    const { receipt } = CommercialReceiptQueryResultSchema.parse(
+      await this.client.receipt({
+        operation: "get-commercial-receipt",
+        domainId: before.record.payload.domainId,
+        recordType: "native-dispute-freeze",
+        recordId: claim.caseId,
+      }),
+    );
+    if (!receipt) throw new FederationError("DATA_WAITING");
+    if (receipt.recordId !== claim.caseId || receipt.digest !== before.original.digest)
+      throw new FederationError("OPERATION_CONFLICT");
+    await this.db.transaction(async (tx) => {
+      const row = await this.lock(tx, claim);
+      const record = await this.disputes.verifiedCase(tx, claim.caseId);
+      const original = await this.saved(tx, row, record.other);
+      this.checkIdentity(original.payload, record);
+      if (
+        original.digest !== receipt.digest ||
+        original.counterpartyJws !== before.original.counterpartyJws ||
+        original.approvalJws !== before.original.approvalJws ||
+        record.digest !== before.record.digest
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      await tx
+        .update(freezes)
+        .set({
+          state: "confirmed",
+          ledgerReceipt: receipt,
+          confirmedAt: new Date(),
+          leaseToken: null,
+          leaseUntil: null,
+          lastError: null,
+        })
+        .where(this.key(claim.caseId));
+      await this.confirm(
+        tx,
+        { record, view: CommercialDisputeFinancialViewSchema.parse(original.financialView) },
+        original.digest,
+      );
+    });
+  }
   async advanceNext() {
-    if (!this.send) return false;
+    if (!this.send && !this.client?.receipt) return false;
     const claim = await this.db.transaction(async (tx) => {
       const [row] = await tx
         .select()
@@ -385,7 +523,10 @@ export class FederationDisputeFreezeExchange {
         .where(
           and(
             eq(freezes.localSiteId, this.signing.siteId),
-            eq(freezes.state, "pending"),
+            or(
+              this.send ? eq(freezes.state, "pending") : undefined,
+              this.client?.receipt ? eq(freezes.state, "ledger_pending") : undefined,
+            ),
             sql`${freezes.nextAttemptAt} <= clock_timestamp()`,
             sql`(${freezes.leaseUntil} IS NULL OR ${freezes.leaseUntil} <= clock_timestamp())`,
           ),
@@ -406,19 +547,23 @@ export class FederationDisputeFreezeExchange {
     });
     if (!claim) return false;
     try {
-      await this.advance(claim);
+      if (claim.state === "ledger_pending") await this.reconcile(claim);
+      else await this.advance(claim);
     } catch (error) {
       if (error instanceof FreezeLeaseLost || !claim.leaseToken) return true;
       const review =
         (error instanceof FederationError && error.code !== "DATA_WAITING") ||
+        (error instanceof FabricClientFailure && error.needsReview) ||
         error instanceof z.ZodError ||
         (error instanceof FederationDeliveryError && error.code === "INVALID_RECEIPT_RESPONSE");
       await this.db
         .update(freezes)
         .set({
-          state: review ? "needs_review" : "pending",
+          state: review ? "needs_review" : claim.state,
           lastError:
-            error instanceof FederationError || error instanceof FederationDeliveryError
+            error instanceof FederationError ||
+            error instanceof FederationDeliveryError ||
+            error instanceof FabricClientFailure
               ? error.code
               : error instanceof z.ZodError
                 ? "INVALID_MESSAGE"
@@ -431,7 +576,7 @@ export class FederationDisputeFreezeExchange {
           and(
             this.key(claim.caseId),
             eq(freezes.leaseToken, claim.leaseToken),
-            eq(freezes.state, "pending"),
+            eq(freezes.state, claim.state),
             sql`${freezes.leaseUntil} > clock_timestamp()`,
           ),
         );
@@ -476,13 +621,13 @@ export class FederationDisputeFreezeExchange {
           and(
             eq(submissions.localSiteId, this.signing.siteId),
             eq(submissions.agreementRevisionId, revisionId),
-            sql`${submissions.input}->>'operation' = 'record-dispute-freeze'`,
+            sql`${submissions.input}->>'operation' IN ('record-dispute-freeze','freeze-disputed-task')`,
             sql`${submissions.input}->>'recordId' = ${caseId}`,
           ),
         );
       return {
         attestation: attestation ?? null,
-        enabled: !!this.send,
+        enabled: !!this.send || !!this.client?.receipt,
         sync: row
           ? {
               state: row.state,
@@ -496,20 +641,23 @@ export class FederationDisputeFreezeExchange {
     });
   }
   async retry(actor: FederationActor, revisionId: string, caseId: string) {
-    if (!this.send) throw new FederationError("ASSET_UNAVAILABLE");
+    if (!this.send && !this.client?.receipt) throw new FederationError("ASSET_UNAVAILABLE");
     await this.db.transaction(async (tx) => {
       const record = await this.authorize(tx, actor, revisionId, caseId, "dispute.open");
-      if (!record.openedBy || record.payload.openingSiteId !== this.signing.siteId)
-        throw new FederationError("POLICY_DENIED");
       const [row] = await tx.select().from(freezes).where(this.key(caseId)).for("update");
       if (!row) throw new FederationError("ASSET_UNAVAILABLE");
+      const native = row.payload?.mode === "ledger_coordinated" && !!row.counterpartyJws;
+      if (!native && (!record.openedBy || record.payload.openingSiteId !== this.signing.siteId))
+        throw new FederationError("POLICY_DENIED");
+      if (native ? !this.client?.receipt : !this.send)
+        throw new FederationError("ASSET_UNAVAILABLE");
       if (row.state === "confirmed" || (row.leaseUntil && row.leaseUntil > new Date()))
         throw new FederationError("OPERATION_CONFLICT");
       await this.disputes.verifiedCase(tx, caseId);
       await tx
         .update(freezes)
         .set({
-          state: "pending",
+          state: native ? "ledger_pending" : "pending",
           lastError: null,
           nextAttemptAt: new Date(),
           leaseToken: null,

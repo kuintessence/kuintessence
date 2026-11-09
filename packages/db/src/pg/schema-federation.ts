@@ -1482,6 +1482,7 @@ export const federationDisputeFreezes = pgTable(
     state: varchar("state", { length: 24 }).notNull().default("pending"),
     payload: jsonb("payload").$type<CommercialDisputeFreeze>(),
     financialView: jsonb("financial_view").$type<CommercialDisputeFinancialView>(),
+    ledgerReceipt: jsonb("ledger_receipt").$type<{ recordId: string; digest: string }>(),
     digest: varchar("digest", { length: 71 }),
     approvalJws: text("approval_jws"),
     counterpartyJws: text("counterparty_jws"),
@@ -1501,11 +1502,11 @@ export const federationDisputeFreezes = pgTable(
     index("federation_dispute_freeze_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
     check(
       "federation_dispute_freeze_state",
-      sql`${t.state} IN ('pending','confirmed','needs_review')`,
+      sql`${t.state} IN ('pending','ledger_pending','confirmed','needs_review')`,
     ),
     check(
       "federation_dispute_freeze_lease",
-      sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL) AND (${t.state} = 'pending' OR ${t.leaseToken} IS NULL)`,
+      sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL) AND (${t.state} IN ('pending','ledger_pending') OR ${t.leaseToken} IS NULL)`,
     ),
     check(
       "federation_dispute_freeze_original",
@@ -1523,8 +1524,15 @@ export const federationDisputeFreezes = pgTable(
       "federation_dispute_freeze_confirmed",
       sql`
     (${t.state} = 'confirmed') = (${t.confirmedAt} IS NOT NULL)
-    AND (${t.counterpartyJws} IS NULL) = (${t.confirmedAt} IS NULL)
-    AND (${t.state} <> 'confirmed' OR (${t.approvalJws} IS NOT NULL AND ${t.payload}->>'mode' IN ('bilateral_direct','bilateral_attested')) IS TRUE)`,
+    AND (${t.counterpartyJws} IS NULL OR (${t.approvalJws} IS NOT NULL AND
+      (${t.state} = 'confirmed' OR (${t.payload}->>'mode' = 'ledger_coordinated' AND ${t.state} IN ('ledger_pending','needs_review')))) IS TRUE)
+    AND (${t.state} NOT IN ('confirmed','ledger_pending') OR ${t.counterpartyJws} IS NOT NULL)
+    AND (${t.state} <> 'ledger_pending' OR (${t.payload}->>'mode' = 'ledger_coordinated') IS TRUE)
+    AND (${t.ledgerReceipt} IS NULL OR (${t.payload}->>'mode' = 'ledger_coordinated'
+      AND ${t.ledgerReceipt}->>'recordId' = ${t.caseId}::text AND ${t.ledgerReceipt}->>'digest' = ${t.digest}
+      AND ${t.state} = 'confirmed') IS TRUE)
+    AND (${t.state} <> 'confirmed' OR (${t.approvalJws} IS NOT NULL AND
+      (${t.payload}->>'mode' IN ('bilateral_direct','bilateral_attested') OR ${t.ledgerReceipt} IS NOT NULL)) IS TRUE)`,
     ),
   ],
 );
@@ -1773,7 +1781,7 @@ export const federationCommercialSubmissions = pgTable(
     ),
     check(
       "federation_commercial_submission_input",
-      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement','record-refund','record-payment','record-dispute-freeze') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement','record-refund','record-payment','record-dispute-freeze','freeze-disputed-task') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
     check(
       "federation_commercial_submission_lease",

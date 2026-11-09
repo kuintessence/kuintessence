@@ -665,8 +665,6 @@ export class FederationCommercialSubmissionService {
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
-    // shortcut: enable native submissions only after durable coordinated proof state and receipt reconciliation are wired.
-    if (input.operation === "freeze-disputed-task") throw new FederationError("LEDGER_REQUIRED");
     if (input.operation === "adjust-settlement") {
       const [row] = await (tx ?? this.db)
         .select()
@@ -691,7 +689,8 @@ export class FederationCommercialSubmissionService {
       )
         throw new FederationError("POLICY_DENIED");
     }
-    if (input.operation === "record-dispute-freeze") {
+    if (input.operation === "record-dispute-freeze" || input.operation === "freeze-disputed-task") {
+      const native = input.operation === "freeze-disputed-task";
       const [row] = await (tx ?? this.db)
         .select({ proof: freezes, record: disputes, contract: agreements })
         .from(freezes)
@@ -709,14 +708,15 @@ export class FederationCommercialSubmissionService {
         .where(and(eq(freezes.localSiteId, this.siteId), eq(freezes.caseId, input.recordId)));
       if (
         !row ||
-        row.proof.state !== "confirmed" ||
+        !(native ? ["ledger_pending", "confirmed"] : ["confirmed"]).includes(row.proof.state) ||
         !row.proof.counterpartyJws ||
         !row.proof.payload ||
         row.proof.digest !== input.digest ||
         row.record.payload.openingSiteId !== this.siteId ||
         row.record.localOrgId !== row.contract.localOrgId ||
         !row.contract.counterpartyJws ||
-        row.contract.terms.agreement.mode !== "bilateral_attested" ||
+        row.contract.terms.agreement.mode !==
+          (native ? "ledger_coordinated" : "bilateral_attested") ||
         row.record.payload.agreementDigest !== row.contract.digest ||
         row.record.openingJws !== input.envelope.openingJws ||
         input.envelope.openingSiteId !== this.siteId ||
@@ -743,6 +743,7 @@ export class FederationCommercialSubmissionService {
         input.domainId,
         input.recordId,
         new Date(),
+        native ? "ledger_coordinated" : "bilateral_attested",
       );
     }
     if (input.operation === "record-payment") {
@@ -895,6 +896,7 @@ export class FederationCommercialSubmissionService {
         "record-refund": "commercial-refund",
         "record-payment": "commercial-payment",
         "record-dispute-freeze": "commercial-dispute-freeze",
+        "freeze-disputed-task": "commercial-dispute-freeze",
       } as const;
       for (const [siteId, jws] of [
         [input.envelope.sourceSiteId, input.envelope.sourceJws],

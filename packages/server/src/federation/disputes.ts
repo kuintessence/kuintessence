@@ -5,6 +5,7 @@ import {
   federationCommercialBills as bills,
   federationDisputes as cases,
   federationCommercialAgreements as contracts,
+  federationCommercialExecutionApprovals as executionApprovals,
   federationOutbound as outbound,
   type PgDb,
   type PgTransaction,
@@ -30,6 +31,7 @@ import {
   CommercialAdjustmentSchema,
   CommercialAgreementSchema,
   CommercialBillSchema,
+  CommercialExecutionApprovalSchema,
   CommercialPaymentSchema,
   CommercialRefundSchema,
   CommercialSettlementSchema,
@@ -42,7 +44,7 @@ import {
   CommercialDisputeReceiptSchema,
   CommercialDisputeSchema,
 } from "@kuintessence/shared/federation/disputes";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
 import { lockFederationDisputeTask } from "./dispute-freeze";
@@ -786,6 +788,99 @@ export class FederationDisputeService {
       requiresLedgerFreeze: terms.agreement.mode === "ledger_coordinated",
     });
     return { record, view };
+  }
+  /** Existing execution commitments are prerequisites, not entries in the financial head. */
+  async nativeReferences(
+    tx: PgTransaction,
+    current: Awaited<ReturnType<FederationDisputeService["financialSnapshot"]>>,
+  ) {
+    const { record, view } = current;
+    if (!view.requiresLedgerFreeze || !view.localReady) throw new FederationError("DATA_WAITING");
+    const refs: {
+      recordType: "reservation" | "release" | "bill" | "settlement" | "adjustment" | "refund";
+      recordId: string;
+      digest: string;
+    }[] = view.records.map((r) => ({
+      recordType: r.recordType,
+      recordId: r.recordId,
+      digest: r.recordDigest,
+    }));
+    const rows = await tx
+      .select()
+      .from(executionApprovals)
+      .where(
+        and(
+          eq(executionApprovals.localSiteId, this.signing.siteId),
+          eq(executionApprovals.agreementRevisionId, record.agreementRevisionId),
+          sql`${executionApprovals.payload}->>'kind' = 'commercial-reservation'`,
+          sql`${executionApprovals.payload}->'request'->>'taskId' = ${record.taskId}`,
+          sql`${executionApprovals.payload}->'request'->>'attempt' = ${String(record.attempt)}`,
+        ),
+      );
+    if (!rows.length) throw new FederationError("DATA_WAITING");
+    for (const row of rows) {
+      const value = await this.stored(tx, CommercialExecutionApprovalSchema, row, record.other);
+      if (
+        value.kind !== "commercial-reservation" ||
+        value.reservationId !== row.recordId ||
+        row.localOrgId !== record.localOrgId ||
+        value.domainId !== record.payload.domainId ||
+        value.agreementDigest !== record.payload.agreementDigest ||
+        value.request.agreementRevisionId !== record.agreementRevisionId ||
+        value.request.senderSiteId !== record.payload.sourceSiteId ||
+        value.request.recipientSiteId !== record.payload.targetSiteId ||
+        value.request.mode !== "ledger_coordinated" ||
+        value.request.taskId !== record.taskId ||
+        value.request.attempt !== record.attempt
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      if (!row.counterpartyJws) throw new FederationError("DATA_WAITING");
+      refs.push({ recordType: "reservation", recordId: row.recordId, digest: row.digest });
+      const releases = await tx
+        .select()
+        .from(executionApprovals)
+        .where(
+          and(
+            eq(executionApprovals.localSiteId, this.signing.siteId),
+            sql`${executionApprovals.payload}->>'kind' = 'commercial-release'`,
+            sql`${executionApprovals.payload}->>'reservationId' = ${row.recordId}`,
+          ),
+        );
+      for (const release of releases) {
+        const released = await this.stored(
+          tx,
+          CommercialExecutionApprovalSchema,
+          release,
+          record.other,
+        );
+        if (
+          released.kind !== "commercial-release" ||
+          released.releaseId !== release.recordId ||
+          release.localOrgId !== record.localOrgId ||
+          release.agreementRevisionId !== record.agreementRevisionId ||
+          released.domainId !== value.domainId ||
+          released.reservationId !== row.recordId ||
+          released.reservationDigest !== row.digest ||
+          released.sourceSiteId !== record.payload.sourceSiteId ||
+          released.targetSiteId !== record.payload.targetSiteId
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        if (!release.counterpartyJws) throw new FederationError("DATA_WAITING");
+        refs.push({ recordType: "release", recordId: release.recordId, digest: release.digest });
+      }
+    }
+    const ids = view.records.filter((r) => r.recordType === "bill").map((r) => r.recordId);
+    if (ids.length) {
+      const originals = await tx
+        .select({ payload: bills.payload })
+        .from(bills)
+        .where(and(eq(bills.localSiteId, this.signing.siteId), inArray(bills.billId, ids)));
+      if (originals.some((b) => !rows.some((r) => r.recordId === b.payload.reservationId)))
+        throw new FederationError("DATA_WAITING");
+    }
+    return refs.sort((a, b) =>
+      `${a.recordType}:${a.recordId}`.localeCompare(`${b.recordType}:${b.recordId}`),
+    );
   }
   async list(actor: FederationActor, revisionId: string, limit = 50, offset = 0, caseId?: string) {
     return this.db.transaction(async (tx) => {

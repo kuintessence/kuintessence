@@ -26,6 +26,7 @@ import {
   federationCommercialAttempts,
   federationCommercialBills,
   federationCommercialDiscounts,
+  federationCommercialExecutionApprovals,
   federationCommercialPayments,
   federationCommercialRefunds,
   federationCommercialSettlements,
@@ -67,6 +68,8 @@ import {
   CommercialDiscountSchema,
   CommercialPaymentSchema,
   CommercialRefundSchema,
+  CommercialReleaseSchema,
+  CommercialReservationSchema,
   CommercialSettlementSchema,
   type CommercialUsageCorrectionInput,
   CommercialUsageSchema,
@@ -8017,6 +8020,7 @@ test("dispute delivery validates the original before sending and rejects a repla
 async function financialDispute(
   f: Parameters<typeof disputeAccess>[0] &
     Pick<Awaited<ReturnType<typeof billingExchangeFixture>>, "revisionId" | "fingerprint">,
+  subject?: z.infer<typeof CommercialDisputeSchema>["subject"],
 ) {
   const c = await disputeAccess(f);
   await db
@@ -8025,7 +8029,10 @@ async function financialDispute(
       allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-dispute-receipt"]'::jsonb`,
     })
     .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
-  const draft = await c.sourceCases.draft(f.sourceActor, f.revisionId, c.input);
+  const draft = await c.sourceCases.draft(f.sourceActor, f.revisionId, {
+    ...c.input,
+    subject: subject ?? c.input.subject,
+  });
   const original = await c.sourceCases.open(f.sourceActor, f.revisionId, draft);
   await c.providerCases.receive(original.openingJws, f.fingerprint);
   return {
@@ -8429,8 +8436,12 @@ test("dispute financial view keeps one database snapshot while an original settl
   }
 });
 
-async function freezeFixture(f: Parameters<typeof financialDispute>[0]) {
-  const c = await financialDispute(f);
+async function freezeFixture(
+  f: Parameters<typeof financialDispute>[0],
+  subject?: z.infer<typeof CommercialDisputeSchema>["subject"],
+  clients?: { source: CommercialClient; target: CommercialClient },
+) {
+  const c = await financialDispute(f, subject);
   for (const siteId of [f.source.signing.siteId, f.provider.signing.siteId])
     await db
       .update(federationSigningKeys)
@@ -8458,7 +8469,18 @@ async function freezeFixture(f: Parameters<typeof financialDispute>[0]) {
   );
   await delivery.discover();
   await delivery.advanceNext();
-  const ingress = createFederationIngress(db, f.provider.signing),
+  const ingress = createFederationIngress(
+      db,
+      f.provider.signing,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      clients?.target,
+    ),
     bodies: string[] = [];
   const send: FederationSend = async (_endpoint, jws, path) => {
     expect(path).toBe("/federation/v1/dispute-freezes");
@@ -8477,8 +8499,13 @@ async function freezeFixture(f: Parameters<typeof financialDispute>[0]) {
     expect(response.headers.get("content-type")).toBe("application/jose");
     return response.text();
   };
-  const freeze = new FederationDisputeFreezeExchange(db, f.source.signing, send);
-  const receiver = new FederationDisputeFreezeExchange(db, f.provider.signing);
+  const freeze = new FederationDisputeFreezeExchange(db, f.source.signing, send, clients?.source);
+  const receiver = new FederationDisputeFreezeExchange(
+    db,
+    f.provider.signing,
+    undefined,
+    clients?.target,
+  );
   const key = and(
     eq(federationDisputeFreezes.localSiteId, f.source.signing.siteId),
     eq(federationDisputeFreezes.caseId, c.original.caseId),
@@ -8808,8 +8835,8 @@ test("dispute freeze refuses native-ledger downgrade and partial or rewritten pr
     observe.mockRestore();
   }
   expect(await c.read()).toMatchObject({
-    state: "needs_review",
-    lastError: "LEDGER_REQUIRED",
+    state: "pending",
+    lastError: "DATA_WAITING",
     approvalJws: null,
   });
   expect(c.bodies).toHaveLength(0);
@@ -9150,4 +9177,615 @@ test("dispute attestation checks the original case and dedicated current authori
   expect((await status()).attestation?.state).toBe("pending");
   const [retried] = await db.select().from(federationCommercialSubmissions).where(key);
   expect(retried?.input).toEqual(row.input);
+});
+
+async function nativeFreezeFixture(providerOpening = false) {
+  const f = await settlementFixture("bilateral_attested");
+  // Authenticated native originals isolate platform coordination; real Fabric is tested separately.
+  const pair = async <T extends { kind: string }>(schema: z.ZodType<T>, payload: T) => {
+    const a = await signFederationMessage(schema, payload, f.source.signing);
+    const b = await signFederationMessage(schema, payload, f.provider.signing);
+    const signed = await verifyFederationMessage(
+      schema,
+      a,
+      {
+        ...f.source.verification,
+        allowedKinds: [
+          "commercial-agreement",
+          "commercial-bill",
+          "commercial-reservation",
+          "commercial-release",
+        ],
+      },
+      new Date(),
+    );
+    return { a, b, digest: signed.digest };
+  };
+  const terms = CommercialAgreementSchema.parse({
+    ...f.contract,
+    agreement: { ...f.contract.agreement, mode: "ledger_coordinated" },
+  });
+  const contract = await pair(CommercialAgreementSchema, terms);
+  const bill = CommercialBillSchema.parse({
+    ...f.bill,
+    agreementDigest: contract.digest,
+    request: { ...f.bill.request, mode: "ledger_coordinated" },
+    reservationId: f.reservationId,
+  });
+  const signedBill = await pair(CommercialBillSchema, bill);
+  const reservation = CommercialReservationSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-reservation",
+    domainId: terms.domainId,
+    reservationId: f.reservationId,
+    demandId: randomUUID(),
+    claimVersion: 2,
+    agreementDigest: contract.digest,
+    salt: "c".repeat(64),
+    request: bill.request,
+  });
+  const signedReservation = await pair(CommercialReservationSchema, reservation);
+  const sites = [f.source.signing.siteId, f.provider.signing.siteId];
+  cleanup.push(async () => {
+    await db
+      .delete(federationCommercialExecutionApprovals)
+      .where(inArray(federationCommercialExecutionApprovals.localSiteId, sites));
+  });
+  for (const [keys, actor, source] of [
+    [f.source, f.sourceActor, true],
+    [f.provider, f.actor, false],
+  ] as const) {
+    const signatures = (p: { a: string; b: string; digest: string }) => ({
+      approvalJws: source ? p.a : p.b,
+      counterpartyJws: source ? p.b : p.a,
+      digest: p.digest,
+    });
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-reservation","commercial-release"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, keys.signing.siteId));
+    await db
+      .update(federationCommercialAgreements)
+      .set({ terms, ...signatures(contract) })
+      .where(
+        and(
+          eq(federationCommercialAgreements.localSiteId, keys.signing.siteId),
+          eq(federationCommercialAgreements.revisionId, f.revisionId),
+        ),
+      );
+    await db
+      .update(federationCommercialBills)
+      .set({ payload: bill, ...signatures(signedBill) })
+      .where(
+        and(
+          eq(federationCommercialBills.localSiteId, keys.signing.siteId),
+          eq(federationCommercialBills.billId, bill.billId),
+        ),
+      );
+    await db.insert(federationCommercialExecutionApprovals).values({
+      localSiteId: keys.signing.siteId,
+      localOrgId: actor.orgId,
+      agreementRevisionId: f.revisionId,
+      recordId: reservation.reservationId,
+      payload: reservation,
+      approvedBy: actor.userId,
+      ...signatures(signedReservation),
+    });
+  }
+  const receipts = new Map<string, { recordId: string; digest: string }>([
+    [`agreement:${f.revisionId}`, { recordId: f.revisionId, digest: contract.digest }],
+    [`bill:${bill.billId}`, { recordId: bill.billId, digest: signedBill.digest }],
+    [
+      `reservation:${reservation.reservationId}`,
+      { recordId: reservation.reservationId, digest: signedReservation.digest },
+    ],
+  ]);
+  const hidden = new Set<string>();
+  let online = true,
+    prepares = 0;
+  let proposed: Parameters<CommercialClient["prepare"]>[0] | undefined;
+  const transactionId = "d".repeat(64),
+    proposal = Buffer.from("native-proposal").toString("base64"),
+    transaction = Buffer.from("native-transaction").toString("base64");
+  const makeClient = (site: string): CommercialClient => ({
+    receipt: async (input) => {
+      if (!online) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+      const key = `${input.recordType}:${input.recordId}`;
+      return { receipt: hidden.has(`${site}:${key}`) ? null : (receipts.get(key) ?? null) };
+    },
+    prepare: async (input) => {
+      if (!online) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+      prepares++;
+      proposed = input;
+      return { transactionId, recovery: proposal };
+    },
+    advance: async (recovery) => {
+      if (!online) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+      if (recovery === proposal) return { state: "prepared", transactionId, recovery: transaction };
+      expect(recovery).toBe(transaction);
+      if (!proposed || proposed.operation !== "freeze-disputed-task")
+        throw new Error("Missing native proposal");
+      receipts.set(`native-dispute-freeze:${proposed.recordId}`, {
+        recordId: proposed.recordId,
+        digest: proposed.digest,
+      });
+      return { state: "committed", transactionId, blockNumber: "101" };
+    },
+  });
+  const clients = { source: makeClient("source"), target: makeClient("target") };
+  const flow = providerOpening
+    ? {
+        ...f,
+        source: f.provider,
+        provider: f.source,
+        sourceActor: f.actor,
+        actor: f.sourceActor,
+        fingerprint: f.providerFingerprint,
+      }
+    : f;
+  const c = await freezeFixture(
+    flow,
+    { recordType: "bill", recordId: bill.billId, recordDigest: signedBill.digest },
+    clients,
+  );
+  // Old fixture outboxes were for the bilateral originals; only exercise the new native submission.
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(inArray(federationCommercialSubmissions.localSiteId, sites));
+  const worker = () =>
+    new FederationCommercialSubmissionService(db, flow.source.signing.siteId, clients.source);
+  const dueBoth = () =>
+    db
+      .update(federationDisputeFreezes)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(federationDisputeFreezes.caseId, c.original.caseId));
+  const dueSubmission = () =>
+    db
+      .update(federationCommercialSubmissions)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(
+        and(
+          eq(federationCommercialSubmissions.localSiteId, flow.source.signing.siteId),
+          sql`${federationCommercialSubmissions.input}->>'operation' = 'freeze-disputed-task'`,
+        ),
+      );
+  const queued = () =>
+    db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(
+        and(
+          inArray(federationCommercialSubmissions.localSiteId, sites),
+          sql`${federationCommercialSubmissions.input}->>'operation' = 'freeze-disputed-task'`,
+        ),
+      );
+  return {
+    ...flow,
+    ...c,
+    bill,
+    reservation,
+    signedReservation,
+    clients,
+    pair,
+    receipts,
+    hidden,
+    worker,
+    dueBoth,
+    dueSubmission,
+    queued,
+    prepares: () => prepares,
+    setOnline: (value: boolean) => {
+      online = value;
+    },
+  };
+}
+
+test("native dispute freeze saves both signatures but confirms each institution only after its matching private receipt", async () => {
+  const f = await nativeFreezeFixture();
+  const budget = await f.budget();
+  await f.advance();
+  for (const site of [f.source.signing.siteId, f.provider.signing.siteId])
+    expect(await f.read(site)).toMatchObject({
+      state: "ledger_pending",
+      confirmedAt: null,
+      ledgerReceipt: null,
+    });
+  expect((await f.sourceCases.list(f.sourceActor, f.revisionId)).data[0]?.state).toBe(
+    "FREEZE_PENDING",
+  );
+  expect(await f.queued()).toHaveLength(1);
+  await f.freeze.advanceNext();
+  expect(await f.read()).toMatchObject({ state: "ledger_pending", lastError: "DATA_WAITING" });
+  for (let i = 0; i < 3; i++) await f.worker().advanceNext();
+  expect((await f.queued())[0]?.state).toBe("committed");
+  await f.dueBoth();
+  await f.receiver.advanceNext();
+  expect((await f.read(f.provider.signing.siteId))?.state).toBe("confirmed");
+  expect((await f.read())?.state).toBe("ledger_pending");
+  await new FederationDisputeFreezeExchange(
+    db,
+    f.source.signing,
+    undefined,
+    f.clients.source,
+  ).advanceNext();
+  expect(await f.read()).toMatchObject({
+    state: "confirmed",
+    ledgerReceipt: { recordId: f.original.caseId, digest: (await f.read())?.digest },
+  });
+  expect((await f.sourceCases.list(f.sourceActor, f.revisionId)).data[0]?.state).toBe("DISPUTED");
+  expect(await f.budget()).toEqual(budget);
+  expect(f.prepares()).toBe(1);
+});
+
+test("native dispute freeze waits for both institutions' financial and execution receipts before signing", async () => {
+  const f = await nativeFreezeFixture();
+  for (const [site, key] of [
+    ["source", `bill:${f.bill.billId}`],
+    ["target", `reservation:${f.reservation.reservationId}`],
+  ] as const) {
+    f.hidden.add(`${site}:${key}`);
+    await f.dueBoth();
+    await f.advance();
+    expect((await f.read())?.state).toBe("pending");
+    expect(await f.read(f.provider.signing.siteId)).toBeUndefined();
+    expect(await f.queued()).toHaveLength(0);
+    f.hidden.clear();
+  }
+  const proposal = (await f.read())?.approvalJws;
+  await f.dueBoth();
+  await f.advance();
+  expect(await f.read()).toMatchObject({ state: "ledger_pending", approvalJws: proposal });
+});
+
+test("native dispute freeze waits for unilateral releases and verifies original signatures before proceeding", async () => {
+  const f = await nativeFreezeFixture();
+  const release = CommercialReleaseSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-release",
+    domainId: f.reservation.domainId,
+    releaseId: randomUUID(),
+    reservationId: f.reservation.reservationId,
+    reservationDigest: f.signedReservation.digest,
+    sourceSiteId: f.source.signing.siteId,
+    targetSiteId: f.provider.signing.siteId,
+    expectedGateVersion: 1,
+    issuedAt: new Date().toISOString(),
+    salt: "e".repeat(64),
+    reason: "Previously signed release",
+  });
+  const signed = await f.pair(CommercialReleaseSchema, release);
+  const key = and(
+    eq(federationCommercialExecutionApprovals.localSiteId, f.provider.signing.siteId),
+    eq(federationCommercialExecutionApprovals.recordId, release.releaseId),
+  );
+  await db.insert(federationCommercialExecutionApprovals).values({
+    localSiteId: f.provider.signing.siteId,
+    localOrgId: f.actor.orgId,
+    agreementRevisionId: f.revisionId,
+    recordId: release.releaseId,
+    payload: release,
+    approvalJws: signed.b,
+    digest: signed.digest,
+    approvedBy: f.actor.userId,
+  });
+  await f.advance();
+  expect((await f.read())?.state).toBe("pending");
+  expect(await f.read(f.provider.signing.siteId)).toBeUndefined();
+  await db
+    .update(federationCommercialExecutionApprovals)
+    .set({ counterpartyJws: signed.a })
+    .where(key);
+  await f.dueBoth();
+  await f.advance();
+  expect((await f.read())?.state).toBe("pending");
+  f.receipts.set(`release:${release.releaseId}`, {
+    recordId: release.releaseId,
+    digest: signed.digest,
+  });
+  await f.dueBoth();
+  await f.advance();
+  expect((await f.read())?.state).toBe("ledger_pending");
+});
+
+test("native dispute freeze recovers a lost peer response and submitted checkpoint after service reconstruction", async () => {
+  const f = await nativeFreezeFixture();
+  const lost = new FederationDisputeFreezeExchange(
+    db,
+    f.source.signing,
+    async (...args) => {
+      await f.send(...args);
+      throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+    },
+    f.clients.source,
+  );
+  await lost.discover();
+  await lost.advanceNext();
+  const original = (await f.read())?.approvalJws;
+  expect((await f.read(f.provider.signing.siteId))?.state).toBe("ledger_pending");
+  expect(await f.queued()).toHaveLength(0);
+  await f.dueBoth();
+  await f.advance();
+  expect((await f.read())?.approvalJws).toBe(original);
+  await f.worker().advanceNext();
+  await f.worker().advanceNext();
+  const [queued] = await f.queued();
+  if (!queued) throw new Error("Missing native outbox");
+  const attempts = () =>
+    db
+      .select()
+      .from(federationCommercialAttempts)
+      .where(eq(federationCommercialAttempts.submissionId, queued.id));
+  const saved = (await attempts())[0];
+  f.setOnline(false);
+  await f.worker().advanceNext();
+  await f.freeze.advanceNext();
+  await f.receiver.advanceNext();
+  expect((await f.read())?.state).toBe("ledger_pending");
+  expect((await f.read(f.provider.signing.siteId))?.state).toBe("ledger_pending");
+  f.setOnline(true);
+  await f.dueSubmission();
+  await f.worker().advanceNext();
+  await f.dueBoth();
+  await new FederationDisputeFreezeExchange(
+    db,
+    f.source.signing,
+    undefined,
+    f.clients.source,
+  ).advanceNext();
+  await new FederationDisputeFreezeExchange(
+    db,
+    f.provider.signing,
+    undefined,
+    f.clients.target,
+  ).advanceNext();
+  expect((await attempts())[0]).toMatchObject({
+    transactionId: saved?.transactionId,
+    recovery: saved?.recovery,
+    stage: "committed",
+  });
+  expect(f.prepares()).toBe(1);
+  expect((await f.read())?.state).toBe("confirmed");
+  expect(await f.queued()).toHaveLength(1);
+});
+
+test("native dispute freeze rejects a mismatched receipt and enforces durable native confirmation constraints", async () => {
+  const f = await nativeFreezeFixture();
+  await f.advance();
+  const row = await f.read();
+  if (!row?.digest) throw new Error("Missing dual proof");
+  for (const patch of [
+    { state: "confirmed", confirmedAt: new Date() },
+    {
+      state: "confirmed",
+      confirmedAt: new Date(),
+      ledgerReceipt: { recordId: randomUUID(), digest: row.digest },
+    },
+    {
+      state: "confirmed",
+      confirmedAt: new Date(),
+      ledgerReceipt: { recordId: row.caseId, digest: `sha256:${"0".repeat(64)}` },
+    },
+    { counterpartyJws: null },
+  ])
+    await expect(
+      Promise.resolve(db.update(federationDisputeFreezes).set(patch).where(f.key)),
+    ).rejects.toThrow();
+  f.receipts.set(`native-dispute-freeze:${f.original.caseId}`, {
+    recordId: randomUUID(),
+    digest: row.digest,
+  });
+  await f.receiver.advanceNext();
+  expect(await f.read(f.provider.signing.siteId)).toMatchObject({
+    state: "needs_review",
+    lastError: "OPERATION_CONFLICT",
+    ledgerReceipt: null,
+  });
+  expect((await f.providerCases.list(f.actor, f.revisionId)).data[0]?.state).toBe("FREEZE_PENDING");
+  f.receipts.set(`native-dispute-freeze:${f.original.caseId}`, {
+    recordId: f.original.caseId,
+    digest: row.digest,
+  });
+  await f.receiver.retry(f.actor, f.revisionId, f.original.caseId);
+  expect((await f.read(f.provider.signing.siteId))?.state).toBe("ledger_pending");
+  await f.receiver.advanceNext();
+  expect((await f.read(f.provider.signing.siteId))?.state).toBe("confirmed");
+});
+
+test("native dispute freeze receipt and confirmation audit commit atomically without regressing later case states", async () => {
+  const f = await nativeFreezeFixture();
+  await f.advance();
+  for (let i = 0; i < 3; i++) await f.worker().advanceNext();
+  const constraint = sql.identifier(`native_freeze_audit_${randomUUID().replaceAll("-", "")}`);
+  await db.execute(
+    sql`ALTER TABLE audit_log ADD CONSTRAINT ${constraint} CHECK (action <> 'federation.dispute.freeze_confirm') NOT VALID`,
+  );
+  try {
+    await f.receiver.advanceNext();
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT ${constraint}`);
+  }
+  expect(await f.read(f.provider.signing.siteId)).toMatchObject({
+    state: "ledger_pending",
+    confirmedAt: null,
+    ledgerReceipt: null,
+  });
+  await db
+    .update(federationDisputes)
+    .set({ state: "EVIDENCE_WAITING" })
+    .where(
+      and(
+        eq(federationDisputes.localSiteId, f.provider.signing.siteId),
+        eq(federationDisputes.caseId, f.original.caseId),
+      ),
+    );
+  await f.dueBoth();
+  await f.receiver.advanceNext();
+  expect((await f.read(f.provider.signing.siteId))?.state).toBe("confirmed");
+  expect((await f.providerCases.list(f.actor, f.revisionId)).data[0]?.state).toBe(
+    "EVIDENCE_WAITING",
+  );
+});
+
+test("native dispute freeze cannot sign without a local receipt client or with a rewritten execution original", async () => {
+  const f = await nativeFreezeFixture();
+  const offline = new FederationDisputeFreezeExchange(db, f.source.signing, f.send);
+  await offline.discover();
+  await offline.advanceNext();
+  expect(await f.read()).toMatchObject({
+    state: "pending",
+    lastError: "LEDGER_UNAVAILABLE",
+    approvalJws: null,
+  });
+  const key = and(
+    eq(federationCommercialExecutionApprovals.localSiteId, f.source.signing.siteId),
+    eq(federationCommercialExecutionApprovals.recordId, f.reservation.reservationId),
+  );
+  await db
+    .update(federationCommercialExecutionApprovals)
+    .set({ payload: { ...f.reservation, salt: "f".repeat(64) } })
+    .where(key);
+  await f.dueBoth();
+  await f.advance();
+  expect(await f.read()).toMatchObject({
+    state: "needs_review",
+    lastError: "OPERATION_CONFLICT",
+    approvalJws: null,
+  });
+  expect(f.bodies).toHaveLength(0);
+  expect(await f.queued()).toHaveLength(0);
+});
+
+test("native dispute freeze source audit failure rolls back its dual proof and outbox then reuses the recipient signature", async () => {
+  const f = await nativeFreezeFixture();
+  const constraint = sql.identifier(`native_freeze_sign_${randomUUID().replaceAll("-", "")}`);
+  const actor = sql.raw(`'dispute-freeze:${f.source.signing.siteId}'`);
+  await db.execute(
+    sql`ALTER TABLE audit_log ADD CONSTRAINT ${constraint} CHECK (action <> 'federation.dispute.freeze_sign' OR actor <> ${actor}) NOT VALID`,
+  );
+  try {
+    await f.advance();
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT ${constraint}`);
+  }
+  const recipient = await f.read(f.provider.signing.siteId),
+    original = await f.read();
+  expect(recipient?.state).toBe("ledger_pending");
+  expect(original).toMatchObject({ state: "pending", counterpartyJws: null });
+  expect(await f.queued()).toHaveLength(0);
+  await f.dueBoth();
+  await f.advance();
+  expect(await f.read()).toMatchObject({
+    state: "ledger_pending",
+    approvalJws: original?.approvalJws,
+    counterpartyJws: recipient?.approvalJws,
+  });
+  expect(await f.queued()).toHaveLength(1);
+});
+
+test("native dispute freeze fences an expired receipt poll and preserves a newer confirmation", async () => {
+  const f = await nativeFreezeFixture();
+  await f.advance();
+  for (let i = 0; i < 3; i++) await f.worker().advanceNext();
+  const arrived = Promise.withResolvers<void>(),
+    proceed = Promise.withResolvers<void>();
+  const delayed = new FederationDisputeFreezeExchange(db, f.provider.signing, undefined, {
+    receipt: async (input) => {
+      const answer = await f.clients.target.receipt?.(input);
+      if (!answer) throw new Error("Missing receipt client");
+      arrived.resolve();
+      await proceed.promise;
+      return answer;
+    },
+  });
+  const running = delayed.advanceNext();
+  try {
+    await arrived.promise;
+    await db
+      .update(federationDisputeFreezes)
+      .set({ leaseUntil: new Date(0) })
+      .where(
+        and(
+          eq(federationDisputeFreezes.localSiteId, f.provider.signing.siteId),
+          eq(federationDisputeFreezes.caseId, f.original.caseId),
+        ),
+      );
+    await f.receiver.advanceNext();
+    expect((await f.read(f.provider.signing.siteId))?.state).toBe("confirmed");
+  } finally {
+    proceed.resolve();
+    await running;
+  }
+  expect((await f.read(f.provider.signing.siteId))?.state).toBe("confirmed");
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.actor, `dispute-freeze:${f.provider.signing.siteId}`),
+          eq(auditLog.action, "federation.dispute.freeze_confirm"),
+          eq(auditLog.target, f.original.caseId),
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+test("native dispute freeze rechecks original authority after receipt I/O and never confirms on a different digest", async () => {
+  const f = await nativeFreezeFixture();
+  await f.advance();
+  const proof = await f.read();
+  if (!proof?.digest) throw new Error("Missing native proof");
+  f.receipts.set(`native-dispute-freeze:${f.original.caseId}`, {
+    recordId: f.original.caseId,
+    digest: `sha256:${"1".repeat(64)}`,
+  });
+  await f.receiver.advanceNext();
+  expect(await f.read(f.provider.signing.siteId)).toMatchObject({
+    state: "needs_review",
+    lastError: "OPERATION_CONFLICT",
+    ledgerReceipt: null,
+  });
+  f.receipts.set(`native-dispute-freeze:${f.original.caseId}`, {
+    recordId: f.original.caseId,
+    digest: proof.digest,
+  });
+  await f.receiver.retry(f.actor, f.revisionId, f.original.caseId);
+  const changed = new FederationDisputeFreezeExchange(db, f.provider.signing, undefined, {
+    receipt: async (input) => {
+      const answer = await f.clients.target.receipt?.(input);
+      if (!answer) throw new Error("Missing receipt client");
+      await db
+        .update(federationSigningKeys)
+        .set({ revokedAt: new Date() })
+        .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+      return answer;
+    },
+  });
+  await changed.advanceNext();
+  expect(await f.read(f.provider.signing.siteId)).toMatchObject({
+    state: "needs_review",
+    lastError: "UNTRUSTED_IDENTITY",
+    confirmedAt: null,
+    ledgerReceipt: null,
+  });
+});
+
+test("native dispute freeze supports provider opening while preserving original contract parties", async () => {
+  const f = await nativeFreezeFixture(true);
+  await f.advance();
+  const [queued] = await f.queued();
+  if (queued?.input.operation !== "freeze-disputed-task") throw new Error("Missing native outbox");
+  expect(queued.localSiteId).toBe(f.reservation.request.recipientSiteId);
+  expect(queued.input.envelope.openingSiteId).toBe(f.reservation.request.recipientSiteId);
+  expect(queued.input.envelope.sourceSiteId).toBe(f.reservation.request.senderSiteId);
+  expect(queued.input.envelope.targetSiteId).toBe(f.reservation.request.recipientSiteId);
+  for (let i = 0; i < 3; i++) await f.worker().advanceNext();
+  expect((await f.queued())[0]?.state).toBe("committed");
+  await f.freeze.advanceNext();
+  await f.receiver.advanceNext();
+  expect((await f.read())?.state).toBe("confirmed");
+  expect((await f.read(f.provider.signing.siteId))?.state).toBe("confirmed");
 });

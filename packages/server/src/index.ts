@@ -1860,7 +1860,14 @@ const federationReservationProposals = federationSigningKey
     )
   : undefined;
 const federationDisputeFreezes = federationSigningKey
-  ? new FederationDisputeFreezeExchange(db, federationSigningKey, federationSender)
+  ? new FederationDisputeFreezeExchange(
+      db,
+      federationSigningKey,
+      federationSender,
+      config.FEDERATION_COMMERCIAL_SOCKET_PATH
+        ? new UnixCommercialClient(config.FEDERATION_COMMERCIAL_SOCKET_PATH)
+        : undefined,
+    )
   : undefined;
 const federationDisputeDelivery = federationSigningKey
   ? new FederationDisputeDelivery(db, federationSigningKey, federationSender)

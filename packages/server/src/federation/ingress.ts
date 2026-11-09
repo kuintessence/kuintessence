@@ -28,6 +28,7 @@ import { FederationUsageExchange } from "./usage-exchange";
 
 const logger = createLogger("federation-ingress");
 
+import type { CommercialClient } from "./commercial-client";
 import type { FederationStorageGuard } from "./storage-capacity";
 
 /** Mount only on the private Unix listener. The Node gateway owns the certificate header. */
@@ -41,6 +42,7 @@ export function createFederationIngress(
   storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   mediaKeys?: Pick<FederationMediaKeyResponder, "respond">,
   datasetUse?: Pick<FederationDatasetUseResponder, "respond">,
+  commercial?: Pick<CommercialClient, "receipt">,
 ) {
   const r = new Hono();
   const trust = new FederationTrustRegistry(db);
@@ -70,7 +72,7 @@ export function createFederationIngress(
     );
     return c.json({ error: { code: "TEMPORARILY_UNAVAILABLE", incidentId } }, 503);
   });
-  const disputeFreezes = new FederationDisputeFreezeExchange(db, signingKey);
+  const disputeFreezes = new FederationDisputeFreezeExchange(db, signingKey, undefined, commercial);
   r.post("/federation/v1/dispute-freezes", async (c) => {
     if (c.req.header("content-type") !== "application/jose")
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
