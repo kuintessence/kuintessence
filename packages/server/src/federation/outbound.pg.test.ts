@@ -135,6 +135,7 @@ import { FederationMediaImportOperations } from "./media-import-operations";
 import { FederationMediaImportTransport } from "./media-import-transport";
 import { FederationMediaKeyRequester, FederationMediaKeyResponder } from "./media-key-exchange";
 import { FederationMediaPackageService } from "./media-packages";
+import { FederationMediaUploadTransport } from "./media-upload-transport";
 import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
@@ -11330,6 +11331,267 @@ taskMediaTest(
       expect(attempts.map((attempt) => attempt.state).sort()).toEqual(["cleaned", "copying"]);
     } finally {
       await t.source.release();
+    }
+  },
+);
+
+async function taskMediaDispatchFixture(kind: "task-input" | "task-result") {
+  const dispatcher = new AgentDispatcher();
+  const messages: ServerMessage[] = [];
+  let afterAllocate = async () => {};
+  let allocations = 0;
+  const allocate = async () => {
+    allocations++;
+    await afterAllocate();
+    return { uploadId: "media-dispatch-upload" };
+  };
+  const f = await (async () => {
+    if (kind === "task-input") {
+      const t = await taskInputUploadFixture();
+      const storage = new FederationInputStorage(
+        t.transfers,
+        {
+          ...unassembledInputStorage,
+          createMultipartUpload: allocate,
+          cleanupFederationInput: async () => {},
+          findFederationInputUpload: async () => undefined,
+          presignUploadPart: async () => {
+            throw new Error("No part grant expected");
+          },
+        },
+        { clock },
+      );
+      return {
+        operations: t.operations(),
+        agentId: t.agentId,
+        claimId: t.claimId,
+        authorizationId: t.approval.authorizationId,
+        generation: t.started.generation,
+        transport: new FederationMediaUploadTransport(t.operations(), dispatcher, {
+          storage,
+          transfers: t.transfers,
+        }),
+        attempts: () => db.select().from(federationInputAttempts),
+        cleanup: () => storage.cleanup(),
+        revoke: t.revoke,
+        revokeSource: () =>
+          t.source
+            .service()
+            .revoke(t.source.local, t.exported.packageId, { reason: "Stop upload dispatch" }),
+        release: t.source.release,
+        members: t.parent.manifest.inputs.flatMap((input) =>
+          input.files.map((file) => ({ ...file, descriptor: input.descriptor })),
+        ),
+        networkPending: () => t.transfers.pending([t.agentId]),
+      };
+    }
+    const t = await taskResultUploadFixture();
+    t.backend.createMultipartUpload = allocate;
+    return {
+      operations: t.operations(),
+      agentId: t.agentId,
+      claimId: t.claimId,
+      authorizationId: t.approval.authorizationId,
+      generation: t.started.generation,
+      transport: new FederationMediaUploadTransport(t.operations(), dispatcher, undefined, {
+        storage: t.storage,
+        imports: t.imports,
+      }),
+      attempts: () => db.select().from(federationResultAttempts),
+      cleanup: () => t.storage.cleanup(),
+      revoke: t.revoke,
+      revokeSource: () =>
+        t.source
+          .service()
+          .revoke(t.source.local, t.exported.packageId, { reason: "Stop upload dispatch" }),
+      release: t.source.release,
+      members: t.parent.report.manifest.outputs.flatMap((output) =>
+        output.files.map((file) => ({ ...file, outputId: output.outputId })),
+      ),
+      networkPending: () => t.imports.pending([t.agentId]),
+    };
+  })();
+  const channel = {
+    push: (message: ServerMessage) => messages.push(message),
+    close() {},
+    federationMediaImportV1: true,
+    federationMediaUploadV1: true,
+    federationInputCopyV1: true,
+    federationInputVerifyV1: true,
+    federationResultCopyV1: true,
+    federationResultVerifyV1: true,
+    verifiedCertFingerprint: sourceFingerprint,
+  };
+  dispatcher.register(f.agentId, channel);
+  await db
+    .update(federationMediaImportAuthorizations)
+    .set({ expiresAt: new Date(clock().getTime() + 180_000) })
+    .where(eq(federationMediaImportAuthorizations.authorizationId, f.authorizationId));
+  time = new Date(clock().getTime() + 31_000);
+  return {
+    ...f,
+    dispatcher,
+    channel,
+    messages,
+    allocations: () => allocations,
+    onAllocate: (callback: () => Promise<void>) => {
+      afterAllocate = callback;
+    },
+  };
+}
+
+for (const kind of ["task-input", "task-result"] as const) {
+  taskMediaTest(
+    `task media dispatch ${kind} refreshes source, pins original member and shares the durable slot`,
+    async () => {
+      const f = await taskMediaDispatchFixture(kind);
+      try {
+        expect(await f.networkPending()).toHaveLength(0);
+        const candidates = await f.operations.pendingUploads(kind, [f.agentId]);
+        expect(candidates.length).toBeGreaterThan(0);
+        for (const candidate of candidates) {
+          const prepared = await f.operations.uploadTask(f.agentId, f.authorizationId, {
+            kind,
+            transferId: candidate.transferId,
+          });
+          expect(prepared.memberIndex).toBeGreaterThanOrEqual(0);
+        }
+        await expect(
+          f.operations.uploadTask(f.agentId, f.authorizationId, {
+            kind,
+            transferId: crypto.randomUUID(),
+          }),
+        ).rejects.toThrow("OPERATION_CONFLICT");
+        await Promise.all([f.transport.tick(), f.transport.tick()]);
+        expect(f.messages).toHaveLength(1);
+        const message = f.messages[0];
+        if (message?.payload.case !== "federationMediaUpload")
+          throw new Error("Expected upload command");
+        const task = JSON.parse(message.payload.value.taskJson);
+        expect(task.media.generation).toBe(f.generation);
+        expect(task.target.binding.generation).not.toBe(f.generation);
+        expect(task.target.kind).toBe(kind);
+        const member = f.members[task.memberIndex];
+        if (!member) throw new Error("Expected original inventory member");
+        expect(task.target.binding).toMatchObject(member);
+        const [attempt] = await f.attempts();
+        if (!attempt) throw new Error("Expected durable upload attempt");
+        expect(attempt).toMatchObject({
+          mediaClaimId: f.claimId,
+          state: "copying",
+          uploadId: "media-dispatch-upload",
+        });
+        expect(Number(message.payload.value.leaseExpiresAtUnixMs)).toBe(
+          attempt.leaseUntil.getTime(),
+        );
+        time = new Date(clock().getTime() + 1_000);
+        await f.transport.tick();
+        expect(f.allocations()).toBe(1);
+        expect(await f.operations.pendingUploads(kind, [f.agentId])).toHaveLength(0);
+      } finally {
+        await f.transport.stop();
+        await f.release();
+      }
+    },
+  );
+
+  taskMediaTest.each([
+    "capability",
+    "source",
+    "receiver",
+    "disconnect",
+    "revoke-during-allocation",
+  ] as const)(`task media dispatch ${kind} fences %s without publishing`, async (change) => {
+    const f = await taskMediaDispatchFixture(kind);
+    try {
+      if (change === "capability") f.channel.federationMediaUploadV1 = false;
+      if (change === "source") await f.revokeSource();
+      if (change === "receiver") await f.revoke();
+      if (change === "disconnect")
+        f.onAllocate(async () => {
+          f.dispatcher.unregister(f.agentId);
+        });
+      if (change === "revoke-during-allocation")
+        f.onAllocate(async () => {
+          await f.revoke();
+        });
+      await f.transport.tick();
+      expect(f.messages).toHaveLength(0);
+      if (change === "disconnect" || change === "revoke-during-allocation") {
+        const [attempt] = await f.attempts();
+        expect(attempt).toMatchObject({
+          state: "cleanup_pending",
+          uploadId: "media-dispatch-upload",
+        });
+        if (!attempt) throw new Error("Expected durable allocation");
+        time = new Date(attempt.leaseUntil.getTime() + 31_000);
+        expect(await f.cleanup()).toBe(1);
+        if (change === "disconnect") {
+          f.dispatcher.register(f.agentId, f.channel);
+          f.onAllocate(async () => {});
+          await f.transport.tick();
+          expect(f.messages).toHaveLength(1);
+          expect((await f.attempts()).find((row) => row.state === "copying")?.generation).not.toBe(
+            attempt.generation,
+          );
+        }
+      } else expect(f.allocations()).toBe(0);
+    } finally {
+      await f.transport.stop();
+      await f.release();
+    }
+  });
+}
+
+taskMediaTest.each(["task-input", "task-result"] as const)(
+  "task media pending scan %s only selects current verified authorized claims",
+  async (kind) => {
+    const f = await taskMediaDispatchFixture(kind);
+    try {
+      const pending = () => f.operations.pendingUploads(kind, [f.agentId]);
+      expect((await pending()).length).toBeGreaterThan(0);
+      expect(await f.operations.pendingUploads(kind, ["foreign-agent"])).toHaveLength(0);
+      const condition = eq(federationMediaImportOperations.authorizationId, f.authorizationId);
+      const [original] = await db.select().from(federationMediaImportOperations).where(condition);
+      if (!original) throw new Error("Expected verified private import");
+      await db
+        .update(federationMediaImportOperations)
+        .set({ state: "queued", verifiedAt: null, verifiedBytes: null })
+        .where(condition);
+      expect(await pending()).toHaveLength(0);
+      await db
+        .update(federationMediaImportOperations)
+        .set({
+          state: "verified",
+          verifiedAt: original.verifiedAt,
+          verifiedBytes: original.verifiedBytes,
+        })
+        .where(condition);
+      await db
+        .update(federationTaskMediaClaims)
+        .set({ releasedAt: clock() })
+        .where(eq(federationTaskMediaClaims.id, f.claimId));
+      expect(await pending()).toHaveLength(0);
+      await db
+        .update(federationTaskMediaClaims)
+        .set({ releasedAt: null })
+        .where(eq(federationTaskMediaClaims.id, f.claimId));
+      await db.update(agents).set({ status: "offline" }).where(eq(agents.agentId, f.agentId));
+      expect(await pending()).toHaveLength(0);
+      await db.update(agents).set({ status: "online" }).where(eq(agents.agentId, f.agentId));
+      expect((await pending()).length).toBeGreaterThan(0);
+      await f.operations.deferUpload(f.authorizationId);
+      expect(await pending()).toHaveLength(0);
+      time = new Date(clock().getTime() + 31_000);
+      expect((await pending()).length).toBeGreaterThan(0);
+      await db
+        .update(federationMediaImportAuthorizations)
+        .set({ expiresAt: clock() })
+        .where(eq(federationMediaImportAuthorizations.authorizationId, f.authorizationId));
+      expect(await pending()).toHaveLength(0);
+    } finally {
+      await f.transport.stop();
+      await f.release();
     }
   },
 );

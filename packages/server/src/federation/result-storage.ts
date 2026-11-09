@@ -72,7 +72,11 @@ export class FederationResultStorage {
         });
       if (!(await this.bounded(allocated))) throw new FederationError("POLICY_DENIED");
       const current = await this.imports.assertCopyLease(agentId, ready.binding);
-      return { task: started.task, leaseExpiresAt: current.leaseUntil.toISOString() };
+      return {
+        task: started.task,
+        binding: ready.binding,
+        leaseExpiresAt: current.leaseUntil.toISOString(),
+      };
     } catch (error) {
       await this.imports.failed(agentId, generation, "STORAGE_FAILED");
       if (error instanceof FederationError) throw error;

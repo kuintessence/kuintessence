@@ -115,6 +115,7 @@ import {
   FederationMediaReceiptReceiver,
   FederationMediaReceiptSender,
 } from "./federation/media-receipts";
+import { FederationMediaUploadTransport } from "./federation/media-upload-transport";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
 import { FederationPermissionService } from "./federation/permissions";
@@ -2159,6 +2160,7 @@ if (!(config.SSH_SESSION_RECORDING && config.NETDRIVE_ENABLED)) {
 }
 let federationResults: FederationResultTransport | undefined;
 let federationResultWorker: FederationResultWorker | undefined;
+let federationResultStorage: FederationResultStorage | undefined;
 let federationInputStorageBackend: FederationInputStorageBackend | undefined;
 let federationInputDownloads:
   | import("./federation/download-credential").FederationDownloadStorage
@@ -2204,6 +2206,7 @@ if (config.NETDRIVE_ENABLED) {
         destinationOrigins: config.FEDERATION_RESULT_DOWNLOAD_ORIGINS,
       },
     );
+    federationResultStorage = storage;
     federationResults = new FederationResultTransport(
       federationOutbound.resultImports,
       storage,
@@ -2577,6 +2580,19 @@ const federationInputWorker =
       )
     : undefined;
 
+const federationMediaUploads = federationMediaImportOperations
+  ? new FederationMediaUploadTransport(
+      federationMediaImportOperations,
+      dispatcher,
+      federationInputs && federationInputTransfers && federationInputStorage
+        ? { transfers: federationInputTransfers, storage: federationInputStorage }
+        : undefined,
+      federationResults && federationResultStorage && federationOutbound
+        ? { imports: federationOutbound.resultImports, storage: federationResultStorage }
+        : undefined,
+    )
+  : undefined;
+
 if (federationInputTransfers)
   protectedApi.route(
     "/",
@@ -2741,6 +2757,7 @@ federationResultWorker?.start();
 federationInputWorker?.start();
 federationMediaExportTransport?.start();
 federationMediaImportTransport?.start();
+federationMediaUploads?.start();
 federationDatasetUseWorker?.start();
 const federationExecutionMonitor = new FederationExecutionMonitor(
   db,
@@ -2830,6 +2847,7 @@ async function shutdown(signal: string): Promise<void> {
     await federationPreparationWorker?.stop();
     await federationOutboundWorker?.stop();
     await federationMediaExportTransport?.stop();
+    await federationMediaUploads?.stop();
     await federationMediaImportTransport?.stop();
     await federationDatasetUseWorker?.stop();
     await federationInputWorker?.stop();

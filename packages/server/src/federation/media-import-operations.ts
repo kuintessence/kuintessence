@@ -1,8 +1,15 @@
 import { createHash } from "node:crypto";
 import {
+  agents,
   auditLog,
   federationMediaImportAuthorizations as authorizations,
   federationTaskMediaClaims as claims,
+  federationInputAttempts,
+  federationInputImports,
+  federationInputTransfers,
+  federationResultAttempts,
+  federationResultImports,
+  federationResultTransfers,
   federationMediaImportOperations as operations,
   type PgDb,
   type PgTransaction,
@@ -20,7 +27,7 @@ import {
   FederationMediaKeyGrantSchema,
   FederationMediaKeyQuerySchema,
 } from "@kuintessence/shared/federation";
-import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, isNull, lte, notExists } from "drizzle-orm";
 import { exportSPKI } from "jose";
 import { z } from "zod";
 import type { FederationMediaKeyRequester } from "./media-key-exchange";
@@ -152,6 +159,92 @@ export class FederationMediaImportOperations {
       .set({ updatedAt: this.clock() })
       .where(and(eq(operations.authorizationId, authorizationId), eq(operations.state, "queued")));
   }
+  async pendingUploads(kind: "task-input" | "task-result", agentIds: string[]) {
+    if (!agentIds.length) return [];
+    const parent = kind === "task-input" ? federationInputImports : federationResultImports;
+    const transfers = kind === "task-input" ? federationInputTransfers : federationResultTransfers;
+    const importId = kind === "task-input" ? claims.taskInputImportId : claims.taskResultImportId;
+    return this.db
+      .select({
+        transferId: transfers.id,
+        importId: parent.id,
+        claimId: claims.id,
+        authorizationId: claims.authorizationId,
+        agentId: authorizations.agentId,
+      })
+      .from(claims)
+      .innerJoin(parent, eq(parent.id, importId))
+      .innerJoin(transfers, eq(transfers.importId, parent.id))
+      .innerJoin(
+        operations,
+        and(
+          eq(operations.authorizationId, claims.authorizationId),
+          eq(operations.generation, claims.generation),
+        ),
+      )
+      .innerJoin(authorizations, eq(authorizations.authorizationId, claims.authorizationId))
+      .innerJoin(
+        packages,
+        and(
+          eq(packages.localSiteId, authorizations.localSiteId),
+          eq(packages.packageId, authorizations.packageId),
+        ),
+      )
+      .innerJoin(
+        agents,
+        and(
+          eq(agents.agentId, authorizations.agentId),
+          eq(agents.providerOrgId, parent.localOrgId),
+        ),
+      )
+      .where(
+        and(
+          eq(parent.localSiteId, this.siteId),
+          eq(authorizations.localSiteId, this.siteId),
+          eq(parent.delivery, "media"),
+          inArray(parent.state, ["pending", "transferring"]),
+          eq(transfers.state, "pending"),
+          eq(operations.state, "verified"),
+          isNull(claims.releasedAt),
+          isNull(authorizations.revokedAt),
+          isNull(packages.revokedAt),
+          gt(authorizations.expiresAt, this.clock()),
+          lte(operations.updatedAt, new Date(this.clock().getTime() - 30_000)),
+          inArray(agents.agentId, agentIds),
+          eq(agents.status, "online"),
+          ...[federationInputAttempts, federationResultAttempts].map((attempts) =>
+            notExists(
+              this.db
+                .select({ id: attempts.generation })
+                .from(attempts)
+                .where(
+                  and(
+                    eq(attempts.agentId, agents.agentId),
+                    inArray(attempts.state, [
+                      "preparing",
+                      "copying",
+                      "assembling",
+                      "verifying",
+                      "cleanup_pending",
+                    ]),
+                    gte(attempts.leaseUntil, this.clock()),
+                  ),
+                ),
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(operations.updatedAt), asc(transfers.updatedAt), asc(transfers.id))
+      .limit(20);
+  }
+  async deferUpload(authorizationId: string) {
+    await this.db
+      .update(operations)
+      .set({ updatedAt: this.clock() })
+      .where(
+        and(eq(operations.authorizationId, authorizationId), eq(operations.state, "verified")),
+      );
+  }
   private async reader(agentId: string, authorizationId: string) {
     const [selected] = await this.db
       .select({ orgId: packages.localOrgId, packageId: packages.packageId })
@@ -257,13 +350,68 @@ export class FederationMediaImportOperations {
     });
   }
   /** Only a verified private task package can be used as an upload source. */
-  async uploadTask(agentId: string, authorizationId: string) {
+  async uploadTask(
+    agentId: string,
+    authorizationId: string,
+    target?: { kind: "task-input" | "task-result"; transferId: string },
+  ) {
     const reader = await this.reader(agentId, authorizationId);
     return this.db.transaction(async (tx) => {
       const s = await this.scope(tx, agentId, authorizationId, reader);
       if (!s.claim || s.operation.state !== "verified")
         throw new FederationError("OPERATION_CONFLICT");
-      return { ...(await this.preparedTask(s)), claimId: s.claim.id };
+      let memberIndex: number | undefined;
+      if (target?.kind === "task-input") {
+        if (!s.claim.taskInputImportId) throw new FederationError("OPERATION_CONFLICT");
+        const [row] = await tx
+          .select({ parent: federationInputImports, transfer: federationInputTransfers })
+          .from(federationInputTransfers)
+          .innerJoin(
+            federationInputImports,
+            eq(federationInputImports.id, federationInputTransfers.importId),
+          )
+          .where(
+            and(
+              eq(federationInputTransfers.id, target.transferId),
+              eq(federationInputImports.id, s.claim.taskInputImportId),
+            ),
+          );
+        if (!row) throw new FederationError("OPERATION_CONFLICT");
+        memberIndex = row.parent.manifest.inputs
+          .flatMap((input) =>
+            input.files.map((file) => ({ descriptor: input.descriptor, path: file.path })),
+          )
+          .findIndex(
+            (file) =>
+              file.descriptor === row.transfer.descriptor && file.path === row.transfer.path,
+          );
+      } else if (target?.kind === "task-result") {
+        if (!s.claim.taskResultImportId) throw new FederationError("OPERATION_CONFLICT");
+        const [row] = await tx
+          .select({ parent: federationResultImports, transfer: federationResultTransfers })
+          .from(federationResultTransfers)
+          .innerJoin(
+            federationResultImports,
+            eq(federationResultImports.id, federationResultTransfers.importId),
+          )
+          .where(
+            and(
+              eq(federationResultTransfers.id, target.transferId),
+              eq(federationResultImports.id, s.claim.taskResultImportId),
+            ),
+          );
+        if (!row) throw new FederationError("OPERATION_CONFLICT");
+        memberIndex = row.parent.report.manifest.outputs
+          .flatMap((output) =>
+            output.files.map((file) => ({ outputId: output.outputId, path: file.path })),
+          )
+          .findIndex(
+            (file) => file.outputId === row.transfer.outputId && file.path === row.transfer.path,
+          );
+      }
+      if (memberIndex !== undefined && memberIndex < 0)
+        throw new FederationError("INVALID_MESSAGE");
+      return { ...(await this.preparedTask(s)), claimId: s.claim.id, memberIndex };
     });
   }
   private async preparedTask(s: Awaited<ReturnType<FederationMediaImportOperations["scope"]>>) {
