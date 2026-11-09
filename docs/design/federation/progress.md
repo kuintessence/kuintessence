@@ -3077,3 +3077,7 @@ Drizzle 生成迁移 0166，四张表保存介质、不可变批次、活动占�
 CI 第二轮已通过 protobuf 生成、独立类型与链码测试，实际 Peer 启动退出。检查发现夹具只覆盖 ledger 路径，快照仍使用 Fabric 默认的 `/var/hyperledger/production/snapshots`；普通 runner 无权写入，多个 Peer 也不应共享该路径。改为每个 Peer 在隔离临时目录中保存快照，随环境一并清理，继续由远端真实检查确认。未扩大 runner 权限或输出密钥／私有账本。
 
 静态收尾：全仓 lint 退出 0（既有 47 warnings/1 info），全仓 typecheck 含 protobuf 生成和独立 Fabric 脚本退出 0；942 个本地文档目标、workflow 引用和 diff 检查通过。隔离数据库已清理。
+
+## 远端 Fabric 商业初始化夹具修复
+
+2026-11-09：PR 真实隐私与数据库恢复专项通过，主 CI 与 Server/Agent bundle 检查通过。商业专项在初始化时退出，夹具仍用最初仅含 agreement/usage 的枚举重新解析已由共享协议验证的用途列表，误拒新增账单、结算等用途；改为保留原配置列表，不自动增加权限。隔离 PostgreSQL 中实际 worker 的初始化、双方直接审批通过，链待办为零；仅更新本轮私有测试副本的有效期并重新签署模板，原材料未改写，未启动本地链。独立脚本类型检查及全仓 lint 退出 0。下一轮远端继续验证商业恢复、市场和 gate，完整目标与预览保持未完成。
