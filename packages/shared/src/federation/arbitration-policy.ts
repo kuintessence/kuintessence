@@ -134,3 +134,26 @@ export const CommercialArbitrationPolicyListSchema = z.object({
   data: CommercialArbitrationPolicyApprovalSchema.array(),
   hasMore: z.boolean(),
 });
+
+/** Current local binding observation, not a signed mandate, financial head or execution permit. */
+export const CommercialArbitrationTaskBindingSchema = z.strictObject({
+  caseId: z.uuid(),
+  caseDigest: FederationDigestSchema,
+  domainId: z.uuid(),
+  agreementRevisionId: z.uuid(),
+  agreementDigest: FederationDigestSchema,
+  sourceSiteId: z.uuid(),
+  targetSiteId: z.uuid(),
+  arbitratorSiteId: z.uuid(),
+  taskId: z.uuid(),
+  attempt: FederationDelegationSchema.shape.attempt,
+  operationId: z.uuid(),
+  reservationId: z.uuid(),
+  requestDigest: FederationDigestSchema,
+  acceptanceDigest: FederationDigestSchema,
+  policyId: z.uuid(),
+  policyDigest: FederationDigestSchema,
+  mode: FederationDelegationSchema.shape.mode,
+  unit: FederationDelegationSchema.shape.unit,
+  observedAt: z.iso.datetime(),
+});

@@ -6,6 +6,7 @@ import {
   federationDisputes as cases,
   federationCommercialAgreements as contracts,
   federationCommercialExecutionApprovals as executionApprovals,
+  federationAgreements,
   federationOutbound as outbound,
   type PgDb,
   type PgTransaction,
@@ -18,10 +19,17 @@ import {
   federationUsageTasks as tasks,
 } from "@kuintessence/db";
 import {
+  assertDelegationTerms,
+  FederationAcceptanceSchema,
   FederationCancellationReceiptSchema,
+  FederationDelegationSchema,
   FederationError,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
+import {
+  assertArbitrationRequest,
+  CommercialArbitrationTaskBindingSchema,
+} from "@kuintessence/shared/federation/arbitration-policy";
 import {
   assertCommercialAdjustment,
   assertCommercialRefund,
@@ -47,6 +55,7 @@ import {
 } from "@kuintessence/shared/federation/disputes";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
+import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { federationMaterialDigest } from "./assets";
 import { lockFederationDisputeTask } from "./dispute-freeze";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -612,6 +621,186 @@ export class FederationDisputeService {
     if (!row.openedBy || row.payload.openingSiteId !== this.signing.siteId)
       throw new FederationError("POLICY_DENIED");
     return row;
+  }
+
+  /** Resolve only the original admission. A later policy or a bill's embedded request cannot grant authority. */
+  async arbitrationBinding(actor: FederationActor, revisionId: string, caseId: string) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "dispute.read");
+      await requireFederationCapability(tx, actor, "arbitration.approve");
+      const [visible] = await tx
+        .select()
+        .from(cases)
+        .where(
+          and(
+            eq(cases.localSiteId, this.signing.siteId),
+            eq(cases.localOrgId, actor.orgId),
+            eq(cases.agreementRevisionId, revisionId),
+            eq(cases.caseId, caseId),
+          ),
+        )
+        .for("share");
+      if (!visible) throw new FederationError("POLICY_DENIED");
+      const record = await this.verifiedCase(tx, caseId);
+      if (!["FREEZE_PENDING", "DISPUTED", "EVIDENCE_WAITING"].includes(record.state))
+        throw new FederationError("OPERATION_CONFLICT");
+      const scope = record.payload;
+      const source = this.signing.siteId === scope.sourceSiteId;
+      const original = source
+        ? (
+            await tx
+              .select({
+                operationId: outbound.operationId,
+                requestDigest: outbound.requestDigest,
+                requestJws: outbound.requestJws,
+                receipt: outbound.receipt,
+                receiptJws: outbound.receiptJws,
+                request: outbound.request,
+              })
+              .from(outbound)
+              .where(
+                and(
+                  eq(outbound.localSiteId, this.signing.siteId),
+                  eq(outbound.localOrgId, actor.orgId),
+                  eq(outbound.agreementRevisionId, revisionId),
+                  eq(outbound.taskId, scope.taskId),
+                  eq(outbound.attempt, scope.attempt),
+                  eq(outbound.state, "accepted"),
+                ),
+              )
+              .for("share")
+          )[0]
+        : (
+            await tx
+              .select({
+                operationId: reservations.operationId,
+                requestDigest: reservations.requestDigest,
+                requestJws: reservations.requestJws,
+                receipt: reservations.receipt,
+                receiptJws: reservations.receiptJws,
+                reservationId: reservations.id,
+              })
+              .from(reservations)
+              .innerJoin(
+                federationAgreements,
+                eq(federationAgreements.revisionId, reservations.agreementRevisionId),
+              )
+              .where(
+                and(
+                  eq(federationAgreements.localOrgId, actor.orgId),
+                  eq(federationAgreements.targetSiteId, this.signing.siteId),
+                  eq(reservations.agreementRevisionId, revisionId),
+                  eq(reservations.senderSiteId, scope.sourceSiteId),
+                  eq(reservations.taskId, scope.taskId),
+                  eq(reservations.attempt, scope.attempt),
+                  eq(reservations.state, "reserved"),
+                ),
+              )
+              .for("share", { of: [reservations, federationAgreements] })
+          )[0];
+      if (!original?.receiptJws || !original.receipt) throw new FederationError("DATA_WAITING");
+      const request = await this.verify(
+        tx,
+        FederationDelegationSchema,
+        original.requestJws,
+        scope.sourceSiteId,
+      );
+      const r = request.payload;
+      if (
+        request.digest !== original.requestDigest ||
+        r.operationId !== original.operationId ||
+        r.agreementRevisionId !== revisionId ||
+        r.taskId !== scope.taskId ||
+        r.attempt !== scope.attempt ||
+        r.senderSiteId !== scope.sourceSiteId ||
+        r.recipientSiteId !== scope.targetSiteId ||
+        ("request" in original &&
+          federationCanonicalJson(original.request) !== federationCanonicalJson(r))
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      if (!r.arbitration) throw new FederationError("POLICY_DENIED");
+      const [contract] = await tx
+        .select({ terms: contracts.terms })
+        .from(contracts)
+        .where(
+          and(
+            eq(contracts.localSiteId, this.signing.siteId),
+            eq(contracts.revisionId, revisionId),
+            eq(contracts.localOrgId, actor.orgId),
+          ),
+        );
+      if (!contract) throw new FederationError("AGREEMENT_UNAVAILABLE");
+      assertDelegationTerms(contract.terms.agreement, r, new Date(r.issuedAt));
+      const { row: policy } = await new FederationArbitrationPolicyService(
+        this.db,
+        this.signing,
+      ).verified(tx, actor, revisionId, r.arbitration.policyId);
+      assertArbitrationRequest(policy.payload, policy.digest, r, new Date());
+      if (
+        policy.payload.domainId !== scope.domainId ||
+        policy.payload.agreementDigest !== scope.agreementDigest ||
+        !policy.payload.subjectTypes.includes(scope.subject.recordType) ||
+        r.arbitration.sourceJws !== (source ? policy.approvalJws : policy.counterpartyJws) ||
+        r.arbitration.targetJws !== (source ? policy.counterpartyJws : policy.approvalJws)
+      )
+        throw new FederationError("POLICY_DENIED");
+      // Policy locks may have waited; original key validity must still hold at the observation boundary.
+      await this.verify(tx, FederationDelegationSchema, original.requestJws, scope.sourceSiteId);
+      const accepted = await this.verify(
+        tx,
+        FederationAcceptanceSchema,
+        original.receiptJws,
+        scope.targetSiteId,
+      );
+      const receipt = accepted.payload;
+      if (
+        federationCanonicalJson(receipt) !== federationCanonicalJson(original.receipt) ||
+        receipt.senderSiteId !== r.recipientSiteId ||
+        receipt.recipientSiteId !== r.senderSiteId ||
+        receipt.requestDigest !== request.digest ||
+        receipt.reservedAmount !== r.maxAmount ||
+        receipt.unit !== r.unit ||
+        (
+          [
+            "operationId",
+            "agreementRevisionId",
+            "mode",
+            "budgetDomainId",
+            "epoch",
+            "taskId",
+            "attempt",
+          ] as const
+        ).some((field) => receipt[field] !== r[field]) ||
+        ("reservationId" in original && receipt.reservationId !== original.reservationId) ||
+        Date.parse(receipt.acceptedAt) < Date.parse(r.issuedAt) - 60000 ||
+        Date.parse(receipt.acceptedAt) >= Date.parse(r.expiresAt) ||
+        Date.parse(receipt.acceptedAt) > Date.now() + 60000
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      const now = new Date();
+      assertArbitrationRequest(policy.payload, policy.digest, r, now);
+      return CommercialArbitrationTaskBindingSchema.parse({
+        caseId,
+        caseDigest: record.digest,
+        domainId: scope.domainId,
+        agreementRevisionId: revisionId,
+        agreementDigest: scope.agreementDigest,
+        sourceSiteId: scope.sourceSiteId,
+        targetSiteId: scope.targetSiteId,
+        arbitratorSiteId: policy.arbitratorSiteId,
+        taskId: r.taskId,
+        attempt: r.attempt,
+        operationId: r.operationId,
+        reservationId: receipt.reservationId,
+        requestDigest: request.digest,
+        acceptanceDigest: accepted.digest,
+        policyId: policy.policyId,
+        policyDigest: policy.digest,
+        mode: r.mode,
+        unit: r.unit,
+        observedAt: now.toISOString(),
+      });
+    });
   }
   /** The caller holds disclosure authority; return only a verified original from this case's scope. */
   async disclosureOriginal(

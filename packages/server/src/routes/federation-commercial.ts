@@ -189,6 +189,16 @@ export function createFederationCommercialRoutes(
   if (disputes) {
     const path = "/federation/commercial-agreements/:revisionId/disputes";
     r.get(
+      `${path}/:caseId/arbitration-binding`,
+      kqValidator("param", id.extend({ caseId: z.uuid() })),
+      async (c) => {
+        const { revisionId, caseId } = c.req.valid("param");
+        return c.json({
+          data: await disputes.arbitrationBinding(c.get("federationActor"), revisionId, caseId),
+        });
+      },
+    );
+    r.get(
       path,
       kqValidator("param", id),
       kqValidator("query", page.extend({ caseId: z.uuid().optional() })),

@@ -3560,3 +3560,14 @@ a4320dc 的 bundle 重试也已 success，Fabric 重试随后被新提交的并�
 通用存证失败路径已单独在本机复现检查，12 项真实 Fabric 断言全部通过；未复跑已通过的三 Server 或科研软件矩阵。诊断进一步覆盖 SDK 的固定 `Error.message` 错误码，仅精确白名单可公开，任意正文／后缀仍拒绝；3 项诊断检查（12 断言）通过。此结果未定位远端历史失败根因，新提交 CI 仍须确认。
 
 完整 `bun run typecheck`（protobuf、全部 package、独立 Fabric 脚本）退出 0；全仓 lint 退出 0（既有 47 warnings／1 info），诊断小修的定向 lint 通过。1059 个本地文档目标、两个新增标题、Python 语法、workflow 引用及 diff 检查通过。Fabric CI 的路径过滤补齐 `scripts/federation-live/**`，但三 Server 联合专项仍为本地独立入口，并未宣称已由 CI 执行。下一项 R 裁决、原任务证明、窄执行及同任务多案件冻结的具体接线写入 disputes；尚未开放生产裁决或财务入口。
+
+
+## 案件绑定原接单仲裁依据
+
+2026-11-10：新增生产 `arbitration-binding` 查询，复用现有争议和政策服务，无迁移、新队列、依赖或机构签署用途。源站读取原 accepted outbound，提供方读取原 reservation／执行协议，逐项验证签名、摘要、合同和原接单范围；从原请求取唯一双签政策，拒绝后来的账单或政策补权。当前政策及原签名用途检查保留，历史接单窗口不限制核对，锁等待后重新检查有效期。人员须同时具有 dispute.read 和 arbitration.approve，只返回必要标识与摘要。见[接口与边界](disputes.md#从案件核对原接单仲裁绑定)。
+
+测试夹具首次误用了 outbound 的方法名，改为实际 deliverNext 后继续定向验证。复查补上原合同的预算域／epoch／模式校验，防止签署原件范围不一致时被当成有效依据。当前入口仍是本地观察，不是发给 R 的签署上下文、链就绪证明或裁决执行许可；完整目标继续 active，后续 R 裁决、窄财务执行、合法解冻及其他蓝图均保留。
+
+上一提交 ad7b5d1 的 CI、bundle、完整 Fabric workflow 均 success，草稿预览 skipped；本轮没有重复三站或科研软件矩阵。
+
+7 项隔离 PostgreSQL／生产接口检查通过（56 断言），包含实际政策行锁及时间推进；运行资源清理完成。全仓 lint 通过，保留既有 47 warnings／1 info；1061 个本地文档目标及 diff 检查通过。完整类型检查首次仅新测试的 HTTP unknown 取值报错，改为严格解析完整响应，Server 及未执行到的独立 Fabric 脚本定向补查均退出 0，其他 package 已在根命令通过。完整类型范围通过，未使用类型抑制。

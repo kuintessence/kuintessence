@@ -78,6 +78,7 @@ import {
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
 } from "@kuintessence/shared/federation";
+import { CommercialArbitrationTaskBindingSchema } from "@kuintessence/shared/federation/arbitration-policy";
 import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
   type CommercialAdapterProposalInput,
@@ -118,7 +119,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
-import type { z } from "zod";
+import { z } from "zod";
 import { JobCancellationOutbox } from "../grpc/dispatcher";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
@@ -142,6 +143,7 @@ import { FederationCommercialSubmissionService } from "./commercial-submissions"
 import { FederationCommercialWorker } from "./commercial-worker";
 import { FederationDispatchAuthorization } from "./dispatch-authorization";
 import { lockFederationDisputeTask } from "./dispute-freeze";
+import { FederationDisputeService } from "./disputes";
 import { FederationExecutionAutomation } from "./execution-automation";
 import { FederationExecutionBindingService } from "./execution-binding";
 import { FederationExecutionConfirmationService } from "./execution-confirmation";
@@ -11875,4 +11877,389 @@ test("execution dispute approval waits for a concurrent case transaction and obs
       .from(executionApprovals)
       .where(eq(executionApprovals.localSiteId, row.localSiteId)),
   ).toHaveLength(0);
+});
+
+async function arbitrationCaseFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  legacy = false,
+) {
+  const f = await arbitrationAdmission(mode);
+  await f.arbitration.confirm();
+  const request = {
+    ...f.reservation.request,
+    ...(legacy ? {} : { arbitration: f.arbitration.binding }),
+  };
+  await f.outbound.enqueue(f.actor, request);
+  await f.outbound.deliverNext();
+  const [original] = await db
+    .select()
+    .from(federationOutbound)
+    .where(eq(federationOutbound.operationId, request.operationId));
+  if (!original?.receiptJws || !original.receipt)
+    throw new Error("Original admission fixture was not accepted");
+  for (const site of [f.a.signing.siteId, f.b.signing.siteId])
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-bill","commercial-dispute","commercial-dispute-receipt"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, site));
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "dispute.open", enabled: true },
+    f.actor.userId,
+  );
+  const contract = await f.approvals.get(f.actor, f.revisionId);
+  const endedAt = new Date().toISOString();
+  const report = CommercialUsageSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-usage",
+    reportId: randomUUID(),
+    domainId: f.terms.domainId,
+    agreementRevisionId: f.revisionId,
+    agreementDigest: contract.digest,
+    sourceSiteId: f.a.signing.siteId,
+    targetSiteId: f.b.signing.siteId,
+    taskId: request.taskId,
+    attempt: request.attempt,
+    salt: randomBytes(32).toString("hex"),
+    reportedAt: endedAt,
+    periodStart: request.issuedAt,
+    periodEnd: endedAt,
+    measurements: f.terms.prices.map((p) => ({
+      metric: p.metric,
+      quantityUnit: p.quantityUnit,
+      quantity: "1",
+      evidenceDigest: contract.digest,
+    })),
+  });
+  // A later bill deliberately carries consent even in the legacy test; only original admission may confer it.
+  const billRequest = { ...request, arbitration: f.arbitration.binding };
+  const bill = CommercialBillSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-bill",
+    billId: randomUUID(),
+    domainId: f.terms.domainId,
+    agreementDigest: contract.digest,
+    priceVersionId: f.terms.priceVersionId,
+    reportId: report.reportId,
+    reportDigest: federationMaterialDigest(report),
+    request: billRequest,
+    reservationId: null,
+    discount: null,
+    calculation: calculateCommercialBill(f.terms, billRequest, report),
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const signatures = await Promise.all(
+    [f.a, f.b].map((key) => signFederationMessage(CommercialBillSchema, bill, key.signing)),
+  );
+  const first = signatures[0],
+    second = signatures[1];
+  if (!first || !second) throw new Error("Missing signed bill fixture");
+  const billDigest = `sha256:${createHash("sha256")
+    .update(Buffer.from(first.split(".")[1] ?? "", "base64url"))
+    .digest("hex")}`;
+  for (const [site, own, other] of [
+    [f.a.signing.siteId, first, second],
+    [f.b.signing.siteId, second, first],
+  ] as const)
+    await db.insert(federationCommercialBills).values({
+      localSiteId: site,
+      localOrgId: f.actor.orgId,
+      billId: bill.billId,
+      agreementRevisionId: f.revisionId,
+      taskId: request.taskId,
+      attempt: request.attempt,
+      payload: bill,
+      digest: billDigest,
+      approvalJws: own,
+      counterpartyJws: other,
+      approvedBy: f.actor.userId,
+    });
+  const sourceCases = new FederationDisputeService(db, f.a.signing),
+    targetCases = new FederationDisputeService(db, f.b.signing);
+  const draft = await targetCases.draft(f.actor, f.revisionId, {
+    caseId: randomUUID(),
+    subject: { recordType: "bill", recordId: bill.billId, recordDigest: billDigest },
+    reason: "Private case allegation",
+    requestedResolution: "Review before financial execution",
+  });
+  const opened = await targetCases.open(f.actor, f.revisionId, draft);
+  const fingerprint = randomBytes(32).toString("hex");
+  await db.insert(federationCertificates).values({
+    fingerprint,
+    siteId: f.b.signing.siteId,
+    certificatePem: "registered fixture fingerprint",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2099-01-01"),
+  });
+  await sourceCases.receive(opened.openingJws, fingerprint);
+  const read = (target = false) =>
+    (target ? targetCases : sourceCases).arbitrationBinding(f.actor, f.revisionId, draft.caseId);
+  return { ...f, request, original, draft, sourceCases, targetCases, read };
+}
+
+test("arbitration case binding resolves both original admissions without financial or ledger writes", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await arbitrationCaseFixture(mode);
+    const before = await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.request.budgetDomainId));
+    const queued = await db
+      .select()
+      .from(submissions)
+      .where(eq(submissions.agreementRevisionId, f.revisionId));
+    const { observedAt: sourceAt, ...source } = CommercialArbitrationTaskBindingSchema.parse(
+      await f.read(),
+    );
+    const { observedAt: targetAt, ...target } = CommercialArbitrationTaskBindingSchema.parse(
+      await f.read(true),
+    );
+    expect(source).toEqual(target);
+    expect(source).toMatchObject({
+      policyId: f.arbitration.policy.policyId,
+      requestDigest: f.original.requestDigest,
+      reservationId: f.original.receipt?.reservationId,
+      arbitratorSiteId: f.arbitration.policy.arbitratorSiteId,
+      mode,
+    });
+    expect(Date.parse(sourceAt)).toBeLessThanOrEqual(Date.now());
+    expect(Date.parse(targetAt)).toBeLessThanOrEqual(Date.now());
+    for (const secret of [
+      f.original.requestJws,
+      f.original.receiptJws,
+      f.terms.termsText,
+      f.draft.reason,
+      "approvalJws",
+      "maxChargedAmount",
+    ])
+      expect(JSON.stringify(source)).not.toContain(secret ?? "missing");
+    expect(
+      CommercialArbitrationTaskBindingSchema.safeParse({
+        ...source,
+        observedAt: sourceAt,
+        approved: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.request.budgetDomainId)),
+    ).toEqual(before);
+    expect(
+      await db.select().from(submissions).where(eq(submissions.agreementRevisionId, f.revisionId)),
+    ).toEqual(queued);
+  }
+});
+
+test("arbitration case binding cannot infer missing original consent from a later signed bill or policy", async () => {
+  const f = await arbitrationCaseFixture("bilateral_direct", true);
+  for (const target of [false, true]) await expect(f.read(target)).rejects.toThrow("POLICY_DENIED");
+  const [original] = await db
+    .select()
+    .from(federationOutbound)
+    .where(eq(federationOutbound.operationId, f.request.operationId));
+  expect(original?.request).not.toHaveProperty("arbitration");
+  expect(original?.requestJws).toBe(f.original.requestJws);
+});
+
+test("arbitration case binding rejects changed original receipts and untrusted admission signatures", async () => {
+  const f = await arbitrationCaseFixture();
+  if (!f.original.receipt) throw new Error("Missing original receipt");
+  const path = eq(federationOutbound.operationId, f.request.operationId);
+  for (const patch of [
+    { unit: "wrong" },
+    { reservedAmount: "1" },
+    { requestDigest: f.arbitration.binding.policyDigest },
+    { acceptedAt: f.request.expiresAt },
+    { attempt: 2 },
+    { recipientSiteId: randomUUID() },
+  ]) {
+    const receipt = { ...f.original.receipt, ...patch };
+    await db
+      .update(federationOutbound)
+      .set({
+        receipt,
+        receiptJws: await signFederationMessage(FederationAcceptanceSchema, receipt, f.b.signing),
+      })
+      .where(path);
+    await expect(f.read()).rejects.toThrow("OPERATION_CONFLICT");
+  }
+  await db
+    .update(federationOutbound)
+    .set({ receipt: f.original.receipt, receiptJws: f.original.receiptJws })
+    .where(path);
+  const wrongId = { ...f.original.receipt, reservationId: randomUUID() };
+  await db
+    .update(federationReservations)
+    .set({
+      receipt: wrongId,
+      receiptJws: await signFederationMessage(FederationAcceptanceSchema, wrongId, f.b.signing),
+    })
+    .where(eq(federationReservations.id, f.original.receipt.reservationId));
+  await expect(f.read(true)).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'delegation'` })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  await expect(f.read()).rejects.toThrow("UNTRUSTED_IDENTITY");
+});
+
+test("arbitration case binding stops at current policy revocation and ended case state", async () => {
+  const f = await arbitrationCaseFixture();
+  await db
+    .update(federationDisputes)
+    .set({ state: "RESOLVED" })
+    .where(eq(federationDisputes.caseId, f.draft.caseId));
+  await expect(f.read()).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationDisputes)
+    .set({ state: "DISPUTED" })
+    .where(eq(federationDisputes.caseId, f.draft.caseId));
+  await f.arbitration.source.revoke(f.actor, f.revisionId, f.arbitration.policy.policyId);
+  await f.arbitration.target.revoke(f.actor, f.revisionId, f.arbitration.policy.policyId);
+  for (const target of [false, true])
+    await expect(f.read(target)).rejects.toThrow("AUTHORIZATION_EXPIRED");
+});
+
+test("arbitration case binding HTTP requires both human capabilities and the original organization", async () => {
+  const f = await arbitrationCaseFixture();
+  const args: Parameters<typeof createFederationCommercialRoutes> = [f.approvals, f.service];
+  args[23] = f.sourceCases;
+  const app = new Hono();
+  let actor = f.actor,
+    automation = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    c.set("automation" as never, automation as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...args));
+  const path = `/federation/commercial-agreements/${f.revisionId}/disputes/${f.draft.caseId}/arbitration-binding`;
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(
+    z.object({ data: CommercialArbitrationTaskBindingSchema }).safeParse(await response.json())
+      .success,
+  ).toBe(true);
+  automation = true;
+  expect((await app.request(path)).status).toBe(403);
+  automation = false;
+  for (const capability of ["arbitration.approve", "dispute.open"] as const) {
+    await new FederationPermissionService(db).set(
+      { ...f.actor, capability, enabled: false },
+      f.actor.userId,
+    );
+    expect((await app.request(path)).status).toBe(403);
+    await new FederationPermissionService(db).set(
+      { ...f.actor, capability, enabled: true },
+      f.actor.userId,
+    );
+  }
+  const other = await fixture();
+  for (const capability of ["arbitration.approve", "dispute.open"] as const)
+    await new FederationPermissionService(db).set(
+      { ...other.actor, capability, enabled: true },
+      other.actor.userId,
+    );
+  actor = other.actor;
+  expect((await app.request(path)).status).toBe(403);
+  actor = f.actor;
+  expect((await app.request(path.replace(f.revisionId, randomUUID()))).status).toBe(403);
+  expect((await app.request(path.replace(f.draft.caseId, "invalid"))).status).toBe(400);
+});
+
+test("arbitration case binding permits historical admission but not policy expiry during a real lock wait", async () => {
+  const f = await arbitrationCaseFixture();
+  try {
+    setSystemTime(new Date(Date.parse(f.request.expiresAt) + 1));
+    expect((await f.read()).requestDigest).toBe(f.original.requestDigest);
+  } finally {
+    setSystemTime();
+  }
+  const locked = Promise.withResolvers<number>();
+  const release = Promise.withResolvers<void>();
+  const blocker = db.transaction(async (tx) => {
+    await tx
+      .select()
+      .from(federationArbitrationPolicies)
+      .where(
+        and(
+          eq(federationArbitrationPolicies.localSiteId, f.a.signing.siteId),
+          eq(federationArbitrationPolicies.policyId, f.arbitration.policy.policyId),
+        ),
+      )
+      .for("update");
+    const rows = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+    if (!rows[0]) throw new Error("Missing lock holder");
+    locked.resolve(rows[0].pid);
+    await release.promise;
+  });
+  const pid = await locked.promise;
+  const operation = f.read().then(
+    () => null,
+    (error: unknown) => error,
+  );
+  try {
+    let waiting = false;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (
+        (
+          await db.execute(
+            sql`select pid from pg_stat_activity where ${pid} = ANY(pg_blocking_pids(pid))`,
+          )
+        ).length
+      ) {
+        waiting = true;
+        break;
+      }
+      await Bun.sleep(10);
+    }
+    expect(waiting).toBe(true);
+    setSystemTime(new Date(f.arbitration.policy.validUntil));
+    release.resolve();
+    await blocker;
+    expect(await operation).toMatchObject({ code: "AUTHORIZATION_EXPIRED" });
+  } finally {
+    release.resolve();
+    await blocker;
+    await operation;
+    setSystemTime();
+  }
+});
+
+test("arbitration case binding checks the original contract budget and mode even for matching signed request and receipt", async () => {
+  const f = await arbitrationCaseFixture();
+  if (!f.original.receipt) throw new Error("Missing original receipt");
+  for (const patch of [
+    { budgetDomainId: randomUUID() },
+    { epoch: randomUUID() },
+    { mode: "bilateral_attested" as const },
+  ]) {
+    const request = { ...f.request, ...patch };
+    const requestJws = await signFederationMessage(
+      FederationDelegationSchema,
+      request,
+      f.a.signing,
+    );
+    const digest = `sha256:${createHash("sha256")
+      .update(Buffer.from(requestJws.split(".")[1] ?? "", "base64url"))
+      .digest("hex")}`;
+    const receipt = { ...f.original.receipt, ...patch, requestDigest: digest };
+    await db
+      .update(federationOutbound)
+      .set({
+        request,
+        requestJws,
+        requestDigest: digest,
+        receipt,
+        receiptJws: await signFederationMessage(FederationAcceptanceSchema, receipt, f.b.signing),
+      })
+      .where(eq(federationOutbound.operationId, f.request.operationId));
+    await expect(f.read()).rejects.toThrow("POLICY_DENIED");
+  }
 });
