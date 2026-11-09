@@ -14,6 +14,7 @@ export const MediaOptionsQuerySchema = z
   .discriminatedUnion("kind", [
     z.object({ kind: z.literal("agreements") }),
     z.object({ kind: z.literal("agents") }),
+    z.object({ kind: z.literal("datasets") }),
     z.object({ kind: z.literal("roots"), agentId: z.string().min(1).max(255) }),
   ])
   .and(
@@ -28,6 +29,23 @@ const OptionsPage = {
   hasMore: z.boolean(),
 };
 export const MediaOptionsSchema = z.discriminatedUnion("kind", [
+  z.object({
+    ...OptionsPage,
+    kind: z.literal("datasets"),
+    data: z
+      .array(
+        z.object({
+          versionId: z.uuid(),
+          locationId: z.uuid(),
+          name: z.string(),
+          version: z.string(),
+          agentName: z.string(),
+          rootLabel: z.string(),
+          sizeBytes: z.number().int().nonnegative().nullable(),
+        }),
+      )
+      .max(100),
+  }),
   z.object({
     ...OptionsPage,
     kind: z.literal("agreements"),

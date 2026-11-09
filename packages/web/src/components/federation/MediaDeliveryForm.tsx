@@ -69,8 +69,10 @@ export function MediaDeliveryForm({
   const [agentsReady, setAgentsReady] = useState(false);
   const [rootsReady, setRootsReady] = useState(false);
   const [root, setRoot] = useState("");
-  const [version, setVersion] = useState("");
-  const [location, setLocation] = useState("");
+  const [dataset, setDataset] = useState<
+    Extract<MediaOption, { kind: "datasets" }>["value"] | null
+  >(null);
+  const [datasetsReady, setDatasetsReady] = useState(false);
   const [expiry, setExpiry] = useState("");
   const [bytes, setBytes] = useState(action.kind === "approve" ? String(action.sizeBytes) : "");
   const [reason, setReason] = useState("");
@@ -83,7 +85,7 @@ export function MediaDeliveryForm({
   const optionsReady =
     action.kind === "export"
       ? subject === "dataset"
-        ? agreementsReady
+        ? agreementsReady && datasetsReady
         : tasksReady && agentsReady
       : action.kind === "approve"
         ? agentsReady && rootsReady
@@ -189,7 +191,7 @@ export function MediaDeliveryForm({
           recipientSiteId: subject === "dataset" ? agreement?.peerSiteId : task?.recipientSiteId,
           expiresAt: new Date(expiry).toISOString(),
           ...(subject === "dataset"
-            ? { versionId: version, locationId: location }
+            ? { versionId: dataset?.versionId, locationId: dataset?.locationId }
             : { kind: subject, operationId: task?.operationId, agentId: agent }),
         }),
       };
@@ -268,6 +270,10 @@ export function MediaDeliveryForm({
                     return;
                   setSubject(value);
                   setTask(null);
+                  setDataset(null);
+                  setAgreement(null);
+                  setDatasetsReady(false);
+                  setAgreementsReady(false);
                   setTasksReady(false);
                 }}
               >
@@ -304,10 +310,16 @@ export function MediaDeliveryForm({
               />
             )}
             {subject === "dataset" ? (
-              <>
-                {field("versionId", version, setVersion)}
-                {field("locationId", location, setLocation)}
-              </>
+              <MediaOptionPicker
+                scope={scope}
+                kind="datasets"
+                selected={dataset?.locationId ?? ""}
+                disabled={locked}
+                onAvailable={setDatasetsReady}
+                onChange={(option) => {
+                  if (option.kind === "datasets") setDataset(option.value);
+                }}
+              />
             ) : null}
           </>
         ) : null}

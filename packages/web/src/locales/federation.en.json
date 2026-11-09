@@ -811,6 +811,7 @@
       "reason": "Reason for change"
     },
     "delivery": {
+      "datasets": "Dataset / source replica",
       "title": "Media delivery",
       "outgoing": "Outgoing",
       "incoming": "Incoming",

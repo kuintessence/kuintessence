@@ -450,7 +450,7 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     r.route(
       "/api",
       createFederationMediaRoutes(
-        new FederationMediaPackageService(db, source.signing.siteId),
+        new FederationMediaPackageService(db, source.signing.siteId, () => now),
         service,
         operations,
         undefined,
@@ -490,6 +490,103 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     expect(roots.data).toEqual([{ id: rootId, label: "Approved source storage" }]);
     expect(JSON.stringify({ agreements, found, roots })).not.toContain("/managed/");
     expect((await media.options(other, { kind: "roots", agentId })).data).toEqual([]);
+  });
+
+  test("media dataset options: scoped HTTP summaries preserve paired version and replica", async () => {
+    const media = new FederationMediaPackageService(db, source.signing.siteId, () => now);
+    const response = await app().request("/api/federation/media/options?kind=datasets");
+    expect(response.status).toBe(200);
+    const result = MediaOptionsSchema.parse(await response.json());
+    expect(result).toEqual({
+      localSiteId: source.signing.siteId,
+      localOrgId: actor.orgId,
+      kind: "datasets",
+      hasMore: false,
+      data: [
+        {
+          versionId,
+          locationId,
+          name: "Immutable test observations",
+          version: "v1",
+          agentName: "Source",
+          rootLabel: "Approved source storage",
+          sizeBytes: 4,
+        },
+      ],
+    });
+    expect(JSON.stringify(result)).not.toContain("/managed/");
+    expect((await media.options(other, { kind: "datasets" })).data).toEqual([]);
+    await expect(media.options(worker, { kind: "datasets" })).rejects.toThrow();
+    expect(
+      (await app().request("/api/federation/media/options?kind=datasets&limit=101")).status,
+    ).toBe(400);
+  });
+
+  test("media dataset options: discovery and preparation share current disclosure authority", async () => {
+    const media = new FederationMediaPackageService(db, source.signing.siteId, () => now);
+    for (const patch of [
+      { effect: "deny" },
+      { status: "disabled" },
+      { capabilities: ["use"] },
+      { redistributionPolicy: "deny" },
+      { crossCenterReplicationPolicy: "deny" },
+      { expiresAt: testNow },
+    ]) {
+      const [original] = await db
+        .select()
+        .from(dataAccessPolicies)
+        .where(eq(dataAccessPolicies.id, policyId));
+      if (!original) throw new Error("Missing policy");
+      try {
+        await db.update(dataAccessPolicies).set(patch).where(eq(dataAccessPolicies.id, policyId));
+        expect((await media.options(actor, { kind: "datasets" })).data).toEqual([]);
+        await expect(service.prepare(actor, request())).rejects.toThrow("POLICY_DENIED");
+      } finally {
+        await db
+          .update(dataAccessPolicies)
+          .set(original)
+          .where(eq(dataAccessPolicies.id, policyId));
+      }
+    }
+    await db
+      .update(clusterFileRoots)
+      .set({ enabled: false })
+      .where(eq(clusterFileRoots.id, rootId));
+    expect((await media.options(actor, { kind: "datasets" })).data).toEqual([]);
+  });
+
+  test("media dataset options: bounded pages can skip denied candidates without leaking their names", async () => {
+    const media = new FederationMediaPackageService(db, source.signing.siteId, () => now);
+    const second = crypto.randomUUID();
+    await db.insert(dataLocations).values({
+      id: second,
+      dataAssetVersionId: versionId,
+      kind: "cp-local",
+      managedRootId: rootId,
+      relativePath: "second-copy",
+      agentId,
+      providerOrgId: actor.orgId,
+    });
+    try {
+      const first = await media.options(actor, { kind: "datasets", limit: 1 });
+      const next = await media.options(actor, { kind: "datasets", limit: 1, offset: 1 });
+      expect(first.hasMore).toBe(true);
+      expect(next.hasMore).toBe(false);
+      expect(
+        [...first.data, ...next.data]
+          .map((row) => ("locationId" in row ? row.locationId : null))
+          .sort(),
+      ).toEqual([locationId, second].sort());
+      await db
+        .update(dataAccessPolicies)
+        .set({ effect: "deny" })
+        .where(eq(dataAccessPolicies.id, policyId));
+      const denied = await media.options(actor, { kind: "datasets", limit: 1 });
+      expect(denied.data).toEqual([]);
+      expect(denied.hasMore).toBe(true);
+    } finally {
+      await db.delete(dataLocations).where(eq(dataLocations.id, second));
+    }
   });
 
   test("media options: signed active agreement candidates retain independent result deadlines", async () => {

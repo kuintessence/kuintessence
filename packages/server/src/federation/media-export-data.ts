@@ -18,7 +18,7 @@ import { isFederationDataset } from "./dataset-authority";
 import type { FederationActor } from "./permissions";
 
 /** Use/download grants alone carry no permission to redistribute a dataset to another institution. */
-export async function readMediaExportDataset(
+export async function readMediaExportDatasetSource(
   tx: PgTransaction,
   actor: FederationActor,
   input: { versionId: string; locationId: string },
@@ -116,6 +116,29 @@ export async function readMediaExportDataset(
     storage.root.agentId !== storage.agent.agentId
   )
     throw new FederationError("POLICY_DENIED");
+  return {
+    asset: data.asset,
+    version: data.version,
+    agentName: storage.agent.siteName,
+    rootLabel: storage.root.label,
+    source: {
+      agentId: storage.agent.agentId,
+      managedRootId: storage.root.id,
+      relativePath: storage.location.relativePath,
+    },
+    authorizationExpiresAt: Math.max(
+      ...permits.map((policy) => policy.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY),
+    ),
+  };
+}
+
+export async function readMediaExportDataset(
+  tx: PgTransaction,
+  actor: FederationActor,
+  input: { versionId: string; locationId: string },
+  now: Date,
+) {
+  const data = await readMediaExportDatasetSource(tx, actor, input, now);
   const entries = await tx
     .select()
     .from(dataAssetManifestEntries)
@@ -138,17 +161,5 @@ export async function readMediaExportDataset(
     files.reduce((sum, file) => sum + file.sizeBytes, 0) !== data.version.sizeBytes
   )
     throw new FederationError("OPERATION_CONFLICT");
-  return {
-    asset: data.asset,
-    version: data.version,
-    files,
-    source: {
-      agentId: storage.agent.agentId,
-      managedRootId: storage.root.id,
-      relativePath: storage.location.relativePath,
-    },
-    authorizationExpiresAt: Math.max(
-      ...permits.map((policy) => policy.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY),
-    ),
-  };
+  return { ...data, files };
 }

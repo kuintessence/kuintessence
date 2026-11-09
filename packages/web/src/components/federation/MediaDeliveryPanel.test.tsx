@@ -189,18 +189,30 @@ beforeEach(async () => {
         data:
           kind === "agents"
             ? [{ agentId: "agent-one", name: "Research Agent", status: "online" }]
-            : kind === "roots"
-              ? [{ id: user, label: "Research inbox" }]
-              : [
+            : kind === "datasets"
+              ? [
                   {
-                    revisionId: user,
-                    peerSiteId: peer,
-                    peerName: "Institution B",
-                    validFrom: date,
-                    validUntil: expiry,
-                    resultAvailableUntil: null,
+                    versionId: authId,
+                    locationId: id,
+                    name: "Climate observations",
+                    version: "v1",
+                    agentName: "Research Agent",
+                    rootLabel: "Data archive",
+                    sizeBytes: 4,
                   },
-                ],
+                ]
+              : kind === "roots"
+                ? [{ id: user, label: "Research inbox" }]
+                : [
+                    {
+                      revisionId: user,
+                      peerSiteId: peer,
+                      peerName: "Institution B",
+                      validFrom: date,
+                      validUntil: expiry,
+                      resultAvailableUntil: null,
+                    },
+                  ],
       };
     }
     if (path.includes("/operation"))
@@ -720,4 +732,55 @@ test("workflow history pins both list directions and registration to the origina
   expect(vi.mocked(api.post).mock.calls[0]?.[0]).toBe(
     `/federation/media/packages?workflowRunId=${id}`,
   );
+});
+
+test("dataset export selects a paired version and source replica without manual IDs", async () => {
+  mount();
+  await clickReady("Approve export");
+  fireEvent.change(screen.getByLabelText("Material purpose"), { target: { value: "dataset" } });
+  const option = await screen.findByRole("option", { name: /Climate observations/ });
+  expect(option.textContent).toContain("v1 · Research Agent / Data archive");
+  fireEvent.change(screen.getByLabelText("Dataset / source replica"), { target: { value: id } });
+  fireEvent.change(screen.getByLabelText("Cooperation agreement"), { target: { value: user } });
+  fireEvent.change(screen.getByLabelText("Expires at"), { target: { value: "2099-01-01T12:00" } });
+  expect(screen.queryByLabelText("Dataset version ID")).toBeNull();
+  expect(screen.queryByLabelText("Source replica ID")).toBeNull();
+  vi.mocked(api.post).mockImplementation(async (_path, body) => ({
+    data: { ...outgoing, ...(typeof body === "object" && body ? body : {}), taskSelection: null },
+  }));
+  fireEvent.submit(form());
+  await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.post).mock.calls[0]?.[1]).toMatchObject({
+    versionId: authId,
+    locationId: id,
+    agreementRevisionId: user,
+    recipientSiteId: peer,
+  });
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull());
+});
+
+test("switching purpose clears dataset selection and failed discovery blocks submission", async () => {
+  const { client } = mount();
+  await clickReady("Approve export");
+  const purpose = screen.getByLabelText("Material purpose");
+  fireEvent.change(purpose, { target: { value: "dataset" } });
+  await screen.findByRole("option", { name: /Climate observations/ });
+  fireEvent.change(screen.getByLabelText("Dataset / source replica"), { target: { value: id } });
+  fireEvent.change(purpose, { target: { value: "task-input" } });
+  fireEvent.change(purpose, { target: { value: "dataset" } });
+  await screen.findByRole("option", { name: /Climate observations/ });
+  expect((screen.getByLabelText("Dataset / source replica") as HTMLSelectElement).value).toBe("");
+  const get = vi.mocked(api.get).getMockImplementation();
+  vi.mocked(api.get).mockImplementation(async (path, scope) => {
+    if (path.includes("kind=datasets")) throw new Error("discovery denied");
+    if (!get) throw new Error("Missing fixture");
+    return get(path, scope);
+  });
+  await client.invalidateQueries({ queryKey: ["federation", "media"] });
+  await screen.findByRole("alert");
+  expect(
+    (within(form()).getByRole("button", { name: "Approve export" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  fireEvent.submit(form());
+  expect(api.post).not.toHaveBeenCalled();
 });

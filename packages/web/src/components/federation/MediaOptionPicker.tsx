@@ -16,6 +16,7 @@ export type MediaTaskOption = z.infer<typeof MediaTaskOptionSchema>;
 export type MediaOption =
   | { kind: "agreements"; value: Extract<Options, { kind: "agreements" }>["data"][number] }
   | { kind: "agents"; value: Extract<Options, { kind: "agents" }>["data"][number] }
+  | { kind: "datasets"; value: Extract<Options, { kind: "datasets" }>["data"][number] }
   | { kind: "roots"; value: Extract<Options, { kind: "roots" }>["data"][number] }
   | { kind: "task-input" | "task-result"; value: MediaTaskOption };
 export function MediaOptionPicker({
@@ -94,11 +95,17 @@ export function MediaOptionPicker({
                 label: value.label,
                 option: { kind: "roots", value },
               }))
-            : query.data.data.map((value) => ({
-                id: `${value.agreementRevisionId}:${value.operationId}`,
-                label: `${value.workflowName} · ${value.invocationPath ?? value.operationId}`,
-                option: { kind: kind === "task-input" ? "task-input" : "task-result", value },
-              }))
+            : query.data.kind === "datasets"
+              ? query.data.data.map((value) => ({
+                  id: value.locationId,
+                  label: `${value.name} · ${value.version} · ${value.agentName} / ${value.rootLabel}`,
+                  option: { kind: "datasets", value },
+                }))
+              : query.data.data.map((value) => ({
+                  id: `${value.agreementRevisionId}:${value.operationId}`,
+                  label: `${value.workflowName} · ${value.invocationPath ?? value.operationId}`,
+                  option: { kind: kind === "task-input" ? "task-input" : "task-result", value },
+                }))
       : [];
   return (
     <div className="min-w-0 space-y-2">

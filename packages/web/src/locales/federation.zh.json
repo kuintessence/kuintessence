@@ -811,6 +811,7 @@
       "reason": "变更原因"
     },
     "delivery": {
+      "datasets": "数据集 / 来源副本",
       "title": "介质交付",
       "outgoing": "发出",
       "incoming": "收到",

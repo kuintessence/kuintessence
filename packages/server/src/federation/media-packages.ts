@@ -2,6 +2,7 @@ import {
   agents,
   auditLog,
   clusterFileRoots,
+  dataLocations,
   federationAgreementApprovals,
   federationAgreements,
   federationMediaImportAuthorizations,
@@ -24,6 +25,7 @@ import {
 import { and, asc, desc, eq, isNotNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import { readMediaExportDatasetSource } from "./media-export-data";
 import { mediaTaskOptions, mediaWorkflowFilter } from "./media-task-options";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
@@ -59,6 +61,52 @@ export class FederationMediaPackageService {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "asset.read");
       const scope = { localSiteId: this.localSiteId, localOrgId: actor.orgId };
+      if (query.kind === "datasets") {
+        // Bound discovery work before checking the same authority as export preparation.
+        const rows = await tx
+          .select({
+            versionId: dataLocations.dataAssetVersionId,
+            locationId: dataLocations.id,
+          })
+          .from(dataLocations)
+          .innerJoin(agents, eq(agents.agentId, dataLocations.agentId))
+          .innerJoin(clusterFileRoots, eq(clusterFileRoots.id, dataLocations.managedRootId))
+          .where(
+            and(
+              eq(agents.providerOrgId, actor.orgId),
+              eq(clusterFileRoots.providerOrgId, actor.orgId),
+              eq(clusterFileRoots.agentId, agents.agentId),
+              eq(clusterFileRoots.enabled, true),
+              eq(dataLocations.kind, "cp-local"),
+              eq(dataLocations.status, "available"),
+            ),
+          )
+          .orderBy(asc(dataLocations.id))
+          .limit(query.limit + 1)
+          .offset(query.offset);
+        const data = [];
+        for (const row of rows.slice(0, query.limit)) {
+          try {
+            const source = await readMediaExportDatasetSource(tx, actor, row, this.clock());
+            data.push({
+              ...row,
+              name: source.asset.name,
+              version: source.version.version,
+              agentName: source.agentName,
+              rootLabel: source.rootLabel,
+              sizeBytes: source.version.sizeBytes,
+            });
+          } catch (error) {
+            if (!(error instanceof FederationError) || error.code !== "POLICY_DENIED") throw error;
+          }
+        }
+        return MediaOptionsSchema.parse({
+          ...scope,
+          kind: query.kind,
+          data,
+          hasMore: rows.length > query.limit,
+        });
+      }
       if (query.kind === "agents") {
         const rows = await tx
           .select({ agentId: agents.agentId, name: agents.siteName, status: agents.status })
