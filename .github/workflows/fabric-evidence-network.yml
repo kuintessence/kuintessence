@@ -31,7 +31,7 @@ concurrency:
 jobs:
   evidence:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16-alpine
@@ -124,6 +124,18 @@ jobs:
         with:
           name: fabric-arbitration-resolution-result
           path: ${{ runner.temp }}/fabric-arbitration-resolution-result.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Verify arbitration financial posting and private balances
+        env:
+          KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
+          KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-arbitration-financial-result.json
+        run: bun scripts/fabric-evidence-network.ts --gate --arbitration-financial
+      - name: Preserve arbitration financial assertion summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-arbitration-financial-result
+          path: ${{ runner.temp }}/fabric-arbitration-financial-result.json
           if-no-files-found: error
           retention-days: 14
       - name: Preserve execution gate assertion summary

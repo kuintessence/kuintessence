@@ -727,3 +727,14 @@ L09 的直接／异步双边冻结已接生产后台和私有机构入口：同�
 真实 Fabric 3.1.5 三 Peer 使用 `bun scripts/fabric-evidence-network.ts --gate --arbitration-resolution`：分别移除 A 或 B 背书得到原生 ENDORSEMENT_POLICY_FAILURE；两案并发模拟后第一案 VALID、第二案 MVCC_READ_CONFLICT；第一案重放仍不能释放预留；重新准备并完成第二案后才允许释放原预留。A/B 可读同一不可变执行回执，R 不可读／不可提交，同案另一决定拒绝。进程日志的私有探针扫描通过。该专项使用签署证据夹具，不宣称已运行三 Server 生产仲裁取证或真实进程崩溃恢复；Worker 重建和未知结果由数据库边界测试覆盖。
 
 完整 typecheck（protobuf、全部 package、独立 Fabric 脚本）通过；后续修改定向补查，根 lint 退出 0（既有 47 warnings／1 info）。三 Peer 测试环境与数据库均已清理。前序提交 a06a2e6 的 CI、Server/Agent 打包及 Fabric 均 success；PR 预览 skipped 不计验收。协调模式完整数据库流程、金额裁决执行、正式机构信任升级及其余蓝图仍待完成，未合并或部署 main。
+
+
+### 金额裁决的链端专项检查
+
+3 项新链码检查通过：裁决使用不同于原账单的收费完成结算，继续裁决调整及普通 A/B 调整；原件保留、重放不重复改账；另案未结保持冻结；其他任务占额导致增额不足时不写预算，容量恢复后原决定可执行；错误财务目标、缺少该目标必要材料、超原任务／政策额度、过时 head 和政策撤销均拒绝。相关普通结算／调整／原生冻结／无金额裁决共 14 项回归通过。首轮容量夹具直接改私有字节导致哈希不符，修正为正常私有写入后定向复验通过，没有弱化完整性校验。共享财务和裁决共 15 项检查通过。
+
+真实 Fabric 3.1.5 三 Peer 使用 `--gate --arbitration-financial`，通过生产 Adapter 从 proposal 检查点准备交易、重建 Adapter 后继续原 transactionId；这不是 OS 进程 SIGKILL。R 结算收费 5，R 调整到 3，再由 A/B 调整到 4。直接读取 B 获授权区块私有写集，逐次确认 locked=0、reservations=0、spent=5／3／4；原裁决重放没有 budget 写入，终态 gate 哈希不变。私有结算保存明确 arbitration 依据而非伪造双签，C/R 订阅同一区块收不到商业 PDC；公开区块和日志探针检查通过。
+
+首次网络失败在普通 `ConfirmBill`，诊断明确为测试用量 periodEnd 晚于 terminal.observedAt；校验符合契约，修正夹具时间后只重跑本专项并通过。未改变账单业务规则。失败环境保留脱敏故障摘要后清理，真实测试服务已停止。新专项加入 Fabric CI；鉴于前序全流程约 16 分钟并新增独立网络验证，job 上限调整为 25 分钟，不改变协议超时。
+
+本项只证明商业链／Adapter 金额路径及相关不变量；Server 人员执行仍拒绝金额，数据库原件与财务投影、异步／直接模式金额回执和三 Server 联合验收尚未完成。前序提交 5e6ecb5 的 CI、Server/Agent bundle、Fabric 全部 success，预览仍 skipped，不计可信预览验收。完整目标保持不变。

@@ -5,7 +5,7 @@ import {
   type Signer,
 } from "@hyperledger/fabric-gateway";
 import { FederationCancellationReceiptSchema } from "@kuintessence/shared/federation";
-import { verifyArbitrationResolution } from "@kuintessence/shared/federation/arbitration-resolution";
+import { verifyArbitrationExecution } from "@kuintessence/shared/federation/arbitration-resolution";
 import { CommercialArbitrationRevocationSchema } from "@kuintessence/shared/federation/arbitration-revocation";
 import {
   type CommercialAdapterProposalInput,
@@ -97,7 +97,7 @@ export class FabricCommercialAdapter {
       input.operation === "resolve-arbitrated-case" ||
       input.operation === "record-arbitration-resolution"
     ) {
-      const proof = await verifyArbitrationResolution(
+      const proof = await verifyArbitrationExecution(
         input.envelope,
         (schema, jws, siteId) => this.verify(schema, jws, siteId, now),
         now,

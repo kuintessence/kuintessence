@@ -5,7 +5,10 @@ import {
   ArbitrationReviewInputSchema,
   ArbitrationReviewSchema,
 } from "./arbitration-context";
-import { CommercialArbitrationTaskBindingSchema } from "./arbitration-policy";
+import {
+  type CommercialArbitrationPolicy,
+  CommercialArbitrationTaskBindingSchema,
+} from "./arbitration-policy";
 import {
   CommercialDisclosureEvidenceSchema,
   CommercialDisclosureReadPairSchema,
@@ -86,11 +89,33 @@ export function arbitrationDecisionIntent(
   const { observedAt: _observedAt, ...binding } = context.binding;
   if (!context.financial) throw new FederationError("DATA_WAITING");
   const outcome = input.outcome;
-  if (!context.policy.actions.includes(outcome.action)) throw new FederationError("POLICY_DENIED");
+  assertArbitrationOutcome(context.policy, context.financial, review.evidence, outcome);
+  return ArbitrationDecisionIntentSchema.parse({
+    decisionId: input.decisionId,
+    binding,
+    subject: context.subject,
+    financial: context.financial,
+    evidence: review.evidence
+      .map((e) => ({ ...e, fields: [...e.fields].sort() }))
+      .sort((a, b) => a.grantId.localeCompare(b.grantId)),
+    outcome,
+    reason: input.reason,
+    salt,
+  });
+}
+
+/** Applies equally when signing an award and when executing the independently verified original. */
+export function assertArbitrationOutcome(
+  policy: CommercialArbitrationPolicy,
+  financial: z.infer<typeof ArbitrationFinancialViewSchema>,
+  evidence: z.infer<typeof ArbitrationReviewSchema>["evidence"],
+  outcome: z.infer<typeof ArbitrationOutcomeSchema>,
+) {
+  if (!policy.actions.includes(outcome.action)) throw new FederationError("POLICY_DENIED");
   if (outcome.action !== "resolve-without-financial-change") {
-    if (BigInt(outcome.chargedAmount) > BigInt(context.policy.maxChargedAmount))
+    if (BigInt(outcome.chargedAmount) > BigInt(policy.maxChargedAmount))
       throw new FederationError("POLICY_DENIED");
-    const target = context.financial.targets.find(
+    const target = financial.targets.find(
       (t) => federationCanonicalJson(t.bill) === federationCanonicalJson(outcome.bill),
     );
     if (
@@ -105,7 +130,7 @@ export function arbitrationDecisionIntent(
     )
       throw new FederationError("OPERATION_CONFLICT");
     // Required financial evidence must describe the chosen financial target, not another bill.
-    for (const required of context.policy.requiredEvidence) {
+    for (const required of policy.requiredEvidence) {
       const ref =
         required.recordType === "bill"
           ? target.bill
@@ -116,7 +141,7 @@ export function arbitrationDecisionIntent(
               : undefined;
       if (ref === undefined) continue;
       const fields = new Set(
-        review.evidence
+        evidence
           .filter(
             (e) =>
               e.recordType === required.recordType &&
@@ -129,16 +154,4 @@ export function arbitrationDecisionIntent(
         throw new FederationError("DATA_WAITING");
     }
   }
-  return ArbitrationDecisionIntentSchema.parse({
-    decisionId: input.decisionId,
-    binding,
-    subject: context.subject,
-    financial: context.financial,
-    evidence: review.evidence
-      .map((e) => ({ ...e, fields: [...e.fields].sort() }))
-      .sort((a, b) => a.grantId.localeCompare(b.grantId)),
-    outcome,
-    reason: input.reason,
-    salt,
-  });
 }

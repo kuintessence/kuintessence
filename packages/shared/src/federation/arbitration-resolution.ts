@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { ArbitrationDecisionSchema } from "./arbitration-decision";
+import { ArbitrationDecisionSchema, assertArbitrationOutcome } from "./arbitration-decision";
 import { assertArbitrationRequest, CommercialArbitrationPolicySchema } from "./arbitration-policy";
 import type { ArbitrationResolutionEnvelope, CommercialArbitrationResolution } from "./commercial";
 import {
@@ -10,7 +10,7 @@ import {
 } from "./index";
 
 /** Current execution authority; historical receipt or PDC publication cannot substitute for this proof. */
-export async function verifyArbitrationResolution(
+export async function verifyArbitrationExecution(
   envelope: ArbitrationResolutionEnvelope,
   verify: <T extends { kind: string }>(
     schema: z.ZodType<T>,
@@ -59,7 +59,6 @@ export async function verifyArbitrationResolution(
     policy = source.payload,
     receipt = accepted.payload;
   if (
-    d.intent.outcome.action !== "resolve-without-financial-change" ||
     !policy.actions.includes(d.intent.outcome.action) ||
     !policy.subjectTypes.includes(d.intent.subject.recordType) ||
     b.policyId !== policy.policyId ||
@@ -114,6 +113,12 @@ export async function verifyArbitrationResolution(
     )
       throw new FederationError("DATA_WAITING");
   }
+  assertArbitrationOutcome(policy, d.intent.financial, d.intent.evidence, d.intent.outcome);
+  if (
+    d.intent.outcome.action !== "resolve-without-financial-change" &&
+    BigInt(d.intent.outcome.chargedAmount) > BigInt(r.maxAmount)
+  )
+    throw new FederationError("POLICY_DENIED");
   return { decision, request, accepted, policy: source };
 }
 
@@ -140,4 +145,14 @@ export function assertArbitrationResolution(
     federationCanonicalJson(value.outcome) !== federationCanonicalJson(d.intent.outcome)
   )
     throw new FederationError("OPERATION_CONFLICT");
+}
+
+/** The case-only Server path remains closed to financial awards until its posting path is connected. */
+export async function verifyArbitrationResolution(
+  ...args: Parameters<typeof verifyArbitrationExecution>
+) {
+  const proof = await verifyArbitrationExecution(...args);
+  if (proof.decision.payload.intent.outcome.action !== "resolve-without-financial-change")
+    throw new FederationError("POLICY_DENIED");
+  return proof;
 }

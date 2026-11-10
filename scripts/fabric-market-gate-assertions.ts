@@ -24,7 +24,9 @@ export async function verifyExecutionGateNetwork(
     result = join(root, "gate-result.json");
   await writeFile(entry, await build.outputs[0].text(), { mode: 0o600 });
   const arbitration = process.argv.includes("--arbitration-revocation");
-  const resolution = process.argv.includes("--arbitration-resolution");
+  const resolution =
+    process.argv.includes("--arbitration-resolution") ||
+    process.argv.includes("--arbitration-financial");
   const preexecution = process.argv.includes("--preexecution-closure");
   const unreserved = process.argv.includes("--unreserved-closure");
   const child = Bun.spawn(
@@ -36,7 +38,13 @@ export async function verifyExecutionGateNetwork(
       ...(preexecution ? ["--preexecution-closure"] : []),
       ...(unreserved ? ["--unreserved-closure"] : []),
       ...(arbitration ? ["--arbitration-revocation"] : []),
-      ...(resolution ? ["--arbitration-resolution"] : []),
+      ...(resolution
+        ? [
+            process.argv.includes("--arbitration-financial")
+              ? "--arbitration-financial"
+              : "--arbitration-resolution",
+          ]
+        : []),
       ...(process.argv.includes("--database") ? ["--database"] : []),
     ],
     {

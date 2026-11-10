@@ -55,6 +55,7 @@ import {
 } from "@kuintessence/shared/federation/signatures";
 import { importPKCS8 } from "jose";
 import { z } from "zod";
+import { FabricCommercialAdapter } from "../packages/fabric-adapter/src/commercial";
 import { Site } from "./fabric-evidence-fixture";
 
 const network = z
@@ -69,6 +70,7 @@ const connections: { gateway: ReturnType<typeof connect>; client: Client }[] = [
 const passed: string[] = [],
   probes: string[] = [];
 const blocks = new Set<bigint>();
+let probeOperation = "initialize";
 const site = (name: string) => Site.parse(network.sites.find((value) => value.name === name));
 async function connection(name: string, market = false, endpointName = name) {
   const member = site(name),
@@ -144,8 +146,9 @@ async function run() {
     recordId: string,
     input?: unknown,
     msps = ["AMSP", "BMSP"],
-  ) =>
-    gateway
+  ) => {
+    probeOperation = name;
+    return gateway
       .getNetwork(network.channel)
       .getContract("kq-commercial")
       .newProposal(name, {
@@ -153,6 +156,7 @@ async function run() {
         endorsingOrganizations: msps,
         ...(input ? { transientData: { commercial: JSON.stringify(input) } } : {}),
       });
+  };
   const market = (
     gateway: ReturnType<typeof connect>,
     name: string,
@@ -455,7 +459,11 @@ async function run() {
     probes.push(signed.sourceJws, signed.targetJws);
     return { value, signed };
   };
-  if (process.argv.includes("--arbitration-resolution")) {
+  if (
+    process.argv.includes("--arbitration-resolution") ||
+    process.argv.includes("--arbitration-financial")
+  ) {
+    const financial = process.argv.includes("--arbitration-financial");
     const digest = (jws: string) =>
       `sha256:${createHash("sha256")
         .update(Buffer.from(jws.split(".")[1] ?? "", "base64url"))
@@ -476,11 +484,15 @@ async function run() {
       targetSiteId: target.siteId,
       arbitratorSiteId: arbitrator.siteId,
       subjectTypes: ["usage"],
-      disclosures: [{ recordType: "usage", fields: ["measurements"] }],
-      requiredEvidence: [{ recordType: "usage", fields: ["measurements"] }],
+      disclosures: financial
+        ? [{ recordType: "bill", fields: ["dueAmount"] }]
+        : [{ recordType: "usage", fields: ["measurements"] }],
+      requiredEvidence: financial
+        ? [{ recordType: "bill", fields: ["dueAmount"] }]
+        : [{ recordType: "usage", fields: ["measurements"] }],
       decisionRule: "designated-arbitrator",
-      actions: ["resolve-without-financial-change"],
-      maxChargedAmount: "0",
+      actions: financial ? ["settle", "adjust"] : ["resolve-without-financial-change"],
+      maxChargedAmount: financial ? amount : "0",
       unit: terms.agreement.unit,
       salt: randomBytes(32).toString("hex"),
       issuedAt: new Date().toISOString(),
@@ -532,7 +544,132 @@ async function run() {
       acceptance,
       target,
     );
-    const makeCase = async () => {
+    type Reference = { recordId: string; recordDigest: string };
+    const records: {
+      recordType: "bill" | "settlement" | "adjustment";
+      recordId: string;
+      recordDigest: string;
+      state: "ready";
+    }[] = [];
+    let billRef: Reference | null = null,
+      settlementRef: Reference | null = null;
+    let billTerms: z.infer<typeof CommercialBillSchema> | undefined;
+    if (financial) {
+      const gate = MarketExecutionGateSchema.parse({
+        domainId: domain.domainId,
+        reservationId: reservation.reservationId,
+        demandId: reservation.demandId,
+        claimVersion: 2,
+        version: 1,
+        state: "READY",
+        reservationDigest: digest(signedReservation.sourceJws),
+        expiresAt: request.expiresAt,
+      });
+      const activation = MarketActivationSchema.parse({
+        demandId: reservation.demandId,
+        activationId: randomUUID(),
+        expectedVersion: 2,
+        gate,
+      });
+      assert(
+        (
+          await commit(
+            await market(am, "ActivateDemand", reservation.demandId, activation).endorse(),
+          )
+        ).successful,
+      );
+      await synced(reservation.demandId, "ACTIVE");
+      const terminal = CommercialTerminalSchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-terminal",
+        terminalId: randomUUID(),
+        domainId: domain.domainId,
+        reservationId: reservation.reservationId,
+        reservationDigest: gate.reservationDigest,
+        activationId: activation.activationId,
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        expectedGateVersion: 1,
+        outcome: "completed",
+        executionEvidenceDigest: `sha256:${"a".repeat(64)}`,
+        resultManifestDigest: `sha256:${"b".repeat(64)}`,
+        observedAt: new Date().toISOString(),
+        issuedAt: new Date().toISOString(),
+        salt: randomBytes(32).toString("hex"),
+      });
+      assert(
+        (
+          await commit(
+            await commercial(
+              a,
+              "RecordExecutionTerminal",
+              terminal.terminalId,
+              await bilateral(CommercialTerminalSchema, terminal),
+            ).endorse(),
+          )
+        ).successful,
+      );
+      const report = CommercialUsageSchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-usage",
+        reportId: randomUUID(),
+        domainId: domain.domainId,
+        agreementRevisionId: request.agreementRevisionId,
+        agreementDigest: agreementReceipt.digest,
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        taskId: request.taskId,
+        attempt: request.attempt,
+        periodStart: request.issuedAt,
+        periodEnd: terminal.observedAt,
+        reportedAt: new Date().toISOString(),
+        measurements: terms.prices.map((p) => ({
+          metric: p.metric,
+          quantityUnit: p.quantityUnit,
+          quantity: "1000",
+          evidenceDigest: `sha256:${"c".repeat(64)}`,
+        })),
+        salt: randomBytes(32).toString("hex"),
+      });
+      const providerJws = await signFederationMessage(CommercialUsageSchema, report, target);
+      assert(
+        (
+          await commit(
+            await commercial(b, "RecordUsage", report.reportId, { providerJws }).endorse(),
+          )
+        ).successful,
+      );
+      billTerms = CommercialBillSchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-bill",
+        billId: randomUUID(),
+        domainId: domain.domainId,
+        agreementDigest: agreementReceipt.digest,
+        priceVersionId: terms.priceVersionId,
+        reportId: report.reportId,
+        reportDigest: digest(providerJws),
+        request,
+        reservationId: reservation.reservationId,
+        discount: null,
+        calculation: calculateCommercialBill(terms, request, report),
+        issuedAt: new Date().toISOString(),
+        salt: randomBytes(32).toString("hex"),
+      });
+      const signed = await bilateral(CommercialBillSchema, billTerms);
+      assert(
+        (await commit(await commercial(a, "ConfirmBill", billTerms.billId, signed).endorse()))
+          .successful,
+      );
+      billRef = { recordId: billTerms.billId, recordDigest: digest(signed.sourceJws) };
+      records.push({ recordType: "bill", ...billRef, state: "ready" });
+    }
+    const makeCase = async (
+      action:
+        | "settle"
+        | "adjust"
+        | "resolve-without-financial-change" = "resolve-without-financial-change",
+      chargedAmount = "0",
+    ) => {
       // Signed fixture evidence exercises contract enforcement, not the three-Server review flow.
       const opening = CommercialDisputeSchema.parse({
         protocolVersion: 1,
@@ -572,7 +709,14 @@ async function run() {
         sourceSiteId: source.siteId,
         targetSiteId: target.siteId,
         headDigest: `sha256:${createHash("sha256")
-          .update(federationCanonicalJson({ ...identity, records: [] }))
+          .update(
+            federationCanonicalJson({
+              ...identity,
+              records: [...records].sort((a, b) =>
+                `${a.recordType}:${a.recordId}` < `${b.recordType}:${b.recordId}` ? -1 : 1,
+              ),
+            }),
+          )
           .digest("hex")}`,
         issuedAt: new Date().toISOString(),
         salt: randomBytes(32).toString("hex"),
@@ -617,20 +761,45 @@ async function run() {
           financial: {
             headDigest: freeze.headDigest,
             freezeDigest: digest(freezeEnvelope.sourceJws),
-            records: [],
+            records: [...records].sort((a, b) =>
+              `${a.recordType}:${a.recordId}` < `${b.recordType}:${b.recordId}` ? -1 : 1,
+            ),
             evidenceReferences: [],
-            targets: [],
+            targets: billRef
+              ? [{ bill: billRef, settlement: settlementRef, previousAdjustment: null }]
+              : [],
             ledgerReceipt: { recordId: opening.caseId, digest: digest(freezeEnvelope.sourceJws) },
           },
-          evidence: [
-            {
-              ...opening.subject,
-              grantId: randomUUID(),
-              disclosureDigest: `sha256:${"c".repeat(64)}`,
-              fields: ["measurements"],
-            },
-          ],
-          outcome: { action: "resolve-without-financial-change" },
+          evidence: billRef
+            ? [
+                {
+                  ...billRef,
+                  recordType: "bill",
+                  grantId: randomUUID(),
+                  disclosureDigest: `sha256:${"c".repeat(64)}`,
+                  fields: ["dueAmount"],
+                },
+              ]
+            : [
+                {
+                  ...opening.subject,
+                  grantId: randomUUID(),
+                  disclosureDigest: `sha256:${"c".repeat(64)}`,
+                  fields: ["measurements"],
+                },
+              ],
+          outcome:
+            action === "settle"
+              ? { action, bill: billRef, chargedAmount }
+              : action === "adjust"
+                ? {
+                    action,
+                    bill: billRef,
+                    settlement: settlementRef,
+                    previousAdjustment: null,
+                    chargedAmount,
+                  }
+                : { action },
           reason: opening.reason,
           salt: randomBytes(32).toString("hex"),
         },
@@ -651,6 +820,158 @@ async function run() {
           commercial(a, "ResolveArbitratedCase", decision.intent.decisionId, envelope).endorse(),
       };
     };
+    if (financial) {
+      assert(billRef && billTerms);
+      const gateHash = () =>
+        commercial(cm, "GetExecutionGateHash", reservation.reservationId)
+          .endorse()
+          .then((tx) => Buffer.from(tx.getResult()).toString());
+      const terminalHash = await gateHash();
+      const first = await makeCase("settle", "5");
+      const member = site("A");
+      const keyNames = await readdir(join(member.userMsp, "keystore"));
+      assert(keyNames[0]);
+      const identity = {
+        mspId: "AMSP",
+        credentials: await readFile(join(member.userMsp, "signcerts", "User1@a.kq.test-cert.pem")),
+      };
+      const signer = signers.newPrivateKeySigner(
+        createPrivateKey(await readFile(join(member.userMsp, "keystore", keyNames[0]))),
+      );
+      const recoveryKey = randomBytes(32);
+      const adapter = () =>
+        new FabricCommercialAdapter(
+          {
+            siteId: source.siteId,
+            channel: network.channel,
+            chaincode: "kq-commercial",
+            trust: network.trust,
+          },
+          a,
+          identity,
+          signer,
+          recoveryKey,
+        );
+      const proposal = await adapter().prepare({
+        operation: "resolve-arbitrated-case",
+        domainId: domain.domainId,
+        recordId: first.id,
+        digest: digest(first.envelope.decisionJws),
+        envelope: first.envelope,
+      });
+      const prepared = await adapter().advance(proposal.recovery);
+      assert.equal(prepared.state, "prepared");
+      assert(prepared.state === "prepared");
+      const settled = await adapter().advance(prepared.recovery);
+      assert.equal(settled.state, "committed");
+      assert(settled.state === "committed");
+      assert.equal(settled.transactionId, proposal.transactionId);
+      settlementRef = { recordId: first.id, recordDigest: digest(first.envelope.decisionJws) };
+      records.push({ recordType: "settlement", ...settlementRef, state: "ready" });
+      const second = await makeCase("adjust", "3");
+      const adjusted = await commit(await second.resolve());
+      assert(adjusted.successful);
+      const next = CommercialAdjustmentSchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-adjustment",
+        adjustmentId: randomUUID(),
+        domainId: domain.domainId,
+        agreementRevisionId: request.agreementRevisionId,
+        billId: billRef.recordId,
+        billDigest: billRef.recordDigest,
+        settlementId: first.id,
+        settlementDigest: settlementRef.recordDigest,
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        unit: request.unit,
+        previous: { adjustmentId: second.id, digest: digest(second.envelope.decisionJws) },
+        previousChargedAmount: "3",
+        chargedAmount: "4",
+        reason: "Joint post-award correction",
+        supportingEvidenceDigest: null,
+        issuedAt: new Date().toISOString(),
+        salt: randomBytes(32).toString("hex"),
+      });
+      const changed = await commit(
+        await commercial(
+          a,
+          "AdjustSettlement",
+          next.adjustmentId,
+          await bilateral(CommercialAdjustmentSchema, next),
+        ).endorse(),
+      );
+      assert(changed.successful);
+      const replay = await commit(await first.resolve());
+      assert(replay.successful);
+      assert.equal(await gateHash(), terminalHash);
+      passed.push(
+        "production Adapter executes a private R settlement through restored checkpoints with the original transaction; R adjustment and a later A/B correction retain the terminal gate",
+      );
+      for (const [block, spent] of [
+        [BigInt(settled.blockNumber), "5"],
+        [adjusted.blockNumber, "3"],
+        [changed.blockNumber, "4"],
+        [replay.blockNumber, null],
+      ] as const) {
+        for (const gateway of [b, c]) {
+          const events = await gateway
+            .getNetwork(network.channel)
+            .getBlockAndPrivateDataEvents({ startBlock: block });
+          try {
+            let seen = false;
+            for await (const event of events) {
+              const publicBlock = event.getBlock();
+              assert(publicBlock);
+              assert.equal(String(publicBlock.getHeader()?.getNumber()), String(block));
+              const bytes = Buffer.from(publicBlock.serializeBinary());
+              for (const probe of probes) assert(!bytes.includes(Buffer.from(probe)));
+              const writes: { key: string; value: Uint8Array }[] = [];
+              for (const [, tx] of event.getPrivateDataMapMap().entries())
+                for (const ns of tx.getNsPvtRwsetList())
+                  if (ns.getNamespace() === "kq-commercial")
+                    for (const collection of ns.getCollectionPvtRwsetList())
+                      for (const write of ledger.rwset.kvrwset.KVRWSet.deserializeBinary(
+                        collection.getRwset_asU8(),
+                      ).getWritesList())
+                        writes.push({ key: write.getKey(), value: write.getValue_asU8() });
+              if (gateway === c) assert.equal(writes.length, 0);
+              else {
+                const budgets = writes.filter((w) => w.key.startsWith("\u0000budget\u0000"));
+                assert.equal(budgets.length, spent === null ? 0 : 1);
+                if (spent !== null)
+                  assert.deepEqual(
+                    z
+                      .object({ locked: z.string(), spent: z.string(), reservations: z.number() })
+                      .parse(JSON.parse(Buffer.from(budgets[0]?.value ?? []).toString())),
+                    { locked: "0", spent, reservations: 0 },
+                  );
+                if (block === BigInt(settled.blockNumber)) {
+                  const original = writes.find((w) => w.key.startsWith("\u0000settlement\u0000"));
+                  assert(original);
+                  const saved = JSON.parse(Buffer.from(original.value).toString());
+                  assert.equal(saved.arbitration.decision.intent.decisionId, first.id);
+                  assert.equal(saved.envelope, undefined);
+                }
+              }
+              seen = true;
+              break;
+            }
+            assert(seen);
+          } finally {
+            events.close();
+          }
+        }
+      }
+      passed.push(
+        "real private budget spends exactly 5 then 3 then 4, replay writes no budget; R receives no PDC and public blocks expose no signed financial proof",
+      );
+      await writeFile(
+        z.string().parse(process.argv[3]),
+        JSON.stringify({ passed, probes }, null, 2),
+        { mode: 0o600 },
+      );
+      return;
+    }
     const first = await makeCase(),
       second = await makeCase();
     const releaseValue = CommercialReleaseSchema.parse({
@@ -2266,8 +2587,9 @@ try {
     `${z.string().parse(process.argv[3])}.failure`,
     JSON.stringify(
       error instanceof EndorseError
-        ? { message: error.message, details: error.details }
+        ? { operation: probeOperation, message: error.message, details: error.details }
         : {
+            operation: probeOperation,
             message: error instanceof Error ? error.message : "Unknown failure",
             stack: error instanceof Error ? error.stack : undefined,
           },

@@ -6,17 +6,20 @@ import {
   FederationError,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
+import { ArbitrationDecisionSchema } from "@kuintessence/shared/federation/arbitration-decision";
 import {
   assertArbitrationRequest,
   CommercialArbitrationPolicySchema,
 } from "@kuintessence/shared/federation/arbitration-policy";
-import { verifyArbitrationResolution } from "@kuintessence/shared/federation/arbitration-resolution";
+import { verifyArbitrationExecution } from "@kuintessence/shared/federation/arbitration-resolution";
 import {
   type CommercialArbitrationRevocation,
   CommercialArbitrationRevocationEnvelopeSchema,
   CommercialArbitrationRevocationSchema,
 } from "@kuintessence/shared/federation/arbitration-revocation";
 import {
+  arbitrationAdjustmentTerms,
+  arbitrationSettlementTerms,
   assertCommercialAdjustment,
   assertCommercialBill,
   assertCommercialDiscount,
@@ -92,21 +95,41 @@ const StoredBill = z.strictObject({
   envelope: CommercialAgreementEnvelopeSchema,
   terms: CommercialBillSchema,
 });
-const StoredSettlement = z.strictObject({
-  receipt: CommercialReceiptSchema,
-  envelope: CommercialAgreementEnvelopeSchema,
-  terms: CommercialSettlementSchema,
-});
+const StoredSettlement = z.union([
+  z.strictObject({
+    receipt: CommercialReceiptSchema,
+    envelope: CommercialAgreementEnvelopeSchema,
+    terms: CommercialSettlementSchema,
+  }),
+  z.strictObject({
+    receipt: CommercialReceiptSchema,
+    arbitration: z.strictObject({
+      envelope: ArbitrationResolutionEnvelopeSchema,
+      decision: ArbitrationDecisionSchema,
+    }),
+    terms: CommercialSettlementSchema,
+  }),
+]);
 const StoredRefund = z.strictObject({
   receipt: CommercialReceiptSchema,
   envelope: CommercialAgreementEnvelopeSchema,
   terms: CommercialRefundSchema,
 });
-const StoredAdjustment = z.strictObject({
-  receipt: CommercialReceiptSchema,
-  envelope: CommercialAgreementEnvelopeSchema,
-  terms: CommercialAdjustmentSchema,
-});
+const StoredAdjustment = z.union([
+  z.strictObject({
+    receipt: CommercialReceiptSchema,
+    envelope: CommercialAgreementEnvelopeSchema,
+    terms: CommercialAdjustmentSchema,
+  }),
+  z.strictObject({
+    receipt: CommercialReceiptSchema,
+    arbitration: z.strictObject({
+      envelope: ArbitrationResolutionEnvelopeSchema,
+      decision: ArbitrationDecisionSchema,
+    }),
+    terms: CommercialAdjustmentSchema,
+  }),
+]);
 const TaskDispute = z.strictObject({
   activeCases: z.number().int().nonnegative().max(2147483647),
   salt: z.string().regex(/^[a-f0-9]{64}$/),
@@ -1338,7 +1361,7 @@ export class CommercialLedger {
       !domain.siteIds.includes(envelope.targetSiteId)
     )
       return fail("POLICY_DENIED");
-    const proof = await verifyArbitrationResolution(
+    const proof = await verifyArbitrationExecution(
       envelope,
       (schema, jws, siteId) => this.verify(stub, schema, jws, siteId, now),
       now,
@@ -1465,15 +1488,99 @@ export class CommercialLedger {
       if (!bytes.length) return fail("DATA_WAITING");
       const task = TaskDispute.parse(JSON.parse(Buffer.from(bytes).toString()));
       if (task.activeCases < 1) return fail("OPERATION_CONFLICT");
+      if (decision.intent.outcome.action !== "resolve-without-financial-change") {
+        if (task.activeCases !== 1) return fail("DATA_WAITING");
+        await this.postArbitratedFinancial(stub, domain, proof, envelope, agreement);
+      }
       await stub.putPrivateData(
         domain.collection,
         taskKey,
         encode({ ...task, activeCases: task.activeCases - 1 }),
       );
     }
+    if (!native && decision.intent.outcome.action !== "resolve-without-financial-change")
+      await this.postArbitratedFinancial(stub, domain, proof, envelope, agreement);
     await stub.putPrivateData(domain.collection, caseKey, encode(receipt));
     await stub.putPrivateData(domain.collection, recordKey, encode({ receipt, envelope }));
     return encode(receipt);
+  }
+  private async postArbitratedFinancial(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    proof: Awaited<ReturnType<typeof verifyArbitrationExecution>>,
+    envelope: z.infer<typeof ArbitrationResolutionEnvelopeSchema>,
+    agreement: z.infer<typeof StoredAgreement>,
+  ) {
+    const decision = proof.decision.payload,
+      outcome = decision.intent.outcome;
+    if (outcome.action === "resolve-without-financial-change") return fail("POLICY_DENIED");
+    const read = async (type: string, id: string) => {
+      const bytes = await this.privateValue(
+        stub,
+        domain.collection,
+        stub.createCompositeKey(type, [domain.domainId, id]),
+      );
+      if (!bytes.length) return fail("DATA_WAITING");
+      return JSON.parse(Buffer.from(bytes).toString());
+    };
+    const bill = StoredBill.parse(await read("bill", outcome.bill.recordId));
+    if (
+      bill.receipt.digest !== outcome.bill.recordDigest ||
+      bill.terms.agreementDigest !== agreement.receipt.digest ||
+      federationCanonicalJson(bill.terms.request) !==
+        federationCanonicalJson(proof.request.payload) ||
+      (agreement.terms.consideration === "charity" && outcome.chargedAmount !== "0")
+    )
+      return fail("POLICY_DENIED");
+    const receipt = { recordId: decision.intent.decisionId, digest: proof.decision.digest };
+    const arbitration = { envelope, decision };
+    if (outcome.action === "settle") {
+      let terminal: z.infer<typeof CommercialSettlementSchema>["terminal"] = null;
+      if (bill.terms.reservationId) {
+        const reservation = StoredReservation.parse(
+          await read("reservation", bill.terms.reservationId),
+        );
+        if (!reservation.terminal) return fail("DATA_WAITING");
+        terminal = {
+          terminalId: reservation.terminal.receipt.recordId,
+          digest: reservation.terminal.receipt.digest,
+        };
+      }
+      const terms = arbitrationSettlementTerms(decision, bill.terms, bill.receipt.digest, terminal);
+      const key = stub.createCompositeKey("settlement", [domain.domainId, receipt.recordId]);
+      if ((await this.privateValue(stub, domain.collection, key)).length)
+        return fail("OPERATION_CONFLICT");
+      await this.postSettlement(stub, domain, bill, { receipt, arbitration, terms });
+    } else {
+      const settlement = StoredSettlement.parse(
+        await read("settlement", outcome.settlement.recordId),
+      );
+      const headBytes = await this.privateValue(
+        stub,
+        domain.collection,
+        stub.createCompositeKey("adjustment-head", [domain.domainId, outcome.settlement.recordId]),
+      );
+      const head = headBytes.length
+        ? z.object({ adjustmentId: z.uuid() }).parse(JSON.parse(Buffer.from(headBytes).toString()))
+        : null;
+      const previous = head
+        ? StoredAdjustment.parse(await read("adjustment", head.adjustmentId))
+        : undefined;
+      const terms = arbitrationAdjustmentTerms(decision, {
+        agreement: agreement.terms,
+        bill: { terms: bill.terms, digest: bill.receipt.digest },
+        settlement: {
+          terms: settlement.terms,
+          digest: settlement.receipt.digest,
+          ...("arbitration" in settlement ? { arbitration: settlement.arbitration.decision } : {}),
+        },
+        previous: previous ? { terms: previous.terms, digest: previous.receipt.digest } : undefined,
+      });
+      const key = stub.createCompositeKey("adjustment", [domain.domainId, receipt.recordId]);
+      if ((await this.privateValue(stub, domain.collection, key)).length)
+        return fail("OPERATION_CONFLICT");
+      await this.postAdjustment(stub, domain, bill, settlement, { receipt, arbitration, terms });
+    }
   }
   private async payment(
     stub: Stub,
@@ -1614,11 +1721,24 @@ export class CommercialLedger {
     await this.assertTaskNotDisputed(stub, domain, bill.terms.request);
     assertCommercialSettlement(terms, bill.terms, bill.receipt.digest);
     if (bill.terms.request.mode === "bilateral_direct") return fail("POLICY_DENIED");
+    return this.postSettlement(stub, domain, bill, {
+      receipt: { recordId, digest: signed.digest },
+      envelope,
+      terms,
+    });
+  }
+  private async postSettlement(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    bill: z.infer<typeof StoredBill>,
+    settlement: z.infer<typeof StoredSettlement>,
+  ) {
+    const { terms, receipt } = settlement,
+      recordId = receipt.recordId;
+    const key = stub.createCompositeKey("settlement", [domain.domainId, recordId]);
     const headKey = stub.createCompositeKey("settlement-head", [domain.domainId, terms.billId]);
     if ((await this.privateValue(stub, domain.collection, headKey)).length)
       return fail("OPERATION_CONFLICT");
-    const receipt = { recordId, digest: signed.digest },
-      settlement = { receipt, envelope, terms };
     if (terms.reservationId) {
       const reservationKey = stub.createCompositeKey("reservation", [
         domain.domainId,
@@ -1786,9 +1906,33 @@ export class CommercialLedger {
     assertCommercialAdjustment(terms, {
       agreement: agreement.terms,
       bill: { terms: bill.terms, digest: bill.receipt.digest },
-      settlement: { terms: settlement.terms, digest: settlement.receipt.digest },
+      settlement: {
+        terms: settlement.terms,
+        digest: settlement.receipt.digest,
+        ...("arbitration" in settlement ? { arbitration: settlement.arbitration.decision } : {}),
+      },
       previous: previous ? { terms: previous.terms, digest: previous.receipt.digest } : undefined,
     });
+    return this.postAdjustment(stub, domain, bill, settlement, {
+      receipt: { recordId, digest: signed.digest },
+      envelope,
+      terms,
+    });
+  }
+  private async postAdjustment(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    bill: z.infer<typeof StoredBill>,
+    settlement: z.infer<typeof StoredSettlement>,
+    posting: z.infer<typeof StoredAdjustment>,
+  ) {
+    const { terms, receipt } = posting,
+      recordId = receipt.recordId;
+    const key = stub.createCompositeKey("adjustment", [domain.domainId, recordId]);
+    const headKey = stub.createCompositeKey("adjustment-head", [
+      domain.domainId,
+      terms.settlementId,
+    ]);
     if (settlement.terms.reservationId) {
       const reservationBytes = await this.privateValue(
         stub,
@@ -1836,8 +1980,7 @@ export class CommercialLedger {
         encode({ ...budget, spent: adjusted.toString() }),
       );
     }
-    const receipt = { recordId, digest: signed.digest };
-    await stub.putPrivateData(domain.collection, key, encode({ receipt, envelope, terms }));
+    await stub.putPrivateData(domain.collection, key, encode(posting));
     await stub.putPrivateData(
       domain.collection,
       headKey,

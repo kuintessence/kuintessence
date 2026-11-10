@@ -1,3 +1,4 @@
+import type { ArbitrationDecision } from "./arbitration-decision";
 import {
   type CommercialAdjustment,
   CommercialAdjustmentSchema,
@@ -148,7 +149,7 @@ export function assertCommercialBill(
     throw new FederationError("OPERATION_CONFLICT");
 }
 
-export function assertCommercialSettlement(
+function assertSettlementIdentity(
   raw: CommercialSettlement,
   original: CommercialBill,
   billDigest: string,
@@ -165,10 +166,139 @@ export function assertCommercialSettlement(
     value.reservationId !== bill.reservationId ||
     value.unit !== bill.request.unit ||
     value.reservedAmount !== bill.request.maxAmount ||
-    value.chargedAmount !== bill.calculation.dueAmount ||
     Date.parse(value.issuedAt) < Date.parse(bill.issuedAt)
   )
     throw new FederationError("POLICY_DENIED");
+}
+
+export function assertCommercialSettlement(
+  raw: CommercialSettlement,
+  original: CommercialBill,
+  billDigest: string,
+) {
+  assertSettlementIdentity(raw, original, billDigest);
+  if (raw.chargedAmount !== original.calculation.dueAmount)
+    throw new FederationError("POLICY_DENIED");
+}
+
+/** Caller authenticates the original decision; this derives terms, never bilateral signatures. */
+export function arbitrationSettlementTerms(
+  decision: ArbitrationDecision,
+  bill: CommercialBill,
+  billDigest: string,
+  terminal: CommercialSettlement["terminal"],
+): CommercialSettlement {
+  const { binding: b, outcome } = decision.intent;
+  if (
+    outcome.action !== "settle" ||
+    outcome.bill.recordId !== bill.billId ||
+    outcome.bill.recordDigest !== billDigest ||
+    b.agreementDigest !== bill.agreementDigest ||
+    b.domainId !== bill.domainId ||
+    b.agreementRevisionId !== bill.request.agreementRevisionId ||
+    b.sourceSiteId !== bill.request.senderSiteId ||
+    b.targetSiteId !== bill.request.recipientSiteId ||
+    b.taskId !== bill.request.taskId ||
+    b.attempt !== bill.request.attempt ||
+    b.operationId !== bill.request.operationId ||
+    b.mode !== bill.request.mode ||
+    b.unit !== bill.request.unit ||
+    (bill.reservationId !== null && b.reservationId !== bill.reservationId) ||
+    BigInt(outcome.chargedAmount) > BigInt(bill.request.maxAmount)
+  )
+    throw new FederationError("POLICY_DENIED");
+  const value = CommercialSettlementSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-settlement",
+    settlementId: decision.intent.decisionId,
+    domainId: b.domainId,
+    agreementRevisionId: b.agreementRevisionId,
+    billId: bill.billId,
+    billDigest,
+    sourceSiteId: b.sourceSiteId,
+    targetSiteId: b.targetSiteId,
+    reservationId: bill.reservationId,
+    terminal,
+    unit: b.unit,
+    reservedAmount: bill.request.maxAmount,
+    chargedAmount: outcome.chargedAmount,
+    releasedAmount: (BigInt(bill.request.maxAmount) - BigInt(outcome.chargedAmount)).toString(),
+    issuedAt: decision.issuedAt,
+    salt: decision.intent.salt,
+  });
+  assertSettlementIdentity(value, bill, billDigest);
+  return value;
+}
+
+/** An authenticated ledger original may carry R authority instead of A/B financial signatures. */
+export function assertArbitratedSettlement(
+  value: CommercialSettlement,
+  bill: CommercialBill,
+  billDigest: string,
+  decision: ArbitrationDecision,
+) {
+  if (
+    federationCanonicalJson(value) !==
+    federationCanonicalJson(arbitrationSettlementTerms(decision, bill, billDigest, value.terminal))
+  )
+    throw new FederationError("OPERATION_CONFLICT");
+}
+
+/** Originals must already be authenticated; callers supply the current head under their ledger lock. */
+export function arbitrationAdjustmentTerms(
+  decision: ArbitrationDecision,
+  originals: Parameters<typeof assertCommercialAdjustment>[1],
+): CommercialAdjustment {
+  const { binding: b, outcome } = decision.intent;
+  const { bill, settlement, previous } = originals;
+  if (
+    outcome.action !== "adjust" ||
+    outcome.bill.recordId !== bill.terms.billId ||
+    outcome.bill.recordDigest !== bill.digest ||
+    outcome.settlement.recordId !== settlement.terms.settlementId ||
+    outcome.settlement.recordDigest !== settlement.digest ||
+    federationCanonicalJson(outcome.previousAdjustment) !==
+      federationCanonicalJson(
+        previous ? { recordId: previous.terms.adjustmentId, recordDigest: previous.digest } : null,
+      ) ||
+    b.domainId !== bill.terms.domainId ||
+    b.agreementDigest !== bill.terms.agreementDigest ||
+    b.agreementRevisionId !== bill.terms.request.agreementRevisionId ||
+    b.sourceSiteId !== bill.terms.request.senderSiteId ||
+    b.targetSiteId !== bill.terms.request.recipientSiteId ||
+    b.taskId !== bill.terms.request.taskId ||
+    b.attempt !== bill.terms.request.attempt ||
+    b.operationId !== bill.terms.request.operationId ||
+    b.mode !== bill.terms.request.mode ||
+    b.unit !== bill.terms.request.unit ||
+    (bill.terms.reservationId !== null && b.reservationId !== bill.terms.reservationId)
+  )
+    throw new FederationError("POLICY_DENIED");
+  const value = CommercialAdjustmentSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-adjustment",
+    adjustmentId: decision.intent.decisionId,
+    domainId: b.domainId,
+    agreementRevisionId: b.agreementRevisionId,
+    billId: bill.terms.billId,
+    billDigest: bill.digest,
+    settlementId: settlement.terms.settlementId,
+    settlementDigest: settlement.digest,
+    sourceSiteId: b.sourceSiteId,
+    targetSiteId: b.targetSiteId,
+    unit: b.unit,
+    previous: previous
+      ? { adjustmentId: previous.terms.adjustmentId, digest: previous.digest }
+      : null,
+    previousChargedAmount: previous?.terms.chargedAmount ?? settlement.terms.chargedAmount,
+    chargedAmount: outcome.chargedAmount,
+    reason: decision.intent.reason,
+    supportingEvidenceDigest: decision.basisDigest,
+    issuedAt: decision.issuedAt,
+    salt: decision.intent.salt,
+  });
+  assertCommercialAdjustment(value, originals);
+  return value;
 }
 
 /** Originals must already be authenticated; callers supply the current head under their ledger lock. */
@@ -177,7 +307,7 @@ export function assertCommercialAdjustment(
   originals: {
     agreement: CommercialAgreement;
     bill: { terms: CommercialBill; digest: string };
-    settlement: { terms: CommercialSettlement; digest: string };
+    settlement: { terms: CommercialSettlement; digest: string; arbitration?: ArbitrationDecision };
     previous?: { terms: CommercialAdjustment; digest: string };
   },
 ) {
@@ -188,7 +318,14 @@ export function assertCommercialAdjustment(
     previous = originals.previous
       ? CommercialAdjustmentSchema.parse(originals.previous.terms)
       : undefined;
-  assertCommercialSettlement(settlement, bill, originals.bill.digest);
+  if (originals.settlement.arbitration)
+    assertArbitratedSettlement(
+      settlement,
+      bill,
+      originals.bill.digest,
+      originals.settlement.arbitration,
+    );
+  else assertCommercialSettlement(settlement, bill, originals.bill.digest);
   if (
     value.domainId !== bill.domainId ||
     value.agreementRevisionId !== bill.request.agreementRevisionId ||
