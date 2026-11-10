@@ -84,6 +84,30 @@ export class FederationAssetService {
     });
   }
 
+  async listMaterials(actor: FederationActor, limit = 50, offset = 0) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "asset.read");
+      const rows = await tx
+        .select({
+          localOrgId: federationMaterials.localOrgId,
+          originSiteId: federationMaterials.originSiteId,
+          digest: federationMaterials.digest,
+          kind: federationMaterials.kind,
+          createdAt: federationMaterials.createdAt,
+        })
+        .from(federationMaterials)
+        .where(eq(federationMaterials.localOrgId, actor.orgId))
+        .orderBy(
+          desc(federationMaterials.createdAt),
+          desc(federationMaterials.digest),
+          desc(federationMaterials.originSiteId),
+        )
+        .limit(limit + 1)
+        .offset(offset);
+      return { data: rows.slice(0, limit), hasMore: rows.length > limit };
+    });
+  }
+
   async register(
     actor: FederationActor,
     input: { reference: FederationAssetRef; localRevisionId: string },

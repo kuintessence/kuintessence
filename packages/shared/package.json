@@ -161,6 +161,11 @@
       "types": "./src/federation/arbitration-decision-delivery.ts",
       "default": "./src/federation/arbitration-decision-delivery.ts"
     },
+    "./federation/outbound-views": {
+      "bun": "./src/federation/outbound-views.ts",
+      "types": "./src/federation/outbound-views.ts",
+      "default": "./src/federation/outbound-views.ts"
+    },
     "./federation/arbitration-execution": {
       "bun": "./src/federation/arbitration-execution.ts",
       "types": "./src/federation/arbitration-execution.ts",

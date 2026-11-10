@@ -5,6 +5,7 @@ import {
   CommercialSettlementListSchema,
   CommercialSettlementSchema,
 } from "@kuintessence/shared/federation/commercial";
+import type { CommercialDispute } from "@kuintessence/shared/federation/disputes";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -33,6 +34,7 @@ type SettlementProps = {
   scope: ApiOrganizationScope;
   writable: boolean;
   busy: boolean;
+  onOpenDispute?: (subject: CommercialDispute["subject"]) => void;
   recordId?: string;
   billId?: string;
   onOpenAdjustments?: (settlementId: string) => void;
@@ -55,6 +57,7 @@ function SettlementPanel({
   billId,
   recordId,
   onOpenAdjustments,
+  onOpenDispute,
 }: SettlementProps) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
@@ -438,6 +441,21 @@ function SettlementPanel({
               }}
             >
               {t("federation.commercial.actions.retry")}
+            </Button>
+          ) : null}
+          {onOpenDispute ? (
+            <Button
+              variant="outline"
+              disabled={blocked}
+              onClick={() =>
+                onOpenDispute({
+                  recordType: "settlement",
+                  recordId: current.settlement.settlementId,
+                  recordDigest: current.settlement.digest,
+                })
+              }
+            >
+              {t("federation.dispute.openCase")}
             </Button>
           ) : null}
           <CommercialSettlementTerms settlement={current.settlement.payload} />

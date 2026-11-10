@@ -81,6 +81,13 @@ type Outbound = typeof federationOutbound.$inferSelect;
 const logger = createLogger("federation-outbound");
 function summary(row: Outbound) {
   return {
+    localOrgId: row.localOrgId,
+    localSiteId: row.localSiteId,
+    targetSiteId: row.request.recipientSiteId,
+    template: row.request.template,
+    resources: row.request.resources,
+    maxAmount: row.request.maxAmount,
+    unit: row.request.unit,
     operationId: row.operationId,
     agreementRevisionId: row.agreementRevisionId,
     taskId: row.taskId,
@@ -657,6 +664,18 @@ export class FederationOutboundService {
         .limit(limit)
         .offset(offset);
       return rows.map(summary);
+    });
+  }
+
+  async get(actor: FederationActor, operationId: string) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "delegation.read");
+      const [row] = await tx
+        .select()
+        .from(federationOutbound)
+        .where(and(this.key(operationId), eq(federationOutbound.localOrgId, actor.orgId)));
+      if (!row) throw new FederationError("POLICY_DENIED");
+      return summary(row);
     });
   }
 

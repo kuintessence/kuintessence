@@ -2,10 +2,10 @@ import {
   type FederationCapability,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
+import { ArbitrationResolutionViewSchema } from "@kuintessence/shared/federation/arbitration-resolution";
 import {
   CommercialAdjustmentSchema,
   type CommercialAgreementApproval,
-  CommercialArbitrationResolutionSchema,
   CommercialSettlementSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
@@ -21,7 +21,6 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { z } from "zod";
 import { ApiError, type ApiOrganizationScope, api } from "../../lib/api-client";
 import { Button } from "../ui/button";
 import {
@@ -36,23 +35,19 @@ import {
 import { Input, Textarea } from "../ui/input";
 import { AgreementFact } from "./AgreementTerms";
 import { CommercialAdjustmentTerms } from "./CommercialAdjustmentTerms";
+import { CommercialArbitrationPanel } from "./CommercialArbitrationPanel";
+import { CommercialDisputeCreate } from "./CommercialDisputeCreate";
+import { CommercialDisputeProgress } from "./CommercialDisputeProgress";
 import { CommercialSettlementTerms } from "./CommercialSettlementTerms";
 
-const executionSchema = z
-  .object({
-    payload: CommercialArbitrationResolutionSchema,
-    appliedAt: z.iso.datetime().nullable(),
-    createdAt: z.iso.datetime(),
-    withdrawalRequestedAt: z.iso.datetime().nullable(),
-    withdrawnAt: z.iso.datetime().nullable(),
-  })
-  .nullable();
 type Props = {
   approval: CommercialAgreementApproval;
   scope: ApiOrganizationScope;
   grants: readonly FederationCapability[];
   readOnly: boolean;
   busy: boolean;
+  subject?: CommercialDispute["subject"] | null;
+  onClearSubject?: () => void;
 };
 type Intent =
   | { kind: "approve"; value: CommercialDisputeResolution }
@@ -72,6 +67,8 @@ function Disputes(props: Props) {
   const { t } = useTranslation();
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
+  const [filter, setFilter] = useState<string | null>(null);
+  const client = useQueryClient();
   const key = [
     "federation",
     "commercial",
@@ -81,12 +78,12 @@ function Disputes(props: Props) {
     props.approval.revisionId,
   ];
   const list = useQuery({
-    queryKey: [...key, "list", page],
+    queryKey: [...key, "list", page, filter],
     queryFn: async () => {
       const list = CommercialDisputeListSchema.parse(
         (
           await api.get<{ data: unknown }>(
-            `/federation/commercial-agreements/${props.approval.revisionId}/disputes?limit=20&offset=${page * 20}`,
+            `/federation/commercial-agreements/${props.approval.revisionId}/disputes?limit=20&offset=${page * 20}${filter ? `&caseId=${filter}` : ""}`,
             props.scope,
           )
         ).data,
@@ -96,6 +93,7 @@ function Disputes(props: Props) {
           row.localOrgId !== props.scope.organizationId ||
           row.localSiteId !== props.approval.localSiteId ||
           row.agreementRevisionId !== props.approval.revisionId ||
+          (filter !== null && row.caseId !== filter) ||
           row.payload.sourceSiteId !== props.approval.terms.agreement.sourceSiteId ||
           row.payload.targetSiteId !== props.approval.terms.agreement.targetSiteId
         )
@@ -107,6 +105,25 @@ function Disputes(props: Props) {
   const current = !list.isError
     ? list.data?.data.find((row) => row.caseId === selected)
     : undefined;
+  if (props.subject && props.grants.includes("dispute.open") && !props.readOnly)
+    return (
+      <CommercialDisputeCreate
+        key={`${props.subject.recordType}:${props.subject.recordId}:${props.subject.recordDigest}`}
+        subject={props.subject}
+        approval={props.approval}
+        scope={props.scope}
+        writable={props.grants.includes("dispute.open") && !props.readOnly}
+        busy={props.busy}
+        onCancel={() => props.onClearSubject?.()}
+        onOpened={(caseId) => {
+          setPage(0);
+          setFilter(caseId);
+          setSelected(caseId);
+          props.onClearSubject?.();
+          void client.invalidateQueries({ queryKey: key });
+        }}
+      />
+    );
   if (current)
     return (
       <DisputeDetail
@@ -116,7 +133,10 @@ function Disputes(props: Props) {
         caseDigest={current.digest}
         resolved={current.state === "RESOLVED"}
         queryKey={key}
-        onBack={() => setSelected(null)}
+        onBack={() => {
+          setSelected(null);
+          setFilter(null);
+        }}
       />
     );
   return (
@@ -252,19 +272,31 @@ function DisputeDetail({
   const execution = useQuery({
     queryKey: [...queryKey, dispute.caseId, "execution"],
     queryFn: async () => {
-      const value = executionSchema.parse(
+      const value = ArbitrationResolutionViewSchema.nullable().parse(
         (await api.get<{ data: unknown }>(`${path}/arbitration-resolution`, scope)).data,
       );
       if (
         value &&
         (value.payload.caseId !== dispute.caseId ||
           value.payload.agreementRevisionId !== approval.revisionId ||
-          value.payload.caseDigest !== caseDigest)
+          value.payload.caseDigest !== caseDigest ||
+          value.payload.domainId !== approval.terms.domainId ||
+          value.payload.sourceSiteId !== dispute.sourceSiteId ||
+          value.payload.targetSiteId !== dispute.targetSiteId ||
+          value.payload.taskId !== dispute.taskId ||
+          value.payload.attempt !== dispute.attempt ||
+          value.payload.mode !== approval.terms.agreement.mode)
       )
         throw new Error("Execution scope mismatch");
       return value;
     },
-    refetchInterval: intent || creating || resolved || resolution.data?.appliedAt ? false : 10000,
+    refetchInterval: (query) =>
+      intent || creating
+        ? false
+        : query.state.data?.ledger?.state === "pending" ||
+            (!resolved && !resolution.data?.appliedAt)
+          ? 10000
+          : false,
     refetchOnWindowFocus: false,
     refetchIntervalInBackground: false,
   });
@@ -471,6 +503,26 @@ function DisputeDetail({
           </dl>
         </details>
       </div>
+      <CommercialDisputeProgress
+        approval={approval}
+        dispute={dispute}
+        scope={scope}
+        writable={!readOnly && grants.includes("dispute.open")}
+        busy={busy}
+        resolved={resolved}
+      />
+      <CommercialArbitrationPanel
+        approval={approval}
+        dispute={dispute}
+        caseDigest={caseDigest}
+        scope={scope}
+        grants={grants}
+        readOnly={readOnly}
+        busy={busy}
+        resolved={resolved}
+        execution={execution.isError ? undefined : execution.data}
+        onChanged={refresh}
+      />
       {message ? (
         <p role="alert" className="text-sm text-status-failed">
           {message}
@@ -511,7 +563,7 @@ function DisputeDetail({
               <span className="block font-medium">{t(`${prefix}.closure`)}</span>
               <span>
                 {t(
-                  `${prefix}.${resolution.data?.appliedAt ? "closed" : resolution.data?.counterpartyApproved && f ? "financialWaiting" : resolved ? "alreadyResolved" : "open"}`,
+                  `${prefix}.${resolution.data?.appliedAt ? "closed" : execution.data?.appliedAt ? "arbitrated" : resolution.data?.counterpartyApproved && f ? "financialWaiting" : resolved ? "alreadyResolved" : "open"}`,
                 )}
               </span>
               {resolution.data?.appliedAt ? (

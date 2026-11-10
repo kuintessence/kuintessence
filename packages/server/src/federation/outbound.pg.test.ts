@@ -94,11 +94,13 @@ import {
   MediaTaskOptionsSchema,
 } from "@kuintessence/shared/federation";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
+import { FederationResultImportViewSchema } from "@kuintessence/shared/federation/outbound-views";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportJWK, exportSPKI, generateKeyPair } from "jose";
 import pino from "pino";
 import { stringify } from "yaml";
+import { z } from "zod";
 import { AgentDispatcher } from "../grpc/dispatcher";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createAdminFederationStorageRoutes } from "../routes/admin-federation-storage";
@@ -2694,6 +2696,25 @@ test("result import HTTP API persists intent, enforces operation scope, and requ
     expect(reply.status).toBe(202);
     expect(await reply.json()).toMatchObject({ data: { id: importId, state: "pending" } });
   }
+  const list = await app.request(`${base}?limit=1&offset=0`);
+  expect(list.status).toBe(200);
+  expect(list.headers.get("cache-control")).toBe("no-store");
+  const importList = z.object({
+    data: z.object({ data: z.array(FederationResultImportViewSchema), hasMore: z.boolean() }),
+  });
+  const listed = importList.parse(await list.json());
+  expect(listed.data.data.map((row: { id: string }) => row.id)).toEqual([importId]);
+  expect(listed.data.hasMore).toBe(false);
+  const summary = await app.request(`/api/federation/outbound/${f.request.operationId}`);
+  expect(summary.status).toBe(200);
+  expect(summary.headers.get("cache-control")).toBe("no-store");
+  const summaryText = await summary.text();
+  expect(summaryText).not.toContain("Jws");
+  expect(summaryText).not.toContain("endpoint");
+  const view = (
+    await import("@kuintessence/shared/federation/outbound-views")
+  ).FederationOutboundViewSchema.parse(JSON.parse(summaryText).data);
+  expect(view.taskId).toBe(f.request.taskId);
   const detail = await app.request(`${base}/${importId}`);
   expect(detail.status).toBe(200);
   expect(detail.headers.get("cache-control")).toBe("no-store");
@@ -2706,8 +2727,18 @@ test("result import HTTP API persists intent, enforces operation scope, and requ
   ).toBe(403);
   await permission.set({ ...receiver, capability: "result.read", enabled: true }, actor.userId);
   principal = receiver;
+  expect((await app.request(base)).status).toBe(403);
   expect((await app.request(`${base}/${importId}`)).status).toBe(403);
   expect((await app.request(`${base}/${importId}/cancel`, { method: "POST" })).status).toBe(403);
+  principal = { ...actor, userId: receiver.userId };
+  await db
+    .insert(userOrgMemberships)
+    .values({ userId: receiver.userId, orgId: actor.orgId, role: "member" })
+    .onConflictDoNothing();
+  await permission.set({ ...principal, capability: "result.read", enabled: true }, actor.userId);
+  const sameOrg = await app.request(base);
+  expect(sameOrg.status).toBe(200);
+  expect(await sameOrg.json()).toMatchObject({ data: { data: [], hasMore: false } });
   principal = actor;
   await permission.set({ ...actor, capability: "result.read", enabled: false }, actor.userId);
   expect((await app.request(`${base}/${importId}/cancel`, { method: "POST" })).status).toBe(202);
@@ -2717,6 +2748,11 @@ test("result import HTTP API persists intent, enforces operation scope, and requ
   });
   const fresh = crypto.randomUUID();
   expect(await (await post(fresh)).json()).toMatchObject({ data: { id: fresh, state: "pending" } });
+  const pages = importList.parse(await (await app.request(`${base}?limit=1`)).json());
+  expect(pages.data.hasMore).toBe(true);
+  expect(pages.data.data).toHaveLength(1);
+  const secondPage = importList.parse(await (await app.request(`${base}?limit=1&offset=1`)).json());
+  expect(secondPage.data.data[0]?.id).toBe(fresh);
   const attempts = await db
     .select()
     .from(federationResultAttempts)

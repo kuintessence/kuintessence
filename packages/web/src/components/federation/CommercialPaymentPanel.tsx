@@ -7,6 +7,7 @@ import {
   CommercialPaymentListSchema,
   CommercialPaymentSchema,
 } from "@kuintessence/shared/federation/commercial";
+import type { CommercialDispute } from "@kuintessence/shared/federation/disputes";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -34,6 +35,7 @@ type Props = {
   scope: ApiOrganizationScope;
   writable: boolean;
   busy: boolean;
+  onOpenDispute?: (subject: CommercialDispute["subject"]) => void;
   billId?: string;
   onOpenBill?: (billId: string) => void;
 };
@@ -45,7 +47,15 @@ export function CommercialPaymentPanel(props: Props) {
     />
   );
 }
-function PaymentPanel({ approval, scope, writable, busy, billId, onOpenBill }: Props) {
+function PaymentPanel({
+  approval,
+  scope,
+  writable,
+  busy,
+  billId,
+  onOpenBill,
+  onOpenDispute,
+}: Props) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
   const id = useId();
@@ -598,6 +608,21 @@ function PaymentPanel({ approval, scope, writable, busy, billId, onOpenBill }: P
               <dd className="mt-1 font-medium">{ledgerLabel(current)}</dd>
             </div>
           </dl>
+          {onOpenDispute ? (
+            <Button
+              variant="outline"
+              disabled={blocked}
+              onClick={() =>
+                onOpenDispute({
+                  recordType: "payment",
+                  recordId: current.payment.receiptId,
+                  recordDigest: current.payment.digest,
+                })
+              }
+            >
+              {t("federation.dispute.openCase")}
+            </Button>
+          ) : null}
           <CommercialPaymentTerms payment={current.payment.payload} />
           <div className="flex flex-wrap gap-2">
             {writable && current.payment.current ? (

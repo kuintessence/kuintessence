@@ -62,9 +62,45 @@ export function createFederationOutboundRoutes(service: FederationOutboundServic
     ),
     async (c) => {
       const { limit, offset } = c.req.valid("query");
+      c.header("cache-control", "no-store");
       return c.json({
         success: true,
         data: await service.list(c.get("federationActor"), limit, offset),
+      });
+    },
+  );
+  r.get(
+    "/federation/outbound/:operationId",
+    kqValidator("param", z.object({ operationId: z.uuid() })),
+    async (c) => {
+      c.header("cache-control", "no-store");
+      return c.json({
+        success: true,
+        data: await service.get(c.get("federationActor"), c.req.valid("param").operationId),
+      });
+    },
+  );
+  r.get(
+    "/federation/outbound/:operationId/result-imports",
+    kqValidator("param", z.object({ operationId: z.uuid() })),
+    kqValidator(
+      "query",
+      z.object({
+        limit: z.coerce.number().int().min(1).max(100).default(20),
+        offset: z.coerce.number().int().min(0).default(0),
+      }),
+    ),
+    async (c) => {
+      c.header("cache-control", "no-store");
+      const { limit, offset } = c.req.valid("query");
+      return c.json({
+        success: true,
+        data: await service.resultImports.list(
+          c.get("federationActor"),
+          c.req.valid("param").operationId,
+          limit,
+          offset,
+        ),
       });
     },
   );

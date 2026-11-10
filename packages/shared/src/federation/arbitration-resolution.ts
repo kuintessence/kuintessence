@@ -1,13 +1,35 @@
-import type { z } from "zod";
+import { z } from "zod";
 import { ArbitrationDecisionSchema, assertArbitrationOutcome } from "./arbitration-decision";
 import { assertArbitrationRequest, CommercialArbitrationPolicySchema } from "./arbitration-policy";
 import type { ArbitrationResolutionEnvelope, CommercialArbitrationResolution } from "./commercial";
+import { CommercialArbitrationResolutionSchema } from "./commercial";
 import {
   FederationAcceptanceSchema,
+  FederationAmountSchema,
   FederationDelegationSchema,
   FederationError,
   federationCanonicalJson,
 } from "./index";
+
+/** Personnel status excludes signatures, execution receipts and encrypted recovery checkpoints. */
+export const ArbitrationResolutionViewSchema = z.object({
+  payload: CommercialArbitrationResolutionSchema,
+  appliedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+  withdrawalRequestedAt: z.iso.datetime().nullable(),
+  withdrawnAt: z.iso.datetime().nullable(),
+  approvedHeldAmount: FederationAmountSchema,
+  lastError: z.string().nullable(),
+  nextAttemptAt: z.iso.datetime().nullable(),
+  ledger: z
+    .object({
+      id: z.uuid(),
+      state: z.enum(["pending", "committed", "needs_review"]),
+      lastError: z.string().nullable(),
+    })
+    .nullable(),
+});
+export type ArbitrationResolutionView = z.infer<typeof ArbitrationResolutionViewSchema>;
 
 /** Current execution authority; historical receipt or PDC publication cannot substitute for this proof. */
 export async function verifyArbitrationExecution(

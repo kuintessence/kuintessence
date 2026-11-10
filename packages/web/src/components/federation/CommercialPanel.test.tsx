@@ -883,3 +883,28 @@ test.each([
   await screen.findByText("No payment receipts yet.");
   expect(!!screen.queryByRole("button", { name: "Record payment" })).toBe(canPay);
 });
+
+test("a usage reader can open a dispute on the exact report without acquiring correction permission", async () => {
+  const fixture = usageSetup();
+  const onOpenDispute = vi.fn();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <CommercialUsagePanel
+        approval={fixture.approval}
+        scope={scope}
+        writable={false}
+        busy={false}
+        onOpenDispute={onOpenDispute}
+      />
+    </QueryClientProvider>,
+  );
+  await openUsage();
+  fireEvent.click(await screen.findByRole("button", { name: "Open dispute" }));
+  expect(onOpenDispute).toHaveBeenCalledWith({
+    recordType: "usage",
+    recordId: fixture.record.report.reportId,
+    recordDigest: fixture.record.digest,
+  });
+  expect(api.post).not.toHaveBeenCalled();
+});

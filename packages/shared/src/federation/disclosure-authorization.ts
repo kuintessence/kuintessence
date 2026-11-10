@@ -8,11 +8,7 @@ import {
 } from "./disclosure";
 import { FederationError } from "./errors";
 import { FederationDigestSchema } from "./references";
-import {
-  type FederationVerificationKey,
-  federationMessageKeyId,
-  verifyFederationMessage,
-} from "./signatures";
+import type { FederationVerificationKey } from "./signatures";
 import { assertFederationStatusQueryFresh } from "./status";
 
 const selection = { recordType: true, fields: true } as const;
@@ -170,6 +166,7 @@ async function bilateral<T extends { kind: string }>(
     envelope.targetSiteId !== context.targetSiteId
   )
     throw new FederationError("UNTRUSTED_IDENTITY");
+  const { federationMessageKeyId, verifyFederationMessage } = await import("./signatures");
   const verify = async (siteId: string, jws: string) => {
     const id = federationMessageKeyId(jws);
     const matches = keys.filter((key) => key.siteId === siteId && key.keyId === id);

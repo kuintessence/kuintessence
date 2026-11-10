@@ -5,6 +5,7 @@ import {
   CommercialBillListSchema,
   CommercialBillSchema,
 } from "@kuintessence/shared/federation/commercial";
+import type { CommercialDispute } from "@kuintessence/shared/federation/disputes";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -33,6 +34,7 @@ type BillingProps = {
   scope: ApiOrganizationScope;
   writable: boolean;
   busy: boolean;
+  onOpenDispute?: (subject: CommercialDispute["subject"]) => void;
   recordId?: string;
   reportId?: string;
   onOpenPayments?: (billId: string) => void;
@@ -56,6 +58,7 @@ function BillingPanel({
   recordId,
   reportId,
   onDraftSettlement,
+  onOpenDispute,
   onOpenPayments,
 }: BillingProps) {
   const { t, i18n } = useTranslation();
@@ -407,6 +410,21 @@ function BillingPanel({
               }}
             >
               {t("federation.commercial.actions.retry")}
+            </Button>
+          ) : null}
+          {onOpenDispute ? (
+            <Button
+              variant="outline"
+              disabled={blocked}
+              onClick={() =>
+                onOpenDispute({
+                  recordType: "bill",
+                  recordId: current.bill.billId,
+                  recordDigest: current.bill.digest,
+                })
+              }
+            >
+              {t("federation.dispute.openCase")}
             </Button>
           ) : null}
           <CommercialBillTerms bill={current.bill.payload} />

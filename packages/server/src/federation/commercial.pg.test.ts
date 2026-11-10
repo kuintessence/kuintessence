@@ -14814,6 +14814,7 @@ test("arbitration resolution HTTP requires a human executor, rejects extra field
     f.approvals,
     new FederationCommercialSubmissionService(db, f.a.signing.siteId),
   ];
+  deps[29] = new FederationArbitrationDecisionDelivery(db, f.a.signing);
   deps[30] = f.resolveA;
   let actor = f.actor,
     automation = false;
@@ -14848,6 +14849,34 @@ test("arbitration resolution HTTP requires a human executor, rejects extra field
     { ...actor, capability: "arbitration.execute", enabled: true },
     actor.userId,
   );
+  const decisionPath = path.replace(/arbitration-resolution$/, "arbitration-decision");
+  const permissions = new FederationPermissionService(db);
+  await permissions.set(
+    { ...actor, capability: "arbitration.approve", enabled: false },
+    actor.userId,
+  );
+  const decision = await app.request(decisionPath);
+  expect(decision.status).toBe(200);
+  const receivedAward = (await decision.json()) as {
+    data: { payload: { intent: { decisionId: string } } };
+  };
+  expect(receivedAward.data.payload.intent.decisionId).toBe(f.intent.decisionId);
+  actor = f.owner.actor;
+  expect((await app.request(decisionPath)).status).toBe(403);
+  actor = f.actor;
+  for (const capability of ["dispute.read", "dispute.open", "dispute.resolve"] as const)
+    await permissions.set({ ...actor, capability, enabled: false }, actor.userId);
+  expect((await app.request(decisionPath)).status).toBe(403);
+  await permissions.set({ ...actor, capability: "dispute.read", enabled: true }, actor.userId);
+  await permissions.set(
+    { ...actor, capability: "arbitration.execute", enabled: false },
+    actor.userId,
+  );
+  expect((await app.request(decisionPath)).status).toBe(403);
+  await permissions.set(
+    { ...actor, capability: "arbitration.execute", enabled: true },
+    actor.userId,
+  );
   const executed = await post();
   expect(executed.status).toBe(200);
   expect(executed.headers.get("cache-control")).toBe("no-store");
@@ -14858,6 +14887,13 @@ test("arbitration resolution HTTP requires a human executor, rejects extra field
   expect(body).not.toContain("Jws");
   expect(body).not.toContain(f.intent.reason);
   expect(body).not.toContain("envelope");
+  const status = JSON.parse(body).data;
+  expect(status.approvedHeldAmount).toBe("0");
+  expect(status.lastError).toBeNull();
+  expect(status.nextAttemptAt).toBeNull();
+  expect(status.ledger).toBeNull();
+  expect(body).not.toContain("recovery");
+  expect(body).not.toContain("commitment");
 }, 60000);
 
 test("coordinated monetary arbitration posts only after VALID and rolls back failed local accounting", async () => {
@@ -14871,6 +14907,8 @@ test("coordinated monetary arbitration posts only after VALID and rolls back fai
   const b = await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
   expect(a.appliedAt).toBeNull();
   expect(b.appliedAt).toBeNull();
+  expect(a.ledger?.state).toBe("pending");
+  expect(b.ledger?.state).toBe("pending");
   const financial = () =>
     db
       .select()
@@ -14948,6 +14986,9 @@ test("coordinated monetary arbitration posts only after VALID and rolls back fai
     (await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId)).appliedAt,
   ).not.toBeNull();
   expect(await financial()).toEqual(rows);
+  expect((await f.resolveA.read(f.actor, f.revisionId, f.scope.caseId))?.ledger?.state).toBe(
+    "committed",
+  );
   const stored = rows[0];
   if (!stored) throw new Error("Missing arbitrated original");
   await expect(
@@ -15445,11 +15486,20 @@ test("bilateral monetary arbitration reserves a positive adjustment once and rel
   await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
   expect(BigInt((await budget())?.reserved ?? "-1") - BigInt(prior?.reserved ?? "-1")).toBe(10n);
   expect((await f.rows()).map((row) => row.heldAmount)).toEqual(["10", "10"]);
+  const pendingView = await f.resolveA.read(f.actor, f.revisionId, f.scope.caseId);
+  expect(pendingView?.approvedHeldAmount).toBe("10");
+  expect(pendingView?.appliedAt).toBeNull();
+  expect(pendingView?.nextAttemptAt).not.toBeNull();
+  expect(pendingView?.ledger).toBeNull();
   const worker = new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress);
   await worker.advanceNext();
   expect((await outbound())?.settledAmount).toBe("50");
   expect((await outbound())?.adjustmentHeldAmount).toBe("0");
   expect((await budget())?.reserved).toBe(prior?.reserved);
+  const appliedView = await f.resolveA.read(f.actor, f.revisionId, f.scope.caseId);
+  expect(appliedView?.approvedHeldAmount).toBe("10");
+  expect(appliedView?.appliedAt).not.toBeNull();
+  expect(appliedView?.nextAttemptAt).toBeNull();
   expect(BigInt((await budget())?.spent ?? "-1") - BigInt(prior?.spent ?? "-1")).toBe(10n);
   const posted = await db
     .select()

@@ -462,7 +462,7 @@ export class FederationArbitrationDecisionDelivery {
   async receivedDecision(actor: FederationActor, revisionId: string, caseId: string) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "dispute.read");
-      await requireFederationCapability(tx, actor, "arbitration.approve");
+      await requireFederationCapability(tx, actor, ["arbitration.approve", "arbitration.execute"]);
       const [record] = await tx
         .select()
         .from(cases)

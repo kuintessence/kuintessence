@@ -8,6 +8,7 @@ import {
   CommercialAgreementSummarySchema,
   CommercialSubmissionsViewSchema,
 } from "@kuintessence/shared/federation/commercial";
+import type { CommercialDispute } from "@kuintessence/shared/federation/disputes";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -54,6 +55,7 @@ export function CommercialPanel({
   const client = useQueryClient();
   const key = ["federation", "commercial", scope.organizationId, scope.authRevision];
   const readOnly = useMobileMutationBlocked(path);
+  const [disputeSubject, setDisputeSubject] = useState<CommercialDispute["subject"] | null>(null);
   const [section, setSection] = useState("terms");
   const [closingRecord, setClosingRecord] = useState<{
     kind: "bill" | "settlement" | "refund";
@@ -79,6 +81,13 @@ export function CommercialPanel({
       ? capabilities.data.effectiveCapabilities
       : [];
   const canRead = grants.includes("agreement.read");
+  const openDispute =
+    !readOnly && grants.includes("dispute.open")
+      ? (subject: CommercialDispute["subject"]) => {
+          setDisputeSubject(subject);
+          setSection("disputes");
+        }
+      : undefined;
   const canApprove = grants.includes("agreement.approve") && !readOnly;
   const canAdjust = grants.includes("adjustment.approve") && !readOnly;
   const canSettle = grants.includes("settlement.approve") && !readOnly;
@@ -259,6 +268,7 @@ export function CommercialPanel({
               value={section}
               onValueChange={(value) => {
                 setSection(value);
+                setDisputeSubject(null);
                 setClosingRecord(null);
                 setBillingReport(undefined);
                 setSettlementBill(undefined);
@@ -303,6 +313,7 @@ export function CommercialPanel({
               </TabsContent>
               <TabsContent value="usage">
                 <CommercialUsagePanel
+                  onOpenDispute={openDispute}
                   key={`${scope.organizationId}:${scope.authRevision}:${detail.data.revisionId}`}
                   onDraftBill={
                     canBill
@@ -320,6 +331,7 @@ export function CommercialPanel({
               </TabsContent>
               <TabsContent value="bills">
                 <CommercialBillingPanel
+                  onOpenDispute={openDispute}
                   approval={detail.data}
                   scope={scope}
                   writable={canBill}
@@ -346,6 +358,7 @@ export function CommercialPanel({
               </TabsContent>
               <TabsContent value="settlements">
                 <CommercialSettlementPanel
+                  onOpenDispute={openDispute}
                   approval={detail.data}
                   scope={scope}
                   writable={canSettle}
@@ -371,6 +384,7 @@ export function CommercialPanel({
               </TabsContent>
               <TabsContent value="adjustments">
                 <CommercialAdjustmentPanel
+                  onOpenDispute={openDispute}
                   approval={detail.data}
                   scope={scope}
                   writable={canAdjust}
@@ -386,6 +400,7 @@ export function CommercialPanel({
               </TabsContent>
               <TabsContent value="payments">
                 <CommercialPaymentPanel
+                  onOpenDispute={openDispute}
                   approval={detail.data}
                   scope={scope}
                   writable={canPay}
@@ -403,6 +418,8 @@ export function CommercialPanel({
                 grants.includes("dispute.open") ||
                 grants.includes("dispute.resolve") ? (
                   <CommercialDisputePanel
+                    subject={disputeSubject}
+                    onClearSubject={() => setDisputeSubject(null)}
                     approval={detail.data}
                     scope={scope}
                     grants={grants}
@@ -448,6 +465,7 @@ export function CommercialPanel({
                     className="flex w-full flex-col gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring sm:flex-row sm:justify-between"
                     onClick={() => {
                       setSelected(row.revisionId);
+                      setDisputeSubject(null);
                       setSection("terms");
                       setClosingRecord(null);
                       setBillingReport(undefined);

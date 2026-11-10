@@ -612,6 +612,23 @@ test("asset API takes organization from the session, refuses automation and vali
     return r;
   };
   expect((await app().request("/api/federation/assets/mappings")).status).toBe(200);
+  const content = {
+    protocolVersion: 1,
+    kind: "inputs",
+    parameters: { privateValue: "must-not-leak" },
+    datasets: [],
+    bindings: [],
+  };
+  await assets.putMaterial(actor, scriptRef.originSiteId, content);
+  const materials = await app().request("/api/federation/assets/materials?limit=1");
+  expect(materials.status).toBe(200);
+  expect(materials.headers.get("cache-control")).toBe("no-store");
+  const text = await materials.text();
+  expect(text).not.toContain("must-not-leak");
+  expect(text).not.toContain("content");
+  expect(JSON.parse(text).data.data).toHaveLength(1);
+  expect((await app(true).request("/api/federation/assets/materials")).status).toBe(403);
+
   expect((await app(true).request("/api/federation/assets/mappings")).status).toBe(403);
   expect(
     (

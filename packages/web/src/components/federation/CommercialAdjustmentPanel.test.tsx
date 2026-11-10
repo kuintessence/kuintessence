@@ -503,3 +503,16 @@ test("arbitrated adjustment shows its authority without bilateral signature cont
   expect(screen.queryByLabelText("Counterparty signature")).toBeNull();
   expect(screen.queryByRole("button", { name: "Copy signature" })).toBeNull();
 });
+
+test("opens a dispute for the exact selected adjustment without granting financial approval", async () => {
+  const onOpenDispute = vi.fn();
+  mount({ writable: false, onOpenDispute });
+  await openAdjustment();
+  fireEvent.click(screen.getByRole("button", { name: "Open dispute" }));
+  expect(onOpenDispute).toHaveBeenCalledWith({
+    recordType: "adjustment",
+    recordId: first().adjustment.adjustmentId,
+    recordDigest: first().adjustment.digest,
+  });
+  expect(api.post).not.toHaveBeenCalled();
+});

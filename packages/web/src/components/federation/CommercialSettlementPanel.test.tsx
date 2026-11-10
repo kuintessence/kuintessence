@@ -387,3 +387,16 @@ test("arbitrated settlement shows its authority without bilateral signature cont
   expect(screen.queryByLabelText("Counterparty signature")).toBeNull();
   expect(screen.queryByRole("button", { name: "Copy signature" })).toBeNull();
 });
+
+test("opens a dispute for the exact selected settlement without granting financial approval", async () => {
+  const onOpenDispute = vi.fn();
+  mount({ writable: false, onOpenDispute });
+  await openSettlement();
+  fireEvent.click(screen.getByRole("button", { name: "Open dispute" }));
+  expect(onOpenDispute).toHaveBeenCalledWith({
+    recordType: "settlement",
+    recordId: first().settlement.settlementId,
+    recordDigest: first().settlement.digest,
+  });
+  expect(api.post).not.toHaveBeenCalled();
+});

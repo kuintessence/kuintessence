@@ -6,6 +6,7 @@ import {
   CommercialAdjustmentSchema,
   type CommercialAgreementApproval,
 } from "@kuintessence/shared/federation/commercial";
+import type { CommercialDispute } from "@kuintessence/shared/federation/disputes";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -33,6 +34,7 @@ type AdjustmentProps = {
   scope: ApiOrganizationScope;
   writable: boolean;
   busy: boolean;
+  onOpenDispute?: (subject: CommercialDispute["subject"]) => void;
   recordId?: string;
   settlementId?: string;
   onOpenSettlement: (id: string) => void;
@@ -55,6 +57,7 @@ function AdjustmentPanel({
   settlementId,
   recordId,
   onOpenSettlement,
+  onOpenDispute,
 }: AdjustmentProps) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
@@ -556,6 +559,21 @@ function AdjustmentPanel({
               }}
             >
               {t("federation.commercial.actions.retry")}
+            </Button>
+          ) : null}
+          {onOpenDispute ? (
+            <Button
+              variant="outline"
+              disabled={blocked}
+              onClick={() =>
+                onOpenDispute({
+                  recordType: "adjustment",
+                  recordId: current.adjustment.adjustmentId,
+                  recordDigest: current.adjustment.digest,
+                })
+              }
+            >
+              {t("federation.dispute.openCase")}
             </Button>
           ) : null}
           <CommercialAdjustmentTerms adjustment={current.adjustment.payload} />

@@ -177,6 +177,40 @@ export class FederationResultImports {
     });
   }
 
+  async list(actor: FederationActor, operationId: string, limit = 20, offset = 0) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "result.read");
+      const [outbound] = await tx
+        .select({ id: federationOutbound.operationId })
+        .from(federationOutbound)
+        .where(
+          and(
+            eq(federationOutbound.localSiteId, this.siteId),
+            eq(federationOutbound.localOrgId, actor.orgId),
+            eq(federationOutbound.operationId, operationId),
+          ),
+        );
+      if (!outbound) throw new FederationError("POLICY_DENIED");
+      const rows = await tx
+        .select()
+        .from(federationResultImports)
+        .where(
+          and(
+            eq(federationResultImports.localSiteId, this.siteId),
+            eq(federationResultImports.localOrgId, actor.orgId),
+            eq(federationResultImports.operationId, operationId),
+            eq(federationResultImports.requestedBy, actor.userId),
+          ),
+        )
+        .orderBy(asc(federationResultImports.createdAt), asc(federationResultImports.id))
+        .limit(limit + 1)
+        .offset(offset);
+      const data = [];
+      for (const row of rows.slice(0, limit)) data.push(await this.summary(tx, row));
+      return { data, hasMore: rows.length > limit };
+    });
+  }
+
   async get(actor: FederationActor, importId: string, operationId?: string) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "result.read");

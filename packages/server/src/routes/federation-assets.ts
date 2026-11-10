@@ -99,6 +99,24 @@ export function createFederationAssetRoutes(
       return c.json({ success: true });
     },
   );
+  r.get(
+    "/federation/assets/materials",
+    kqValidator(
+      "query",
+      z.object({
+        limit: z.coerce.number().int().min(1).max(100).default(20),
+        offset: z.coerce.number().int().min(0).default(0),
+      }),
+    ),
+    async (c) => {
+      c.header("cache-control", "no-store");
+      const { limit, offset } = c.req.valid("query");
+      return c.json({
+        success: true,
+        data: await service.listMaterials(c.get("federationActor"), limit, offset),
+      });
+    },
+  );
   r.post(
     "/federation/assets/materials",
     kqValidator("json", z.strictObject({ originSiteId: z.uuid(), content: z.unknown() })),

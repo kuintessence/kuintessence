@@ -15,6 +15,7 @@ import {
 import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
 import { ArbitrationExecutionCommitmentSchema } from "@kuintessence/shared/federation/arbitration-execution";
 import {
+  type ArbitrationResolutionView,
   assertArbitrationResolution,
   verifyArbitrationExecution,
 } from "@kuintessence/shared/federation/arbitration-resolution";
@@ -22,7 +23,6 @@ import {
   ArbitrationResolutionEnvelopeSchema,
   type CommercialAdapterProposalInput,
   CommercialAdapterProposalInputSchema,
-  type CommercialArbitrationResolution,
 } from "@kuintessence/shared/federation/commercial";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { applyFederationAdjustment, holdFederationAdjustment } from "./adjustment";
@@ -46,13 +46,7 @@ import {
 } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
 
-type ResolutionView = {
-  payload: CommercialArbitrationResolution;
-  appliedAt: string | null;
-  createdAt: string;
-  withdrawalRequestedAt: string | null;
-  withdrawnAt: string | null;
-};
+type ResolutionView = ArbitrationResolutionView;
 
 /** Current authorization is fixed once; financial application requires a committed ledger result or bilateral receipt. */
 export class FederationArbitrationResolutionService {
@@ -111,12 +105,30 @@ export class FederationArbitrationResolutionService {
     const payload = row?.payload ?? original?.executionWithdrawal?.resolution;
     const createdAt = row?.createdAt ?? original?.receivedAt;
     if (!payload || !createdAt || (!row && !original?.executionWithdrawal)) return null;
+    const [ledger] = await tx
+      .select({ id: submissions.id, state: submissions.state, lastError: submissions.lastError })
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.localSiteId, this.signing.siteId),
+          eq(submissions.agreementRevisionId, payload.agreementRevisionId),
+          sql`${submissions.input}->>'recordId' = ${payload.decisionId}`,
+          sql`${submissions.input}->>'operation' IN ('record-arbitration-resolution','resolve-arbitrated-case')`,
+        ),
+      );
     return {
       payload,
       appliedAt: row?.appliedAt?.toISOString() ?? null,
       createdAt: createdAt.toISOString(),
       withdrawalRequestedAt: row?.withdrawalRequestedAt?.toISOString() ?? null,
       withdrawnAt: original?.executionWithdrawal?.withdrawnAt ?? null,
+      approvedHeldAmount: row?.heldAmount ?? "0",
+      lastError: row?.lastError ?? null,
+      nextAttemptAt:
+        row && !row.appliedAt && !original?.executionWithdrawal
+          ? row.nextAttemptAt.toISOString()
+          : null,
+      ledger: ledger ?? null,
     };
   }
   private async current(tx: PgTransaction, caseId: string) {

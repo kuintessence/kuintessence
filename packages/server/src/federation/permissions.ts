@@ -41,10 +41,13 @@ async function requireHumanMember(tx: FederationTransaction, actor: FederationAc
 export async function requireFederationCapability(
   tx: FederationTransaction,
   actor: FederationActor,
-  capability: FederationCapability,
+  capability: FederationCapability | readonly FederationCapability[],
 ) {
   await requireHumanMember(tx, actor);
-  const allowed = federationCapabilitySources(capability);
+  const allowed =
+    typeof capability === "string"
+      ? federationCapabilitySources(capability)
+      : capability.flatMap(federationCapabilitySources);
   const [grant] = await tx
     .select()
     .from(federationCapabilities)

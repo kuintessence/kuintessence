@@ -402,3 +402,16 @@ test("closing navigation loads the exact bill and back clears its query filter",
     expect(api.get).toHaveBeenCalledWith(`${base}/bills?limit=20&offset=0`, scope),
   );
 });
+
+test("opens a dispute for the exact selected bill without granting financial approval", async () => {
+  const onOpenDispute = vi.fn();
+  mount({ writable: false, onOpenDispute });
+  await openBill();
+  fireEvent.click(screen.getByRole("button", { name: "Open dispute" }));
+  expect(onOpenDispute).toHaveBeenCalledWith({
+    recordType: "bill",
+    recordId: first().bill.billId,
+    recordDigest: first().bill.digest,
+  });
+  expect(api.post).not.toHaveBeenCalled();
+});

@@ -8,6 +8,7 @@ import {
   CommercialUsageSyncViewSchema,
   CommercialUsageTaskViewSchema,
 } from "@kuintessence/shared/federation/commercial";
+import type { CommercialDispute } from "@kuintessence/shared/federation/disputes";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -38,11 +39,13 @@ export function CommercialUsagePanel({
   writable,
   busy,
   onDraftBill,
+  onOpenDispute,
 }: {
   approval: CommercialAgreementApproval;
   scope: ApiOrganizationScope;
   writable: boolean;
   busy: boolean;
+  onOpenDispute?: (subject: CommercialDispute["subject"]) => void;
   onDraftBill?: (reportId: string) => void;
 }) {
   const { t, i18n } = useTranslation();
@@ -535,6 +538,21 @@ export function CommercialUsagePanel({
                                 onClick={() => onDraftBill(record.report.reportId)}
                               >
                                 {t("federation.billing.newBill")}
+                              </Button>
+                            ) : null}
+                            {onOpenDispute ? (
+                              <Button
+                                variant="outline"
+                                disabled={blocked}
+                                onClick={() =>
+                                  onOpenDispute({
+                                    recordType: "usage",
+                                    recordId: record.report.reportId,
+                                    recordDigest: record.digest,
+                                  })
+                                }
+                              >
+                                {t("federation.dispute.openCase")}
                               </Button>
                             ) : null}
                             <Button variant="outline" onClick={() => exportRecord(record)}>

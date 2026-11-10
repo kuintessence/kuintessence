@@ -1,14 +1,20 @@
 import type { FederationCapability } from "@kuintessence/shared/federation";
+import { ArbitrationDecisionSchema } from "@kuintessence/shared/federation/arbitration-decision";
+import type { ArbitrationResolutionView } from "@kuintessence/shared/federation/arbitration-resolution";
 import { CommercialAgreementApprovalSchema } from "@kuintessence/shared/federation/commercial";
 import {
   CommercialDisputeResolutionSchema,
   type CommercialDisputeResolutionView,
 } from "@kuintessence/shared/federation/dispute-resolution";
+import type { CommercialDispute } from "@kuintessence/shared/federation/disputes";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api-client";
 import i18n from "../../lib/i18n";
+import { CommercialArbitrationPanel } from "./CommercialArbitrationPanel";
+import { CommercialDisputeCreate } from "./CommercialDisputeCreate";
 import { CommercialDisputePanel } from "./CommercialDisputePanel";
 
 vi.mock("../../lib/api-client", async (original) => ({
@@ -110,7 +116,7 @@ const financial = {
   issuedAt: date,
   salt: "d".repeat(64),
 };
-const dispute = {
+const dispute: CommercialDispute = {
   protocolVersion: 1,
   kind: "commercial-dispute",
   caseId,
@@ -212,6 +218,25 @@ beforeEach(async () => {
           hasMore: false,
         },
       };
+    if (path.endsWith("/delivery"))
+      return {
+        data: { enabled: true, sync: { state: "received", lastError: null, nextAttemptAt: date } },
+      };
+    if (path.endsWith("/freeze"))
+      return {
+        data: {
+          enabled: true,
+          sync: {
+            state: "confirmed",
+            lastError: null,
+            nextAttemptAt: date,
+            confirmedAt: date,
+            headDigest: digest,
+          },
+          attestation: null,
+        },
+      };
+    if (path.endsWith("/arbitration-decision")) return { data: null };
     if (path.endsWith("/arbitration-resolution"))
       return {
         data: {
@@ -235,6 +260,10 @@ beforeEach(async () => {
               chargedAmount: "50",
             },
           },
+          approvedHeldAmount: "0",
+          lastError: null,
+          nextAttemptAt: null,
+          ledger: null,
           appliedAt: null,
           createdAt: date,
           withdrawalRequestedAt: withdrawn ? date : null,
@@ -387,4 +416,359 @@ test("closed asynchronous cases show ledger failure separately and retry only th
       scope,
     ),
   );
+});
+
+function surface(element: ReactNode) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const wrap = (child: ReactNode) => (
+    <QueryClientProvider client={client}>{child}</QueryClientProvider>
+  );
+  return { ...render(wrap(element)), wrap };
+}
+const caseRecord = (value = dispute) => ({
+  localSiteId: source,
+  localOrgId: orgId,
+  agreementRevisionId: revisionId,
+  caseId: value.caseId,
+  taskId,
+  attempt: 1,
+  payload: value,
+  digest,
+  openingJws: "private.fixture",
+  openedBy: userId,
+  acceptanceJws: null,
+  receivedAt: null,
+  state: "FREEZE_PENDING",
+  createdAt: date,
+});
+test("opens a dispute from the selected original only after confirmation and recovers a lost response with the same case", async () => {
+  const onOpened = vi.fn();
+  let original: typeof dispute | undefined;
+  let lost = false;
+  vi.mocked(api.post).mockImplementation(async (path, raw) => {
+    if (path.endsWith("/draft")) {
+      original = { ...dispute, ...(raw as object) };
+      return { data: original };
+    }
+    if (!lost) {
+      lost = true;
+      throw new Error("response lost after commit");
+    }
+    return { data: caseRecord(original) };
+  });
+  surface(
+    <CommercialDisputeCreate
+      subject={dispute.subject}
+      approval={approval}
+      scope={scope}
+      writable
+      busy={false}
+      onCancel={vi.fn()}
+      onOpened={onOpened}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("Reason for dispute"), {
+    target: { value: dispute.reason },
+  });
+  fireEvent.change(screen.getByLabelText("Requested resolution"), {
+    target: { value: dispute.requestedResolution },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Review dispute" }));
+  await screen.findByRole("dialog");
+  expect(vi.mocked(api.post).mock.calls).toHaveLength(1);
+  expect(vi.mocked(api.post).mock.calls[0]?.[1]).toMatchObject({ subject: dispute.subject });
+  await confirm();
+  await screen.findAllByRole("alert");
+  await confirm();
+  await waitFor(() => expect(onOpened).toHaveBeenCalledWith(original?.caseId));
+  const posts = vi.mocked(api.post).mock.calls.filter(([path]) => path.endsWith("/open"));
+  expect(posts).toHaveLength(2);
+  expect(posts[0]).toEqual(posts[1]);
+  expect(posts[0]?.[2]).toEqual(scope);
+  expect(screen.queryByText("private.fixture")).toBeNull();
+});
+test("rejects a draft for another original before allowing dispute submission", async () => {
+  vi.mocked(api.post).mockResolvedValue({
+    data: { ...dispute, subject: { ...dispute.subject, recordId: uuid(999) } },
+  });
+  surface(
+    <CommercialDisputeCreate
+      subject={dispute.subject}
+      approval={approval}
+      scope={scope}
+      writable
+      busy={false}
+      onCancel={vi.fn()}
+      onOpened={vi.fn()}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("Reason for dispute"), {
+    target: { value: dispute.reason },
+  });
+  fireEvent.change(screen.getByLabelText("Requested resolution"), {
+    target: { value: dispute.requestedResolution },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Review dispute" }));
+  await screen.findByRole("alert");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(vi.mocked(api.post).mock.calls).toHaveLength(1);
+});
+test("a draft arriving after permission was revoked and restored cannot reopen confirmation", async () => {
+  let complete!: (value: { data: unknown }) => void;
+  vi.mocked(api.post).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  const element = (writable: boolean) => (
+    <CommercialDisputeCreate
+      subject={dispute.subject}
+      approval={approval}
+      scope={scope}
+      writable={writable}
+      busy={false}
+      onCancel={vi.fn()}
+      onOpened={vi.fn()}
+    />
+  );
+  const m = surface(element(true));
+  fireEvent.change(screen.getByLabelText("Reason for dispute"), {
+    target: { value: dispute.reason },
+  });
+  fireEvent.change(screen.getByLabelText("Requested resolution"), {
+    target: { value: dispute.requestedResolution },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Review dispute" }));
+  await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1));
+  const input = vi.mocked(api.post).mock.calls[0]?.[1] as Record<string, unknown>;
+  m.rerender(m.wrap(element(false)));
+  m.rerender(m.wrap(element(true)));
+  await act(async () => complete({ data: { ...dispute, ...input } }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+const decision = ArbitrationDecisionSchema.parse({
+  protocolVersion: 1,
+  kind: "arbitration-decision",
+  issuedAt: date,
+  basisDigest: digest,
+  basisExpiresAt: "2026-01-01T00:01:00.000Z",
+  intent: {
+    decisionId: uuid(13),
+    salt: "a".repeat(64),
+    reason: "Reviewed authorized billing evidence",
+    binding: {
+      caseId,
+      caseDigest: digest,
+      domainId: proposal.domainId,
+      agreementRevisionId: revisionId,
+      agreementDigest: digest,
+      sourceSiteId: source,
+      targetSiteId: target,
+      arbitratorSiteId: uuid(70),
+      taskId,
+      attempt: 1,
+      operationId: uuid(71),
+      reservationId: uuid(72),
+      requestDigest: digest,
+      acceptanceDigest: digest,
+      policyId: uuid(73),
+      policyDigest: digest,
+      mode: "bilateral_attested",
+      unit: "credit.micro",
+    },
+    subject: dispute.subject,
+    financial: {
+      headDigest: digest,
+      freezeDigest: digest,
+      records: [],
+      evidenceReferences: [],
+      targets: [],
+      ledgerReceipt: null,
+    },
+    evidence: [],
+    outcome: {
+      action: "adjust",
+      bill: { recordId: uuid(15), recordDigest: digest },
+      settlement: { recordId: uuid(16), recordDigest: digest },
+      previousAdjustment: null,
+      chargedAmount: "9007199254740993",
+    },
+  },
+});
+function executionView(mode = approval.terms.agreement.mode): ArbitrationResolutionView {
+  return {
+    payload: {
+      decisionId: uuid(13),
+      decisionDigest: digest,
+      caseId,
+      caseDigest: digest,
+      domainId: proposal.domainId,
+      agreementRevisionId: revisionId,
+      sourceSiteId: source,
+      targetSiteId: target,
+      taskId,
+      attempt: 1,
+      mode,
+      headDigest: digest,
+      freezeDigest: digest,
+      outcome: decision.intent.outcome,
+    },
+    approvedHeldAmount: "10",
+    lastError: null,
+    nextAttemptAt: date,
+    ledger: null,
+    appliedAt: null,
+    createdAt: date,
+    withdrawalRequestedAt: null,
+    withdrawnAt: null,
+  };
+}
+function arbitrationProps() {
+  return {
+    approval,
+    dispute,
+    scope,
+    caseDigest: digest,
+    grants: ["arbitration.execute"] as FederationCapability[],
+    readOnly: false,
+    busy: false,
+    resolved: false,
+    execution: null,
+    onChanged: vi.fn().mockResolvedValue(undefined),
+  };
+}
+test("reviews the exact large charge before institution approval and keeps a lost-response retry on the original decision", async () => {
+  vi.mocked(api.get).mockResolvedValue({ data: { payload: decision, digest, receivedAt: date } });
+  vi.mocked(api.post)
+    .mockRejectedValueOnce(new Error("response lost"))
+    .mockResolvedValue({ data: executionView() });
+  const p = arbitrationProps();
+  surface(<CommercialArbitrationPanel {...p} />);
+  await screen.findByText(/9007199254740993/);
+  expect(api.post).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Approve decision execution" }));
+  expect(within(screen.getByRole("dialog")).getByText(/9007199254740993/)).toBeTruthy();
+  await confirm();
+  await screen.findByRole("alert");
+  await confirm();
+  await waitFor(() => expect(p.onChanged).toHaveBeenCalledOnce());
+  expect(vi.mocked(api.post).mock.calls[0]).toEqual(vi.mocked(api.post).mock.calls[1]);
+  expect(api.post).toHaveBeenCalledWith(
+    `/federation/commercial-agreements/${revisionId}/disputes/${caseId}/arbitration-resolution`,
+    {},
+    scope,
+  );
+});
+test("coordinated authorization stays distinct from local application and retries only its saved ledger item", async () => {
+  const p = arbitrationProps();
+  const coordinated = {
+    ...approval,
+    terms: {
+      ...approval.terms,
+      agreement: { ...approval.terms.agreement, mode: "ledger_coordinated" as const },
+    },
+  };
+  const original = {
+    ...decision,
+    intent: {
+      ...decision.intent,
+      binding: { ...decision.intent.binding, mode: "ledger_coordinated" },
+    },
+  };
+  vi.mocked(api.get).mockResolvedValue({ data: { payload: original, digest, receivedAt: date } });
+  const value = {
+    ...executionView("ledger_coordinated"),
+    ledger: { id: uuid(90), state: "needs_review" as const, lastError: "DELIVERY_UNAVAILABLE" },
+  };
+  const c = <CommercialArbitrationPanel {...p} approval={coordinated} execution={value} />;
+  surface(c);
+  await screen.findByText("Approved; awaiting execution", { exact: true });
+  expect(screen.queryByText("Applied locally", { exact: true })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Approve decision execution" })).toBeNull();
+  vi.mocked(api.post).mockResolvedValue({ data: {} });
+  fireEvent.click(screen.getByRole("button", { name: "Retry private attestation" }));
+  await confirm();
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      `/federation/commercial-agreements/${revisionId}/submissions/${uuid(90)}/retry`,
+      {},
+      scope,
+    ),
+  );
+});
+test("revoking execution permission closes confirmation and mobile remains read only", async () => {
+  vi.mocked(api.get).mockResolvedValue({ data: { payload: decision, digest, receivedAt: date } });
+  const p = arbitrationProps();
+  const m = surface(<CommercialArbitrationPanel {...p} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Approve decision execution" }));
+  m.rerender(m.wrap(<CommercialArbitrationPanel {...p} grants={["arbitration.approve"]} />));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  m.rerender(m.wrap(<CommercialArbitrationPanel {...p} readOnly />));
+  expect(screen.queryByRole("button", { name: "Approve decision execution" })).toBeNull();
+  expect(api.post).not.toHaveBeenCalled();
+});
+test("a decision from another task is rejected without showing its amounts or an execution action", async () => {
+  vi.mocked(api.get).mockResolvedValue({
+    data: {
+      payload: {
+        ...decision,
+        intent: { ...decision.intent, binding: { ...decision.intent.binding, taskId: uuid(888) } },
+      },
+      digest,
+      receivedAt: date,
+    },
+  });
+  surface(<CommercialArbitrationPanel {...arbitrationProps()} />);
+  await screen.findByRole("alert");
+  expect(screen.queryByText(/9007199254740993/)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Approve decision execution" })).toBeNull();
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test("a locally resolved asynchronous case keeps polling its pending attestation until confirmed", async () => {
+  grants.push("arbitration.approve");
+  const get = vi.mocked(api.get).getMockImplementation();
+  let committed = false;
+  vi.mocked(api.get).mockImplementation(async (path, requestScope) => {
+    if (path.endsWith("/arbitration-decision"))
+      return { data: { payload: decision, digest, receivedAt: date } };
+    if (path.endsWith("/arbitration-resolution"))
+      return {
+        data: {
+          ...executionView(),
+          appliedAt: date,
+          nextAttemptAt: null,
+          ledger: { id: uuid(90), state: committed ? "committed" : "pending", lastError: null },
+        },
+      };
+    const value = await get?.(path, requestScope);
+    if (path.includes("disputes?"))
+      return { data: { data: [{ ...caseRecord(), state: "RESOLVED" }], hasMore: false } };
+    return value;
+  });
+  vi.useFakeTimers();
+  const m = mount();
+  try {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Reconcile disputed charge/ }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(screen.getAllByText("Applied locally", { exact: true }).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Ledger record.*Awaiting chain confirmation/)).toBeTruthy();
+    committed = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    expect(screen.getByText(/Confirmed on chain/)).toBeTruthy();
+  } finally {
+    m.unmount();
+    vi.useRealTimers();
+  }
 });

@@ -472,3 +472,16 @@ test.each([408, 500])("HTTP %i does not assert a safe rejection", async (status)
     true,
   );
 });
+
+test("opens a dispute for the exact selected payment without granting financial approval", async () => {
+  const onOpenDispute = vi.fn();
+  mount({ writable: false, onOpenDispute });
+  await openPayment();
+  fireEvent.click(screen.getByRole("button", { name: "Open dispute" }));
+  expect(onOpenDispute).toHaveBeenCalledWith({
+    recordType: "payment",
+    recordId: first().payment.receiptId,
+    recordDigest: first().payment.digest,
+  });
+  expect(api.post).not.toHaveBeenCalled();
+});
