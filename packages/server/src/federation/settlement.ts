@@ -27,7 +27,8 @@ import {
 import { and, desc, eq, sql } from "drizzle-orm";
 import { verifyArbitratedFinancialOriginal } from "./arbitrated-financial-original";
 import { assertClosingPolicyActive, FederationClosingPolicyService } from "./closing-policy";
-import { assertFederationTaskNotDisputed } from "./dispute-freeze";
+import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
+import { completeFinancialDisputeResolution } from "./dispute-resolution-state";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -167,6 +168,7 @@ export async function applyFederationSettlement(
     target: row.settlementId,
     diff: { after: { digest: row.digest } },
   });
+  await completeFinancialDisputeResolution(tx, row.localSiteId, value);
 }
 
 export class FederationSettlementService {
@@ -219,6 +221,7 @@ export class FederationSettlementService {
       .for("share");
     if (!bill?.counterpartyJws) throw new FederationError("DATA_WAITING");
     const value = CommercialBillSchema.parse(bill.payload);
+    await lockFederationDisputeTask(tx, this.signing.siteId, value.request);
     if (
       value.agreementDigest !== contract.digest ||
       value.domainId !== contract.terms.domainId ||
@@ -408,7 +411,7 @@ export class FederationSettlementService {
       if (!prior.approvalJws) throw new FederationError("OPERATION_CONFLICT");
       return { ...prior, approvalJws: prior.approvalJws };
     }
-    await assertFederationTaskNotDisputed(tx, this.signing.siteId, bill.payload.request);
+    await assertFederationTaskNotDisputed(tx, this.signing.siteId, bill.payload.request, value);
     const signed = await this.verify(
       tx,
       await signFederationMessage(CommercialSettlementSchema, value, this.signing),

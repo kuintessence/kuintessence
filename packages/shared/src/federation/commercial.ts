@@ -45,6 +45,7 @@ export const CommercialSigningKindSchema = z.enum([
   "commercial-dispute",
   "commercial-dispute-receipt",
   "commercial-dispute-freeze",
+  "commercial-dispute-resolution",
   "cancellation-receipt",
 ]);
 
@@ -655,6 +656,7 @@ export const CommercialRecordTypeSchema = z.enum([
   "refund",
   "payment",
   "dispute-freeze",
+  "dispute-resolution",
   "native-dispute-freeze",
   "arbitration-revocation",
   "arbitration-resolution",
@@ -807,6 +809,11 @@ export const CommercialArbitrationResolutionSchema = z.strictObject({
 });
 export type CommercialArbitrationResolution = z.infer<typeof CommercialArbitrationResolutionSchema>;
 export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operation", [
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("record-dispute-resolution"),
+    envelope: CommercialAgreementEnvelopeSchema,
+  }),
   z.strictObject({
     ...ProposalIdentity,
     operation: z.literal("resolve-arbitrated-case"),

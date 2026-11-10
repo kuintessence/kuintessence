@@ -92,6 +92,7 @@ import { FederationDisclosurePolicyService } from "./federation/disclosure-polic
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
 import { FederationDisputeDelivery } from "./federation/dispute-delivery";
 import { FederationDisputeFreezeExchange } from "./federation/dispute-freeze-exchange";
+import { FederationDisputeResolutionService } from "./federation/dispute-resolution";
 import { FederationDisputeService } from "./federation/disputes";
 import { FederationExecutionAutomation } from "./federation/execution-automation";
 import {
@@ -2029,6 +2030,7 @@ if (federationSigningKey && federationCommercial)
       federationArbitrationRevocations,
       federationArbitrationDecisions,
       federationArbitrationResolution,
+      new FederationDisputeResolutionService(db, federationSigningKey),
     ),
   );
 const federationPreparation = federationSigningKey

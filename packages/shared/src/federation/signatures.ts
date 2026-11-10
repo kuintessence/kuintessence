@@ -93,6 +93,7 @@ export interface FederationVerificationKey {
     | "arbitration-execution-withdrawal-query"
     | "arbitration-execution-withdrawal-receipt"
     | "arbitration-execution-withdrawal-response"
+    | "commercial-dispute-resolution"
     | "commercial-disclosure-policy"
     | "commercial-disclosure"
     | "commercial-disclosure-read-query"

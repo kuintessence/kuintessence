@@ -96,6 +96,11 @@
       "types": "./src/federation/media-key-crypto.ts",
       "default": "./src/federation/media-key-crypto.ts"
     },
+    "./federation/dispute-resolution": {
+      "bun": "./src/federation/dispute-resolution.ts",
+      "types": "./src/federation/dispute-resolution.ts",
+      "default": "./src/federation/dispute-resolution.ts"
+    },
     "./federation/disputes": {
       "bun": "./src/federation/disputes.ts",
       "types": "./src/federation/disputes.ts",

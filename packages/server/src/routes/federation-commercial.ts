@@ -28,6 +28,7 @@ import {
   CommercialDisclosurePolicyDraftSchema,
   CommercialDisclosurePolicySchema,
 } from "@kuintessence/shared/federation/disclosure-authorization";
+import { CommercialDisputeResolutionSchema } from "@kuintessence/shared/federation/dispute-resolution";
 import {
   CommercialDisputeDraftSchema,
   CommercialDisputeSchema,
@@ -56,6 +57,7 @@ import type { FederationDisclosureService } from "../federation/disclosure";
 import type { FederationDisclosurePolicyService } from "../federation/disclosure-policy";
 import type { FederationDisputeDelivery } from "../federation/dispute-delivery";
 import type { FederationDisputeFreezeExchange } from "../federation/dispute-freeze-exchange";
+import type { FederationDisputeResolutionService } from "../federation/dispute-resolution";
 import type { FederationDisputeService } from "../federation/disputes";
 import type { FederationExecutionAutomation } from "../federation/execution-automation";
 import type { FederationExecutionConfirmationService } from "../federation/execution-confirmation";
@@ -114,6 +116,7 @@ export function createFederationCommercialRoutes(
   arbitrationRevocations?: FederationArbitrationRevocationDelivery,
   arbitrationDecisions?: FederationArbitrationDecisionDelivery,
   arbitrationResolution?: FederationArbitrationResolutionService,
+  disputeResolution?: FederationDisputeResolutionService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -205,6 +208,55 @@ export function createFederationCommercialRoutes(
         });
       },
     );
+  if (disputeResolution) {
+    const path = "/federation/commercial-agreements/:revisionId/disputes/:caseId/resolution";
+    const params = z.object({ revisionId: z.uuid(), caseId: z.uuid() });
+    r.get(path, kqValidator("param", params), async (c) => {
+      const { revisionId, caseId } = c.req.valid("param");
+      return c.json({
+        data: await disputeResolution.read(c.get("federationActor"), revisionId, caseId),
+      });
+    });
+    r.post(
+      `${path}/draft`,
+      kqValidator("param", params),
+      kqValidator(
+        "json",
+        z.strictObject({
+          resolutionId: z.uuid(),
+          reason: z.string().trim().min(1).max(4096),
+          financial: CommercialDisputeResolutionSchema.shape.financial,
+        }),
+      ),
+      async (c) => {
+        const { revisionId, caseId } = c.req.valid("param");
+        return c.json({
+          data: await disputeResolution.draft(
+            c.get("federationActor"),
+            revisionId,
+            caseId,
+            c.req.valid("json"),
+          ),
+        });
+      },
+    );
+    r.post(
+      path,
+      kqValidator("param", params),
+      kqValidator("json", CommercialDisputeResolutionSchema),
+      async (c) => {
+        const { revisionId, caseId } = c.req.valid("param");
+        return c.json({
+          data: await disputeResolution.approve(
+            c.get("federationActor"),
+            revisionId,
+            caseId,
+            c.req.valid("json"),
+          ),
+        });
+      },
+    );
+  }
   if (arbitrationResolution) {
     const path =
       "/federation/commercial-agreements/:revisionId/disputes/:caseId/arbitration-resolution";

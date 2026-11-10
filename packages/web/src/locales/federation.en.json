@@ -120,6 +120,7 @@
       "commercial-dispute": "Dispute opening",
       "commercial-dispute-receipt": "Dispute receipt",
       "commercial-dispute-freeze": "Dispute financial freeze",
+      "commercial-dispute-resolution": "Bilateral dispute settlement",
       "commercial-arbitration-policy": "Arbitration preauthorization policy",
       "commercial-arbitration-revocation": "Arbitration preauthorization withdrawal",
       "arbitration-revocation-notice": "Arbitration withdrawal notice",
@@ -271,6 +272,7 @@
           "receive": "Receive approved evidence"
         },
         "dispute": {
+          "resolve": "Approve bilateral dispute settlements",
           "read": "View disputes",
           "open": "Open disputes"
         },

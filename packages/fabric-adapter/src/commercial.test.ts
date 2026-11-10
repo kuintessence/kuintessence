@@ -28,6 +28,7 @@ import {
   CommercialTerminalSchema,
   CommercialUsageSchema,
 } from "@kuintessence/shared/federation/commercial";
+import { CommercialDisputeResolutionSchema } from "@kuintessence/shared/federation/dispute-resolution";
 import {
   CommercialDisputeFreezeSchema,
   CommercialDisputeSchema,
@@ -101,6 +102,7 @@ beforeAll(async () => {
           "commercial-payment",
           "commercial-dispute",
           "commercial-dispute-freeze",
+          "commercial-dispute-resolution",
           "cancellation-receipt",
         ],
       })),
@@ -269,6 +271,75 @@ test("arbitration withdrawals keep signatures transient, require a current purpo
   for (const key of trust.keyPurposes)
     key.kinds = key.kinds.filter((kind) => kind !== "commercial-arbitration-revocation");
   await expect(setup({ trust }).adapter.prepare(value)).rejects.toThrow("UNTRUSTED_IDENTITY");
+});
+
+test("bilateral dispute settlement proposal binds private consent and native A/B endorsement without changing financial authority", async () => {
+  const a = keys[0],
+    b = keys[1];
+  if (!a || !b) throw new Error("Missing parties");
+  const terms = CommercialDisputeResolutionSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute-resolution",
+    resolutionId: randomUUID(),
+    caseId: randomUUID(),
+    caseDigest: input.digest,
+    domainId: input.domainId,
+    agreementRevisionId: input.recordId,
+    sourceSiteId: a.siteId,
+    targetSiteId: b.siteId,
+    taskId: randomUUID(),
+    attempt: 1,
+    mode: "bilateral_attested",
+    decisionId: randomUUID(),
+    withdrawalDigest: input.digest,
+    headDigest: input.digest,
+    financial: null,
+    reason: "PRIVATE-RECONCILIATION",
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const sourceJws = await signFederationMessage(CommercialDisputeResolutionSchema, terms, a);
+  const value = CommercialAdapterProposalInputSchema.parse({
+    operation: "record-dispute-resolution",
+    domainId: input.domainId,
+    recordId: terms.resolutionId,
+    digest: `sha256:${createHash("sha256")
+      .update(Buffer.from(sourceJws.split(".")[1] ?? "", "base64url"))
+      .digest("hex")}`,
+    envelope: {
+      sourceSiteId: a.siteId,
+      targetSiteId: b.siteId,
+      sourceJws,
+      targetJws: await signFederationMessage(CommercialDisputeResolutionSchema, terms, b),
+    },
+  });
+  const f = setup(),
+    prepared = await f.adapter.prepare(value),
+    stored = decode(f, prepared.recovery);
+  const proposed = proto.ProposedTransaction.deserializeBinary(
+    Buffer.from(stored.message.bytes, "base64"),
+  );
+  expect(proposed.getEndorsingOrganizationsList()).toEqual(["AMSP", "BMSP"]);
+  const signed = proposed.getProposal();
+  if (!signed) throw new Error("Missing SDK proposal");
+  const payload = peer.ChaincodeProposalPayload.deserializeBinary(
+    peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+  );
+  expect(Buffer.from(payload.getTransientmapMap().get("commercial") ?? []).toString()).toBe(
+    JSON.stringify(value.envelope),
+  );
+  expect(
+    peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((v) => Buffer.from(v).toString()),
+  ).toEqual(["RecordDisputeResolution", input.domainId, terms.resolutionId]);
+  const denied = setup();
+  await expect(
+    denied.adapter.prepare({ ...value, digest: `sha256:${"f".repeat(64)}` }),
+  ).rejects.toThrow();
+  expect(denied.sdk).not.toHaveBeenCalled();
 });
 
 test("commercial proposals encrypt exact signed terms and target only the two configured member MSPs", async () => {

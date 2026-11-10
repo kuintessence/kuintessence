@@ -58,6 +58,7 @@ const SigningKindSchema = z.enum([
   "arbitration-execution-withdrawal-query",
   "arbitration-execution-withdrawal-receipt",
   "arbitration-execution-withdrawal-response",
+  "commercial-dispute-resolution",
   "commercial-disclosure-policy",
   "commercial-disclosure",
   "case-arbitration-decision",

@@ -81,6 +81,7 @@ import type {
   CommercialDisclosureReadScope,
   CommercialEvidenceCaseInput,
 } from "@kuintessence/shared/federation/disclosure-authorization";
+import type { CommercialDisputeResolution } from "@kuintessence/shared/federation/dispute-resolution";
 import type {
   CommercialDispute,
   CommercialDisputeFinancialView,
@@ -188,6 +189,7 @@ export const federationSigningKeys = pgTable(
           | "arbitration-execution-withdrawal-query"
           | "arbitration-execution-withdrawal-receipt"
           | "arbitration-execution-withdrawal-response"
+          | "commercial-dispute-resolution"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
           | "case-arbitration-decision"
@@ -280,7 +282,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'arbitration.decide', 'arbitration.execute', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'arbitration.decide', 'arbitration.execute', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'dispute.resolve', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -2309,7 +2311,7 @@ export const federationCommercialSubmissions = pgTable(
     ),
     check(
       "federation_commercial_submission_input",
-      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement','record-refund','record-payment','record-dispute-freeze','freeze-disputed-task','revoke-arbitration-policy','resolve-arbitrated-case','record-arbitration-resolution') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement','record-refund','record-payment','record-dispute-freeze','record-dispute-resolution','freeze-disputed-task','revoke-arbitration-policy','resolve-arbitrated-case','record-arbitration-resolution') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
     check(
       "federation_commercial_submission_lease",
@@ -3039,6 +3041,7 @@ export const federationCommercialApprovalSyncs = pgTable(
         | "disclosure-policy"
         | "disclosure"
         | "case-publication"
+        | "dispute-resolution"
       >()
       .notNull(),
     recordId: uuid("record_id").notNull(),
@@ -3062,7 +3065,7 @@ export const federationCommercialApprovalSyncs = pgTable(
     index("federation_approval_sync_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
     check(
       "federation_approval_sync_identity",
-      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment','refund','payment','arbitration-policy','disclosure-policy','disclosure','case-publication') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
+      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment','refund','payment','arbitration-policy','disclosure-policy','disclosure','case-publication','dispute-resolution') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
     ),
     check(
       "federation_approval_sync_state",
@@ -4196,6 +4199,45 @@ export const federationCaseArbitrationDecisions = pgTable(
     AND ${t.payload}->>'decisionId' = ${t.decisionId}::text
     AND ${t.payload}->'binding'->>'caseId' = ${t.caseId}::text
     AND ${t.payload}->'binding'->>'arbitratorSiteId' = ${t.localSiteId}::text) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationDisputeResolutions = pgTable(
+  "federation_dispute_resolutions",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    localOrgId: uuid("local_org_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    resolutionId: uuid("resolution_id").notNull(),
+    payload: jsonb("payload").$type<CommercialDisputeResolution>().notNull(),
+    digest: text("digest").notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    approvedBy: uuid("approved_by").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.caseId] }),
+    uniqueIndex("dispute_resolution_identity").on(t.localSiteId, t.resolutionId),
+    foreignKey({
+      name: "dispute_resolution_case_fk",
+      columns: [t.localSiteId, t.caseId],
+      foreignColumns: [federationDisputes.localSiteId, federationDisputes.caseId],
+    }),
+    check(
+      "dispute_resolution_binding",
+      sql`(
+      ${t.payload}->>'kind' = 'commercial-dispute-resolution'
+      AND ${t.payload}->>'caseId' = ${t.caseId}::text
+      AND ${t.payload}->>'resolutionId' = ${t.resolutionId}::text
+      AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND ${t.payload}->>'mode' IN ('bilateral_direct','bilateral_attested')
+      AND ${t.localSiteId}::text IN (${t.payload}->>'sourceSiteId', ${t.payload}->>'targetSiteId')
+      AND (${t.appliedAt} IS NULL OR ${t.counterpartyJws} IS NOT NULL)
+    ) IS TRUE`,
     ),
   ],
 );

@@ -48,6 +48,7 @@ import {
   type FabricCommercialTrust,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
+import { CommercialDisputeResolutionSchema } from "@kuintessence/shared/federation/dispute-resolution";
 import {
   assertDisputeAttestation,
   type CommercialDisputeFinancialView,
@@ -1348,6 +1349,54 @@ export class CommercialLedger {
     );
     return encode(receipt);
   }
+  private async disputeResolution(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    recordId: string,
+  ) {
+    const envelope = this.input(stub, CommercialAgreementEnvelopeSchema),
+      now = stub.getDateTimestamp();
+    if (
+      !domain.siteIds.includes(envelope.sourceSiteId) ||
+      !domain.siteIds.includes(envelope.targetSiteId)
+    )
+      return fail("POLICY_DENIED");
+    const signed = await this.verify(
+      stub,
+      CommercialDisputeResolutionSchema,
+      envelope.sourceJws,
+      envelope.sourceSiteId,
+      now,
+    );
+    const other = await this.verify(
+      stub,
+      CommercialDisputeResolutionSchema,
+      envelope.targetJws,
+      envelope.targetSiteId,
+      now,
+    );
+    const value = signed.payload;
+    if (
+      signed.digest !== other.digest ||
+      value.domainId !== domain.domainId ||
+      value.resolutionId !== recordId ||
+      value.sourceSiteId !== envelope.sourceSiteId ||
+      value.targetSiteId !== envelope.targetSiteId ||
+      value.mode !== "bilateral_attested" ||
+      Date.parse(value.issuedAt) > now.getTime() + 60000
+    )
+      return fail("POLICY_DENIED");
+    const key = stub.createCompositeKey("dispute-resolution", [domain.domainId, recordId]);
+    const existing = await this.privateValue(stub, domain.collection, key);
+    const stored = { receipt: { recordId, digest: signed.digest }, envelope, terms: value };
+    if (
+      existing.length &&
+      Buffer.from(existing).toString() !== Buffer.from(encode(stored)).toString()
+    )
+      return fail("OPERATION_CONFLICT");
+    await stub.putPrivateData(domain.collection, key, encode(stored));
+    return encode(stored.receipt);
+  }
   private async resolveArbitration(
     stub: Stub,
     domain: FabricCommercialTrust["domains"][number],
@@ -2080,6 +2129,7 @@ export class CommercialLedger {
         "AdjustSettlement",
         "RecordRefund",
         "RecordPayment",
+        "RecordDisputeResolution",
         "RecordDisputeFreeze",
         "FreezeDisputedTask",
         "ResolveArbitratedCase",
@@ -2099,6 +2149,7 @@ export class CommercialLedger {
       return this.resolveArbitration(stub, domain, recordId, false);
     if (fcn === "FreezeDisputedTask") return this.disputeAttestation(stub, domain, recordId, true);
     if (fcn === "RecordDisputeFreeze") return this.disputeAttestation(stub, domain, recordId);
+    if (fcn === "RecordDisputeResolution") return this.disputeResolution(stub, domain, recordId);
     if (fcn === "RecordPayment") return this.payment(stub, domain, recordId);
     if (fcn === "RecordRefund") return this.refund(stub, domain, recordId);
     if (fcn === "RecordDiscount") return this.discount(stub, domain, recordId, org.siteId);

@@ -29,6 +29,7 @@ import type { z } from "zod";
 import { verifyArbitratedFinancialOriginal } from "./arbitrated-financial-original";
 import { renewTaskCompletion } from "./completion-capacity";
 import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
+import { completeFinancialDisputeResolution } from "./dispute-resolution-state";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -303,6 +304,7 @@ export async function applyFederationAdjustment(tx: PgTransaction, snapshot: Adj
     target: row.adjustmentId,
     diff: { after: { digest: row.digest } },
   });
+  await completeFinancialDisputeResolution(tx, row.localSiteId, row.payload);
 }
 
 /** Reserve a positive correction once, before creating an immutable financial commitment. */
@@ -413,6 +415,17 @@ export async function releaseFederationAdjustmentHold(
         ),
       );
   }
+}
+
+export async function validateFederationAdjustment(
+  tx: PgTransaction,
+  siteId: string,
+  orgId: string,
+  revisionId: string,
+  value: CommercialAdjustment,
+) {
+  const original = await originals(tx, siteId, orgId, revisionId, value.settlementId);
+  check(value, original, await head(tx, siteId, value.settlementId));
 }
 
 export class FederationAdjustmentService {
@@ -560,7 +573,12 @@ export class FederationAdjustmentService {
           throw new FederationError("OPERATION_CONFLICT");
         return { ...prior, approvalJws: prior.approvalJws };
       }
-      await assertFederationTaskNotDisputed(tx, this.signing.siteId, original.bill.payload.request);
+      await assertFederationTaskNotDisputed(
+        tx,
+        this.signing.siteId,
+        original.bill.payload.request,
+        value,
+      );
       const previous = await head(tx, this.signing.siteId, value.settlementId);
       await this.verifyOriginals(tx, original, previous);
       check(value, original, previous);

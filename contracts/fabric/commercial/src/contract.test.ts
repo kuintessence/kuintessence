@@ -35,6 +35,7 @@ import {
   FabricCommercialTrustSchema,
   fabricCommercialCollections,
 } from "@kuintessence/shared/federation/commercial";
+import { CommercialDisputeResolutionSchema } from "@kuintessence/shared/federation/dispute-resolution";
 import {
   CommercialDisputeFreezeSchema,
   CommercialDisputeSchema,
@@ -56,6 +57,59 @@ const domainId = randomUUID();
 const keys: FederationSigningKey[] = [];
 let trust: FabricCommercialTrust;
 const now = new Date("2027-01-01T12:00:00.000Z");
+test("bilateral dispute settlement attestation requires identical A/B signatures and writes only private historical consent", async () => {
+  const f = await setup(),
+    a = keys[0],
+    b = keys[1];
+  if (!a || !b) throw new Error("Missing signers");
+  const value = CommercialDisputeResolutionSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-dispute-resolution",
+    resolutionId: randomUUID(),
+    caseId: randomUUID(),
+    caseDigest: `sha256:${"a".repeat(64)}`,
+    domainId,
+    agreementRevisionId: randomUUID(),
+    sourceSiteId: a.siteId,
+    targetSiteId: b.siteId,
+    taskId: randomUUID(),
+    attempt: 1,
+    mode: "bilateral_attested",
+    decisionId: randomUUID(),
+    withdrawalDigest: `sha256:${"b".repeat(64)}`,
+    headDigest: `sha256:${"c".repeat(64)}`,
+    financial: null,
+    reason: "PRIVATE-SETTLEMENT-PROBE",
+    issuedAt: now.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const envelope = {
+    sourceSiteId: a.siteId,
+    targetSiteId: b.siteId,
+    sourceJws: await signFederationMessage(CommercialDisputeResolutionSchema, value, a),
+    targetJws: await signFederationMessage(CommercialDisputeResolutionSchema, value, b),
+  };
+  const publicBefore = new Map(f.stub.state),
+    before = new Map(f.stub.privateState);
+  await expect(
+    f.call("RecordDisputeResolution", value.resolutionId, {
+      ...envelope,
+      targetJws: envelope.sourceJws,
+    }),
+  ).rejects.toThrow();
+  await expect(
+    f.call("RecordDisputeResolution", value.resolutionId, envelope, identity(2)),
+  ).rejects.toThrow("POLICY_DENIED");
+  expect(f.stub.privateState).toEqual(before);
+  const first = await f.call("RecordDisputeResolution", value.resolutionId, envelope);
+  expect(await f.call("RecordDisputeResolution", value.resolutionId, envelope)).toEqual(first);
+  expect(f.stub.privateState.size - before.size).toBe(1);
+  expect(f.stub.state).toEqual(publicBefore);
+  const key = f.stub.createCompositeKey("dispute-resolution", [domainId, value.resolutionId]);
+  expect(
+    JSON.parse((await f.stub.getPrivateData("commercial_AB_v1", key)).toString()).terms,
+  ).toEqual(value);
+});
 beforeAll(async () => {
   const organizations: FabricCommercialTrust["organizations"] = [];
   for (const [index, siteId] of sites.entries()) {
@@ -102,6 +156,7 @@ beforeAll(async () => {
         "commercial-payment",
         "commercial-dispute",
         "commercial-dispute-freeze",
+        "commercial-dispute-resolution",
         "cancellation-receipt",
       ],
     })),

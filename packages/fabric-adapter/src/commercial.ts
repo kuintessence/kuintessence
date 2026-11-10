@@ -29,6 +29,7 @@ import {
   CommercialUsageSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
+import { CommercialDisputeResolutionSchema } from "@kuintessence/shared/federation/dispute-resolution";
 import {
   assertDisputeAttestation,
   CommercialDisputeFreezeSchema,
@@ -253,6 +254,19 @@ export class FabricCommercialAdapter {
         now,
         input.operation === "freeze-disputed-task" ? "ledger_coordinated" : "bilateral_attested",
       );
+    } else if (input.operation === "record-dispute-resolution") {
+      const signed = await this.verifyPair(CommercialDisputeResolutionSchema, input.envelope, now),
+        value = signed.payload;
+      if (
+        signed.digest !== input.digest ||
+        value.domainId !== input.domainId ||
+        value.resolutionId !== input.recordId ||
+        value.sourceSiteId !== input.envelope.sourceSiteId ||
+        value.targetSiteId !== input.envelope.targetSiteId ||
+        value.mode !== "bilateral_attested" ||
+        Date.parse(value.issuedAt) > now.getTime() + 60000
+      )
+        throw new Error("POLICY_DENIED");
     } else if (input.operation === "record-payment") {
       const signed = await this.verifyPair(CommercialPaymentSchema, input.envelope, now),
         value = signed.payload;
@@ -339,6 +353,7 @@ export class FabricCommercialAdapter {
       "adjust-settlement": "AdjustSettlement",
       "record-refund": "RecordRefund",
       "record-payment": "RecordPayment",
+      "record-dispute-resolution": "RecordDisputeResolution",
       "record-dispute-freeze": "RecordDisputeFreeze",
       "freeze-disputed-task": "FreezeDisputedTask",
     } as const;

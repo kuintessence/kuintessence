@@ -39,6 +39,7 @@ import {
   federationDisclosures,
   federationDisputeDeliveries,
   federationDisputeFreezes,
+  federationDisputeResolutions,
   federationDisputes,
   federationEvidence,
   federationEvidenceCases,
@@ -145,6 +146,7 @@ import {
   CommercialApprovalQuerySchema,
   CommercialApprovalWaitingSchema,
 } from "@kuintessence/shared/federation/commercial-approval-exchange";
+import type { CommercialDisputeResolutionSchema } from "@kuintessence/shared/federation/dispute-resolution";
 import {
   CommercialDisputeFreezeSchema,
   CommercialDisputeSchema,
@@ -167,7 +169,7 @@ import {
   TerminalDeliverySchema,
   TerminalQuerySchema,
 } from "@kuintessence/shared/federation/terminal-exchange";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
@@ -217,6 +219,7 @@ import { FederationDispatchAuthorization } from "./dispatch-authorization";
 import { FederationDisputeDelivery } from "./dispute-delivery";
 import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
 import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
+import { FederationDisputeResolutionService } from "./dispute-resolution";
 import { FederationDisputeService } from "./disputes";
 import { FederationExecutionAutomation } from "./execution-automation";
 import { FederationExecutionBindingService } from "./execution-binding";
@@ -420,6 +423,9 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
 }
 afterAll(async () => {
   const allSites = fixtures.flatMap((f) => [f.a.signing.siteId, f.b.signing.siteId]);
+  await db
+    .delete(federationDisputeResolutions)
+    .where(inArray(federationDisputeResolutions.localSiteId, allSites));
   await db
     .delete(federationCommercialAdjustments)
     .where(inArray(federationCommercialAdjustments.localSiteId, allSites));
@@ -15942,4 +15948,317 @@ test("arbitration withdrawal refuses a signed response whose historical receipt 
   expect(final.outbound?.adjustmentHeldAmount).toBe("0");
   expect(final.audit).toHaveLength(2);
   expect(final.adjustments).toHaveLength(0);
+}, 60000);
+
+async function disputeSettlementFixture(
+  mode: FederationMode = "bilateral_direct",
+  withSettlement = true,
+) {
+  const f = await bilateralMonetaryFixture(mode, withSettlement);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "settlement.approve", enabled: true },
+    f.actor.userId,
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "dispute.resolve", enabled: true },
+    f.actor.userId,
+  );
+  for (const siteId of [f.a.signing.siteId, f.b.signing.siteId])
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-dispute-resolution","commercial-approval-query","commercial-approval-waiting","commercial-settlement"]'::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, siteId));
+  await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+  await f.resolveA.withdraw(f.actor, f.revisionId, f.scope.caseId);
+  await new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress).advanceNext();
+  return {
+    ...f,
+    reconciliationA: new FederationDisputeResolutionService(db, f.a.signing),
+    reconciliationB: new FederationDisputeResolutionService(db, f.b.signing),
+    reconciliationRows: () =>
+      db
+        .select()
+        .from(federationDisputeResolutions)
+        .where(eq(federationDisputeResolutions.caseId, f.scope.caseId)),
+  };
+}
+async function approveDisputeSettlement(
+  f: Awaited<ReturnType<typeof disputeSettlementFixture>>,
+  financial: z.infer<typeof CommercialDisputeResolutionSchema>["financial"],
+) {
+  const value = await f.reconciliationA.draft(f.actor, f.revisionId, f.scope.caseId, {
+    resolutionId: randomUUID(),
+    financial,
+    reason: "双方重新核对原件后和解",
+  });
+  await f.reconciliationA.approve(f.actor, f.revisionId, f.scope.caseId, value);
+  await f.reconciliationB.approve(f.actor, f.revisionId, f.scope.caseId, value);
+  const rows = await f.reconciliationRows();
+  const a = rows.find((r) => r.localSiteId === f.a.signing.siteId),
+    b = rows.find((r) => r.localSiteId === f.b.signing.siteId);
+  if (!a || !b) throw new Error("Missing bilateral reconciliation signatures");
+  await f.reconciliationA.attachExchanged(
+    f.revisionId,
+    value.resolutionId,
+    b.approvalJws,
+    async () => {},
+  );
+  await f.reconciliationB.attachExchanged(
+    f.revisionId,
+    value.resolutionId,
+    a.approvalJws,
+    async () => {},
+  );
+  return value;
+}
+
+test("dispute settlement closes only its withdrawn case after real automatic signature exchange without changing funds", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await disputeSettlementFixture(mode);
+    const prior = await arbitrationWithdrawalState(f);
+    const draft = await f.reconciliationA.draft(f.actor, f.revisionId, f.scope.caseId, {
+      resolutionId: randomUUID(),
+      financial: null,
+      reason: "保留原收费",
+    });
+    const approved = await f.reconciliationA.approve(f.actor, f.revisionId, f.scope.caseId, draft);
+    expect(approved.appliedAt).toBeNull();
+    const otherDraft = await f.sourceCases.draft(f.actor, f.revisionId, {
+      caseId: randomUUID(),
+      subject: f.draft.subject,
+      reason: "另案",
+      requestedResolution: "独立处理",
+    });
+    const otherCase = await f.sourceCases.open(f.actor, f.revisionId, otherDraft);
+    const worker = new FederationCommercialApprovalExchange(
+      db,
+      f.a.signing,
+      async (_endpoint, jws, path) => {
+        expect(path).toBe("/federation/v1/commercial-approvals");
+        return new FederationCommercialApprovalExchange(db, f.b.signing).receive(
+          jws,
+          f.fingerprint,
+        );
+      },
+    );
+    await worker.discover();
+    await db
+      .update(federationCommercialApprovalSyncs)
+      .set({ nextAttemptAt: new Date("2099-01-01") })
+      .where(ne(federationCommercialApprovalSyncs.recordKind, "dispute-resolution"));
+    await worker.advanceNext();
+    expect(
+      (await f.reconciliationA.read(f.actor, f.revisionId, f.scope.caseId))?.appliedAt,
+    ).toBeNull();
+    await f.reconciliationB.approve(f.actor, f.revisionId, f.scope.caseId, draft);
+    await db
+      .update(federationCommercialApprovalSyncs)
+      .set({ nextAttemptAt: new Date() })
+      .where(eq(federationCommercialApprovalSyncs.recordId, draft.resolutionId));
+    await worker.advanceNext();
+    const saved = await f.reconciliationA.read(f.actor, f.revisionId, f.scope.caseId);
+    if (!saved) throw new Error("Missing applied dispute resolution");
+    expect(saved.appliedAt).toBeTruthy();
+    expect(JSON.stringify(saved)).not.toContain("Jws");
+    const states = await db
+      .select()
+      .from(federationDisputes)
+      .where(eq(federationDisputes.localSiteId, f.a.signing.siteId));
+    expect(states.find((r) => r.caseId === f.scope.caseId)?.state).toBe("RESOLVED");
+    expect(states.find((r) => r.caseId === otherCase.caseId)?.state).not.toBe("RESOLVED");
+    const final = await arbitrationWithdrawalState(f);
+    expect(final.budget).toEqual(prior.budget);
+    expect(final.outbound).toEqual(prior.outbound);
+    const queued = await db
+      .select()
+      .from(submissions)
+      .where(sql`${submissions.input}->>'recordId' = ${draft.resolutionId}`);
+    expect(queued).toHaveLength(mode === "bilateral_attested" ? 1 : 0);
+    expect(
+      (await f.reconciliationA.approve(f.actor, f.revisionId, f.scope.caseId, draft)).appliedAt,
+    ).toBe(saved.appliedAt);
+  }
+}, 60000);
+
+test("dispute settlement authorizes only its exact ordinary adjustment and closes atomically after financial application", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await disputeSettlementFixture(mode);
+    if (!f.initialSettlement) throw new Error("Missing original settlement");
+    const a = new FederationAdjustmentService(db, f.a.signing),
+      b = new FederationAdjustmentService(db, f.b.signing);
+    const financial = await a.draft(f.actor, f.revisionId, {
+      adjustmentId: randomUUID(),
+      settlementId: f.initialSettlement.settlementId,
+      chargedAmount: "35",
+      reason: "和解后的收费更正",
+      supportingEvidenceDigest: f.original.digest,
+    });
+    await expect(a.approve(f.actor, f.revisionId, financial)).rejects.toThrow("DATA_WAITING");
+    await approveDisputeSettlement(f, financial);
+    expect((await f.reconciliationRows()).every((r) => !r.appliedAt)).toBe(true);
+    await expect(
+      a.approve(f.actor, f.revisionId, { ...financial, chargedAmount: "34" }),
+    ).rejects.toThrow("DATA_WAITING");
+    const left = await a.approve(f.actor, f.revisionId, financial),
+      right = await b.approve(f.actor, f.revisionId, financial);
+    const before = await arbitrationWithdrawalState(f);
+    await db.execute(
+      sql`CREATE FUNCTION settlement_close_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.dispute_resolution.apply' THEN RAISE EXCEPTION 'injected closure audit failure'; END IF; RETURN NEW; END $$`,
+    );
+    await db.execute(
+      sql`CREATE TRIGGER settlement_close_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION settlement_close_audit_fail()`,
+    );
+    try {
+      await expect(
+        a.attachCounterparty(f.actor, f.revisionId, financial.adjustmentId, right.approvalJws),
+      ).rejects.toThrow();
+    } finally {
+      await db.execute(sql`DROP TRIGGER settlement_close_audit_fail ON audit_log`);
+      await db.execute(sql`DROP FUNCTION settlement_close_audit_fail()`);
+    }
+    expect((await arbitrationWithdrawalState(f)).outbound).toEqual(before.outbound);
+    expect((await f.reconciliationRows()).every((r) => !r.appliedAt)).toBe(true);
+    await a.attachCounterparty(f.actor, f.revisionId, financial.adjustmentId, right.approvalJws);
+    await b.attachCounterparty(f.actor, f.revisionId, financial.adjustmentId, left.approvalJws);
+    const final = await arbitrationWithdrawalState(f);
+    expect(final.outbound?.settledAmount).toBe("35");
+    expect(final.outbound?.adjustmentHeldAmount).toBe("0");
+    expect(BigInt(final.budget[0]?.spent ?? "-1") - BigInt(before.budget[0]?.spent ?? "-1")).toBe(
+      -5n,
+    );
+    expect((await f.reconciliationRows()).every((r) => !!r.appliedAt)).toBe(true);
+    const audits = await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.action, "federation.dispute_resolution.apply"),
+          sql`${auditLog.diff}->'after'->>'caseId' = ${f.scope.caseId}`,
+        ),
+      );
+    expect(audits).toHaveLength(2);
+    await a.attachCounterparty(f.actor, f.revisionId, financial.adjustmentId, right.approvalJws);
+    expect((await arbitrationWithdrawalState(f)).budget).toEqual(final.budget);
+  }
+}, 60000);
+
+test("dispute settlement reuses ordinary initial settlement after withdrawal and never substitutes an arbitration original", async () => {
+  const f = await disputeSettlementFixture("bilateral_direct", false);
+  const a = new FederationSettlementService(db, f.a.signing),
+    b = new FederationSettlementService(db, f.b.signing);
+  const financial = await a.draft(f.actor, f.revisionId, f.draft.subject.recordId, randomUUID());
+  await approveDisputeSettlement(f, financial);
+  const left = await a.approve(f.actor, f.revisionId, financial),
+    right = await b.approve(f.actor, f.revisionId, financial);
+  await a.attachCounterparty(f.actor, f.revisionId, financial.settlementId, right.approvalJws);
+  await b.attachCounterparty(f.actor, f.revisionId, financial.settlementId, left.approvalJws);
+  expect((await f.reconciliationRows()).every((r) => !!r.appliedAt)).toBe(true);
+  const posted = await db
+    .select()
+    .from(federationCommercialSettlements)
+    .where(eq(federationCommercialSettlements.settlementId, financial.settlementId));
+  expect(posted).toHaveLength(2);
+  expect(
+    posted.every((r) => !r.arbitrationDecisionId && !!r.approvalJws && !!r.counterpartyJws),
+  ).toBe(true);
+  expect((await f.rows()).every((r) => !r.appliedAt && !r.executionReceipt)).toBe(true);
+}, 60000);
+
+test("dispute settlement rejects unconfirmed withdrawal, stale heads, missing purpose and independent human permission", async () => {
+  const f = await bilateralMonetaryFixture("bilateral_direct", true);
+  const service = new FederationDisputeResolutionService(db, f.a.signing);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "dispute.resolve", enabled: true },
+    f.actor.userId,
+  );
+  const input = { resolutionId: randomUUID(), reason: "和解", financial: null };
+  await expect(service.draft(f.actor, f.revisionId, f.scope.caseId, input)).rejects.toThrow(
+    "DATA_WAITING",
+  );
+  await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+  await f.resolveA.withdraw(f.actor, f.revisionId, f.scope.caseId);
+  await new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress).advanceNext();
+  const draft = await service.draft(f.actor, f.revisionId, f.scope.caseId, input);
+  await expect(
+    service.approve(f.actor, f.revisionId, f.scope.caseId, {
+      ...draft,
+      headDigest: `sha256:${"f".repeat(64)}`,
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(service.approve(f.actor, f.revisionId, f.scope.caseId, draft)).rejects.toThrow();
+  expect(await service.read(f.actor, f.revisionId, f.scope.caseId)).toBeNull();
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-dispute-resolution"]'::jsonb`,
+    })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "dispute.resolve", enabled: false },
+    f.actor.userId,
+  );
+  await expect(service.approve(f.actor, f.revisionId, f.scope.caseId, draft)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await expect(service.read(f.owner.actor, f.revisionId, f.scope.caseId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+}, 60000);
+
+test("dispute settlement human HTTP keeps organization, explicit capability, strict body and private signature boundaries", async () => {
+  const f = await disputeSettlementFixture();
+  const value = await f.reconciliationA.draft(f.actor, f.revisionId, f.scope.caseId, {
+    resolutionId: randomUUID(),
+    reason: "人工作出和解决定",
+    financial: null,
+  });
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [
+    f.approvals,
+    new FederationCommercialSubmissionService(db, f.a.signing.siteId),
+  ];
+  deps[31] = f.reconciliationA;
+  let actor = f.actor,
+    automation = false;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    c.set("automation" as never, automation as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...deps));
+  const path = `/federation/commercial-agreements/${f.revisionId}/disputes/${f.scope.caseId}/resolution`;
+  const post = (body: unknown = value) =>
+    app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await post({ ...value, refund: true })).status).toBe(400);
+  automation = true;
+  expect((await post()).status).toBe(403);
+  automation = false;
+  actor = f.owner.actor;
+  expect((await post()).status).toBe(403);
+  actor = f.actor;
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "dispute.resolve", enabled: false },
+    actor.userId,
+  );
+  expect((await post()).status).toBe(403);
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "dispute.resolve", enabled: true },
+    actor.userId,
+  );
+  const saved = await post();
+  expect(saved.status).toBe(200);
+  expect(saved.headers.get("cache-control")).toBe("no-store");
+  const body = await saved.text();
+  expect(body).not.toContain("Jws");
+  expect(body).toContain('"appliedAt":null');
+  const read = await app.request(path);
+  expect(read.status).toBe(200);
+  expect(await read.text()).not.toContain("Jws");
 }, 60000);

@@ -120,6 +120,7 @@
       "commercial-dispute": "争议开案",
       "commercial-dispute-receipt": "争议接收回执",
       "commercial-dispute-freeze": "争议财务冻结确认",
+      "commercial-dispute-resolution": "争议双边和解",
       "commercial-arbitration-policy": "仲裁预授权政策",
       "commercial-arbitration-revocation": "撤销仲裁预授权",
       "arbitration-revocation-notice": "仲裁预授权撤销通知",
@@ -271,6 +272,7 @@
           "receive": "接收获批证据"
         },
         "dispute": {
+          "resolve": "批准争议和解",
           "read": "查看争议案件",
           "open": "发起争议"
         },

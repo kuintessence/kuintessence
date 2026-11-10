@@ -16,6 +16,7 @@ export const FederationCapabilitySchema = z.enum([
   "case.publish",
   "dispute.read",
   "dispute.open",
+  "dispute.resolve",
   "asset.read",
   "asset.map",
   "media.import",
@@ -36,7 +37,7 @@ export type FederationCapability = z.infer<typeof FederationCapabilitySchema>;
 export function federationCapabilitySources(
   capability: FederationCapability,
 ): readonly FederationCapability[] {
-  if (capability === "dispute.read") return ["dispute.read", "dispute.open"];
+  if (capability === "dispute.read") return ["dispute.read", "dispute.open", "dispute.resolve"];
   return capability === "market.read"
     ? ["market.read", "market.publish", "market.claim"]
     : capability === "agreement.read"

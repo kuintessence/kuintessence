@@ -1,5 +1,10 @@
-import { federationDisputes, type PgTransaction } from "@kuintessence/db";
-import { FederationError } from "@kuintessence/shared/federation";
+import {
+  federationDisputeResolutions,
+  federationDisputes,
+  type PgTransaction,
+} from "@kuintessence/db";
+import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
+import type { CommercialDisputeResolution } from "@kuintessence/shared/federation/dispute-resolution";
 import { and, eq, ne, sql } from "drizzle-orm";
 
 /** Acquire after reading immutable originals; opening a case never locks financial rows. */
@@ -18,9 +23,10 @@ export async function assertFederationTaskNotDisputed(
   tx: PgTransaction,
   localSiteId: string,
   task: { agreementRevisionId: string; taskId: string; attempt: number },
+  financial?: NonNullable<CommercialDisputeResolution["financial"]>,
 ) {
   await lockFederationDisputeTask(tx, localSiteId, task);
-  const [pending] = await tx
+  const pending = await tx
     .select({ id: federationDisputes.caseId })
     .from(federationDisputes)
     .where(
@@ -31,7 +37,23 @@ export async function assertFederationTaskNotDisputed(
         eq(federationDisputes.attempt, task.attempt),
         ne(federationDisputes.state, "RESOLVED"),
       ),
+    );
+  for (const record of pending) {
+    if (!financial) throw new FederationError("DATA_WAITING");
+    const [resolution] = await tx
+      .select()
+      .from(federationDisputeResolutions)
+      .where(
+        and(
+          eq(federationDisputeResolutions.localSiteId, localSiteId),
+          eq(federationDisputeResolutions.caseId, record.id),
+        ),
+      );
+    if (
+      !resolution?.counterpartyJws ||
+      resolution.appliedAt ||
+      federationCanonicalJson(resolution.payload.financial) !== federationCanonicalJson(financial)
     )
-    .limit(1);
-  if (pending) throw new FederationError("DATA_WAITING");
+      throw new FederationError("DATA_WAITING");
+  }
 }
