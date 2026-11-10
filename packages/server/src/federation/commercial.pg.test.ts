@@ -12164,6 +12164,13 @@ async function arbitrationCaseFixture(
   });
   // A later bill deliberately carries consent even in the legacy test; only original admission may confer it.
   const billRequest = { ...request, arbitration: f.arbitration.binding };
+  const usageJws = await signFederationMessage(CommercialUsageSchema, report, f.b.signing);
+  const { digest: reportDigest } = await verifyFederationMessage(
+    CommercialUsageSchema,
+    usageJws,
+    await f.trust.resolveKey(f.b.signing.siteId, f.b.signing.keyId, new Date()),
+    new Date(),
+  );
   const bill = CommercialBillSchema.parse({
     protocolVersion: 1,
     kind: "commercial-bill",
@@ -12172,7 +12179,7 @@ async function arbitrationCaseFixture(
     agreementDigest: contract.digest,
     priceVersionId: f.terms.priceVersionId,
     reportId: report.reportId,
-    reportDigest: federationMaterialDigest(report),
+    reportDigest,
     request: billRequest,
     reservationId: mode === "ledger_coordinated" ? f.reservation.reservationId : null,
     discount: null,
@@ -12330,6 +12337,8 @@ async function arbitrationCaseFixture(
     read,
     initialSettlement,
     initialAdjustment,
+    usageJws,
+    reportDigest,
   };
 }
 
