@@ -133,7 +133,10 @@
       "arbitration-execution-commitment": "仲裁执行承诺",
       "arbitration-execution-receipt": "仲裁执行回执",
       "arbitration-execution-query": "仲裁执行查询",
-      "arbitration-execution-response": "仲裁执行响应"
+      "arbitration-execution-response": "仲裁执行响应",
+      "arbitration-execution-withdrawal-query": "仲裁执行撤回查询",
+      "arbitration-execution-withdrawal-receipt": "仲裁执行撤回凭证",
+      "arbitration-execution-withdrawal-response": "仲裁执行撤回响应"
     },
     "storage": {
       "title": "输入存储核对",

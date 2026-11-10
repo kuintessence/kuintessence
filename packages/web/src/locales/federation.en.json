@@ -133,7 +133,10 @@
       "arbitration-execution-commitment": "Arbitration execution commitment",
       "arbitration-execution-receipt": "Arbitration execution receipt",
       "arbitration-execution-query": "Arbitration execution query",
-      "arbitration-execution-response": "Arbitration execution response"
+      "arbitration-execution-response": "Arbitration execution response",
+      "arbitration-execution-withdrawal-query": "Arbitration withdrawal query",
+      "arbitration-execution-withdrawal-receipt": "Arbitration withdrawal receipt",
+      "arbitration-execution-withdrawal-response": "Arbitration withdrawal response"
     },
     "storage": {
       "title": "Input storage reconciliation",

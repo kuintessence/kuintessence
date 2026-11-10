@@ -42,6 +42,7 @@ import type {
 import type {
   ArbitrationExecutionCommitment,
   ArbitrationExecutionReceipt,
+  ArbitrationExecutionWithdrawalReceipt,
 } from "@kuintessence/shared/federation/arbitration-execution";
 import type { CommercialArbitrationPolicy } from "@kuintessence/shared/federation/arbitration-policy";
 import type { CommercialArbitrationRevocation } from "@kuintessence/shared/federation/arbitration-revocation";
@@ -184,6 +185,9 @@ export const federationSigningKeys = pgTable(
           | "arbitration-execution-receipt"
           | "arbitration-execution-query"
           | "arbitration-execution-response"
+          | "arbitration-execution-withdrawal-query"
+          | "arbitration-execution-withdrawal-receipt"
+          | "arbitration-execution-withdrawal-response"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
           | "case-arbitration-decision"
@@ -4125,6 +4129,9 @@ export const federationReceivedArbitrationDecisions = pgTable(
     deliveryJws: text("delivery_jws").notNull(),
     receipt: jsonb("receipt").$type<ArbitrationDecisionReceipt>().notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    executionWithdrawal:
+      jsonb("execution_withdrawal").$type<ArbitrationExecutionWithdrawalReceipt>(),
+    executionWithdrawalJws: text("execution_withdrawal_jws"),
   },
   (t) => [
     primaryKey({ name: "arb_received_decision_pk", columns: [t.localSiteId, t.decisionId] }),
@@ -4134,6 +4141,17 @@ export const federationReceivedArbitrationDecisions = pgTable(
       columns: [t.localSiteId, t.caseId],
       foreignColumns: [federationDisputes.localSiteId, federationDisputes.caseId],
     }),
+    check(
+      "arb_received_execution_withdrawal",
+      sql`((${t.executionWithdrawal} IS NULL) = (${t.executionWithdrawalJws} IS NULL)
+      AND (${t.executionWithdrawal} IS NULL OR (
+        ${t.executionWithdrawal}->>'kind' = 'arbitration-execution-withdrawal-receipt'
+        AND ${t.executionWithdrawal}->'resolution'->>'decisionId' = ${t.decisionId}::text
+        AND ${t.executionWithdrawal}->'resolution'->>'caseId' = ${t.caseId}::text
+        AND ${t.executionWithdrawal}->'resolution'->>'decisionDigest' = ${t.payload}->>'decisionDigest'
+        AND ${t.executionWithdrawal}->'resolution'->>'mode' IN ('bilateral_direct','bilateral_attested')
+      ))) IS TRUE`,
+    ),
     check(
       "arb_received_decision_identity",
       sql`(${t.payload}->>'receivingSiteId' = ${t.localSiteId}::text AND ${t.payload}->>'decisionId' = ${t.decisionId}::text AND ${t.payload}->>'caseId' = ${t.caseId}::text) IS TRUE`,
@@ -4207,6 +4225,7 @@ export const federationArbitrationResolutions = pgTable(
     executionReceipt: jsonb("execution_receipt").$type<ArbitrationExecutionReceipt>(),
     executionReceiptJws: text("execution_receipt_jws"),
     heldAmount: numeric("held_amount", { precision: 38, scale: 0 }).notNull().default("0"),
+    withdrawalRequestedAt: timestamp("withdrawal_requested_at", { withTimezone: true }),
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
     leaseToken: uuid("lease_token"),
     leaseUntil: timestamp("lease_until", { withTimezone: true }),
@@ -4223,6 +4242,13 @@ export const federationArbitrationResolutions = pgTable(
         federationReceivedArbitrationDecisions.decisionId,
       ],
     }),
+    check(
+      "arb_resolution_withdrawal_request",
+      sql`(${t.withdrawalRequestedAt} IS NULL OR (
+        ${t.commitment} IS NOT NULL AND ${t.payload}->>'mode' IN ('bilateral_direct','bilateral_attested')
+        AND ${t.payload}->'outcome'->>'action' IN ('settle','adjust')
+      )) IS TRUE`,
+    ),
     check(
       "arb_resolution_commitment",
       sql`(

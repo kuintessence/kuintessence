@@ -226,6 +226,17 @@ export function createFederationCommercialRoutes(
         });
       },
     );
+    r.post(
+      `${path}/withdraw`,
+      kqValidator("param", params),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        const { revisionId, caseId } = c.req.valid("param");
+        return c.json({
+          data: await arbitrationResolution.withdraw(c.get("federationActor"), revisionId, caseId),
+        });
+      },
+    );
   }
   if (disputes) {
     const path = "/federation/commercial-agreements/:revisionId/disputes";

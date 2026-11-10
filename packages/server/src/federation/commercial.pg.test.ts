@@ -119,6 +119,7 @@ import {
   ArbitrationExecutionQuerySchema,
   ArbitrationExecutionReceiptSchema,
   ArbitrationExecutionResponseSchema,
+  ArbitrationExecutionWithdrawalResponseSchema,
 } from "@kuintessence/shared/federation/arbitration-execution";
 import { CommercialArbitrationTaskBindingSchema } from "@kuintessence/shared/federation/arbitration-policy";
 import { ArbitrationRevocationNoticeSchema } from "@kuintessence/shared/federation/arbitration-revocation-notice";
@@ -15107,6 +15108,9 @@ async function bilateralMonetaryFixture(
     "arbitration-execution-receipt",
     "arbitration-execution-query",
     "arbitration-execution-response",
+    "arbitration-execution-withdrawal-query",
+    "arbitration-execution-withdrawal-receipt",
+    "arbitration-execution-withdrawal-response",
   ] as const;
   for (const siteId of [f.a.signing.siteId, f.b.signing.siteId])
     await db
@@ -15558,4 +15562,384 @@ test("bilateral monetary arbitration rejects forged commitments, stale transport
   await f.due();
   await new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress).advanceNext();
   expect(await f.financial()).toHaveLength(2);
+}, 60000);
+
+async function arbitrationWithdrawalState(f: Awaited<ReturnType<typeof bilateralMonetaryFixture>>) {
+  return {
+    budget: await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.request.budgetDomainId)),
+    outbound: (
+      await db
+        .select()
+        .from(federationOutbound)
+        .where(eq(federationOutbound.operationId, f.request.operationId))
+    )[0],
+    decisions: await db
+      .select()
+      .from(federationReceivedArbitrationDecisions)
+      .where(eq(federationReceivedArbitrationDecisions.decisionId, f.intent.decisionId)),
+    adjustments: await db
+      .select()
+      .from(federationCommercialAdjustments)
+      .where(eq(federationCommercialAdjustments.adjustmentId, f.intent.decisionId)),
+    audit: await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.action, "federation.arbitration_execution.withdraw"),
+          eq(auditLog.target, f.intent.decisionId),
+        ),
+      ),
+  };
+}
+
+test("arbitration withdrawal releases a source-only correction hold only after B's permanent signed tombstone", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await bilateralMonetaryFixture(mode, true);
+    const prior = await arbitrationWithdrawalState(f);
+    await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+    const worker = new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress);
+    let lateQuery = "";
+    await new FederationArbitrationExecutionExchange(db, f.a.signing, async (...args) => {
+      lateQuery = args[1];
+      throw new Error("provider offline");
+    }).advanceNext();
+    const pending = await f.resolveA.withdraw(f.actor, f.revisionId, f.scope.caseId);
+    expect(pending?.withdrawalRequestedAt).not.toBeNull();
+    expect(pending?.withdrawnAt).toBeNull();
+    expect((await arbitrationWithdrawalState(f)).outbound?.adjustmentHeldAmount).toBe("10");
+    await worker.advanceNext();
+    const final = await arbitrationWithdrawalState(f);
+    expect(final.outbound?.adjustmentHeldAmount).toBe("0");
+    expect(final.outbound?.settledAmount).toBe(prior.outbound?.settledAmount);
+    expect(final.budget).toEqual(prior.budget);
+    expect(final.adjustments).toHaveLength(0);
+    expect(final.audit).toHaveLength(2);
+    expect(final.decisions.every((r) => r.executionWithdrawalJws && r.executionWithdrawal)).toBe(
+      true,
+    );
+    expect(final.decisions[0]?.executionWithdrawalJws).toBe(
+      final.decisions[1]?.executionWithdrawalJws,
+    );
+    expect((await f.rows()).filter((r) => r.localSiteId === f.b.signing.siteId)).toHaveLength(0);
+    expect(
+      (await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId)).withdrawnAt,
+    ).not.toBeNull();
+    // The pre-withdrawal execution query can arrive after the tombstone and cannot revive the award.
+    const replay = await new FederationArbitrationExecutionExchange(db, f.b.signing).receive(
+      lateQuery,
+      f.fingerprint,
+    );
+    expect(JSON.parse(Buffer.from(replay.split(".")[1] ?? "", "base64url").toString()).kind).toBe(
+      "arbitration-execution-withdrawal-response",
+    );
+    expect((await arbitrationWithdrawalState(f)).budget).toEqual(prior.budget);
+    expect(await worker.advanceNext()).toBe(false);
+    await f.resolveA.withdraw(f.actor, f.revisionId, f.scope.caseId);
+    expect((await arbitrationWithdrawalState(f)).audit).toHaveLength(2);
+    expect(
+      (
+        await db
+          .select()
+          .from(federationDisputes)
+          .where(eq(federationDisputes.caseId, f.scope.caseId))
+      ).every((row) => row.state !== "RESOLVED"),
+    ).toBe(true);
+  }
+}, 60000);
+
+test("arbitration withdrawal lets B abandon its hold before A approves and blocks later execution", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await bilateralMonetaryFixture(mode, true);
+    const prior = await arbitrationWithdrawalState(f);
+    await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
+    const held = await arbitrationWithdrawalState(f);
+    expect(
+      BigInt(held.budget[0]?.reserved ?? "-1") - BigInt(prior.budget[0]?.reserved ?? "-1"),
+    ).toBe(10n);
+    expect(
+      (await f.resolveB.withdraw(f.actor, f.revisionId, f.scope.caseId))?.withdrawnAt,
+    ).not.toBeNull();
+    expect((await arbitrationWithdrawalState(f)).budget).toEqual(prior.budget);
+    await f.resolveB.withdraw(f.actor, f.revisionId, f.scope.caseId);
+    expect((await arbitrationWithdrawalState(f)).audit).toHaveLength(1);
+    const requests = await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.action, "federation.arbitration_execution.withdraw_request"),
+          eq(auditLog.target, f.intent.decisionId),
+        ),
+      );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.actor).toBe(f.actor.userId);
+    expect(requests[0]?.diff?.after).toEqual({
+      caseId: f.scope.caseId,
+      decisionDigest: f.original.digest,
+      localSiteId: f.b.signing.siteId,
+    });
+    await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+    expect((await arbitrationWithdrawalState(f)).outbound?.adjustmentHeldAmount).toBe("10");
+    const worker = new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress);
+    await worker.advanceNext();
+    const final = await arbitrationWithdrawalState(f);
+    expect(final.budget).toEqual(prior.budget);
+    expect(final.outbound?.adjustmentHeldAmount).toBe("0");
+    expect(final.adjustments).toHaveLength(0);
+    expect(final.audit).toHaveLength(2);
+    expect((await f.rows()).every((r) => !r.appliedAt && !r.executionReceipt)).toBe(true);
+  }
+}, 60000);
+
+test("arbitration withdrawal preserves executed money when the original provider receipt was lost", async () => {
+  const f = await bilateralMonetaryFixture("bilateral_direct", true);
+  await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+  await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
+  await new FederationArbitrationExecutionExchange(db, f.a.signing, async (...args) => {
+    await f.ingress(...args);
+    throw new Error("lost executed response");
+  }).advanceNext();
+  const posted = await arbitrationWithdrawalState(f);
+  expect(posted.adjustments).toHaveLength(1);
+  expect(posted.outbound?.adjustmentHeldAmount).toBe("10");
+  expect(
+    (await f.resolveA.withdraw(f.actor, f.revisionId, f.scope.caseId))?.withdrawnAt,
+  ).toBeNull();
+  await new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress).advanceNext();
+  const recovered = await arbitrationWithdrawalState(f);
+  expect(recovered.adjustments).toHaveLength(2);
+  expect(recovered.budget).toEqual(posted.budget);
+  expect(recovered.outbound?.adjustmentHeldAmount).toBe("0");
+  expect(recovered.outbound?.settledAmount).toBe("50");
+  expect(recovered.audit).toHaveLength(0);
+  expect((await f.rows()).every((r) => r.appliedAt && r.executionReceiptJws)).toBe(true);
+  expect(
+    (await f.resolveB.withdraw(f.actor, f.revisionId, f.scope.caseId))?.appliedAt,
+  ).not.toBeNull();
+}, 60000);
+
+test("arbitration withdrawal rolls back failed release audits and recovers the same proof after policy and key retirement", async () => {
+  const f = await bilateralMonetaryFixture("bilateral_attested", true);
+  const prior = await arbitrationWithdrawalState(f);
+  await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+  await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
+  await f.resolveA.withdraw(f.actor, f.revisionId, f.scope.caseId);
+  const fail = async (siteId: string) => {
+    await db.execute(
+      sql.raw(
+        `CREATE FUNCTION withdrawal_audit_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.arbitration_execution.withdraw' AND NEW.actor = 'arbitration-withdrawal:${siteId}' THEN RAISE EXCEPTION 'injected withdrawal audit failure'; END IF; RETURN NEW; END $$`,
+      ),
+    );
+    await db.execute(
+      sql.raw(
+        "CREATE TRIGGER withdrawal_audit_failure BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION withdrawal_audit_failure()",
+      ),
+    );
+  };
+  const restore = async () => {
+    await db.execute(sql.raw("DROP TRIGGER IF EXISTS withdrawal_audit_failure ON audit_log"));
+    await db.execute(sql.raw("DROP FUNCTION IF EXISTS withdrawal_audit_failure()"));
+  };
+  try {
+    await fail(f.b.signing.siteId);
+    await new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress).advanceNext();
+    const failed = await arbitrationWithdrawalState(f);
+    expect(failed.decisions.every((r) => r.executionWithdrawal === null)).toBe(true);
+    expect(failed.outbound?.adjustmentHeldAmount).toBe("10");
+    expect(
+      BigInt(failed.budget[0]?.reserved ?? "-1") - BigInt(prior.budget[0]?.reserved ?? "-1"),
+    ).toBe(10n);
+    await restore();
+    await f.due();
+    await new FederationArbitrationExecutionExchange(db, f.a.signing, async (...args) => {
+      const response = await f.ingress(...args);
+      await fail(f.a.signing.siteId);
+      return response;
+    }).advanceNext();
+    const partial = await arbitrationWithdrawalState(f);
+    expect(partial.budget).toEqual(prior.budget);
+    expect(partial.outbound?.adjustmentHeldAmount).toBe("10");
+    const proof = partial.decisions.find(
+      (r) => r.localSiteId === f.b.signing.siteId,
+    )?.executionWithdrawalJws;
+    expect(proof).toBeTruthy();
+    expect(
+      partial.decisions.find((r) => r.localSiteId === f.a.signing.siteId)?.executionWithdrawalJws,
+    ).toBeNull();
+    await restore();
+    await f.arbitration.source.revoke(f.actor, f.revisionId, f.arbitration.policy.policyId);
+    const next = await testKeys(f.b.signing.siteId);
+    next.signing.keyId = `withdrawal-rotated-${randomUUID()}`;
+    await db
+      .update(federationSigningKeys)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, f.b.signing.siteId),
+          eq(federationSigningKeys.keyId, f.b.signing.keyId),
+        ),
+      );
+    await f.trust.addKey(
+      next.signing.siteId,
+      {
+        keyId: next.signing.keyId,
+        publicKeyPem: await exportSPKI(next.verification.publicKey),
+        allowedKinds: [...f.kinds],
+        validFrom: "2020-01-01T00:00:00Z",
+        validUntil: "2099-01-01T00:00:00Z",
+      },
+      f.actor.userId,
+    );
+    f.useSigning(next.signing);
+    await f.due();
+    await new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress).advanceNext();
+    const final = await arbitrationWithdrawalState(f);
+    expect(final.outbound?.adjustmentHeldAmount).toBe("0");
+    expect(final.budget).toEqual(prior.budget);
+    expect(final.decisions.every((r) => r.executionWithdrawalJws === proof)).toBe(true);
+    expect(final.audit).toHaveLength(2);
+    expect(final.adjustments).toHaveLength(0);
+  } finally {
+    await restore();
+  }
+}, 60000);
+
+test("arbitration withdrawal serializes against actual execution and cannot both refund and post", async () => {
+  const f = await bilateralMonetaryFixture("bilateral_direct", true);
+  const prior = await arbitrationWithdrawalState(f);
+  await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+  await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
+  await Promise.all([
+    f.resolveB.withdraw(f.actor, f.revisionId, f.scope.caseId),
+    new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress).advanceNext(),
+  ]);
+  const final = await arbitrationWithdrawalState(f);
+  const cancelled = final.decisions.some((r) => r.executionWithdrawal);
+  expect(final.adjustments).toHaveLength(cancelled ? 0 : 2);
+  expect(final.outbound?.adjustmentHeldAmount).toBe("0");
+  expect(final.outbound?.settledAmount).toBe(cancelled ? "40" : "50");
+  expect(BigInt(final.budget[0]?.reserved ?? "-1")).toBe(BigInt(prior.budget[0]?.reserved ?? "-1"));
+  expect(BigInt(final.budget[0]?.spent ?? "-1") - BigInt(prior.budget[0]?.spent ?? "-1")).toBe(
+    cancelled ? 0n : 10n,
+  );
+  expect(final.decisions.every((r) => !r.executionWithdrawal || !final.adjustments.length)).toBe(
+    true,
+  );
+}, 60000);
+
+test("arbitration withdrawal HTTP requires a human executor and explicit new signing purposes", async () => {
+  const f = await bilateralMonetaryFixture("bilateral_direct", true);
+  await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [
+    f.approvals,
+    new FederationCommercialSubmissionService(db, f.a.signing.siteId),
+  ];
+  deps[30] = f.resolveA;
+  let actor = f.actor,
+    automation = false;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    c.set("automation" as never, automation as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...deps));
+  const path = `/federation/commercial-agreements/${f.revisionId}/disputes/${f.scope.caseId}/arbitration-resolution`;
+  const post = (body = {}) =>
+    app.request(`${path}/withdraw`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await post({ refund: "10" })).status).toBe(400);
+  automation = true;
+  expect((await post()).status).toBe(403);
+  automation = false;
+  actor = f.owner.actor;
+  expect((await post()).status).toBe(403);
+  actor = f.actor;
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "arbitration.execute", enabled: false },
+    actor.userId,
+  );
+  expect((await post()).status).toBe(403);
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "arbitration.execute", enabled: true },
+    actor.userId,
+  );
+  const pending = await post();
+  expect(pending.status).toBe(200);
+  expect(pending.headers.get("cache-control")).toBe("no-store");
+  const body = await pending.text();
+  expect(body).not.toContain("Jws");
+  expect(body).not.toContain("envelope");
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'arbitration-execution-withdrawal-receipt'`,
+    })
+    .where(eq(federationSigningKeys.siteId, f.b.signing.siteId));
+  const worker = new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress);
+  await worker.advanceNext();
+  expect((await arbitrationWithdrawalState(f)).outbound?.adjustmentHeldAmount).toBe("10");
+  expect((await arbitrationWithdrawalState(f)).decisions.every((r) => !r.executionWithdrawal)).toBe(
+    true,
+  );
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["arbitration-execution-withdrawal-receipt"]'::jsonb`,
+    })
+    .where(eq(federationSigningKeys.siteId, f.b.signing.siteId));
+  await f.due();
+  await worker.advanceNext();
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const result = z
+    .object({ data: z.object({ withdrawnAt: z.string() }) })
+    .parse(await response.json());
+  expect(result.data.withdrawnAt).toBeTruthy();
+  expect(JSON.stringify(result)).not.toContain("Jws");
+  expect((await arbitrationWithdrawalState(f)).outbound?.adjustmentHeldAmount).toBe("0");
+}, 60000);
+
+test("arbitration withdrawal refuses a signed response whose historical receipt was altered", async () => {
+  const f = await bilateralMonetaryFixture("bilateral_direct", true);
+  await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+  await f.resolveA.withdraw(f.actor, f.revisionId, f.scope.caseId);
+  await new FederationArbitrationExecutionExchange(db, f.a.signing, async (...args) => {
+    const raw = await f.ingress(...args);
+    const value = ArbitrationExecutionWithdrawalResponseSchema.parse(
+      JSON.parse(Buffer.from(raw.split(".")[1] ?? "", "base64url").toString()),
+    );
+    return signFederationMessage(
+      ArbitrationExecutionWithdrawalResponseSchema,
+      {
+        ...value,
+        receipt: {
+          ...value.receipt,
+          withdrawnAt: new Date(Date.parse(value.receipt.withdrawnAt) - 1000).toISOString(),
+        },
+      },
+      f.b.signing,
+    );
+  }).advanceNext();
+  const rejected = await arbitrationWithdrawalState(f);
+  expect(rejected.outbound?.adjustmentHeldAmount).toBe("10");
+  expect(
+    rejected.decisions.find((r) => r.localSiteId === f.a.signing.siteId)?.executionWithdrawal,
+  ).toBeNull();
+  expect(rejected.audit).toHaveLength(1);
+  await f.due();
+  await new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress).advanceNext();
+  const final = await arbitrationWithdrawalState(f);
+  expect(final.outbound?.adjustmentHeldAmount).toBe("0");
+  expect(final.audit).toHaveLength(2);
+  expect(final.adjustments).toHaveLength(0);
 }, 60000);

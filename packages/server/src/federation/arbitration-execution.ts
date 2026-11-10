@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type PgDb,
   type PgTransaction,
+  federationReceivedArbitrationDecisions as received,
   federationArbitrationResolutions as resolutions,
   federationSites as sites,
 } from "@kuintessence/db";
@@ -11,13 +12,20 @@ import {
   ArbitrationExecutionQuerySchema,
   ArbitrationExecutionReceiptSchema,
   ArbitrationExecutionResponseSchema,
+  ArbitrationExecutionWithdrawalQuerySchema,
+  ArbitrationExecutionWithdrawalResponseSchema,
   assertArbitrationCommitment,
 } from "@kuintessence/shared/federation/arbitration-execution";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
-import type { z } from "zod";
+import { z } from "zod";
 import { verifyArbitrationHistory } from "./arbitration-decision-history";
 import { verifyBilateralArbitrationExecution } from "./arbitration-execution-proof";
 import { FederationArbitrationResolutionService } from "./arbitration-resolution";
+import {
+  applyArbitrationWithdrawal,
+  createArbitrationWithdrawal,
+  receivedArbitrationResolution,
+} from "./arbitration-withdrawal";
 import { lockFederationDisputeTask } from "./dispute-freeze";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import {
@@ -27,6 +35,15 @@ import {
   verifyFederationMessage,
 } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
+
+const Query = z.discriminatedUnion("kind", [
+  ArbitrationExecutionQuerySchema,
+  ArbitrationExecutionWithdrawalQuerySchema,
+]);
+const Response = z.discriminatedUnion("kind", [
+  ArbitrationExecutionResponseSchema,
+  ArbitrationExecutionWithdrawalResponseSchema,
+]);
 
 type Execution = typeof resolutions.$inferSelect;
 class LeaseLost extends Error {}
@@ -70,12 +87,7 @@ export class FederationArbitrationExecutionExchange {
   }
   async receive(jws: string, fingerprint: string) {
     const peer = await this.trust.resolvePeer(fingerprint, federationMessageKeyId(jws), new Date());
-    const signed = await verifyFederationMessage(
-      ArbitrationExecutionQuerySchema,
-      jws,
-      peer,
-      new Date(),
-    );
+    const signed = await verifyFederationMessage(Query, jws, peer, new Date());
     const q = signed.payload,
       value = q.commitment.payload.resolution;
     this.fresh(q.issuedAt);
@@ -94,17 +106,66 @@ export class FederationArbitrationExecutionExchange {
         .from(resolutions)
         .where(this.key(value.decisionId))
         .for("update");
-      if (!row?.commitment || !row.commitmentJws) throw new FederationError("DATA_WAITING");
-      if (federationCanonicalJson(row.payload) !== federationCanonicalJson(value))
+      if (row && federationCanonicalJson(row.payload) !== federationCanonicalJson(value))
         throw new FederationError("OPERATION_CONFLICT");
       await this.trust.assertPeer(tx, fingerprint, peer.siteId, peer.keyId, new Date());
       await verifyFederationMessage(
-        ArbitrationExecutionQuerySchema,
+        Query,
         jws,
         await this.trust.resolveKey(peer.siteId, peer.keyId, new Date(), tx),
         new Date(),
       );
       this.fresh(q.issuedAt);
+      const [original] = await tx
+        .select()
+        .from(received)
+        .where(
+          and(
+            eq(received.localSiteId, this.signing.siteId),
+            eq(received.decisionId, value.decisionId),
+          ),
+        );
+      if (
+        original?.executionWithdrawal ||
+        (q.kind === "arbitration-execution-withdrawal-query" && !row?.executionReceipt)
+      ) {
+        if (!original) throw new FederationError("DATA_WAITING");
+        if (
+          federationCanonicalJson(receivedArbitrationResolution(original.payload)) !==
+          federationCanonicalJson(value)
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        const source = await verifyArbitrationHistory(
+          tx,
+          ArbitrationExecutionCommitmentSchema,
+          q.commitment.jws,
+          peer.siteId,
+          new Date(q.commitment.payload.committedAt),
+        );
+        if (
+          federationCanonicalJson(source.payload) !==
+            federationCanonicalJson(q.commitment.payload) ||
+          Date.parse(source.payload.committedAt) > Date.now() + 60000
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        const withdrawal = await createArbitrationWithdrawal(
+          tx,
+          this.signing,
+          value,
+          peer.siteId,
+          this.trust,
+        );
+        return this.sign(tx, ArbitrationExecutionWithdrawalResponseSchema, {
+          protocolVersion: 1,
+          kind: "arbitration-execution-withdrawal-response",
+          queryDigest: signed.digest,
+          sourceSiteId: value.sourceSiteId,
+          targetSiteId: value.targetSiteId,
+          ...withdrawal,
+          issuedAt: new Date().toISOString(),
+        });
+      }
+      if (!row?.commitment || !row.commitmentJws) throw new FederationError("DATA_WAITING");
       if (row.counterpartyCommitmentJws) {
         if (
           row.counterpartyCommitmentJws !== q.commitment.jws ||
@@ -219,18 +280,20 @@ export class FederationArbitrationExecutionExchange {
         .where(eq(sites.id, value.targetSiteId))
         .for("share");
       if (peer?.state !== "active") throw new FederationError("UNTRUSTED_IDENTITY");
-      const query = ArbitrationExecutionQuerySchema.parse({
+      const query = Query.parse({
         protocolVersion: 1,
-        kind: "arbitration-execution-query",
+        kind: row.withdrawalRequestedAt
+          ? "arbitration-execution-withdrawal-query"
+          : "arbitration-execution-query",
         queryId: randomUUID(),
         sourceSiteId: value.sourceSiteId,
         targetSiteId: value.targetSiteId,
         commitment: { payload: row.commitment, jws: row.commitmentJws },
         issuedAt: new Date().toISOString(),
       });
-      const jws = await this.sign(tx, ArbitrationExecutionQuerySchema, query);
+      const jws = await this.sign(tx, Query, query);
       const signed = await verifyFederationMessage(
-        ArbitrationExecutionQuerySchema,
+        Query,
         jws,
         await this.trust.resolveKey(this.signing.siteId, this.signing.keyId, new Date(), tx),
         new Date(),
@@ -256,7 +319,7 @@ export class FederationArbitrationExecutionExchange {
       const kid = federationMessageKeyId(response);
       await this.trust.assertKey(tx, value.targetSiteId, kid, new Date());
       const result = await verifyFederationMessage(
-        ArbitrationExecutionResponseSchema,
+        Response,
         response,
         await this.trust.resolveKey(value.targetSiteId, kid, new Date(), tx),
         new Date(),
@@ -269,6 +332,10 @@ export class FederationArbitrationExecutionExchange {
         r.targetSiteId !== value.targetSiteId
       )
         throw new FederationError("OPERATION_CONFLICT");
+      if (r.kind === "arbitration-execution-withdrawal-response") {
+        await applyArbitrationWithdrawal(tx, this.signing.siteId, value, r.receipt, r.receiptJws);
+        return;
+      }
       row.counterpartyCommitment = r.commitment.payload;
       row.counterpartyCommitmentJws = r.commitment.jws;
       row.executionReceipt = r.receipt;
@@ -301,6 +368,8 @@ export class FederationArbitrationExecutionExchange {
             eq(resolutions.localSiteId, this.signing.siteId),
             isNull(resolutions.appliedAt),
             sql`${resolutions.commitment} IS NOT NULL`,
+            sql`NOT EXISTS (SELECT 1 FROM ${received} WHERE ${received.localSiteId} = ${resolutions.localSiteId}
+              AND ${received.decisionId} = ${resolutions.decisionId} AND ${received.executionWithdrawal} IS NOT NULL)`,
             sql`${resolutions.payload}->>'sourceSiteId' = ${this.signing.siteId}`,
             sql`${resolutions.nextAttemptAt} <= clock_timestamp()`,
             sql`(${resolutions.leaseUntil} IS NULL OR ${resolutions.leaseUntil} <= clock_timestamp())`,

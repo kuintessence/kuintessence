@@ -1415,6 +1415,13 @@
       "when": 1794274879048,
       "tag": "0201_nostalgic_purple_man",
       "breakpoints": true
+    },
+    {
+      "idx": 202,
+      "version": "7",
+      "when": 1794289419104,
+      "tag": "0202_closed_supreme_intelligence",
+      "breakpoints": true
     }
   ]
 }

@@ -22,13 +22,17 @@ import {
   ArbitrationResolutionEnvelopeSchema,
   type CommercialAdapterProposalInput,
   CommercialAdapterProposalInputSchema,
-  CommercialArbitrationResolutionSchema,
+  type CommercialArbitrationResolution,
 } from "@kuintessence/shared/federation/commercial";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { applyFederationAdjustment, holdFederationAdjustment } from "./adjustment";
 import { arbitrationFinancialTerms } from "./arbitrated-financial-original";
 import { verifyReceivedArbitrationDecision } from "./arbitration-decision-history";
 import { verifyBilateralArbitrationExecution } from "./arbitration-execution-proof";
+import {
+  createArbitrationWithdrawal,
+  receivedArbitrationResolution,
+} from "./arbitration-withdrawal";
 import { lockFederationDisputeTask } from "./dispute-freeze";
 import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
 import { FederationDisputeService } from "./disputes";
@@ -41,6 +45,14 @@ import {
   verifyFederationMessage,
 } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
+
+type ResolutionView = {
+  payload: CommercialArbitrationResolution;
+  appliedAt: string | null;
+  createdAt: string;
+  withdrawalRequestedAt: string | null;
+  withdrawnAt: string | null;
+};
 
 /** Current authorization is fixed once; financial application requires a committed ledger result or bilateral receipt. */
 export class FederationArbitrationResolutionService {
@@ -81,11 +93,30 @@ export class FederationArbitrationResolutionService {
     if (!row) throw new FederationError("POLICY_DENIED");
     return row;
   }
-  private view(row: typeof resolutions.$inferSelect) {
+  private view(
+    tx: PgTransaction,
+    caseId: string,
+    row: typeof resolutions.$inferSelect,
+  ): Promise<ResolutionView>;
+  private view(
+    tx: PgTransaction,
+    caseId: string,
+    row?: typeof resolutions.$inferSelect,
+  ): Promise<ResolutionView | null>;
+  private async view(tx: PgTransaction, caseId: string, row?: typeof resolutions.$inferSelect) {
+    const [original] = await tx
+      .select()
+      .from(received)
+      .where(and(eq(received.localSiteId, this.signing.siteId), eq(received.caseId, caseId)));
+    const payload = row?.payload ?? original?.executionWithdrawal?.resolution;
+    const createdAt = row?.createdAt ?? original?.receivedAt;
+    if (!payload || !createdAt || (!row && !original?.executionWithdrawal)) return null;
     return {
-      payload: row.payload,
-      appliedAt: row.appliedAt?.toISOString() ?? null,
-      createdAt: row.createdAt.toISOString(),
+      payload,
+      appliedAt: row?.appliedAt?.toISOString() ?? null,
+      createdAt: createdAt.toISOString(),
+      withdrawalRequestedAt: row?.withdrawalRequestedAt?.toISOString() ?? null,
+      withdrawnAt: original?.executionWithdrawal?.withdrawnAt ?? null,
     };
   }
   private async current(tx: PgTransaction, caseId: string) {
@@ -153,22 +184,7 @@ export class FederationArbitrationResolutionService {
       },
       new Date(),
     );
-    const payload = CommercialArbitrationResolutionSchema.parse({
-      decisionId: original.decisionId,
-      decisionDigest: value.decisionDigest,
-      caseId,
-      caseDigest: b.caseDigest,
-      domainId: b.domainId,
-      agreementRevisionId: b.agreementRevisionId,
-      sourceSiteId: b.sourceSiteId,
-      targetSiteId: b.targetSiteId,
-      taskId: b.taskId,
-      attempt: b.attempt,
-      mode: b.mode,
-      headDigest: decision.intent.financial.headDigest,
-      freezeDigest: decision.intent.financial.freezeDigest,
-      outcome: decision.intent.outcome,
-    });
+    const payload = receivedArbitrationResolution(value);
     assertArbitrationResolution(payload, proof);
     if (payload.outcome.action !== "resolve-without-financial-change") {
       const [other] = await tx
@@ -195,7 +211,8 @@ export class FederationArbitrationResolutionService {
       const record = await this.visible(tx, actor, revisionId, caseId, true);
       await lockFederationDisputeTask(tx, this.signing.siteId, record);
       const [prior] = await tx.select().from(resolutions).where(this.key(caseId));
-      if (prior) return this.view(prior);
+      const previous = await this.view(tx, caseId, prior);
+      if (previous) return previous;
       const { original, payload, envelope } = await this.current(tx, caseId);
       const bilateralMoney =
         payload.mode !== "ledger_coordinated" &&
@@ -284,7 +301,54 @@ export class FederationArbitrationResolutionService {
         await this.apply(tx, payload.decisionId, payload.decisionDigest);
       const [saved] = await tx.select().from(resolutions).where(this.key(caseId));
       if (!saved) throw new FederationError("OPERATION_CONFLICT");
-      return this.view(saved);
+      return this.view(tx, caseId, saved);
+    });
+  }
+  async withdraw(actor: FederationActor, revisionId: string, caseId: string) {
+    return this.db.transaction(async (tx) => {
+      const record = await this.visible(tx, actor, revisionId, caseId, true);
+      await lockFederationDisputeTask(tx, this.signing.siteId, record);
+      const [row] = await tx.select().from(resolutions).where(this.key(caseId)).for("update");
+      if (!row?.commitment || row.payload.mode === "ledger_coordinated")
+        throw new FederationError("POLICY_DENIED");
+      const view = await this.view(tx, caseId, row);
+      if (row.appliedAt || view?.withdrawnAt) return view;
+      if (!row.withdrawalRequestedAt) {
+        await tx
+          .update(resolutions)
+          .set({
+            withdrawalRequestedAt: sql`clock_timestamp()`,
+            nextAttemptAt: sql`clock_timestamp()`,
+            leaseToken: null,
+            leaseUntil: null,
+            lastError: null,
+          })
+          .where(this.key(caseId));
+        await tx.insert(auditLog).values({
+          actor: actor.userId,
+          orgId: actor.orgId,
+          action: "federation.arbitration_execution.withdraw_request",
+          target: row.decisionId,
+          diff: {
+            after: {
+              caseId,
+              decisionDigest: row.payload.decisionDigest,
+              localSiteId: this.signing.siteId,
+            },
+          },
+        });
+      }
+      if (this.signing.siteId === row.payload.targetSiteId)
+        await createArbitrationWithdrawal(
+          tx,
+          this.signing,
+          row.payload,
+          this.signing.siteId,
+          this.trust,
+        );
+      const [saved] = await tx.select().from(resolutions).where(this.key(caseId));
+      if (!saved) throw new FederationError("OPERATION_CONFLICT");
+      return this.view(tx, caseId, saved);
     });
   }
   async beforeDisclosure(input: CommercialAdapterProposalInput, tx?: PgTransaction): Promise<void> {
@@ -334,6 +398,13 @@ export class FederationArbitrationResolutionService {
     if (!row || row.payload.decisionDigest !== digest)
       throw new FederationError("OPERATION_CONFLICT");
     if (row.appliedAt) return;
+    const [withdrawn] = await tx
+      .select({ proof: received.executionWithdrawal })
+      .from(received)
+      .where(
+        and(eq(received.localSiteId, this.signing.siteId), eq(received.decisionId, decisionId)),
+      );
+    if (withdrawn?.proof) throw new FederationError("OPERATION_CONFLICT");
     if (row.payload.mode === "ledger_coordinated") {
       const [committed] = await tx
         .select({ id: submissions.id })
@@ -453,7 +524,7 @@ export class FederationArbitrationResolutionService {
     return this.db.transaction(async (tx) => {
       await this.visible(tx, actor, revisionId, caseId);
       const [row] = await tx.select().from(resolutions).where(this.key(caseId));
-      return row ? this.view(row) : null;
+      return this.view(tx, caseId, row);
     });
   }
 }

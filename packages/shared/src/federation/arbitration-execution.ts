@@ -4,7 +4,7 @@ import { FederationError, federationCanonicalJson } from "./index";
 import { FederationDigestSchema } from "./references";
 
 const Jws = z.string().min(1).max(32768);
-/** Irrevocable local authority for this exact award; transport retries never create a new commitment. */
+/** Durable authority for this exact award; only B's signed non-execution proof permits withdrawal. */
 export const ArbitrationExecutionCommitmentSchema = z
   .strictObject({
     protocolVersion: z.literal(1),
@@ -38,6 +38,36 @@ export const ArbitrationExecutionQuerySchema = z.strictObject({
   sourceSiteId: z.uuid(),
   targetSiteId: z.uuid(),
   commitment: Commitment,
+  issuedAt: z.iso.datetime(),
+});
+export const ArbitrationExecutionWithdrawalQuerySchema = ArbitrationExecutionQuerySchema.extend({
+  kind: z.literal("arbitration-execution-withdrawal-query"),
+});
+export const ArbitrationExecutionWithdrawalReceiptSchema = z
+  .strictObject({
+    protocolVersion: z.literal(1),
+    kind: z.literal("arbitration-execution-withdrawal-receipt"),
+    resolution: CommercialArbitrationResolutionSchema,
+    requestingSiteId: z.uuid(),
+    withdrawnAt: z.iso.datetime(),
+  })
+  .refine(
+    (v) =>
+      v.resolution.mode !== "ledger_coordinated" &&
+      v.resolution.outcome.action !== "resolve-without-financial-change" &&
+      [v.resolution.sourceSiteId, v.resolution.targetSiteId].includes(v.requestingSiteId),
+  );
+export type ArbitrationExecutionWithdrawalReceipt = z.infer<
+  typeof ArbitrationExecutionWithdrawalReceiptSchema
+>;
+export const ArbitrationExecutionWithdrawalResponseSchema = z.strictObject({
+  protocolVersion: z.literal(1),
+  kind: z.literal("arbitration-execution-withdrawal-response"),
+  queryDigest: FederationDigestSchema,
+  sourceSiteId: z.uuid(),
+  targetSiteId: z.uuid(),
+  receipt: ArbitrationExecutionWithdrawalReceiptSchema,
+  receiptJws: Jws,
   issuedAt: z.iso.datetime(),
 });
 export const ArbitrationExecutionResponseSchema = z.strictObject({

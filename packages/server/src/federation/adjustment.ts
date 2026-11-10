@@ -367,6 +367,54 @@ export async function holdFederationAdjustment(
   return hold.toString();
 }
 
+/** Release only the recorded correction hold, after an authoritative non-execution receipt. */
+export async function releaseFederationAdjustmentHold(
+  tx: PgTransaction,
+  row: Pick<
+    Adjustment,
+    "localSiteId" | "localOrgId" | "agreementRevisionId" | "payload" | "heldAmount"
+  >,
+) {
+  const held = BigInt(row.heldAmount);
+  if (held === 0n) return;
+  const original = await originals(
+    tx,
+    row.localSiteId,
+    row.localOrgId,
+    row.agreementRevisionId,
+    row.payload.settlementId,
+  );
+  if (
+    original.bill.payload.request.mode === "ledger_coordinated" ||
+    held !== BigInt(row.payload.chargedAmount) - BigInt(row.payload.previousChargedAmount)
+  )
+    throw new FederationError("OPERATION_CONFLICT");
+  const target = await accountingTarget(tx, row, original);
+  if (target.provider) {
+    const current = await budget(tx, original);
+    if (BigInt(current.reserved) < held) throw new FederationError("OPERATION_CONFLICT");
+    await tx
+      .update(budgets)
+      .set({
+        available: (BigInt(current.available) + held).toString(),
+        reserved: (BigInt(current.reserved) - held).toString(),
+      })
+      .where(and(eq(budgets.domainId, current.domainId), eq(budgets.epoch, current.epoch)));
+  } else {
+    if (target.operation.adjustmentHeldAmount !== row.heldAmount)
+      throw new FederationError("OPERATION_CONFLICT");
+    await tx
+      .update(outbound)
+      .set({ adjustmentHeldAmount: "0" })
+      .where(
+        and(
+          eq(outbound.localSiteId, row.localSiteId),
+          eq(outbound.operationId, target.operation.operationId),
+        ),
+      );
+  }
+}
+
 export class FederationAdjustmentService {
   private readonly trust: FederationTrustRegistry;
   constructor(
