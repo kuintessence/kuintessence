@@ -36,3 +36,29 @@ export const CommercialDisputeResolutionSchema = z
     "Inconsistent settlement parties",
   );
 export type CommercialDisputeResolution = z.infer<typeof CommercialDisputeResolutionSchema>;
+
+export const CommercialDisputeResolutionViewSchema = z.object({
+  payload: CommercialDisputeResolutionSchema,
+  digest: FederationDigestSchema,
+  counterpartyApproved: z.boolean(),
+  appliedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+  financialApproved: z.boolean(),
+  financialAppliedAt: z.iso.datetime().nullable(),
+  exchange: z
+    .object({
+      state: z.enum(["pending", "complete", "needs_review"]),
+      lastError: z.string().nullable(),
+    })
+    .nullable(),
+  ledger: z
+    .object({
+      id: z.uuid(),
+      state: z.enum(["pending", "committed", "needs_review"]),
+      lastError: z.string().nullable(),
+      transactionId: z.string().nullable(),
+      blockNumber: z.string().nullable(),
+    })
+    .nullable(),
+});
+export type CommercialDisputeResolutionView = z.infer<typeof CommercialDisputeResolutionViewSchema>;

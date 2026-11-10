@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 import {
+  federationCommercialAdjustments as adjustments,
+  federationCommercialAttempts as attempts,
   auditLog,
   federationCommercialBills as bills,
   federationDisputes as cases,
@@ -7,14 +9,18 @@ import {
   type PgTransaction,
   federationReceivedArbitrationDecisions as received,
   federationDisputeResolutions as resolutions,
+  federationCommercialSettlements as settlements,
+  federationCommercialSubmissions as submissions,
+  federationCommercialApprovalSyncs as syncs,
 } from "@kuintessence/db";
 import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
 import { assertCommercialSettlement } from "@kuintessence/shared/federation/billing";
 import {
   type CommercialDisputeResolution,
   CommercialDisputeResolutionSchema,
+  CommercialDisputeResolutionViewSchema,
 } from "@kuintessence/shared/federation/dispute-resolution";
-import { and, eq, ne } from "drizzle-orm";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
 import { validateFederationAdjustment } from "./adjustment";
 import {
   applyArbitrationWithdrawal,
@@ -45,14 +51,84 @@ export class FederationDisputeResolutionService {
   private key(caseId: string) {
     return and(eq(resolutions.localSiteId, this.signing.siteId), eq(resolutions.caseId, caseId));
   }
-  private view(row: Resolution) {
-    return {
+  private async view(tx: PgTransaction, row: Resolution) {
+    const financial = row.payload.financial;
+    let financialApproved = false;
+    let financialAppliedAt: string | null = null;
+    if (financial) {
+      const table = financial.kind === "commercial-settlement" ? settlements : adjustments;
+      const identity =
+        financial.kind === "commercial-settlement"
+          ? settlements.settlementId
+          : adjustments.adjustmentId;
+      const id =
+        financial.kind === "commercial-settlement"
+          ? financial.settlementId
+          : financial.adjustmentId;
+      const [posting] = await tx
+        .select()
+        .from(table)
+        .where(and(eq(table.localSiteId, row.localSiteId), eq(identity, id)));
+      if (posting) {
+        if (
+          posting.localOrgId !== row.localOrgId ||
+          posting.agreementRevisionId !== row.agreementRevisionId ||
+          posting.arbitrationDecisionId ||
+          federationCanonicalJson(posting.payload) !== federationCanonicalJson(financial)
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        financialApproved = true;
+        financialAppliedAt = posting.appliedAt?.toISOString() ?? null;
+      }
+    }
+    const [exchange] = await tx
+      .select({ state: syncs.state, lastError: syncs.lastError })
+      .from(syncs)
+      .where(
+        and(
+          eq(syncs.localSiteId, row.localSiteId),
+          eq(syncs.recordKind, "dispute-resolution"),
+          eq(syncs.recordId, row.resolutionId),
+        ),
+      );
+    const [submission] = await tx
+      .select()
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.localSiteId, row.localSiteId),
+          eq(submissions.agreementRevisionId, row.agreementRevisionId),
+          sql`${submissions.input}->>'operation' = 'record-dispute-resolution'`,
+          sql`${submissions.input}->>'recordId' = ${row.resolutionId}`,
+        ),
+      );
+    const [attempt] = submission
+      ? await tx
+          .select()
+          .from(attempts)
+          .where(eq(attempts.submissionId, submission.id))
+          .orderBy(desc(attempts.number))
+          .limit(1)
+      : [];
+    return CommercialDisputeResolutionViewSchema.parse({
       payload: row.payload,
       digest: row.digest,
       counterpartyApproved: !!row.counterpartyJws,
       appliedAt: row.appliedAt?.toISOString() ?? null,
       createdAt: row.createdAt.toISOString(),
-    };
+      financialApproved,
+      financialAppliedAt,
+      exchange: exchange ?? null,
+      ledger: submission
+        ? {
+            id: submission.id,
+            state: submission.state,
+            lastError: submission.lastError,
+            transactionId: attempt?.transactionId ?? null,
+            blockNumber: attempt?.blockNumber ?? null,
+          }
+        : null,
+    });
   }
   private async visible(
     tx: PgTransaction,
@@ -216,7 +292,7 @@ export class FederationDisputeResolutionService {
       if (prior) {
         if (federationCanonicalJson(prior.payload) !== federationCanonicalJson(value))
           throw new FederationError("OPERATION_CONFLICT");
-        return this.view(prior);
+        return this.view(tx, prior);
       }
       const { current, original, withdrawalDigest } = await this.boundary(tx, caseId);
       const c = current.record.payload;
@@ -263,7 +339,7 @@ export class FederationDisputeResolutionService {
         target: value.resolutionId,
         diff: { after: { caseId, digest: signed.digest } },
       });
-      return this.view(saved);
+      return this.view(tx, saved);
     });
   }
   async exchangeRecord(tx: PgTransaction, orgId: string, revisionId: string, resolutionId: string) {
@@ -320,19 +396,19 @@ export class FederationDisputeResolutionService {
       )
         throw new FederationError("OPERATION_CONFLICT");
       await authorize(tx);
-      if (row.counterpartyJws) return this.view(row);
+      if (row.counterpartyJws) return this.view(tx, row);
       await tx.update(resolutions).set({ counterpartyJws: jws }).where(this.key(row.caseId));
       await completeDisputeResolution(tx, this.signing.siteId, row.caseId);
       const [saved] = await tx.select().from(resolutions).where(this.key(row.caseId));
       if (!saved) throw new FederationError("OPERATION_CONFLICT");
-      return this.view(saved);
+      return this.view(tx, saved);
     });
   }
   async read(actor: FederationActor, revisionId: string, caseId: string) {
     return this.db.transaction(async (tx) => {
       await this.visible(tx, actor, revisionId, caseId);
       const [row] = await tx.select().from(resolutions).where(this.key(caseId));
-      return row ? this.view(row) : null;
+      return row ? this.view(tx, row) : null;
     });
   }
 }

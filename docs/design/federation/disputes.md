@@ -717,7 +717,7 @@ B 使用当前密钥签署 `arbitration-execution-withdrawal-response`，绑定�
 | --- | --- |
 | `POST /api/federation/commercial-agreements/:revisionId/disputes/:caseId/resolution/draft` | `{ resolutionId, reason, financial }`；从本站原件生成正文 |
 | `POST /api/federation/commercial-agreements/:revisionId/disputes/:caseId/resolution` | 分别批准同一完整正文；同案异文拒绝 |
-| `GET /api/federation/commercial-agreements/:revisionId/disputes/:caseId/resolution` | 查看正文、对方批准状态及本站应用时间 |
+| `GET /api/federation/commercial-agreements/:revisionId/disputes/:caseId/resolution` | 查看正文、对方批准、独立财务批准／应用、签名交换及本项私有存证状态 |
 
 `financial: null` 明确表示保持原账目。双方原签名通过既有商业后台及 mTLS 自动交换，本站取得同文对签后才能关闭本案。其他案件继续冻结，原任务预留和所有历史均保留。
 
@@ -727,4 +727,4 @@ B 使用当前密钥签署 `arbitration-execution-withdrawal-response`，绑定�
 
 异步模式由源方在本站完成后，同事务创建 `record-dispute-resolution` 私有存证待办。链码和 Adapter 要求 A/B 同文签名、指定机构集合和 A/B 原生背书，只记录和解原件，不重复核算、不修改预算或原生冻结计数。存证是双方同意内容的凭据，不证明双方已同时完成入账；链离线不回滚已完成的本地和解。沿用原商业队列、加密交易检查点和人工重试，重试另需 `dispute.resolve`。晚到签名密钥退休后的新存证仍受既有当前信任限制。
 
-生成迁移 `0203_opposite_surge.sql` 增加和解原件表，扩展原权限、签名交换和商业待办约束；部署库尚未应用。异步存证还须按原治理流程升级商业链码以提供 `RecordDisputeResolution`，并同步登记链端签署用途；只升级 Server 或改本站信任不代表链端已支持。当前为生产 API／后台接线，完整和解页面、协调模式及未经过本次金额退出的通用和解仍待补齐。实际验证范围见[和解专项](acceptance.md#退出后双边和解专项)。
+生成迁移 `0203_opposite_surge.sql` 增加和解原件表，扩展原权限、签名交换和商业待办约束；部署库尚未应用。异步存证还须按原治理流程升级商业链码以提供 `RecordDisputeResolution`，并同步登记链端签署用途；只升级 Server 或改本站信任不代表链端已支持。合同页面新增“争议”页签，按本组织能力展示案件清单和退出后和解操作。桌面端可对既有承诺申请退出，待永久未执行凭证确认后提出保持账目、结算原账单或调整已结金额的方案。方案通过下载／导入 JSON 文件交给对方核对；当前没有自动发现未批准提案。文件绑定当前案件、合同、双方、任务与单位，不含 JWS；批准和解与批准财务原件使用不同确认和权限。界面分别显示执行退出、双方批准、本站结案及签名交换／链存证状态；失败可按当前能力重试，手机端只读。读取 API 不公开内部签名或加密恢复检查点。协调模式及未经过本次金额退出的通用和解仍不支持。实际验证范围见[和解专项](acceptance.md#退出后双边和解专项)。

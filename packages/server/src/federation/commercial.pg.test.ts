@@ -16098,11 +16098,18 @@ test("dispute settlement authorizes only its exact ordinary adjustment and close
     await expect(a.approve(f.actor, f.revisionId, financial)).rejects.toThrow("DATA_WAITING");
     await approveDisputeSettlement(f, financial);
     expect((await f.reconciliationRows()).every((r) => !r.appliedAt)).toBe(true);
+    const awaitingFinancial = await f.reconciliationA.read(f.actor, f.revisionId, f.scope.caseId);
+    expect(awaitingFinancial?.financialApproved).toBe(false);
+    expect(awaitingFinancial?.financialAppliedAt).toBeNull();
+
     await expect(
       a.approve(f.actor, f.revisionId, { ...financial, chargedAmount: "34" }),
     ).rejects.toThrow("DATA_WAITING");
     const left = await a.approve(f.actor, f.revisionId, financial),
       right = await b.approve(f.actor, f.revisionId, financial);
+    const approvedFinancial = await f.reconciliationA.read(f.actor, f.revisionId, f.scope.caseId);
+    expect(approvedFinancial?.financialApproved).toBe(true);
+    expect(approvedFinancial?.financialAppliedAt).toBeNull();
     const before = await arbitrationWithdrawalState(f);
     await db.execute(
       sql`CREATE FUNCTION settlement_close_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.dispute_resolution.apply' THEN RAISE EXCEPTION 'injected closure audit failure'; END IF; RETURN NEW; END $$`,
@@ -16128,6 +16135,13 @@ test("dispute settlement authorizes only its exact ordinary adjustment and close
     expect(BigInt(final.budget[0]?.spent ?? "-1") - BigInt(before.budget[0]?.spent ?? "-1")).toBe(
       -5n,
     );
+    const appliedView = await f.reconciliationA.read(f.actor, f.revisionId, f.scope.caseId);
+    expect(appliedView?.financialAppliedAt).toBeTruthy();
+    expect(appliedView?.exchange).toBeNull();
+    expect(appliedView?.ledger?.state ?? null).toBe(
+      mode === "bilateral_attested" ? "pending" : null,
+    );
+    expect(JSON.stringify(appliedView)).not.toContain("Jws");
     expect((await f.reconciliationRows()).every((r) => !!r.appliedAt)).toBe(true);
     const audits = await db
       .select()

@@ -29,6 +29,7 @@ import { CommercialAdjustmentPanel } from "./CommercialAdjustmentPanel";
 import { CommercialBillingPanel } from "./CommercialBillingPanel";
 import { CommercialClosingPanel } from "./CommercialClosingPanel";
 import { CommercialDetail } from "./CommercialDetail";
+import { CommercialDisputePanel } from "./CommercialDisputePanel";
 import { CommercialEditor } from "./CommercialEditor";
 import { CommercialPaymentPanel } from "./CommercialPaymentPanel";
 import { CommercialRefundPanel } from "./CommercialRefundPanel";
@@ -277,6 +278,11 @@ export function CommercialPanel({
                 {detail.data.terms.consideration === "paid" ? (
                   <TabsTrigger value="payments">{t("federation.payment.title")}</TabsTrigger>
                 ) : null}
+                {grants.includes("dispute.read") ||
+                grants.includes("dispute.open") ||
+                grants.includes("dispute.resolve") ? (
+                  <TabsTrigger value="disputes">{t("federation.dispute.title")}</TabsTrigger>
+                ) : null}
                 <TabsTrigger value="closing">{t("federation.closing.title")}</TabsTrigger>
               </TabsList>
               <TabsContent value="terms">
@@ -391,6 +397,19 @@ export function CommercialPanel({
                     setSection("bills");
                   }}
                 />
+              </TabsContent>
+              <TabsContent value="disputes">
+                {grants.includes("dispute.read") ||
+                grants.includes("dispute.open") ||
+                grants.includes("dispute.resolve") ? (
+                  <CommercialDisputePanel
+                    approval={detail.data}
+                    scope={scope}
+                    grants={grants}
+                    readOnly={readOnly}
+                    busy={busy || detail.isFetching}
+                  />
+                ) : null}
               </TabsContent>
               <TabsContent value="closing">
                 <CommercialClosingPanel
