@@ -137,7 +137,7 @@ bash deploy/federation/compose.sh fabric --profile fabric-admin run --rm fabric-
 | `<kind>/initialize.args` | `-C` 通道、`-n` 名称、Orderer/Peer TLS/mTLS 参数；工具固定 `--isInit`、`Args=["Init"]` 和等待提交事件 |
 | `<kind>/verify.args` | `--channelID`、`--name`，工具添加 JSON 输出 |
 
-管理员配置必须包含链码初始化要求的 `kq.role=trust-admin` 签名身份。Init 会设置组织信任与私有数据策略，不是健康探针。首次 Init 后不能在例行 CD 中重复运行；重复通道加入、已安装相同包可查询恢复，生命周期批准、commit、Init 的结果不确定时先查询原状态，不盲目重做。
+管理员的 Fabric 签名证书必须同时具有 `kq.federation.site=<本站 UUID>` 和 `kq.federation.role=trust-admin` 属性，并属于本站 MSP；字段名不能缩写为 `kq.role`。四类 Adapter 分别使用 `attestor`、`commercial`、`market`、`case` 业务角色，不能复用管理员身份。属性由机构 CA 签发并限制签发权限，写入 `adapter.json` 或平台信任记录不能替代证书属性。Init 会设置组织信任与私有数据策略，不是健康探针。首次 Init 后不能在例行 CD 中重复运行；重复通道加入、已安装相同包可查询恢复，生命周期批准、commit、Init 的结果不确定时先查询原状态，不盲目重做。
 
 常规更新只拉取固定版本并重建容器。链码升级另行批准新定义，验证 PDC 和信任代际后操作；不删除账本、不重建密钥、不自动改变组织策略。只有受治理允许的组织签名才可推进通道或定义。此交付不提供证书颁发机构、跨机构治理批准或多 Orderer 容灾的自动安装。
 
@@ -159,4 +159,6 @@ CD 部署到独立 `/opt/kuintessence-federation`，持有部署锁；第一次�
 
 `down` 保留卷；不要执行 `down -v`、删除 Peer 区块文件或只备份容器文件系统。至少备份 PostgreSQL、Peer/Orderer 卷、Registry/对象数据、原 MSP/TLS/JWS/恢复密钥、批准的通道/PDC/链码定义及应用信任配置。Peer 空间不足按 [容量蓝图](../../docs/design/federation/blueprint.md) 做监控、受控快照与归档，不能把 `blockToLive` 或删区块当通用扩容。
 
-本交付验证范围是 Compose 接线及新增镜像启动。正式多机构的独立身份、通道治理、故障恢复、多 Orderer 容灾、真实作业与金额联合验收仍按 [验收清单](../../docs/design/federation/acceptance.md) 执行。已有业务测试结论不因新部署文件自动扩大。
+两种入口已在一次性 Docker 引擎中完成完整平台启动。另以一个完整平台、A/B/C 三个独立 MSP/Peer 及一个 Orderer 验证四类链码批准、提交和初始化；通过 Server 内生产 Unix 客户端与 Adapter 提交一笔私有存证，A/B 查询摘要一致，C 读取被拒绝，重启后原存证仍可读取。重复本站 Peer 加入及相同包安装也已验证，见[完整启动验收](../../docs/design/federation/acceptance.md#两种-compose-完整启动与私有存证)。
+
+上述测试使用同一主机上的临时机构身份，只有一个完整 Server/数据库；存证由受控客户端调用，没有经过人员 API 或真实作业。它不替代正式多机构治理、跨主机网络、三个独立平台、故障恢复、多 Orderer 容灾、真实作业与金额联合验收。其余范围仍按[验收清单](../../docs/design/federation/acceptance.md)执行。

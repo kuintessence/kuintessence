@@ -775,3 +775,20 @@ Web 共 63 个不同组件场景通过（61 个既有、2 个新增），裁决�
 根 typecheck 已覆盖 protobuf、全部 package，修正新用途的数据库 TypeScript 联合类型后补查 Server 与独立 Fabric 脚本；最终类型范围通过，新增测试的可空字段严格收窄，未增加类型抑制。全仓 lint 通过（保留既有 47 warnings／1 info）。新生成迁移从隔离空库应用，测试数据库均停止删除，部署数据库未修改。
 
 边界：生产批准／冻结／取证／裁决交付、Hono 机构执行收件和核算服务使用三机构共用的隔离 PostgreSQL；登记证书指纹和用量／账单为夹具，金额执行不经过真实跨实例 mTLS。TLS 由独立传输专项验证，不能将两个专项合称真实多 Server 联合验收。没有重复此前已通过的真实 Fabric 金额、浏览器或科研软件矩阵；未完成单方承诺退出、完整裁决页面、可信 PR 预览或正式机构部署。
+
+## 两种 Compose 完整启动与私有存证
+
+2026-11-10，以 `38b0ff8` 源码构建全部八类 KQ 镜像，在一次性 Docker 引擎中顺序运行 `direct` 和 `fabric` 入口。测试 Pod 上限 3 CPU／6 GiB，没有修改腾讯云或已有本机服务。以下是新增部署验收，未重复科研软件及既有完整账务矩阵。
+
+| 检查 | 结果与口径 |
+| --- | --- |
+| 无链完整启动 | PostgreSQL、Redis、RustFS、SpiceDB、数据库迁移、Server、Registry、Web 和 mTLS Gateway 启动；Web 返回页面，Gateway 转发测试请求后拒绝无效消息。配置没有 Fabric 服务或商业 socket。未验证真实 SSO 登录。 |
+| 有链完整启动 | 同一套基础平台、四个生产 Adapter、A/B/C 各自的 MSP、Peer 和四类 CCAAS、一个 Orderer 启动。B/C 是测试辅助 Peer，没有另起完整 Server。 |
+| 四类链码初始化 | 通过交付的 `fabric-admin` 工具逐机构加入、安装、批准；检查三方批准后提交、Init，并从三个 Peer 查询已提交定义。四类均成功，CCAAS 使用官方内置 builder、双向 TLS。 |
+| 私有存证 | 在 Server 容器内调用生产 `UnixAttestationClient`，经共享 socket 和生产 Adapter 提交带独立 RSA 签名的测试批次；交易推进过程中保留同一 transactionId，返回 anchored／区块号。A/B 的 GetAnchor 摘要均与原批次一致。C 以自己的业务身份读取被拒绝。该批次是受控夹具，不是实际科研任务证据。 |
+| 本站重复操作 | 重复 Peer 加入、安装相同 package ID 返回已存在；没有重复提交相应操作。没有重复执行 Init。 |
+| 重启保留 | 重启 A Peer、Orderer 与 evidence Adapter；平台重新就绪后仍能查询原链码定义和相同私有存证摘要。未模拟主机掉电、网络分区或恢复密钥丢失。 |
+
+本轮更正部署文档的管理员属性名：必须是 `kq.federation.site` 与 `kq.federation.role=trust-admin`，不能写成 `kq.role`；Adapter 使用四种独立业务角色。启动测试首次的媒体类型和查询配置目录错误属于夹具，分别改为 `application/jose` 和显式 `FABRIC_CFG_PATH` 后定向续验；没有为读取失败重新提交已成功的存证。
+
+全部测试容器、专属账本／数据库卷和临时构建 Pod 已清理，构建缓存仅在该临时引擎内清理。原始过程记录留在本地忽略目录，不发布临时凭据。此结果补齐 Compose 实际接线和初始化验收，不代替跨主机的独立机构治理、三个完整平台／独立数据库、真实作业与金额恢复、正式 SSO、生产 GitHub Environment／凭据或可信 PR 预览。现网未发布。
