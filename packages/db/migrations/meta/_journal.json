@@ -1387,6 +1387,13 @@
       "when": 1794267479414,
       "tag": "0197_tidy_pride",
       "breakpoints": true
+    },
+    {
+      "idx": 198,
+      "version": "7",
+      "when": 1794269097064,
+      "tag": "0198_unusual_bloodstrike",
+      "breakpoints": true
     }
   ]
 }

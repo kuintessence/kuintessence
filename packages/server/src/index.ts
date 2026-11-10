@@ -64,6 +64,7 @@ import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
 import { FederationBillingService } from "./federation/billing";
 import { FederationCancellationMonitor } from "./federation/cancellation-monitor";
+import { FederationCaseArbitrationDecisionService } from "./federation/case-arbitration-decisions";
 import { UnixCaseClient } from "./federation/case-client";
 import { FederationCaseRevocationDelivery } from "./federation/case-revocations";
 import { FederationCaseSubmissionService } from "./federation/case-submissions";
@@ -1911,6 +1912,14 @@ const federationCaseRevocations =
         federationSender,
       )
     : undefined;
+const federationCaseDecisions =
+  federationSigningKey && federationCasePublications
+    ? new FederationCaseArbitrationDecisionService(
+        db,
+        federationSigningKey,
+        federationCasePublications.ledger,
+      )
+    : undefined;
 const federationCaseSubmissions =
   federationSigningKey && federationCasePublications
     ? new FederationCaseSubmissionService(
@@ -1920,6 +1929,7 @@ const federationCaseSubmissions =
         config.FEDERATION_CASE_SOCKET_PATH
           ? new UnixCaseClient(config.FEDERATION_CASE_SOCKET_PATH)
           : undefined,
+        federationCaseDecisions,
       )
     : undefined;
 const federationApprovalExchange = federationSigningKey
@@ -1952,6 +1962,8 @@ if (federationSigningKey) {
       review,
       new FederationArbitrationDecisionService(db, federationSigningKey, review),
       federationArbitrationDecisions,
+      federationCaseDecisions,
+      federationCaseSubmissions,
     ),
   );
 }

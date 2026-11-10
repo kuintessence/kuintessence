@@ -5,9 +5,11 @@ import {
   CaseReceiptQuerySchema,
   CaseReceiptSchema,
   caseMembers,
+  caseOperationFunction,
   caseVerificationKeys,
   type FabricCaseTrust,
   FabricCaseTrustSchema,
+  verifyCaseArbitrationDecision,
   verifyCasePublication,
   verifyCaseRevocation,
 } from "@kuintessence/shared/federation/case-ledger";
@@ -133,7 +135,7 @@ export class CaseLedger {
       if (stored.receipt.recordId !== recordId) return fail("OPERATION_CONFLICT");
       return encode(stored);
     }
-    if (fcn !== "RecordCaseEvidence" && fcn !== "RevokeCasePublication")
+    if (!Object.values(caseOperationFunction).some((operation) => operation === fcn))
       return fail("INVALID_MESSAGE");
     const [domainId, recordId] = z.tuple([z.uuid(), z.uuid()]).parse(params);
     const domain = this.trust.domains.find((value) => value.domainId === domainId);
@@ -147,7 +149,7 @@ export class CaseLedger {
     if (
       input.domainId !== domainId ||
       input.recordId !== recordId ||
-      (input.operation === "record-case-evidence") !== (fcn === "RecordCaseEvidence")
+      caseOperationFunction[input.operation] !== fcn
     )
       return fail("POLICY_DENIED");
     const keys = await caseVerificationKeys(
@@ -157,6 +159,37 @@ export class CaseLedger {
         Buffer.from(await stub.getState(this.key(stub, site, key))).toString() !== "active",
     );
     const now = stub.getDateTimestamp();
+    if (input.operation === "record-arbitration-decision") {
+      if (org.siteId !== domain.recipientSiteId) return fail("POLICY_DENIED");
+      const signed = await verifyCaseArbitrationDecision(input.envelope, domain, keys, now);
+      if (signed.digest !== input.digest || signed.payload.decisionId !== recordId)
+        return fail("OPERATION_CONFLICT");
+      const recordKey = stub.createCompositeKey("case-arbitration-decision", [domainId, recordId]);
+      const caseKey = stub.createCompositeKey("case-decision", [
+        domainId,
+        signed.payload.binding.caseId,
+      ]);
+      const prior = await this.value(stub, domain.collection, recordKey);
+      const existing = await this.value(stub, domain.collection, caseKey);
+      const receipt = { recordId, digest: signed.digest };
+      if (existing.length && !Buffer.from(existing).equals(encode(receipt)))
+        return fail("OPERATION_CONFLICT");
+      if (prior.length) {
+        const stored = z
+          .object({ receipt: CaseReceiptSchema })
+          .parse(JSON.parse(Buffer.from(prior).toString()));
+        if (stored.receipt.recordId !== recordId || stored.receipt.digest !== signed.digest)
+          return fail("OPERATION_CONFLICT");
+      }
+      // Even replay writes private keys, retaining native A/B/R endorsement.
+      await stub.putPrivateData(domain.collection, caseKey, encode(receipt));
+      await stub.putPrivateData(
+        domain.collection,
+        recordKey,
+        prior.length ? prior : encode({ receipt, input }),
+      );
+      return encode(receipt);
+    }
     const signed =
       input.operation === "record-case-evidence"
         ? await verifyCasePublication(input.envelope, domain, keys, now)

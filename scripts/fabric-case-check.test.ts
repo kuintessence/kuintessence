@@ -10,11 +10,14 @@ import { Client, credentials } from "@grpc/grpc-js";
 import { connect, signers } from "@hyperledger/fabric-gateway";
 import { peer, gateway as proto } from "@hyperledger/fabric-protos";
 import {
+  type CaseArbitrationDecision,
+  CaseArbitrationDecisionSchema,
   type CaseProposal,
   CaseProposalSchema,
   CasePublicationSchema,
   CaseRevocationSchema,
   CaseSigningKindSchema,
+  caseOperationFunction,
   type FabricCaseTrust,
   FabricCaseTrustSchema,
   fabricCaseCollections,
@@ -245,8 +248,7 @@ async function fixture() {
   const ledger = new CaseLedger(trust);
   await ledger.initialize(memory, identity(0, "trust-admin"));
   const invoke = (value: CaseProposal, index = 0) => {
-    memory.fcn =
-      value.operation === "record-case-evidence" ? "RecordCaseEvidence" : "RevokeCasePublication";
+    memory.fcn = caseOperationFunction[value.operation];
     memory.params = [value.domainId, value.recordId];
     memory.transient = new Map([["case", Buffer.from(JSON.stringify(value))]]);
     return ledger.invoke(memory, identity(index));
@@ -459,7 +461,7 @@ function adapter(
 test("case Adapter creates encrypted recoverable SDK proposal with no field values in public args and no outsider endorsements", async () => {
   const f = await fixture(),
     sdk = adapter(f);
-  for (const input of [f.input, await f.revoke()]) {
+  for (const input of [f.input, await f.revoke(), (await decisionCommitment(f)).input]) {
     const prepared = await sdk.adapter.prepare(input),
       bytes = Buffer.from(prepared.recovery, "base64");
     const cipher = createDecipheriv("aes-256-gcm", sdk.recoveryKey, bytes.subarray(0, 12));
@@ -494,11 +496,7 @@ test("case Adapter creates encrypted recoverable SDK proposal with no field valu
       ?.getInput()
       ?.getArgsList_asU8()
       .map((value) => Buffer.from(value).toString());
-    expect(args).toEqual([
-      input.operation === "record-case-evidence" ? "RecordCaseEvidence" : "RevokeCasePublication",
-      input.domainId,
-      input.recordId,
-    ]);
+    expect(args).toEqual([caseOperationFunction[input.operation], input.domainId, input.recordId]);
     await expect(adapter(f).adapter.advance(prepared.recovery)).rejects.toThrow("INVALID_RECOVERY");
     expect(bytes.includes(Buffer.from("9007199254740993"))).toBe(false);
   }
@@ -546,4 +544,129 @@ test("case runtime accepts only the private case paths and hides raw transport e
       server.close((error) => (error ? reject(error) : resolve())),
     );
   }
+});
+
+async function decisionCommitment(f: Awaited<ReturnType<typeof fixture>>) {
+  const d = `sha256:${"d".repeat(64)}`;
+  const payload = CaseArbitrationDecisionSchema.parse({
+    protocolVersion: 1,
+    kind: "case-arbitration-decision",
+    caseDomainId: f.domain.domainId,
+    decisionId: randomUUID(),
+    decisionDigest: d,
+    binding: {
+      caseId: randomUUID(),
+      caseDigest: d,
+      domainId: f.domain.commercialDomainId,
+      agreementRevisionId: randomUUID(),
+      agreementDigest: d,
+      sourceSiteId: f.a.siteId,
+      targetSiteId: f.b.siteId,
+      arbitratorSiteId: f.r.siteId,
+      taskId: randomUUID(),
+      attempt: 1,
+      operationId: randomUUID(),
+      reservationId: randomUUID(),
+      requestDigest: d,
+      acceptanceDigest: d,
+      policyId: randomUUID(),
+      policyDigest: d,
+    },
+    headDigest: d,
+    freezeDigest: d,
+    basisDigest: d,
+    action: "settle",
+    decidedAt: new Date(f.memory.now.getTime() - 1000).toISOString(),
+    issuedAt: f.memory.now.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const sign = async (value: CaseArbitrationDecision, signer = f.r) => {
+    const jws = await signFederationMessage(CaseArbitrationDecisionSchema, value, signer);
+    return CaseProposalSchema.parse({
+      operation: "record-arbitration-decision",
+      domainId: value.caseDomainId,
+      recordId: value.decisionId,
+      digest: digest(jws),
+      envelope: { issuerSiteId: signer.siteId, jws },
+    });
+  };
+  return { payload, sign, input: await sign(payload) };
+}
+
+test("case arbitration commitment requires designated R, stores no financial content and preserves immutable private replay", async () => {
+  const f = await fixture(),
+    d = await decisionCommitment(f),
+    before = new Map(f.memory.state);
+  await expect(f.invoke(d.input, 0)).rejects.toThrow("POLICY_DENIED");
+  await expect(f.invoke(await d.sign(d.payload, f.a), 2)).rejects.toThrow("POLICY_DENIED");
+  const result = JSON.parse((await f.invoke(d.input, 2)).toString());
+  expect(result).toEqual({ recordId: d.input.recordId, digest: d.input.digest });
+  expect(f.memory.state).toEqual(before);
+  const stored = new Map(f.memory.privateState);
+  expect(stored.size).toBe(2);
+  let writes = 0;
+  const put = f.memory.putPrivateData;
+  f.memory.putPrivateData = async (...args) => {
+    writes++;
+    await put(...args);
+  };
+  await f.invoke(d.input, 2);
+  expect(writes).toBe(2);
+  expect(f.memory.privateState).toEqual(stored);
+  for (const field of ["chargedAmount", "reason", "sourceJws", "targetJws", "evidence"])
+    expect(JSON.stringify(d.payload)).not.toContain(field);
+  expect(
+    CaseArbitrationDecisionSchema.safeParse({ ...d.payload, chargedAmount: "50" }).success,
+  ).toBe(false);
+  await expect(
+    f.invoke(await d.sign({ ...d.payload, decisionId: randomUUID() }), 2),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(
+    f.invoke(await d.sign({ ...d.payload, decisionDigest: `sha256:${"e".repeat(64)}` }), 2),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  for (const index of [0, 1, 2]) {
+    f.memory.fcn = "GetCaseReceipt";
+    f.memory.params = [f.domain.domainId, "case-arbitration-decision", d.input.recordId];
+    f.memory.transient.clear();
+    expect(JSON.parse((await f.ledger.invoke(f.memory, f.identity(index))).toString())).toEqual({
+      receipt: result,
+    });
+  }
+  await expect(f.ledger.invoke(f.memory, f.identity(3))).rejects.toThrow("POLICY_DENIED");
+  const key = [...stored.keys()].find((key) => key.includes("case-arbitration-decision"));
+  if (!key) throw new Error("Missing commitment");
+  f.memory.privateState.delete(key);
+  await expect(f.invoke(d.input, 2)).rejects.toThrow("DATA_WAITING");
+});
+
+test("case arbitration commitment rejects mismatched domains, future dates, revoked keys and non-R Adapter identity", async () => {
+  const f = await fixture(),
+    d = await decisionCommitment(f);
+  await expect(
+    f.invoke(
+      await d.sign({ ...d.payload, binding: { ...d.payload.binding, domainId: randomUUID() } }),
+      2,
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.invoke(
+      await d.sign({ ...d.payload, issuedAt: new Date(Date.now() + 60000).toISOString() }),
+      2,
+    ),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  await expect(f.invoke({ ...d.input, digest: `sha256:${"e".repeat(64)}` }, 2)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(adapter(f, f.a.siteId).adapter.prepare(d.input)).rejects.toThrow("POLICY_DENIED");
+  const restricted = structuredClone(f.trust);
+  for (const p of restricted.keyPurposes)
+    p.kinds = p.kinds.filter((kind) => kind !== "case-arbitration-decision");
+  await expect(adapter(f, f.r.siteId, restricted).adapter.prepare(d.input)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  f.memory.fcn = "RevokeKey";
+  f.memory.params = [f.r.siteId, f.r.keyId];
+  f.memory.transient.clear();
+  await f.ledger.invoke(f.memory, f.identity(2, "trust-admin"));
+  await expect(f.invoke(d.input, 2)).rejects.toThrow("UNTRUSTED_IDENTITY");
 });

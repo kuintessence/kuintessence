@@ -128,6 +128,7 @@
       "arbitration-context": "Arbitration context",
       "arbitration-decision": "Arbitration decision",
       "arbitration-decision-delivery": "Arbitration decision delivery",
+      "case-arbitration-decision": "Arbitration decision commitment",
       "arbitration-decision-receipt": "Arbitration decision receipt"
     },
     "storage": {

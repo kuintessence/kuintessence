@@ -6,8 +6,10 @@ import {
   CaseReceiptResultSchema,
   CaseReceiptSchema,
   caseMembers,
+  caseOperationFunction,
   caseVerificationKeys,
   FabricCaseTrustSchema,
+  verifyCaseArbitrationDecision,
   verifyCasePublication,
   verifyCaseRevocation,
 } from "@kuintessence/shared/federation/case-ledger";
@@ -57,15 +59,24 @@ export class FabricCaseAdapter {
     const input = CaseProposalSchema.parse(raw),
       domain = this.domain(input.domainId);
     const keys = await caseVerificationKeys(this.config.trust, input, async () => false);
+    if (
+      input.operation === "record-arbitration-decision" &&
+      this.config.siteId !== domain.recipientSiteId
+    )
+      throw new Error("POLICY_DENIED");
     const signed =
       input.operation === "record-case-evidence"
         ? await verifyCasePublication(input.envelope, domain, keys, new Date())
-        : await verifyCaseRevocation(input.envelope, domain, keys, new Date());
+        : input.operation === "record-arbitration-decision"
+          ? await verifyCaseArbitrationDecision(input.envelope, domain, keys, new Date())
+          : await verifyCaseRevocation(input.envelope, domain, keys, new Date());
     if (
       signed.digest !== input.digest ||
       (signed.payload.kind === "case-evidence-publication"
         ? signed.payload.publicationId
-        : signed.payload.revocationId) !== input.recordId
+        : signed.payload.kind === "case-arbitration-decision"
+          ? signed.payload.decisionId
+          : signed.payload.revocationId) !== input.recordId
     )
       throw new Error("OPERATION_CONFLICT");
     const body = JSON.stringify(input);
@@ -73,16 +84,13 @@ export class FabricCaseAdapter {
     const proposal = this.gateway
       .getNetwork(this.config.channel)
       .getContract(this.config.chaincode)
-      .newProposal(
-        input.operation === "record-case-evidence" ? "RecordCaseEvidence" : "RevokeCasePublication",
-        {
-          arguments: [input.domainId, input.recordId],
-          transientData: { case: body },
-          endorsingOrganizations: this.config.trust.organizations
-            .filter((org) => caseMembers(domain).includes(org.siteId))
-            .map((org) => org.mspId),
-        },
-      );
+      .newProposal(caseOperationFunction[input.operation], {
+        arguments: [input.domainId, input.recordId],
+        transientData: { case: body },
+        endorsingOrganizations: this.config.trust.organizations
+          .filter((org) => caseMembers(domain).includes(org.siteId))
+          .map((org) => org.mspId),
+      });
     return this.submission.prepare(proposal, input);
   }
   advance(recovery: string) {

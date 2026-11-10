@@ -20,6 +20,9 @@ import {
   federationBudgets,
   federationCancellations,
   federationCapabilities,
+  federationCaseArbitrationDecisions,
+  federationCaseAttempts,
+  federationCaseSubmissions,
   federationCertificates,
   federationClosingPolicies,
   federationClosingTasks,
@@ -112,6 +115,10 @@ import { CommercialArbitrationTaskBindingSchema } from "@kuintessence/shared/fed
 import { ArbitrationRevocationNoticeSchema } from "@kuintessence/shared/federation/arbitration-revocation-notice";
 import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
+  type CaseProposal,
+  FabricCaseTrustSchema,
+} from "@kuintessence/shared/federation/case-ledger";
+import {
   type CommercialAdapterProposalInput,
   type CommercialAdvanceResult,
   CommercialAgreementSchema,
@@ -149,7 +156,7 @@ import {
   TerminalDeliverySchema,
   TerminalQuerySchema,
 } from "@kuintessence/shared/federation/terminal-exchange";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
@@ -176,6 +183,10 @@ import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { FederationArbitrationReviewService } from "./arbitration-review";
 import { FederationArbitrationRevocationDelivery } from "./arbitration-revocations";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
+import { FederationCaseArbitrationDecisionService } from "./case-arbitration-decisions";
+import type { CaseClient } from "./case-client";
+import { FederationCasePublicationService } from "./case-publications";
+import { FederationCaseSubmissionService } from "./case-submissions";
 import { FederationClosingAutomation } from "./closing-automation";
 import { FederationClosingPolicyService } from "./closing-policy";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
@@ -392,6 +403,32 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
     .where(eq(submissions.id, row.id));
 }
 afterAll(async () => {
+  if (arbitrationSites.length) {
+    const queue = await db
+      .select({ id: federationCaseSubmissions.id })
+      .from(federationCaseSubmissions)
+      .where(inArray(federationCaseSubmissions.localSiteId, arbitrationSites));
+    if (queue.length)
+      await db.delete(federationCaseAttempts).where(
+        inArray(
+          federationCaseAttempts.submissionId,
+          queue.map((q) => q.id),
+        ),
+      );
+    await db
+      .delete(federationCaseSubmissions)
+      .where(inArray(federationCaseSubmissions.localSiteId, arbitrationSites));
+    await db
+      .delete(federationCaseArbitrationDecisions)
+      .where(inArray(federationCaseArbitrationDecisions.localSiteId, arbitrationSites));
+    await db.delete(auditLog).where(
+      inArray(
+        auditLog.actor,
+        arbitrationSites.map((id) => `case-ledger:${id}`),
+      ),
+    );
+  }
+
   if (arbitrationSites.length)
     await db
       .delete(federationArbitrationDecisionDeliveries)
@@ -13834,3 +13871,408 @@ test("arbitration delivery rejects altered receipts and exposes bounded authoriz
     "POLICY_DENIED",
   );
 });
+
+async function caseDecisionFixture() {
+  const f = await arbitrationDecisionFixture();
+  const intent = await f.decisionDraft();
+  const original = await f.decisions.approve(f.owner.actor, f.scope.caseId, intent);
+  await new FederationPermissionService(db).set(
+    { ...f.owner.actor, capability: "case.publish", enabled: true },
+    f.owner.actor.userId,
+  );
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["case-arbitration-decision"]'::jsonb`,
+    })
+    .where(eq(federationSigningKeys.siteId, f.r.signing.siteId));
+  const keys = [f.a, f.b, f.r];
+  const caseDomainId = randomUUID();
+  const ledger = FabricCaseTrustSchema.parse({
+    version: 1,
+    generationId: randomUUID(),
+    organizations: await Promise.all(
+      keys.map(async (k, i) => ({
+        siteId: k.signing.siteId,
+        mspId: `Org${i}MSP`,
+        keys: [
+          {
+            keyId: k.signing.keyId,
+            publicKeyPem: await exportSPKI(k.verification.publicKey),
+            validFrom: "2020-01-01T00:00:00Z",
+            validUntil: "2099-01-01T00:00:00Z",
+          },
+        ],
+      })),
+    ),
+    domains: [
+      {
+        domainId: caseDomainId,
+        commercialDomainId: intent.binding.domainId,
+        sourceSiteId: f.a.signing.siteId,
+        targetSiteId: f.b.signing.siteId,
+        recipientSiteId: f.r.signing.siteId,
+        collection: "case_ABR_v1",
+      },
+    ],
+    keyPurposes: keys.map((k) => ({
+      siteId: k.signing.siteId,
+      keyId: k.signing.keyId,
+      kinds: ["case-arbitration-decision"],
+    })),
+  });
+  const summary = new FederationCaseArbitrationDecisionService(db, f.r.signing, ledger);
+  const publications = new FederationCasePublicationService(db, f.r.signing, ledger);
+  const proposals: CaseProposal[] = [],
+    advances: string[] = [];
+  const transport = { pending: false, wrongReceipt: false, offline: false };
+  const client: CaseClient = {
+    prepare: async (input) => {
+      if (transport.offline) throw new Error("offline");
+      proposals.push(input);
+      const id = randomBytes(32).toString("hex");
+      return { transactionId: id, recovery: Buffer.from(`proposal:${id}`).toString("base64") };
+    },
+    advance: async (recovery) => {
+      advances.push(recovery);
+      const [stage, id] = Buffer.from(recovery, "base64").toString().split(":");
+      if (!id) throw new Error("missing transaction");
+      const [saved] = await db
+        .select()
+        .from(federationCaseAttempts)
+        .where(eq(federationCaseAttempts.transactionId, id));
+      expect(saved?.recovery).toBe(recovery);
+      if (stage === "proposal")
+        return {
+          state: "prepared",
+          transactionId: id,
+          recovery: Buffer.from(`transaction:${id}`).toString("base64"),
+        };
+      expect(saved?.dispatchAuthorizedAt).not.toBeNull();
+      return transport.pending
+        ? { state: "pending", transactionId: id, recovery }
+        : { state: "committed", transactionId: id, blockNumber: "1" };
+    },
+    receipt: async (input) => {
+      expect(input.recordType).toBe("case-arbitration-decision");
+      const proposal = proposals.at(-1);
+      if (!proposal) throw new Error("missing proposal");
+      return {
+        receipt: {
+          recordId: input.recordId,
+          digest: transport.wrongReceipt ? `sha256:${"f".repeat(64)}` : proposal.digest,
+        },
+      };
+    },
+  };
+  const worker = new FederationCaseSubmissionService(
+    db,
+    f.r.signing.siteId,
+    publications,
+    client,
+    summary,
+  );
+  const row = async () =>
+    (
+      await db
+        .select()
+        .from(federationCaseSubmissions)
+        .where(eq(federationCaseSubmissions.localSiteId, f.r.signing.siteId))
+    )[0];
+  const history = () =>
+    db
+      .select()
+      .from(federationCaseAttempts)
+      .where(
+        inArray(
+          federationCaseAttempts.submissionId,
+          db
+            .select({ id: federationCaseSubmissions.id })
+            .from(federationCaseSubmissions)
+            .where(eq(federationCaseSubmissions.localSiteId, f.r.signing.siteId)),
+        ),
+      )
+      .orderBy(asc(federationCaseAttempts.number));
+  const due = () =>
+    db
+      .update(federationCaseSubmissions)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(federationCaseSubmissions.localSiteId, f.r.signing.siteId));
+  const draft = await summary.draft(f.owner.actor, f.scope.caseId, caseDomainId);
+  return {
+    ...f,
+    original,
+    ledger,
+    summary,
+    publications,
+    worker,
+    client,
+    proposals,
+    advances,
+    transport,
+    row,
+    history,
+    due,
+    draft,
+  };
+}
+
+test("case arbitration ledger persists explicit commitment, queues once and leaves budgets and disputes unchanged", async () => {
+  const f = await caseDecisionFixture();
+  const before = await db
+    .select()
+    .from(federationBudgets)
+    .where(eq(federationBudgets.domainId, f.request.budgetDomainId));
+  const disputes = await db
+    .select()
+    .from(federationDisputes)
+    .where(eq(federationDisputes.caseId, f.scope.caseId));
+  await f.worker.discover();
+  expect(await f.row()).toBeUndefined();
+  const approvals = await Promise.all(
+    [1, 2].map(() => f.summary.approve(f.owner.actor, f.scope.caseId, f.draft)),
+  );
+  expect(approvals[0]).toEqual(approvals[1]);
+  const audits = await db
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.target, f.input.decisionId),
+        eq(auditLog.action, "federation.case_decision.approve"),
+      ),
+    );
+  expect(audits).toHaveLength(1);
+  expect(JSON.stringify(approvals)).not.toContain("chargedAmount");
+  expect(JSON.stringify(approvals)).not.toContain(f.input.reason);
+  await Promise.all([f.worker.discover(), f.worker.discover()]);
+  await f.worker.advanceNext();
+  await f.worker.advanceNext();
+  await f.worker.advanceNext();
+  await f.worker.advanceNext();
+  expect(await f.row()).toMatchObject({
+    publicationId: null,
+    arbitrationDecisionId: f.input.decisionId,
+    state: "committed",
+    receipt: { digest: approvals[0]?.digest },
+  });
+  expect(f.proposals).toHaveLength(1);
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.request.budgetDomainId)),
+  ).toEqual(before);
+  expect(
+    await db.select().from(federationDisputes).where(eq(federationDisputes.caseId, f.scope.caseId)),
+  ).toEqual(disputes);
+  // A committed record remains readable after current human publication authority is removed.
+  await new FederationPermissionService(db).set(
+    { ...f.owner.actor, capability: "case.publish", enabled: false },
+    f.owner.actor.userId,
+  );
+  expect(await f.summary.read(f.owner.actor, f.scope.caseId)).toEqual(approvals[0] ?? null);
+}, 60000);
+
+test("case arbitration ledger rejects altered commitments and missing independent approval, and rolls back audit failure", async () => {
+  const f = await caseDecisionFixture();
+  await expect(
+    f.summary.approve(f.owner.actor, f.scope.caseId, {
+      ...f.draft,
+      decisionDigest: `sha256:${"f".repeat(64)}`,
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(f.summary.draft(f.owner.actor, f.scope.caseId, randomUUID())).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await expect(f.summary.read(f.actor, f.scope.caseId)).rejects.toThrow("POLICY_DENIED");
+  await new FederationPermissionService(db).set(
+    { ...f.owner.actor, capability: "case.publish", enabled: false },
+    f.owner.actor.userId,
+  );
+  await expect(f.summary.approve(f.owner.actor, f.scope.caseId, f.draft)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.owner.actor, capability: "case.publish", enabled: true },
+    f.owner.actor.userId,
+  );
+  await db.execute(
+    sql`CREATE FUNCTION case_decision_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.case_decision.approve' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER case_decision_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION case_decision_audit_fail()`,
+  );
+  try {
+    await expect(f.summary.approve(f.owner.actor, f.scope.caseId, f.draft)).rejects.toThrow();
+  } finally {
+    await db.execute(sql`DROP TRIGGER case_decision_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION case_decision_audit_fail()`);
+  }
+  expect(await f.summary.read(f.owner.actor, f.scope.caseId)).toBeNull();
+  // Expired evidence and later policy revocation cannot erase the historical commitment.
+  await db
+    .update(federationArbitrationPolicies)
+    .set({ revokedAt: new Date(), revokedBy: f.actor.userId })
+    .where(eq(federationArbitrationPolicies.policyId, f.draft.binding.policyId));
+  setSystemTime(new Date(Date.now() + 60000));
+  try {
+    await f.summary.approve(f.owner.actor, f.scope.caseId, f.draft);
+  } finally {
+    setSystemTime();
+  }
+  let automation = false;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.owner.actor as never);
+    c.set("automation" as never, automation as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationEvidenceRoutes(
+      f.evidence,
+      f.service,
+      f.review,
+      f.decisions,
+      undefined,
+      f.summary,
+      f.worker,
+    ),
+  );
+  const path = `/federation/evidence-cases/${f.scope.caseId}/arbitration-decision/ledger`;
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const body = await response.text();
+  expect(body).not.toContain("Jws");
+  expect(body).not.toContain("chargedAmount");
+  expect(
+    (
+      await app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...f.draft, chargedAmount: "1" }),
+      })
+    ).status,
+  ).toBe(400);
+  automation = true;
+  expect((await app.request(path)).status).toBe(403);
+}, 60000);
+
+async function rotateCaseSigner(f: Awaited<ReturnType<typeof caseDecisionFixture>>) {
+  const next = await testKeys(f.r.signing.siteId);
+  next.signing.keyId = `rotated-${randomUUID()}`;
+  next.verification.keyId = next.signing.keyId;
+  const registration = {
+    keyId: next.signing.keyId,
+    publicKeyPem: await exportSPKI(next.verification.publicKey),
+    validFrom: "2020-01-01T00:00:00Z",
+    validUntil: "2099-01-01T00:00:00Z",
+  };
+  await db
+    .update(federationSigningKeys)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(federationSigningKeys.siteId, f.r.signing.siteId),
+        eq(federationSigningKeys.keyId, f.r.signing.keyId),
+      ),
+    );
+  await f.trust.addKey(
+    next.signing.siteId,
+    { ...registration, allowedKinds: ["case-arbitration-decision"] },
+    f.owner.actor.userId,
+  );
+  const trust = structuredClone(f.ledger),
+    org = trust.organizations.find((org) => org.siteId === next.signing.siteId);
+  if (!org) throw new Error("missing R");
+  org.keys.push(registration);
+  trust.keyPurposes.push({
+    siteId: next.signing.siteId,
+    keyId: next.signing.keyId,
+    kinds: ["case-arbitration-decision"],
+  });
+  const service = new FederationCaseArbitrationDecisionService(db, next.signing, trust);
+  return {
+    next,
+    service,
+    worker: new FederationCaseSubmissionService(
+      db,
+      next.signing.siteId,
+      new FederationCasePublicationService(db, next.signing, trust),
+      f.client,
+      service,
+    ),
+  };
+}
+
+test("case arbitration ledger reattests only unsent immutable content after rotation and preserves first approval", async () => {
+  const f = await caseDecisionFixture();
+  await f.summary.approve(f.owner.actor, f.scope.caseId, f.draft);
+  await f.worker.discover();
+  await f.worker.advanceNext();
+  await f.worker.advanceNext();
+  const [original] = await db
+    .select()
+    .from(federationCaseArbitrationDecisions)
+    .where(eq(federationCaseArbitrationDecisions.decisionId, f.input.decisionId));
+  const rotated = await rotateCaseSigner(f);
+  await f.worker.advanceNext();
+  expect((await f.row())?.state).toBe("needs_review");
+  await rotated.service.approve(f.owner.actor, f.scope.caseId, f.draft);
+  expect((await f.history())[0]?.stage).toBe("abandoned");
+  const [saved] = await db
+    .select()
+    .from(federationCaseArbitrationDecisions)
+    .where(eq(federationCaseArbitrationDecisions.decisionId, f.input.decisionId));
+  expect(saved?.approvalJws).toBe(original?.approvalJws);
+  expect(saved?.digest).toBe(original?.digest);
+  expect(federationMessageKeyId(saved?.submissionJws ?? "")).toBe(rotated.next.signing.keyId);
+  await rotated.worker.advanceNext();
+  await rotated.worker.advanceNext();
+  await rotated.worker.advanceNext();
+  await rotated.worker.advanceNext();
+  expect((await f.row())?.state).toBe("committed");
+  expect(await f.history()).toHaveLength(2);
+}, 60000);
+
+test("case arbitration ledger recovers the authorized unknown transaction after rotation without replacement or money movement", async () => {
+  const f = await caseDecisionFixture();
+  await f.summary.approve(f.owner.actor, f.scope.caseId, f.draft);
+  await f.worker.discover();
+  await f.worker.advanceNext();
+  await f.worker.advanceNext();
+  f.transport.pending = true;
+  await f.worker.advanceNext();
+  const [attempt] = await f.history();
+  expect(attempt?.dispatchAuthorizedAt).not.toBeNull();
+  const rotated = await rotateCaseSigner(f);
+  await expect(rotated.service.approve(f.owner.actor, f.scope.caseId, f.draft)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.owner.actor, capability: "case.publish", enabled: false },
+    f.owner.actor.userId,
+  );
+  f.transport.pending = false;
+  f.transport.wrongReceipt = true;
+  await f.due();
+  await rotated.worker.advanceNext();
+  await rotated.worker.advanceNext();
+  expect((await f.row())?.state).toBe("needs_review");
+  await expect(rotated.worker.retryArbitration(f.owner.actor, f.scope.caseId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.owner.actor, capability: "case.publish", enabled: true },
+    f.owner.actor.userId,
+  );
+  f.transport.wrongReceipt = false;
+  await rotated.worker.retryArbitration(f.owner.actor, f.scope.caseId);
+  await rotated.worker.advanceNext();
+  expect((await f.row())?.state).toBe("committed");
+  expect(f.proposals).toHaveLength(1);
+  expect((await f.history())[0]?.transactionId).toBe(attempt?.transactionId);
+}, 60000);

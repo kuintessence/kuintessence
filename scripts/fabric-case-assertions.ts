@@ -53,7 +53,9 @@ export async function verifyCaseNetwork(
     }
   }
   await probe("verify");
-  console.log("PASS case publication, native endorsement and concurrent revocation checks");
+  console.log(
+    "PASS case publication, arbitration commitment, native endorsement and concurrent revocation checks",
+  );
   const proposal = await probe("prepare");
   assert.equal(proposal?.state, "proposal");
   const prepared = await probe("advance");

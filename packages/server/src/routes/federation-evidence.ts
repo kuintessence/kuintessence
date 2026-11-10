@@ -6,6 +6,10 @@ import {
   ArbitrationDecisionIntentSchema,
 } from "@kuintessence/shared/federation/arbitration-decision";
 import {
+  CaseArbitrationDecisionDraftSchema,
+  CaseArbitrationDecisionSchema,
+} from "@kuintessence/shared/federation/case-ledger";
+import {
   CommercialDisclosureReadScopeSchema,
   CommercialEvidenceCaseInputSchema,
 } from "@kuintessence/shared/federation/disclosure-authorization";
@@ -16,6 +20,8 @@ import type { FederationArbitrationContextService } from "../federation/arbitrat
 import type { FederationArbitrationDecisionService } from "../federation/arbitration-decision";
 import type { FederationArbitrationDecisionDelivery } from "../federation/arbitration-decision-delivery";
 import type { FederationArbitrationReviewService } from "../federation/arbitration-review";
+import type { FederationCaseArbitrationDecisionService } from "../federation/case-arbitration-decisions";
+import type { FederationCaseSubmissionService } from "../federation/case-submissions";
 import type { FederationEvidenceService } from "../federation/disclosure-delivery";
 import { FederationDeliveryError } from "../federation/outbound-client";
 import type { FederationActor } from "../federation/permissions";
@@ -28,6 +34,8 @@ export function createFederationEvidenceRoutes(
   review?: FederationArbitrationReviewService,
   decisions?: FederationArbitrationDecisionService,
   delivery?: FederationArbitrationDecisionDelivery,
+  caseDecisions?: FederationCaseArbitrationDecisionService,
+  caseSubmissions?: FederationCaseSubmissionService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   const path = "/federation/evidence-cases";
@@ -184,6 +192,62 @@ export function createFederationEvidenceRoutes(
       if (!delivery) throw new FederationError("ASSET_UNAVAILABLE");
       const { caseId, receivingSiteId } = c.req.valid("param");
       await delivery.retry(c.get("federationActor"), caseId, receivingSiteId);
+      return c.json({ data: { queued: true } });
+    },
+  );
+  const ledgerPath = `${path}/:caseId/arbitration-decision/ledger`;
+  r.get(ledgerPath, kqValidator("param", id), async (c) => {
+    if (!caseDecisions) throw new FederationError("ASSET_UNAVAILABLE");
+    return c.json({
+      data: await caseDecisions.read(c.get("federationActor"), c.req.valid("param").caseId),
+    });
+  });
+  r.post(
+    `${ledgerPath}/draft`,
+    kqValidator("param", id),
+    kqValidator("json", CaseArbitrationDecisionDraftSchema),
+    async (c) => {
+      if (!caseDecisions) throw new FederationError("ASSET_UNAVAILABLE");
+      return c.json({
+        data: await caseDecisions.draft(
+          c.get("federationActor"),
+          c.req.valid("param").caseId,
+          c.req.valid("json").caseDomainId,
+        ),
+      });
+    },
+  );
+  r.post(
+    ledgerPath,
+    kqValidator("param", id),
+    kqValidator("json", CaseArbitrationDecisionSchema),
+    async (c) => {
+      if (!caseDecisions) throw new FederationError("ASSET_UNAVAILABLE");
+      return c.json({
+        data: await caseDecisions.approve(
+          c.get("federationActor"),
+          c.req.valid("param").caseId,
+          c.req.valid("json"),
+        ),
+      });
+    },
+  );
+  r.get(`${ledgerPath}/status`, kqValidator("param", id), async (c) => {
+    if (!caseSubmissions) throw new FederationError("ASSET_UNAVAILABLE");
+    return c.json(
+      await caseSubmissions.arbitrationStatus(
+        c.get("federationActor"),
+        c.req.valid("param").caseId,
+      ),
+    );
+  });
+  r.post(
+    `${ledgerPath}/retry`,
+    kqValidator("param", id),
+    kqValidator("json", z.strictObject({})),
+    async (c) => {
+      if (!caseSubmissions) throw new FederationError("ASSET_UNAVAILABLE");
+      await caseSubmissions.retryArbitration(c.get("federationActor"), c.req.valid("param").caseId);
       return c.json({ data: { queued: true } });
     },
   );

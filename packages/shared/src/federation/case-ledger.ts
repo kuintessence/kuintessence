@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { type ArbitrationDecision, ArbitrationOutcomeSchema } from "./arbitration-decision";
+import { CommercialArbitrationTaskBindingSchema } from "./arbitration-policy";
 import { CommercialAgreementEnvelopeSchema, CommercialReceiptSchema } from "./commercial";
 import { CommercialDisclosureSchema } from "./disclosure";
 import {
@@ -19,6 +21,7 @@ import {
 export const CaseSigningKindSchema = z.enum([
   "case-evidence-publication",
   "case-publication-revocation",
+  "case-arbitration-decision",
   "commercial-disclosure-policy",
   "commercial-disclosure",
 ]);
@@ -40,7 +43,7 @@ export const FabricCaseTrustSchema = z
       .strictObject({
         siteId: z.uuid(),
         keyId: z.string().regex(/^[a-zA-Z0-9_.:-]{1,128}$/),
-        kinds: CaseSigningKindSchema.array().min(1).max(4),
+        kinds: CaseSigningKindSchema.array().min(1).max(5),
       })
       .array()
       .min(3)
@@ -174,6 +177,54 @@ export const CaseRevocationEnvelopeSchema = z.strictObject({
   issuerSiteId: z.uuid(),
   jws: z.string().min(1).max(524288),
 });
+/** R attests a historical decision commitment, not its financial execution or confidential content. */
+export const CaseArbitrationDecisionSchema = z
+  .strictObject({
+    protocolVersion: z.literal(1),
+    kind: z.literal("case-arbitration-decision"),
+    caseDomainId: z.uuid(),
+    decisionId: z.uuid(),
+    decisionDigest: FederationDigestSchema,
+    binding: CommercialArbitrationTaskBindingSchema.omit({
+      observedAt: true,
+      unit: true,
+      mode: true,
+    }),
+    headDigest: FederationDigestSchema,
+    freezeDigest: FederationDigestSchema,
+    basisDigest: FederationDigestSchema,
+    action: z.enum(ArbitrationOutcomeSchema.options.map((option) => option.shape.action.value)),
+    decidedAt: z.iso.datetime(),
+    issuedAt: z.iso.datetime(),
+    salt: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .refine((value) => Date.parse(value.decidedAt) <= Date.parse(value.issuedAt));
+export type CaseArbitrationDecision = z.infer<typeof CaseArbitrationDecisionSchema>;
+export const CaseArbitrationDecisionDraftSchema = z.strictObject({ caseDomainId: z.uuid() });
+export function caseArbitrationDecision(
+  decision: ArbitrationDecision,
+  digest: string,
+  caseDomainId: string,
+  issuedAt: string,
+  salt: string,
+): CaseArbitrationDecision {
+  const { unit: _unit, mode: _mode, ...binding } = decision.intent.binding;
+  return CaseArbitrationDecisionSchema.parse({
+    protocolVersion: 1,
+    kind: "case-arbitration-decision",
+    caseDomainId,
+    decisionId: decision.intent.decisionId,
+    decisionDigest: digest,
+    binding,
+    headDigest: decision.intent.financial.headDigest,
+    freezeDigest: decision.intent.financial.freezeDigest,
+    basisDigest: decision.basisDigest,
+    action: decision.intent.outcome.action,
+    decidedAt: decision.issuedAt,
+    issuedAt,
+    salt,
+  });
+}
 const reference = { domainId: z.uuid(), recordId: z.uuid(), digest: FederationDigestSchema };
 export const CaseProposalSchema = z.discriminatedUnion("operation", [
   z.strictObject({
@@ -186,13 +237,18 @@ export const CaseProposalSchema = z.discriminatedUnion("operation", [
     operation: z.literal("revoke-case-publication"),
     envelope: CaseRevocationEnvelopeSchema,
   }),
+  z.strictObject({
+    ...reference,
+    operation: z.literal("record-arbitration-decision"),
+    envelope: CaseRevocationEnvelopeSchema,
+  }),
 ]);
 export type CaseProposal = z.infer<typeof CaseProposalSchema>;
 export const CaseReceiptSchema = CommercialReceiptSchema;
 export const CaseReceiptQuerySchema = z.strictObject({
   domainId: z.uuid(),
   recordId: z.uuid(),
-  recordType: z.enum(["case-evidence", "case-revocation"]),
+  recordType: z.enum(["case-evidence", "case-revocation", "case-arbitration-decision"]),
 });
 export const CaseReceiptResultSchema = z.strictObject({ receipt: CaseReceiptSchema.nullable() });
 
@@ -202,7 +258,7 @@ export async function caseVerificationKeys(
   revoked: (site: string, key: string) => Promise<boolean>,
 ) {
   const references =
-    input.operation === "revoke-case-publication"
+    input.operation !== "record-case-evidence"
       ? [{ siteId: input.envelope.issuerSiteId, jws: input.envelope.jws }]
       : [
           input.envelope.publication,
@@ -342,5 +398,44 @@ export async function verifyCaseRevocation(
     Date.parse(signed.payload.issuedAt) > now.getTime()
   )
     throw new FederationError("POLICY_DENIED");
+  return signed;
+}
+
+export const caseOperationFunction = {
+  "record-case-evidence": "RecordCaseEvidence",
+  "revoke-case-publication": "RevokeCasePublication",
+  "record-arbitration-decision": "RecordArbitrationDecision",
+} as const;
+export const caseOperationRecordType = {
+  "record-case-evidence": "case-evidence",
+  "revoke-case-publication": "case-revocation",
+  "record-arbitration-decision": "case-arbitration-decision",
+} as const;
+export async function verifyCaseArbitrationDecision(
+  envelope: z.infer<typeof CaseRevocationEnvelopeSchema>,
+  domain: CaseDomain,
+  keys: readonly FederationVerificationKey[],
+  now: Date,
+) {
+  if (envelope.issuerSiteId !== domain.recipientSiteId) throw new FederationError("POLICY_DENIED");
+  const signed = await verifyCaseSignature(
+    CaseArbitrationDecisionSchema,
+    envelope.jws,
+    domain.recipientSiteId,
+    keys,
+    now,
+  );
+  const value = signed.payload,
+    binding = value.binding;
+  if (
+    value.caseDomainId !== domain.domainId ||
+    binding.domainId !== domain.commercialDomainId ||
+    binding.sourceSiteId !== domain.sourceSiteId ||
+    binding.targetSiteId !== domain.targetSiteId ||
+    binding.arbitratorSiteId !== domain.recipientSiteId
+  )
+    throw new FederationError("POLICY_DENIED");
+  if (Date.parse(value.issuedAt) > now.getTime())
+    throw new FederationError("AUTHORIZATION_EXPIRED");
   return signed;
 }

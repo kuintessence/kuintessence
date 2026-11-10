@@ -39,7 +39,7 @@ export class FederationCasePublicationService {
   private readonly trust: FederationTrustRegistry;
   private readonly disclosures: FederationDisclosureService;
   private readonly policies: FederationDisclosurePolicyService;
-  private readonly ledger: FabricCaseTrust;
+  readonly ledger: FabricCaseTrust;
   constructor(
     private readonly db: PgDb,
     private readonly signing: FederationSigningKey,
@@ -394,7 +394,7 @@ export class FederationCasePublicationService {
   async ledgerProposal(
     tx: PgTransaction,
     publicationId: string,
-    operation: CaseProposal["operation"],
+    operation: Exclude<CaseProposal["operation"], "record-arbitration-decision">,
   ) {
     const [row] = await tx
       .select()

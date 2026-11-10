@@ -19,11 +19,14 @@ import {
 } from "@hyperledger/fabric-gateway";
 import { common, ledger, msp, peer, gateway as proto } from "@hyperledger/fabric-protos";
 import {
+  CaseArbitrationDecisionSchema,
   CaseDomainSchema,
   type CaseProposal,
   CaseProposalSchema,
   CasePublicationSchema,
   CaseRevocationSchema,
+  caseOperationFunction,
+  caseOperationRecordType,
   FabricCaseTrustSchema,
 } from "@kuintessence/shared/federation/case-ledger";
 import {
@@ -168,6 +171,8 @@ async function readyEndorse(proposal: Proposal) {
 async function verify() {
   const a = await connection("A");
   const contract = a.getNetwork(network.channel).getContract("kq-cases");
+  const r = await connection("R");
+  const rContract = r.getNetwork(network.channel).getContract("kq-cases");
   async function receipt(recordId: string, recordType = "case-evidence") {
     const bytes = await contract
       .newProposal("GetCaseReceipt", {
@@ -177,8 +182,8 @@ async function verify() {
     return JSON.parse(Buffer.from(bytes).toString());
   }
   const propose = (input: CaseProposal) =>
-    contract.newProposal(
-      input.operation === "record-case-evidence" ? "RecordCaseEvidence" : "RevokeCasePublication",
+    (input.operation === "record-arbitration-decision" ? rContract : contract).newProposal(
+      caseOperationFunction[input.operation],
       {
         arguments: [input.domainId, input.recordId],
         transientData: { case: JSON.stringify(input) },
@@ -358,48 +363,141 @@ async function verify() {
     });
   }
   const evidence = await fresh();
+  const commitment = CaseArbitrationDecisionSchema.parse({
+    protocolVersion: 1,
+    kind: "case-arbitration-decision",
+    caseDomainId: domain.domainId,
+    decisionId: randomUUID(),
+    decisionDigest: `sha256:${randomBytes(32).toString("hex")}`,
+    binding: {
+      caseId: publication.scope.caseId,
+      caseDigest: `sha256:${randomBytes(32).toString("hex")}`,
+      domainId: domain.commercialDomainId,
+      agreementRevisionId: policy.agreementRevisionId,
+      agreementDigest: policy.agreementDigest,
+      sourceSiteId: sourceKey.siteId,
+      targetSiteId: targetKey.siteId,
+      arbitratorSiteId: domain.recipientSiteId,
+      taskId: randomUUID(),
+      attempt: 1,
+      operationId: randomUUID(),
+      reservationId: randomUUID(),
+      requestDigest: `sha256:${randomBytes(32).toString("hex")}`,
+      acceptanceDigest: `sha256:${randomBytes(32).toString("hex")}`,
+      policyId: randomUUID(),
+      policyDigest: `sha256:${randomBytes(32).toString("hex")}`,
+    },
+    headDigest: `sha256:${randomBytes(32).toString("hex")}`,
+    freezeDigest: `sha256:${randomBytes(32).toString("hex")}`,
+    basisDigest: `sha256:${randomBytes(32).toString("hex")}`,
+    action: "settle",
+    decidedAt: new Date(time).toISOString(),
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const commitmentJws = await signFederationMessage(
+    CaseArbitrationDecisionSchema,
+    commitment,
+    await signing("R"),
+  );
+  const decisionInput = CaseProposalSchema.options[2].parse({
+    operation: "record-arbitration-decision",
+    domainId: domain.domainId,
+    recordId: commitment.decisionId,
+    digest: digest(commitmentJws),
+    envelope: { issuerSiteId: domain.recipientSiteId, jws: commitmentJws },
+  });
   stage = "case endorsements";
-  for (const missing of members) {
-    const tx = await readyEndorse(propose(evidence));
-    const prepared = proto.PreparedTransaction.deserializeBinary(tx.getBytes()),
-      outer = prepared.getEnvelope();
-    assert(outer);
-    const payload = common.Payload.deserializeBinary(outer.getPayload_asU8());
-    const transaction = peer.Transaction.deserializeBinary(payload.getData_asU8());
-    for (const action of transaction.getActionsList()) {
-      const body = peer.ChaincodeActionPayload.deserializeBinary(action.getPayload_asU8()),
-        endorsements = body.getAction();
-      assert(endorsements);
-      assert.deepEqual(
-        endorsements
-          .getEndorsementsList()
-          .map((entry) =>
-            msp.SerializedIdentity.deserializeBinary(entry.getEndorser_asU8()).getMspid(),
-          )
-          .sort(),
-        [...members].sort(),
-      );
-      endorsements.setEndorsementsList(
-        endorsements
-          .getEndorsementsList()
-          .filter(
-            (entry) =>
-              msp.SerializedIdentity.deserializeBinary(entry.getEndorser_asU8()).getMspid() !==
-              missing,
-          ),
-      );
-      action.setPayload(body.serializeBinary());
+  for (const input of [evidence, decisionInput]) {
+    const submitter = input.operation === "record-arbitration-decision" ? r : a;
+    const expected =
+      input.operation === "record-arbitration-decision"
+        ? [stored(input), stored(input).receipt]
+        : [stored(input)];
+    for (const missing of members) {
+      const tx = await readyEndorse(propose(input));
+      const prepared = proto.PreparedTransaction.deserializeBinary(tx.getBytes()),
+        outer = prepared.getEnvelope();
+      assert(outer);
+      const payload = common.Payload.deserializeBinary(outer.getPayload_asU8());
+      const transaction = peer.Transaction.deserializeBinary(payload.getData_asU8());
+      for (const action of transaction.getActionsList()) {
+        const body = peer.ChaincodeActionPayload.deserializeBinary(action.getPayload_asU8()),
+          endorsements = body.getAction();
+        assert(endorsements);
+        assert.deepEqual(
+          endorsements
+            .getEndorsementsList()
+            .map((entry) =>
+              msp.SerializedIdentity.deserializeBinary(entry.getEndorser_asU8()).getMspid(),
+            )
+            .sort(),
+          [...members].sort(),
+        );
+        endorsements.setEndorsementsList(
+          endorsements
+            .getEndorsementsList()
+            .filter(
+              (entry) =>
+                msp.SerializedIdentity.deserializeBinary(entry.getEndorser_asU8()).getMspid() !==
+                missing,
+            ),
+        );
+        action.setPayload(body.serializeBinary());
+      }
+      payload.setData(transaction.serializeBinary());
+      outer.setPayload(payload.serializeBinary());
+      // Invalid transactions retain authorized private simulation data, but never update world state.
+      await commit(submitter.newTransaction(prepared.serializeBinary()), expected, "kq-cases", 10);
+      assert.deepEqual(await receipt(input.recordId, caseOperationRecordType[input.operation]), {
+        receipt: null,
+      });
     }
-    payload.setData(transaction.serializeBinary());
-    outer.setPayload(payload.serializeBinary());
-    // Invalid transactions retain authorized private simulation data, but never update world state.
-    await commit(a.newTransaction(prepared.serializeBinary()), [stored(evidence)], "kq-cases", 10);
-    assert.deepEqual(await receipt(evidence.recordId), { receipt: null });
   }
   passed.push("native validation rejects each missing A/B/R endorsement");
   await commit(await readyEndorse(propose(evidence)), [stored(evidence)]);
   await commit(await readyEndorse(propose(evidence)), [stored(evidence)]);
   passed.push("three-member publication commits and replay preserves all six original signatures");
+  await commit(await readyEndorse(propose(decisionInput)), [
+    stored(decisionInput),
+    stored(decisionInput).receipt,
+  ]);
+  await commit(await readyEndorse(propose(decisionInput)), [
+    stored(decisionInput),
+    stored(decisionInput).receipt,
+  ]);
+  assert.deepEqual(await receipt(decisionInput.recordId, "case-arbitration-decision"), {
+    receipt: stored(decisionInput).receipt,
+  });
+  await assert.rejects(
+    contract
+      .newProposal("RecordArbitrationDecision", {
+        arguments: [domain.domainId, decisionInput.recordId],
+        transientData: { case: JSON.stringify(decisionInput) },
+        endorsingOrganizations: members,
+      })
+      .endorse(),
+    chainRejection("POLICY_DENIED"),
+  );
+  const replaced = { ...commitment, decisionId: randomUUID() };
+  const replacedJws = await signFederationMessage(
+    CaseArbitrationDecisionSchema,
+    replaced,
+    await signing("R"),
+  );
+  await assert.rejects(
+    propose({
+      ...decisionInput,
+      recordId: replaced.decisionId,
+      digest: digest(replacedJws),
+      envelope: { issuerSiteId: domain.recipientSiteId, jws: replacedJws },
+    }).endorse(),
+    chainRejection("OPERATION_CONFLICT"),
+  );
+  passed.push(
+    "R-only decision commitment requires every A/B/R endorsement, stays private and cannot replace a case decision",
+  );
+
   for (const name of ["R", "D"]) {
     const gateway = await connection(name, "A", true);
     await assert.rejects(
@@ -452,6 +550,9 @@ async function verify() {
   await write(join(root, "case-proposal.json"), recovery);
   await writeFile(join(root, "case-recovery.key"), randomBytes(32), { mode: 0o600 });
   const probes = [
+    commitmentJws,
+    commitment.salt,
+    commitment.basisDigest,
     contractProbe,
     priceProbe,
     envelope.sourceJws,

@@ -46,7 +46,7 @@ import {
   verifyFederationMessage,
 } from "./signatures";
 
-/** Only called inside currently authenticated delivery. Never use historical keys for new authority. */
+/** Only for authenticated historical delivery or explicit commitment publication. Never grants execution authority. */
 export async function verifyArbitrationHistory<T extends { kind: string }>(
   tx: PgTransaction,
   schema: z.ZodType<T>,

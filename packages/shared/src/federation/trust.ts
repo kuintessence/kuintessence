@@ -59,6 +59,7 @@ export const FederationKeyInput = z
           "arbitration-decision-receipt",
           "commercial-disclosure-policy",
           "commercial-disclosure",
+          "case-arbitration-decision",
           "case-evidence-publication",
           "case-publication-revocation",
           "case-revocation-notice",

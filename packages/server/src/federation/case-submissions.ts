@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   federationCaseAttempts as attempts,
   auditLog,
+  federationCaseArbitrationDecisions as decisions,
   type PgDb,
   type PgTransaction,
   federationCasePublications as publications,
@@ -11,11 +12,13 @@ import { FederationError, federationCanonicalJson } from "@kuintessence/shared/f
 import {
   CaseProposalSchema,
   CaseReceiptResultSchema,
+  caseOperationRecordType,
 } from "@kuintessence/shared/federation/case-ledger";
 import { FabricCommercialAdvanceResultSchema } from "@kuintessence/shared/federation/commercial";
 import { FabricProposalCheckpointSchema } from "@kuintessence/shared/federation/ledger";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
+import type { FederationCaseArbitrationDecisionService } from "./case-arbitration-decisions";
 import type { CaseClient } from "./case-client";
 import type { FederationCasePublicationService } from "./case-publications";
 import { FabricClientFailure } from "./fabric-client";
@@ -32,6 +35,7 @@ export class FederationCaseSubmissionService {
     private readonly siteId: string,
     private readonly cases: FederationCasePublicationService,
     private readonly client?: CaseClient,
+    private readonly arbitration?: FederationCaseArbitrationDecisionService,
   ) {}
 
   async discover() {
@@ -71,7 +75,35 @@ export class FederationCaseSubmissionService {
             .onConflictDoNothing();
       });
     }
+    if (this.arbitration)
+      await this.db.transaction(async (tx) => {
+        const rows = await tx
+          .select({
+            localSiteId: decisions.localSiteId,
+            arbitrationDecisionId: decisions.decisionId,
+          })
+          .from(decisions)
+          .leftJoin(
+            submissions,
+            and(
+              eq(submissions.localSiteId, decisions.localSiteId),
+              eq(submissions.arbitrationDecisionId, decisions.decisionId),
+            ),
+          )
+          .where(and(eq(decisions.localSiteId, this.siteId), isNull(submissions.id)))
+          .orderBy(asc(decisions.approvedAt), asc(decisions.decisionId))
+          .limit(8)
+          .for("update", { of: decisions, skipLocked: true });
+        if (rows.length)
+          await tx
+            .insert(submissions)
+            .values(
+              rows.map((row) => ({ ...row, operation: "record-arbitration-decision" as const })),
+            )
+            .onConflictDoNothing();
+      });
   }
+
   private latest(tx: PgTransaction, id: string) {
     return tx
       .select()
@@ -135,7 +167,14 @@ export class FederationCaseSubmissionService {
     });
   }
   private async original(tx: PgTransaction, row: Submission) {
-    const input = await this.cases.ledgerProposal(tx, row.publicationId, row.operation);
+    const input =
+      row.operation === "record-arbitration-decision"
+        ? this.arbitration &&
+          row.arbitrationDecisionId &&
+          (await this.arbitration.ledgerProposal(tx, row.arbitrationDecisionId))
+        : row.publicationId &&
+          (await this.cases.ledgerProposal(tx, row.publicationId, row.operation));
+    if (!input) throw new FederationError("POLICY_DENIED");
     if (row.input && federationCanonicalJson(input) !== federationCanonicalJson(row.input))
       throw new FederationError("OPERATION_CONFLICT");
     return input;
@@ -184,8 +223,7 @@ export class FederationCaseSubmissionService {
           await this.client.receipt({
             domainId: input.domainId,
             recordId: input.recordId,
-            recordType:
-              input.operation === "record-case-evidence" ? "case-evidence" : "case-revocation",
+            recordType: caseOperationRecordType[input.operation],
           }),
         );
         if (!result.receipt) {
@@ -204,13 +242,22 @@ export class FederationCaseSubmissionService {
                 updatedAt: sql`clock_timestamp()`,
               })
               .where(eq(submissions.id, row.id));
+            const table =
+              row.operation === "record-arbitration-decision" ? decisions : publications;
+            const ownerId = row.arbitrationDecisionId ?? row.publicationId;
+            if (!ownerId) throw new FederationError("OPERATION_CONFLICT");
             const [owner] = await tx
-              .select({ orgId: publications.localOrgId })
-              .from(publications)
+              .select({ orgId: table.localOrgId })
+              .from(table)
               .where(
                 and(
-                  eq(publications.localSiteId, this.siteId),
-                  eq(publications.publicationId, row.publicationId),
+                  eq(table.localSiteId, this.siteId),
+                  eq(
+                    row.operation === "record-arbitration-decision"
+                      ? decisions.decisionId
+                      : publications.publicationId,
+                    ownerId,
+                  ),
                 ),
               );
             if (!owner) throw new FederationError("OPERATION_CONFLICT");
@@ -218,7 +265,7 @@ export class FederationCaseSubmissionService {
               actor: `case-ledger:${this.siteId}`,
               orgId: owner.orgId,
               action: "federation.case_ledger.confirm",
-              target: row.publicationId,
+              target: ownerId,
               diff: {
                 after: {
                   submissionId: row.id,
@@ -360,6 +407,80 @@ export class FederationCaseSubmissionService {
       return { enabled: !!this.client, data: rows.slice(0, limit), hasMore: rows.length > limit };
     });
   }
+  async arbitrationStatus(actor: FederationActor, caseId: string) {
+    if (!this.arbitration) throw new FederationError("ASSET_UNAVAILABLE");
+    const arbitration = this.arbitration;
+    return this.db.transaction(async (tx) => {
+      const decision = await arbitration.visible(tx, actor, caseId);
+      const [row] = await tx
+        .select({
+          id: submissions.id,
+          state: submissions.state,
+          lastError: submissions.lastError,
+          receipt: submissions.receipt,
+          nextAttemptAt: submissions.nextAttemptAt,
+          updatedAt: submissions.updatedAt,
+        })
+        .from(submissions)
+        .where(
+          and(
+            eq(submissions.localSiteId, this.siteId),
+            eq(submissions.arbitrationDecisionId, decision.decisionId),
+          ),
+        );
+      return { enabled: !!this.client, data: row ?? null };
+    });
+  }
+  async retryArbitration(actor: FederationActor, caseId: string) {
+    if (!this.arbitration || !this.client) throw new FederationError("ASSET_UNAVAILABLE");
+    const arbitration = this.arbitration;
+    await this.db.transaction(async (tx) => {
+      const decision = await arbitration.visible(tx, actor, caseId, true);
+      const [row] = await tx
+        .select()
+        .from(submissions)
+        .where(
+          and(
+            eq(submissions.localSiteId, this.siteId),
+            eq(submissions.arbitrationDecisionId, decision.decisionId),
+          ),
+        )
+        .for("update");
+      if (!row) throw new FederationError("POLICY_DENIED");
+      await this.retryRow(tx, row);
+      await tx.insert(auditLog).values({
+        actor: actor.userId,
+        orgId: actor.orgId,
+        action: "federation.case_ledger.retry",
+        target: decision.decisionId,
+        diff: { after: { submissionId: row.id } },
+      });
+    });
+  }
+  private async retryRow(tx: PgTransaction, row: Submission) {
+    const id = row.id;
+    const [available] = await tx
+      .select({
+        valid: sql<boolean>`(${submissions.leaseUntil} IS NULL OR ${submissions.leaseUntil} <= clock_timestamp())`,
+      })
+      .from(submissions)
+      .where(eq(submissions.id, id));
+    if (!available?.valid || ["closed", "committed"].includes(row.state))
+      throw new FederationError("OPERATION_CONFLICT");
+    const attempt = (await this.latest(tx, id))[0];
+    if (!attempt?.dispatchAuthorizedAt || ["invalid", "abandoned"].includes(attempt.stage))
+      await this.original(tx, row);
+    await tx
+      .update(submissions)
+      .set({
+        state: "pending",
+        lastError: null,
+        leaseToken: null,
+        leaseUntil: null,
+        nextAttemptAt: sql`clock_timestamp()`,
+      })
+      .where(eq(submissions.id, id));
+  }
   async retry(actor: FederationActor, revisionId: string, publicationId: string, id: string) {
     if (!this.client) throw new FederationError("ASSET_UNAVAILABLE");
     await this.db.transaction(async (tx) => {
@@ -385,27 +506,7 @@ export class FederationCaseSubmissionService {
         )
         .for("update", { of: submissions });
       if (!row) throw new FederationError("POLICY_DENIED");
-      const [available] = await tx
-        .select({
-          valid: sql<boolean>`(${submissions.leaseUntil} IS NULL OR ${submissions.leaseUntil} <= clock_timestamp())`,
-        })
-        .from(submissions)
-        .where(eq(submissions.id, id));
-      if (!available?.valid || ["closed", "committed"].includes(row.submission.state))
-        throw new FederationError("OPERATION_CONFLICT");
-      const attempt = (await this.latest(tx, id))[0];
-      if (!attempt?.dispatchAuthorizedAt || ["invalid", "abandoned"].includes(attempt.stage))
-        await this.original(tx, row.submission);
-      await tx
-        .update(submissions)
-        .set({
-          state: "pending",
-          lastError: null,
-          leaseToken: null,
-          leaseUntil: null,
-          nextAttemptAt: sql`clock_timestamp()`,
-        })
-        .where(eq(submissions.id, id));
+      await this.retryRow(tx, row.submission);
       await tx.insert(auditLog).values({
         actor: actor.userId,
         orgId: actor.orgId,

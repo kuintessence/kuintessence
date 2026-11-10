@@ -43,6 +43,7 @@ import type { CommercialArbitrationPolicy } from "@kuintessence/shared/federatio
 import type { CommercialArbitrationRevocation } from "@kuintessence/shared/federation/arbitration-revocation";
 import type { ArbitrationRevocationNotice } from "@kuintessence/shared/federation/arbitration-revocation-notice";
 import type {
+  CaseArbitrationDecision,
   CaseProposal,
   CasePublication,
   CaseRevocation,
@@ -175,6 +176,7 @@ export const federationSigningKeys = pgTable(
           | "arbitration-decision-receipt"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
+          | "case-arbitration-decision"
           | "case-evidence-publication"
           | "case-publication-revocation"
           | "case-revocation-notice"
@@ -1992,7 +1994,8 @@ export const federationCaseSubmissions = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     localSiteId: uuid("local_site_id").notNull(),
-    publicationId: uuid("publication_id").notNull(),
+    publicationId: uuid("publication_id"),
+    arbitrationDecisionId: uuid("arbitration_decision_id"),
     operation: varchar("operation", { length: 32 }).$type<CaseProposal["operation"]>().notNull(),
     input: jsonb("input").$type<CaseProposal>(),
     state: varchar("state", { length: 24 }).notNull().default("pending"),
@@ -2013,6 +2016,21 @@ export const federationCaseSubmissions = pgTable(
         federationCasePublications.publicationId,
       ],
     }),
+    foreignKey({
+      name: "federation_case_submission_decision_fk",
+      columns: [t.localSiteId, t.arbitrationDecisionId],
+      foreignColumns: [
+        federationCaseArbitrationDecisions.localSiteId,
+        federationCaseArbitrationDecisions.decisionId,
+      ],
+    }),
+    uniqueIndex("federation_case_submission_decision").on(t.localSiteId, t.arbitrationDecisionId),
+    check(
+      "federation_case_submission_owner",
+      sql`(
+      (${t.operation} = 'record-arbitration-decision' AND ${t.arbitrationDecisionId} IS NOT NULL AND ${t.publicationId} IS NULL)
+      OR (${t.operation} IN ('record-case-evidence','revoke-case-publication') AND ${t.publicationId} IS NOT NULL AND ${t.arbitrationDecisionId} IS NULL)) IS TRUE`,
+    ),
     uniqueIndex("federation_case_submission_record").on(
       t.localSiteId,
       t.publicationId,
@@ -2027,7 +2045,7 @@ export const federationCaseSubmissions = pgTable(
     ),
     check(
       "federation_case_submission_input",
-      sql`(${t.operation} IN ('record-case-evidence','revoke-case-publication')
+      sql`(${t.operation} IN ('record-case-evidence','revoke-case-publication','record-arbitration-decision')
     AND (${t.input} IS NULL OR (${t.input}->>'operation' = ${t.operation}
       AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL
       AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$'))
@@ -4088,6 +4106,47 @@ export const federationReceivedArbitrationDecisions = pgTable(
     check(
       "arb_received_decision_identity",
       sql`(${t.payload}->>'receivingSiteId' = ${t.localSiteId}::text AND ${t.payload}->>'decisionId' = ${t.decisionId}::text AND ${t.payload}->>'caseId' = ${t.caseId}::text) IS TRUE`,
+    ),
+  ],
+);
+
+/** Explicit R approval of a commitment only, separate from the immutable full decision. */
+export const federationCaseArbitrationDecisions = pgTable(
+  "federation_case_arbitration_decisions",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    decisionId: uuid("decision_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    payload: jsonb("payload").$type<CaseArbitrationDecision>().notNull(),
+    digest: text("digest").notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    submissionJws: text("submission_jws").notNull(),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    approvedAt: timestamp("approved_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.decisionId] }),
+    uniqueIndex("federation_case_decision_case").on(t.localSiteId, t.caseId),
+    foreignKey({
+      name: "federation_case_decision_original_fk",
+      columns: [t.localSiteId, t.decisionId],
+      foreignColumns: [
+        federationArbitrationDecisions.localSiteId,
+        federationArbitrationDecisions.decisionId,
+      ],
+    }),
+    check(
+      "federation_case_decision_identity",
+      sql`(${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.payload}->>'kind' = 'case-arbitration-decision'
+    AND ${t.payload}->>'decisionId' = ${t.decisionId}::text
+    AND ${t.payload}->'binding'->>'caseId' = ${t.caseId}::text
+    AND ${t.payload}->'binding'->>'arbitratorSiteId' = ${t.localSiteId}::text) IS TRUE`,
     ),
   ],
 );
