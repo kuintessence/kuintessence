@@ -16,6 +16,7 @@ export type FederationSend = (
     | "/federation/v1/case-revocations"
     | "/federation/v1/arbitration-revocations"
     | "/federation/v1/arbitration-contexts"
+    | "/federation/v1/arbitration-executions"
     | "/federation/v1/arbitration-decisions"
     | "/federation/v1/disclosure-authorizations"
     | "/federation/v1/disclosure-downloads"
@@ -54,6 +55,7 @@ export function createFederationSender(tls: {
       path !== "/federation/v1/case-revocations" &&
       path !== "/federation/v1/arbitration-revocations" &&
       path !== "/federation/v1/arbitration-contexts" &&
+      path !== "/federation/v1/arbitration-executions" &&
       path !== "/federation/v1/arbitration-decisions" &&
       path !== "/federation/v1/disclosure-authorizations" &&
       path !== "/federation/v1/disclosure-downloads" &&

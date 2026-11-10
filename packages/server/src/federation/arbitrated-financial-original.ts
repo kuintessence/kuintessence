@@ -22,6 +22,7 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { verifyReceivedArbitrationDecision } from "./arbitration-decision-history";
+import { verifyBilateralArbitrationExecution } from "./arbitration-execution-proof";
 
 /** Derive the same financial original as the chain, using the locked task's existing records. */
 export async function arbitrationFinancialTerms(
@@ -31,7 +32,7 @@ export async function arbitrationFinancialTerms(
   decision: ArbitrationDecision,
 ) {
   const { binding: b, outcome } = decision.intent;
-  if (b.mode !== "ledger_coordinated" || outcome.action === "resolve-without-financial-change")
+  if (outcome.action === "resolve-without-financial-change")
     throw new FederationError("POLICY_DENIED");
   const [bill] = await tx
     .select()
@@ -74,19 +75,27 @@ export async function arbitrationFinancialTerms(
       .from(terminals)
       .where(and(eq(terminals.localSiteId, siteId), eq(terminals.reservationId, b.reservationId)));
     if (
-      !terminal?.counterpartyJws ||
-      terminal.payload.domainId !== b.domainId ||
-      terminal.payload.sourceSiteId !== b.sourceSiteId ||
-      terminal.payload.targetSiteId !== b.targetSiteId ||
-      !bill.payload.reservationId
+      b.mode === "ledger_coordinated" &&
+      (!terminal?.counterpartyJws ||
+        terminal.payload.domainId !== b.domainId ||
+        terminal.payload.sourceSiteId !== b.sourceSiteId ||
+        terminal.payload.targetSiteId !== b.targetSiteId ||
+        !bill.payload.reservationId)
     )
       throw new FederationError("DATA_WAITING");
     return {
       bill,
-      payload: arbitrationSettlementTerms(decision, bill.payload, bill.digest, {
-        terminalId: terminal.terminalId,
-        digest: terminal.digest,
-      }),
+      payload: arbitrationSettlementTerms(
+        decision,
+        bill.payload,
+        bill.digest,
+        bill.payload.reservationId && terminal?.counterpartyJws
+          ? {
+              terminalId: terminal.terminalId,
+              digest: terminal.digest,
+            }
+          : null,
+      ),
       number: 0,
     };
   }
@@ -167,25 +176,26 @@ export async function verifyArbitratedFinancialOriginal(
   if (
     !execution ||
     !original ||
-    execution.payload.mode !== "ledger_coordinated" ||
     execution.payload.decisionDigest !== row.digest ||
     original.payload.decisionDigest !== row.digest ||
     execution.envelope.decisionJws !== original.payload.decisionJws
   )
     throw new FederationError("OPERATION_CONFLICT");
-  const [committed] = await tx
-    .select({ id: submissions.id })
-    .from(submissions)
-    .where(
-      and(
-        eq(submissions.localSiteId, siteId),
-        eq(submissions.state, "committed"),
-        sql`${submissions.input}->>'operation' = 'resolve-arbitrated-case'`,
-        sql`${submissions.input}->>'recordId' = ${row.arbitrationDecisionId}`,
-        sql`${submissions.input}->>'digest' = ${row.digest}`,
-      ),
-    );
-  if (!committed) throw new FederationError("LEDGER_REQUIRED");
+  if (execution.payload.mode === "ledger_coordinated") {
+    const [committed] = await tx
+      .select({ id: submissions.id })
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.localSiteId, siteId),
+          eq(submissions.state, "committed"),
+          sql`${submissions.input}->>'operation' = 'resolve-arbitrated-case'`,
+          sql`${submissions.input}->>'recordId' = ${row.arbitrationDecisionId}`,
+          sql`${submissions.input}->>'digest' = ${row.digest}`,
+        ),
+      );
+    if (!committed) throw new FederationError("LEDGER_REQUIRED");
+  } else await verifyBilateralArbitrationExecution(tx, execution);
   await verifyReceivedArbitrationDecision(tx, original.payload, siteId);
   const decision = original.payload.decision,
     { binding: b, outcome } = decision.intent;
@@ -244,9 +254,11 @@ export async function verifyArbitratedFinancialOriginal(
       .from(terminals)
       .where(and(eq(terminals.localSiteId, siteId), eq(terminals.reservationId, b.reservationId)));
     if (
-      !terminal?.counterpartyJws ||
-      value.terminal?.terminalId !== terminal.terminalId ||
-      value.terminal.digest !== terminal.digest
+      value.terminal
+        ? !terminal?.counterpartyJws ||
+          value.terminal.terminalId !== terminal.terminalId ||
+          value.terminal.digest !== terminal.digest
+        : b.mode === "ledger_coordinated"
     )
       throw new FederationError("OPERATION_CONFLICT");
   } else {

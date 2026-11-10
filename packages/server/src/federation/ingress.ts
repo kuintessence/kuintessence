@@ -7,6 +7,7 @@ import { FederationAdmission } from "./admission";
 import { FederationAgreementExchange } from "./agreement-exchange";
 import { FederationArbitrationContextResponder } from "./arbitration-context";
 import { FederationArbitrationDecisionDelivery } from "./arbitration-decision-delivery";
+import { FederationArbitrationExecutionExchange } from "./arbitration-execution";
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { FederationArbitrationRevocationDelivery } from "./arbitration-revocations";
 import { FederationCancellationReceiver } from "./cancellation";
@@ -67,6 +68,7 @@ export function createFederationIngress(
           [
             "/federation/v1/disputes",
             "/federation/v1/dispute-freezes",
+            "/federation/v1/arbitration-executions",
             "/federation/v1/arbitration-decisions",
           ].includes(c.req.path))
           ? 503
@@ -307,6 +309,18 @@ export function createFederationIngress(
     if (c.req.header("content-type") !== "application/jose")
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
     const response = await new FederationDisclosureReadResponder(db, signingKey).receive(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(response, 200, {
+      "content-type": "application/jose",
+      "cache-control": "no-store",
+    });
+  });
+  r.post("/federation/v1/arbitration-executions", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const response = await new FederationArbitrationExecutionExchange(db, signingKey).receive(
       await c.req.text(),
       c.req.header("x-kq-federation-cert") ?? "",
     );

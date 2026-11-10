@@ -129,7 +129,11 @@
       "arbitration-decision": "仲裁裁决原件",
       "arbitration-decision-delivery": "仲裁裁决投递",
       "case-arbitration-decision": "仲裁裁决摘要存证",
-      "arbitration-decision-receipt": "仲裁裁决收件回执"
+      "arbitration-decision-receipt": "仲裁裁决收件回执",
+      "arbitration-execution-commitment": "仲裁执行承诺",
+      "arbitration-execution-receipt": "仲裁执行回执",
+      "arbitration-execution-query": "仲裁执行查询",
+      "arbitration-execution-response": "仲裁执行响应"
     },
     "storage": {
       "title": "输入存储核对",

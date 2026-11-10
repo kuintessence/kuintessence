@@ -129,7 +129,11 @@
       "arbitration-decision": "Arbitration decision",
       "arbitration-decision-delivery": "Arbitration decision delivery",
       "case-arbitration-decision": "Arbitration decision commitment",
-      "arbitration-decision-receipt": "Arbitration decision receipt"
+      "arbitration-decision-receipt": "Arbitration decision receipt",
+      "arbitration-execution-commitment": "Arbitration execution commitment",
+      "arbitration-execution-receipt": "Arbitration execution receipt",
+      "arbitration-execution-query": "Arbitration execution query",
+      "arbitration-execution-response": "Arbitration execution response"
     },
     "storage": {
       "title": "Input storage reconciliation",

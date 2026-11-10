@@ -114,6 +114,12 @@ import {
   ArbitrationDecisionReceiptSchema,
   arbitrationDecisionDeliveryPayload,
 } from "@kuintessence/shared/federation/arbitration-decision-delivery";
+import {
+  ArbitrationExecutionCommitmentSchema,
+  ArbitrationExecutionQuerySchema,
+  ArbitrationExecutionReceiptSchema,
+  ArbitrationExecutionResponseSchema,
+} from "@kuintessence/shared/federation/arbitration-execution";
 import { CommercialArbitrationTaskBindingSchema } from "@kuintessence/shared/federation/arbitration-policy";
 import { ArbitrationRevocationNoticeSchema } from "@kuintessence/shared/federation/arbitration-revocation-notice";
 import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
@@ -185,6 +191,7 @@ import {
 } from "./arbitration-context";
 import { FederationArbitrationDecisionService } from "./arbitration-decision";
 import { FederationArbitrationDecisionDelivery } from "./arbitration-decision-delivery";
+import { FederationArbitrationExecutionExchange } from "./arbitration-execution";
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { FederationArbitrationResolutionService } from "./arbitration-resolution";
 import { FederationArbitrationReviewService } from "./arbitration-review";
@@ -12222,8 +12229,8 @@ async function arbitrationCaseFixture(
     }
   }
   let initialSettlement: Awaited<ReturnType<FederationSettlementService["approve"]>> | undefined;
+  let initialAdjustment: Awaited<ReturnType<FederationAdjustmentService["approve"]>> | undefined;
   if (withSettlement) {
-    if (mode !== "ledger_coordinated") throw new Error("Native financial fixture required");
     f.adapter.receipt = async (query) => {
       const [committed] = await db
         .select()
@@ -12266,6 +12273,32 @@ async function arbitrationCaseFixture(
       for (let i = 0; i < 3; i++) await worker.advanceNext();
     }
     initialSettlement = own;
+    if (mode !== "ledger_coordinated") {
+      const sourceAdjustment = new FederationAdjustmentService(db, f.a.signing);
+      const targetAdjustment = new FederationAdjustmentService(db, f.b.signing);
+      const terms = await sourceAdjustment.draft(f.actor, f.revisionId, {
+        adjustmentId: randomUUID(),
+        settlementId: own.settlementId,
+        chargedAmount: "40",
+        reason: "Bilateral credit before arbitration",
+        supportingEvidenceDigest: billDigest,
+      });
+      const a = await sourceAdjustment.approve(f.actor, f.revisionId, terms);
+      const b = await targetAdjustment.approve(f.actor, f.revisionId, terms);
+      await sourceAdjustment.attachCounterparty(
+        f.actor,
+        f.revisionId,
+        a.adjustmentId,
+        b.approvalJws,
+      );
+      await targetAdjustment.attachCounterparty(
+        f.actor,
+        f.revisionId,
+        a.adjustmentId,
+        a.approvalJws,
+      );
+      initialAdjustment = a;
+    }
   }
   const sourceCases = new FederationDisputeService(db, f.a.signing),
     targetCases = new FederationDisputeService(db, f.b.signing);
@@ -12287,7 +12320,17 @@ async function arbitrationCaseFixture(
   await sourceCases.receive(opened.openingJws, fingerprint);
   const read = (target = false) =>
     (target ? targetCases : sourceCases).arbitrationBinding(f.actor, f.revisionId, draft.caseId);
-  return { ...f, request, original, draft, sourceCases, targetCases, read, initialSettlement };
+  return {
+    ...f,
+    request,
+    original,
+    draft,
+    sourceCases,
+    targetCases,
+    read,
+    initialSettlement,
+    initialAdjustment,
+  };
 }
 
 test("arbitration case binding resolves both original admissions without financial or ledger writes", async () => {
@@ -13341,7 +13384,12 @@ async function arbitrationDecisionFixture(
             recordId: f.initialSettlement.settlementId,
             recordDigest: f.initialSettlement.digest,
           },
-          previousAdjustment: null,
+          previousAdjustment: f.initialAdjustment
+            ? {
+                recordId: f.initialAdjustment.adjustmentId,
+                recordDigest: f.initialAdjustment.digest,
+              }
+            : null,
           chargedAmount: "50",
         }
       : {
@@ -14553,7 +14601,7 @@ test("arbitration resolution closes only the decided case, retains other freezes
   }
 }, 60000);
 
-test("arbitration resolution requires separate execution authority and rejects financial awards or revoked mandates", async () => {
+test("arbitration resolution requires separate execution authority and rejects revoked mandates", async () => {
   const f = await arbitrationResolutionFixture();
   await new FederationPermissionService(db).set(
     { ...f.actor, capability: "arbitration.execute", enabled: false },
@@ -14577,7 +14625,17 @@ test("arbitration resolution requires separate execution authority and rejects f
   const monetary = await arbitrationResolutionFixture("bilateral_direct", true);
   await expect(
     monetary.resolveA.execute(monetary.actor, monetary.revisionId, monetary.scope.caseId),
-  ).rejects.toThrow("POLICY_DENIED");
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+  await db
+    .update(federationSigningKeys)
+    .set({
+      allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["arbitration-execution-commitment"]'::jsonb`,
+    })
+    .where(eq(federationSigningKeys.siteId, monetary.a.signing.siteId));
+  expect(
+    (await monetary.resolveA.execute(monetary.actor, monetary.revisionId, monetary.scope.caseId))
+      .appliedAt,
+  ).toBeNull();
 }, 60000);
 
 test("arbitration resolution audit failure rolls back case closure and execution together", async () => {
@@ -15028,4 +15086,467 @@ test("monetary arbitration refuses an additional unresolved case before creating
       .from(federationCommercialSettlements)
       .where(eq(federationCommercialSettlements.agreementRevisionId, f.revisionId)),
   ).toHaveLength(0);
+}, 60000);
+
+async function bilateralMonetaryFixture(
+  mode: FederationMode = "bilateral_direct",
+  withSettlement = false,
+) {
+  const f = await arbitrationResolutionFixture(mode, true, withSettlement);
+  const kinds = [
+    "arbitration-execution-commitment",
+    "arbitration-execution-receipt",
+    "arbitration-execution-query",
+    "arbitration-execution-response",
+  ] as const;
+  for (const siteId of [f.a.signing.siteId, f.b.signing.siteId])
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: sql`${federationSigningKeys.allowedKinds} || ${JSON.stringify(kinds)}::jsonb`,
+      })
+      .where(eq(federationSigningKeys.siteId, siteId));
+  const fingerprint = randomBytes(32).toString("hex");
+  await db.insert(federationCertificates).values({
+    fingerprint,
+    siteId: f.a.signing.siteId,
+    certificatePem: "registered fixture fingerprint",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2099-01-01"),
+  });
+  let signing = f.b.signing;
+  const ingress: FederationSend = async (endpoint, jws, path) => {
+    expect(endpoint).toBe(`https://${f.b.signing.siteId}.test.invalid`);
+    if (path !== "/federation/v1/arbitration-executions")
+      throw new Error("Unexpected execution endpoint");
+    const res = await createFederationIngress(db, signing).request(path, {
+      method: "POST",
+      headers: { "content-type": "application/jose", "x-kq-federation-cert": fingerprint },
+      body: jws,
+    });
+    if (res.status !== 200) {
+      const result = z.object({ error: z.object({ code: z.string() }) }).parse(await res.json());
+      throw new Error(result.error.code);
+    }
+    return res.text();
+  };
+  const rows = () =>
+    db
+      .select()
+      .from(federationArbitrationResolutions)
+      .where(eq(federationArbitrationResolutions.decisionId, f.intent.decisionId));
+  const due = () =>
+    db
+      .update(federationArbitrationResolutions)
+      .set({ nextAttemptAt: sql`clock_timestamp()` })
+      .where(eq(federationArbitrationResolutions.decisionId, f.intent.decisionId));
+  return {
+    ...f,
+    kinds,
+    fingerprint,
+    ingress,
+    rows,
+    due,
+    useSigning: (value: typeof signing) => {
+      signing = value;
+    },
+    financial: () =>
+      db
+        .select()
+        .from(federationCommercialSettlements)
+        .where(eq(federationCommercialSettlements.settlementId, f.intent.decisionId)),
+  };
+}
+
+test("bilateral monetary arbitration waits for both commitments and recovers a lost execution receipt after withdrawal and rotation", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await bilateralMonetaryFixture(mode);
+    const source = await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+    expect(source.appliedAt).toBeNull();
+    const priorBudget = await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.request.budgetDomainId));
+    const waiting = new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress);
+    await waiting.advanceNext();
+    expect(await f.financial()).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.request.budgetDomainId)),
+    ).toEqual(priorBudget);
+    expect((await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId)).appliedAt).toBeNull();
+    await f.due();
+    const sent: string[] = [];
+    const lost = new FederationArbitrationExecutionExchange(db, f.a.signing, async (...args) => {
+      sent.push(args[1]);
+      await f.ingress(...args);
+      throw new Error("lost response");
+    });
+    await Promise.all([lost.advanceNext(), lost.advanceNext()]);
+    expect(sent).toHaveLength(1);
+    expect(await f.financial()).toHaveLength(1);
+    const saved = (await f.rows()).find((row) => row.localSiteId === f.b.signing.siteId);
+    if (!saved?.executionReceiptJws) throw new Error("Missing durable execution receipt");
+    const receipt = saved.executionReceiptJws;
+    const later = await f.sourceCases.draft(f.actor, f.revisionId, {
+      subject: f.draft.subject,
+      reason: "New case after execution commitment",
+      requestedResolution: "Keep independently frozen",
+      caseId: randomUUID(),
+    });
+    await f.sourceCases.open(f.actor, f.revisionId, later);
+    const afterProvider = await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.request.budgetDomainId));
+    await f.arbitration.source.revoke(f.actor, f.revisionId, f.arbitration.policy.policyId);
+    await new FederationPermissionService(db).set(
+      { ...f.actor, capability: "arbitration.execute", enabled: false },
+      f.actor.userId,
+    );
+    const next = await testKeys(f.b.signing.siteId);
+    next.signing.keyId = `rotated-${randomUUID()}`;
+    next.verification.keyId = next.signing.keyId;
+    await db
+      .update(federationSigningKeys)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, f.b.signing.siteId),
+          eq(federationSigningKeys.keyId, f.b.signing.keyId),
+        ),
+      );
+    await f.trust.addKey(
+      next.signing.siteId,
+      {
+        keyId: next.signing.keyId,
+        publicKeyPem: await exportSPKI(next.verification.publicKey),
+        allowedKinds: [...f.kinds],
+        validFrom: "2020-01-01T00:00:00Z",
+        validUntil: "2099-01-01T00:00:00Z",
+      },
+      f.owner.actor.userId,
+    );
+    f.useSigning(next.signing);
+    await f.due();
+    const restarted = new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress);
+    await restarted.advanceNext();
+    const rows = await f.rows();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.appliedAt).not.toBeNull();
+      expect(row.executionReceiptJws).toBe(receipt);
+    }
+    expect(await f.financial()).toHaveLength(2);
+    expect(
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.request.budgetDomainId)),
+    ).toEqual(afterProvider);
+    for (const row of await f.financial()) {
+      expect(row.payload.chargedAmount).toBe("50");
+      expect(row.approvalJws).toBeNull();
+      await db.transaction((tx) => verifyArbitratedFinancialOriginal(tx, row.localSiteId, row));
+    }
+    const replay = await new FederationArbitrationExecutionExchange(db, next.signing).receive(
+      sent[0] ?? "",
+      f.fingerprint,
+    );
+    expect(
+      ArbitrationExecutionResponseSchema.parse(
+        JSON.parse(Buffer.from(replay.split(".")[1] ?? "", "base64url").toString()),
+      ).receiptJws,
+    ).toBe(receipt);
+    const approvals = await db
+      .select()
+      .from(submissions)
+      .where(
+        and(
+          sql`${submissions.input}->>'recordId' = ${f.intent.decisionId}`,
+          sql`${submissions.input}->>'operation' = 'record-arbitration-resolution'`,
+        ),
+      );
+    expect(approvals).toHaveLength(mode === "bilateral_attested" ? 2 : 0);
+    expect(await restarted.advanceNext()).toBe(false);
+    await expect(
+      db.transaction((tx) => assertFederationTaskNotDisputed(tx, f.a.signing.siteId, f.request)),
+    ).rejects.toThrow("DATA_WAITING");
+  }
+}, 60000);
+
+test("bilateral monetary arbitration rolls back provider receipt and source projection on audit failure", async () => {
+  const f = await bilateralMonetaryFixture();
+  await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+  await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
+  const before = await db
+    .select()
+    .from(federationBudgets)
+    .where(eq(federationBudgets.domainId, f.request.budgetDomainId));
+  const fail = async (siteId: string) => {
+    await db.execute(
+      sql.raw(
+        `CREATE FUNCTION bilateral_execution_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.arbitration_resolution.apply' AND NEW.actor = 'arbitration-resolution:${siteId}' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+      ),
+    );
+    await db.execute(
+      sql`CREATE TRIGGER bilateral_execution_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION bilateral_execution_fail()`,
+    );
+  };
+  const stop = async () => {
+    await db.execute(sql`DROP TRIGGER bilateral_execution_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION bilateral_execution_fail()`);
+  };
+  const worker = new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress);
+  await fail(f.b.signing.siteId);
+  try {
+    await worker.advanceNext();
+  } finally {
+    await stop();
+  }
+  expect(await f.financial()).toHaveLength(0);
+  expect(
+    (await f.rows()).every((row) => row.executionReceiptJws === null && row.appliedAt === null),
+  ).toBe(true);
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.request.budgetDomainId)),
+  ).toEqual(before);
+  await f.due();
+  await fail(f.a.signing.siteId);
+  try {
+    await worker.advanceNext();
+  } finally {
+    await stop();
+  }
+  expect(await f.financial()).toHaveLength(1);
+  expect(
+    (await f.rows()).find((row) => row.localSiteId === f.a.signing.siteId)?.executionReceiptJws,
+  ).toBeNull();
+  await f.due();
+  await worker.advanceNext();
+  expect(await f.financial()).toHaveLength(2);
+}, 60000);
+
+test("bilateral monetary arbitration reserves a positive adjustment once and releases it on receipt-driven application", async () => {
+  const f = await bilateralMonetaryFixture("bilateral_direct", true);
+  if (!f.initialSettlement || !f.initialAdjustment)
+    throw new Error("Missing financial predecessors");
+  const budget = async () =>
+    (
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.request.budgetDomainId))
+    )[0];
+  const outbound = async () =>
+    (
+      await db
+        .select()
+        .from(federationOutbound)
+        .where(eq(federationOutbound.operationId, f.request.operationId))
+    )[0];
+  const prior = await budget();
+  if (!prior) throw new Error("Missing provider budget");
+  // A reader waiting on the task must not hold the settlement row needed by its executor.
+  const locked = Promise.withResolvers<number>();
+  const check = Promise.withResolvers<void>();
+  const blocker = db.transaction(async (tx) => {
+    await lockFederationDisputeTask(tx, f.a.signing.siteId, f.request);
+    const [pid] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+    if (!pid) throw new Error("Missing lock holder");
+    locked.resolve(pid.pid);
+    await check.promise;
+    await tx.execute(sql`set local lock_timeout = '250ms'`);
+    await tx
+      .select()
+      .from(federationCommercialSettlements)
+      .where(
+        and(
+          eq(federationCommercialSettlements.localSiteId, f.a.signing.siteId),
+          eq(federationCommercialSettlements.settlementId, f.initialSettlement?.settlementId ?? ""),
+        ),
+      )
+      .for("update");
+  });
+  const pid = await locked.promise;
+  const draft = new FederationAdjustmentService(db, f.a.signing).draft(f.actor, f.revisionId, {
+    adjustmentId: randomUUID(),
+    settlementId: f.initialSettlement.settlementId,
+    chargedAmount: "41",
+    reason: "Lock order observation",
+    supportingEvidenceDigest: f.original.digest,
+  });
+  try {
+    let waiting = false;
+    for (let i = 0; i < 100; i++) {
+      if (
+        (
+          await db.execute(
+            sql`select pid from pg_stat_activity where ${pid} = ANY(pg_blocking_pids(pid))`,
+          )
+        ).length
+      ) {
+        waiting = true;
+        break;
+      }
+      await Bun.sleep(10);
+    }
+    expect(waiting).toBe(true);
+  } finally {
+    check.resolve();
+    await Promise.all([blocker, draft]);
+  }
+  expect((await outbound())?.settledAmount).toBe("40");
+  await Promise.all([
+    f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId),
+    f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId),
+  ]);
+  expect((await outbound())?.adjustmentHeldAmount).toBe("10");
+  await db
+    .update(federationBudgets)
+    .set({
+      available: "9",
+      reserved: (BigInt(prior.reserved) + BigInt(prior.available) - 9n).toString(),
+    })
+    .where(eq(federationBudgets.domainId, f.request.budgetDomainId));
+  await expect(f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId)).rejects.toThrow(
+    "BUDGET_EXHAUSTED",
+  );
+  expect((await f.rows()).filter((row) => row.localSiteId === f.b.signing.siteId)).toHaveLength(0);
+  await db
+    .update(federationBudgets)
+    .set({ available: prior.available, reserved: prior.reserved })
+    .where(eq(federationBudgets.domainId, f.request.budgetDomainId));
+  await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
+  await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
+  expect(BigInt((await budget())?.reserved ?? "-1") - BigInt(prior?.reserved ?? "-1")).toBe(10n);
+  expect((await f.rows()).map((row) => row.heldAmount)).toEqual(["10", "10"]);
+  const worker = new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress);
+  await worker.advanceNext();
+  expect((await outbound())?.settledAmount).toBe("50");
+  expect((await outbound())?.adjustmentHeldAmount).toBe("0");
+  expect((await budget())?.reserved).toBe(prior?.reserved);
+  expect(BigInt((await budget())?.spent ?? "-1") - BigInt(prior?.spent ?? "-1")).toBe(10n);
+  const posted = await db
+    .select()
+    .from(federationCommercialAdjustments)
+    .where(eq(federationCommercialAdjustments.adjustmentId, f.intent.decisionId));
+  expect(posted).toHaveLength(2);
+  for (const row of posted) {
+    expect(row.number).toBe(2);
+    expect(row.payload.previous?.adjustmentId).toBe(f.initialAdjustment.adjustmentId);
+    expect(row.appliedAt).not.toBeNull();
+    await db.transaction((tx) => verifyArbitratedFinancialOriginal(tx, row.localSiteId, row));
+  }
+  expect(await worker.advanceNext()).toBe(false);
+  const sourceAdjustment = new FederationAdjustmentService(db, f.a.signing);
+  const targetAdjustment = new FederationAdjustmentService(db, f.b.signing);
+  const terms = await sourceAdjustment.draft(f.actor, f.revisionId, {
+    adjustmentId: randomUUID(),
+    settlementId: f.initialSettlement.settlementId,
+    chargedAmount: "45",
+    reason: "Correction after award",
+    supportingEvidenceDigest: f.original.digest,
+  });
+  const a = await sourceAdjustment.approve(f.actor, f.revisionId, terms);
+  const b = await targetAdjustment.approve(f.actor, f.revisionId, terms);
+  await sourceAdjustment.attachCounterparty(f.actor, f.revisionId, a.adjustmentId, b.approvalJws);
+  await targetAdjustment.attachCounterparty(f.actor, f.revisionId, a.adjustmentId, a.approvalJws);
+  expect((await outbound())?.settledAmount).toBe("45");
+}, 60000);
+
+test("bilateral monetary arbitration rejects forged commitments, stale transport and altered execution proofs", async () => {
+  const f = await bilateralMonetaryFixture();
+  await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+  await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
+  const source = (await f.rows()).find((row) => row.localSiteId === f.a.signing.siteId);
+  if (!source?.commitment || !source.commitmentJws) throw new Error("Missing source commitment");
+  const query = ArbitrationExecutionQuerySchema.parse({
+    protocolVersion: 1,
+    kind: "arbitration-execution-query",
+    queryId: randomUUID(),
+    sourceSiteId: f.a.signing.siteId,
+    targetSiteId: f.b.signing.siteId,
+    commitment: { payload: source.commitment, jws: source.commitmentJws },
+    issuedAt: new Date().toISOString(),
+  });
+  const receiver = new FederationArbitrationExecutionExchange(db, f.b.signing);
+  await expect(
+    receiver.receive(
+      await signFederationMessage(ArbitrationExecutionQuerySchema, query, f.a.signing),
+      "0".repeat(64),
+    ),
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+  await expect(
+    receiver.receive(
+      await signFederationMessage(
+        ArbitrationExecutionQuerySchema,
+        { ...query, issuedAt: new Date(Date.now() - 61000).toISOString() },
+        f.a.signing,
+      ),
+      f.fingerprint,
+    ),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  await expect(
+    receiver.receive(
+      await signFederationMessage(
+        ArbitrationExecutionQuerySchema,
+        {
+          ...query,
+          commitment: {
+            ...query.commitment,
+            jws: await signFederationMessage(
+              ArbitrationExecutionCommitmentSchema,
+              source.commitment,
+              f.b.signing,
+            ),
+          },
+        },
+        f.a.signing,
+      ),
+      f.fingerprint,
+    ),
+  ).rejects.toThrow();
+  expect(await f.financial()).toHaveLength(0);
+  await expect(
+    db.transaction((tx) =>
+      tx
+        .update(federationArbitrationResolutions)
+        .set({ appliedAt: new Date() })
+        .where(eq(federationArbitrationResolutions.decisionId, f.intent.decisionId)),
+    ),
+  ).rejects.toThrow();
+  const altered = new FederationArbitrationExecutionExchange(db, f.a.signing, async (...args) => {
+    const response = await f.ingress(...args);
+    const value = ArbitrationExecutionResponseSchema.parse(
+      JSON.parse(Buffer.from(response.split(".")[1] ?? "", "base64url").toString()),
+    );
+    const receipt = { ...value.receipt, sourceCommitmentDigest: `sha256:${"f".repeat(64)}` };
+    return signFederationMessage(
+      ArbitrationExecutionResponseSchema,
+      {
+        ...value,
+        receipt,
+        receiptJws: await signFederationMessage(
+          ArbitrationExecutionReceiptSchema,
+          receipt,
+          f.b.signing,
+        ),
+      },
+      f.b.signing,
+    );
+  });
+  await altered.advanceNext();
+  expect(await f.financial()).toHaveLength(1);
+  expect((await f.rows()).find((row) => row.localSiteId === f.a.signing.siteId)?.lastError).toBe(
+    "OPERATION_CONFLICT",
+  );
+  await f.due();
+  await new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress).advanceNext();
+  expect(await f.financial()).toHaveLength(2);
 }, 60000);

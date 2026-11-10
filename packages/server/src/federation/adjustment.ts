@@ -28,7 +28,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { verifyArbitratedFinancialOriginal } from "./arbitrated-financial-original";
 import { renewTaskCompletion } from "./completion-capacity";
-import { assertFederationTaskNotDisputed } from "./dispute-freeze";
+import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -86,6 +86,8 @@ async function originals(
       ),
     )
     .for("share");
+  if (!bill?.counterpartyJws) throw new FederationError("DATA_WAITING");
+  await lockFederationDisputeTask(tx, siteId, bill.payload.request);
   const [settlement] = await tx
     .select()
     .from(settlements)
@@ -303,6 +305,68 @@ export async function applyFederationAdjustment(tx: PgTransaction, snapshot: Adj
   });
 }
 
+/** Reserve a positive correction once, before creating an immutable financial commitment. */
+export async function holdFederationAdjustment(
+  tx: PgTransaction,
+  identity: Pick<Adjustment, "localSiteId" | "localOrgId" | "agreementRevisionId" | "payload">,
+) {
+  const value = identity.payload;
+  const original = await originals(
+    tx,
+    identity.localSiteId,
+    identity.localOrgId,
+    identity.agreementRevisionId,
+    value.settlementId,
+  );
+  const delta = BigInt(value.chargedAmount) - BigInt(value.previousChargedAmount);
+  const hold =
+    original.bill.payload.request.mode === "ledger_coordinated" || delta < 0n ? 0n : delta;
+  const target = await accountingTarget(tx, identity, original);
+  if (target.provider && hold > 0n) {
+    const current = await budget(tx, original);
+    if (BigInt(current.available) < hold) throw new FederationError("BUDGET_EXHAUSTED");
+    await tx
+      .update(budgets)
+      .set({
+        available: (BigInt(current.available) - hold).toString(),
+        reserved: (BigInt(current.reserved) + hold).toString(),
+      })
+      .where(and(eq(budgets.domainId, current.domainId), eq(budgets.epoch, current.epoch)));
+  } else if (!target.provider) {
+    if (target.operation.adjustmentHeldAmount !== "0")
+      throw new FederationError("OPERATION_CONFLICT");
+    if (hold > 0n) {
+      const request = original.bill.payload.request;
+      const [used] = await tx
+        .select({
+          amount: sql<string>`coalesce(sum(coalesce(${outbound.settledAmount}, ${outbound.amount}) + ${outbound.adjustmentHeldAmount}), 0)::text`,
+          conflict: sql<boolean>`coalesce(bool_or(${outbound.agreementRevisionId} <> ${identity.agreementRevisionId}), false)`,
+        })
+        .from(outbound)
+        .where(
+          and(
+            eq(outbound.localSiteId, identity.localSiteId),
+            eq(outbound.budgetDomainId, request.budgetDomainId),
+            eq(outbound.epoch, request.epoch),
+          ),
+        );
+      if (!used || used.conflict) throw new FederationError("OPERATION_CONFLICT");
+      if (BigInt(used.amount) + hold > BigInt(original.contract.terms.agreement.budgetLimit))
+        throw new FederationError("BUDGET_EXHAUSTED");
+      await tx
+        .update(outbound)
+        .set({ adjustmentHeldAmount: hold.toString() })
+        .where(
+          and(
+            eq(outbound.localSiteId, identity.localSiteId),
+            eq(outbound.operationId, request.operationId),
+          ),
+        );
+    }
+  }
+  return hold.toString();
+}
+
 export class FederationAdjustmentService {
   private readonly trust: FederationTrustRegistry;
   constructor(
@@ -454,58 +518,13 @@ export class FederationAdjustmentService {
       check(value, original, previous);
       if (Date.parse(value.issuedAt) > Date.now() + 60000)
         throw new FederationError("POLICY_DENIED");
-      const delta = BigInt(value.chargedAmount) - BigInt(value.previousChargedAmount);
-      const hold =
-        original.bill.payload.request.mode === "ledger_coordinated" || delta < 0n ? 0n : delta;
       const identity = {
         localSiteId: this.signing.siteId,
         localOrgId: actor.orgId,
         agreementRevisionId: revisionId,
         payload: value,
       };
-      const target = await accountingTarget(tx, identity, original);
-      if (target.provider && hold > 0n) {
-        const current = await budget(tx, original);
-        if (BigInt(current.available) < hold) throw new FederationError("BUDGET_EXHAUSTED");
-        await tx
-          .update(budgets)
-          .set({
-            available: (BigInt(current.available) - hold).toString(),
-            reserved: (BigInt(current.reserved) + hold).toString(),
-          })
-          .where(and(eq(budgets.domainId, current.domainId), eq(budgets.epoch, current.epoch)));
-      } else if (!target.provider) {
-        if (target.operation.adjustmentHeldAmount !== "0")
-          throw new FederationError("OPERATION_CONFLICT");
-        if (hold > 0n) {
-          const request = original.bill.payload.request;
-          const [used] = await tx
-            .select({
-              amount: sql<string>`coalesce(sum(coalesce(${outbound.settledAmount}, ${outbound.amount}) + ${outbound.adjustmentHeldAmount}), 0)::text`,
-              conflict: sql<boolean>`coalesce(bool_or(${outbound.agreementRevisionId} <> ${revisionId}), false)`,
-            })
-            .from(outbound)
-            .where(
-              and(
-                eq(outbound.localSiteId, this.signing.siteId),
-                eq(outbound.budgetDomainId, request.budgetDomainId),
-                eq(outbound.epoch, request.epoch),
-              ),
-            );
-          if (!used || used.conflict) throw new FederationError("OPERATION_CONFLICT");
-          if (BigInt(used.amount) + hold > BigInt(original.contract.terms.agreement.budgetLimit))
-            throw new FederationError("BUDGET_EXHAUSTED");
-          await tx
-            .update(outbound)
-            .set({ adjustmentHeldAmount: hold.toString() })
-            .where(
-              and(
-                eq(outbound.localSiteId, this.signing.siteId),
-                eq(outbound.operationId, request.operationId),
-              ),
-            );
-        }
-      }
+      const hold = await holdFederationAdjustment(tx, identity);
       await renewTaskCompletion(
         tx,
         this.signing.siteId,
@@ -528,7 +547,7 @@ export class FederationAdjustmentService {
           number: (previous?.number ?? 0) + 1,
           digest: signed.digest,
           approvalJws: signed.jws,
-          heldAmount: hold.toString(),
+          heldAmount: hold,
           approvedBy: actor.userId,
         })
         .returning();

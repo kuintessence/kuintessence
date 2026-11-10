@@ -39,6 +39,10 @@ import type {
   ArbitrationDecisionDelivery,
   ArbitrationDecisionReceipt,
 } from "@kuintessence/shared/federation/arbitration-decision-delivery";
+import type {
+  ArbitrationExecutionCommitment,
+  ArbitrationExecutionReceipt,
+} from "@kuintessence/shared/federation/arbitration-execution";
 import type { CommercialArbitrationPolicy } from "@kuintessence/shared/federation/arbitration-policy";
 import type { CommercialArbitrationRevocation } from "@kuintessence/shared/federation/arbitration-revocation";
 import type { ArbitrationRevocationNotice } from "@kuintessence/shared/federation/arbitration-revocation-notice";
@@ -176,6 +180,10 @@ export const federationSigningKeys = pgTable(
           | "arbitration-decision"
           | "arbitration-decision-delivery"
           | "arbitration-decision-receipt"
+          | "arbitration-execution-commitment"
+          | "arbitration-execution-receipt"
+          | "arbitration-execution-query"
+          | "arbitration-execution-response"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
           | "case-arbitration-decision"
@@ -4191,6 +4199,18 @@ export const federationArbitrationResolutions = pgTable(
       .references(() => users.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     appliedAt: timestamp("applied_at", { withTimezone: true }),
+    commitment: jsonb("commitment").$type<ArbitrationExecutionCommitment>(),
+    commitmentJws: text("commitment_jws"),
+    counterpartyCommitment:
+      jsonb("counterparty_commitment").$type<ArbitrationExecutionCommitment>(),
+    counterpartyCommitmentJws: text("counterparty_commitment_jws"),
+    executionReceipt: jsonb("execution_receipt").$type<ArbitrationExecutionReceipt>(),
+    executionReceiptJws: text("execution_receipt_jws"),
+    heldAmount: numeric("held_amount", { precision: 38, scale: 0 }).notNull().default("0"),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    lastError: text("last_error"),
   },
   (t) => [
     primaryKey({ name: "arb_resolution_pk", columns: [t.localSiteId, t.decisionId] }),
@@ -4204,12 +4224,23 @@ export const federationArbitrationResolutions = pgTable(
       ],
     }),
     check(
+      "arb_resolution_commitment",
+      sql`(
+      (${t.commitment} IS NULL) = (${t.commitmentJws} IS NULL)
+      AND (${t.counterpartyCommitment} IS NULL) = (${t.counterpartyCommitmentJws} IS NULL)
+      AND (${t.executionReceipt} IS NULL) = (${t.executionReceiptJws} IS NULL)
+      AND ${t.heldAmount} >= 0
+      AND ((${t.payload}->>'mode' = 'ledger_coordinated' OR ${t.payload}->'outcome'->>'action' = 'resolve-without-financial-change')
+        OR (${t.commitment} IS NOT NULL AND (${t.appliedAt} IS NULL OR ${t.executionReceipt} IS NOT NULL)))
+    ) IS TRUE`,
+    ),
+    check(
       "arb_resolution_identity",
       sql`(${t.payload}->>'decisionId' = ${t.decisionId}::text AND ${t.payload}->>'caseId' = ${t.caseId}::text
     AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
     AND (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text)
     AND (${t.payload}->'outcome'->>'action' = 'resolve-without-financial-change'
-      OR (${t.payload}->>'mode' = 'ledger_coordinated' AND ${t.payload}->'outcome'->>'action' IN ('settle', 'adjust')))) IS TRUE`,
+      OR ${t.payload}->'outcome'->>'action' IN ('settle', 'adjust'))) IS TRUE`,
     ),
   ],
 );

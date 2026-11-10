@@ -13,6 +13,7 @@ import {
   federationCommercialSubmissions as submissions,
 } from "@kuintessence/db";
 import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
+import { ArbitrationExecutionCommitmentSchema } from "@kuintessence/shared/federation/arbitration-execution";
 import {
   assertArbitrationResolution,
   verifyArbitrationExecution,
@@ -24,9 +25,10 @@ import {
   CommercialArbitrationResolutionSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { and, eq, ne, sql } from "drizzle-orm";
-import { applyFederationAdjustment } from "./adjustment";
+import { applyFederationAdjustment, holdFederationAdjustment } from "./adjustment";
 import { arbitrationFinancialTerms } from "./arbitrated-financial-original";
 import { verifyReceivedArbitrationDecision } from "./arbitration-decision-history";
+import { verifyBilateralArbitrationExecution } from "./arbitration-execution-proof";
 import { lockFederationDisputeTask } from "./dispute-freeze";
 import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
 import { FederationDisputeService } from "./disputes";
@@ -35,11 +37,12 @@ import { applyFederationSettlement } from "./settlement";
 import {
   type FederationSigningKey,
   federationMessageKeyId,
+  signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
 
-/** Monetary awards require a committed coordinated transaction; bilateral money needs recovery receipts. */
+/** Current authorization is fixed once; financial application requires a committed ledger result or bilateral receipt. */
 export class FederationArbitrationResolutionService {
   private readonly trust: FederationTrustRegistry;
   private readonly disputes: FederationDisputeService;
@@ -168,7 +171,6 @@ export class FederationArbitrationResolutionService {
     });
     assertArbitrationResolution(payload, proof);
     if (payload.outcome.action !== "resolve-without-financial-change") {
-      if (payload.mode !== "ledger_coordinated") throw new FederationError("POLICY_DENIED");
       const [other] = await tx
         .select({ id: cases.caseId })
         .from(cases)
@@ -195,6 +197,49 @@ export class FederationArbitrationResolutionService {
       const [prior] = await tx.select().from(resolutions).where(this.key(caseId));
       if (prior) return this.view(prior);
       const { original, payload, envelope } = await this.current(tx, caseId);
+      const bilateralMoney =
+        payload.mode !== "ledger_coordinated" &&
+        payload.outcome.action !== "resolve-without-financial-change";
+      let commitment = null;
+      let commitmentJws: string | null = null;
+      let heldAmount = "0";
+      if (bilateralMoney) {
+        const terms = await arbitrationFinancialTerms(
+          tx,
+          this.signing.siteId,
+          actor.orgId,
+          original.payload.decision,
+        );
+        if (terms.payload.kind === "commercial-adjustment")
+          heldAmount = await holdFederationAdjustment(tx, {
+            localSiteId: this.signing.siteId,
+            localOrgId: actor.orgId,
+            agreementRevisionId: revisionId,
+            payload: terms.payload,
+          });
+        const current = await this.current(tx, caseId);
+        if (federationCanonicalJson(current.payload) !== federationCanonicalJson(payload))
+          throw new FederationError("OPERATION_CONFLICT");
+        commitment = ArbitrationExecutionCommitmentSchema.parse({
+          protocolVersion: 1,
+          kind: "arbitration-execution-commitment",
+          resolution: payload,
+          committingSiteId: this.signing.siteId,
+          committedAt: new Date().toISOString(),
+        });
+        await this.trust.assertKey(tx, this.signing.siteId, this.signing.keyId, new Date());
+        commitmentJws = await signFederationMessage(
+          ArbitrationExecutionCommitmentSchema,
+          commitment,
+          this.signing,
+        );
+        await verifyFederationMessage(
+          ArbitrationExecutionCommitmentSchema,
+          commitmentJws,
+          await this.trust.resolveKey(this.signing.siteId, this.signing.keyId, new Date(), tx),
+          new Date(),
+        );
+      }
       const [row] = await tx
         .insert(resolutions)
         .values({
@@ -206,10 +251,13 @@ export class FederationArbitrationResolutionService {
           payload,
           envelope,
           initiatedBy: actor.userId,
+          commitment,
+          commitmentJws,
+          heldAmount,
         })
         .returning();
       if (!row) throw new FederationError("OPERATION_CONFLICT");
-      if (payload.mode !== "bilateral_direct")
+      if (payload.mode !== "bilateral_direct" && !bilateralMoney)
         await tx.insert(submissions).values({
           id: randomUUID(),
           localSiteId: this.signing.siteId,
@@ -232,7 +280,7 @@ export class FederationArbitrationResolutionService {
         target: row.decisionId,
         diff: { after: { caseId, decisionDigest: payload.decisionDigest, mode: payload.mode } },
       });
-      if (payload.mode !== "ledger_coordinated")
+      if (payload.mode !== "ledger_coordinated" && !bilateralMoney)
         await this.apply(tx, payload.decisionId, payload.decisionDigest);
       const [saved] = await tx.select().from(resolutions).where(this.key(caseId));
       if (!saved) throw new FederationError("OPERATION_CONFLICT");
@@ -301,6 +349,11 @@ export class FederationArbitrationResolutionService {
         );
       if (!committed) throw new FederationError("LEDGER_REQUIRED");
     }
+    if (
+      row.payload.mode !== "ledger_coordinated" &&
+      row.payload.outcome.action !== "resolve-without-financial-change"
+    )
+      await verifyBilateralArbitrationExecution(tx, row);
     if (row.payload.outcome.action !== "resolve-without-financial-change") {
       const [original] = await tx
         .select()
@@ -349,6 +402,7 @@ export class FederationArbitrationResolutionService {
             adjustmentId: decisionId,
             settlementId: posting.payload.settlementId,
             number: posting.number,
+            heldAmount: row.heldAmount,
             payload: posting.payload,
           })
           .returning();
@@ -356,6 +410,19 @@ export class FederationArbitrationResolutionService {
         await applyFederationAdjustment(tx, financial);
       }
     }
+    if (row.commitment && row.payload.mode === "bilateral_attested")
+      await tx.insert(submissions).values({
+        id: randomUUID(),
+        localSiteId: this.signing.siteId,
+        agreementRevisionId: row.agreementRevisionId,
+        input: CommercialAdapterProposalInputSchema.parse({
+          operation: "record-arbitration-resolution",
+          domainId: row.payload.domainId,
+          recordId: decisionId,
+          digest,
+          envelope: row.envelope,
+        }),
+      });
     const [record] = await tx
       .update(cases)
       .set({ state: "RESOLVED" })
