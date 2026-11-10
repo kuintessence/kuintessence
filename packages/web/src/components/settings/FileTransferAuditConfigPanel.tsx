@@ -11,7 +11,8 @@ import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked"
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { Input } from "../ui/input";
+import { Input, Textarea } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 interface FormState {
   userPlatformRetentionDays: string;
@@ -177,10 +178,10 @@ export function FileTransferAuditConfigPanel({
           <label className="text-sm font-medium" htmlFor="download-evidence-mode">
             {t("settings.operations.fileTransferAudit.mode")}
           </label>
-          <select
+          <NativeSelect
             id="download-evidence-mode"
             data-testid="download-evidence-mode"
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full"
             value={form.downloadEvidenceMode}
             disabled={!canManage || saving}
             onChange={(event) =>
@@ -200,7 +201,7 @@ export function FileTransferAuditConfigPanel({
             <option value="direct_authorization_only">
               {t("settings.operations.fileTransferAudit.directAuthorizationOnly")}
             </option>
-          </select>
+          </NativeSelect>
           <p className="text-xs text-muted-foreground">
             {t("settings.operations.fileTransferAudit.modeHelp")}
           </p>
@@ -221,10 +222,10 @@ export function FileTransferAuditConfigPanel({
             <label className="text-sm font-medium" htmlFor="file-transfer-audit-change-reason">
               {t("settings.operations.fileTransferAudit.reason")}
             </label>
-            <textarea
+            <Textarea
               id="file-transfer-audit-change-reason"
               data-testid="file-transfer-audit-change-reason"
-              className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              className="min-h-20 w-full"
               maxLength={500}
               value={form.changeReason}
               disabled={saving}

@@ -7,6 +7,8 @@ import { Save } from "lucide-react";
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button";
+import { Textarea } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 function ids(value: string): string[] {
   return value.trim() === "" ? [] : value.trim().split(/\s+/);
@@ -54,10 +56,10 @@ export function MaterialVisibilityForm({
     >
       <label htmlFor={`${id}-mode`} className="block space-y-1 text-xs">
         <span id={`${id}-mode-label`}>{t("materials.visibilityPolicy")}</span>
-        <select
+        <NativeSelect
           id={`${id}-mode`}
           aria-labelledby={`${id}-mode-label`}
-          className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+          className="w-full"
           value={mode}
           disabled={!canWrite}
           onChange={(event) => {
@@ -70,7 +72,7 @@ export function MaterialVisibilityForm({
         >
           <option value="inherit">{t("materials.visibilityMode.inherit")}</option>
           <option value="allowlist">{t("materials.visibilityMode.allowlist")}</option>
-        </select>
+        </NativeSelect>
       </label>
       {mode === "allowlist" ? (
         <div className="grid min-w-0 gap-2 sm:grid-cols-2">
@@ -84,9 +86,9 @@ export function MaterialVisibilityForm({
               className="min-w-0 space-y-1 text-xs"
             >
               <span>{t(`materials.visibilityPrincipals.${field.key}`)}</span>
-              <textarea
+              <Textarea
                 id={`${id}-${field.key}`}
-                className="min-h-24 w-full resize-y rounded-md border border-input bg-transparent p-2 font-mono text-sm"
+                className="min-h-24 w-full resize-y font-mono"
                 rows={3}
                 maxLength={4000}
                 value={field.value}
@@ -114,9 +116,9 @@ export function MaterialVisibilityForm({
       ) : null}
       <label htmlFor={`${id}-reason`} className="block space-y-1 text-xs">
         <span>{t("materials.visibilityReason")}</span>
-        <textarea
+        <Textarea
           id={`${id}-reason`}
-          className="min-h-20 w-full resize-y rounded-md border border-input bg-transparent p-2 text-sm"
+          className="min-h-20 w-full resize-y"
           rows={2}
           maxLength={1000}
           value={reason}

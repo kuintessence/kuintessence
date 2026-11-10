@@ -7,7 +7,7 @@ import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked"
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { Input } from "../ui/input";
+import { Input, Textarea } from "../ui/input";
 
 /**
  * admin SSH credential vault form (PRD F17).
@@ -263,13 +263,13 @@ export function SshCredentialsForm() {
               >
                 {t("settings.ssh.privateKey", { defaultValue: "Private key (PEM)" })}
               </label>
-              <textarea
+              <Textarea
                 id="ssh-private-key"
                 data-testid="ssh-private-key"
                 value={form.privateKey}
                 onChange={(e) => update("privateKey", e.target.value)}
                 rows={3}
-                className="w-full rounded-md border border-border bg-card px-2 py-1.5 font-mono text-[11px]"
+                className="w-full font-mono text-[11px]"
                 placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
                 autoComplete="off"
               />

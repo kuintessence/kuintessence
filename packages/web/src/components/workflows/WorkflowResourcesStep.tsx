@@ -7,6 +7,7 @@ import { graphToYaml, yamlToGraph } from "../../lib/yaml-graph-sync";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { WorkflowReviewGraph } from "./WorkflowReviewGraph";
 
 export interface WorkflowQueueOption {
@@ -31,9 +32,6 @@ export function isWorkflowBudgetValid(value: string): boolean {
   const amount = Number(value);
   return Number.isFinite(amount) && amount >= 0;
 }
-
-const SELECT_CLASS =
-  "h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -158,9 +156,9 @@ export function WorkflowResourcesStep({
                 <Route className="h-4 w-4 text-brand" />
                 {t("workflows.creation.resources.plannerMode")}
               </span>
-              <select
+              <NativeSelect
                 data-testid="workflow-resource-planner-mode"
-                className={SELECT_CLASS}
+                className="w-full"
                 value={draft.plannerMode}
                 onChange={(event) =>
                   onDraftChange({
@@ -178,7 +176,7 @@ export function WorkflowResourcesStep({
                 <option value="Greedy">
                   {t("workflows.creation.resources.algorithms.Greedy.name")}
                 </option>
-              </select>
+              </NativeSelect>
               <span className="block text-xs leading-5 text-muted-foreground">
                 {t(`workflows.creation.resources.algorithms.${draft.plannerMode}.description`)}
               </span>
@@ -260,9 +258,9 @@ export function WorkflowResourcesStep({
                   <span className="text-sm font-medium">
                     {t("workflows.creation.resources.schedulingStrategy")}
                   </span>
-                  <select
+                  <NativeSelect
                     data-testid="workflow-resource-node-strategy"
-                    className={SELECT_CLASS}
+                    className="w-full"
                     value={strategy.type}
                     onChange={(event) =>
                       patchSchedulingStrategy(
@@ -277,16 +275,16 @@ export function WorkflowResourcesStep({
                     <option value="Manual" disabled={selectableQueues.length === 0}>
                       {t("workflows.creation.resources.manual")}
                     </option>
-                  </select>
+                  </NativeSelect>
                 </label>
                 {strategy.type !== "Auto" ? (
                   <label className="block space-y-1.5">
                     <span className="text-sm font-medium">
                       {t("workflows.creation.resources.targetQueue")}
                     </span>
-                    <select
+                    <NativeSelect
                       data-testid="workflow-resource-target-queue"
-                      className={SELECT_CLASS}
+                      className="w-full"
                       value={selectedQueueId}
                       onChange={(event) =>
                         patchSchedulingStrategy(strategy.type, event.target.value)
@@ -297,16 +295,16 @@ export function WorkflowResourcesStep({
                           {queue.name} · {queue.schedulerType}
                         </option>
                       ))}
-                    </select>
+                    </NativeSelect>
                   </label>
                 ) : null}
                 <label className="block space-y-1.5">
                   <span className="text-sm font-medium">
                     {t("workflows.creation.resources.dataMovement")}
                   </span>
-                  <select
+                  <NativeSelect
                     data-testid="workflow-resource-data-movement"
-                    className={SELECT_CLASS}
+                    className="w-full"
                     value={constraint?.dataMovement ?? "Allow"}
                     onChange={(event) =>
                       patchDataMovement(event.target.value as "Allow" | "Forbid")
@@ -314,7 +312,7 @@ export function WorkflowResourcesStep({
                   >
                     <option value="Allow">{t("workflows.creation.resources.allow")}</option>
                     <option value="Forbid">{t("workflows.creation.resources.forbid")}</option>
-                  </select>
+                  </NativeSelect>
                 </label>
               </div>
             ) : (

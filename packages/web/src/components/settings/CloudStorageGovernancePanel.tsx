@@ -11,6 +11,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 const GB = 1024 ** 3;
 
@@ -296,9 +297,9 @@ export function CloudStorageGovernancePanel() {
                 />
               </Field>
               <Field label="申请审批方式">
-                <select
+                <NativeSelect
                   aria-label="申请审批方式"
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  className="w-full"
                   value={draft.requestMode}
                   onChange={(event) =>
                     setDraft((current) => ({
@@ -310,7 +311,7 @@ export function CloudStorageGovernancePanel() {
                   <option value="auto">自动审批</option>
                   <option value="manual">人工审批</option>
                   <option value="disabled">关闭申请</option>
-                </select>
+                </NativeSelect>
               </Field>
               <Field label="自动审批上限（GB）">
                 <Input
@@ -404,9 +405,9 @@ export function CloudStorageGovernancePanel() {
                     </Button>
                   </div>
                 ) : (
-                  <select
+                  <NativeSelect
                     aria-label="分配给"
-                    className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+                    className="w-full min-w-0"
                     value={grantUserId}
                     disabled={usersQ.isPending || granting}
                     onChange={(event) => setGrantUserId(event.target.value)}
@@ -424,7 +425,7 @@ export function CloudStorageGovernancePanel() {
                         {user.displayName ? ` · ${user.email}` : ""}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 )}
                 {usersQ.data?.data.moreUsers && <p>仅显示前 50 个匹配用户，请缩小搜索范围。</p>}
               </Field>

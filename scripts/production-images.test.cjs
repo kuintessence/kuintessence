@@ -8,11 +8,12 @@ const root = resolve(__dirname, "..");
 const workflow = parse(readFileSync(resolve(root, ".github/workflows/build-images.yml"), "utf8"));
 const job = workflow.jobs.images;
 const resolver = job.steps.find((step) => step.id === "image");
+const revision = "a".repeat(40);
 
 async function tags(eventName, ref, payload = {}, component = "server") {
   const outputs = {};
   await runInNewContext(`(async () => { ${resolver.with.script} })()`, {
-    context: { eventName, ref, payload, repo: { owner: "Example" } },
+    context: { eventName, ref, payload, sha: revision, repo: { owner: "Example" } },
     process: { env: { COMPONENT: component } },
     core: {
       setOutput: (name, value) => {
@@ -28,19 +29,40 @@ function release(tag, prerelease = false, draft = false) {
 }
 
 describe("production image publication", () => {
-  test("main publishes only the main tag for each production component", async () => {
+  test("main publishes main and pinned revision tags for each production component", async () => {
     expect(job.strategy.matrix.include.map((entry) => entry.component)).toEqual([
       "server",
       "registry",
       "web",
       "db-migrate",
+      "federation-gateway",
+      "fabric-adapter",
+      "fabric-chaincode",
+      "fabric-tools",
     ]);
     for (const entry of job.strategy.matrix.include) {
       expect(existsSync(resolve(root, entry.dockerfile))).toBe(true);
       expect(await tags("push", "refs/heads/main", {}, entry.component)).toEqual([
         `ghcr.io/example/kuintessence-${entry.component}:main`,
+        `ghcr.io/example/kuintessence-${entry.component}:sha-${revision}`,
       ]);
     }
+  });
+
+  test("shared Fabric Dockerfile selects the correct runtime targets", () => {
+    for (const [component, target] of [
+      ["fabric-adapter", "adapter"],
+      ["fabric-chaincode", "chaincode"],
+    ]) {
+      expect(job.strategy.matrix.include.find((entry) => entry.component === component)).toEqual({
+        component,
+        dockerfile: "deploy/federation/runtime.Dockerfile",
+        target,
+      });
+    }
+    const build = job.steps.find((step) => step.uses === "docker/build-push-action@v6").with;
+    expect(build.target).toBe(`\${{ matrix.target || '' }}`);
+    expect(build.labels).toContain(`org.opencontainers.image.revision=\${{ github.sha }}`);
   });
 
   test.each([

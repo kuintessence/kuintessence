@@ -36,6 +36,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 
 type Translate = ReturnType<typeof useTranslation>["t"];
@@ -967,11 +968,11 @@ export function CpQueuesPage() {
                 data-testid="cp-queues-search"
               />
             </label>
-            <select
+            <NativeSelect
               value={agentFilter}
               onChange={(event) => setAgentFilter(event.currentTarget.value)}
               aria-label={t("cp.queues.filterAgent")}
-              className="h-11 min-w-0 rounded-md border border-border bg-card px-3 text-sm sm:h-9 sm:w-56"
+              className="h-11 min-w-0 sm:h-9 sm:w-56"
               data-testid="cp-queues-agent-filter"
             >
               <option value="">{t("cp.queues.allAgents")}</option>
@@ -980,7 +981,7 @@ export function CpQueuesPage() {
                   {agent.hostname} · {agent.id}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
             <label className="flex min-h-11 items-center gap-2 rounded-md border border-border px-3 text-sm sm:min-h-9">
               <input
                 type="checkbox"
@@ -1106,7 +1107,7 @@ export function CpQueuesPage() {
                   htmlFor="cp-queue-field-provider-org-id"
                   label={t("cp.queues.field.providerOrgId")}
                 >
-                  <select
+                  <NativeSelect
                     id="cp-queue-field-provider-org-id"
                     value={form.providerOrgId}
                     required
@@ -1114,14 +1115,14 @@ export function CpQueuesPage() {
                       setForm({ ...form, providerOrgId: event.currentTarget.value })
                     }
                     data-testid="cp-queue-field-provider-org-id"
-                    className="flex h-11 w-full rounded-md border border-border bg-card px-3 py-1 text-sm shadow-sm sm:h-9"
+                    className="flex h-11 w-full sm:h-9"
                   >
                     {providerOrgs.map((org) => (
                       <option key={org.id} value={org.id}>
                         {org.name}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </Field>
               ) : (
                 <input
@@ -1131,7 +1132,7 @@ export function CpQueuesPage() {
                 />
               )}
               <Field htmlFor="cp-queue-field-agent-id" label={t("cp.queues.field.agentId")}>
-                <select
+                <NativeSelect
                   id="cp-queue-field-agent-id"
                   value={form.agentId}
                   required
@@ -1139,7 +1140,7 @@ export function CpQueuesPage() {
                   aria-describedby={formErrors.agentId ? "cp-queue-agent-error" : undefined}
                   onChange={(event) => changeAgent(event.currentTarget.value)}
                   data-testid="cp-queue-field-agent-id"
-                  className="flex h-11 w-full rounded-md border border-border bg-card px-3 py-1 text-sm shadow-sm sm:h-9"
+                  className="flex h-11 w-full sm:h-9"
                 >
                   <option value="">{t("cp.queues.field.chooseAgent")}</option>
                   {agents.map((agent) => (
@@ -1147,7 +1148,7 @@ export function CpQueuesPage() {
                       {agent.hostname} · {agent.id}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
                 {formErrors.agentId ? (
                   <p id="cp-queue-agent-error" className="text-xs text-status-failed" role="alert">
                     {formErrors.agentId}
@@ -1224,7 +1225,7 @@ export function CpQueuesPage() {
                   htmlFor="cp-queue-field-queue-name"
                   label={t("cp.queues.field.queueName")}
                 >
-                  <select
+                  <NativeSelect
                     id="cp-queue-field-queue-name"
                     value={form.queueName}
                     required
@@ -1236,7 +1237,7 @@ export function CpQueuesPage() {
                       setFormErrors((current) => ({ ...current, queueName: "" }));
                     }}
                     data-testid="cp-queue-field-queue-name"
-                    className="flex h-11 w-full rounded-md border border-border bg-card px-3 py-1 text-sm shadow-sm sm:h-9"
+                    className="flex h-11 w-full sm:h-9"
                   >
                     <option value="">{t("cp.queues.field.chooseDiscoveredQueue")}</option>
                     {namedQueueMissing ? (
@@ -1250,7 +1251,7 @@ export function CpQueuesPage() {
                         {fact.isDefault ? ` · ${t("cp.queues.schedulerDefault")}` : ""}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                   {formErrors.queueName ? (
                     <p id="cp-queue-name-error" className="text-xs text-status-failed" role="alert">
                       {formErrors.queueName}

@@ -22,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
-import { Input } from "../ui/input";
+import { Input, Textarea } from "../ui/input";
 
 interface StorageQuotaRequestDialogProps {
   open: boolean;
@@ -201,9 +201,9 @@ export function StorageQuotaRequestDialog({
             </div>
             <label className="block space-y-1.5 text-sm" htmlFor="storage-quota-reason">
               <span className="font-medium">{t("files.quota.reason")}</span>
-              <textarea
+              <Textarea
                 id="storage-quota-reason"
-                className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                className="min-h-20 w-full"
                 maxLength={2000}
                 value={reason}
                 onChange={(event) => setReason(event.target.value)}

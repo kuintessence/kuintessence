@@ -332,7 +332,7 @@ describe("main deployment wiring", () => {
     const compose = parse(readFileSync(join(root, "deploy/main/compose.yml"), "utf8"));
     for (const name of ["server", "registry", "web", "db-migrate"]) {
       expect(compose.services[name].image).toBe(
-        `ghcr.io/\${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-${name}:main`,
+        `ghcr.io/\${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-${name}:\${KQ_IMAGE_TAG:-main}`,
       );
       expect(compose.services[name].pull_policy).toBe("always");
     }

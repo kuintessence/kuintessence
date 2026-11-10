@@ -111,10 +111,12 @@ describe("WorkflowsPage", () => {
       Promise.resolve(path === "/workflows/drafts" ? { drafts: [] } : { runs: [] }),
     );
     render(<WorkflowsPage />, { wrapper: wrapper() });
-    expect(screen.getByTestId("workflows-chip-all").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("workflows-chip-all").getAttribute("aria-checked")).toBe("true");
     fireEvent.click(screen.getByTestId("workflows-chip-failed"));
-    expect(screen.getByTestId("workflows-chip-all").getAttribute("aria-pressed")).toBe("false");
-    expect(screen.getByTestId("workflows-chip-failed").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("workflows-chip-all").getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByTestId("workflows-chip-failed").getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByTestId("workflows-chip-failed"));
+    expect(screen.getByTestId("workflows-chip-failed").getAttribute("aria-checked")).toBe("true");
   });
 
   test("aligns active workflow statuses with the Server lifecycle", () => {

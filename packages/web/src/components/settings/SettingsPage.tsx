@@ -19,6 +19,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { PageHeader, PageShell } from "../ui/page";
+import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 import { AgentCertsPanel } from "./AgentCertsPanel";
 import { AuthzAdminPanel } from "./AuthzAdminPanel";
 import { ClusterFileRootsPanel } from "./ClusterFileRootsPanel";
@@ -80,26 +81,23 @@ function ThemeRow() {
     { value: "system", labelKey: "settings.themeSystem", icon: Monitor },
   ];
   return (
-    <div className="flex flex-wrap gap-2" data-testid="settings-theme">
+    <ToggleGroup
+      type="single"
+      role="radiogroup"
+      value={theme}
+      onValueChange={(value) => {
+        if (value) setTheme(value as ThemePreference);
+      }}
+      aria-label={t("settings.personalSections.appearance.title")}
+      data-testid="settings-theme"
+    >
       {items.map(({ value, labelKey, icon: Icon }) => (
-        <button
-          key={value}
-          type="button"
-          data-testid={`settings-theme-${value}`}
-          onClick={() => setTheme(value)}
-          aria-pressed={theme === value}
-          className={cn(
-            "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs",
-            theme === value
-              ? "border-brand bg-brand-soft"
-              : "border-border text-muted-foreground hover:bg-muted/60",
-          )}
-        >
+        <ToggleGroupItem key={value} value={value} data-testid={`settings-theme-${value}`}>
           <Icon className="h-3.5 w-3.5" />
           {t(labelKey)}
-        </button>
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   );
 }
 

@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { NativeSelect } from "../ui/native-select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 
 export interface SlotOption {
@@ -253,8 +254,8 @@ export function WorkflowSlotMappingDialog({
                 <div className="grid gap-2 rounded-lg border border-border p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
                   <label className="space-y-1 text-xs text-muted-foreground">
                     {t("workflow.editor.slotMapping.output")}
-                    <select
-                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                    <NativeSelect
+                      className="w-full"
                       value={fromSlot}
                       onChange={(event) => {
                         const next = event.target.value;
@@ -272,12 +273,12 @@ export function WorkflowSlotMappingDialog({
                           {slot.descriptor} · {slot.type}
                         </option>
                       ))}
-                    </select>
+                    </NativeSelect>
                   </label>
                   <label className="space-y-1 text-xs text-muted-foreground">
                     {t("workflow.editor.slotMapping.input")}
-                    <select
-                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                    <NativeSelect
+                      className="w-full"
                       value={toSlot}
                       onChange={(event) => setToSlot(event.target.value)}
                     >
@@ -286,12 +287,12 @@ export function WorkflowSlotMappingDialog({
                           {slot.descriptor} · {slot.type}
                         </option>
                       ))}
-                    </select>
+                    </NativeSelect>
                   </label>
                   <label className="space-y-1 text-xs text-muted-foreground">
                     {t("workflow.editor.slotMapping.transfer")}
-                    <select
-                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                    <NativeSelect
+                      className="w-full"
                       value={transferType}
                       onChange={(event) =>
                         setTransferType(event.target.value as "Network" | "Disk")
@@ -299,7 +300,7 @@ export function WorkflowSlotMappingDialog({
                     >
                       <option value="Network">Network</option>
                       <option value="Disk">Disk</option>
-                    </select>
+                    </NativeSelect>
                   </label>
                   <Button
                     type="button"

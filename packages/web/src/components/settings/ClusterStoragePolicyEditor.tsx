@@ -8,6 +8,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 const GB = 1024 ** 3;
 
@@ -161,15 +162,15 @@ export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
           <LabeledInput label="单用户上限（GB）" value={maxGb} onChange={setMaxGb} />
           <label className="space-y-1 text-[11px]">
             <span>审批方式</span>
-            <select
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            <NativeSelect
+              className="w-full"
               value={requestMode}
               onChange={(event) => setRequestMode(event.target.value as typeof requestMode)}
             >
               <option value="auto">自动审批</option>
               <option value="manual">人工审批</option>
               <option value="disabled">关闭申请</option>
-            </select>
+            </NativeSelect>
           </label>
           <LabeledInput
             label="自动审批上限（GB）"
