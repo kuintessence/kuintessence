@@ -16,11 +16,11 @@ import {
   useRevokeAgentRegistrationToken,
 } from "../../lib/use-cp-agent-registration";
 import { toUserFacingError } from "../../lib/user-facing-error";
-import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 interface IssuedToken extends AgentRegistrationToken {
   command: string;
@@ -220,12 +220,12 @@ export function AgentRegistrationPage() {
                   <span className="text-muted-foreground">
                     {t("cp.agentRegistration.form.providerOrgId")}
                   </span>
-                  <select
+                  <NativeSelect
                     id="agent-registration-provider"
                     value={providerOrgId}
                     onChange={(event) => setProviderOrgId(event.target.value)}
                     data-testid="agent-registration-provider"
-                    className={selectClassName}
+                    className="w-full"
                     disabled={context.isLoading || providerOrgs.length === 0}
                     required
                   >
@@ -237,7 +237,7 @@ export function AgentRegistrationPage() {
                         {org.name}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                   {providerOrgId ? (
                     <code
                       className="block min-w-0 truncate rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground"
@@ -327,21 +327,21 @@ export function AgentRegistrationPage() {
                   <span className="text-muted-foreground">
                     {t("cp.agentRegistration.form.scheduler")}
                   </span>
-                  <select
+                  <NativeSelect
                     id="agent-registration-scheduler"
                     value={scheduler}
                     onChange={(event) =>
                       setScheduler(event.target.value as AgentRegistrationScheduler)
                     }
                     data-testid="agent-registration-scheduler"
-                    className={selectClassName}
+                    className="w-full"
                   >
                     {schedulers.map((item) => (
                       <option key={item} value={item}>
                         {item}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </label>
               </div>
 
@@ -535,12 +535,6 @@ export function AgentRegistrationPage() {
     </div>
   );
 }
-
-const selectClassName = cn(
-  "flex h-9 w-full rounded-md border border-border bg-card px-3 py-1 text-sm shadow-sm",
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
-  "disabled:cursor-not-allowed disabled:opacity-50",
-);
 
 function ActiveTokenCard({
   token,

@@ -23,6 +23,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { ClusterStoragePolicyEditor } from "./ClusterStoragePolicyEditor";
 
 interface ClusterFileRootsResponse {
@@ -319,9 +320,9 @@ export function ClusterFileRootsPanel() {
                   id="cluster-file-root-new-provider"
                   label={t("settings.clusterFileRoots.providerOrgId")}
                 >
-                  <select
+                  <NativeSelect
                     aria-label={t("settings.clusterFileRoots.providerOrgId")}
-                    className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm"
+                    className="min-w-0"
                     value={newRoot.providerOrgId}
                     required
                     disabled={directoryUnavailable || creating}
@@ -341,7 +342,7 @@ export function ClusterFileRootsPanel() {
                         {org.name}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </RootField>
                 <RootAgentSelect
                   agents={agents}
@@ -592,11 +593,11 @@ function RootAgentSelect({
   const choices = agents.filter((agent) => agent.providerOrgId === providerOrgId);
   return (
     <RootField id={testId} label={t("settings.clusterFileRoots.agentId")}>
-      <select
+      <NativeSelect
         aria-label={t("settings.clusterFileRoots.agentId")}
         id={testId}
         data-testid={testId}
-        className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm"
+        className="min-w-0"
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
@@ -610,7 +611,7 @@ function RootAgentSelect({
             {agent.siteName} · {agent.agentId}
           </option>
         ))}
-      </select>
+      </NativeSelect>
     </RootField>
   );
 }

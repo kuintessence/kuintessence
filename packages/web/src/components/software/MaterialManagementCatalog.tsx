@@ -11,6 +11,7 @@ import { listSpackMaterialManagement } from "../../lib/spack-material-management
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 export type MaterialManagementFilter = Omit<SpackMaterialManagementQuery, "after">;
 
@@ -146,10 +147,10 @@ export function MaterialManagementCatalog({
         </label>
         <label htmlFor={`${id}-state`} className="min-w-0 space-y-1 text-xs">
           <span id={`${id}-state-label`}>{t("materials.managementState")}</span>
-          <select
+          <NativeSelect
             id={`${id}-state`}
             aria-labelledby={`${id}-state-label`}
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            className="w-full"
             value={filter.state}
             onChange={(event) => {
               const state = event.target.value;
@@ -161,14 +162,14 @@ export function MaterialManagementCatalog({
             <option value="all">{t("materials.managementAll")}</option>
             <option value="available">{t("materials.lifecycleState.available")}</option>
             <option value="withdrawn">{t("materials.lifecycleState.withdrawn")}</option>
-          </select>
+          </NativeSelect>
         </label>
         <label htmlFor={`${id}-limit`} className="min-w-0 space-y-1 text-xs">
           <span id={`${id}-limit-label`}>{t("materials.managementPageSize")}</span>
-          <select
+          <NativeSelect
             id={`${id}-limit`}
             aria-labelledby={`${id}-limit-label`}
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            className="w-full"
             value={filter.limit}
             onChange={(event) => edit({ ...filter, limit: Number(event.target.value) })}
           >
@@ -177,7 +178,7 @@ export function MaterialManagementCatalog({
                 {limit}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </label>
         <div className="flex shrink-0 items-center gap-2">
           <Button

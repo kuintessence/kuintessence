@@ -7,6 +7,7 @@ import { relativeFromNow } from "../../lib/format";
 import type { AgentRow } from "../agents/AgentCard";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { type FileContextAction, FileContextMenu, type FileContextTarget } from "./FileContextMenu";
 import { fmtBytes, joinClusterPath, parentClusterPath } from "./path-picker-utils";
 
@@ -126,9 +127,9 @@ export function ClusterPane({
             {agents.length === 0 ? (
               <span className="font-mono text-[11px] text-muted-foreground">{noAgentMessage}</span>
             ) : (
-              <select
+              <NativeSelect
                 data-testid="files-cluster-agent-select"
-                className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-0.5 font-mono text-[11px] sm:max-w-80"
+                className="min-w-0 flex-1 py-0.5 font-mono text-[11px] sm:max-w-80"
                 aria-label={t("files.clusterAgent")}
                 value={agent?.agentId ?? ""}
                 onChange={(e) => onAgentChange(e.target.value)}
@@ -143,7 +144,7 @@ export function ClusterPane({
                     {a.siteName} · {a.schedulerType} {a.schedulerVersion}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             )}
             <Button
               type="button"
@@ -161,11 +162,11 @@ export function ClusterPane({
         </div>
         <div className="mt-1 flex min-w-0 items-center gap-2 pl-9">
           {roots.length > 1 ? (
-            <select
+            <NativeSelect
               value={activeRoot}
               onChange={(event) => onRootChange(event.target.value)}
               aria-label={t("files.clusterRoot")}
-              className="min-w-0 max-w-48 rounded-md border border-border bg-card px-2 py-0.5 font-mono text-[11px]"
+              className="min-w-0 max-w-48 py-0.5 font-mono text-[11px]"
               data-testid="files-cluster-root-select"
             >
               {roots.map((root) => (
@@ -173,7 +174,7 @@ export function ClusterPane({
                   {root}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           ) : null}
           <div
             className="min-w-0 flex-1 break-all font-mono text-[11px] leading-4 text-muted-foreground"
@@ -193,17 +194,17 @@ export function ClusterPane({
           className="h-8 font-mono text-xs"
           data-testid="files-cluster-search"
         />
-        <select
+        <NativeSelect
           value={sortKey}
           onChange={(event) => setSortKey(event.target.value as SortKey)}
           aria-label={t("files.sortBy")}
-          className="h-8 rounded-md border border-border bg-card px-2 font-mono text-[11px]"
+          className="h-8 font-mono text-[11px]"
           data-testid="files-cluster-sort"
         >
           <option value="name">{t("files.sort.name")}</option>
           <option value="modified">{t("files.sort.modified")}</option>
           <option value="size">{t("files.sort.size")}</option>
-        </select>
+        </NativeSelect>
       </div>
       <div className="min-h-0 max-h-[28rem] flex-1 overflow-auto">
         {visibleEntries.length === 0 ? (

@@ -11,6 +11,7 @@ import {
 } from "../../lib/active-organization";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
+import { NativeSelect } from "../ui/native-select";
 
 const CP_ROLES = new Set(["owner", "admin", "operator", "platform_admin", "super_admin"]);
 const ORGANIZATION_SENSITIVE_QUERY_ROOTS = new Set([
@@ -133,9 +134,9 @@ export function ProviderOrganizationSelector() {
     >
       <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
       <span className="shrink-0 text-muted-foreground">{t("cp.organizationSelector.label")}</span>
-      <select
+      <NativeSelect
         aria-label={t("cp.organizationSelector.ariaLabel")}
-        className="h-9 min-w-48 max-w-full rounded-md border border-input bg-background px-3 text-sm"
+        className="min-w-0 flex-[1_1_12rem]"
         disabled={update.isPending}
         value={activeOrganizationId ?? ""}
         onChange={(event) => update.mutate(event.target.value || null)}
@@ -146,7 +147,7 @@ export function ProviderOrganizationSelector() {
             {organization.name}
           </option>
         ))}
-      </select>
+      </NativeSelect>
       {update.error ? (
         <span
           className="min-w-0 break-words text-xs text-status-failed"

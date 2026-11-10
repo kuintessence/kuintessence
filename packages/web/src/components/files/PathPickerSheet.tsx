@@ -21,6 +21,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import type { AgentRow } from "../agents/AgentCard";
 import { Button } from "../ui/button";
+import { NativeSelect } from "../ui/native-select";
 import {
   Sheet,
   SheetBody,
@@ -549,7 +550,7 @@ export function PathPickerSheet({
           >
             {selection?.path ?? (location === "cloud" ? cloudPrefix || "/" : clusterPath)}
           </div>
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
+          <div className="kq-fill-row flex-col-reverse items-stretch sm:flex-row sm:items-center">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               {t("files.pathPicker.cancel")}
             </Button>
@@ -827,9 +828,9 @@ function ClusterBrowser({
         </div>
         <div className="flex items-center gap-2">
           {agents.length > 0 ? (
-            <select
+            <NativeSelect
               data-testid="path-picker-agent-select"
-              className="rounded-md border border-border bg-card px-2 py-1 font-mono text-[11px]"
+              className="font-mono text-[11px]"
               aria-label={t("files.clusterAgent")}
               value={agent?.agentId ?? ""}
               onChange={(event) => onAgentChange(event.target.value)}
@@ -844,14 +845,14 @@ function ClusterBrowser({
                   {item.siteName} · {item.schedulerType} {item.schedulerVersion}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           ) : null}
           {roots.length > 1 ? (
-            <select
+            <NativeSelect
               value={activeRoot}
               onChange={(event) => onRootChange(event.target.value)}
               aria-label={t("files.pathPicker.clusterRoot")}
-              className="min-w-0 max-w-44 rounded-md border border-border bg-card px-2 py-1 font-mono text-[11px]"
+              className="min-w-0 max-w-44 font-mono text-[11px]"
               data-testid="path-picker-cluster-root-select"
             >
               {roots.map((root) => (
@@ -859,7 +860,7 @@ function ClusterBrowser({
                   {root}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           ) : null}
         </div>
       </div>

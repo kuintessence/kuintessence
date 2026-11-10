@@ -3,6 +3,8 @@
 本页约定 Web 的工作区布局、权限投影和共享动效。客户端运行方式见
 [客户端使用](clients.md)，功能支持范围见[当前实现状态](status/current-state.md)。
 
+公共控件的选型、使用边界与验证方式见[Web 组件库与接入约定](ui-components.md)。
+
 <a id="navigation"></a>
 
 ## 工作区导航

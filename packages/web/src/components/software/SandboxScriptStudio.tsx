@@ -51,6 +51,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { SandboxCodeEditor } from "./SandboxCodeEditor";
@@ -467,10 +468,10 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
             </Field>
             {detailQuery.data?.revisions.length ? (
               <Field label={t("sandbox.studio.revisions")}>
-                <select
+                <NativeSelect
                   value={selectedRevision ?? ""}
                   onChange={(event) => loadRevision(Number(event.target.value))}
-                  className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm"
+                  className="w-full"
                 >
                   {detailQuery.data.revisions.map((revision) => (
                     <option key={revision.id} value={revision.revision}>
@@ -478,7 +479,7 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
                       {revision.contentSha256?.slice(0, 10)}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               </Field>
             ) : null}
           </StudioCard>
@@ -538,23 +539,23 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
         <aside className="grid min-w-0 content-start gap-3">
           <StudioCard title={t("sandbox.studio.runtime")}>
             <Field label={t("sandbox.studio.language")}>
-              <select
+              <NativeSelect
                 value={draft.language}
                 onChange={(event) => updateLanguage(event.target.value as SandboxLanguage)}
-                className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm"
+                className="w-full"
               >
                 <option value="python">Python</option>
                 <option value="nodejs">Node.js</option>
                 <option value="bash">Bash</option>
-              </select>
+              </NativeSelect>
             </Field>
             <Field label={t("sandbox.studio.runtimeProfile")}>
-              <select
+              <NativeSelect
                 value={draft.runtimeProfileId}
                 onChange={(event) =>
                   setDraft((current) => ({ ...current, runtimeProfileId: event.target.value }))
                 }
-                className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm"
+                className="w-full"
               >
                 <option value="">{t("sandbox.studio.selectRuntime")}</option>
                 {activeRuntimes.map((runtime) => (
@@ -562,7 +563,7 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
                     {runtime.name} · {runtime.languageVersion}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </Field>
             <Field label={t("sandbox.studio.entrypoint")}>
               <Input
@@ -727,15 +728,15 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
             </TabsContent>
             <TabsContent value="placement" className="grid gap-3 md:grid-cols-3">
               <Field label={t("sandbox.studio.plannerMode")}>
-                <select
+                <NativeSelect
                   value={plannerMode}
                   onChange={(event) => setPlannerMode(event.target.value as PlannerMode)}
-                  className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm"
+                  className="w-full"
                 >
                   <option value="Global">Global</option>
                   <option value="Lookahead">Lookahead</option>
                   <option value="Greedy">Greedy</option>
-                </select>
+                </NativeSelect>
               </Field>
               <PreviewMetric
                 label={t("sandbox.studio.identityMode")}

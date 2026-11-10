@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Braces, Code2, FileCode2, PackagePlus, Search } from "lucide-react";
+import { Braces, Code2, FileCode2, PackagePlus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listSandboxScripts } from "../../lib/sandbox-client";
@@ -9,8 +9,10 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader } from "../ui/card";
-import { Input } from "../ui/input";
+import { EmptyState, ErrorState, LoadingState } from "../ui/content-state";
+import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
+import { SearchInput } from "../ui/search-input";
 import { CatalogEmptyState } from "./CatalogEmptyState";
 import {
   cardActionLayerClass,
@@ -18,6 +20,7 @@ import {
   cardSurfaceLinkClass,
   clickableCardClass,
 } from "./card-navigation";
+import { SoftwareCardGrid } from "./SoftwareCardGrid";
 
 type LanguageFilter = "all" | "python" | "nodejs" | "bash";
 
@@ -82,45 +85,38 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
         />
       )}
 
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <label htmlFor="sandbox-script-search" className="grid gap-1 text-xs text-muted-foreground">
           <span>{t("sandbox.catalog.search")}</span>
-          <span className="relative">
-            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4" />
-            <Input
-              id="sandbox-script-search"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              className="pl-9"
-              placeholder={t("sandbox.catalog.searchPlaceholder")}
-            />
-          </span>
+          <SearchInput
+            id="sandbox-script-search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={t("sandbox.catalog.searchPlaceholder")}
+          />
         </label>
         <label
           htmlFor="sandbox-language-filter"
           className="grid gap-1 text-xs text-muted-foreground"
         >
           <span>{t("sandbox.catalog.language")}</span>
-          <select
+          <NativeSelect
             id="sandbox-language-filter"
             value={language}
             onChange={(event) => setLanguage(event.target.value as LanguageFilter)}
-            className="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground shadow-sm"
           >
             <option value="all">{t("sandbox.catalog.allLanguages")}</option>
             <option value="python">Python</option>
             <option value="nodejs">Node.js</option>
             <option value="bash">Bash</option>
-          </select>
+          </NativeSelect>
         </label>
       </div>
 
       {scriptsQuery.isLoading ? (
-        <div className="py-12 text-center text-sm text-muted-foreground">{t("common.loading")}</div>
+        <LoadingState>{t("common.loading")}</LoadingState>
       ) : scriptsQuery.error instanceof Error ? (
-        <div className="rounded-md border border-status-failed/40 p-4 text-sm text-[var(--status-failed)]">
-          {toUserFacingError(scriptsQuery.error, t("software.unreachable"))}
-        </div>
+        <ErrorState>{toUserFacingError(scriptsQuery.error, t("software.unreachable"))}</ErrorState>
       ) : scripts.length === 0 ? (
         <CatalogEmptyState
           actionLabel={t("sandbox.catalog.create")}
@@ -132,13 +128,13 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
           title={t("sandbox.catalog.emptyLibraryTitle")}
         />
       ) : visible.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border py-16 text-center">
-          <Code2 className="mx-auto h-8 w-8 text-muted-foreground" />
-          <h2 className="mt-3 text-sm font-semibold">{t("sandbox.catalog.empty")}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">{t("sandbox.catalog.emptyHint")}</p>
-        </div>
+        <EmptyState
+          icon={<Code2 />}
+          title={t("sandbox.catalog.empty")}
+          description={t("sandbox.catalog.emptyHint")}
+        />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+        <SoftwareCardGrid className="gap-4">
           {visible.map((script) => (
             <Card
               key={script.id}
@@ -201,7 +197,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
                     <div className="tabular-nums">{Object.keys(script.payload.outputs).length}</div>
                   </div>
                 </div>
-                <div className={`mt-auto flex justify-end pt-1 ${cardActionLayerClass}`}>
+                <div className={`mt-auto kq-fill-row pt-1 ${cardActionLayerClass}`}>
                   <Button asChild variant="outline" size="sm">
                     <Link to="/software/scripts/$scriptId" params={{ scriptId: script.id }}>
                       {t("sandbox.catalog.open")}
@@ -211,7 +207,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
               </CardContent>
             </Card>
           ))}
-        </div>
+        </SoftwareCardGrid>
       )}
     </PageShell>
   );

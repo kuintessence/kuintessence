@@ -12,6 +12,7 @@ import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "../ThemeProvider";
 import { Button } from "../ui/button";
+import { NativeSelect } from "../ui/native-select";
 import { clusterSymbol, getStatusLabels, groupNearbyCenters, STATUS_COLORS } from "./model";
 
 type LocatedCenter = InterconnectCenter & {
@@ -226,33 +227,32 @@ export function InterconnectMap({
       className="overflow-hidden rounded-xl border border-border bg-card"
       aria-label={t("interconnect.mapLabel")}
     >
-      <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
+      <div className="kq-fill-row border-b border-border p-3">
         <h2 className="mr-auto font-semibold">{t("interconnect.mapTitle")}</h2>
-        <select
+        <NativeSelect
           aria-label={t("interconnect.mapLevel")}
-          className="rounded-md border border-border bg-background p-2 text-sm"
           value={view.level}
           onChange={(e) => changeLevel(e.target.value as MapView["level"])}
         >
           <option value="world">{t("interconnect.world")}</option>
           <option value="china">{t("interconnect.china")}</option>
           <option value="province">{t("interconnect.provinceLevel")}</option>
-        </select>
+        </NativeSelect>
         {view.level === "province" && (
-          <select
+          <NativeSelect
             aria-label={t("interconnect.province")}
-            className="rounded-md border border-border bg-background p-2 text-sm"
             value={view.region}
             onChange={(e) => changeLevel("province", e.target.value)}
           >
             {provinces.map((p) => (
               <option key={p}>{p}</option>
             ))}
-          </select>
+          </NativeSelect>
         )}
         <Button
           variant="outline"
           size="sm"
+          className="flex-none"
           aria-label={t("interconnect.zoomOut")}
           onClick={() => onView({ ...view, zoom: Math.max(0.5, view.zoom / 1.5) })}
         >
@@ -261,6 +261,7 @@ export function InterconnectMap({
         <Button
           variant="outline"
           size="sm"
+          className="flex-none"
           aria-label={t("interconnect.zoomIn")}
           onClick={() => onView({ ...view, zoom: Math.min(64, view.zoom * 1.5) })}
         >

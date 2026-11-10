@@ -9,6 +9,7 @@ import { listSandboxAccountMappings } from "../../lib/sandbox-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import type { AgentRow } from "../agents/AgentCard";
 import { Button } from "../ui/button";
+import { NativeSelect } from "../ui/native-select";
 import {
   Sheet,
   SheetBody,
@@ -138,10 +139,10 @@ export function NewSessionDialog({ open, onOpenChange, onCreated }: NewSessionDi
                   </code>
                 </div>
               ) : (
-                <select
+                <NativeSelect
                   id="terminal-agent"
                   data-testid="terminal-agent-select"
-                  className="flex h-9 w-full rounded-md border border-border bg-card px-3 text-sm font-mono"
+                  className="flex w-full font-mono"
                   value={selectedAgent?.agentId ?? ""}
                   onChange={(e) => {
                     setAgentId(e.target.value);
@@ -153,7 +154,7 @@ export function NewSessionDialog({ open, onOpenChange, onCreated }: NewSessionDi
                       {a.siteName} · {a.schedulerType} {a.schedulerVersion}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               )}
             </div>
 
@@ -180,11 +181,11 @@ export function NewSessionDialog({ open, onOpenChange, onCreated }: NewSessionDi
                   </Button>
                 </div>
               ) : (
-                <select
+                <NativeSelect
                   id="terminal-user"
                   value={selectedMapping?.mapping.id ?? ""}
                   onChange={(event) => setMappingId(event.target.value)}
-                  className="flex h-9 w-full rounded-md border border-border bg-card px-3 text-sm"
+                  className="flex w-full"
                   data-testid="terminal-user-select"
                 >
                   {approvedMappings.map(({ account, mapping }) => (
@@ -193,7 +194,7 @@ export function NewSessionDialog({ open, onOpenChange, onCreated }: NewSessionDi
                       {account.schedulerAccount ? ` · ${account.schedulerAccount}` : ""}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               )}
               <p className="text-[11px] text-muted-foreground">
                 {t("terminal.accountMappingHint")}

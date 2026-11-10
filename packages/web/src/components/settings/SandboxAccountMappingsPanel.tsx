@@ -14,6 +14,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { NativeSelect } from "../ui/native-select";
 
 function statusVariant(status: string) {
   if (status === "approved") return "succeeded" as const;
@@ -105,12 +106,12 @@ export function SandboxAccountMappingsPanel() {
           ))}
         </ol>
         <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
-          <select
+          <NativeSelect
             value={candidateId}
             onChange={(event) => setCandidateId(event.target.value)}
             aria-label={t("sandbox.accounts.candidate")}
             disabled={candidateUnavailable || candidates.length === 0}
-            className="h-9 min-w-0 rounded-md border border-border bg-card px-3 text-sm"
+            className="min-w-0"
           >
             <option value="">{t("sandbox.accounts.selectCandidate")}</option>
             {candidates.map((candidate) => (
@@ -118,7 +119,7 @@ export function SandboxAccountMappingsPanel() {
                 {candidate.siteName} · {candidate.displayName} · {candidate.schedulerType}
               </option>
             ))}
-          </select>
+          </NativeSelect>
           <Button
             size="sm"
             onClick={() => requestMutation.mutate(candidateId)}

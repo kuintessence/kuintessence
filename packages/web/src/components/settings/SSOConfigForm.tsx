@@ -10,6 +10,7 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 /**
  * admin SSO configuration form (PRD F1.1).
@@ -376,12 +377,12 @@ export function SSOConfigForm() {
               >
                 {t("settings.sso.providerType", { defaultValue: "Provider type" })}
               </label>
-              <select
+              <NativeSelect
                 id="sso-provider"
                 data-testid="sso-provider-type"
                 value={state.providerType}
                 onChange={(e) => update("providerType", e.target.value as ProviderType)}
-                className="h-9 w-full rounded-md border border-border bg-card px-2 text-sm"
+                className="w-full"
               >
                 {PROVIDER_TYPES.map((p) => (
                   <option key={p} value={p} disabled={p !== "oidc"}>
@@ -389,7 +390,7 @@ export function SSOConfigForm() {
                     {p !== "oidc" ? " (coming soon)" : ""}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </div>
 
             {/* Issuer URL */}
@@ -495,18 +496,17 @@ export function SSOConfigForm() {
                     placeholder="idp-group-name"
                     className="flex-1"
                   />
-                  <select
+                  <NativeSelect
                     data-testid={`sso-group-role-${idx}`}
                     value={row.value}
                     onChange={(e) => updateGroupRow(idx, row.key, e.target.value as Role)}
-                    className="h-9 rounded-md border border-border bg-card px-2 text-sm"
                   >
                     {ROLES.map((r) => (
                       <option key={r} value={r}>
                         {r}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                   <Button
                     type="button"
                     variant="ghost"

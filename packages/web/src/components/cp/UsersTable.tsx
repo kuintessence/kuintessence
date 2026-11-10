@@ -8,6 +8,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { PaginationControls } from "../ui/pagination-controls";
 
 export function UsersTable() {
   const { t } = useTranslation();
@@ -257,30 +258,24 @@ export function UsersTable() {
         </div>
       )}
       {canShowMembers && total > 50 ? (
-        <nav
+        <PaginationControls
+          role="navigation"
           aria-label={t("cp.users.pagination")}
-          className="flex flex-wrap items-center justify-end gap-3"
+          previous={{
+            disabled: page === 0 || q.isFetching,
+            onClick: () => setPage(page - 1),
+            children: t("cp.users.previousPage"),
+          }}
+          next={{
+            disabled: (page + 1) * 50 >= total || q.isFetching,
+            onClick: () => setPage(page + 1),
+            children: t("cp.users.nextPage"),
+          }}
         >
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={page === 0 || q.isFetching}
-            onClick={() => setPage(page - 1)}
-          >
-            {t("cp.users.previousPage")}
-          </Button>
           <span className="text-sm">
             {t("cp.users.page", { page: page + 1, pages: Math.ceil(total / 50) })}
           </span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={(page + 1) * 50 >= total || q.isFetching}
-            onClick={() => setPage(page + 1)}
-          >
-            {t("cp.users.nextPage")}
-          </Button>
-        </nav>
+        </PaginationControls>
       ) : null}
     </div>
   );
