@@ -1394,6 +1394,13 @@
       "when": 1794269097064,
       "tag": "0198_unusual_bloodstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 199,
+      "version": "7",
+      "when": 1794270348800,
+      "tag": "0199_mysterious_stark_industries",
+      "breakpoints": true
     }
   ]
 }

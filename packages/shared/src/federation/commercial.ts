@@ -26,6 +26,9 @@ export const commercialAutomaticMeters = [
 export const CommercialSigningKindSchema = z.enum([
   "commercial-agreement",
   "commercial-arbitration-policy",
+  "arbitration-decision",
+  "delegation",
+  "acceptance",
   "commercial-arbitration-revocation",
   "commercial-usage",
   "commercial-reservation",
@@ -632,6 +635,7 @@ export const CommercialRecordTypeSchema = z.enum([
   "dispute-freeze",
   "native-dispute-freeze",
   "arbitration-revocation",
+  "arbitration-resolution",
 ]);
 export const CommercialReceiptQuerySchema = z.strictObject({
   operation: z.literal("get-commercial-receipt"),
@@ -735,7 +739,43 @@ export const CommercialDisputeAttestationEnvelopeSchema = CommercialAgreementEnv
   openingSiteId: Id,
   openingJws: z.string().min(1).max(524288),
 });
+/** One preauthorized R decision; the original bilateral admission remains the authority source. */
+export const ArbitrationResolutionEnvelopeSchema = z.strictObject({
+  sourceSiteId: Id,
+  targetSiteId: Id,
+  decisionJws: z.string().min(1).max(524288),
+  requestJws: z.string().min(1).max(524288),
+  acceptanceJws: z.string().min(1).max(524288),
+});
+export type ArbitrationResolutionEnvelope = z.infer<typeof ArbitrationResolutionEnvelopeSchema>;
+export const CommercialArbitrationResolutionSchema = z.strictObject({
+  decisionId: Id,
+  decisionDigest: FederationDigestSchema,
+  caseId: Id,
+  caseDigest: FederationDigestSchema,
+  domainId: Id,
+  agreementRevisionId: Id,
+  sourceSiteId: Id,
+  targetSiteId: Id,
+  taskId: Id,
+  attempt: z.number().int().min(1).max(2147483647),
+  mode: FederationDelegationSchema.shape.mode,
+  headDigest: FederationDigestSchema,
+  freezeDigest: FederationDigestSchema,
+  outcome: z.strictObject({ action: z.literal("resolve-without-financial-change") }),
+});
+export type CommercialArbitrationResolution = z.infer<typeof CommercialArbitrationResolutionSchema>;
 export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operation", [
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("resolve-arbitrated-case"),
+    envelope: ArbitrationResolutionEnvelopeSchema,
+  }),
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("record-arbitration-resolution"),
+    envelope: ArbitrationResolutionEnvelopeSchema,
+  }),
   z.strictObject({
     ...ProposalIdentity,
     operation: z.literal("revoke-arbitration-policy"),

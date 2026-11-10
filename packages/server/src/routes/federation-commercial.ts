@@ -40,6 +40,7 @@ import { z } from "zod";
 import type { FederationAdjustmentService } from "../federation/adjustment";
 import type { FederationArbitrationDecisionDelivery } from "../federation/arbitration-decision-delivery";
 import type { FederationArbitrationPolicyService } from "../federation/arbitration-policy";
+import type { FederationArbitrationResolutionService } from "../federation/arbitration-resolution";
 import type { FederationArbitrationRevocationDelivery } from "../federation/arbitration-revocations";
 import type { FederationBillingService } from "../federation/billing";
 import type { FederationClosingAutomation } from "../federation/closing-automation";
@@ -112,6 +113,7 @@ export function createFederationCommercialRoutes(
   arbitrationPolicies?: FederationArbitrationPolicyService,
   arbitrationRevocations?: FederationArbitrationRevocationDelivery,
   arbitrationDecisions?: FederationArbitrationDecisionDelivery,
+  arbitrationResolution?: FederationArbitrationResolutionService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -203,6 +205,28 @@ export function createFederationCommercialRoutes(
         });
       },
     );
+  if (arbitrationResolution) {
+    const path =
+      "/federation/commercial-agreements/:revisionId/disputes/:caseId/arbitration-resolution";
+    const params = id.extend({ caseId: z.uuid() });
+    r.get(path, kqValidator("param", params), async (c) => {
+      const { revisionId, caseId } = c.req.valid("param");
+      return c.json({
+        data: await arbitrationResolution.read(c.get("federationActor"), revisionId, caseId),
+      });
+    });
+    r.post(
+      path,
+      kqValidator("param", params),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        const { revisionId, caseId } = c.req.valid("param");
+        return c.json({
+          data: await arbitrationResolution.execute(c.get("federationActor"), revisionId, caseId),
+        });
+      },
+    );
+  }
   if (disputes) {
     const path = "/federation/commercial-agreements/:revisionId/disputes";
     r.get(

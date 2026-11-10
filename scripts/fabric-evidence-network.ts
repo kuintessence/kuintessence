@@ -52,7 +52,8 @@ if (
 )
   throw new Error("Set KQ_FEDERATION_EXECUTION_LAB=1 for the disposable local k3s lab");
 if (
-  (process.argv.includes("--arbitration-revocation") ||
+  (process.argv.includes("--arbitration-resolution") ||
+    process.argv.includes("--arbitration-revocation") ||
     process.argv.includes("--arbitration-live")) &&
   (!process.argv.includes("--gate") ||
     execution ||
@@ -420,9 +421,13 @@ async function setup() {
                 "commercial-payment",
                 "commercial-dispute",
                 "commercial-dispute-freeze",
-                ...(process.argv.includes("--arbitration-revocation") ||
+                ...(process.argv.includes("--arbitration-resolution") ||
+                process.argv.includes("--arbitration-revocation") ||
                 process.argv.includes("--arbitration-live")
                   ? ["commercial-arbitration-policy", "commercial-arbitration-revocation"]
+                  : []),
+                ...(process.argv.includes("--arbitration-resolution")
+                  ? ["arbitration-decision", "delegation", "acceptance"]
                   : []),
                 "cancellation-receipt",
                 ...(gate

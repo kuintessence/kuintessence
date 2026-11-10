@@ -56,6 +56,7 @@ import { FederationArbitrationContextService } from "./federation/arbitration-co
 import { FederationArbitrationDecisionService } from "./federation/arbitration-decision";
 import { FederationArbitrationDecisionDelivery } from "./federation/arbitration-decision-delivery";
 import { FederationArbitrationPolicyService } from "./federation/arbitration-policy";
+import { FederationArbitrationResolutionService } from "./federation/arbitration-resolution";
 import { FederationArbitrationReviewService } from "./federation/arbitration-review";
 import { FederationArbitrationRevocationDelivery } from "./federation/arbitration-revocations";
 import { FederationAssetService } from "./federation/assets";
@@ -1802,6 +1803,9 @@ const federationAttestation = federationSigningKey
         : undefined,
     )
   : undefined;
+const federationArbitrationResolution = federationSigningKey
+  ? new FederationArbitrationResolutionService(db, federationSigningKey)
+  : undefined;
 const federationCommercial = federationSigningKey
   ? new FederationCommercialSubmissionService(
       db,
@@ -1809,6 +1813,7 @@ const federationCommercial = federationSigningKey
       config.FEDERATION_COMMERCIAL_SOCKET_PATH
         ? new UnixCommercialClient(config.FEDERATION_COMMERCIAL_SOCKET_PATH)
         : undefined,
+      federationArbitrationResolution,
     )
   : undefined;
 const federationMarket = federationSigningKey
@@ -2019,6 +2024,7 @@ if (federationSigningKey && federationCommercial)
       new FederationArbitrationPolicyService(db, federationSigningKey),
       federationArbitrationRevocations,
       federationArbitrationDecisions,
+      federationArbitrationResolution,
     ),
   );
 const federationPreparation = federationSigningKey

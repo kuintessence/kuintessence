@@ -5,6 +5,7 @@ import {
   type Signer,
 } from "@hyperledger/fabric-gateway";
 import { FederationCancellationReceiptSchema } from "@kuintessence/shared/federation";
+import { verifyArbitrationResolution } from "@kuintessence/shared/federation/arbitration-resolution";
 import { CommercialArbitrationRevocationSchema } from "@kuintessence/shared/federation/arbitration-revocation";
 import {
   type CommercialAdapterProposalInput,
@@ -92,7 +93,27 @@ export class FabricCommercialAdapter {
       )
         throw new Error("POLICY_DENIED");
     }
-    if (input.operation === "revoke-arbitration-policy") {
+    if (
+      input.operation === "resolve-arbitrated-case" ||
+      input.operation === "record-arbitration-resolution"
+    ) {
+      const proof = await verifyArbitrationResolution(
+        input.envelope,
+        (schema, jws, siteId) => this.verify(schema, jws, siteId, now),
+        now,
+      );
+      const b = proof.decision.payload.intent.binding;
+      if (
+        proof.decision.digest !== input.digest ||
+        proof.decision.payload.intent.decisionId !== input.recordId ||
+        b.domainId !== input.domainId ||
+        b.mode !==
+          (input.operation === "resolve-arbitrated-case"
+            ? "ledger_coordinated"
+            : "bilateral_attested")
+      )
+        throw new Error("POLICY_DENIED");
+    } else if (input.operation === "revoke-arbitration-policy") {
       const signed = await this.verify(
         CommercialArbitrationRevocationSchema,
         input.envelope.revocationJws,
@@ -304,6 +325,8 @@ export class FabricCommercialAdapter {
         throw new Error("POLICY_DENIED");
     }
     const methods = {
+      "resolve-arbitrated-case": "ResolveArbitratedCase",
+      "record-arbitration-resolution": "RecordArbitrationResolution",
       "revoke-arbitration-policy": "RevokeArbitrationPolicy",
       "register-agreement": "RegisterAgreement",
       "record-usage": "RecordUsage",

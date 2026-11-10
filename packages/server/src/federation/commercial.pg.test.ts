@@ -13,6 +13,7 @@ import {
   federationArbitrationDecisionDeliveries,
   federationArbitrationDecisions,
   federationArbitrationPolicies,
+  federationArbitrationResolutions,
   federationArbitrationRevocationDeliveries,
   federationArbitrationRevocationNotices,
   federationAssetMappings,
@@ -120,6 +121,7 @@ import {
 } from "@kuintessence/shared/federation/case-ledger";
 import {
   type CommercialAdapterProposalInput,
+  CommercialAdapterProposalInputSchema,
   type CommercialAdvanceResult,
   CommercialAgreementSchema,
   CommercialAgreementSummarySchema,
@@ -180,6 +182,7 @@ import {
 import { FederationArbitrationDecisionService } from "./arbitration-decision";
 import { FederationArbitrationDecisionDelivery } from "./arbitration-decision-delivery";
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
+import { FederationArbitrationResolutionService } from "./arbitration-resolution";
 import { FederationArbitrationReviewService } from "./arbitration-review";
 import { FederationArbitrationRevocationDelivery } from "./arbitration-revocations";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
@@ -200,7 +203,7 @@ import { FederationEvidenceService } from "./disclosure-delivery";
 import { FederationDisclosurePolicyService } from "./disclosure-policy";
 import { FederationDispatchAuthorization } from "./dispatch-authorization";
 import { FederationDisputeDelivery } from "./dispute-delivery";
-import { lockFederationDisputeTask } from "./dispute-freeze";
+import { assertFederationTaskNotDisputed, lockFederationDisputeTask } from "./dispute-freeze";
 import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
 import { FederationDisputeService } from "./disputes";
 import { FederationExecutionAutomation } from "./execution-automation";
@@ -403,6 +406,12 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
     .where(eq(submissions.id, row.id));
 }
 afterAll(async () => {
+  await db.delete(federationArbitrationResolutions).where(
+    inArray(
+      federationArbitrationResolutions.localSiteId,
+      fixtures.flatMap((f) => [f.a.signing.siteId, f.b.signing.siteId]),
+    ),
+  );
   if (arbitrationSites.length) {
     const queue = await db
       .select({ id: federationCaseSubmissions.id })
@@ -1104,7 +1113,7 @@ async function arbitrationForExecution(
     disclosures: [{ recordType: "bill", fields }],
     requiredEvidence: [{ recordType: "bill", fields }],
     decisionRule: "designated-arbitrator",
-    actions: ["settle"],
+    actions: ["settle", "resolve-without-financial-change"],
     maxChargedAmount: "60",
     validUntil: "2098-01-01T00:00:00Z",
   });
@@ -13489,9 +13498,15 @@ test("arbitration decision outcome checks exact financial relationships and fina
 
 async function arbitrationDeliveryFixture(
   mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  noFinancial = false,
 ) {
   const f = await arbitrationDecisionFixture(mode);
-  const intent = await f.decisionDraft();
+  const intent = noFinancial
+    ? await f.decisions.draft(f.owner.actor, f.scope.caseId, {
+        ...f.input,
+        outcome: { action: "resolve-without-financial-change" },
+      })
+    : await f.decisionDraft();
   await f.decisions.approve(f.owner.actor, f.scope.caseId, intent);
   for (const siteId of [f.a.signing.siteId, f.b.signing.siteId, f.r.signing.siteId])
     await db
@@ -14275,4 +14290,324 @@ test("case arbitration ledger recovers the authorized unknown transaction after 
   expect((await f.row())?.state).toBe("committed");
   expect(f.proposals).toHaveLength(1);
   expect((await f.history())[0]?.transactionId).toBe(attempt?.transactionId);
+}, 60000);
+
+async function arbitrationResolutionFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  financial = false,
+) {
+  const f = await arbitrationDeliveryFixture(mode, !financial);
+  await f.delivery.discover();
+  await f.delivery.advanceNext();
+  await f.delivery.advanceNext();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "arbitration.execute", enabled: true },
+    f.actor.userId,
+  );
+  return {
+    ...f,
+    resolveA: new FederationArbitrationResolutionService(db, f.a.signing),
+    resolveB: new FederationArbitrationResolutionService(db, f.b.signing),
+  };
+}
+
+test("arbitration resolution closes only the decided case, retains other freezes and never changes funds", async () => {
+  for (const mode of ["bilateral_direct", "bilateral_attested"] as const) {
+    const f = await arbitrationResolutionFixture(mode);
+    const before = await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.request.budgetDomainId));
+    const other = await f.sourceCases.draft(f.actor, f.revisionId, {
+      subject: f.draft.subject,
+      reason: "Second independent case",
+      requestedResolution: "Review separately",
+      caseId: randomUUID(),
+    });
+    await f.sourceCases.open(f.actor, f.revisionId, other);
+    const [one, two] = await Promise.all([
+      f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId),
+      f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId),
+    ]);
+    expect(one).toEqual(two);
+    expect(one.appliedAt).not.toBeNull();
+    await expect(
+      db.transaction((tx) => assertFederationTaskNotDisputed(tx, f.a.signing.siteId, f.request)),
+    ).rejects.toThrow("DATA_WAITING");
+    const [unclosed] = await db
+      .select()
+      .from(federationDisputes)
+      .where(
+        and(
+          eq(federationDisputes.localSiteId, f.a.signing.siteId),
+          eq(federationDisputes.caseId, other.caseId),
+        ),
+      );
+    expect(unclosed?.state).toBe("FREEZE_PENDING");
+    await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
+    await db.transaction((tx) =>
+      assertFederationTaskNotDisputed(tx, f.b.signing.siteId, f.request),
+    );
+    expect(
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.request.budgetDomainId)),
+    ).toEqual(before);
+    const applied = await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, f.intent.decisionId),
+          eq(auditLog.action, "federation.arbitration_resolution.apply"),
+        ),
+      );
+    expect(applied).toHaveLength(2);
+    const queued = await db
+      .select()
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.agreementRevisionId, f.revisionId),
+          sql`${submissions.input}->>'operation' = 'record-arbitration-resolution'`,
+        ),
+      );
+    expect(queued).toHaveLength(mode === "bilateral_direct" ? 0 : 2);
+    await f.arbitration.source.revoke(f.actor, f.revisionId, f.arbitration.policy.policyId);
+    expect(await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId)).toEqual(one);
+  }
+}, 60000);
+
+test("arbitration resolution requires separate execution authority and rejects financial awards or revoked mandates", async () => {
+  const f = await arbitrationResolutionFixture();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "arbitration.execute", enabled: false },
+    f.actor.userId,
+  );
+  await expect(f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await expect(f.resolveA.read(f.owner.actor, f.revisionId, f.scope.caseId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "arbitration.execute", enabled: true },
+    f.actor.userId,
+  );
+  await f.arbitration.source.revoke(f.actor, f.revisionId, f.arbitration.policy.policyId);
+  await expect(f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+  expect(await f.resolveA.read(f.actor, f.revisionId, f.scope.caseId)).toBeNull();
+  const monetary = await arbitrationResolutionFixture("bilateral_direct", true);
+  await expect(
+    monetary.resolveA.execute(monetary.actor, monetary.revisionId, monetary.scope.caseId),
+  ).rejects.toThrow("POLICY_DENIED");
+}, 60000);
+
+test("arbitration resolution audit failure rolls back case closure and execution together", async () => {
+  const f = await arbitrationResolutionFixture();
+  await db.execute(
+    sql`CREATE FUNCTION resolution_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.arbitration_resolution.apply' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER resolution_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION resolution_audit_fail()`,
+  );
+  try {
+    await expect(f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId)).rejects.toThrow();
+  } finally {
+    await db.execute(sql`DROP TRIGGER resolution_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION resolution_audit_fail()`);
+  }
+  expect(await f.resolveA.read(f.actor, f.revisionId, f.scope.caseId)).toBeNull();
+  const [record] = await db
+    .select()
+    .from(federationDisputes)
+    .where(
+      and(
+        eq(federationDisputes.localSiteId, f.a.signing.siteId),
+        eq(federationDisputes.caseId, f.scope.caseId),
+      ),
+    );
+  expect(record?.state).toBe("DISPUTED");
+  expect(
+    (await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId)).appliedAt,
+  ).not.toBeNull();
+}, 60000);
+
+// Queue-only tests inject the authorization boundary; signed award validation has separate coverage.
+async function arbitrationResolutionQueueFixture() {
+  const f = await fixture("ledger_coordinated");
+  await approveBoth(f);
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  const input = CommercialAdapterProposalInputSchema.parse({
+    operation: "resolve-arbitrated-case",
+    domainId: f.terms.domainId,
+    recordId: randomUUID(),
+    digest: `sha256:${"a".repeat(64)}`,
+    envelope: {
+      sourceSiteId: f.a.signing.siteId,
+      targetSiteId: f.b.signing.siteId,
+      decisionJws: "queue-only-decision",
+      requestJws: "queue-only-request",
+      acceptanceJws: "queue-only-acceptance",
+    },
+  });
+  const id = randomUUID();
+  await db
+    .insert(submissions)
+    .values({ id, localSiteId: f.a.signing.siteId, agreementRevisionId: f.revisionId, input });
+  const resolution = new FederationArbitrationResolutionService(db, f.a.signing);
+  const controls = { authorized: true, failApply: false };
+  const authorization = spyOn(resolution, "beforeDisclosure").mockImplementation(async () => {
+    if (!controls.authorized) throw new FederationError("AUTHORIZATION_EXPIRED");
+  });
+  const apply = spyOn(resolution, "apply").mockImplementation(async (tx, decisionId) => {
+    await tx.insert(auditLog).values({
+      actor: f.actor.userId,
+      orgId: f.actor.orgId,
+      action: "test.arbitration.queue.apply",
+      target: decisionId,
+    });
+    if (controls.failApply) throw new Error("Injected local commit failure");
+  });
+  const worker = () =>
+    new FederationCommercialSubmissionService(db, f.a.signing.siteId, f.adapter, resolution);
+  return {
+    ...f,
+    input,
+    id,
+    controls,
+    authorization,
+    apply,
+    worker,
+    due: () =>
+      db
+        .update(submissions)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(submissions.id, id)),
+    row: async () => (await db.select().from(submissions).where(eq(submissions.id, id)))[0],
+    history: () => db.select().from(attempts).where(eq(attempts.submissionId, id)),
+    restore: () => {
+      authorization.mockRestore();
+      apply.mockRestore();
+    },
+  };
+}
+
+test("arbitration resolution queue stops before dispatch when authority expires after preparation", async () => {
+  const f = await arbitrationResolutionQueueFixture();
+  try {
+    const worker = f.worker();
+    await worker.advanceNext();
+    await worker.advanceNext();
+    expect((await f.history())[0]?.stage).toBe("transaction");
+    f.controls.authorized = false;
+    const calls = f.adapter.advances.length;
+    await worker.advanceNext();
+    expect(f.adapter.advances).toHaveLength(calls);
+    expect((await f.row())?.state).toBe("needs_review");
+    expect((await f.history())[0]?.dispatchAuthorizedAt).toBeNull();
+    expect(f.apply).not.toHaveBeenCalled();
+  } finally {
+    f.restore();
+  }
+});
+
+test("arbitration resolution queue recovers the original dispatched transaction and atomically retries local apply", async () => {
+  const f = await arbitrationResolutionQueueFixture();
+  try {
+    const worker = f.worker();
+    await worker.advanceNext();
+    await worker.advanceNext();
+    f.adapter.outcome = "pending";
+    await worker.advanceNext();
+    const [sent] = await f.history();
+    expect(sent?.dispatchAuthorizedAt).toBeInstanceOf(Date);
+    expect(f.apply).not.toHaveBeenCalled();
+    const prepares = f.adapter.prepares.length;
+    const checks = f.authorization.mock.calls.length;
+    f.controls.authorized = false;
+    f.adapter.outcome = "committed";
+    f.controls.failApply = true;
+    await f.due();
+    await f.worker().advanceNext();
+    expect((await f.row())?.state).toBe("pending");
+    expect((await f.history())[0]?.stage).toBe("transaction");
+    const applied = () =>
+      db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.target, f.input.recordId),
+            eq(auditLog.action, "test.arbitration.queue.apply"),
+          ),
+        );
+    expect(await applied()).toHaveLength(0);
+    f.controls.failApply = false;
+    await f.due();
+    await f.worker().advanceNext();
+    expect((await f.row())?.state).toBe("committed");
+    expect(await applied()).toHaveLength(1);
+    expect(await f.history()).toHaveLength(1);
+    expect((await f.history())[0]?.transactionId).toBe(sent?.transactionId);
+    expect(f.adapter.prepares).toHaveLength(prepares);
+    expect(f.authorization.mock.calls).toHaveLength(checks);
+  } finally {
+    f.restore();
+  }
+});
+
+test("arbitration resolution HTTP requires a human executor, rejects extra fields and never exposes signed envelopes", async () => {
+  const f = await arbitrationResolutionFixture();
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [
+    f.approvals,
+    new FederationCommercialSubmissionService(db, f.a.signing.siteId),
+  ];
+  deps[30] = f.resolveA;
+  let actor = f.actor,
+    automation = false;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    c.set("automation" as never, automation as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...deps));
+  const path = `/federation/commercial-agreements/${f.revisionId}/disputes/${f.scope.caseId}/arbitration-resolution`;
+  const post = (body = {}) =>
+    app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await post({ outcome: "settle" })).status).toBe(400);
+  automation = true;
+  expect((await post()).status).toBe(403);
+  automation = false;
+  actor = f.owner.actor;
+  expect((await post()).status).toBe(403);
+  actor = f.actor;
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "arbitration.execute", enabled: false },
+    actor.userId,
+  );
+  expect((await post()).status).toBe(403);
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "arbitration.execute", enabled: true },
+    actor.userId,
+  );
+  const executed = await post();
+  expect(executed.status).toBe(200);
+  expect(executed.headers.get("cache-control")).toBe("no-store");
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const body = await response.text();
+  expect(body).not.toContain("Jws");
+  expect(body).not.toContain(f.intent.reason);
+  expect(body).not.toContain("envelope");
 }, 60000);

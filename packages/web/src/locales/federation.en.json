@@ -270,7 +270,8 @@
         "arbitration": {
           "read": "Read arbitration context",
           "approve": "Approve arbitration policies",
-          "decide": "Sign arbitration decisions"
+          "decide": "Sign arbitration decisions",
+          "execute": "Execute authorized arbitration resolutions"
         }
       },
       "effects": {
@@ -331,7 +332,8 @@
         "arbitration": {
           "read": "Read current bilateral authority for registered cases. Grants no contract, evidence, award or financial access.",
           "approve": "Approve or revoke arbitration policies, including contract viewing. Grants no award, admission, debit or payment authority.",
-          "decide": "Sign this site’s arbitration decisions. New decisions also require context and evidence access; this grants no debit or unfreeze authority."
+          "decide": "Sign this site’s arbitration decisions. New decisions also require context and evidence access; this grants no debit or unfreeze authority.",
+          "execute": "Execute a received no-financial-change award after rechecking the original preauthorization and current freeze. Does not authorize settlement, adjustment or payment."
         }
       }
     },

@@ -10,6 +10,7 @@ import {
   assertArbitrationRequest,
   CommercialArbitrationPolicySchema,
 } from "@kuintessence/shared/federation/arbitration-policy";
+import { verifyArbitrationResolution } from "@kuintessence/shared/federation/arbitration-resolution";
 import {
   type CommercialArbitrationRevocation,
   CommercialArbitrationRevocationEnvelopeSchema,
@@ -24,6 +25,7 @@ import {
   assertCommercialSettlement,
 } from "@kuintessence/shared/federation/billing";
 import {
+  ArbitrationResolutionEnvelopeSchema,
   CommercialAdjustmentSchema,
   CommercialAgreementEnvelopeSchema,
   CommercialAgreementSchema,
@@ -106,7 +108,7 @@ const StoredAdjustment = z.strictObject({
   terms: CommercialAdjustmentSchema,
 });
 const TaskDispute = z.strictObject({
-  activeCases: z.number().int().positive().max(2147483647),
+  activeCases: z.number().int().nonnegative().max(2147483647),
   salt: z.string().regex(/^[a-f0-9]{64}$/),
 });
 const StoredDisputeFreeze = z.strictObject({
@@ -1071,8 +1073,8 @@ export class CommercialLedger {
       this.disputeTaskKey(stub, domain.domainId, task),
     );
     if (bytes.length) {
-      TaskDispute.parse(JSON.parse(Buffer.from(bytes).toString()));
-      return fail("DATA_WAITING");
+      if (TaskDispute.parse(JSON.parse(Buffer.from(bytes).toString())).activeCases > 0)
+        return fail("DATA_WAITING");
     }
   }
   private async nativeFinancialRecords(
@@ -1321,6 +1323,156 @@ export class CommercialLedger {
       key,
       encode({ receipt, envelope, terms, opening: opening.payload }),
     );
+    return encode(receipt);
+  }
+  private async resolveArbitration(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    recordId: string,
+    native: boolean,
+  ) {
+    const envelope = this.input(stub, ArbitrationResolutionEnvelopeSchema),
+      now = stub.getDateTimestamp();
+    if (
+      !domain.siteIds.includes(envelope.sourceSiteId) ||
+      !domain.siteIds.includes(envelope.targetSiteId)
+    )
+      return fail("POLICY_DENIED");
+    const proof = await verifyArbitrationResolution(
+      envelope,
+      (schema, jws, siteId) => this.verify(stub, schema, jws, siteId, now),
+      now,
+    );
+    const decision = proof.decision.payload,
+      b = decision.intent.binding;
+    if (
+      b.domainId !== domain.domainId ||
+      recordId !== decision.intent.decisionId ||
+      b.mode !== (native ? "ledger_coordinated" : "bilateral_attested")
+    )
+      return fail("POLICY_DENIED");
+    const recordKey = stub.createCompositeKey("arbitration-resolution", [
+      domain.domainId,
+      recordId,
+    ]);
+    const caseKey = stub.createCompositeKey("arbitration-resolved-case", [
+      domain.domainId,
+      b.caseId,
+    ]);
+    const prior = await this.privateValue(stub, domain.collection, recordKey);
+    const receipt = { recordId, digest: proof.decision.digest };
+    const resolved = await this.privateValue(stub, domain.collection, caseKey);
+    if (resolved.length && !Buffer.from(resolved).equals(encode(receipt)))
+      return fail("OPERATION_CONFLICT");
+    if (prior.length) {
+      const saved = z
+        .object({ receipt: CommercialReceiptSchema })
+        .parse(JSON.parse(Buffer.from(prior).toString()));
+      if (saved.receipt.recordId !== recordId || saved.receipt.digest !== receipt.digest)
+        return fail("OPERATION_CONFLICT");
+      await stub.putPrivateData(domain.collection, recordKey, prior);
+      return encode(receipt);
+    }
+    if (
+      (
+        await this.privateValue(
+          stub,
+          domain.collection,
+          this.arbitrationWithdrawalKey(stub, {
+            domainId: b.domainId,
+            agreementRevisionId: b.agreementRevisionId,
+            policyId: b.policyId,
+            policyDigest: b.policyDigest,
+          }),
+        )
+      ).length
+    )
+      return fail("AUTHORIZATION_EXPIRED");
+    const agreementBytes = await this.privateValue(
+      stub,
+      domain.collection,
+      stub.createCompositeKey("agreement", [domain.domainId, b.agreementRevisionId]),
+    );
+    if (!agreementBytes.length) return fail("DATA_WAITING");
+    const agreement = StoredAgreement.parse(JSON.parse(Buffer.from(agreementBytes).toString()));
+    if (agreement.receipt.digest !== b.agreementDigest) return fail("OPERATION_CONFLICT");
+    assertDelegationTerms(
+      agreement.terms.agreement,
+      proof.request.payload,
+      new Date(proof.request.payload.issuedAt),
+    );
+    const freezeBytes = await this.privateValue(
+      stub,
+      domain.collection,
+      stub.createCompositeKey(native ? "native-dispute-freeze" : "dispute-freeze", [
+        domain.domainId,
+        b.caseId,
+      ]),
+    );
+    if (!freezeBytes.length) return fail("DATA_WAITING");
+    const freeze = StoredDisputeFreeze.parse(JSON.parse(Buffer.from(freezeBytes).toString()));
+    if (
+      freeze.receipt.digest !== decision.intent.financial.freezeDigest ||
+      freeze.terms.headDigest !== decision.intent.financial.headDigest ||
+      freeze.terms.caseDigest !== b.caseDigest ||
+      freeze.opening.subject.recordId !== decision.intent.subject.recordId ||
+      federationCanonicalJson(freeze.opening.subject) !==
+        federationCanonicalJson(decision.intent.subject) ||
+      (
+        [
+          "agreementRevisionId",
+          "taskId",
+          "attempt",
+          "sourceSiteId",
+          "targetSiteId",
+          "mode",
+        ] as const
+      ).some((k) => freeze.terms[k] !== b[k])
+    )
+      return fail("OPERATION_CONFLICT");
+    if (native) {
+      const reservationBytes = await this.privateValue(
+        stub,
+        domain.collection,
+        stub.createCompositeKey("reservation", [domain.domainId, b.reservationId]),
+      );
+      if (!reservationBytes.length) return fail("DATA_WAITING");
+      const reservation = StoredReservation.parse(
+        JSON.parse(Buffer.from(reservationBytes).toString()),
+      );
+      if (
+        federationCanonicalJson(reservation.reservation.request) !==
+        federationCanonicalJson(proof.request.payload)
+      )
+        return fail("POLICY_DENIED");
+      const records = await this.nativeFinancialRecords(stub, domain, freeze.terms);
+      const head = {
+        caseId: b.caseId,
+        caseDigest: b.caseDigest,
+        agreementRevisionId: b.agreementRevisionId,
+        taskId: b.taskId,
+        attempt: b.attempt,
+        mode: b.mode,
+        records,
+      };
+      if (
+        `sha256:${createHash("sha256").update(federationCanonicalJson(head)).digest("hex")}` !==
+        decision.intent.financial.headDigest
+      )
+        return fail("OPERATION_CONFLICT");
+      const taskKey = this.disputeTaskKey(stub, domain.domainId, b);
+      const bytes = await this.privateValue(stub, domain.collection, taskKey);
+      if (!bytes.length) return fail("DATA_WAITING");
+      const task = TaskDispute.parse(JSON.parse(Buffer.from(bytes).toString()));
+      if (task.activeCases < 1) return fail("OPERATION_CONFLICT");
+      await stub.putPrivateData(
+        domain.collection,
+        taskKey,
+        encode({ ...task, activeCases: task.activeCases - 1 }),
+      );
+    }
+    await stub.putPrivateData(domain.collection, caseKey, encode(receipt));
+    await stub.putPrivateData(domain.collection, recordKey, encode({ receipt, envelope }));
     return encode(receipt);
   }
   private async payment(
@@ -1787,6 +1939,8 @@ export class CommercialLedger {
         "RecordPayment",
         "RecordDisputeFreeze",
         "FreezeDisputedTask",
+        "ResolveArbitratedCase",
+        "RecordArbitrationResolution",
         "RevokeArbitrationPolicy",
       ].includes(fcn)
     )
@@ -1796,6 +1950,10 @@ export class CommercialLedger {
     const domain = this.trust.domains.find((domain) => domain.domainId === domainId);
     if (!domain?.siteIds.includes(org.siteId)) return fail("POLICY_DENIED");
     if (fcn === "RevokeArbitrationPolicy") return this.revokeArbitration(stub, domain, recordId);
+    if (fcn === "ResolveArbitratedCase")
+      return this.resolveArbitration(stub, domain, recordId, true);
+    if (fcn === "RecordArbitrationResolution")
+      return this.resolveArbitration(stub, domain, recordId, false);
     if (fcn === "FreezeDisputedTask") return this.disputeAttestation(stub, domain, recordId, true);
     if (fcn === "RecordDisputeFreeze") return this.disputeAttestation(stub, domain, recordId);
     if (fcn === "RecordPayment") return this.payment(stub, domain, recordId);

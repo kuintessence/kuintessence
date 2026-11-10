@@ -11,7 +11,12 @@ import { dirname, join } from "node:path";
 import { Client, credentials } from "@grpc/grpc-js";
 import { connect, EndorseError, signers, type Transaction } from "@hyperledger/fabric-gateway";
 import { common, ledger, msp, peer, gateway as proto } from "@hyperledger/fabric-protos";
-import { federationCanonicalJson } from "@kuintessence/shared/federation";
+import {
+  FederationAcceptanceSchema,
+  FederationDelegationSchema,
+  federationCanonicalJson,
+} from "@kuintessence/shared/federation";
+import { ArbitrationDecisionSchema } from "@kuintessence/shared/federation/arbitration-decision";
 import { CommercialArbitrationPolicySchema } from "@kuintessence/shared/federation/arbitration-policy";
 import {
   type CommercialArbitrationRevocationEnvelopeSchema,
@@ -450,6 +455,315 @@ async function run() {
     probes.push(signed.sourceJws, signed.targetJws);
     return { value, signed };
   };
+  if (process.argv.includes("--arbitration-resolution")) {
+    const digest = (jws: string) =>
+      `sha256:${createHash("sha256")
+        .update(Buffer.from(jws.split(".")[1] ?? "", "base64url"))
+        .digest("hex")}`;
+    const arbitrator: FederationSigningKey = {
+      siteId: site("C").siteId,
+      keyId: "batch-1",
+      privateKey: await importPKCS8(await readFile(site("C").businessKeyFile, "utf8"), "RS256"),
+    };
+    const policy = CommercialArbitrationPolicySchema.parse({
+      protocolVersion: 1,
+      kind: "commercial-arbitration-policy",
+      policyId: randomUUID(),
+      domainId: domain.domainId,
+      agreementRevisionId: agreementReceipt.recordId,
+      agreementDigest: agreementReceipt.digest,
+      sourceSiteId: source.siteId,
+      targetSiteId: target.siteId,
+      arbitratorSiteId: arbitrator.siteId,
+      subjectTypes: ["usage"],
+      disclosures: [{ recordType: "usage", fields: ["measurements"] }],
+      requiredEvidence: [{ recordType: "usage", fields: ["measurements"] }],
+      decisionRule: "designated-arbitrator",
+      actions: ["resolve-without-financial-change"],
+      maxChargedAmount: "0",
+      unit: terms.agreement.unit,
+      salt: randomBytes(32).toString("hex"),
+      issuedAt: new Date().toISOString(),
+      validFrom: new Date().toISOString(),
+      validUntil: new Date(time + 1800000).toISOString(),
+    });
+    const approvals = await bilateral(CommercialArbitrationPolicySchema, policy);
+    const task = await claimed();
+    const request = {
+      ...task.reservation.request,
+      arbitration: {
+        policyId: policy.policyId,
+        policyDigest: digest(approvals.sourceJws),
+        sourceJws: approvals.sourceJws,
+        targetJws: approvals.targetJws,
+      },
+    };
+    const reservation = CommercialReservationSchema.parse({ ...task.reservation, request });
+    const signedReservation = await bilateral(CommercialReservationSchema, reservation);
+    const reserved = await commercial(
+      a,
+      "ReserveExecution",
+      reservation.reservationId,
+      signedReservation,
+    ).endorse();
+    assert.equal((await commit(reserved)).successful, true);
+    const requestJws = await signFederationMessage(FederationDelegationSchema, request, source);
+    const acceptance = FederationAcceptanceSchema.parse({
+      protocolVersion: 1,
+      kind: "acceptance",
+      senderSiteId: target.siteId,
+      recipientSiteId: source.siteId,
+      operationId: request.operationId,
+      agreementRevisionId: request.agreementRevisionId,
+      mode: request.mode,
+      budgetDomainId: request.budgetDomainId,
+      epoch: request.epoch,
+      taskId: request.taskId,
+      attempt: request.attempt,
+      requestDigest: digest(requestJws),
+      reservationId: reservation.reservationId,
+      reservedAmount: request.maxAmount,
+      unit: request.unit,
+      acceptedAt: new Date().toISOString(),
+      status: "RESERVED",
+    });
+    const acceptanceJws = await signFederationMessage(
+      FederationAcceptanceSchema,
+      acceptance,
+      target,
+    );
+    const makeCase = async () => {
+      // Signed fixture evidence exercises contract enforcement, not the three-Server review flow.
+      const opening = CommercialDisputeSchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-dispute",
+        caseId: randomUUID(),
+        domainId: domain.domainId,
+        agreementRevisionId: request.agreementRevisionId,
+        agreementDigest: agreementReceipt.digest,
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        openingSiteId: source.siteId,
+        taskId: request.taskId,
+        attempt: request.attempt,
+        subject: {
+          recordType: "usage",
+          recordId: randomUUID(),
+          recordDigest: `sha256:${"a".repeat(64)}`,
+        },
+        reason: `PRIVATE-RESOLUTION-${randomUUID()}`,
+        requestedResolution: "Resolve without charge",
+        issuedAt: new Date().toISOString(),
+        salt: randomBytes(32).toString("hex"),
+      });
+      const openingJws = await signFederationMessage(CommercialDisputeSchema, opening, source);
+      const identity = {
+        caseId: opening.caseId,
+        caseDigest: digest(openingJws),
+        agreementRevisionId: request.agreementRevisionId,
+        taskId: request.taskId,
+        attempt: request.attempt,
+        mode: request.mode,
+      };
+      const freeze = CommercialDisputeFreezeSchema.parse({
+        ...identity,
+        protocolVersion: 1,
+        kind: "commercial-dispute-freeze",
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        headDigest: `sha256:${createHash("sha256")
+          .update(federationCanonicalJson({ ...identity, records: [] }))
+          .digest("hex")}`,
+        issuedAt: new Date().toISOString(),
+        salt: randomBytes(32).toString("hex"),
+      });
+      const freezeEnvelope = {
+        ...(await bilateral(CommercialDisputeFreezeSchema, freeze)),
+        openingSiteId: source.siteId,
+        openingJws,
+      };
+      assert.equal(
+        (
+          await commit(
+            await commercial(a, "FreezeDisputedTask", opening.caseId, freezeEnvelope).endorse(),
+          )
+        ).successful,
+        true,
+      );
+      const decision = ArbitrationDecisionSchema.parse({
+        protocolVersion: 1,
+        kind: "arbitration-decision",
+        issuedAt: new Date().toISOString(),
+        basisExpiresAt: new Date(Date.now() + 30000).toISOString(),
+        basisDigest: `sha256:${"b".repeat(64)}`,
+        intent: {
+          decisionId: randomUUID(),
+          binding: {
+            ...identity,
+            domainId: domain.domainId,
+            agreementDigest: agreementReceipt.digest,
+            sourceSiteId: source.siteId,
+            targetSiteId: target.siteId,
+            arbitratorSiteId: arbitrator.siteId,
+            operationId: request.operationId,
+            reservationId: reservation.reservationId,
+            requestDigest: digest(requestJws),
+            acceptanceDigest: digest(acceptanceJws),
+            policyId: policy.policyId,
+            policyDigest: digest(approvals.sourceJws),
+            unit: request.unit,
+          },
+          subject: opening.subject,
+          financial: {
+            headDigest: freeze.headDigest,
+            freezeDigest: digest(freezeEnvelope.sourceJws),
+            records: [],
+            evidenceReferences: [],
+            targets: [],
+            ledgerReceipt: { recordId: opening.caseId, digest: digest(freezeEnvelope.sourceJws) },
+          },
+          evidence: [
+            {
+              ...opening.subject,
+              grantId: randomUUID(),
+              disclosureDigest: `sha256:${"c".repeat(64)}`,
+              fields: ["measurements"],
+            },
+          ],
+          outcome: { action: "resolve-without-financial-change" },
+          reason: opening.reason,
+          salt: randomBytes(32).toString("hex"),
+        },
+      });
+      const envelope = {
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        requestJws,
+        acceptanceJws,
+        decisionJws: await signFederationMessage(ArbitrationDecisionSchema, decision, arbitrator),
+      };
+      probes.push(opening.reason, openingJws, envelope.decisionJws, freezeEnvelope.sourceJws);
+      return {
+        decision,
+        envelope,
+        id: decision.intent.decisionId,
+        resolve: () =>
+          commercial(a, "ResolveArbitratedCase", decision.intent.decisionId, envelope).endorse(),
+      };
+    };
+    const first = await makeCase(),
+      second = await makeCase();
+    const releaseValue = CommercialReleaseSchema.parse({
+      protocolVersion: 1,
+      kind: "commercial-release",
+      domainId: domain.domainId,
+      releaseId: randomUUID(),
+      reservationId: reservation.reservationId,
+      reservationDigest: digest(signedReservation.sourceJws),
+      sourceSiteId: source.siteId,
+      targetSiteId: target.siteId,
+      expectedGateVersion: 1,
+      issuedAt: new Date().toISOString(),
+      salt: randomBytes(32).toString("hex"),
+      reason: "After both cases resolve",
+    });
+    const releaseEnvelope = await bilateral(CommercialReleaseSchema, releaseValue);
+    const releaseAttempt = () =>
+      commercial(a, "ReleaseExecution", releaseValue.releaseId, releaseEnvelope).endorse();
+    await assert.rejects(releaseAttempt(), rejected("DATA_WAITING"));
+    await assert.rejects(
+      commercial(c, "ResolveArbitratedCase", first.id, first.envelope).endorse(),
+      rejected("POLICY_DENIED"),
+    );
+    for (const omitted of ["AMSP", "BMSP"]) {
+      const tx = await first.resolve();
+      const prepared = proto.PreparedTransaction.deserializeBinary(tx.getBytes());
+      const envelope = prepared.getEnvelope();
+      assert(envelope);
+      const payload = common.Payload.deserializeBinary(envelope.getPayload_asU8());
+      const transaction = peer.Transaction.deserializeBinary(payload.getData_asU8());
+      for (const action of transaction.getActionsList()) {
+        const body = peer.ChaincodeActionPayload.deserializeBinary(action.getPayload_asU8());
+        const endorsements = body.getAction();
+        assert(endorsements);
+        const remaining = endorsements
+          .getEndorsementsList()
+          .filter(
+            (entry) =>
+              msp.SerializedIdentity.deserializeBinary(entry.getEndorser_asU8()).getMspid() !==
+              omitted,
+          );
+        assert.equal(remaining.length, 1);
+        endorsements.setEndorsementsList(remaining);
+        action.setPayload(body.serializeBinary());
+      }
+      payload.setData(transaction.serializeBinary());
+      envelope.setPayload(payload.serializeBinary());
+      assert.equal(
+        (await commit(a.newTransaction(prepared.serializeBinary()))).code,
+        peer.TxValidationCode.ENDORSEMENT_POLICY_FAILURE,
+      );
+    }
+    passed.push(
+      "resolution without either A or B endorsement is native INVALID; R cannot access the commercial PDC",
+    );
+    const [one, two] = await Promise.all([first.resolve(), second.resolve()]);
+    assert.equal((await commit(one)).successful, true);
+    assert.equal((await commit(two)).code, peer.TxValidationCode.MVCC_READ_CONFLICT);
+    assert.equal((await commit(await first.resolve())).successful, true);
+    await assert.rejects(releaseAttempt(), rejected("DATA_WAITING"));
+    passed.push(
+      "concurrent case resolutions serialize through native MVCC; replay of the first cannot unfreeze the second",
+    );
+    assert.equal((await commit(await second.resolve())).successful, true);
+    assert.equal((await commit(await releaseAttempt())).successful, true);
+    passed.push("the original reservation can be released only after both distinct cases resolve");
+    const changed = {
+      ...first.decision,
+      intent: { ...first.decision.intent, decisionId: randomUUID() },
+    };
+    await assert.rejects(
+      commercial(a, "ResolveArbitratedCase", changed.intent.decisionId, {
+        ...first.envelope,
+        decisionJws: await signFederationMessage(ArbitrationDecisionSchema, changed, arbitrator),
+      }).endorse(),
+      rejected("OPERATION_CONFLICT"),
+    );
+    for (const gateway of [a, b]) {
+      const result = await gateway
+        .getNetwork(network.channel)
+        .getContract("kq-commercial")
+        .evaluateTransaction(
+          "GetRecordReceipt",
+          domain.domainId,
+          "arbitration-resolution",
+          first.id,
+        );
+      assert.deepEqual(JSON.parse(Buffer.from(result).toString()), {
+        receipt: { recordId: first.id, digest: digest(first.envelope.decisionJws) },
+      });
+    }
+    await assert.rejects(
+      c
+        .getNetwork(network.channel)
+        .getContract("kq-commercial")
+        .evaluateTransaction(
+          "GetRecordReceipt",
+          domain.domainId,
+          "arbitration-resolution",
+          first.id,
+        ),
+    );
+    passed.push(
+      "both parties read the immutable resolution receipt, R is denied and a second award cannot overwrite the same case",
+    );
+    await writeFile(
+      z.string().parse(process.argv[3]),
+      JSON.stringify({ passed, probes }, null, 2),
+      { mode: 0o600 },
+    );
+    return;
+  }
   if (process.argv.includes("--arbitration-revocation")) {
     const record = async (gateway: ReturnType<typeof connect>, type: string, id: string) =>
       z

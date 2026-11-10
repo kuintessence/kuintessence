@@ -47,6 +47,7 @@ import { FabricProposalCheckpointSchema } from "@kuintessence/shared/federation/
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { applyFederationAdjustment } from "./adjustment";
+import type { FederationArbitrationResolutionService } from "./arbitration-resolution";
 import type { CommercialClient } from "./commercial-client";
 import { enqueueExecutionClosure } from "./execution-closure";
 import { FabricClientFailure } from "./fabric-client";
@@ -62,6 +63,8 @@ type Lease = { id: string; token: string };
 class LeaseLost extends Error {}
 const MvccReconciling = "MVCC_RECONCILING";
 const recordTypes = {
+  "resolve-arbitrated-case": "arbitration-resolution",
+  "record-arbitration-resolution": "arbitration-resolution",
   "revoke-arbitration-policy": "arbitration-revocation",
   "register-agreement": "agreement",
   "record-usage": "usage",
@@ -84,6 +87,7 @@ export class FederationCommercialSubmissionService {
     private readonly db: PgDb,
     private readonly siteId: string,
     private readonly client?: CommercialClient,
+    private readonly arbitration?: FederationArbitrationResolutionService,
   ) {
     this.trust = new FederationTrustRegistry(db);
   }
@@ -316,7 +320,11 @@ export class FederationCommercialSubmissionService {
           await this.client.prepare(submission.input),
         );
         await this.fenced(claimed, async (tx, current) => {
-          if (["reserve-execution", "release-execution"].includes(current.input.operation))
+          if (
+            ["reserve-execution", "release-execution", "resolve-arbitrated-case"].includes(
+              current.input.operation,
+            )
+          )
             await this.beforeDisclosure(current.input, tx);
           if (receipt) {
             const [latest] = await this.latest(tx, submission.id);
@@ -366,6 +374,19 @@ export class FederationCommercialSubmissionService {
         });
       } else {
         if (attempt.stage === "proposal") await this.beforeDisclosure(submission.input);
+        if (
+          submission.input.operation === "resolve-arbitrated-case" &&
+          attempt.stage === "transaction" &&
+          !attempt.dispatchAuthorizedAt
+        ) {
+          await this.fenced(claimed, async (tx, current) => {
+            await this.beforeDisclosure(current.input, tx);
+            await tx
+              .update(attempts)
+              .set({ dispatchAuthorizedAt: sql`clock_timestamp()` })
+              .where(eq(attempts.id, attempt.id));
+          });
+        }
         const result = FabricCommercialAdvanceResultSchema.parse(
           await this.client.advance(attempt.recovery),
         );
@@ -423,6 +444,13 @@ export class FederationCommercialSubmissionService {
                 updatedAt: sql`clock_timestamp()`,
               })
               .where(eq(submissions.id, submission.id));
+            if (
+              result.state === "committed" &&
+              submission.input.operation === "resolve-arbitrated-case"
+            ) {
+              if (!this.arbitration) throw new FederationError("ASSET_UNAVAILABLE");
+              await this.arbitration.apply(tx, submission.input.recordId, submission.input.digest);
+            }
             if (
               result.state === "committed" &&
               submission.input.operation === "adjust-settlement"
@@ -668,6 +696,13 @@ export class FederationCommercialSubmissionService {
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
+    if (
+      input.operation === "resolve-arbitrated-case" ||
+      input.operation === "record-arbitration-resolution"
+    ) {
+      if (!this.arbitration) throw new FederationError("ASSET_UNAVAILABLE");
+      return this.arbitration.beforeDisclosure(input, tx);
+    }
     if (input.operation === "revoke-arbitration-policy") {
       const jws = input.envelope.revocationJws,
         keyId = federationMessageKeyId(jws);
@@ -1071,25 +1106,33 @@ export class FederationCommercialSubmissionService {
       await requireFederationCapability(
         tx,
         actor,
-        row.input.operation === "revoke-arbitration-policy"
-          ? "arbitration.approve"
-          : row.input.operation === "record-dispute-freeze" ||
-              row.input.operation === "freeze-disputed-task"
-            ? "dispute.open"
-            : row.input.operation === "record-payment"
-              ? "payment.approve"
-              : row.input.operation === "adjust-settlement"
-                ? "adjustment.approve"
-                : row.input.operation === "settle-bill" || row.input.operation === "record-refund"
-                  ? "settlement.approve"
-                  : ["confirm-bill", "record-discount"].includes(row.input.operation)
-                    ? "billing.approve"
-                    : "agreement.approve",
+        row.input.operation === "resolve-arbitrated-case" ||
+          row.input.operation === "record-arbitration-resolution"
+          ? "arbitration.execute"
+          : row.input.operation === "revoke-arbitration-policy"
+            ? "arbitration.approve"
+            : row.input.operation === "record-dispute-freeze" ||
+                row.input.operation === "freeze-disputed-task"
+              ? "dispute.open"
+              : row.input.operation === "record-payment"
+                ? "payment.approve"
+                : row.input.operation === "adjust-settlement"
+                  ? "adjustment.approve"
+                  : row.input.operation === "settle-bill" || row.input.operation === "record-refund"
+                    ? "settlement.approve"
+                    : ["confirm-bill", "record-discount"].includes(row.input.operation)
+                      ? "billing.approve"
+                      : "agreement.approve",
       );
       const [attempt] = await this.latest(tx, id);
       if (
         ["reserve-execution", "release-execution"].includes(row.input.operation) &&
         attempt?.stage !== "transaction"
+      )
+        await this.beforeDisclosure(row.input, tx);
+      if (
+        row.input.operation === "resolve-arbitrated-case" &&
+        (!attempt?.dispatchAuthorizedAt || attempt.stage === "invalid")
       )
         await this.beforeDisclosure(row.input, tx);
       if (attempt?.stage === "proposal")

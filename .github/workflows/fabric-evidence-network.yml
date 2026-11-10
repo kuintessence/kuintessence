@@ -114,6 +114,18 @@ jobs:
           path: ${{ runner.temp }}/fabric-arbitration-result.json
           if-no-files-found: error
           retention-days: 14
+      - name: Verify arbitration case resolution and native endorsement
+        env:
+          KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
+          KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-arbitration-resolution-result.json
+        run: bun scripts/fabric-evidence-network.ts --gate --arbitration-resolution
+      - name: Preserve arbitration resolution assertion summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-arbitration-resolution-result
+          path: ${{ runner.temp }}/fabric-arbitration-resolution-result.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Preserve execution gate assertion summary
         uses: actions/upload-artifact@v4
         with:

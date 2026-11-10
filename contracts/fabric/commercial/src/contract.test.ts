@@ -1,10 +1,12 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  FederationAcceptanceSchema,
   FederationCancellationReceiptSchema,
   FederationDelegationSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
+import { ArbitrationDecisionSchema } from "@kuintessence/shared/federation/arbitration-decision";
 import { CommercialArbitrationPolicySchema } from "@kuintessence/shared/federation/arbitration-policy";
 import {
   type CommercialArbitrationRevocation,
@@ -84,6 +86,9 @@ beforeAll(async () => {
       kinds: [
         "commercial-agreement",
         "commercial-arbitration-policy",
+        "arbitration-decision",
+        "delegation",
+        "acceptance",
         "commercial-arbitration-revocation",
         "commercial-usage",
         "commercial-reservation",
@@ -618,7 +623,7 @@ async function reservationFixture(terms = agreement()) {
   };
   return { ...f, reservation, reserve, market, budget };
 }
-async function arbitrationReservationFixture() {
+async function arbitrationReservationFixture(resolution = false) {
   const f = await reservationFixture();
   const policy = CommercialArbitrationPolicySchema.parse({
     protocolVersion: 1,
@@ -630,12 +635,12 @@ async function arbitrationReservationFixture() {
     sourceSiteId: sites[0],
     targetSiteId: sites[1],
     arbitratorSiteId: sites[2],
-    subjectTypes: ["bill"],
+    subjectTypes: resolution ? ["usage"] : ["bill"],
     disclosures: [{ recordType: "bill", fields: ["dueAmount"] }],
     requiredEvidence: [{ recordType: "bill", fields: ["dueAmount"] }],
     decisionRule: "designated-arbitrator",
-    actions: ["settle"],
-    maxChargedAmount: "9007199254740993",
+    actions: resolution ? ["resolve-without-financial-change"] : ["settle"],
+    maxChargedAmount: resolution ? "0" : "9007199254740993",
     unit: f.reservation.request.unit,
     issuedAt: now.toISOString(),
     validFrom: now.toISOString(),
@@ -2459,4 +2464,181 @@ test("native dispute fences reserve and release but permits terminal evidence an
   await opening.record();
   await terminal.record();
   expect(terminal.budget()).toEqual(budget);
+});
+
+async function arbitrationResolutionFixture() {
+  const f = await arbitrationReservationFixture(true);
+  await f.reserve(f.reservation);
+  const dispute = await nativeDispute(f, f.request);
+  await dispute.record();
+  const second = await nativeDispute(f, f.request);
+  await second.record();
+  const [a, b, r] = keys;
+  if (!a || !b || !r) throw new Error("Missing key");
+  const digest = (jws: string) =>
+    `sha256:${createHash("sha256")
+      .update(Buffer.from(jws.split(".")[1] ?? "", "base64url"))
+      .digest("hex")}`;
+  const requestJws = await signFederationMessage(FederationDelegationSchema, f.request, a);
+  const requestDigest = digest(requestJws);
+  const accepted = FederationAcceptanceSchema.parse({
+    protocolVersion: 1,
+    kind: "acceptance",
+    senderSiteId: sites[1],
+    recipientSiteId: sites[0],
+    operationId: f.request.operationId,
+    agreementRevisionId: f.request.agreementRevisionId,
+    mode: f.request.mode,
+    budgetDomainId: f.request.budgetDomainId,
+    epoch: f.request.epoch,
+    taskId: f.request.taskId,
+    attempt: f.request.attempt,
+    requestDigest,
+    reservationId: f.reservation.reservationId,
+    reservedAmount: f.request.maxAmount,
+    unit: f.request.unit,
+    acceptedAt: now.toISOString(),
+    status: "RESERVED",
+  });
+  const acceptanceJws = await signFederationMessage(FederationAcceptanceSchema, accepted, b);
+  const make = async (d: typeof dispute) => {
+    const freeze = await d.envelope();
+    const decision = ArbitrationDecisionSchema.parse({
+      protocolVersion: 1,
+      kind: "arbitration-decision",
+      issuedAt: now.toISOString(),
+      basisExpiresAt: new Date(now.getTime() + 30000).toISOString(),
+      basisDigest: `sha256:${"b".repeat(64)}`,
+      intent: {
+        decisionId: randomUUID(),
+        binding: {
+          caseId: d.opening.caseId,
+          caseDigest: d.freeze.caseDigest,
+          domainId,
+          agreementRevisionId: f.request.agreementRevisionId,
+          agreementDigest: f.receipt.digest,
+          sourceSiteId: sites[0],
+          targetSiteId: sites[1],
+          arbitratorSiteId: sites[2],
+          taskId: f.request.taskId,
+          attempt: f.request.attempt,
+          operationId: f.request.operationId,
+          reservationId: f.reservation.reservationId,
+          requestDigest,
+          acceptanceDigest: digest(acceptanceJws),
+          policyId: f.policy.policyId,
+          policyDigest: f.binding.policyDigest,
+          mode: f.request.mode,
+          unit: f.request.unit,
+        },
+        subject: d.opening.subject,
+        financial: {
+          headDigest: d.freeze.headDigest,
+          freezeDigest: digest(freeze.sourceJws),
+          records: [],
+          evidenceReferences: [],
+          targets: [],
+          ledgerReceipt: { recordId: d.opening.caseId, digest: digest(freeze.sourceJws) },
+        },
+        evidence: [
+          {
+            recordType: "bill",
+            recordId: randomUUID(),
+            recordDigest: `sha256:${"a".repeat(64)}`,
+            grantId: randomUUID(),
+            disclosureDigest: `sha256:${"b".repeat(64)}`,
+            fields: ["dueAmount"],
+          },
+        ],
+        outcome: { action: "resolve-without-financial-change" },
+        reason: "Resolve without modifying finances",
+        salt: randomBytes(32).toString("hex"),
+      },
+    });
+    const decisionJws = await signFederationMessage(ArbitrationDecisionSchema, decision, r);
+    const envelope = {
+      sourceSiteId: sites[0],
+      targetSiteId: sites[1],
+      decisionJws,
+      requestJws,
+      acceptanceJws,
+    };
+    return {
+      decision,
+      envelope,
+      resolve: () => f.call("ResolveArbitratedCase", decision.intent.decisionId, envelope),
+    };
+  };
+  const taskKey = `commercial_AB_v1:${f.stub.createCompositeKey("dispute-task", [domainId, f.request.agreementRevisionId, f.request.taskId, String(f.request.attempt)])}`;
+  const active = () =>
+    z
+      .object({ activeCases: z.number() })
+      .parse(JSON.parse(Buffer.from(f.stub.privateState.get(taskKey) ?? []).toString()))
+      .activeCases;
+  return { ...f, dispute, second, make, active, first: await make(dispute) };
+}
+
+test("arbitration resolution decrements only its native case freeze with no budget mutation and immutable replay", async () => {
+  const f = await arbitrationResolutionFixture(),
+    before = f.budget();
+  expect(f.active()).toBe(2);
+  await f.first.resolve();
+  expect(f.active()).toBe(1);
+  expect(f.budget()).toEqual(before);
+  await f.first.resolve();
+  expect(f.active()).toBe(1);
+  const other = await f.make(f.second);
+  await other.resolve();
+  expect(f.active()).toBe(0);
+  expect(f.budget()).toEqual(before);
+  const conflicting = await f.make(f.dispute);
+  await expect(conflicting.resolve()).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(
+    f.call(
+      "ResolveArbitratedCase",
+      f.first.decision.intent.decisionId,
+      f.first.envelope,
+      identity(2),
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+});
+
+test("arbitration resolution refuses revoked authority, altered heads and financial outcomes", async () => {
+  const f = await arbitrationResolutionFixture();
+  const signer = keys[2];
+  if (!signer) throw new Error("Missing R");
+  const d = f.first.decision;
+  const altered = {
+    ...d,
+    intent: {
+      ...d.intent,
+      financial: { ...d.intent.financial, headDigest: `sha256:${"f".repeat(64)}` },
+    },
+  };
+  await expect(
+    f.call("ResolveArbitratedCase", d.intent.decisionId, {
+      ...f.first.envelope,
+      decisionJws: await signFederationMessage(ArbitrationDecisionSchema, altered, signer),
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  const monetary = {
+    ...d,
+    intent: {
+      ...d.intent,
+      outcome: {
+        action: "settle" as const,
+        bill: { recordId: randomUUID(), recordDigest: `sha256:${"f".repeat(64)}` },
+        chargedAmount: "1",
+      },
+    },
+  };
+  await expect(
+    f.call("ResolveArbitratedCase", d.intent.decisionId, {
+      ...f.first.envelope,
+      decisionJws: await signFederationMessage(ArbitrationDecisionSchema, monetary, signer),
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await f.revoke(f.withdrawal());
+  await expect(f.first.resolve()).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  expect(f.active()).toBe(2);
 });

@@ -50,9 +50,11 @@ import type {
 } from "@kuintessence/shared/federation/case-ledger";
 import type { CaseRevocationNotice } from "@kuintessence/shared/federation/case-revocation";
 import type {
+  ArbitrationResolutionEnvelope,
   CommercialAdapterProposalInput,
   CommercialAdjustment,
   CommercialAgreement,
+  CommercialArbitrationResolution,
   CommercialBill,
   CommercialDiscount,
   CommercialExecutionApproval,
@@ -266,7 +268,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'arbitration.decide', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'arbitration.decide', 'arbitration.execute', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -2275,7 +2277,7 @@ export const federationCommercialSubmissions = pgTable(
     ),
     check(
       "federation_commercial_submission_input",
-      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement','record-refund','record-payment','record-dispute-freeze','freeze-disputed-task','revoke-arbitration-policy') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement','record-refund','record-payment','record-dispute-freeze','freeze-disputed-task','revoke-arbitration-policy','resolve-arbitrated-case','record-arbitration-resolution') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
     check(
       "federation_commercial_submission_lease",
@@ -2603,6 +2605,7 @@ export const federationCommercialAttempts = pgTable(
     transactionId: varchar("transaction_id", { length: 64 }).notNull(),
     recovery: text("recovery").notNull(),
     stage: varchar("stage", { length: 24 }).notNull().default("proposal"),
+    dispatchAuthorizedAt: timestamp("dispatch_authorized_at", { withTimezone: true }),
     validationCode: integer("validation_code"),
     blockNumber: numeric("block_number", { precision: 20, scale: 0 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -4147,6 +4150,45 @@ export const federationCaseArbitrationDecisions = pgTable(
     AND ${t.payload}->>'decisionId' = ${t.decisionId}::text
     AND ${t.payload}->'binding'->>'caseId' = ${t.caseId}::text
     AND ${t.payload}->'binding'->>'arbitratorSiteId' = ${t.localSiteId}::text) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationArbitrationResolutions = pgTable(
+  "federation_arbitration_resolutions",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    decisionId: uuid("decision_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    payload: jsonb("payload").$type<CommercialArbitrationResolution>().notNull(),
+    envelope: jsonb("envelope").$type<ArbitrationResolutionEnvelope>().notNull(),
+    initiatedBy: uuid("initiated_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ name: "arb_resolution_pk", columns: [t.localSiteId, t.decisionId] }),
+    uniqueIndex("arb_resolution_case").on(t.localSiteId, t.caseId),
+    foreignKey({
+      name: "arb_resolution_received_fk",
+      columns: [t.localSiteId, t.decisionId],
+      foreignColumns: [
+        federationReceivedArbitrationDecisions.localSiteId,
+        federationReceivedArbitrationDecisions.decisionId,
+      ],
+    }),
+    check(
+      "arb_resolution_identity",
+      sql`(${t.payload}->>'decisionId' = ${t.decisionId}::text AND ${t.payload}->>'caseId' = ${t.caseId}::text
+    AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+    AND (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text)
+    AND ${t.payload}->'outcome'->>'action' = 'resolve-without-financial-change') IS TRUE`,
     ),
   ],
 );
