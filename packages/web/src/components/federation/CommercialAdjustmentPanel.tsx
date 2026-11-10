@@ -274,7 +274,7 @@ function AdjustmentPanel({
     if (!provider && mode === "bilateral_attested")
       return t("federation.billing.states.remoteLedger");
     return t(
-      row.adjustment.counterpartyJws
+      row.adjustment.arbitrationDecisionId || row.adjustment.counterpartyJws
         ? "federation.settlement.notQueued"
         : "federation.billing.states.awaitingSignatures",
     );
@@ -508,9 +508,11 @@ function AdjustmentPanel({
               </dt>
               <dd className="mt-1 text-sm font-medium">
                 {t(
-                  current.adjustment.counterpartyJws
-                    ? "federation.billing.bothSigned"
-                    : "federation.billing.localSigned",
+                  current.adjustment.arbitrationDecisionId
+                    ? "federation.settlement.arbitrated"
+                    : current.adjustment.counterpartyJws
+                      ? "federation.billing.bothSigned"
+                      : "federation.billing.localSigned",
                 )}
               </dd>
             </div>
@@ -571,51 +573,58 @@ function AdjustmentPanel({
               {t("federation.adjustment.openSettlement")}
             </Button>
           ) : null}
-          <details className="space-y-3 border-t border-border pt-4 text-sm">
-            <summary className="cursor-pointer">{t("federation.billing.signatures")}</summary>
-            <Button variant="outline" onClick={() => void copy(current.adjustment.approvalJws)}>
-              {t("federation.agreements.copySignature")}
-            </Button>
-            {current.adjustment.counterpartyJws ? (
+          {!current.adjustment.arbitrationDecisionId && (
+            <details className="space-y-3 border-t border-border pt-4 text-sm">
+              <summary className="cursor-pointer">{t("federation.billing.signatures")}</summary>
               <Button
                 variant="outline"
                 onClick={() => {
-                  if (current.adjustment.counterpartyJws)
-                    void copy(current.adjustment.counterpartyJws);
+                  if (current.adjustment.approvalJws) void copy(current.adjustment.approvalJws);
                 }}
               >
-                {t("federation.billing.copyCounterparty")}
+                {t("federation.agreements.copySignature")}
               </Button>
-            ) : writable ? (
-              <div className="space-y-3">
-                <label htmlFor={`${id}-signature`} className="block">
-                  {t("federation.agreements.counterpartySignature")}
-                </label>
-                <Textarea
-                  id={`${id}-signature`}
-                  value={signature}
-                  maxLength={524288}
-                  rows={4}
-                  disabled={blocked}
-                  onChange={(e) => setSignature(e.target.value)}
-                  className="font-mono text-xs"
-                />
+              {current.adjustment.counterpartyJws ? (
                 <Button
                   variant="outline"
-                  disabled={blocked || !signature.trim()}
-                  onClick={() =>
-                    review({
-                      kind: "attach",
-                      adjustmentId: current.adjustment.adjustmentId,
-                      approvalJws: signature.trim(),
-                    })
-                  }
+                  onClick={() => {
+                    if (current.adjustment.counterpartyJws)
+                      void copy(current.adjustment.counterpartyJws);
+                  }}
                 >
-                  {t("federation.commercial.actions.attach")}
+                  {t("federation.billing.copyCounterparty")}
                 </Button>
-              </div>
-            ) : null}
-          </details>
+              ) : writable ? (
+                <div className="space-y-3">
+                  <label htmlFor={`${id}-signature`} className="block">
+                    {t("federation.agreements.counterpartySignature")}
+                  </label>
+                  <Textarea
+                    id={`${id}-signature`}
+                    value={signature}
+                    maxLength={524288}
+                    rows={4}
+                    disabled={blocked}
+                    onChange={(e) => setSignature(e.target.value)}
+                    className="font-mono text-xs"
+                  />
+                  <Button
+                    variant="outline"
+                    disabled={blocked || !signature.trim()}
+                    onClick={() =>
+                      review({
+                        kind: "attach",
+                        adjustmentId: current.adjustment.adjustmentId,
+                        approvalJws: signature.trim(),
+                      })
+                    }
+                  >
+                    {t("federation.commercial.actions.attach")}
+                  </Button>
+                </div>
+              ) : null}
+            </details>
+          )}
         </div>
       ) : list.isPending ? (
         <p role="status">{t("federation.loading")}</p>
@@ -649,9 +658,11 @@ function AdjustmentPanel({
                     <span className="text-sm">
                       <span className="block">
                         {t(
-                          row.adjustment.counterpartyJws
-                            ? "federation.billing.bothSigned"
-                            : "federation.billing.localSigned",
+                          row.adjustment.arbitrationDecisionId
+                            ? "federation.settlement.arbitrated"
+                            : row.adjustment.counterpartyJws
+                              ? "federation.billing.bothSigned"
+                              : "federation.billing.localSigned",
                         )}
                       </span>
                       <time dateTime={row.adjustment.createdAt} className="text-muted-foreground">

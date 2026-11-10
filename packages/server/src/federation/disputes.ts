@@ -31,6 +31,7 @@ import {
   CommercialArbitrationTaskBindingSchema,
 } from "@kuintessence/shared/federation/arbitration-policy";
 import {
+  assertArbitratedSettlement,
   assertCommercialAdjustment,
   assertCommercialRefund,
   assertCommercialSettlement,
@@ -55,6 +56,7 @@ import {
 } from "@kuintessence/shared/federation/disputes";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
+import { verifyArbitratedFinancialOriginal } from "./arbitrated-financial-original";
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import { federationMaterialDigest } from "./assets";
 import { lockFederationDisputeTask } from "./dispute-freeze";
@@ -102,9 +104,20 @@ export class FederationDisputeService {
   private async stored<T extends { kind: string }>(
     tx: PgTransaction,
     schema: z.ZodType<T>,
-    row: { payload: unknown; digest: string; approvalJws: string; counterpartyJws: string | null },
+    row: {
+      payload: unknown;
+      digest: string;
+      approvalJws: string | null;
+      counterpartyJws: string | null;
+      arbitrationDecisionId?: string | null;
+    },
     other: string,
   ) {
+    if (row.arbitrationDecisionId) {
+      await verifyArbitratedFinancialOriginal(tx, this.signing.siteId, row);
+      return schema.parse(row.payload);
+    }
+    if (!row.approvalJws) throw new FederationError("POLICY_DENIED");
     const own = await this.verify(tx, schema, row.approvalJws, this.signing.siteId);
     if (
       own.digest !== row.digest ||
@@ -963,17 +976,23 @@ export class FederationDisputeService {
     const add = (
       recordType: (typeof records)[number]["recordType"],
       recordId: string,
-      row: { digest: string; counterpartyJws: string | null; appliedAt?: Date | null },
+      row: {
+        digest: string;
+        counterpartyJws: string | null;
+        appliedAt?: Date | null;
+        arbitrationDecisionId?: string | null;
+      },
     ) => {
       records.push({
         recordType,
         recordId,
         recordDigest: row.digest,
-        state: !row.counterpartyJws
-          ? "counterparty_waiting"
-          : recordType !== "bill" && !row.appliedAt
-            ? "application_waiting"
-            : "ready",
+        state:
+          !row.counterpartyJws && !row.arbitrationDecisionId
+            ? "counterparty_waiting"
+            : recordType !== "bill" && !row.appliedAt
+              ? "application_waiting"
+              : "ready",
       });
     };
     const taskBills = await tx
@@ -1002,7 +1021,11 @@ export class FederationDisputeService {
       for (const settlement of taskSettlements) {
         checkRow(settlement);
         const settled = await this.stored(tx, CommercialSettlementSchema, settlement, record.other);
-        assertCommercialSettlement(settled, value, row.digest);
+        const arbitration = settlement.arbitrationDecisionId
+          ? await verifyArbitratedFinancialOriginal(tx, this.signing.siteId, settlement)
+          : undefined;
+        if (arbitration) assertArbitratedSettlement(settled, value, row.digest, arbitration);
+        else assertCommercialSettlement(settled, value, row.digest);
         if (settled.settlementId !== settlement.settlementId)
           throw new FederationError("OPERATION_CONFLICT");
         add("settlement", settlement.settlementId, settlement);
@@ -1027,7 +1050,7 @@ export class FederationDisputeService {
           assertCommercialAdjustment(adjusted, {
             agreement: terms,
             bill: { terms: value, digest: row.digest },
-            settlement: { terms: settled, digest: settlement.digest },
+            settlement: { terms: settled, digest: settlement.digest, arbitration },
             previous,
           });
           add("adjustment", change.adjustmentId, change);

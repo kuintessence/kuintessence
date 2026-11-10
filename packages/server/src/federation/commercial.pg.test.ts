@@ -27,9 +27,11 @@ import {
   federationCertificates,
   federationClosingPolicies,
   federationClosingTasks,
+  federationCommercialAdjustments,
   federationCommercialApprovalSyncs,
   federationCommercialBills,
   federationCommercialRefunds,
+  federationCommercialSettlements,
   federationCompletionClaims,
   federationDisclosureDownloads,
   federationDisclosurePolicies,
@@ -173,8 +175,10 @@ import { JobService } from "../services/job-service";
 import { SoftwareAvailabilityService } from "../services/software-availability";
 import { createWorkflowPlacementBuilder } from "../services/workflow-placement-builder";
 import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
+import { FederationAdjustmentService } from "./adjustment";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
+import { verifyArbitratedFinancialOriginal } from "./arbitrated-financial-original";
 import {
   FederationArbitrationContextResponder,
   FederationArbitrationContextService,
@@ -228,6 +232,7 @@ import {
   ReservationPolicyInputSchema,
 } from "./reservation-policy";
 import { FederationReservationProposalService } from "./reservation-proposals";
+import { FederationSettlementService } from "./settlement";
 import {
   federationMessageKeyId,
   signFederationMessage,
@@ -406,6 +411,13 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
     .where(eq(submissions.id, row.id));
 }
 afterAll(async () => {
+  const allSites = fixtures.flatMap((f) => [f.a.signing.siteId, f.b.signing.siteId]);
+  await db
+    .delete(federationCommercialAdjustments)
+    .where(inArray(federationCommercialAdjustments.localSiteId, allSites));
+  await db
+    .delete(federationCommercialSettlements)
+    .where(inArray(federationCommercialSettlements.localSiteId, allSites));
   await db.delete(federationArbitrationResolutions).where(
     inArray(
       federationArbitrationResolutions.localSiteId,
@@ -1113,7 +1125,7 @@ async function arbitrationForExecution(
     disclosures: [{ recordType: "bill", fields }],
     requiredEvidence: [{ recordType: "bill", fields }],
     decisionRule: "designated-arbitrator",
-    actions: ["settle", "resolve-without-financial-change"],
+    actions: ["settle", "adjust", "resolve-without-financial-change"],
     maxChargedAmount: "60",
     validUntil: "2098-01-01T00:00:00Z",
   });
@@ -1133,9 +1145,43 @@ async function arbitrationForExecution(
 }
 
 async function arbitrationAdmission(
-  mode: "bilateral_direct" | "bilateral_attested",
+  mode: FederationMode,
   fields?: ("dueAmount" | "grossAmount")[],
 ) {
+  if (mode === "ledger_coordinated") {
+    const f = await terminalSourceFixture("completed", false, true, fields);
+    if (!f.arbitration) throw new Error("Missing original coordinated consent");
+    await f.approveTerminal();
+    const source = await f.sourceTerminal.countersign(
+      f.actor,
+      f.revisionId,
+      f.reservation.reservationId,
+      await f.proposal(),
+    );
+    await db
+      .update(federationExecutionTerminals)
+      .set({ counterpartyJws: source.approvalJws })
+      .where(
+        and(
+          eq(federationExecutionTerminals.localSiteId, f.b.signing.siteId),
+          eq(federationExecutionTerminals.reservationId, f.reservation.reservationId),
+        ),
+      );
+    const admission = new FederationAdmission(
+      db,
+      f.b.signing,
+      f.b.verification,
+      undefined,
+      f.confirmation,
+    );
+    const receive = async (request: typeof f.reservation.request) =>
+      admission.receive({
+        requestJws: await signFederationMessage(FederationDelegationSchema, request, f.a.signing),
+        authenticatedPeerSiteId: f.a.signing.siteId,
+        senderKey: f.a.verification,
+      });
+    return { ...f, arbitration: f.arbitration, receive };
+  }
   const f = await executionFixture(true, true, false, undefined, mode);
   const arbitration = await arbitrationForExecution(f, fields);
   const source = new FederationAgreementService(db, f.a.signing);
@@ -1852,10 +1898,11 @@ async function activationFixture(
   withMaterials = false,
   withResults = false,
   withArbitration = false,
+  fields?: ("dueAmount" | "grossAmount")[],
 ) {
   const f = await executionFixture(true, withMaterials, withResults);
-  if (withArbitration) {
-    const arbitration = await arbitrationForExecution(f);
+  const arbitration = withArbitration ? await arbitrationForExecution(f, fields) : null;
+  if (arbitration) {
     await arbitration.confirm();
     f.reservation.request.arbitration = arbitration.binding;
   }
@@ -1871,7 +1918,7 @@ async function activationFixture(
   );
   const marketAdapter = new ActivationAdapter();
   const market = new FederationMarketService(db, f.a.signing.siteId, marketAdapter);
-  return { ...f, market, marketAdapter, activationId: randomUUID() };
+  return { ...f, arbitration, market, marketAdapter, activationId: randomUUID() };
 }
 
 async function confirmationFixture(
@@ -1879,8 +1926,9 @@ async function confirmationFixture(
   withMaterials = false,
   withResults = false,
   withArbitration = false,
+  fields?: ("dueAmount" | "grossAmount")[],
 ) {
-  const f = await activationFixture(withMaterials, withResults, withArbitration);
+  const f = await activationFixture(withMaterials, withResults, withArbitration, fields);
   const ordinary = new FederationAgreementService(db, f.a.signing);
   const own = await ordinary.approve(f.actor, { terms: f.terms.agreement });
   let executionUserId: string | undefined;
@@ -3063,8 +3111,10 @@ const terminalAgentIds: string[] = [];
 async function terminalFixture(
   outcome: "completed" | "failed" | "cancelled" = "completed",
   withResults = false,
+  withArbitration = false,
+  fields?: ("dueAmount" | "grossAmount")[],
 ) {
-  const f = await confirmationFixture(true, true, withResults);
+  const f = await confirmationFixture(true, true, withResults, withArbitration, fields);
   await f.requestConfirmation();
   for (let i = 0; i < 3; i++) await f.market.advanceNext();
   const admission = new FederationAdmission(
@@ -3611,8 +3661,10 @@ test("execution terminal waits for the original source cancellation cleanup moni
 async function terminalSourceFixture(
   outcome: "completed" | "failed" | "cancelled" = "completed",
   withResults = false,
+  withArbitration = false,
+  fields?: ("dueAmount" | "grossAmount")[],
 ) {
-  const f = await terminalFixture(outcome, withResults);
+  const f = await terminalFixture(outcome, withResults, withArbitration, fields);
   const sourceSiteId = f.a.signing.siteId;
   const sourceConfirmation = new FederationExecutionConfirmationService(db, sourceSiteId, {
     query: async () => ({ operation: "get-demand", demand: f.state }),
@@ -12037,9 +12089,10 @@ test("execution dispute approval waits for a concurrent case transaction and obs
 });
 
 async function arbitrationCaseFixture(
-  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  mode: FederationMode = "bilateral_direct",
   legacy = false,
   fields?: ("dueAmount" | "grossAmount")[],
+  withSettlement = false,
 ) {
   const f = await arbitrationAdmission(mode, fields);
   await f.arbitration.confirm();
@@ -12067,7 +12120,19 @@ async function arbitrationCaseFixture(
     f.actor.userId,
   );
   const contract = await f.approvals.get(f.actor, f.revisionId);
-  const endedAt = new Date().toISOString();
+  const [terminal] =
+    mode === "ledger_coordinated"
+      ? await db
+          .select()
+          .from(federationExecutionTerminals)
+          .where(
+            and(
+              eq(federationExecutionTerminals.localSiteId, f.b.signing.siteId),
+              eq(federationExecutionTerminals.reservationId, f.reservation.reservationId),
+            ),
+          )
+      : [];
+  const endedAt = terminal?.payload.observedAt ?? new Date().toISOString();
   const report = CommercialUsageSchema.parse({
     protocolVersion: 1,
     kind: "commercial-usage",
@@ -12102,7 +12167,7 @@ async function arbitrationCaseFixture(
     reportId: report.reportId,
     reportDigest: federationMaterialDigest(report),
     request: billRequest,
-    reservationId: null,
+    reservationId: mode === "ledger_coordinated" ? f.reservation.reservationId : null,
     discount: null,
     calculation: calculateCommercialBill(f.terms, billRequest, report),
     issuedAt: new Date().toISOString(),
@@ -12134,6 +12199,74 @@ async function arbitrationCaseFixture(
       counterpartyJws: other,
       approvedBy: f.actor.userId,
     });
+  if (mode === "ledger_coordinated") {
+    for (const key of [f.a, f.b]) {
+      await db.insert(submissions).values({
+        id: randomUUID(),
+        localSiteId: key.signing.siteId,
+        agreementRevisionId: f.revisionId,
+        state: "committed",
+        input: CommercialAdapterProposalInputSchema.parse({
+          operation: "confirm-bill",
+          domainId: bill.domainId,
+          recordId: bill.billId,
+          digest: billDigest,
+          envelope: {
+            sourceSiteId: f.a.signing.siteId,
+            targetSiteId: f.b.signing.siteId,
+            sourceJws: first,
+            targetJws: second,
+          },
+        }),
+      });
+    }
+  }
+  let initialSettlement: Awaited<ReturnType<FederationSettlementService["approve"]>> | undefined;
+  if (withSettlement) {
+    if (mode !== "ledger_coordinated") throw new Error("Native financial fixture required");
+    f.adapter.receipt = async (query) => {
+      const [committed] = await db
+        .select()
+        .from(submissions)
+        .where(
+          and(
+            eq(submissions.state, "committed"),
+            sql`${submissions.input}->>'recordId' = ${query.recordId}`,
+          ),
+        );
+      return {
+        receipt: committed ? { recordId: query.recordId, digest: committed.input.digest } : null,
+      };
+    };
+    for (const capability of ["settlement.approve", "adjustment.approve"] as const)
+      await new FederationPermissionService(db).set(
+        { ...f.actor, capability, enabled: true },
+        f.actor.userId,
+      );
+    for (const key of [f.a, f.b])
+      await db
+        .update(federationSigningKeys)
+        .set({
+          allowedKinds: sql`${federationSigningKeys.allowedKinds} || '["commercial-settlement","commercial-adjustment"]'::jsonb`,
+        })
+        .where(eq(federationSigningKeys.siteId, key.signing.siteId));
+    for (const key of [f.a, f.b]) {
+      const worker = new FederationCommercialSubmissionService(db, key.signing.siteId, f.adapter);
+      for (let i = 0; i < 12 && (await worker.advanceNext()); i++) {}
+    }
+    const source = new FederationSettlementService(db, f.a.signing),
+      target = new FederationSettlementService(db, f.b.signing);
+    const terms = await source.draft(f.actor, f.revisionId, bill.billId, randomUUID());
+    const own = await source.approve(f.actor, f.revisionId, terms),
+      peer = await target.approve(f.actor, f.revisionId, terms);
+    await source.attachCounterparty(f.actor, f.revisionId, terms.settlementId, peer.approvalJws);
+    await target.attachCounterparty(f.actor, f.revisionId, terms.settlementId, own.approvalJws);
+    for (const key of [f.a, f.b]) {
+      const worker = new FederationCommercialSubmissionService(db, key.signing.siteId, f.adapter);
+      for (let i = 0; i < 3; i++) await worker.advanceNext();
+    }
+    initialSettlement = own;
+  }
   const sourceCases = new FederationDisputeService(db, f.a.signing),
     targetCases = new FederationDisputeService(db, f.b.signing);
   const draft = await targetCases.draft(f.actor, f.revisionId, {
@@ -12154,7 +12287,7 @@ async function arbitrationCaseFixture(
   await sourceCases.receive(opened.openingJws, fingerprint);
   const read = (target = false) =>
     (target ? targetCases : sourceCases).arbitrationBinding(f.actor, f.revisionId, draft.caseId);
-  return { ...f, request, original, draft, sourceCases, targetCases, read };
+  return { ...f, request, original, draft, sourceCases, targetCases, read, initialSettlement };
 }
 
 test("arbitration case binding resolves both original admissions without financial or ledger writes", async () => {
@@ -12423,10 +12556,11 @@ test("arbitration case binding checks the original contract budget and mode even
 });
 
 async function arbitrationContextFixture(
-  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  mode: FederationMode = "bilateral_direct",
   fields?: ("dueAmount" | "grossAmount")[],
+  withSettlement = false,
 ) {
-  const f = await arbitrationCaseFixture(mode, false, fields);
+  const f = await arbitrationCaseFixture(mode, false, fields, withSettlement);
   const owner = await fixture(); // R has its own local organization and user.
   const r = await testKeys(f.arbitration.policy.arbitratorSiteId);
   await f.trust.addKey(
@@ -12835,10 +12969,11 @@ test("arbitration context requires explicit message purposes and registered call
 });
 
 async function arbitrationReviewFixture(
-  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  mode: FederationMode = "bilateral_direct",
   fields?: ("dueAmount" | "grossAmount")[],
+  withSettlement = false,
 ) {
-  const f = await arbitrationContextFixture(mode, fields);
+  const f = await arbitrationContextFixture(mode, fields, withSettlement);
   for (const siteId of [f.a.signing.siteId, f.b.signing.siteId])
     await db
       .update(federationSigningKeys)
@@ -12862,12 +12997,37 @@ async function arbitrationReviewFixture(
   );
   await delivery.discover();
   await delivery.advanceNext();
-  const receiver = new FederationDisputeFreezeExchange(db, f.a.signing);
-  const freeze = new FederationDisputeFreezeExchange(db, f.b.signing, async (_endpoint, jws) =>
-    receiver.receive(jws, certificate.fingerprint),
+  if (mode === "ledger_coordinated")
+    f.adapter.receipt = async (query) => {
+      const [published] = await db
+        .select()
+        .from(submissions)
+        .where(
+          and(
+            eq(submissions.state, "committed"),
+            sql`${submissions.input}->>'domainId' = ${query.domainId}`,
+            sql`${submissions.input}->>'recordId' = ${query.recordId}`,
+          ),
+        );
+      return {
+        receipt: published ? { recordId: query.recordId, digest: published.input.digest } : null,
+      };
+    };
+  const receiver = new FederationDisputeFreezeExchange(db, f.a.signing, undefined, f.adapter);
+  const freeze = new FederationDisputeFreezeExchange(
+    db,
+    f.b.signing,
+    async (_endpoint, jws) => receiver.receive(jws, certificate.fingerprint),
+    f.adapter,
   );
   await freeze.discover();
   await freeze.advanceNext();
+  if (mode === "ledger_coordinated") {
+    const worker = new FederationCommercialSubmissionService(db, f.b.signing.siteId, f.adapter);
+    for (let i = 0; i < 3; i++) await worker.advanceNext();
+    await freeze.advanceNext();
+    await receiver.advanceNext();
+  }
   const frozen = await db
     .select()
     .from(federationDisputeFreezes)
@@ -13155,9 +13315,10 @@ test("arbitration review rejects signed but unauthorized subject types and futur
 });
 
 async function arbitrationDecisionFixture(
-  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  mode: FederationMode = "bilateral_direct",
+  withSettlement = false,
 ) {
-  const f = await arbitrationReviewFixture(mode);
+  const f = await arbitrationReviewFixture(mode, undefined, withSettlement);
   await new FederationPermissionService(db).set(
     { ...f.owner.actor, capability: "arbitration.decide", enabled: true },
     f.owner.actor.userId,
@@ -13172,11 +13333,22 @@ async function arbitrationDecisionFixture(
   const input = {
     decisionId: randomUUID(),
     grantIds: [f.material.draft.grant.grantId],
-    outcome: {
-      action: "settle" as const,
-      bill: { recordId: f.draft.subject.recordId, recordDigest: f.draft.subject.recordDigest },
-      chargedAmount: "50",
-    },
+    outcome: f.initialSettlement
+      ? {
+          action: "adjust" as const,
+          bill: { recordId: f.draft.subject.recordId, recordDigest: f.draft.subject.recordDigest },
+          settlement: {
+            recordId: f.initialSettlement.settlementId,
+            recordDigest: f.initialSettlement.digest,
+          },
+          previousAdjustment: null,
+          chargedAmount: "50",
+        }
+      : {
+          action: "settle" as const,
+          bill: { recordId: f.draft.subject.recordId, recordDigest: f.draft.subject.recordDigest },
+          chargedAmount: "50",
+        },
     reason: "Accepted charge after reviewing disclosed evidence",
   };
   return {
@@ -13497,10 +13669,11 @@ test("arbitration decision outcome checks exact financial relationships and fina
 });
 
 async function arbitrationDeliveryFixture(
-  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  mode: FederationMode = "bilateral_direct",
   noFinancial = false,
+  withSettlement = false,
 ) {
-  const f = await arbitrationDecisionFixture(mode);
+  const f = await arbitrationDecisionFixture(mode, withSettlement);
   const intent = noFinancial
     ? await f.decisions.draft(f.owner.actor, f.scope.caseId, {
         ...f.input,
@@ -14293,10 +14466,11 @@ test("case arbitration ledger recovers the authorized unknown transaction after 
 }, 60000);
 
 async function arbitrationResolutionFixture(
-  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  mode: FederationMode = "bilateral_direct",
   financial = false,
+  withSettlement = false,
 ) {
-  const f = await arbitrationDeliveryFixture(mode, !financial);
+  const f = await arbitrationDeliveryFixture(mode, !financial, withSettlement);
   await f.delivery.discover();
   await f.delivery.advanceNext();
   await f.delivery.advanceNext();
@@ -14610,4 +14784,248 @@ test("arbitration resolution HTTP requires a human executor, rejects extra field
   expect(body).not.toContain("Jws");
   expect(body).not.toContain(f.intent.reason);
   expect(body).not.toContain("envelope");
+}, 60000);
+
+test("coordinated monetary arbitration posts only after VALID and rolls back failed local accounting", async () => {
+  const f = await arbitrationResolutionFixture("ledger_coordinated", true);
+  // Finish the fixture's earlier terminal publication before exercising the award queue.
+  for (const key of [f.a, f.b]) {
+    const prior = new FederationCommercialSubmissionService(db, key.signing.siteId, f.adapter);
+    for (let i = 0; i < 12 && (await prior.advanceNext()); i++) {}
+  }
+  const a = await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
+  const b = await f.resolveB.execute(f.actor, f.revisionId, f.scope.caseId);
+  expect(a.appliedAt).toBeNull();
+  expect(b.appliedAt).toBeNull();
+  const financial = () =>
+    db
+      .select()
+      .from(federationCommercialSettlements)
+      .where(eq(federationCommercialSettlements.settlementId, f.intent.decisionId));
+  expect(await financial()).toHaveLength(0);
+  await expect(
+    db.transaction((tx) => f.resolveA.apply(tx, f.intent.decisionId, a.payload.decisionDigest)),
+  ).rejects.toThrow("LEDGER_REQUIRED");
+  const worker = new FederationCommercialSubmissionService(
+    db,
+    f.a.signing.siteId,
+    f.adapter,
+    f.resolveA,
+  );
+  await worker.advanceNext();
+  await worker.advanceNext();
+  expect(await financial()).toHaveLength(0);
+  await db.execute(
+    sql`CREATE FUNCTION monetary_arbitration_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.arbitration_resolution.apply' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER monetary_arbitration_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION monetary_arbitration_audit_fail()`,
+  );
+  try {
+    await worker.advanceNext();
+    expect(await financial()).toHaveLength(0);
+  } finally {
+    await db.execute(sql`DROP TRIGGER monetary_arbitration_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION monetary_arbitration_audit_fail()`);
+  }
+  await db
+    .update(submissions)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(
+      and(
+        eq(submissions.localSiteId, f.a.signing.siteId),
+        sql`${submissions.input}->>'recordId' = ${f.intent.decisionId}`,
+      ),
+    );
+  await worker.advanceNext();
+  const provider = new FederationCommercialSubmissionService(
+    db,
+    f.b.signing.siteId,
+    f.adapter,
+    f.resolveB,
+  );
+  for (let i = 0; i < 3; i++) await provider.advanceNext();
+  const rows = await financial();
+  expect(rows).toHaveLength(2);
+  for (const row of rows) {
+    expect(row.arbitrationDecisionId).toBe(f.intent.decisionId);
+    expect(row.approvalJws).toBeNull();
+    expect(row.counterpartyJws).toBeNull();
+    expect(row.appliedAt).not.toBeNull();
+    expect(row.payload.chargedAmount).toBe("50");
+  }
+  expect(
+    (
+      await db
+        .select()
+        .from(federationReservations)
+        .where(eq(federationReservations.id, f.reservation.reservationId))
+    )[0]?.settledAmount,
+  ).toBe("50");
+  expect(
+    (
+      await db
+        .select()
+        .from(federationOutbound)
+        .where(eq(federationOutbound.operationId, f.request.operationId))
+    )[0]?.settledAmount,
+  ).toBe("50");
+  expect(
+    (await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId)).appliedAt,
+  ).not.toBeNull();
+  expect(await financial()).toEqual(rows);
+  const stored = rows[0];
+  if (!stored) throw new Error("Missing arbitrated original");
+  await expect(
+    db.transaction(async (tx) => {
+      await tx
+        .update(federationCommercialSettlements)
+        .set({ approvalJws: "fabricated-pair-signature" })
+        .where(
+          and(
+            eq(federationCommercialSettlements.localSiteId, stored.localSiteId),
+            eq(federationCommercialSettlements.settlementId, stored.settlementId),
+          ),
+        );
+    }),
+  ).rejects.toThrow();
+  await expect(
+    db.transaction((tx) =>
+      verifyArbitratedFinancialOriginal(tx, stored.localSiteId, {
+        ...stored,
+        payload: { ...stored.payload, chargedAmount: "49", releasedAmount: "11" },
+      }),
+    ),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+
+  const listed = await new FederationSettlementService(db, f.a.signing).list(
+    f.actor,
+    f.revisionId,
+    10,
+    0,
+  );
+  expect(listed.data[0]?.ledger?.state).toBe("committed");
+  const exchange = new FederationCommercialApprovalExchange(db, f.a.signing);
+  await exchange.discover();
+  expect(
+    await db
+      .select()
+      .from(federationCommercialApprovalSyncs)
+      .where(eq(federationCommercialApprovalSyncs.recordId, f.intent.decisionId)),
+  ).toHaveLength(0);
+  const adjustment = new FederationAdjustmentService(db, f.a.signing);
+  const draft = await adjustment.draft(f.actor, f.revisionId, {
+    adjustmentId: randomUUID(),
+    settlementId: f.intent.decisionId,
+    chargedAmount: "40",
+    reason: "Bilateral correction after award",
+    supportingEvidenceDigest: a.payload.decisionDigest,
+  });
+  expect(draft.previousChargedAmount).toBe("50");
+  const newCase = await f.sourceCases.draft(f.actor, f.revisionId, {
+    caseId: randomUUID(),
+    subject: {
+      recordType: "settlement",
+      recordId: f.intent.decisionId,
+      recordDigest: a.payload.decisionDigest,
+    },
+    reason: "Review arbitrated original",
+    requestedResolution: "Review charge",
+  });
+  expect(newCase.subject.recordId).toBe(f.intent.decisionId);
+}, 60000);
+
+test("coordinated arbitration adjustment preserves original settlement and allows a later bilateral correction", async () => {
+  const f = await arbitrationResolutionFixture("ledger_coordinated", true, true);
+  if (!f.initialSettlement) throw new Error("Missing initial bilateral settlement");
+  const settlement = f.initialSettlement;
+  for (const [key, resolution] of [
+    [f.a, f.resolveA],
+    [f.b, f.resolveB],
+  ] as const) {
+    await resolution.execute(f.actor, f.revisionId, f.scope.caseId);
+    const worker = new FederationCommercialSubmissionService(
+      db,
+      key.signing.siteId,
+      f.adapter,
+      resolution,
+    );
+    for (let i = 0; i < 3; i++) await worker.advanceNext();
+  }
+  const posted = await db
+    .select()
+    .from(federationCommercialAdjustments)
+    .where(eq(federationCommercialAdjustments.adjustmentId, f.intent.decisionId));
+  expect(posted).toHaveLength(2);
+  for (const row of posted) {
+    expect(row.appliedAt).not.toBeNull();
+    expect(row.approvalJws).toBeNull();
+    expect(row.counterpartyJws).toBeNull();
+    expect(row.payload).toMatchObject({
+      previousChargedAmount: settlement.payload.chargedAmount,
+      chargedAmount: "50",
+    });
+    expect(row.arbitrationDecisionId).toBe(f.intent.decisionId);
+  }
+  const source = new FederationAdjustmentService(db, f.a.signing),
+    target = new FederationAdjustmentService(db, f.b.signing);
+  const listed = await source.list(
+    f.actor,
+    f.revisionId,
+    10,
+    0,
+    undefined,
+    settlement.settlementId,
+  );
+  expect(listed.summary?.currentChargedAmount).toBe("50");
+  expect(listed.data[0]?.ledger?.state).toBe("committed");
+  const terms = await source.draft(f.actor, f.revisionId, {
+    adjustmentId: randomUUID(),
+    settlementId: settlement.settlementId,
+    chargedAmount: "45",
+    reason: "Subsequent bilateral correction",
+    supportingEvidenceDigest: settlement.digest,
+  });
+  expect(terms.previous?.adjustmentId).toBe(f.intent.decisionId);
+  const own = await source.approve(f.actor, f.revisionId, terms),
+    peer = await target.approve(f.actor, f.revisionId, terms);
+  await source.attachCounterparty(f.actor, f.revisionId, terms.adjustmentId, peer.approvalJws);
+  await target.attachCounterparty(f.actor, f.revisionId, terms.adjustmentId, own.approvalJws);
+  for (const key of [f.a, f.b]) {
+    const worker = new FederationCommercialSubmissionService(db, key.signing.siteId, f.adapter);
+    for (let i = 0; i < 3; i++) await worker.advanceNext();
+  }
+  expect(
+    (await source.list(f.actor, f.revisionId, 10, 0, undefined, settlement.settlementId)).summary
+      ?.currentChargedAmount,
+  ).toBe("45");
+  expect(
+    (
+      await db
+        .select()
+        .from(federationCommercialSettlements)
+        .where(eq(federationCommercialSettlements.settlementId, settlement.settlementId))
+    )[0]?.payload.chargedAmount,
+  ).toBe(settlement.payload.chargedAmount);
+}, 60000);
+
+test("monetary arbitration refuses an additional unresolved case before creating a commitment", async () => {
+  const f = await arbitrationResolutionFixture("ledger_coordinated", true);
+  const other = await f.sourceCases.draft(f.actor, f.revisionId, {
+    caseId: randomUUID(),
+    subject: f.draft.subject,
+    reason: "Independent claim",
+    requestedResolution: "Separate review",
+  });
+  await f.sourceCases.open(f.actor, f.revisionId, other);
+  await expect(f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId)).rejects.toThrow(
+    "DATA_WAITING",
+  );
+  expect(await f.resolveA.read(f.actor, f.revisionId, f.scope.caseId)).toBeNull();
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSettlements)
+      .where(eq(federationCommercialSettlements.agreementRevisionId, f.revisionId)),
+  ).toHaveLength(0);
 }, 60000);

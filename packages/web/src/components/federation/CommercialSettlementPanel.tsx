@@ -231,7 +231,7 @@ function SettlementPanel({
     if (!provider && mode === "bilateral_attested")
       return t("federation.billing.states.remoteLedger");
     return t(
-      row.settlement.counterpartyJws
+      row.settlement.arbitrationDecisionId || row.settlement.counterpartyJws
         ? "federation.settlement.notQueued"
         : "federation.billing.states.awaitingSignatures",
     );
@@ -390,9 +390,11 @@ function SettlementPanel({
               </dt>
               <dd className="mt-1 text-sm font-medium">
                 {t(
-                  current.settlement.counterpartyJws
-                    ? "federation.billing.bothSigned"
-                    : "federation.billing.localSigned",
+                  current.settlement.arbitrationDecisionId
+                    ? "federation.settlement.arbitrated"
+                    : current.settlement.counterpartyJws
+                      ? "federation.billing.bothSigned"
+                      : "federation.billing.localSigned",
                 )}
               </dd>
             </div>
@@ -448,51 +450,58 @@ function SettlementPanel({
               {t("federation.adjustment.openHistory")}
             </Button>
           ) : null}
-          <details className="space-y-3 border-t border-border pt-4 text-sm">
-            <summary className="cursor-pointer">{t("federation.billing.signatures")}</summary>
-            <Button variant="outline" onClick={() => void copy(current.settlement.approvalJws)}>
-              {t("federation.agreements.copySignature")}
-            </Button>
-            {current.settlement.counterpartyJws ? (
+          {!current.settlement.arbitrationDecisionId && (
+            <details className="space-y-3 border-t border-border pt-4 text-sm">
+              <summary className="cursor-pointer">{t("federation.billing.signatures")}</summary>
               <Button
                 variant="outline"
                 onClick={() => {
-                  if (current.settlement.counterpartyJws)
-                    void copy(current.settlement.counterpartyJws);
+                  if (current.settlement.approvalJws) void copy(current.settlement.approvalJws);
                 }}
               >
-                {t("federation.billing.copyCounterparty")}
+                {t("federation.agreements.copySignature")}
               </Button>
-            ) : writable ? (
-              <div className="space-y-3">
-                <label htmlFor={`${id}-signature`} className="block">
-                  {t("federation.agreements.counterpartySignature")}
-                </label>
-                <Textarea
-                  id={`${id}-signature`}
-                  value={signature}
-                  maxLength={524288}
-                  rows={4}
-                  disabled={blocked}
-                  onChange={(e) => setSignature(e.target.value)}
-                  className="font-mono text-xs"
-                />
+              {current.settlement.counterpartyJws ? (
                 <Button
                   variant="outline"
-                  disabled={blocked || !signature.trim()}
-                  onClick={() =>
-                    review({
-                      kind: "attach",
-                      settlementId: current.settlement.settlementId,
-                      approvalJws: signature.trim(),
-                    })
-                  }
+                  onClick={() => {
+                    if (current.settlement.counterpartyJws)
+                      void copy(current.settlement.counterpartyJws);
+                  }}
                 >
-                  {t("federation.commercial.actions.attach")}
+                  {t("federation.billing.copyCounterparty")}
                 </Button>
-              </div>
-            ) : null}
-          </details>
+              ) : writable ? (
+                <div className="space-y-3">
+                  <label htmlFor={`${id}-signature`} className="block">
+                    {t("federation.agreements.counterpartySignature")}
+                  </label>
+                  <Textarea
+                    id={`${id}-signature`}
+                    value={signature}
+                    maxLength={524288}
+                    rows={4}
+                    disabled={blocked}
+                    onChange={(e) => setSignature(e.target.value)}
+                    className="font-mono text-xs"
+                  />
+                  <Button
+                    variant="outline"
+                    disabled={blocked || !signature.trim()}
+                    onClick={() =>
+                      review({
+                        kind: "attach",
+                        settlementId: current.settlement.settlementId,
+                        approvalJws: signature.trim(),
+                      })
+                    }
+                  >
+                    {t("federation.commercial.actions.attach")}
+                  </Button>
+                </div>
+              ) : null}
+            </details>
+          )}
         </div>
       ) : list.isPending ? (
         <p role="status">{t("federation.loading")}</p>
@@ -522,9 +531,11 @@ function SettlementPanel({
                     <span className="text-sm">
                       <span className="block">
                         {t(
-                          row.settlement.counterpartyJws
-                            ? "federation.billing.bothSigned"
-                            : "federation.billing.localSigned",
+                          row.settlement.arbitrationDecisionId
+                            ? "federation.settlement.arbitrated"
+                            : row.settlement.counterpartyJws
+                              ? "federation.billing.bothSigned"
+                              : "federation.billing.localSigned",
                         )}
                       </span>
                       <time dateTime={row.settlement.createdAt} className="text-muted-foreground">

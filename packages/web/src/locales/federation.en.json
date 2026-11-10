@@ -682,7 +682,8 @@
         "approve": "Approve settlement",
         "attach": "Verify and import counterparty signature",
         "retry": "Retry settlement evidence"
-      }
+      },
+      "arbitrated": "Arbitration award"
     },
     "closing": {
       "title": "Automatic approvals",

@@ -229,6 +229,7 @@ export class FederationClosingAutomation {
         id.revisionId,
       );
       if (local) {
+        if (!local.approvalJws) throw new FederationError("POLICY_DENIED");
         const ownId = federationMessageKeyId(local.approvalJws);
         await this.trust.assertKey(tx, this.signing.siteId, ownId, new Date());
         const own = await verifyFederationMessage(
@@ -266,6 +267,7 @@ export class FederationClosingAutomation {
     else if (id.kind === "refund")
       await this.refund.attachExchanged(id.revisionId, id.recordId, jws, authorize);
     else await this.settlement.attachExchanged(id.revisionId, id.recordId, jws, authorize);
+    if (!saved.approvalJws) throw new FederationError("POLICY_DENIED");
     return saved.approvalJws;
   }
   async discover() {
@@ -443,6 +445,7 @@ export class FederationClosingAutomation {
       task.agreementRevisionId,
     );
     if (!row) throw new FederationError("ASSET_UNAVAILABLE");
+    if (!row.approvalJws) throw new FederationError("POLICY_DENIED");
     const id = identity(row.payload),
       keyId = federationMessageKeyId(row.approvalJws);
     const initiator = id.kind === "refund" ? id.source : id.target,
@@ -465,7 +468,7 @@ export class FederationClosingAutomation {
       federationCanonicalJson(signed.payload) !== federationCanonicalJson(row.payload)
     )
       throw new FederationError("OPERATION_CONFLICT");
-    return { row, endpoint: peer.endpoint, other };
+    return { row: { ...row, approvalJws: row.approvalJws }, endpoint: peer.endpoint, other };
   }
   private async advance(claim: Task) {
     if (!this.send) return;

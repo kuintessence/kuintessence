@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  ArbitrationFinancialTargetSchema,
   ArbitrationFinancialViewSchema,
   ArbitrationReviewInputSchema,
   ArbitrationReviewSchema,
@@ -9,31 +8,17 @@ import {
   type CommercialArbitrationPolicy,
   CommercialArbitrationTaskBindingSchema,
 } from "./arbitration-policy";
+import { ArbitrationOutcomeSchema } from "./commercial";
 import {
   CommercialDisclosureEvidenceSchema,
   CommercialDisclosureReadPairSchema,
   CommercialDisclosureReadScopeSchema,
 } from "./disclosure-authorization";
 import { CommercialDisputeSubjectSchema } from "./disputes";
-import { FederationAmountSchema, FederationError, federationCanonicalJson } from "./index";
+import { FederationError, federationCanonicalJson } from "./index";
 import { FederationDigestSchema } from "./references";
 
-const reference = ArbitrationFinancialTargetSchema.shape.bill;
-export const ArbitrationOutcomeSchema = z.discriminatedUnion("action", [
-  z.strictObject({ action: z.literal("resolve-without-financial-change") }),
-  z.strictObject({
-    action: z.literal("settle"),
-    bill: reference,
-    chargedAmount: FederationAmountSchema,
-  }),
-  z.strictObject({
-    action: z.literal("adjust"),
-    bill: reference,
-    settlement: reference,
-    previousAdjustment: reference.nullable(),
-    chargedAmount: FederationAmountSchema,
-  }),
-]);
+export { ArbitrationOutcomeSchema } from "./commercial";
 export const ArbitrationDecisionInputSchema = ArbitrationReviewInputSchema.safeExtend({
   decisionId: z.uuid(),
   outcome: ArbitrationOutcomeSchema,

@@ -554,20 +554,31 @@ export const CommercialRefundListSchema = z.object({
   hasMore: z.boolean(),
 });
 
-export const CommercialSettlementApprovalSchema = z.object({
-  localSiteId: Id,
-  localOrgId: Id,
-  agreementRevisionId: Id,
-  billId: Id,
-  settlementId: Id,
-  payload: CommercialSettlementSchema,
-  digest: FederationDigestSchema,
-  approvalJws: z.string().min(1).max(524288),
-  counterpartyJws: z.string().min(1).max(524288).nullable(),
-  approvedBy: Id,
-  appliedAt: z.iso.datetime().nullable(),
-  createdAt: z.iso.datetime(),
-});
+export const CommercialSettlementApprovalSchema = z
+  .object({
+    localSiteId: Id,
+    localOrgId: Id,
+    agreementRevisionId: Id,
+    billId: Id,
+    settlementId: Id,
+    payload: CommercialSettlementSchema,
+    digest: FederationDigestSchema,
+    approvalJws: z.string().min(1).max(524288).nullable(),
+    arbitrationDecisionId: Id.nullish(),
+    counterpartyJws: z.string().min(1).max(524288).nullable(),
+    approvedBy: Id,
+    appliedAt: z.iso.datetime().nullable(),
+    createdAt: z.iso.datetime(),
+  })
+  .refine(
+    (v) =>
+      v.arbitrationDecisionId
+        ? v.approvalJws === null &&
+          v.counterpartyJws === null &&
+          v.arbitrationDecisionId === v.settlementId
+        : v.approvalJws !== null,
+    "Financial authority must be bilateral or arbitrated",
+  );
 export const CommercialSettlementListSchema = z.object({
   data: z.array(
     z.object({
@@ -578,22 +589,33 @@ export const CommercialSettlementListSchema = z.object({
   hasMore: z.boolean(),
 });
 
-export const CommercialAdjustmentApprovalSchema = z.object({
-  localSiteId: Id,
-  localOrgId: Id,
-  agreementRevisionId: Id,
-  adjustmentId: Id,
-  settlementId: Id,
-  number: z.number().int().positive(),
-  payload: CommercialAdjustmentSchema,
-  digest: FederationDigestSchema,
-  approvalJws: z.string().min(1).max(524288),
-  counterpartyJws: z.string().min(1).max(524288).nullable(),
-  heldAmount: FederationAmountSchema,
-  approvedBy: Id,
-  appliedAt: z.iso.datetime().nullable(),
-  createdAt: z.iso.datetime(),
-});
+export const CommercialAdjustmentApprovalSchema = z
+  .object({
+    localSiteId: Id,
+    localOrgId: Id,
+    agreementRevisionId: Id,
+    adjustmentId: Id,
+    settlementId: Id,
+    number: z.number().int().positive(),
+    payload: CommercialAdjustmentSchema,
+    digest: FederationDigestSchema,
+    approvalJws: z.string().min(1).max(524288).nullable(),
+    arbitrationDecisionId: Id.nullish(),
+    counterpartyJws: z.string().min(1).max(524288).nullable(),
+    heldAmount: FederationAmountSchema,
+    approvedBy: Id,
+    appliedAt: z.iso.datetime().nullable(),
+    createdAt: z.iso.datetime(),
+  })
+  .refine(
+    (v) =>
+      v.arbitrationDecisionId
+        ? v.approvalJws === null &&
+          v.counterpartyJws === null &&
+          v.arbitrationDecisionId === v.adjustmentId
+        : v.approvalJws !== null,
+    "Financial authority must be bilateral or arbitrated",
+  );
 export const CommercialAdjustmentListSchema = z.object({
   data: z.array(
     z.object({
@@ -748,6 +770,25 @@ export const ArbitrationResolutionEnvelopeSchema = z.strictObject({
   acceptanceJws: z.string().min(1).max(524288),
 });
 export type ArbitrationResolutionEnvelope = z.infer<typeof ArbitrationResolutionEnvelopeSchema>;
+const arbitrationFinancialReference = z.strictObject({
+  recordId: Id,
+  recordDigest: FederationDigestSchema,
+});
+export const ArbitrationOutcomeSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("resolve-without-financial-change") }),
+  z.strictObject({
+    action: z.literal("settle"),
+    bill: arbitrationFinancialReference,
+    chargedAmount: FederationAmountSchema,
+  }),
+  z.strictObject({
+    action: z.literal("adjust"),
+    bill: arbitrationFinancialReference,
+    settlement: arbitrationFinancialReference,
+    previousAdjustment: arbitrationFinancialReference.nullable(),
+    chargedAmount: FederationAmountSchema,
+  }),
+]);
 export const CommercialArbitrationResolutionSchema = z.strictObject({
   decisionId: Id,
   decisionDigest: FederationDigestSchema,
@@ -762,7 +803,7 @@ export const CommercialArbitrationResolutionSchema = z.strictObject({
   mode: FederationDelegationSchema.shape.mode,
   headDigest: FederationDigestSchema,
   freezeDigest: FederationDigestSchema,
-  outcome: z.strictObject({ action: z.literal("resolve-without-financial-change") }),
+  outcome: ArbitrationOutcomeSchema,
 });
 export type CommercialArbitrationResolution = z.infer<typeof CommercialArbitrationResolutionSchema>;
 export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operation", [

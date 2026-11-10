@@ -491,3 +491,15 @@ test.each([false, true])("closing confirmation restores focus when applied=%s", 
     ),
   );
 });
+
+test("arbitrated adjustment shows its authority without bilateral signature controls", async () => {
+  first().adjustment.approvalJws = null;
+  first().adjustment.arbitrationDecisionId = adjustmentId;
+  first().adjustment.appliedAt = "2026-01-02T02:00:00Z";
+  first().ledger = { id: adjustmentId, state: "committed", lastError: null };
+  mount();
+  await openAdjustment();
+  expect(screen.getAllByText("Arbitration award").length).toBeGreaterThan(0);
+  expect(screen.queryByLabelText("Counterparty signature")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Copy signature" })).toBeNull();
+});

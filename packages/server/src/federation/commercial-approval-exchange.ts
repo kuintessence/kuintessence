@@ -192,6 +192,8 @@ export class FederationCommercialApprovalExchange {
           ),
         );
       if (!record) return null;
+      if (!record.approvalJws || record.arbitrationDecisionId)
+        throw new FederationError("POLICY_DENIED");
       const payload = CommercialAdjustmentSchema.parse(record.payload);
       if (
         !contract.counterpartyJws ||
@@ -289,6 +291,8 @@ export class FederationCommercialApprovalExchange {
           ),
         );
       if (!record) return null;
+      if (!record.approvalJws || record.arbitrationDecisionId)
+        throw new FederationError("POLICY_DENIED");
       const payload = CommercialSettlementSchema.parse(record.payload);
       if (
         !contract.counterpartyJws ||
@@ -609,6 +613,7 @@ export class FederationCommercialApprovalExchange {
           and(
             eq(settlements.localSiteId, this.signing.siteId),
             isNull(settlements.counterpartyJws),
+            isNull(settlements.arbitrationDecisionId),
             isNull(syncs.recordId),
           ),
         )
@@ -639,6 +644,7 @@ export class FederationCommercialApprovalExchange {
           and(
             eq(adjustments.localSiteId, this.signing.siteId),
             isNull(adjustments.counterpartyJws),
+            isNull(adjustments.arbitrationDecisionId),
             isNull(syncs.recordId),
           ),
         )

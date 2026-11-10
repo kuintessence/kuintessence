@@ -682,7 +682,8 @@
         "approve": "批准结算",
         "attach": "验证并导入对方签名",
         "retry": "重试结算存证"
-      }
+      },
+      "arbitrated": "仲裁裁决"
     },
     "closing": {
       "title": "自动审批",

@@ -124,7 +124,7 @@ export async function verifyArbitrationExecution(
 
 export function assertArbitrationResolution(
   value: CommercialArbitrationResolution,
-  proof: Awaited<ReturnType<typeof verifyArbitrationResolution>>,
+  proof: Awaited<ReturnType<typeof verifyArbitrationExecution>>,
 ) {
   const d = proof.decision.payload,
     b = d.intent.binding;
@@ -145,14 +145,4 @@ export function assertArbitrationResolution(
     federationCanonicalJson(value.outcome) !== federationCanonicalJson(d.intent.outcome)
   )
     throw new FederationError("OPERATION_CONFLICT");
-}
-
-/** The case-only Server path remains closed to financial awards until its posting path is connected. */
-export async function verifyArbitrationResolution(
-  ...args: Parameters<typeof verifyArbitrationExecution>
-) {
-  const proof = await verifyArbitrationExecution(...args);
-  if (proof.decision.payload.intent.outcome.action !== "resolve-without-financial-change")
-    throw new FederationError("POLICY_DENIED");
-  return proof;
 }

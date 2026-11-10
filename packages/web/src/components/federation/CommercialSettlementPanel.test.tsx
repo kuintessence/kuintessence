@@ -375,3 +375,15 @@ test("an applied settlement opens adjustment history without granting adjustment
   expect(open).toHaveBeenCalledWith(settlementId);
   expect(api.post).not.toHaveBeenCalled();
 });
+
+test("arbitrated settlement shows its authority without bilateral signature controls", async () => {
+  first().settlement.approvalJws = null;
+  first().settlement.arbitrationDecisionId = settlementId;
+  first().settlement.appliedAt = "2026-01-02T02:00:00Z";
+  first().ledger = { id: settlementId, state: "committed", lastError: null };
+  mount();
+  await openSettlement();
+  expect(screen.getAllByText("Arbitration award").length).toBeGreaterThan(0);
+  expect(screen.queryByLabelText("Counterparty signature")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Copy signature" })).toBeNull();
+});

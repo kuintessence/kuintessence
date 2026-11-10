@@ -26,6 +26,7 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
+import { verifyArbitratedFinancialOriginal } from "./arbitrated-financial-original";
 import { renewTaskCompletion } from "./completion-capacity";
 import { assertFederationTaskNotDisputed } from "./dispute-freeze";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -90,7 +91,11 @@ async function originals(
     .from(settlements)
     .where(and(eq(settlements.localSiteId, siteId), eq(settlements.settlementId, settlementId)))
     .for("update");
-  if (!bill?.counterpartyJws || !settlement?.counterpartyJws || !settlement.appliedAt)
+  if (
+    !bill?.counterpartyJws ||
+    (!settlement?.counterpartyJws && !settlement?.arbitrationDecisionId) ||
+    !settlement?.appliedAt
+  )
     throw new FederationError("DATA_WAITING");
   if (
     bill.payload.agreementDigest !== contract.digest ||
@@ -98,7 +103,10 @@ async function originals(
     settlement.payload.billId !== bill.billId
   )
     throw new FederationError("OPERATION_CONFLICT");
-  return { contract, bill, settlement };
+  const arbitration = settlement.arbitrationDecisionId
+    ? await verifyArbitratedFinancialOriginal(tx, siteId, settlement)
+    : undefined;
+  return { contract, bill, settlement, arbitration };
 }
 type Originals = Awaited<ReturnType<typeof originals>>;
 async function head(tx: PgTransaction, siteId: string, settlementId: string) {
@@ -115,10 +123,17 @@ function check(value: CommercialAdjustment, original: Originals, previous?: Adju
   assertCommercialAdjustment(value, {
     agreement: original.contract.terms,
     bill: { terms: original.bill.payload, digest: original.bill.digest },
-    settlement: { terms: original.settlement.payload, digest: original.settlement.digest },
+    settlement: {
+      terms: original.settlement.payload,
+      digest: original.settlement.digest,
+      arbitration: original.arbitration,
+    },
     previous: previous ? { terms: previous.payload, digest: previous.digest } : undefined,
   });
-  if (previous && (!previous.counterpartyJws || !previous.appliedAt))
+  if (
+    previous &&
+    ((!previous.counterpartyJws && !previous.arbitrationDecisionId) || !previous.appliedAt)
+  )
     throw new FederationError("DATA_WAITING");
 }
 
@@ -216,9 +231,14 @@ export async function applyFederationAdjustment(tx: PgTransaction, snapshot: Adj
     .from(adjustments)
     .where(key(snapshot.localSiteId, snapshot.adjustmentId))
     .for("update");
-  if (!row || row.digest !== snapshot.digest || !row.counterpartyJws)
+  if (
+    !row ||
+    row.digest !== snapshot.digest ||
+    (!row.counterpartyJws && !row.arbitrationDecisionId)
+  )
     throw new FederationError("OPERATION_CONFLICT");
   if (row.appliedAt) return;
+  if (row.arbitrationDecisionId) await verifyArbitratedFinancialOriginal(tx, row.localSiteId, row);
   const latest = await head(tx, row.localSiteId, row.settlementId);
   if (latest?.adjustmentId !== row.adjustmentId) throw new FederationError("OPERATION_CONFLICT");
   const previous = row.payload.previous
@@ -318,6 +338,10 @@ export class FederationAdjustmentService {
       [CommercialBillSchema, original.bill],
       [CommercialSettlementSchema, original.settlement],
     ] as const) {
+      if ("arbitrationDecisionId" in record && record.arbitrationDecisionId) {
+        await verifyArbitratedFinancialOriginal(tx, this.signing.siteId, record);
+        continue;
+      }
       for (const [siteId, jws] of [
         [this.signing.siteId, record.approvalJws],
         [other, record.counterpartyJws],
@@ -331,8 +355,12 @@ export class FederationAdjustmentService {
       }
     }
     if (previous) {
-      if (!previous.appliedAt || !previous.counterpartyJws)
+      if (!previous.appliedAt || (!previous.counterpartyJws && !previous.arbitrationDecisionId))
         throw new FederationError("DATA_WAITING");
+      if (previous.arbitrationDecisionId) {
+        await verifyArbitratedFinancialOriginal(tx, this.signing.siteId, previous);
+        return;
+      }
       for (const [siteId, jws] of [
         [this.signing.siteId, previous.approvalJws],
         [other, previous.counterpartyJws],
@@ -406,6 +434,7 @@ export class FederationAdjustmentService {
         )
           throw new FederationError("OPERATION_CONFLICT");
         await this.verifyOriginals(tx, original);
+        if (!prior.approvalJws) throw new FederationError("OPERATION_CONFLICT");
         if (
           (
             await this.verify(
@@ -417,7 +446,7 @@ export class FederationAdjustmentService {
           ).digest !== prior.digest
         )
           throw new FederationError("OPERATION_CONFLICT");
-        return prior;
+        return { ...prior, approvalJws: prior.approvalJws };
       }
       await assertFederationTaskNotDisputed(tx, this.signing.siteId, original.bill.payload.request);
       const previous = await head(tx, this.signing.siteId, value.settlementId);
@@ -511,7 +540,8 @@ export class FederationAdjustmentService {
         target: row.adjustmentId,
         diff: { after: { digest: row.digest } },
       });
-      return row;
+      if (!row.approvalJws) throw new FederationError("OPERATION_CONFLICT");
+      return { ...row, approvalJws: row.approvalJws };
     });
   }
   async attachExchanged(
@@ -704,7 +734,7 @@ export class FederationAdjustmentService {
           submissions,
           and(
             eq(submissions.localSiteId, adjustments.localSiteId),
-            sql`${submissions.input}->>'operation' = 'adjust-settlement'`,
+            sql`${submissions.input}->>'operation' = CASE WHEN ${adjustments.arbitrationDecisionId} IS NULL THEN 'adjust-settlement' ELSE 'resolve-arbitrated-case' END`,
             sql`${submissions.input}->>'recordId' = ${adjustments.adjustmentId}::text`,
           ),
         )

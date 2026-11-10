@@ -14,7 +14,10 @@ import {
   federationExecutionTerminals as terminals,
 } from "@kuintessence/db";
 import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
-import { assertCommercialSettlement } from "@kuintessence/shared/federation/billing";
+import {
+  assertArbitratedSettlement,
+  assertCommercialSettlement,
+} from "@kuintessence/shared/federation/billing";
 import {
   CommercialAdapterProposalInputSchema,
   CommercialBillSchema,
@@ -22,6 +25,7 @@ import {
   CommercialSettlementSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, sql } from "drizzle-orm";
+import { verifyArbitratedFinancialOriginal } from "./arbitrated-financial-original";
 import { assertClosingPolicyActive, FederationClosingPolicyService } from "./closing-policy";
 import { assertFederationTaskNotDisputed } from "./dispute-freeze";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -40,10 +44,18 @@ export async function applyFederationSettlement(
   bill: typeof bills.$inferSelect,
 ) {
   if (row.appliedAt) return;
-  if (!row.counterpartyJws || !bill.counterpartyJws) throw new FederationError("POLICY_DENIED");
+  if ((!row.counterpartyJws && !row.arbitrationDecisionId) || !bill.counterpartyJws)
+    throw new FederationError("POLICY_DENIED");
   const value = CommercialSettlementSchema.parse(row.payload),
     request = bill.payload.request;
-  assertCommercialSettlement(value, bill.payload, bill.digest);
+  if (row.arbitrationDecisionId)
+    assertArbitratedSettlement(
+      value,
+      bill.payload,
+      bill.digest,
+      await verifyArbitratedFinancialOriginal(tx, row.localSiteId, row),
+    );
+  else assertCommercialSettlement(value, bill.payload, bill.digest);
   if (value.targetSiteId === row.localSiteId) {
     // Match admission's agreement -> reservation -> budget lock order.
     const [agreement] = await tx
@@ -391,8 +403,10 @@ export class FederationSettlementService {
         federationCanonicalJson(prior.payload) !== federationCanonicalJson(value)
       )
         throw new FederationError("OPERATION_CONFLICT");
+      if (!prior.approvalJws) throw new FederationError("OPERATION_CONFLICT");
       await this.verify(tx, prior.approvalJws, this.signing.siteId);
-      return prior;
+      if (!prior.approvalJws) throw new FederationError("OPERATION_CONFLICT");
+      return { ...prior, approvalJws: prior.approvalJws };
     }
     await assertFederationTaskNotDisputed(tx, this.signing.siteId, bill.payload.request);
     const signed = await this.verify(
@@ -425,7 +439,8 @@ export class FederationSettlementService {
         same.digest !== signed.digest
       )
         throw new FederationError("OPERATION_CONFLICT");
-      return same;
+      if (!same.approvalJws) throw new FederationError("OPERATION_CONFLICT");
+      return { ...same, approvalJws: same.approvalJws };
     }
     if (policy) {
       await new FederationClosingPolicyService(this.db, this.signing.siteId).consume(
@@ -443,7 +458,8 @@ export class FederationSettlementService {
       target: row.settlementId,
       diff: { after: { digest: row.digest } },
     });
-    return row;
+    if (!row.approvalJws) throw new FederationError("OPERATION_CONFLICT");
+    return { ...row, approvalJws: row.approvalJws };
   }
   async attachExchanged(
     revisionId: string,
@@ -570,7 +586,7 @@ export class FederationSettlementService {
           submissions,
           and(
             eq(submissions.localSiteId, settlements.localSiteId),
-            sql`${submissions.input}->>'operation' = 'settle-bill'`,
+            sql`${submissions.input}->>'operation' = CASE WHEN ${settlements.arbitrationDecisionId} IS NULL THEN 'settle-bill' ELSE 'resolve-arbitrated-case' END`,
             sql`${submissions.input}->>'recordId' = ${settlements.settlementId}::text`,
           ),
         )

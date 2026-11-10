@@ -2103,7 +2103,8 @@ export const federationCommercialSettlements = pgTable(
       .references(() => orgs.id),
     payload: jsonb("payload").$type<CommercialSettlement>().notNull(),
     digest: varchar("digest", { length: 71 }).notNull(),
-    approvalJws: text("approval_jws").notNull(),
+    approvalJws: text("approval_jws"),
+    arbitrationDecisionId: uuid("arbitration_decision_id"),
     counterpartyJws: text("counterparty_jws"),
     authorizationPolicyId: uuid("authorization_policy_id").references(
       () => federationClosingPolicies.id,
@@ -2115,6 +2116,13 @@ export const federationCommercialSettlements = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    foreignKey({
+      columns: [t.localSiteId, t.arbitrationDecisionId],
+      foreignColumns: [
+        federationArbitrationResolutions.localSiteId,
+        federationArbitrationResolutions.decisionId,
+      ],
+    }),
     primaryKey({ columns: [t.localSiteId, t.settlementId] }),
     foreignKey({
       columns: [t.localSiteId, t.billId],
@@ -2138,7 +2146,9 @@ export const federationCommercialSettlements = pgTable(
       AND ${t.payload}->>'billId' = ${t.billId}::text
       AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
       AND (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text)
-      AND (${t.appliedAt} IS NULL OR ${t.counterpartyJws} IS NOT NULL)) IS TRUE`,
+      AND (( ${t.arbitrationDecisionId} IS NULL AND ${t.approvalJws} IS NOT NULL)
+        OR (${t.arbitrationDecisionId} IS NOT NULL AND ${t.approvalJws} IS NULL AND ${t.counterpartyJws} IS NULL))
+      AND (${t.appliedAt} IS NULL OR ${t.counterpartyJws} IS NOT NULL OR ${t.arbitrationDecisionId} IS NOT NULL)) IS TRUE`,
     ),
   ],
 );
@@ -2157,7 +2167,8 @@ export const federationCommercialAdjustments = pgTable(
     number: integer("number").notNull(),
     payload: jsonb("payload").$type<CommercialAdjustment>().notNull(),
     digest: varchar("digest", { length: 71 }).notNull(),
-    approvalJws: text("approval_jws").notNull(),
+    approvalJws: text("approval_jws"),
+    arbitrationDecisionId: uuid("arbitration_decision_id"),
     counterpartyJws: text("counterparty_jws"),
     heldAmount: numeric("held_amount", { precision: 38, scale: 0 }).notNull().default("0"),
     approvedBy: uuid("approved_by")
@@ -2167,6 +2178,13 @@ export const federationCommercialAdjustments = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    foreignKey({
+      columns: [t.localSiteId, t.arbitrationDecisionId],
+      foreignColumns: [
+        federationArbitrationResolutions.localSiteId,
+        federationArbitrationResolutions.decisionId,
+      ],
+    }),
     primaryKey({ columns: [t.localSiteId, t.adjustmentId] }),
     foreignKey({
       columns: [t.localSiteId, t.settlementId],
@@ -2198,7 +2216,9 @@ export const federationCommercialAdjustments = pgTable(
       AND ${t.payload}->>'settlementId' = ${t.settlementId}::text
       AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
       AND (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text)
-      AND (${t.appliedAt} IS NULL OR ${t.counterpartyJws} IS NOT NULL)
+      AND (( ${t.arbitrationDecisionId} IS NULL AND ${t.approvalJws} IS NOT NULL)
+        OR (${t.arbitrationDecisionId} IS NOT NULL AND ${t.approvalJws} IS NULL AND ${t.counterpartyJws} IS NULL))
+      AND (${t.appliedAt} IS NULL OR ${t.counterpartyJws} IS NOT NULL OR ${t.arbitrationDecisionId} IS NOT NULL)
       AND ((${t.number} = 1) = (${t.payload}->'previous' = 'null'::jsonb))
     ) IS TRUE`,
     ),
@@ -4188,7 +4208,8 @@ export const federationArbitrationResolutions = pgTable(
       sql`(${t.payload}->>'decisionId' = ${t.decisionId}::text AND ${t.payload}->>'caseId' = ${t.caseId}::text
     AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
     AND (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text)
-    AND ${t.payload}->'outcome'->>'action' = 'resolve-without-financial-change') IS TRUE`,
+    AND (${t.payload}->'outcome'->>'action' = 'resolve-without-financial-change'
+      OR (${t.payload}->>'mode' = 'ledger_coordinated' AND ${t.payload}->'outcome'->>'action' IN ('settle', 'adjust')))) IS TRUE`,
     ),
   ],
 );
