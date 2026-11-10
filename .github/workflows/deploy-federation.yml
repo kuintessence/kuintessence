@@ -1,0 +1,51 @@
+name: Deploy federation Compose
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Federation deployment mode
+        type: choice
+        options: [direct, fabric]
+        required: true
+      revision:
+        description: Full published main revision (sha image tag must exist)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: federation-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    environment: federation-production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - name: Verify revision belongs to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          [[ "$REVISION" =~ ^[a-f0-9]{40}$ ]]
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$REVISION...main" --jq .status)
+          [[ "$status" == ahead || "$status" == identical ]]
+      - name: Deploy the selected Compose variant
+        env:
+          KQ_FEDERATION_MODE: ${{ inputs.mode }}
+          KQ_DEPLOY_REVISION: ${{ inputs.revision }}
+          FEDERATION_SSH_HOST: ${{ secrets.FEDERATION_SSH_HOST }}
+          FEDERATION_SSH_PORT: ${{ secrets.FEDERATION_SSH_PORT }}
+          FEDERATION_SSH_USER: ${{ secrets.FEDERATION_SSH_USER }}
+          FEDERATION_SSH_KEY: ${{ secrets.FEDERATION_SSH_KEY }}
+          FEDERATION_SSH_KNOWN_HOSTS: ${{ secrets.FEDERATION_SSH_KNOWN_HOSTS }}
+        run: bash deploy/federation/remote.sh

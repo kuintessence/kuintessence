@@ -20,6 +20,8 @@ Unix socket 只允许 Server 与 Gateway 的相同系统 UID 访问。独立目�
 
 ## 本地运行与 Compose
 
+发布镜像支持 `direct`（无链）与 `fabric`（有链）两个入口，配置、初始化、CI/CD 和现网迁移边界见 [两种 Compose 部署](deployment.md)。
+
 Server 设置：
 
 | 变量 | 值 |
@@ -53,18 +55,16 @@ node temp/federation-gateway.mjs
 现有完整 Compose 可叠加[入口配置](compose.ingress.yml)：
 
 ```sh
-docker compose --project-directory . \
-  -f deploy/compose/docker-compose.yml \
-  -f deploy/federation/compose.ingress.yml up --build -d
+bash deploy/federation/compose.sh direct up -d --wait
 ```
 
-宿主机设置的 `FEDERATION_SIGNING_KEY_FILE` 和三个 `FEDERATION_TLS_*_FILE` 指向部署方管理的文件。缺失变量使 Compose 直接报错。示例采用当前 Server 镜像的默认 UID；变更 UID 时须同步两端及宿主机文件所有者。Gateway 默认只发布到 `127.0.0.1:3443`；跨机构部署时明确配置 `FEDERATION_TLS_BIND`、防火墙和 TLS 直通入口。不得让 HTTP 代理终止 TLS 后伪造证书头。
+宿主机设置的 `FEDERATION_SIGNING_KEY_FILE`、三个 `FEDERATION_TLS_*_FILE` 以及三个 `FEDERATION_CLIENT_*_FILE` 指向部署方管理的文件。缺失变量使 Compose 直接报错。示例采用当前 Server 镜像的默认 UID；变更 UID 时须同步两端及宿主机文件所有者。Gateway 默认只发布到 `127.0.0.1:3443`；跨机构部署时明确配置 `FEDERATION_TLS_BIND`、防火墙和 TLS 直通入口。不得让 HTTP 代理终止 TLS 后伪造证书头。
 
-此叠加文件无任何 Fabric 服务或依赖。Gateway 缺失或上游不可用时返回失败，客户端后续须使用同一个 operationId 核对/重试。源站发送器和按需签名状态查询已接通，启用方式见下节；完整 Helm 联邦配置、Docker/Compose 镜像运行尚待预览环境验证。
+无链入口没有任何 Fabric 服务或依赖；有链入口另叠加 `compose.fabric.yml`。Gateway 缺失或上游不可用时返回失败，客户端后续须使用同一个 operationId 核对/重试。源站发送器和按需签名状态查询已接通，启用方式见下节；Helm 联邦配置和可信预览部署仍待验收；Compose 配置及新增镜像启动由独立部署 CI 检查。
 
 ## 源站发送与状态查询
 
-Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`、`FEDERATION_CLIENT_CA_FILE` 三个绝对路径，必须同时提供。客户端私钥由 Server UID 持有，权限 0600；客户端证书须在对端按机构登记。Compose 入口叠加文件当前仅配置接收入站，源站部署须额外将上述文件只读挂载给 Server 并设置容器内路径；不复用 Agent 凭据。
+Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`、`FEDERATION_CLIENT_CA_FILE` 三个绝对路径，必须同时提供。客户端私钥由 Server UID 持有，权限 0600；客户端证书须在对端按机构登记。Compose 入口已要求只读挂载上述出站身份并设置容器内路径；升级旧配置须补齐三个文件，不复用 Agent 凭据。
 
 平台管理员为活动组织成员显式分配 `delegation.submit` 或 `delegation.read`，前者包含读取权。两端登记原协议/模板/材料，交换同一条款的签名后，源站使用人类登录 session 调用：
 

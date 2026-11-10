@@ -18,6 +18,9 @@ examples/docker-compose.demo.yml
 deploy
 !deploy/aio
 !deploy/dev
+!deploy/federation
+deploy/federation/*
+!deploy/federation/fabric-init.sh
 !deploy/rustfs
 deploy/rustfs/*
 !deploy/rustfs/bootstrap-object-lock.sh

@@ -33,6 +33,16 @@ jobs:
             dockerfile: packages/web/Dockerfile
           - component: db-migrate
             dockerfile: packages/db/Dockerfile
+          - component: federation-gateway
+            dockerfile: deploy/federation/gateway.Dockerfile
+          - component: fabric-adapter
+            dockerfile: deploy/federation/runtime.Dockerfile
+            target: adapter
+          - component: fabric-chaincode
+            dockerfile: deploy/federation/runtime.Dockerfile
+            target: chaincode
+          - component: fabric-tools
+            dockerfile: deploy/federation/tools.Dockerfile
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,7 +59,7 @@ jobs:
             const repository = `ghcr.io/${context.repo.owner.toLowerCase()}/kuintessence-${process.env.COMPONENT}`;
             let tags;
             if (context.eventName === "push" && context.ref === "refs/heads/main") {
-              tags = ["main"];
+              tags = ["main", `sha-${context.sha}`];
             } else if (context.eventName === "release" && context.payload.action === "published") {
               const release = context.payload.release;
               const tag = release.tag_name;
@@ -77,6 +87,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target || '' }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.image.outputs.tags }}

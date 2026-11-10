@@ -1,0 +1,346 @@
+services:
+  server:
+    environment:
+      FEDERATION_ATTESTATION_SOCKET_PATH: /run/kq-fabric/evidence/private/evidence.sock
+      FEDERATION_COMMERCIAL_SOCKET_PATH: /run/kq-fabric/commercial/private/commercial.sock
+      FEDERATION_MARKET_SOCKET_PATH: /run/kq-fabric/market/private/market.sock
+      FEDERATION_CASE_SOCKET_PATH: /run/kq-fabric/case/private/case.sock
+      FEDERATION_CASE_TRUST_FILE: /run/kq-fabric-case-trust.json
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/trust/case.json
+      target: /run/kq-fabric-case-trust.json
+      read_only: true
+      bind:
+        create_host_path: false
+    - fabric-evidence-socket:/run/kq-fabric/evidence
+    - fabric-commercial-socket:/run/kq-fabric/commercial
+    - fabric-market-socket:/run/kq-fabric/market
+    - fabric-case-socket:/run/kq-fabric/case
+  fabric-evidence-adapter:
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-fabric-adapter:${KQ_IMAGE_TAG:-main}
+    environment:
+      KQ_FABRIC_ADAPTER_KIND: evidence
+      KQ_FABRIC_ADAPTER_CONFIG: /run/kq-fabric-config/adapter.json
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/adapters/evidence
+      target: /run/kq-fabric-config
+      read_only: true
+      bind:
+        create_host_path: false
+    - fabric-evidence-socket:/run/kq-fabric/evidence
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - require('node:http').get({socketPath:'/run/kq-fabric/evidence/private/evidence.sock',path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))
+      interval: 10s
+      timeout: 3s
+      retries: 6
+  fabric-evidence-chaincode:
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-fabric-chaincode:${KQ_IMAGE_TAG:-main}
+    command:
+    - node
+    - contracts/fabric/evidence/dist/main.js
+    environment:
+      KQ_EVIDENCE_TRUST_FILE: /run/kq-chaincode/trust.json
+      CHAINCODE_ID: ${KQ_FABRIC_EVIDENCE_PACKAGE_ID:?set approved evidence package ID}
+      CHAINCODE_ADDRESS: 0.0.0.0:9999
+      CHAINCODE_TLS_KEY_FILE: /run/kq-chaincode/server.key
+      CHAINCODE_TLS_CERT_FILE: /run/kq-chaincode/server.crt
+      CHAINCODE_TLS_CLIENT_CA_FILE: /run/kq-chaincode/client-ca.crt
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/chaincodes/evidence
+      target: /run/kq-chaincode
+      read_only: true
+      bind:
+        create_host_path: false
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - const s=require('node:net').connect(9999,'127.0.0.1',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1))
+      interval: 10s
+      timeout: 3s
+      retries: 6
+  fabric-commercial-adapter:
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-fabric-adapter:${KQ_IMAGE_TAG:-main}
+    environment:
+      KQ_FABRIC_ADAPTER_KIND: commercial
+      KQ_FABRIC_ADAPTER_CONFIG: /run/kq-fabric-config/adapter.json
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/adapters/commercial
+      target: /run/kq-fabric-config
+      read_only: true
+      bind:
+        create_host_path: false
+    - fabric-commercial-socket:/run/kq-fabric/commercial
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - require('node:http').get({socketPath:'/run/kq-fabric/commercial/private/commercial.sock',path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))
+      interval: 10s
+      timeout: 3s
+      retries: 6
+  fabric-commercial-chaincode:
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-fabric-chaincode:${KQ_IMAGE_TAG:-main}
+    command:
+    - node
+    - contracts/fabric/commercial/dist/main.js
+    environment:
+      KQ_COMMERCIAL_TRUST_FILE: /run/kq-chaincode/trust.json
+      CHAINCODE_ID: ${KQ_FABRIC_COMMERCIAL_PACKAGE_ID:?set approved commercial package ID}
+      CHAINCODE_ADDRESS: 0.0.0.0:9999
+      CHAINCODE_TLS_KEY_FILE: /run/kq-chaincode/server.key
+      CHAINCODE_TLS_CERT_FILE: /run/kq-chaincode/server.crt
+      CHAINCODE_TLS_CLIENT_CA_FILE: /run/kq-chaincode/client-ca.crt
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/chaincodes/commercial
+      target: /run/kq-chaincode
+      read_only: true
+      bind:
+        create_host_path: false
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - const s=require('node:net').connect(9999,'127.0.0.1',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1))
+      interval: 10s
+      timeout: 3s
+      retries: 6
+  fabric-market-adapter:
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-fabric-adapter:${KQ_IMAGE_TAG:-main}
+    environment:
+      KQ_FABRIC_ADAPTER_KIND: market
+      KQ_FABRIC_ADAPTER_CONFIG: /run/kq-fabric-config/adapter.json
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/adapters/market
+      target: /run/kq-fabric-config
+      read_only: true
+      bind:
+        create_host_path: false
+    - fabric-market-socket:/run/kq-fabric/market
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - require('node:http').get({socketPath:'/run/kq-fabric/market/private/market.sock',path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))
+      interval: 10s
+      timeout: 3s
+      retries: 6
+  fabric-market-chaincode:
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-fabric-chaincode:${KQ_IMAGE_TAG:-main}
+    command:
+    - node
+    - contracts/fabric/market/dist/main.js
+    environment:
+      KQ_MARKET_TRUST_FILE: /run/kq-chaincode/trust.json
+      CHAINCODE_ID: ${KQ_FABRIC_MARKET_PACKAGE_ID:?set approved market package ID}
+      CHAINCODE_ADDRESS: 0.0.0.0:9999
+      CHAINCODE_TLS_KEY_FILE: /run/kq-chaincode/server.key
+      CHAINCODE_TLS_CERT_FILE: /run/kq-chaincode/server.crt
+      CHAINCODE_TLS_CLIENT_CA_FILE: /run/kq-chaincode/client-ca.crt
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/chaincodes/market
+      target: /run/kq-chaincode
+      read_only: true
+      bind:
+        create_host_path: false
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - const s=require('node:net').connect(9999,'127.0.0.1',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1))
+      interval: 10s
+      timeout: 3s
+      retries: 6
+  fabric-case-adapter:
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-fabric-adapter:${KQ_IMAGE_TAG:-main}
+    environment:
+      KQ_FABRIC_ADAPTER_KIND: case
+      KQ_FABRIC_ADAPTER_CONFIG: /run/kq-fabric-config/adapter.json
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/adapters/case
+      target: /run/kq-fabric-config
+      read_only: true
+      bind:
+        create_host_path: false
+    - fabric-case-socket:/run/kq-fabric/case
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - require('node:http').get({socketPath:'/run/kq-fabric/case/private/case.sock',path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))
+      interval: 10s
+      timeout: 3s
+      retries: 6
+  fabric-case-chaincode:
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-fabric-chaincode:${KQ_IMAGE_TAG:-main}
+    command:
+    - node
+    - contracts/fabric/commercial/dist/case-main.js
+    environment:
+      KQ_CASE_TRUST_FILE: /run/kq-chaincode/trust.json
+      CHAINCODE_ID: ${KQ_FABRIC_CASE_PACKAGE_ID:?set approved case package ID}
+      CHAINCODE_ADDRESS: 0.0.0.0:9999
+      CHAINCODE_TLS_KEY_FILE: /run/kq-chaincode/server.key
+      CHAINCODE_TLS_CERT_FILE: /run/kq-chaincode/server.crt
+      CHAINCODE_TLS_CLIENT_CA_FILE: /run/kq-chaincode/client-ca.crt
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/chaincodes/case
+      target: /run/kq-chaincode
+      read_only: true
+      bind:
+        create_host_path: false
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - const s=require('node:net').connect(9999,'127.0.0.1',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1))
+      interval: 10s
+      timeout: 3s
+      retries: 6
+  fabric-peer:
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    image: hyperledger/fabric-peer:3.1.5
+    environment:
+      FABRIC_CFG_PATH: /run/kq-peer
+      CORE_PEER_FILESYSTEMPATH: /var/hyperledger/production
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/peer
+      target: /run/kq-peer
+      read_only: true
+      bind:
+        create_host_path: false
+    - fabric-peer-data:/var/hyperledger/production
+    ports:
+    - ${KQ_FABRIC_BIND:-127.0.0.1}:${KQ_FABRIC_PEER_PORT:-7051}:7051
+    tmpfs:
+    - /tmp
+    command:
+    - peer
+    - node
+    - start
+  fabric-orderer:
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    image: hyperledger/fabric-orderer:3.1.5
+    environment:
+      FABRIC_CFG_PATH: /run/kq-orderer
+      ORDERER_FILELEDGER_LOCATION: /var/hyperledger/production/orderer
+      ORDERER_CONSENSUS_WALDIR: /var/hyperledger/production/etcdraft/wal
+      ORDERER_CONSENSUS_SNAPDIR: /var/hyperledger/production/etcdraft/snapshot
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/orderer
+      target: /run/kq-orderer
+      read_only: true
+      bind:
+        create_host_path: false
+    - fabric-orderer-data:/var/hyperledger/production
+    ports:
+    - ${KQ_FABRIC_BIND:-127.0.0.1}:${KQ_FABRIC_ORDERER_PORT:-7050}:7050
+    tmpfs:
+    - /tmp
+    command:
+    - orderer
+  fabric-admin:
+    image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-fabric-tools:${KQ_IMAGE_TAG:-main}
+    profiles:
+    - fabric-admin
+    volumes:
+    - type: bind
+      source: ${KQ_FABRIC_DIRECTORY:?set absolute deployment-owned Fabric directory}/admin
+      target: /run/kq-admin
+      read_only: true
+      bind:
+        create_host_path: false
+    read_only: true
+    tmpfs:
+    - /tmp
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+volumes:
+  fabric-evidence-socket: null
+  fabric-commercial-socket: null
+  fabric-market-socket: null
+  fabric-case-socket: null
+  fabric-peer-data: null
+  fabric-orderer-data: null

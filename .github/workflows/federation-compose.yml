@@ -1,0 +1,77 @@
+name: Federation Compose delivery
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/federation-compose.yml
+      - .github/workflows/build-images.yml
+      - .github/workflows/deploy-federation.yml
+      - deploy/federation/**
+      - deploy/main/compose.yml
+      - packages/fabric-adapter/**
+      - packages/shared/**
+      - contracts/fabric/**
+      - packages/*/package.json
+      - package.json
+      - bun.lock
+      - .dockerignore
+      - scripts/federation-compose-*.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: federation-compose-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  configuration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Validate both Compose variants
+        run: |
+          bash -n deploy/federation/{compose,remote,apply,fabric-init}.sh
+          python3 scripts/federation-compose-check.py
+          python3 scripts/federation-compose-remote-check.py
+  images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: federation-gateway
+            dockerfile: deploy/federation/gateway.Dockerfile
+          - component: fabric-adapter
+            dockerfile: deploy/federation/runtime.Dockerfile
+            target: adapter
+          - component: fabric-chaincode
+            dockerfile: deploy/federation/runtime.Dockerfile
+            target: chaincode
+          - component: fabric-tools
+            dockerfile: deploy/federation/tools.Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target || '' }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: kuintessence-${{ matrix.component }}:compose-ci
+          cache-from: type=gha,scope=compose-${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=compose-${{ matrix.component }}
+      - name: Start the real image entrypoints with isolated test identities
+        run: python3 scripts/federation-compose-smoke.py '${{ matrix.component }}' 'kuintessence-${{ matrix.component }}:compose-ci'

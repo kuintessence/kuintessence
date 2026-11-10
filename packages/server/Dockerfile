@@ -12,6 +12,8 @@ COPY packages/web/package.json ./packages/web/
 COPY packages/docs-site/package.json ./packages/docs-site/
 COPY packages/fabric-adapter/package.json ./packages/fabric-adapter/
 COPY contracts/fabric/evidence/package.json ./contracts/fabric/evidence/
+COPY contracts/fabric/commercial/package.json ./contracts/fabric/commercial/
+COPY contracts/fabric/market/package.json ./contracts/fabric/market/
 COPY packages/shared/tsconfig.json ./packages/shared/
 COPY packages/proto/tsconfig.json ./packages/proto/
 COPY packages/db/tsconfig.json ./packages/db/
