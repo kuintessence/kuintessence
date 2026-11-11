@@ -80,10 +80,15 @@ def source_revision(revision):
 
 
 def inspect_image(name):
-    records = json.loads(run([*IMAGE_ENGINE, "image", "inspect", name], capture_output=True, text=True).stdout)
+    # nerdctl 2.4.2 incorrectly matches a digest-only image against an implicit latest tag.
+    by_digest = Path(IMAGE_ENGINE[0]).name == "nerdctl" and "@sha256:" in name
+    query = name.rsplit("@", 1)[1] if by_digest else name
+    records = json.loads(run([*IMAGE_ENGINE, "image", "inspect", query], capture_output=True, text=True).stdout)
     if len(records) != 1 or records[0]["Os"] != "linux" or records[0]["Architecture"] != "amd64":
         raise ValueError("Every image must be linux/amd64")
     record = records[0]
+    if by_digest and not any(reference.rsplit("@", 1)[-1] == query for reference in record.get("RepoDigests", [])):
+        raise ValueError("Inspected image does not match the requested source digest")
     return {"name": name, "id": record["Id"], "size": record["Size"],
             "repoDigests": record.get("RepoDigests", []),
             "source": (record.get("Config", {}).get("Labels") or {}).get("org.opencontainers.image.source"),

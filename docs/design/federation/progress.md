@@ -3826,6 +3826,6 @@ Bun、Spack、OpenPBS 下载增加解包前 SHA-256 核对。已知版本内置�
 下一步整理并固定本地候选提交，以该完整 SHA 和干净工作树进行 BuildKit 本机构建，构建期间保持源码不变。不推送、合并或远端部署。截至该候选提交，BuildKit daemon 和完整镜像／SIF 构建尚未执行；各机构批准的 Casdoor digest、构建／导出空间、最终 profile／native lock、三机容量及完整 [38 项现场验收](acceptance.md)仍待完成。四节点 SmartBFT 和真实软件冷安装不以下载校验或命令夹具代替。详见 [AIO 交付范围](aio-delivery.md#交付来源与操作材料)和[离线入口](../../../deploy/federation/aio/README.md)。
 
 
-### 本地候选真实构建与 PBS Python 兼容修复
+### 全部交付镜像准备与摘要查询兼容修复
 
-2026-11-11：本地候选 `a1e1fdb` 已完成九类 KQ／Fabric 镜像、Slurm 最终镜像及公共 SIF 的真实构建。PBS 构建暴露 OpenPBS 23.06.06 与 Python 3.12 的兼容问题；已回移上游 #2594／#2662 的 Python 专用补丁，待固定新提交后真实重试。完整 21 镜像交付包、加载和现场验收仍未完成，不推送、合并或远端部署。 补丁仅对 OpenPBS 23.06.06 应用，保留 Ubuntu 24.04、Python 3.12 和现有 Python／hook 功能；官方同源归档已完成零 fuzz 补丁应用检查，不能据此标记 PBS 编译通过。最终签名 SIF／profile／native lock、三机容量、四节点 SmartBFT 及完整 38 项现场契约继续待验收。
+2026-11-11：本地候选 `074bb0d` 已完成全部 21 个交付镜像的真实构建／准备，包括九类 KQ／Fabric、Slurm、PBS、Casdoor 和九个第三方镜像；PBS 的真实编译及 Agent 封装已通过。导出暴露 nerdctl 2.4.2 对 `name@digest` 的兼容 inspect 问题，正在修复专用摘要查询及核对，待新候选复用缓存构建并重新导出。归档、target／runtime 提取、加载及现场验收尚未通过，不推送、合并或远端部署。 OpenPBS 23.06.06 的 Python 3.12 问题通过回移上游 #2594／#2662 专用补丁解决，保留 Ubuntu 24.04 和现有 Python／hook 功能；已由真实构建验证，不再仅以零 fuzz 补丁检查为依据。nerdctl 导出问题源于 `name@digest` 被兼容 inspect 强制补 `latest`，与 digest-only 镜像的空 tag 不匹配；本轮修复尚待新候选实际导出验证。最终签名 SIF／profile／native lock、三机容量、四节点 SmartBFT 及完整 38 项现场契约继续待验收，导出空间不足也不能认定交付完成。

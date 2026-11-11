@@ -139,6 +139,24 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "trusted manifest"):
                 offline.validate_images(self.manifest)
 
+    def test_nerdctl_digest_inspection_requires_the_original_manifest_digest(self):
+        record = {"Os": "linux", "Architecture": "amd64", "Id": "sha256:" + "b" * 64,
+                  "Size": 1024, "RepoDigests": [CASDOOR_IMAGE]}
+        with patch.object(offline, "IMAGE_ENGINE", ["nerdctl", "--namespace", "kq-federation-build"]), \
+             patch.object(offline, "run", return_value=SimpleNamespace(stdout=json.dumps([record]))) as engine:
+            inspected = offline.inspect_image(CASDOOR_IMAGE)
+            self.assertEqual(engine.call_args.args[0][-3:], ["image", "inspect", CASDOOR_IMAGE.rsplit("@", 1)[1]])
+            self.assertEqual(inspected["name"], CASDOOR_IMAGE)
+            self.assertEqual(inspected["id"], record["Id"])
+            for references in ([], ["casbin/casdoor@sha256:" + "e" * 64]):
+                engine.return_value = SimpleNamespace(stdout=json.dumps([{**record, "RepoDigests": references}]))
+                with self.assertRaisesRegex(ValueError, "source digest"):
+                    offline.inspect_image(CASDOOR_IMAGE)
+        with patch.object(offline, "IMAGE_ENGINE", ["docker"]), \
+             patch.object(offline, "run", return_value=SimpleNamespace(stdout=json.dumps([{**record, "RepoDigests": []}]))) as engine:
+            self.assertEqual(offline.inspect_image(CASDOOR_IMAGE)["name"], CASDOOR_IMAGE)
+            self.assertEqual(engine.call_args.args[0][-1], CASDOOR_IMAGE)
+
     def test_target_observation_is_isolated_and_bound_to_delivered_image(self):
         output = self.root / "slurm-target.json"
         facts = {"version": 1, "scheduler": "slurm", "softwareInstallationAccepted": False}

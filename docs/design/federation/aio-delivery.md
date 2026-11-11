@@ -12,7 +12,7 @@
 
 | 顺序 | 工作 | 状态 |
 | --- | --- | --- |
-| 1 | 完整镜像构建导出、nerdctl→Docker 加载，配套材料及目标锁 | 九类 KQ／Fabric、Slurm 镜像和公共 SIF 已真实构建；PBS 修复待重试，完整 21 镜像包及导出空间待核对 |
+| 1 | 完整镜像构建导出、nerdctl→Docker 加载，配套材料及目标锁 | 全部 21 镜像已真实构建／准备，PBS 编译与 Agent 封装通过；nerdctl 摘要查询修复后待重新导出 |
 | 2 | 单机完整 AIO 登录/存储/Peer/Agent 与容量实测，再复制三机构 | 已完成主机只读预检；容量及部署待确认 |
 | 3 | 四节点 SmartBFT、机构治理批准、PDC/背书、实际交易 | 待初始化，不以容器健康替代 |
 | 4 | 政策、市场、Workflow 联邦节点、R 取证裁决与恢复 UI | 已补预约/终态自动授权、公开/私有市场请求、仲裁/披露政策、单次披露、案件存证授权、Workflow 配置与 R 取证裁决/恢复；研发候选已接线，真实登录联合验收待执行 |
@@ -30,13 +30,13 @@
 
 本次交付增量检查通过离线工具 38 项、SchedulerDownloadTests 下载夹具 3 项；全仓 lint 为 0 errors（保留既有 47 warnings／1 info），离线文档 102 文件／1194 目标、workflow 引用及 diff 检查通过。本轮没有 TypeScript 改动，沿用上一轮类型与业务检查，不重复运行。
 
-本地候选 `a1e1fdb` 已完成九类 KQ／Fabric 镜像、Slurm 最终镜像及公共 SIF 的真实构建。PBS 构建暴露 OpenPBS 23.06.06 与 Python 3.12 的兼容问题；已回移上游 #2594／#2662 的 Python 专用补丁，待固定新提交后真实重试。完整 21 镜像交付包、加载和现场验收仍未完成，不推送、合并或远端部署。 构建工具继续要求干净工作树及匹配的完整 SHA，构建期间不改候选源码；最终目标 profile／lock、nerdctl→Docker 加载及三机容量仍待验证。 导出继续按实际镜像大小检查空间，空间不足时不能认定交付完成。
+本地候选 `074bb0d` 已完成全部 21 个交付镜像的真实构建／准备，包括九类 KQ／Fabric、Slurm、PBS、Casdoor 和九个第三方镜像；PBS 的真实编译及 Agent 封装已通过。导出暴露 nerdctl 2.4.2 对 `name@digest` 的兼容 inspect 问题，正在修复专用摘要查询及核对，待新候选复用缓存构建并重新导出。归档、target／runtime 提取、加载及现场验收尚未通过，不推送、合并或远端部署。 构建工具继续要求干净工作树及匹配的完整 SHA，构建期间不改候选源码；最终目标 profile／lock、nerdctl→Docker 加载及三机容量仍待验证。 导出继续按实际镜像大小检查空间，空间不足时不能认定交付完成。
 
 ### 仍须完成的研发
 
 本轮补齐显式 `config --managed` 的研发候选：Ubuntu 24.04/Apptainer/systemd 公共运行时、可提取的未签名 SIF、root 保护的私有配置、非 root Agent、私有 cgroup namespace 和独立限额 ext4 store；PBS 注册前部署逐作业 hook。SelfAccount 的能力证明、签名派发、Agent 校验与联邦续期共同支持 PBS Pro，仍要求精确账号映射、有效队列/节点证明及签名资源检查；Torque 不增加 SelfAccount。普通模式、R 和独立 Orderer 不自动获得这些权限。
 
-尚须完成 PBS 与完整镜像／SIF 交付及运行、各机构批准的签名 SIF/profile/最终 native lock、systemd/cgroup 和 Slurm/PBS 原生作业、安装/取消/恢复验收。公共 SIF 不预装科学软件，启动脚本不制造站点确认、签名或业务批准。生产准入和受限数据 root profile 继续保留，`AGENT_SPACK_ENABLED` 探测或 Agent 注册仍不能代替 W06/科研验收。具体材料与操作见[托管运行时](../../../deploy/federation/aio/README.md#托管安装与联邦任务运行时)。
+尚须完成完整镜像归档／SIF 提取交付及运行、各机构批准的签名 SIF/profile/最终 native lock、systemd/cgroup 和 Slurm/PBS 原生作业、安装/取消/恢复验收。公共 SIF 不预装科学软件，启动脚本不制造站点确认、签名或业务批准。生产准入和受限数据 root profile 继续保留，`AGENT_SPACK_ENABLED` 探测或 Agent 注册仍不能代替 W06/科研验收。具体材料与操作见[托管运行时](../../../deploy/federation/aio/README.md#托管安装与联邦任务运行时)。
 
 托管 Slurm 已增加 MariaDB 持久服务和镜像内 slurmdbd/MySQL 插件，原生用量继续使用既有 sacct 路径。数据库健康、私有文件密码、固定技术账号关联在 Agent 注册前核对；故障不降级为估算用量。普通 AIO Slurm 仍以 scontrol 查询保留终态，不提供 sacct 用量。实际镜像/数据库、作业用量与财务证据的联合验收尚未执行，不能把接线当成原生计费通过。配置与恢复边界见[原生用量](../../../deploy/federation/aio/README.md#托管-slurm-的原生用量)。
 
