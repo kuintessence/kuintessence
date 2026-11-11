@@ -1,8 +1,8 @@
 # 当前功能与使用边界
 
-AIO 交付继续补齐 Casdoor 不可变来源与别名镜像 ID 的导出核对，manifest 保留来源 ref／ID；公开操作说明、部署契约和三份环境变量示例随包逐文件校验。Bun、Spack、OpenPBS 下载归档现按固定 SHA-256 校验后才解包，未知版本须显式提供摘要。APT 包和基础镜像尚未全部固定，因此不承诺从源码重建获得相同二进制。构建仍要求干净固定提交；已通过独立 BuildKit 开始本机构建，完整交付包、加载及三机容量仍未完成，亦未完成 [38 项现场验收](../design/federation/acceptance.md)。本轮详情见 [交付来源与公开操作材料收尾](../design/federation/progress.md#交付来源与公开操作材料收尾)。
+AIO 交付继续补齐 Casdoor 不可变来源与别名镜像 ID 的导出核对，manifest 保留来源 ref／ID；公开操作说明、部署契约和三份环境变量示例随包逐文件校验。Bun、Spack、OpenPBS 下载归档现按固定 SHA-256 校验后才解包，未知版本须显式提供摘要。APT 包和基础镜像尚未全部固定，因此不承诺从源码重建获得相同二进制。构建仍要求干净固定提交；已通过独立 BuildKit 完成本机构建及一版归档核验，修复后的候选交付包、加载及三机容量仍未完成，亦未完成 [38 项现场验收](../design/federation/acceptance.md)。本轮详情见 [交付来源与公开操作材料收尾](../design/federation/progress.md#交付来源与公开操作材料收尾)。
 
-本次交付增量检查通过离线工具 38 项、SchedulerDownloadTests 下载夹具 3 项；全仓 lint 为 0 errors（保留既有 47 warnings／1 info），离线文档 102 文件／1194 目标、workflow 引用及 diff 检查通过。本轮没有 TypeScript 改动，沿用上一轮类型与业务检查，不重复运行。本地候选 `074bb0d` 已完成全部 21 个交付镜像的真实构建／准备，包括九类 KQ／Fabric、Slurm、PBS、Casdoor 和九个第三方镜像；PBS 的真实编译及 Agent 封装已通过。导出暴露 nerdctl 2.4.2 对 `name@digest` 的兼容 inspect 问题，正在修复专用摘要查询及核对，待新候选复用缓存构建并重新导出。归档、target／runtime 提取、加载及现场验收尚未通过，不推送、合并或远端部署。
+本次交付增量检查通过离线工具 38 项、SchedulerDownloadTests 下载夹具 3 项；全仓 lint 为 0 errors（保留既有 47 warnings／1 info），离线文档 102 文件／1194 目标、workflow 引用及 diff 检查通过。本轮没有 TypeScript 改动，沿用上一轮类型与业务检查，不重复运行。候选 `8531c2c` 已真实导出约 2.6 GiB 镜像归档并通过 verify，Docker／OCI 元数据中的 21 个标签、ConfigID 与架构均核对通过，尚未执行目标 Docker load。Slurm 观察改用不依赖站点配置的 `slurmd --version` 后，两类调度器的完整 collect 已在原隔离条件通过。原 SIF stdout 提取虽退出 0，仍少 57,344 字节；原件留证且不得签名。受限 create（不启动）→cp→finally rm 的对照提取已与镜像内字节数／SHA-256 精确一致，现接入修复，待新候选构建、导出和入口验证；旧归档有效，但不能代表新工具已交付。正式签名、最终 native lock、真实加载和三机现场验收仍未完成，不推送、合并或远端部署。
 
 本轮通用和解与历史恢复的最新范围见文首及[研发进展](../design/federation/progress.md#通用和解与历史存证恢复研发候选)；下文各专项中的历史检查范围不自动扩展为新功能的现场验收。
 

@@ -2,13 +2,13 @@
 
 三台新增虚拟机运行独立 A/B/C 平台、Fabric 和容器测试集群，A/B 使用 Slurm，C 使用 PBS；R 按需在 A 主机运行独立项目。现有集群不变，主平台只新增第四个 Orderer。完整范围见[实施清单](../../../docs/design/federation/aio-delivery.md)。
 
-当前仅实现工具/配置和注册入口，未构建完整镜像包，未启动服务、部署或合并；不能据此声明三机构、SmartBFT、容量或科研验收通过。
+候选 `8531c2c` 的 21 镜像归档已真实导出并核验；目标观察和 SIF 提取修复仍待新候选构建／导出验证。未启动 AIO 平台／测试集群、部署或合并，不能据此声明三机构、SmartBFT、容量或科研验收通过。
 
 ## 本机构建与导出
 
 东京构建机已有 K3s/containerd，不要求 Docker Engine。预先准备校验过的 nerdctl、BuildKit 和 rsync；工具不自动安装或接管服务。BuildKit 使用独立 root/socket，containerd worker 的 address 和 namespace 必须与 nerdctl 一致，namespace 固定为 `kq-federation-build` 或其带后缀的名称，禁止使用 `k8s.io`。
 
-专用 BuildKit 配置示例（尚未安装或启动）：
+专用 BuildKit 配置示例：
 
 ```toml
 root = "/var/lib/kuintessence-buildkit"
@@ -25,7 +25,7 @@ root = "/var/lib/kuintessence-buildkit"
   gc = false
 ```
 
-该配置限制 Dockerfile 内部构建并发，不仅限制镜像之间的顺序；不自动回收构建缓存。当前已下载校验 nerdctl 2.4.2、BuildKit 0.34.2，未启动 daemon；摘要校验不等于已验证发行者签名。
+该配置限制 Dockerfile 内部构建并发，不仅限制镜像之间的顺序；不自动回收构建缓存。当前已使用校验过的 nerdctl 2.4.2、BuildKit 0.34.2 完成本机构建／导出；摘要校验不等于已验证发行者签名。
 
 要求干净且已提交的固定 Git revision。默认构建预留 40 GiB 是保守预算，不是实测下限；不足时拒绝且不自动清理。Casdoor 输入必须是经确认的 digest，不能用 latest 代替验证。
 
@@ -79,7 +79,7 @@ python3 /受信任工具/offline.py load --bundle /目标交付目录 --manifest
 
 ## 最终镜像的目标信息
 
-镜像完成构建、导出后，在本机运行下面的显式观察命令。它会创建短期容器，不启动 KQ、调度器或 Agent；当前研发检查未执行此命令的真实容器路径。
+镜像完成构建、导出后，在本机运行下面的显式观察命令。它会创建短期容器，不启动 KQ、调度器或 Agent。两类镜像的完整 collect 已在相同隔离条件验证；Slurm 版本读取使用 `slurmd --version`，避免 `sinfo` 依赖本站配置。修复后的固定候选入口仍须重新验证。
 
 ```sh
 python3 deploy/federation/offline.py \
@@ -93,11 +93,11 @@ PBS 再执行一次并选择 `--scheduler pbs` 和独立输出。目标 Docker �
 
 记录绑定提交和镜像 ID，包含 OS、glibc、Spack 版本/架构、GCC/G++/Fortran/Python 等工具版本及实际可执行文件摘要。`hostTarget` 是运行观察容器那台主机的 CPU 观察值；它不保证其他主机支持同一指令集。按三机共同 CPU 能力选择最终 target，随后通过既有材料生产工具生成 profile 和 native lock，不能把本文件直接当作它们导入。
 
-`runtimeToolsPresent` 只表示镜像内可找到 Apptainer/systemd 命令；不证明用户服务、cgroup 委派、签名 SIF、受限作业或安装 store 已配置。普通模式的 `AGENT_SPACK_ENABLED=true` 只打开探测。需要托管安装和 SelfAccount 联邦任务时使用下面的显式配置；实际镜像构建与内核隔离仍须现场验收。
+`runtimeToolsPresent` 只表示镜像内可找到 Apptainer/systemd 命令；不证明用户服务、cgroup 委派、签名 SIF、受限作业或安装 store 已配置。普通模式的 `AGENT_SPACK_ENABLED=true` 只打开探测。需要托管安装和 SelfAccount 联邦任务时使用下面的显式配置；目标平台原生运行与内核隔离仍须现场验收。
 
 ## 托管安装与联邦任务运行时
 
-AIO 调度器使用 Ubuntu 24.04、同提交的编译 Agent、Apptainer 1.4.3 和 systemd。普通调度器基础镜像默认仍为 Ubuntu 20.04；旧宿主或旧镜像的 native lock 不能直接套用。公共 SIF 仅包含系统与编译/Spack 工具，不预装待验收的科学软件。提取时使用与目标观察相同的限额、禁网、只读、非 root 容器：
+AIO 调度器使用 Ubuntu 24.04、同提交的编译 Agent、Apptainer 1.4.3 和 systemd。普通调度器基础镜像默认仍为 Ubuntu 20.04；旧宿主或旧镜像的 native lock 不能直接套用。公共 SIF 仅包含系统与编译/Spack 工具，不预装待验收的科学软件。提取先用与目标观察相同的限额、禁网、只读、非 root 观察容器读取镜像内 SIF 的字节数／SHA-256 小 JSON，再以受限 create 建立但不启动临时容器，通过 cp 复制文件，并在 finally 删除该容器：
 
 ```sh
 python3 deploy/federation/offline.py runtime \
@@ -105,7 +105,7 @@ python3 deploy/federation/offline.py runtime \
   --scheduler slurm --output /受控材料/spack-unsigned.sif
 ```
 
-containerd 构建机在 `runtime` 前加前述 nerdctl 全局参数。输出 SIF 为只读，旁边的 0600 JSON 绑定提交、镜像 ID、字节数和 SHA-256，并明确标记尚未签名、尚未通过软件安装。失败留下 `.creating`，不会覆盖已有文件或盲目重试。先核对失败记录再人工处置；不把残留文件当作可用材料。
+containerd 构建机在 `runtime` 前加前述 nerdctl 全局参数。复制后的字节数和 SHA-256 必须与镜像内记录完全一致，才发布只读 SIF 及旁边的 0600 metadata JSON；记录绑定提交、镜像 ID、字节数和 SHA-256，并明确标记尚未签名、尚未通过软件安装。失败留下 `.creating`，不会覆盖已有文件或盲目重试。先核对失败记录再人工处置；不把残留文件当作可用材料。实际发现过 stdout 命令退出 0 但 SIF 少 57,344 字节，原件留证且不得签名；create／cp 对照已经匹配镜像内摘要，修复后的固定候选完整入口仍待验证。
 
 各机构在独立受控环境批准并签名副本，例如使用已交付的 Apptainer 执行 `apptainer sign --key <私钥> <SIF副本>`，再用 `apptainer verify --all --key <公钥> <已签SIF>` 核对。私钥不进入通用包、调度器或 Agent。签名会改变文件摘要，保留原始提取记录和签后摘要，最终 SIF 归 root、0444。构建公共 SIF 不授予软件安装或数据访问权。
 
@@ -137,7 +137,7 @@ containerd 构建机在 `runtime` 前加前述 nerdctl 全局参数。输出 SIF
 
 独立 Docker 卷保存 ext4 store 镜像，默认 2 GiB，可在首次启动前用 `KQ_AIO_MANAGED_STORE_BYTES` 选择 1–16 GiB；现有 store 尺寸变化会停止，绝不重格式化。格式化失败保留独占检查点；删除卷会丢失安装，不能作为修复办法。默认测试容器预算 2560 MiB（`KQ_AIO_MANAGED_MEMORY`），比普通模式多 2176 MiB，安装 worker 默认 1024 MiB、并发 1；还须核对完整主机预算。已有部署不能用换开关、换版本覆盖在途任务，须先停止接单、核对原作业并备份，走维护迁移。
 
-privileged 测试容器不能抵御宿主管理员或容器 root 越权，不能用于不受信任机构共享宿主的生产隔离。此配置只用于用户指定的容器测试集群。镜像/SIF 构建、systemd/cgroup 委派、两类调度器签名作业与安装/停止/恢复的实际验收尚未执行，不能用配置检查代替。
+privileged 测试容器不能抵御宿主管理员或容器 root 越权，不能用于不受信任机构共享宿主的生产隔离。此配置只用于用户指定的容器测试集群。目标平台的 SIF 签名、systemd/cgroup 委派、两类调度器签名作业与安装/停止/恢复的实际验收尚未执行，不能用配置检查代替。
 
 ## 托管 Slurm 的原生用量
 

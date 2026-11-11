@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 
+TOOL_PATH = "/opt/spack/bin:/opt/pbs/bin:/usr/sbin:/usr/bin:/bin"
+
 
 def sha256(path):
     value = hashlib.sha256()
@@ -19,14 +21,14 @@ def sha256(path):
 
 def command(argv):
     result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=30,
-                            env={"PATH": "/opt/spack/bin:/opt/pbs/bin:/usr/bin:/bin",
+                            env={"PATH": TOOL_PATH,
                                  "HOME": "/tmp", "TMPDIR": "/tmp", "LANG": "C",
                                  "SPACK_DISABLE_LOCAL_CONFIG": "true"})
     return result.stdout.strip()
 
 
 def executable(name, arguments):
-    path = shutil.which(name, path="/opt/spack/bin:/opt/pbs/bin:/usr/bin:/bin")
+    path = shutil.which(name, path=TOOL_PATH)
     if path is None:
         raise ValueError(f"Required target executable missing: {name}")
     resolved = Path(path).resolve(strict=True)
@@ -50,7 +52,8 @@ def collect(scheduler):
         ("gcc", ["-dumpfullversion"]), ("g++", ["-dumpfullversion"]),
         ("gfortran", ["-dumpfullversion"]), ("make", ["--version"]),
         ("python3", ["--version"]), ("spack", ["--version"]),
-        ("sinfo" if scheduler == "slurm" else "qstat", ["--version"]),
+        # Slurm clients load cluster configuration even for --version; the daemon does not.
+        ("slurmd" if scheduler == "slurm" else "qstat", ["--version"]),
     )}
     spack = tools["spack"]["path"]
     return {"version": 1, "scheduler": scheduler,

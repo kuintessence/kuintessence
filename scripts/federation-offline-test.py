@@ -8,7 +8,7 @@ import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("offline", ROOT / "deploy/federation/offline.py")
@@ -196,12 +196,24 @@ class DeliveryTests(unittest.TestCase):
     def test_runtime_extraction_is_image_bound_and_never_claims_installation(self):
         output = self.root / "spack.sif"
         image = next(r for r in self.manifest["images"] if "/scheduler-slurm:" in r["name"])
+        content = b"fixture runtime bytes"
         def extract(command, **kwargs):
-            self.assertEqual(command[command.index("--network") + 1], "none")
-            self.assertEqual(command[command.index("--pull") + 1], "never")
-            self.assertNotIn("--privileged", command)
-            self.assertNotIn("--volume", command)
-            kwargs["stdout"].write(b"fixture runtime bytes")
+            action = command[len(offline.IMAGE_ENGINE)]
+            if action in ("run", "create"):
+                self.assertEqual(command[command.index("--network") + 1], "none")
+                self.assertEqual(command[command.index("--pull") + 1], "never")
+                self.assertEqual(command[command.index("--user") + 1], "65534:65534")
+                self.assertEqual(command[command.index("--cap-drop") + 1], "ALL")
+                self.assertEqual(command[command.index("--security-opt") + 1], "no-new-privileges")
+                self.assertIn("--read-only", command)
+                self.assertNotIn("--privileged", command)
+                self.assertNotIn("--volume", command)
+                if action == "run":
+                    self.assertIn("--rm", command)
+                    return SimpleNamespace(stdout=json.dumps({"bytes": len(content), "sha256": offline.hashlib.sha256(content).hexdigest()}))
+                self.assertNotIn("--rm", command)
+            if action == "cp":
+                Path(command[-1]).write_bytes(content)
         with patch.object(offline, "inspect_image", return_value=image), \
              patch.object(offline.shutil, "disk_usage", return_value=SimpleNamespace(free=10 * 1024 ** 3)), \
              patch.object(offline, "run", side_effect=extract) as engine:
@@ -212,23 +224,62 @@ class DeliveryTests(unittest.TestCase):
             self.assertIs(metadata["signed"], False)
             self.assertIs(metadata["softwareInstallationAccepted"], False)
             self.assertEqual(output.stat().st_mode & 0o777, 0o444)
+            self.assertEqual(output.read_bytes(), content)
+            commands = [c.args[0] for c in engine.call_args_list]
+            self.assertEqual([c[len(offline.IMAGE_ENGINE)] for c in commands], ["run", "create", "cp", "rm"])
+            container = commands[1][commands[1].index("--name") + 1]
+            self.assertRegex(container, r"^kq-runtime-copy-[a-f0-9]{32}$")
+            self.assertEqual(commands[2][-2], container + ":/usr/local/share/kuintessence/runtime/spack.sif")
+            self.assertEqual(commands[3], [*offline.IMAGE_ENGINE, "rm", "--force", container])
+            self.assertFalse(Path(str(output) + ".creating").exists())
             with self.assertRaisesRegex(ValueError, "new output"):
                 offline.export_runtime(self.manifest, "slurm", output)
-            engine.assert_called_once()
+            self.assertEqual(engine.call_count, 4)
 
     def test_failed_runtime_export_keeps_checkpoint_without_completion_record(self):
         output = self.root / "spack.sif"
+        def extract(command, **kwargs):
+            action = command[len(offline.IMAGE_ENGINE)]
+            if action == "run":
+                return SimpleNamespace(stdout=json.dumps({"bytes": 10, "sha256": "a" * 64}))
+            if action == "cp":
+                Path(command[-1]).write_bytes(b"partial")
+                raise offline.subprocess.CalledProcessError(1, command)
         with patch.object(offline, "inspect_image", return_value={"id": "sha256:" + "b" * 64}), \
              patch.object(offline.shutil, "disk_usage", return_value=SimpleNamespace(free=10 * 1024 ** 3)), \
-             patch.object(offline, "run", side_effect=offline.subprocess.CalledProcessError(1, "fixture")) as engine:
+             patch.object(offline, "run", side_effect=extract) as engine:
             with self.assertRaises(offline.subprocess.CalledProcessError):
                 offline.export_runtime(self.manifest, "pbs", output)
             self.assertFalse(output.exists())
             self.assertFalse(Path(str(output) + ".json").exists())
-            self.assertTrue(Path(str(output) + ".creating").exists())
+            self.assertEqual(Path(str(output) + ".creating").read_bytes(), b"partial")
+            commands = [c.args[0] for c in engine.call_args_list]
+            container = commands[1][commands[1].index("--name") + 1]
+            self.assertEqual(commands[-1], [*offline.IMAGE_ENGINE, "rm", "--force", container])
             with self.assertRaises(FileExistsError):
                 offline.export_runtime(self.manifest, "pbs", output)
-            engine.assert_called_once()
+            self.assertEqual(engine.call_count, 4)
+
+    def test_truncated_runtime_copy_is_rejected_even_when_engine_reports_success(self):
+        output = self.root / "spack.sif"
+        content = b"fixture runtime bytes"
+        def extract(command, **kwargs):
+            action = command[len(offline.IMAGE_ENGINE)]
+            if action == "run":
+                return SimpleNamespace(stdout=json.dumps({"bytes": len(content), "sha256": offline.hashlib.sha256(content).hexdigest()}))
+            if action == "cp":
+                Path(command[-1]).write_bytes(content[:-1])
+        with patch.object(offline, "inspect_image", return_value={"id": "sha256:" + "b" * 64}), \
+             patch.object(offline.shutil, "disk_usage", return_value=SimpleNamespace(free=10 * 1024 ** 3)), \
+             patch.object(offline, "run", side_effect=extract) as engine:
+            with self.assertRaisesRegex(ValueError, "source size and SHA-256"):
+                offline.export_runtime(self.manifest, "slurm", output)
+        self.assertFalse(output.exists())
+        self.assertFalse(Path(str(output) + ".json").exists())
+        self.assertEqual(Path(str(output) + ".creating").read_bytes(), content[:-1])
+        commands = [c.args[0] for c in engine.call_args_list]
+        container = commands[1][commands[1].index("--name") + 1]
+        self.assertEqual(commands[-1], [*offline.IMAGE_ENGINE, "rm", "--force", container])
 
     def test_failed_or_mismatched_observation_leaves_no_success_file(self):
         output = self.root / "target.json"
@@ -269,6 +320,27 @@ class DeliveryTests(unittest.TestCase):
         with patch.object(module.shutil, "which", return_value=None):
             with self.assertRaisesRegex(ValueError, "executable missing"):
                 module.executable("gcc", [])
+
+    def test_slurm_version_observation_requires_no_cluster_configuration(self):
+        spec = importlib.util.spec_from_file_location("target_facts", ROOT / "deploy/federation/aio/target-facts.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.object(module.Path, "read_text", return_value='ID=ubuntu\nVERSION_ID="24.04"\n'), \
+             patch.object(module, "sha256", return_value="c" * 64), \
+             patch.object(module, "executable", side_effect=lambda name, _: {"path": "/tools/" + name}) as observed, \
+             patch.object(module, "command", return_value="observed"):
+            result = module.collect("slurm")
+        self.assertIn("slurmd", result["executables"])
+        self.assertNotIn("sinfo", result["executables"])
+        self.assertIn(call("slurmd", ["--version"]), observed.call_args_list)
+        with patch.object(module.shutil, "which", return_value="/usr/sbin/slurmd") as lookup, \
+             patch.object(module.Path, "resolve", return_value=Path("/usr/sbin/slurmd")), \
+             patch.object(module, "sha256", return_value="c" * 64), \
+             patch.object(module.subprocess, "run", return_value=SimpleNamespace(stdout="slurm-wlm 23.11.4\n")) as run:
+            self.assertEqual(module.executable("slurmd", ["--version"])["version"], "slurm-wlm 23.11.4")
+        self.assertIn("/usr/sbin", lookup.call_args.kwargs["path"].split(":"))
+        self.assertIn("/usr/sbin", run.call_args.kwargs["env"]["PATH"].split(":"))
+        self.assertEqual(run.call_args.args[0], ["/usr/sbin/slurmd", "--version"])
 
     def test_packaged_agent_requires_the_original_revision_and_binary(self):
         spec = importlib.util.spec_from_file_location("verify_agent", ROOT / "deploy/federation/aio/verify-agent.py")

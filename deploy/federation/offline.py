@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 IMAGE_ENGINE = ["docker"]
@@ -197,8 +198,9 @@ def export(args):
     print(f"manifest-sha256: {digest(output / 'manifest.json')}")
 
 
-def isolated_image_command(name, entrypoint):
-    return [*IMAGE_ENGINE, "run", "--rm", "--pull", "never", "--network", "none", "--read-only",
+def isolated_image_command(name, entrypoint, create_name=None):
+    action = ["create", "--name", create_name] if create_name else ["run", "--rm"]
+    return [*IMAGE_ENGINE, *action, "--pull", "never", "--network", "none", "--read-only",
             "--user", "65534:65534", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--memory", "256m", "--memory-swap", "256m", "--cpus", "1", "--pids-limit", "64",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--workdir", "/tmp",
@@ -221,15 +223,36 @@ def export_runtime(manifest, scheduler, output):
     if shutil.disk_usage(output.parent).free < record["size"] + 256 * 1024 ** 2:
         raise ValueError("Not enough space to extract the runtime")
     pending = Path(str(output) + ".creating")
-    with open(pending, "xb", opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
-        run([*isolated_image_command(record["name"], "/bin/cat"),
-             "/usr/local/share/kuintessence/runtime/spack.sif"], stdout=stream, timeout=120)
-        stream.flush()
+    with open(pending, "xb", opener=lambda p, flags: os.open(p, flags, 0o600)):
+        pass
+    source_path = "/usr/local/share/kuintessence/runtime/spack.sif"
+    observe = ("import hashlib,json,pathlib\np=pathlib.Path(" + repr(source_path) + ")\n"
+               "h=hashlib.sha256()\nwith p.open('rb') as f:\n"
+               " for b in iter(lambda:f.read(1024*1024),b''): h.update(b)\n"
+               "print(json.dumps({'bytes':p.stat().st_size,'sha256':h.hexdigest()}))")
+    source = json.loads(run([*isolated_image_command(record["name"], "/usr/bin/python3"), "-c", observe],
+                            capture_output=True, text=True, timeout=120).stdout)
+    if (not isinstance(source, dict) or set(source) != {"bytes", "sha256"}
+            or type(source["bytes"]) is not int or source["bytes"] <= 0
+            or not isinstance(source["sha256"], str) or not re.fullmatch(r"[a-f0-9]{64}", source["sha256"])):
+        raise ValueError("Invalid runtime source observation")
+    container = "kq-runtime-copy-" + uuid.uuid4().hex
+    try:
+        run(isolated_image_command(record["name"], "/bin/true", create_name=container),
+            capture_output=True, text=True, timeout=120)
+        run([*IMAGE_ENGINE, "cp", container + ":" + source_path, pending],
+            capture_output=True, text=True, timeout=120)
+    finally:
+        run([*IMAGE_ENGINE, "rm", "--force", container], capture_output=True, text=True, timeout=120)
+    if not stat.S_ISREG(pending.lstat().st_mode):
+        raise ValueError("Runtime copy must be a regular file")
+    if pending.stat().st_size != source["bytes"] or digest(pending) != source["sha256"]:
+        raise ValueError("Runtime copy does not match source size and SHA-256")
+    scheduler_image(manifest, scheduler)
+    with pending.open("rb") as stream:
         os.fsync(stream.fileno())
-    if pending.stat().st_size == 0:
-        raise ValueError("Empty runtime export")
     result = {"revision": manifest["revision"], "image": {"name": record["name"], "id": record["id"]},
-              "sha256": digest(pending), "bytes": pending.stat().st_size,
+              "sha256": source["sha256"], "bytes": source["bytes"],
               "signed": False, "softwareInstallationAccepted": False}
     # The metadata is the completion record; failed output is never silently reused.
     pending.chmod(0o444)
