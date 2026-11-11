@@ -3828,6 +3828,6 @@ Bun、Spack、OpenPBS 下载增加解包前 SHA-256 核对。已知版本内置�
 
 ### 镜像归档核验与目标观察／SIF 提取修复
 
-2026-11-11：候选 `8531c2c` 已真实导出约 2.6 GiB 镜像归档并通过 verify，Docker／OCI 元数据中的 21 个标签、ConfigID 与架构均核对通过，尚未执行目标 Docker load。Slurm 观察改用不依赖站点配置的 `slurmd --version` 后，两类调度器的完整 collect 已在原隔离条件通过。原 SIF stdout 提取虽退出 0，仍少 57,344 字节；原件留证且不得签名。受限 create（不启动）→cp→finally rm 的对照提取已与镜像内字节数／SHA-256 精确一致，现接入修复，待新候选构建、导出和入口验证；旧归档有效，但不能代表新工具已交付。正式签名、最终 native lock、真实加载和三机现场验收仍未完成，不推送、合并或远端部署。
+2026-11-11：固定代码候选 `b54743b2320bd6c678e9492df81fe3e153e640c1` 的全部 21 镜像已真实 build／export，约 2.6 GiB 归档及 verify 通过；21 个标签、ConfigID、linux/amd64 和 OCI layout 已核对。正式 CLI 的 Slurm／PBS target 各一次成功，两类 runtime 均通过 create／cp 和源／目标字节数、SHA-256 校验，仍标记 unsigned／softwareInstallationAccepted=false。本轮仅复验受影响范围及真实构建／提取，没有重复业务矩阵；后续文档记录提交不改变镜像来源。原 `8531c2c` 截断 SIF 与证据保留，不得使用。真实 Docker load、目标 profile／native lock、机构签名、三机容量与 38 项现场验收尚未完成，不推送、合并或部署；构建机 CPU 观察不能替代三台目标机器的 CPU 信息。
 
-SIF 对照提取为 299,589,632 字节，SHA-256 为 `fc26d597b34bc9c291cca8d30545501d351b9ef31d2e644f1e11d106186286d7`，与镜像内小 JSON 返回的字节数／摘要相同。修复先读取镜像内小记录，再创建受限但不启动的临时容器，通过 cp 复制并在 finally 删除容器；仅复制后大小与摘要都一致才发布 metadata。失败保留 `.creating` 和原始证据，不把命令退出 0 当完整性证明。此对照实证不替代修复后固定候选的完整入口验收，也不授予签名、软件安装或机构权限；四节点 SmartBFT、容量及 38 项现场契约仍待执行。
+两份正式 CLI 提取的公共 SIF 均为 299,589,632 字节，SHA-256 为 `fc26d597b34bc9c291cca8d30545501d351b9ef31d2e644f1e11d106186286d7`，与镜像内记录一致。临时容器未启动，复制与清理后才发布 metadata；此完整性结果不表示已签名、安装科学软件或通过目标平台原生运行验收。
