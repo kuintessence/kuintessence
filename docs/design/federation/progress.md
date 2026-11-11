@@ -3824,3 +3824,8 @@ Bun、Spack、OpenPBS 下载增加解包前 SHA-256 核对。已知版本内置�
 本次交付增量检查通过离线工具 38 项、SchedulerDownloadTests 下载夹具 3 项；全仓 lint 为 0 errors（保留既有 47 warnings／1 info），离线文档 102 文件／1194 目标、workflow 引用及 diff 检查通过。本轮没有 TypeScript 改动，沿用上一轮类型与业务检查，不重复运行。
 
 下一步整理并固定本地候选提交，以该完整 SHA 和干净工作树进行 BuildKit 本机构建，构建期间保持源码不变。不推送、合并或远端部署。截至该候选提交，BuildKit daemon 和完整镜像／SIF 构建尚未执行；各机构批准的 Casdoor digest、构建／导出空间、最终 profile／native lock、三机容量及完整 [38 项现场验收](acceptance.md)仍待完成。四节点 SmartBFT 和真实软件冷安装不以下载校验或命令夹具代替。详见 [AIO 交付范围](aio-delivery.md#交付来源与操作材料)和[离线入口](../../../deploy/federation/aio/README.md)。
+
+
+### 本地候选真实构建与 PBS Python 兼容修复
+
+2026-11-11：本地候选 `a1e1fdb` 已完成九类 KQ／Fabric 镜像、Slurm 最终镜像及公共 SIF 的真实构建。PBS 构建暴露 OpenPBS 23.06.06 与 Python 3.12 的兼容问题；已回移上游 #2594／#2662 的 Python 专用补丁，待固定新提交后真实重试。完整 21 镜像交付包、加载和现场验收仍未完成，不推送、合并或远端部署。 补丁仅对 OpenPBS 23.06.06 应用，保留 Ubuntu 24.04、Python 3.12 和现有 Python／hook 功能；官方同源归档已完成零 fuzz 补丁应用检查，不能据此标记 PBS 编译通过。最终签名 SIF／profile／native lock、三机容量、四节点 SmartBFT 及完整 38 项现场契约继续待验收。

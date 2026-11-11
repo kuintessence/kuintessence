@@ -1,14 +1,14 @@
 # 当前功能与使用边界
 
-AIO 交付继续补齐 Casdoor 不可变来源与别名镜像 ID 的导出核对，manifest 保留来源 ref／ID；公开操作说明、部署契约和三份环境变量示例随包逐文件校验。Bun、Spack、OpenPBS 下载归档现按固定 SHA-256 校验后才解包，未知版本须显式提供摘要。APT 包和基础镜像尚未全部固定，因此不承诺从源码重建获得相同二进制。构建仍要求干净固定提交；尚未启用 BuildKit daemon、构建或加载完整镜像，也未完成三机容量与 [38 项现场验收](../design/federation/acceptance.md)。本轮详情见 [交付来源与公开操作材料收尾](../design/federation/progress.md#交付来源与公开操作材料收尾)。
+AIO 交付继续补齐 Casdoor 不可变来源与别名镜像 ID 的导出核对，manifest 保留来源 ref／ID；公开操作说明、部署契约和三份环境变量示例随包逐文件校验。Bun、Spack、OpenPBS 下载归档现按固定 SHA-256 校验后才解包，未知版本须显式提供摘要。APT 包和基础镜像尚未全部固定，因此不承诺从源码重建获得相同二进制。构建仍要求干净固定提交；已通过独立 BuildKit 开始本机构建，完整交付包、加载及三机容量仍未完成，亦未完成 [38 项现场验收](../design/federation/acceptance.md)。本轮详情见 [交付来源与公开操作材料收尾](../design/federation/progress.md#交付来源与公开操作材料收尾)。
 
-本次交付增量检查通过离线工具 38 项、SchedulerDownloadTests 下载夹具 3 项；全仓 lint 为 0 errors（保留既有 47 warnings／1 info），离线文档 102 文件／1194 目标、workflow 引用及 diff 检查通过。本轮没有 TypeScript 改动，沿用上一轮类型与业务检查，不重复运行。下一步固定本地候选提交，用于 BuildKit 本机构建；不推送、合并或远端部署。截至该候选提交，真实镜像构建尚未完成。
+本次交付增量检查通过离线工具 38 项、SchedulerDownloadTests 下载夹具 3 项；全仓 lint 为 0 errors（保留既有 47 warnings／1 info），离线文档 102 文件／1194 目标、workflow 引用及 diff 检查通过。本轮没有 TypeScript 改动，沿用上一轮类型与业务检查，不重复运行。本地候选 `a1e1fdb` 已完成九类 KQ／Fabric 镜像、Slurm 最终镜像及公共 SIF 的真实构建。PBS 构建暴露 OpenPBS 23.06.06 与 Python 3.12 的兼容问题；已回移上游 #2594／#2662 的 Python 专用补丁，待固定新提交后真实重试。完整 21 镜像交付包、加载和现场验收仍未完成，不推送、合并或远端部署。
 
 本轮通用和解与历史恢复的最新范围见文首及[研发进展](../design/federation/progress.md#通用和解与历史存证恢复研发候选)；下文各专项中的历史检查范围不自动扩展为新功能的现场验收。
 
 此前通用和解与历史恢复的集中检查：shared 和解／历史恢复、商业链及 Adapter 合计 102 个唯一用例通过，Web 93 个唯一用例及离线工具 35 项通过。PostgreSQL 专项与受影响回归共 353 个测试实例已按批覆盖；修正旧夹具后仅定向复验失败场景，不重复累加检查数量，生产安全校验未放宽。5 张合成 API 浏览器截图已实际审阅，无页面错误、横向溢出或未确认的写调用；记录位于忽略目录 `temp/federation-gaps-ui-review/`。全仓 lint 通过，保留既有 47 warnings／1 info；根类型范围、shared 定向检查与 fabric-tests 类型检查通过，最新 PostgreSQL 测试夹具的 Server 最终类型检查通过。Shell／Python 语法、workflow 引用和离线文档检查通过（102 文件、1189 目标）。这些结果不替代真实 Fabric、正式登录或跨主机验收。
 
-AIO 交付接续补齐 Agent 镜像封装溯源、导出失败/版本漂移保护、Slurm/PBS 状态持久卷与 24 小时历史窗口，以及绑定实际镜像的禁网目标信息观察入口。该观察不生成 native lock，也不表示已安装软件。托管安装与受限执行运行时已接入研发候选，实际镜像／SIF、机构签名和原生运行仍待完成，见[研发与执行边界](../design/federation/aio-delivery.md#仍须完成的研发)；未执行真实镜像构建、容器启动、远端部署或合并。
+AIO 交付接续补齐 Agent 镜像封装溯源、导出失败/版本漂移保护、Slurm/PBS 状态持久卷与 24 小时历史窗口，以及绑定实际镜像的禁网目标信息观察入口。该观察不生成 native lock，也不表示已安装软件。托管安装与受限执行运行时已接入研发候选，完整镜像／SIF 交付、机构签名和原生运行仍待完成，见[研发与执行边界](../design/federation/aio-delivery.md#仍须完成的研发)；尚未启动 AIO 平台／测试集群，未远端部署或合并。
 
 联邦分支新增三机构 AIO [离线交付工具](../../deploy/federation/aio/README.md)：东京 containerd 本机构建，目标 Docker 加载；现有主机角色保留，主平台只新增第四 Orderer。工具/配置、离线链管理及编译注册入口已做定向检查；构建二进制和目标运行时材料已准备，预约/终态政策、市场、仲裁/披露、Workflow 配置和 R 工作台已接入研发候选；完整镜像、容量、SmartBFT 和正式联合验收仍待完成，未合并或部署，见[实施清单](../design/federation/aio-delivery.md)。
 

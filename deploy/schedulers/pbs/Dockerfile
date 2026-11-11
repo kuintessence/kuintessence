@@ -10,6 +10,8 @@ ARG OPENPBS_REF=v23.06.06
 ARG OPENPBS_SHA256=""
 ARG BUILD_JOBS=1
 
+COPY pbs/openpbs-python-compat.patch /tmp/openpbs-python-compat.patch
+
 RUN if [[ -n "${APT_MIRROR}" ]]; then sed -i "s|http://ports.ubuntu.com/ubuntu-ports|${APT_MIRROR}|g" /etc/apt/sources.list; fi \
   && apt-get update && apt-get install -y --no-install-recommends \
     autoconf \
@@ -33,6 +35,7 @@ RUN if [[ -n "${APT_MIRROR}" ]]; then sed -i "s|http://ports.ubuntu.com/ubuntu-p
     libxft-dev \
     libxt-dev \
     net-tools \
+    patch \
     perl \
     pkg-config \
     postgresql \
@@ -60,6 +63,7 @@ RUN if [[ -n "${APT_MIRROR}" ]]; then sed -i "s|http://ports.ubuntu.com/ubuntu-p
   && tar -xzf /tmp/openpbs.tar.gz --strip-components=1 -C /tmp/openpbs \
   && rm -f /tmp/openpbs.tar.gz \
   && cd /tmp/openpbs \
+  && if [[ "${OPENPBS_REF}" == v23.06.06 ]]; then patch --batch --forward --fuzz=0 -p1 < /tmp/openpbs-python-compat.patch; fi \
   && ./autogen.sh \
   && ./configure --prefix=/opt/pbs --with-python=/usr \
   && make -j"${BUILD_JOBS}" \
