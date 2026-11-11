@@ -169,6 +169,7 @@ async function main() {
     const logDir = dataRoots.schedulerLogDir();
     slurmDeps = {
       logDir,
+      terminalStatusBackend: config.AGENT_SLURM_TERMINAL_STATUS_BACKEND,
       queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };

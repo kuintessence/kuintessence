@@ -17,6 +17,7 @@ import {
   calculateCommercialBill,
 } from "@kuintessence/shared/federation/billing";
 import {
+  CommercialAdapterProposalInputSchema,
   CommercialAdjustmentSchema,
   type CommercialAgreement,
   CommercialAgreementSchema,
@@ -40,6 +41,8 @@ import {
   CommercialDisputeFreezeSchema,
   CommercialDisputeSchema,
 } from "@kuintessence/shared/federation/disputes";
+import { CommercialHistoryRecoverySchema } from "@kuintessence/shared/federation/history-recovery";
+import { commercialHistoryDigest } from "@kuintessence/shared/federation/history-recovery-proof";
 import {
   MarketActivationSchema,
   MarketExecutionGateSchema,
@@ -2936,4 +2939,466 @@ test("financial arbitration rejects changed targets, missing target evidence and
   await f.authority.revoke(f.authority.withdrawal());
   await expect(original.resolve()).rejects.toThrow("AUTHORIZATION_EXPIRED");
   expect(f.budget().spent).toBe("0");
+});
+
+async function nativeResolution(
+  f: Awaited<ReturnType<typeof install>>,
+  dispute: Awaited<ReturnType<typeof nativeDispute>>,
+  financial: z.infer<typeof CommercialDisputeResolutionSchema>["financial"] = null,
+) {
+  const freeze = await dispute.envelope(),
+    value = CommercialDisputeResolutionSchema.parse({
+      protocolVersion: 2,
+      kind: "commercial-dispute-resolution",
+      resolutionId: randomUUID(),
+      caseId: dispute.freeze.caseId,
+      caseDigest: dispute.freeze.caseDigest,
+      domainId,
+      agreementRevisionId: dispute.freeze.agreementRevisionId,
+      sourceSiteId: sites[0],
+      targetSiteId: sites[1],
+      taskId: dispute.freeze.taskId,
+      attempt: dispute.freeze.attempt,
+      mode: "ledger_coordinated",
+      decisionId: null,
+      withdrawalDigest: null,
+      freezeDigest: `sha256:${createHash("sha256")
+        .update(Buffer.from(freeze.sourceJws.split(".")[1] ?? "", "base64url"))
+        .digest("hex")}`,
+      headDigest: dispute.freeze.headDigest,
+      financial,
+      reason: "Bilateral resolution without granting R new authority",
+      issuedAt: f.stub.timestamp.toISOString(),
+      salt: randomBytes(32).toString("hex"),
+    });
+  const envelope = await bilateral(CommercialDisputeResolutionSchema, value);
+  return {
+    value,
+    envelope,
+    authorize: () => f.call("AuthorizeDisputeResolution", value.resolutionId, envelope),
+    resolve: () => f.call("ResolveDispute", value.resolutionId, envelope),
+  };
+}
+
+test("coordinated bilateral resolution closes exactly its case, fences old R decisions and preserves money on replay", async () => {
+  const f = await arbitrationResolutionFixture(),
+    budget = f.budget(),
+    first = await nativeResolution(f, f.dispute);
+  await first.resolve();
+  expect(f.active()).toBe(1);
+  expect(f.budget()).toEqual(budget);
+  await first.resolve();
+  expect(f.active()).toBe(1);
+  await expect(f.first.resolve()).rejects.toThrow("OPERATION_CONFLICT");
+  const conflict = await nativeResolution(f, f.dispute);
+  await expect(conflict.resolve()).rejects.toThrow("OPERATION_CONFLICT");
+  const other = await nativeResolution(f, f.second);
+  await other.resolve();
+  expect(f.active()).toBe(0);
+  expect(f.budget()).toEqual(budget);
+  const g = await arbitrationResolutionFixture();
+  await g.first.resolve();
+  await expect((await nativeResolution(g, g.dispute)).resolve()).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+});
+
+test("coordinated bilateral resolution rejects untrusted actors, unilateral consent and stale freeze or financial head", async () => {
+  const f = await reservationFixture(),
+    dispute = await nativeDispute(f, f.reservation.request);
+  await dispute.record();
+  const resolution = await nativeResolution(f, dispute),
+    before = new Map(f.stub.privateState);
+  await expect(
+    f.call("ResolveDispute", resolution.value.resolutionId, resolution.envelope, identity(2)),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.call("ResolveDispute", resolution.value.resolutionId, {
+      ...resolution.envelope,
+      targetJws: resolution.envelope.sourceJws,
+    }),
+  ).rejects.toThrow();
+  for (const patch of [
+    { freezeDigest: `sha256:${"f".repeat(64)}` },
+    { headDigest: `sha256:${"f".repeat(64)}` },
+  ]) {
+    const value = { ...resolution.value, ...patch };
+    await expect(
+      f.call(
+        "ResolveDispute",
+        value.resolutionId,
+        await bilateral(CommercialDisputeResolutionSchema, value),
+      ),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+  }
+  expect(f.stub.privateState).toEqual(before);
+});
+
+test("coordinated settlement resolution needs on-chain consent and separate exact financial signatures before closing", async () => {
+  const f = await settlementFixture(),
+    dispute = await nativeDispute(f, f.bill.request, [
+      { recordType: "bill", recordId: f.bill.billId, recordDigest: f.value.billDigest },
+    ]);
+  await dispute.record();
+  const resolution = await nativeResolution(f, dispute, f.value),
+    budget = f.stub.privateState.get(f.budgetKey),
+    taskKey = `commercial_AB_v1:${f.stub.createCompositeKey("dispute-task", [domainId, f.bill.request.agreementRevisionId, f.bill.request.taskId, String(f.bill.request.attempt)])}`;
+  await expect(f.settle()).rejects.toThrow("DATA_WAITING");
+  await expect(resolution.resolve()).rejects.toThrow("DATA_WAITING");
+  await resolution.authorize();
+  await resolution.authorize();
+  expect(f.stub.privateState.get(f.budgetKey)).toEqual(budget);
+  expect(
+    JSON.parse(Buffer.from(f.stub.privateState.get(taskKey) ?? []).toString()).activeCases,
+  ).toBe(1);
+  await expect(resolution.resolve()).rejects.toThrow("DATA_WAITING");
+  await expect(f.settle({ ...f.value, settlementId: randomUUID() })).rejects.toThrow(
+    "DATA_WAITING",
+  );
+  const signed = await bilateral(CommercialSettlementSchema, f.value);
+  await expect(
+    f.call("SettleBill", f.value.settlementId, { ...signed, targetJws: signed.sourceJws }),
+  ).rejects.toThrow();
+  const posted = CommercialReceiptSchema.parse(JSON.parse((await f.settle()).toString())),
+    other = await nativeDispute(f, f.bill.request, [
+      { recordType: "bill", recordId: f.bill.billId, recordDigest: f.value.billDigest },
+      { recordType: "settlement", recordId: posted.recordId, recordDigest: posted.digest },
+    ]);
+  await other.record();
+  const postedBudget = f.stub.privateState.get(f.budgetKey);
+  await resolution.resolve();
+  expect(
+    JSON.parse(Buffer.from(f.stub.privateState.get(taskKey) ?? []).toString()).activeCases,
+  ).toBe(1);
+  await resolution.resolve();
+  await f.settle();
+  expect(f.stub.privateState.get(f.budgetKey)).toEqual(postedBudget);
+  await (await nativeResolution(f, other)).resolve();
+  expect(
+    JSON.parse(Buffer.from(f.stub.privateState.get(taskKey) ?? []).toString()).activeCases,
+  ).toBe(0);
+});
+
+test("coordinated adjustment resolution preserves the predecessor and other case freezes", async () => {
+  const f = await adjustmentFixture(),
+    records = [
+      { recordType: "bill" as const, recordId: f.bill.billId, recordDigest: f.value.billDigest },
+      {
+        recordType: "settlement" as const,
+        recordId: f.value.settlementId,
+        recordDigest: f.adjustment.settlementDigest,
+      },
+    ],
+    dispute = await nativeDispute(f, f.bill.request, records);
+  await dispute.record();
+  const resolution = await nativeResolution(f, dispute, f.adjustment);
+  await resolution.authorize();
+  const other = await nativeDispute(f, f.bill.request, records);
+  await other.record();
+  await expect(f.adjust()).rejects.toThrow("DATA_WAITING");
+  await (await nativeResolution(f, other)).resolve();
+  await expect(f.adjust({ ...f.adjustment, chargedAmount: "1" })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await f.adjust();
+  await resolution.resolve();
+  const after = new Map(f.stub.privateState);
+  await resolution.resolve();
+  await f.adjust();
+  expect(f.stub.privateState).toEqual(after);
+  expect(JSON.parse(Buffer.from(f.stub.privateState.get(f.budgetKey) ?? []).toString()).spent).toBe(
+    "0",
+  );
+});
+
+test("coordinated financial authorization cannot name a different task or bypass another open case", async () => {
+  const f = await settlementFixture(),
+    dispute = await nativeDispute(f, f.bill.request, [
+      { recordType: "bill", recordId: f.bill.billId, recordDigest: f.value.billDigest },
+    ]);
+  await dispute.record();
+  const second = await nativeDispute(f, f.bill.request, [
+    { recordType: "bill", recordId: f.bill.billId, recordDigest: f.value.billDigest },
+  ]);
+  await second.record();
+  const resolution = await nativeResolution(f, dispute, f.value);
+  await expect(resolution.authorize()).rejects.toThrow("DATA_WAITING");
+  await (await nativeResolution(f, second)).resolve();
+  const malformed = await nativeResolution(f, dispute, { ...f.value, billId: randomUUID() }),
+    before = new Map(f.stub.privateState);
+  await expect(malformed.authorize()).rejects.toThrow("DATA_WAITING");
+  expect(f.stub.privateState).toEqual(before);
+  await resolution.authorize();
+  await expect((await nativeResolution(f, dispute, f.value)).authorize()).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+});
+
+test("current bilateral historical recovery preserves retired originals only in PDC archive keys and cannot satisfy live business records", async () => {
+  const expanded = structuredClone(trust),
+    signers: FederationSigningKey[] = [];
+  for (const site of [sites[0], sites[1]]) {
+    const pair = await generateKeyPair("RS256", { extractable: true }),
+      org = expanded.organizations.find((value) => value.siteId === site);
+    if (!org) throw new Error("Missing current organization");
+    const keyId = "approved-recovery-key";
+    org.keys.push({
+      keyId,
+      publicKeyPem: await exportSPKI(pair.publicKey),
+      validFrom: "2026-01-01T00:00:00Z",
+      validUntil: "2030-01-01T00:00:00Z",
+    });
+    expanded.keyPurposes.push({ siteId: site, keyId, kinds: ["commercial-history-recovery"] });
+    signers.push({ siteId: site, keyId, privateKey: pair.privateKey });
+  }
+  const [source, target] = signers;
+  if (!source || !target) throw new Error("Missing recovery signers");
+  const f = await setup(expanded),
+    terms = agreement();
+  terms.agreement.mode = "bilateral_attested";
+  const originalEnvelope = await signedAgreement(terms),
+    originalDigest = `sha256:${createHash("sha256")
+      .update(Buffer.from(originalEnvelope.sourceJws.split(".")[1] ?? "", "base64url"))
+      .digest("hex")}`,
+    original = CommercialAdapterProposalInputSchema.parse({
+      operation: "register-agreement",
+      domainId,
+      recordId: terms.agreement.agreementRevisionId,
+      digest: originalDigest,
+      envelope: originalEnvelope,
+    });
+  for (const [index, old] of keys.slice(0, 2).entries()) {
+    f.stub.fcn = "RevokeKey";
+    f.stub.params = [old.siteId, old.keyId];
+    f.stub.transient.clear();
+    await f.ledger.invoke(f.stub, identity(index, "trust-admin"));
+  }
+  // These sentinels detect any accidental write to business namespaces, not actual usage.
+  for (const prefix of ["budget", "settlement-head", "dispute-task", "execution-gate"])
+    await f.stub.putPrivateData(
+      "commercial_AB_v1",
+      f.stub.createCompositeKey(prefix, [domainId, randomUUID()]),
+      Buffer.from(prefix),
+    );
+  const value = CommercialHistoryRecoverySchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-history-recovery",
+    recoveryId: randomUUID(),
+    domainId,
+    agreementRevisionId: terms.agreement.agreementRevisionId,
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    mode: "bilateral_attested",
+    assertion: "acknowledge-original-record",
+    originalOperation: original.operation,
+    originalRecordId: original.recordId,
+    originalDigest,
+    originalInputDigest: commercialHistoryDigest(original),
+    reason: "Archive original bytes after a business key has retired",
+    issuedAt: now.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const envelope = {
+      sourceSiteId: source.siteId,
+      targetSiteId: target.siteId,
+      sourceJws: await signFederationMessage(CommercialHistoryRecoverySchema, value, source),
+      targetJws: await signFederationMessage(CommercialHistoryRecoverySchema, value, target),
+      originalInput: federationCanonicalJson(original),
+    },
+    before = new Map(f.stub.privateState),
+    publicBefore = new Map(f.stub.state);
+  await expect(f.call("RegisterAgreement", original.recordId, originalEnvelope)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  await expect(
+    f.call("RecordHistoricalCommercial", value.recoveryId, {
+      ...envelope,
+      targetJws: envelope.sourceJws,
+    }),
+  ).rejects.toThrow();
+  await expect(
+    f.call("RecordHistoricalCommercial", value.recoveryId, envelope, identity(2)),
+  ).rejects.toThrow("POLICY_DENIED");
+  const first = await f.call("RecordHistoricalCommercial", value.recoveryId, envelope);
+  expect(await f.call("RecordHistoricalCommercial", value.recoveryId, envelope)).toEqual(first);
+  expect(f.stub.privateState.size).toBe(before.size + 2);
+  for (const [key, bytes] of before) expect(f.stub.privateState.get(key)).toEqual(bytes);
+  expect(f.stub.state).toEqual(publicBefore);
+  f.stub.fcn = "GetRecordReceipt";
+  f.stub.params = [domainId, "historical-commercial", value.recoveryId];
+  f.stub.transient.clear();
+  expect(JSON.parse((await f.ledger.invoke(f.stub, identity())).toString())).toEqual({
+    receipt: JSON.parse(first.toString()),
+  });
+  await expect(f.ledger.invoke(f.stub, identity(2))).rejects.toThrow("POLICY_DENIED");
+  f.stub.params = [domainId, "agreement", original.recordId];
+  expect(JSON.parse((await f.ledger.invoke(f.stub, identity())).toString())).toEqual({
+    receipt: null,
+  });
+});
+
+const commercialTrustDigest = (value: FabricCommercialTrust) =>
+  `sha256:${createHash("sha256")
+    .update(JSON.stringify(FabricCommercialTrustSchema.parse(value)))
+    .digest("hex")}`;
+async function appendedCommercialTrust(previous = trust) {
+  const next = structuredClone(previous),
+    pair = await generateKeyPair("RS256", { extractable: true }),
+    org = next.organizations[0];
+  if (!org) throw new Error("Missing original organization");
+  const keyId = `current-${randomUUID()}`;
+  org.keys.push({
+    keyId,
+    publicKeyPem: await exportSPKI(pair.publicKey),
+    validFrom: "2026-01-01T00:00:00Z",
+    validUntil: "2031-01-01T00:00:00Z",
+  });
+  next.keyPurposes.push({ siteId: org.siteId, keyId, kinds: ["commercial-history-recovery"] });
+  return next;
+}
+async function applyCommercialTrust(
+  f: Awaited<ReturnType<typeof setup>>,
+  next: FabricCommercialTrust,
+  previousDigest: string,
+  actor = identity(0, "trust-admin"),
+) {
+  f.stub.fcn = "UpdateTrust";
+  f.stub.params = [previousDigest, commercialTrustDigest(next)];
+  f.stub.transient.clear();
+  return new CommercialLedger(next).invoke(f.stub, actor);
+}
+
+test("commercial same-generation trust append retains all-native governance and never revives a revoked business key", async () => {
+  const f = await setup(),
+    next = await appendedCommercialTrust(),
+    old = keys[0];
+  if (!old) throw new Error("Missing original signer");
+  f.stub.fcn = "RevokeKey";
+  f.stub.params = [old.siteId, old.keyId];
+  await f.ledger.invoke(f.stub, identity(0, "trust-admin"));
+  const configPolicy = f.stub.policies.get("kq.commercial.trust.v1"),
+    beforePrivate = new Map(f.stub.privateState),
+    previousDigest = commercialTrustDigest(trust),
+    updated = JSON.parse((await applyCommercialTrust(f, next, previousDigest)).toString()),
+    nextOrg = next.organizations[0],
+    added = nextOrg?.keys.at(-1);
+  if (!nextOrg || !added) throw new Error("Missing added signing key");
+  expect(updated).toEqual({
+    generationId: trust.generationId,
+    previousDigest,
+    nextDigest: commercialTrustDigest(next),
+  });
+  expect(f.stub.policies.get("kq.commercial.trust.v1")).toEqual(configPolicy);
+  expect(
+    Buffer.from(
+      await f.stub.getState(f.stub.createCompositeKey("revoked", [old.siteId, old.keyId])),
+    ).toString(),
+  ).toBe("revoked");
+  const newState = f.stub.createCompositeKey("revoked", [nextOrg.siteId, added.keyId]),
+    oldState = f.stub.createCompositeKey("revoked", [old.siteId, old.keyId]);
+  expect(Buffer.from(await f.stub.getState(newState)).toString()).toBe("active");
+  expect(f.stub.policies.get(newState)).toEqual(f.stub.policies.get(oldState));
+  const receiptKey = f.stub.createCompositeKey("commercial-trust-update", [
+      previousDigest,
+      commercialTrustDigest(next),
+    ]),
+    history = JSON.parse(Buffer.from(await f.stub.getState(receiptKey)).toString());
+  expect(history.previous).toEqual(trust);
+  expect(history.receipt).toEqual(updated);
+  expect(f.stub.policies.get(receiptKey)).toEqual(configPolicy);
+  expect(f.stub.privateState).toEqual(beforePrivate);
+  const after = new Map(f.stub.state);
+  expect(JSON.parse((await applyCommercialTrust(f, next, previousDigest)).toString())).toEqual(
+    updated,
+  );
+  expect(f.stub.state).toEqual(after);
+  f.stub.fcn = "GetRecordReceipt";
+  f.stub.params = [domainId, "agreement", randomUUID()];
+  await expect(f.ledger.invoke(f.stub, identity())).rejects.toThrow("POLICY_DENIED");
+});
+
+test("commercial trust append rejects topology changes, rewritten keys, removed purposes, wrong predecessor and non-admin identities", async () => {
+  const f = await setup(),
+    next = await appendedCommercialTrust(),
+    previousDigest = commercialTrustDigest(trust),
+    before = new Map(f.stub.state),
+    policies = new Map(f.stub.policies),
+    privateBefore = new Map(f.stub.privateState);
+  const mutations: ((value: FabricCommercialTrust) => void)[] = [
+    (value) => {
+      value.generationId = randomUUID();
+    },
+    (value) => {
+      const org = value.organizations[0];
+      if (org) org.mspId = "OtherMSP";
+    },
+    (value) => {
+      const domain = value.domains[0];
+      if (domain) domain.collection = "other_AB";
+    },
+    (value) => {
+      const domain = value.domains[0];
+      if (domain) domain.siteIds = [sites[0], sites[2]];
+    },
+    (value) => {
+      const signing = value.organizations[0]?.keys[0];
+      if (signing) signing.validUntil = "2032-01-01T00:00:00Z";
+    },
+    (value) => {
+      const org = value.organizations[0];
+      if (org) org.keys.shift();
+      value.keyPurposes = value.keyPurposes.filter((item) => item.keyId !== keys[0]?.keyId);
+    },
+    (value) => {
+      const purpose = value.keyPurposes[0];
+      if (purpose) purpose.kinds = ["commercial-history-recovery"];
+    },
+  ];
+  for (const change of mutations) {
+    const invalid = structuredClone(next);
+    change(invalid);
+    await expect(applyCommercialTrust(f, invalid, previousDigest)).rejects.toThrow("POLICY_DENIED");
+    expect(f.stub.state).toEqual(before);
+  }
+  await expect(applyCommercialTrust(f, next, `sha256:${"f".repeat(64)}`)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(
+    applyCommercialTrust(f, next, previousDigest, identity(0, "commercial")),
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+  await expect(
+    applyCommercialTrust(f, next, previousDigest, identity(3, "trust-admin")),
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+  expect(f.stub.state).toEqual(before);
+  expect(f.stub.policies).toEqual(policies);
+  expect(f.stub.privateState).toEqual(privateBefore);
+});
+
+test("commercial trust append preserves revoked keys when granting new purposes and old replays cannot roll back later appends", async () => {
+  const f = await setup(),
+    first = await appendedCommercialTrust(),
+    old = keys[0];
+  if (!old) throw new Error("Missing original signer");
+  f.stub.fcn = "RevokeKey";
+  f.stub.params = [old.siteId, old.keyId];
+  await f.ledger.invoke(f.stub, identity(0, "trust-admin"));
+  const purpose = first.keyPurposes.find(
+    (item) => item.siteId === old.siteId && item.keyId === old.keyId,
+  );
+  if (!purpose) throw new Error("Missing original signing purpose");
+  purpose.kinds.push("commercial-history-recovery");
+  const firstReceipt = await applyCommercialTrust(f, first, commercialTrustDigest(trust)),
+    second = await appendedCommercialTrust(first);
+  await applyCommercialTrust(f, second, commercialTrustDigest(first));
+  const before = new Map(f.stub.state);
+  expect(await applyCommercialTrust(f, first, commercialTrustDigest(trust))).toEqual(firstReceipt);
+  expect(f.stub.state).toEqual(before);
+  expect(
+    Buffer.from(
+      await f.stub.getState(f.stub.createCompositeKey("revoked", [old.siteId, old.keyId])),
+    ).toString(),
+  ).toBe("revoked");
+  expect(
+    JSON.parse(Buffer.from(await f.stub.getState("kq.commercial.trust.v1")).toString()),
+  ).toEqual(second);
 });

@@ -10,7 +10,6 @@ import {
 } from "@kuintessence/db";
 import {
   assertDelegationTerms,
-  FederationAmountSchema,
   FederationError,
   federationExecutionDeadline,
 } from "@kuintessence/shared/federation";
@@ -18,27 +17,17 @@ import {
   CommercialAgreementSchema,
   type CommercialReservation,
   CommercialReservationSchema,
+  ReservationPolicyInputSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, getTableColumns, isNull, sql } from "drizzle-orm";
-import { z } from "zod";
+import type { z } from "zod";
 import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { FederationTrustRegistry } from "./trust-registry";
 import { assertUnreservedDemandOpen } from "./unreserved-closure";
 import { assertWorkflowRequestActive } from "./workflow-delegations";
 
-export const ReservationPolicyInputSchema = z
-  .strictObject({
-    allowMarketPublish: z.boolean().default(false),
-    allowMarketClaim: z.boolean().default(false),
-    allowActivation: z.boolean().default(false),
-    allowExecutionConfirmation: z.boolean().default(false),
-    maxTaskAmount: FederationAmountSchema,
-    maxTotalAmount: FederationAmountSchema,
-    maxTasks: z.number().int().min(1).max(100_000),
-    validUntil: z.iso.datetime({ offset: true }),
-  })
-  .refine((value) => BigInt(value.maxTaskAmount) <= BigInt(value.maxTotalAmount));
+export { ReservationPolicyInputSchema } from "@kuintessence/shared/federation/commercial";
 
 type ReservationPolicy = typeof policies.$inferSelect;
 export function assertReservationPolicyActive(policy: ReservationPolicy, now: Date) {

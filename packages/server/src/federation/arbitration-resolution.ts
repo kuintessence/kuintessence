@@ -3,6 +3,7 @@ import {
   federationCommercialAdjustments as adjustments,
   auditLog,
   federationDisputes as cases,
+  federationDisputeResolutions as disputeResolutions,
   federationOutbound as outbound,
   type PgDb,
   type PgTransaction,
@@ -111,6 +112,7 @@ export class FederationArbitrationResolutionService {
       .where(
         and(
           eq(submissions.localSiteId, this.signing.siteId),
+          sql`${submissions.lastError} IS DISTINCT FROM 'HISTORY_ARCHIVE_ONLY'`,
           eq(submissions.agreementRevisionId, payload.agreementRevisionId),
           sql`${submissions.input}->>'recordId' = ${payload.decisionId}`,
           sql`${submissions.input}->>'operation' IN ('record-arbitration-resolution','resolve-arbitrated-case')`,
@@ -132,6 +134,16 @@ export class FederationArbitrationResolutionService {
     };
   }
   private async current(tx: PgTransaction, caseId: string) {
+    const [bilateral] = await tx
+      .select({ id: disputeResolutions.resolutionId })
+      .from(disputeResolutions)
+      .where(
+        and(
+          eq(disputeResolutions.localSiteId, this.signing.siteId),
+          eq(disputeResolutions.caseId, caseId),
+        ),
+      );
+    if (bilateral) throw new FederationError("OPERATION_CONFLICT");
     const [original] = await tx
       .select()
       .from(received)

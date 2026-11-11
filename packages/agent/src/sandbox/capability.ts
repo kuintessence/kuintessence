@@ -47,7 +47,7 @@ export function buildSandboxCapability(
     rootRequested && config.AGENT_SANDBOX_ROOT_IMPERSONATION && processIdentity?.uid === 0;
   const selfAccount =
     selfAccountRequested &&
-    adapterType === "slurm" &&
+    (adapterType === "slurm" || adapterType === "pbs-pro") &&
     processIdentity &&
     processIdentity.uid > 0 &&
     processIdentity.gid > 0
@@ -94,7 +94,7 @@ export function buildSandboxCapability(
   const missingRequirements: string[] = [];
   if (!enabled) missingRequirements.push("sandbox-disabled");
   if (executionMode === "Disabled") missingRequirements.push("execution-mode");
-  if (selfAccountRequested && adapterType !== "slurm") {
+  if (selfAccountRequested && adapterType !== "slurm" && adapterType !== "pbs-pro") {
     missingRequirements.push("self-account-adapter-unsupported");
   }
   if (!networkIsolation) missingRequirements.push("network-isolation");

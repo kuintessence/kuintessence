@@ -96,6 +96,16 @@
       "types": "./src/federation/media-key-crypto.ts",
       "default": "./src/federation/media-key-crypto.ts"
     },
+    "./federation/history-recovery": {
+      "bun": "./src/federation/history-recovery.ts",
+      "types": "./src/federation/history-recovery.ts",
+      "default": "./src/federation/history-recovery.ts"
+    },
+    "./federation/history-recovery-proof": {
+      "bun": "./src/federation/history-recovery-proof.ts",
+      "types": "./src/federation/history-recovery-proof.ts",
+      "default": "./src/federation/history-recovery-proof.ts"
+    },
     "./federation/dispute-resolution": {
       "bun": "./src/federation/dispute-resolution.ts",
       "types": "./src/federation/dispute-resolution.ts",

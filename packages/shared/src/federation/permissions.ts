@@ -3,6 +3,7 @@ import { z } from "zod";
 export const FederationCapabilitySchema = z.enum([
   "agreement.read",
   "agreement.approve",
+  "attestation.recover",
   "billing.approve",
   "settlement.approve",
   "adjustment.approve",
@@ -44,6 +45,7 @@ export function federationCapabilitySources(
       ? [
           "agreement.read",
           "agreement.approve",
+          "attestation.recover",
           "billing.approve",
           "settlement.approve",
           "adjustment.approve",

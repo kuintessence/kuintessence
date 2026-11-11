@@ -1,0 +1,45 @@
+# Only merged for an institution's managed Slurm test scheduler.
+services:
+  scheduler:
+    environment:
+      AGENT_SLURM_TERMINAL_STATUS_BACKEND: sacct
+    depends_on:
+      scheduler-accounting: {condition: service_healthy}
+  scheduler-accounting:
+    image: mariadb:11.4.8
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.5
+    pids_limit: 128
+    command:
+      - --innodb-buffer-pool-size=64M
+      - --innodb-log-file-size=32M
+      - --max-connections=20
+      - --performance-schema=OFF
+      - --skip-name-resolve
+    environment:
+      MARIADB_DATABASE: slurm_acct_db
+      MARIADB_USER: slurm
+      MARIADB_ROOT_HOST: localhost
+      MARIADB_PASSWORD_FILE: /run/secrets/slurm-db-password
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/root-password
+    volumes:
+      - slurm-accounting:/var/lib/mysql
+      - type: bind
+        source: ${KQ_AIO_PRIVATE_DIRECTORY:?}/runtime/slurm-db-password
+        target: /run/secrets/slurm-db-password
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${KQ_AIO_PRIVATE_DIRECTORY:?}/accounting/root-password
+        target: /run/secrets/root-password
+        read_only: true
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+volumes:
+  slurm-accounting:

@@ -1,4 +1,5 @@
 import { NativeSelect } from "../ui/native-select";
+import { FederationNodeFields } from "./FederationNodeFields";
 /**
  * Right-side panel for the selected workflow node.
  *
@@ -403,7 +404,9 @@ function PropertiesForm({ selected, onPatch }: PropertiesFormProps) {
           onBlur={commitWhen}
         />
       </FieldRow>
-      {raw.type === "SoftwareUsecaseComputing" ? (
+      {raw.type === "Federation" ? (
+        <FederationNodeFields id={id} raw={raw} onPatch={onPatch} />
+      ) : raw.type === "SoftwareUsecaseComputing" ? (
         <UsecaseFields id={id} raw={raw} onPatch={onPatch} />
       ) : raw.type === "Script" ? (
         <ScriptFields id={id} raw={raw} onPatch={onPatch} />

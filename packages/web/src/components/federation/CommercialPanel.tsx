@@ -27,11 +27,16 @@ import {
 } from "../ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { CommercialAdjustmentPanel } from "./CommercialAdjustmentPanel";
+import { CommercialAutomationPanel } from "./CommercialAutomationPanel";
 import { CommercialBillingPanel } from "./CommercialBillingPanel";
 import { CommercialClosingPanel } from "./CommercialClosingPanel";
 import { CommercialDetail } from "./CommercialDetail";
 import { CommercialDisputePanel } from "./CommercialDisputePanel";
 import { CommercialEditor } from "./CommercialEditor";
+import { CommercialGovernancePanel } from "./CommercialGovernancePanel";
+import { CommercialHistoryRecoveryImport } from "./CommercialHistoryRecoveryImport";
+import { CommercialHistoryRecoveryPanel } from "./CommercialHistoryRecoveryPanel";
+import { CommercialMarketRequestsPanel } from "./CommercialMarketRequestsPanel";
 import { CommercialPaymentPanel } from "./CommercialPaymentPanel";
 import { CommercialRefundPanel } from "./CommercialRefundPanel";
 import { CommercialSettlementPanel } from "./CommercialSettlementPanel";
@@ -57,6 +62,12 @@ export function CommercialPanel({
   const readOnly = useMobileMutationBlocked(path);
   const [disputeSubject, setDisputeSubject] = useState<CommercialDispute["subject"] | null>(null);
   const [section, setSection] = useState("terms");
+  const [recovering, setRecovering] = useState<{
+    organizationId: string;
+    authRevision: string | null;
+    revisionId: string;
+    submissionId: string;
+  } | null>(null);
   const [closingRecord, setClosingRecord] = useState<{
     kind: "bill" | "settlement" | "refund";
     recordId: string;
@@ -67,6 +78,12 @@ export function CommercialPanel({
   const [billingReport, setBillingReport] = useState<string | undefined>();
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
+  const activeRecovery =
+    recovering?.organizationId === scope.organizationId &&
+    recovering.authRevision === scope.authRevision &&
+    recovering.revisionId === selected
+      ? recovering
+      : null;
   const [creating, setCreating] = useState(false);
   const [confirmation, setConfirmation] = useState<Action | null>(null);
   const capabilities = useQuery({
@@ -293,7 +310,16 @@ export function CommercialPanel({
                 grants.includes("dispute.resolve") ? (
                   <TabsTrigger value="disputes">{t("federation.dispute.title")}</TabsTrigger>
                 ) : null}
+                <TabsTrigger value="governance">{t("federation.governance.title")}</TabsTrigger>
                 <TabsTrigger value="closing">{t("federation.closing.title")}</TabsTrigger>
+                {detail.data.terms.agreement.mode === "ledger_coordinated" ? (
+                  <>
+                    <TabsTrigger value="automation">{t("federation.automation.title")}</TabsTrigger>
+                    <TabsTrigger value="market-requests">
+                      {t("federation.marketRequest.title")}
+                    </TabsTrigger>
+                  </>
+                ) : null}
               </TabsList>
               <TabsContent value="terms">
                 <CommercialDetail
@@ -309,6 +335,68 @@ export function CommercialPanel({
                   onRetry={(submissionId) =>
                     confirm({ kind: "retry", revisionId: detail.data.revisionId, submissionId })
                   }
+                  onRecoverHistory={
+                    !readOnly &&
+                    grants.includes("attestation.recover") &&
+                    detail.data.terms.agreement.mode === "bilateral_attested"
+                      ? (submissionId) =>
+                          setRecovering({
+                            organizationId: scope.organizationId,
+                            authRevision: scope.authRevision,
+                            revisionId: detail.data.revisionId,
+                            submissionId,
+                          })
+                      : undefined
+                  }
+                />
+                <CommercialHistoryRecoveryImport
+                  key={`${scope.organizationId}:${scope.authRevision}:${detail.data.revisionId}`}
+                  approval={detail.data}
+                  scope={scope}
+                  writable={
+                    !readOnly &&
+                    grants.includes("attestation.recover") &&
+                    detail.data.terms.agreement.mode === "bilateral_attested" &&
+                    !activeRecovery
+                  }
+                  busy={busy || detail.isFetching}
+                  onImported={(submissionId) =>
+                    setRecovering({
+                      organizationId: scope.organizationId,
+                      authRevision: scope.authRevision,
+                      revisionId: detail.data.revisionId,
+                      submissionId,
+                    })
+                  }
+                />
+                {activeRecovery && grants.includes("attestation.recover") ? (
+                  <CommercialHistoryRecoveryPanel
+                    approval={detail.data}
+                    scope={scope}
+                    submissionId={activeRecovery.submissionId}
+                    grants={grants}
+                    readOnly={readOnly}
+                    busy={busy || detail.isFetching}
+                    onClose={() => setRecovering(null)}
+                  />
+                ) : null}
+              </TabsContent>
+              <TabsContent value="market-requests">
+                <CommercialMarketRequestsPanel
+                  approval={detail.data}
+                  scope={scope}
+                  grants={grants}
+                  readOnly={readOnly}
+                  busy={busy || detail.isFetching}
+                />
+              </TabsContent>
+              <TabsContent value="automation">
+                <CommercialAutomationPanel
+                  approval={detail.data}
+                  scope={scope}
+                  grants={grants}
+                  writable={canApprove}
+                  busy={busy || detail.isFetching}
                 />
               </TabsContent>
               <TabsContent value="usage">
@@ -427,6 +515,15 @@ export function CommercialPanel({
                     busy={busy || detail.isFetching}
                   />
                 ) : null}
+              </TabsContent>
+              <TabsContent value="governance">
+                <CommercialGovernancePanel
+                  approval={detail.data}
+                  scope={scope}
+                  grants={grants}
+                  readOnly={readOnly}
+                  busy={busy || detail.isFetching}
+                />
               </TabsContent>
               <TabsContent value="closing">
                 <CommercialClosingPanel

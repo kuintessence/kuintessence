@@ -10,6 +10,9 @@ on:
       - deploy/federation/**
       - deploy/main/compose.yml
       - packages/fabric-adapter/**
+      - packages/cli/src/agent-registration-entry.ts
+      - packages/cli/src/commands/agent*
+      - deploy/schedulers/**
       - packages/shared/**
       - contracts/fabric/**
       - packages/*/package.json
@@ -17,6 +20,8 @@ on:
       - bun.lock
       - .dockerignore
       - scripts/federation-compose-*.py
+      - scripts/federation-offline-test.py
+      - scripts/federation-managed-runtime-test.py
 
 permissions:
   contents: read
@@ -39,6 +44,10 @@ jobs:
           bash -n deploy/federation/{compose,remote,apply,fabric-init}.sh
           python3 scripts/federation-compose-check.py
           python3 scripts/federation-compose-remote-check.py
+          bash -n deploy/federation/aio/register-agent.sh
+          bash -n deploy/schedulers/{slurm,pbs}/entrypoint.sh
+          python3 scripts/federation-offline-test.py
+          python3 scripts/federation-managed-runtime-test.py
   images:
     runs-on: ubuntu-24.04
     timeout-minutes: 25

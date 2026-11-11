@@ -1,8 +1,44 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { parsePositiveInt, parseServePort, writeAgentRegistrationFiles } from "./agent";
+import {
+  parsePositiveInt,
+  parseServePort,
+  readRegistrationToken,
+  writeAgentRegistrationFiles,
+} from "./agent";
+
+describe("registration token file", () => {
+  it("requires exactly one token source", async () => {
+    await expect(readRegistrationToken({})).rejects.toThrow("exactly one");
+    await expect(readRegistrationToken({ token: "x", tokenFile: "unused" })).rejects.toThrow(
+      "exactly one",
+    );
+    await expect(readRegistrationToken({ token: " " })).rejects.toThrow("empty");
+    expect(await readRegistrationToken({ token: "existing-token" })).toBe("existing-token");
+  });
+
+  it("reads a private file and rejects public, linked, empty or oversized files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kq-enroll-"));
+    const path = join(dir, "token");
+    try {
+      await writeFile(path, "one-time-token\n", { mode: 0o600 });
+      expect(await readRegistrationToken({ tokenFile: path })).toBe("one-time-token");
+      await chmod(path, 0o644);
+      await expect(readRegistrationToken({ tokenFile: path })).rejects.toThrow("private");
+      await chmod(path, 0o600);
+      await symlink(path, join(dir, "link"));
+      await expect(readRegistrationToken({ tokenFile: join(dir, "link") })).rejects.toThrow();
+      await writeFile(path, "");
+      await expect(readRegistrationToken({ tokenFile: path })).rejects.toThrow("empty");
+      await writeFile(path, "x".repeat(16385));
+      await expect(readRegistrationToken({ tokenFile: path })).rejects.toThrow("16 KiB");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("parseServePort", () => {
   it("accepts a valid port", () => {
@@ -49,6 +85,7 @@ describe("writeAgentRegistrationFiles", () => {
       });
 
       const env = await readFile(join(dir, "agent.env"), "utf8");
+      expect(env.trim().split("\n")).toHaveLength(9);
       expect(env).toContain('SERVER_GRPC_URL="https://server.example.com/grpc"');
       expect(env).toContain('SERVER_HTTP_URL="https://server.example.com"');
       expect(env).toContain('AGENT_ID="agent-cli-test"');

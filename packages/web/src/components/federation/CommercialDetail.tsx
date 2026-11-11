@@ -18,6 +18,7 @@ export function CommercialDetail({
   failedSubmissions,
   onAttach,
   onRetry,
+  onRecoverHistory,
 }: {
   approval: CommercialAgreementApproval;
   writable: boolean;
@@ -27,6 +28,7 @@ export function CommercialDetail({
   failedSubmissions: boolean;
   onAttach: (signature: string) => void;
   onRetry: (id: string) => void;
+  onRecoverHistory?: (id: string) => void;
 }) {
   const { t, i18n } = useTranslation();
   const id = useId();
@@ -154,6 +156,15 @@ export function CommercialDetail({
                       {writable && item.state === "needs_review" ? (
                         <Button variant="outline" disabled={busy} onClick={() => onRetry(item.id)}>
                           {t("federation.commercial.actions.retry")}
+                        </Button>
+                      ) : null}
+                      {onRecoverHistory && item.state === "needs_review" ? (
+                        <Button
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => onRecoverHistory(item.id)}
+                        >
+                          {t("federation.historyRecovery.title")}
                         </Button>
                       ) : null}
                     </li>

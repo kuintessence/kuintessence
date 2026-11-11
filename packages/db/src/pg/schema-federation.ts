@@ -88,6 +88,10 @@ import type {
   CommercialDisputeFreeze,
   CommercialDisputeState,
 } from "@kuintessence/shared/federation/disputes";
+import type {
+  CommercialHistoryApprovalSnapshot,
+  CommercialHistoryRecovery,
+} from "@kuintessence/shared/federation/history-recovery";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
 import type {
   MarketAdapterProposalInput,
@@ -190,6 +194,7 @@ export const federationSigningKeys = pgTable(
           | "arbitration-execution-withdrawal-receipt"
           | "arbitration-execution-withdrawal-response"
           | "commercial-dispute-resolution"
+          | "commercial-history-recovery"
           | "commercial-disclosure-policy"
           | "commercial-disclosure"
           | "case-arbitration-decision"
@@ -282,7 +287,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'arbitration.decide', 'arbitration.execute', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'dispute.resolve', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'arbitration.decide', 'arbitration.execute', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'dispute.resolve', 'attestation.recover', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -2311,11 +2316,61 @@ export const federationCommercialSubmissions = pgTable(
     ),
     check(
       "federation_commercial_submission_input",
-      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement','record-refund','record-payment','record-dispute-freeze','record-dispute-resolution','freeze-disputed-task','revoke-arbitration-policy','resolve-arbitrated-case','record-arbitration-resolution') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement','record-refund','record-payment','record-dispute-freeze','record-dispute-resolution','authorize-dispute-resolution','resolve-dispute','record-historical-commercial','freeze-disputed-task','revoke-arbitration-policy','resolve-arbitrated-case','record-arbitration-resolution') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
     check(
       "federation_commercial_submission_lease",
       sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
+    ),
+  ],
+);
+
+export const federationCommercialHistoryRecoveries = pgTable(
+  "federation_commercial_history_recoveries",
+  {
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    recoveryId: uuid("recovery_id").notNull(),
+    submissionId: uuid("submission_id")
+      .notNull()
+      .references(() => federationCommercialSubmissions.id),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    payload: jsonb("payload").$type<CommercialHistoryRecovery>().notNull(),
+    digest: text("digest").notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    approvalHistory: jsonb("approval_history")
+      .$type<CommercialHistoryApprovalSnapshot[]>()
+      .notNull()
+      .default([]),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    counterpartyJws: text("counterparty_jws"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.recoveryId] }),
+    uniqueIndex("commercial_history_original").on(t.localSiteId, t.submissionId),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    check(
+      "commercial_history_binding",
+      sql`(
+      ${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.payload}->>'kind' = 'commercial-history-recovery'
+      AND ${t.payload}->>'recoveryId' = ${t.recoveryId}::text
+      AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND ${t.localSiteId}::text IN (${t.payload}->>'sourceSiteId', ${t.payload}->>'targetSiteId')
+    ) IS TRUE`,
     ),
   ],
 );
@@ -4234,7 +4289,17 @@ export const federationDisputeResolutions = pgTable(
       AND ${t.payload}->>'caseId' = ${t.caseId}::text
       AND ${t.payload}->>'resolutionId' = ${t.resolutionId}::text
       AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
-      AND ${t.payload}->>'mode' IN ('bilateral_direct','bilateral_attested')
+      AND ${t.payload}->>'mode' IN ('bilateral_direct','bilateral_attested','ledger_coordinated')
+      AND (${t.payload}->>'protocolVersion' = '1'
+        AND ${t.payload}->>'mode' <> 'ledger_coordinated'
+        AND ${t.payload}->>'decisionId' IS NOT NULL
+        AND ${t.payload}->>'withdrawalDigest' ~ '^sha256:[a-f0-9]{64}$'
+        OR ${t.payload}->>'protocolVersion' = '2'
+        AND ${t.payload}->'decisionId' = 'null'::jsonb
+        AND ${t.payload}->'withdrawalDigest' = 'null'::jsonb
+        AND (CASE WHEN ${t.payload}->>'mode' = 'ledger_coordinated'
+          THEN ${t.payload}->>'freezeDigest' ~ '^sha256:[a-f0-9]{64}$'
+          ELSE ${t.payload}->'freezeDigest' = 'null'::jsonb END))
       AND ${t.localSiteId}::text IN (${t.payload}->>'sourceSiteId', ${t.payload}->>'targetSiteId')
       AND (${t.appliedAt} IS NULL OR ${t.counterpartyJws} IS NOT NULL)
     ) IS TRUE`,

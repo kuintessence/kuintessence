@@ -481,6 +481,7 @@ export class FederationUsageService {
           submissions,
           and(
             eq(submissions.localSiteId, this.signing.siteId),
+            sql`${submissions.lastError} IS DISTINCT FROM 'HISTORY_ARCHIVE_ONLY'`,
             sql`${submissions.input}->>'operation' = 'record-usage'`,
             sql`${submissions.input}->>'recordId' = ${reports.id}::text`,
           ),

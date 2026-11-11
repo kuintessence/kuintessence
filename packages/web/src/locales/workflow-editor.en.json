@@ -102,7 +102,9 @@
         "milestoneHint": "Notify / checkpoint node",
         "subWorkflow": "Sub-workflow",
         "subWorkflowHint": "Inline or referenced child workflow",
-        "releaseToAdd": "Release to add a {{name}} node"
+        "releaseToAdd": "Release to add a {{name}} node",
+        "federation": "Federation",
+        "federationHint": "Contract, materials and market policy"
       },
       "properties": {
         "title": "Properties",
@@ -168,6 +170,42 @@
         "empty": "Empty graph: drag a node from the palette to start.",
         "syncOk": "Synced with YAML",
         "syncError": "YAML parse error: edits paused"
+      },
+      "federation": {
+        "agreementRevisionId": "Agreement revision ID",
+        "template": "Execution template",
+        "templateKind": "Template type",
+        "workflow": "Workflow",
+        "script": "Script",
+        "templateSiteId": "Template site ID",
+        "templateId": "Template ID",
+        "templateRevision": "Template revision",
+        "templateDigest": "Template digest",
+        "inputManifestDigest": "Input snapshot digest",
+        "environmentLockDigest": "Environment lock digest",
+        "resources": "Resource limits",
+        "cpus": "CPU cores",
+        "memoryMb": "Memory MiB",
+        "gpus": "GPUs",
+        "wallTimeSec": "Wall time (seconds)",
+        "maxAmount": "Maximum amount (contract base unit)",
+        "admissionWindowSec": "Admission window (seconds)",
+        "executionExpiresAt": "Execution deadline",
+        "inputDelivery": "Input delivery",
+        "resultDelivery": "Result delivery",
+        "defaultDelivery": "Platform default",
+        "network": "Network",
+        "physical_media": "Physical media",
+        "market": "Delegate through task market",
+        "publicWarning": "Title and description are public. Exclude prices, contracts, materials and personal information.",
+        "policyId": "Market publication policy ID",
+        "title": "Public title",
+        "description": "Public description",
+        "arbitration": "Bind arbitration policy",
+        "arbitrationPolicyId": "Arbitration policy ID",
+        "arbitrationPolicyDigest": "Arbitration policy digest",
+        "invalid": "Check IDs, digests, amount, resources and deadline.",
+        "apply": "Apply configuration"
       }
     }
   }

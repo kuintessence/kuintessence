@@ -21,6 +21,15 @@ deploy
 !deploy/federation
 deploy/federation/*
 !deploy/federation/fabric-init.sh
+!deploy/federation/aio
+!deploy/federation/aio/**
+!deploy/schedulers
+!deploy/schedulers/common
+!deploy/schedulers/common/**
+!deploy/schedulers/pbs
+!deploy/schedulers/pbs/kq-cgroup-v2.py
+!deploy/schedulers/k3s
+!deploy/schedulers/k3s/seccomp-kubernetes-no-network.json
 !deploy/rustfs
 deploy/rustfs/*
 !deploy/rustfs/bootstrap-object-lock.sh

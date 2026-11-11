@@ -366,6 +366,7 @@ export class FederationPaymentService {
           submissions,
           and(
             eq(submissions.localSiteId, payments.localSiteId),
+            sql`${submissions.lastError} IS DISTINCT FROM 'HISTORY_ARCHIVE_ONLY'`,
             sql`${submissions.input}->>'operation' = 'record-payment'`,
             sql`${submissions.input}->>'recordId' = ${payments.receiptId}::text`,
           ),

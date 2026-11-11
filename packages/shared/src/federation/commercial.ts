@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CommercialArbitrationRevocationEnvelopeSchema } from "./arbitration-revocation";
+import { CommercialHistoryEnvelopeSchema } from "./history-recovery";
 import {
   FederationAgreementSchema,
   FederationAmountSchema,
@@ -17,6 +18,78 @@ const Id = z.uuid();
 const Salt = z.string().regex(/^[a-f0-9]{64}$/);
 const PositiveQuantity = z.string().regex(/^[1-9][0-9]{0,37}$/);
 const Metric = z.string().regex(/^[a-z][a-z0-9_.:-]{0,63}$/);
+
+export const ReservationPolicyInputSchema = z
+  .strictObject({
+    allowMarketPublish: z.boolean().default(false),
+    allowMarketClaim: z.boolean().default(false),
+    allowActivation: z.boolean().default(false),
+    allowExecutionConfirmation: z.boolean().default(false),
+    maxTaskAmount: FederationAmountSchema,
+    maxTotalAmount: FederationAmountSchema,
+    maxTasks: z.number().int().min(1).max(100_000),
+    validUntil: z.iso.datetime({ offset: true }),
+  })
+  .refine((value) => BigInt(value.maxTaskAmount) <= BigInt(value.maxTotalAmount));
+export type ReservationPolicyInput = z.infer<typeof ReservationPolicyInputSchema>;
+
+export const TerminalPolicyInputSchema = z.strictObject({
+  outcomes: z
+    .array(z.enum(["completed", "failed", "cancelled"]))
+    .min(1)
+    .max(3)
+    .refine((values) => new Set(values).size === values.length),
+  validUntil: z.iso.datetime({ offset: true }),
+});
+export type TerminalPolicyInput = z.infer<typeof TerminalPolicyInputSchema>;
+
+const policyRecord = {
+  id: Id,
+  localSiteId: Id,
+  localOrgId: Id,
+  agreementRevisionId: Id,
+  agreementDigest: FederationDigestSchema,
+  validFrom: z.iso.datetime({ offset: true }),
+  grantedBy: Id,
+  revokedAt: z.iso.datetime({ offset: true }).nullable(),
+  revokedBy: Id.nullable(),
+};
+function validPolicyRecord(value: {
+  validFrom: string;
+  validUntil: string;
+  revokedAt: string | null;
+  revokedBy: string | null;
+}) {
+  return (
+    Date.parse(value.validFrom) < Date.parse(value.validUntil) &&
+    (value.revokedAt === null) === (value.revokedBy === null)
+  );
+}
+export const ReservationPolicySchema = ReservationPolicyInputSchema.safeExtend({
+  ...policyRecord,
+  allowMarketPublish: z.boolean(),
+  allowMarketClaim: z.boolean(),
+  allowActivation: z.boolean(),
+  allowExecutionConfirmation: z.boolean(),
+  authorizedAmount: FederationAmountSchema,
+  authorizedTasks: z.number().int().nonnegative(),
+  marketAuthorizedAmount: FederationAmountSchema.optional(),
+  marketAuthorizedTasks: z.number().int().nonnegative().optional(),
+})
+  .refine(validPolicyRecord)
+  .refine(
+    (value) =>
+      BigInt(value.authorizedAmount) <= BigInt(value.maxTotalAmount) &&
+      value.authorizedTasks <= value.maxTasks &&
+      (value.marketAuthorizedAmount === undefined ||
+        BigInt(value.marketAuthorizedAmount) <= BigInt(value.maxTotalAmount)) &&
+      (value.marketAuthorizedTasks === undefined || value.marketAuthorizedTasks <= value.maxTasks),
+  );
+export type ReservationPolicy = z.infer<typeof ReservationPolicySchema>;
+export const TerminalPolicySchema =
+  TerminalPolicyInputSchema.safeExtend(policyRecord).refine(validPolicyRecord);
+export type TerminalPolicy = z.infer<typeof TerminalPolicySchema>;
+
 /** These names are an explicit contract choice; generic legacy metrics are never reinterpreted. */
 export const commercialAutomaticMeters = [
   { metric: "cpu.time", quantityUnit: "cpu-millisecond" },
@@ -46,6 +119,7 @@ export const CommercialSigningKindSchema = z.enum([
   "commercial-dispute-receipt",
   "commercial-dispute-freeze",
   "commercial-dispute-resolution",
+  "commercial-history-recovery",
   "cancellation-receipt",
 ]);
 
@@ -644,6 +718,7 @@ export const CommercialReceiptSchema = z.strictObject({
   digest: FederationDigestSchema,
 });
 export const CommercialRecordTypeSchema = z.enum([
+  "historical-commercial",
   "agreement",
   "usage",
   "reservation",
@@ -657,6 +732,7 @@ export const CommercialRecordTypeSchema = z.enum([
   "payment",
   "dispute-freeze",
   "dispute-resolution",
+  "dispute-resolution-authorization",
   "native-dispute-freeze",
   "arbitration-revocation",
   "arbitration-resolution",
@@ -809,6 +885,21 @@ export const CommercialArbitrationResolutionSchema = z.strictObject({
 });
 export type CommercialArbitrationResolution = z.infer<typeof CommercialArbitrationResolutionSchema>;
 export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operation", [
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("record-historical-commercial"),
+    envelope: CommercialHistoryEnvelopeSchema,
+  }),
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("authorize-dispute-resolution"),
+    envelope: CommercialAgreementEnvelopeSchema,
+  }),
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("resolve-dispute"),
+    envelope: CommercialAgreementEnvelopeSchema,
+  }),
   z.strictObject({
     ...ProposalIdentity,
     operation: z.literal("record-dispute-resolution"),

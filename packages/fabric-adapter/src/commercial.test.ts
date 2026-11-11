@@ -1335,3 +1335,89 @@ test("dispute attestation adapter binds all three signatures and uses only trans
     setup().adapter.prepare({ ...value, operation: "freeze-disputed-task" }),
   ).rejects.toThrow("POLICY_DENIED");
 });
+
+test("coordinated bilateral resolution prepares distinct private authorization and completion with current A/B consent", async () => {
+  const [a, b] = keys;
+  if (!a || !b) throw new Error("Missing A/B signers");
+  const posting = (await billingInputs()).find((value) => value.operation === "settle-bill");
+  if (!posting || posting.operation !== "settle-bill") throw new Error("Missing settlement");
+  const financial = CommercialSettlementSchema.parse(
+    JSON.parse(Buffer.from(posting.envelope.sourceJws.split(".")[1] ?? "", "base64url").toString()),
+  );
+  const terms = CommercialDisputeResolutionSchema.parse({
+    protocolVersion: 2,
+    kind: "commercial-dispute-resolution",
+    resolutionId: randomUUID(),
+    caseId: randomUUID(),
+    caseDigest: input.digest,
+    domainId: financial.domainId,
+    agreementRevisionId: financial.agreementRevisionId,
+    sourceSiteId: a.siteId,
+    targetSiteId: b.siteId,
+    taskId: randomUUID(),
+    attempt: 1,
+    mode: "ledger_coordinated",
+    decisionId: null,
+    withdrawalDigest: null,
+    freezeDigest: input.digest,
+    headDigest: input.digest,
+    financial,
+    reason: "PRIVATE-COORDINATED-RESOLUTION",
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const sourceJws = await signFederationMessage(CommercialDisputeResolutionSchema, terms, a),
+    envelope = {
+      sourceSiteId: a.siteId,
+      targetSiteId: b.siteId,
+      sourceJws,
+      targetJws: await signFederationMessage(CommercialDisputeResolutionSchema, terms, b),
+    },
+    digest = `sha256:${createHash("sha256")
+      .update(Buffer.from(sourceJws.split(".")[1] ?? "", "base64url"))
+      .digest("hex")}`;
+  for (const [operation, method] of [
+    ["authorize-dispute-resolution", "AuthorizeDisputeResolution"],
+    ["resolve-dispute", "ResolveDispute"],
+  ] as const) {
+    const value = CommercialAdapterProposalInputSchema.parse({
+      operation,
+      domainId: terms.domainId,
+      recordId: terms.resolutionId,
+      digest,
+      envelope,
+    });
+    if (value.operation !== "authorize-dispute-resolution" && value.operation !== "resolve-dispute")
+      throw new Error("Expected a bilateral resolution proposal");
+    const f = setup(),
+      prepared = await f.adapter.prepare(value),
+      stored = decode(f, prepared.recovery),
+      proposal = proto.ProposedTransaction.deserializeBinary(
+        Buffer.from(stored.message.bytes, "base64"),
+      );
+    expect(proposal.getEndorsingOrganizationsList()).toEqual(["AMSP", "BMSP"]);
+    const signed = proposal.getProposal();
+    if (!signed) throw new Error("Missing signed proposal");
+    const payload = peer.ChaincodeProposalPayload.deserializeBinary(
+      peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+    );
+    expect(Buffer.from(payload.getTransientmapMap().get("commercial") ?? []).toString()).toBe(
+      JSON.stringify(envelope),
+    );
+    expect(
+      peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8())
+        .getChaincodeSpec()
+        ?.getInput()
+        ?.getArgsList_asU8()
+        .map((arg) => Buffer.from(arg).toString()),
+    ).toEqual([method, terms.domainId, terms.resolutionId]);
+    const denied = setup();
+    await expect(
+      denied.adapter.prepare({ ...value, envelope: { ...envelope, targetJws: sourceJws } }),
+    ).rejects.toThrow();
+    await expect(
+      denied.adapter.prepare({ ...value, digest: `sha256:${"f".repeat(64)}` }),
+    ).rejects.toThrow("POLICY_DENIED");
+    expect(denied.sdk).not.toHaveBeenCalled();
+  }
+});

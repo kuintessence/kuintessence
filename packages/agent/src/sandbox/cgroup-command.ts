@@ -34,7 +34,7 @@ except (ValueError, OSError) as error:
 sys.argv = [str(path), *sys.argv[3:]]
 exec(compile(source, str(path), 'exec'), {'__name__': '__main__', '__file__': str(path)})`;
 
-/** SelfAccount is Slurm-only; the native ID must also match the kernel cgroup. */
+/** Legacy Slurm entry point; scheduler-aware execution uses buildHpcCgroupCommand. */
 export function buildSelfAccountCgroupCommand(
   checker: SandboxCgroupCheck | undefined,
   resources: SandboxComputeResources | undefined,

@@ -36,6 +36,10 @@ import {
   CommercialDisputeSchema,
 } from "@kuintessence/shared/federation/disputes";
 import {
+  verifyArchivedCommercialDocument,
+  verifyCommercialHistoryEnvelope,
+} from "@kuintessence/shared/federation/history-recovery-proof";
+import {
   federationMessageKeyId,
   parseFederationPublicKey,
   verifyFederationMessage,
@@ -94,7 +98,24 @@ export class FabricCommercialAdapter {
       )
         throw new Error("POLICY_DENIED");
     }
-    if (
+    if (input.operation === "record-historical-commercial") {
+      const proof = await verifyCommercialHistoryEnvelope(
+        input.envelope,
+        input.domainId,
+        input.recordId,
+        (schema, jws, siteId) => this.verify(schema, jws, siteId, now),
+        (schema, jws, siteId) =>
+          verifyArchivedCommercialDocument(schema, jws, siteId, async (site, keyId) => {
+            const key = this.config.trust.organizations
+              .find((org) => org.siteId === site)
+              ?.keys.find((key) => key.keyId === keyId);
+            if (!key) throw new Error("UNTRUSTED_IDENTITY");
+            return parseFederationPublicKey(key.publicKeyPem);
+          }),
+        now,
+      );
+      if (proof.digest !== input.digest) throw new Error("OPERATION_CONFLICT");
+    } else if (
       input.operation === "resolve-arbitrated-case" ||
       input.operation === "record-arbitration-resolution"
     ) {
@@ -254,7 +275,11 @@ export class FabricCommercialAdapter {
         now,
         input.operation === "freeze-disputed-task" ? "ledger_coordinated" : "bilateral_attested",
       );
-    } else if (input.operation === "record-dispute-resolution") {
+    } else if (
+      input.operation === "record-dispute-resolution" ||
+      input.operation === "authorize-dispute-resolution" ||
+      input.operation === "resolve-dispute"
+    ) {
       const signed = await this.verifyPair(CommercialDisputeResolutionSchema, input.envelope, now),
         value = signed.payload;
       if (
@@ -263,7 +288,12 @@ export class FabricCommercialAdapter {
         value.resolutionId !== input.recordId ||
         value.sourceSiteId !== input.envelope.sourceSiteId ||
         value.targetSiteId !== input.envelope.targetSiteId ||
-        value.mode !== "bilateral_attested" ||
+        value.mode !==
+          (input.operation === "record-dispute-resolution"
+            ? "bilateral_attested"
+            : "ledger_coordinated") ||
+        (input.operation !== "record-dispute-resolution" && value.protocolVersion !== 2) ||
+        (input.operation === "authorize-dispute-resolution" && !value.financial) ||
         Date.parse(value.issuedAt) > now.getTime() + 60000
       )
         throw new Error("POLICY_DENIED");
@@ -339,6 +369,7 @@ export class FabricCommercialAdapter {
         throw new Error("POLICY_DENIED");
     }
     const methods = {
+      "record-historical-commercial": "RecordHistoricalCommercial",
       "resolve-arbitrated-case": "ResolveArbitratedCase",
       "record-arbitration-resolution": "RecordArbitrationResolution",
       "revoke-arbitration-policy": "RevokeArbitrationPolicy",
@@ -354,6 +385,8 @@ export class FabricCommercialAdapter {
       "record-refund": "RecordRefund",
       "record-payment": "RecordPayment",
       "record-dispute-resolution": "RecordDisputeResolution",
+      "authorize-dispute-resolution": "AuthorizeDisputeResolution",
+      "resolve-dispute": "ResolveDispute",
       "record-dispute-freeze": "RecordDisputeFreeze",
       "freeze-disputed-task": "FreezeDisputedTask",
     } as const;

@@ -1,5 +1,7 @@
 # 联邦机构认证入口
 
+新增环境的本机构建与离线 AIO 配置见[三机构交付](aio/README.md)，后续执行与验收见[实施清单](../../docs/design/federation/aio-delivery.md)。当前未部署、未合并。
+
 当前已接通源站持久发送、接收方原子接单、准备后的授权入队，以及源站签名运行状态查询；本机双平台真实 Kubernetes 文件工作流已通过。另有独立的 [Fabric 证据链码与 Adapter](fabric-evidence.md)，已接通 Server outbox 和恢复 worker，并通过真实 Fabric 隐私/背书与断链恢复验证；完整作业与链联合验收仍未完成。完整目标与边界见[实现进展](../../docs/design/federation/progress.md)。不要将入口连通作为完整联邦验收结果。
 
 ## 认证路径

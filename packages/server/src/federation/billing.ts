@@ -785,6 +785,7 @@ export class FederationBillingService {
           submissions,
           and(
             eq(submissions.localSiteId, discounts.localSiteId),
+            sql`${submissions.lastError} IS DISTINCT FROM 'HISTORY_ARCHIVE_ONLY'`,
             sql`${submissions.input}->>'operation' = 'record-discount'`,
             sql`${submissions.input}->>'recordId' = ${discounts.discountId}::text`,
           ),
@@ -826,6 +827,7 @@ export class FederationBillingService {
           submissions,
           and(
             eq(submissions.localSiteId, bills.localSiteId),
+            sql`${submissions.lastError} IS DISTINCT FROM 'HISTORY_ARCHIVE_ONLY'`,
             sql`${submissions.input}->>'operation' = 'confirm-bill'`,
             sql`${submissions.input}->>'recordId' = ${bills.billId}::text`,
           ),

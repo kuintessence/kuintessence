@@ -139,6 +139,8 @@ beforeEach(async () => {
       path.includes("/adjustments?")
     )
       return { data: { data: [], hasMore: false } };
+    if (path.includes("/arbitration-policies?") || path.includes("/disclosure-policies?"))
+      return { data: { data: [], hasMore: false } };
     if (path.includes("/submissions?")) return { data: status };
     if (path.includes("/closing-policies?")) return { data: [] };
     if (path.includes("/closing-tasks?")) return { data: { enabled: true, records: [] } };
@@ -906,5 +908,26 @@ test("a usage reader can open a dispute on the exact report without acquiring co
     recordId: fixture.record.report.reportId,
     recordDigest: fixture.record.digest,
   });
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test("contract governance grants are independent of contract approval authority", async () => {
+  listed = true;
+  row.counterpartyJws = "peer.signature";
+  grants = ["agreement.read", "arbitration.approve"];
+  mount();
+  await openDetail();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Arbitration & disclosure" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  await screen.findByText("No records.");
+  expect(screen.getByRole("button", { name: "Add" })).toBeTruthy();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Disclosure policies" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  await screen.findByText("No records.");
+  expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
   expect(api.post).not.toHaveBeenCalled();
 });

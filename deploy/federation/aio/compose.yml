@@ -1,0 +1,146 @@
+# Overlay for the existing production base and federation ingress.
+services:
+  postgres:
+    mem_limit: 256m
+    cpus: 0.5
+    command: [postgres, -c, shared_buffers=32MB, -c, max_connections=40]
+  redis:
+    mem_limit: 64m
+    command: [redis-server, --appendonly, "yes", --maxmemory, 32mb, --maxmemory-policy, noeviction]
+  spicedb:
+    mem_limit: 192m
+  spicedb-migrate:
+    mem_limit: 192m
+  db-migrate:
+    mem_limit: 384m
+  rustfs:
+    mem_limit: 384m
+  server:
+    mem_limit: 512m
+    cpus: 1
+    environment:
+      MTLS_MODE: direct
+      DB_MAX_CONNECTIONS: "6"
+      NETDRIVE_ENABLED: "true"
+      NETDRIVE_ENDPOINT: rustfs
+      NETDRIVE_PORT: "9000"
+      NETDRIVE_USE_SSL: "false"
+      NETDRIVE_ACCESS_KEY: ${KQ_DATA_MARKET_COMMITTER_ACCESS_KEY:?set committer access key}
+      NETDRIVE_SECRET_KEY: ${KQ_DATA_MARKET_COMMITTER_SECRET_KEY:?set committer secret}
+      NETDRIVE_BUCKET: kq-netdrive
+      DATA_MARKET_STAGING_BUCKET: kq-data-market-staging
+      DATA_MARKET_IMMUTABLE_BUCKET: kq-data-market-immutable
+      NETDRIVE_PUBLIC_URL: ${KQ_STORAGE_PUBLIC_URL:?set reachable object storage URL}
+    extra_hosts:
+      - "${KQ_AIO_SSO_HOST:?set SSO DNS name}:host-gateway"
+      - "${KQ_AIO_PUBLIC_HOST:?set platform DNS name}:host-gateway"
+      - "${KQ_AIO_STORAGE_HOST:?set object storage DNS name}:host-gateway"
+    depends_on:
+      rustfs-init: {condition: service_completed_successfully}
+  registry:
+    mem_limit: 384m
+    environment:
+      DB_MAX_CONNECTIONS: "3"
+      SPACK_UPSTREAM_ENABLED: "false"
+  web:
+    mem_limit: 64m
+  federation-gateway:
+    mem_limit: 96m
+  rustfs-init:
+    image: rustfs/rc:v0.1.36
+    mem_limit: 128m
+    entrypoint: [sh, /bootstrap-object-lock.sh]
+    environment:
+      RUSTFS_ENDPOINT: http://rustfs:9000
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?}
+      DATA_MARKET_COMMITTER_ACCESS_KEY: ${KQ_DATA_MARKET_COMMITTER_ACCESS_KEY:?}
+      DATA_MARKET_COMMITTER_SECRET_KEY: ${KQ_DATA_MARKET_COMMITTER_SECRET_KEY:?}
+    volumes:
+      - ./deploy/rustfs/bootstrap-object-lock.sh:/bootstrap-object-lock.sh:ro
+    depends_on:
+      rustfs: {condition: service_healthy}
+    restart: "no"
+  casdoor-postgres:
+    image: postgres:16-alpine
+    mem_limit: 128m
+    environment:
+      POSTGRES_USER: casdoor
+      POSTGRES_DB: casdoor
+      POSTGRES_PASSWORD: ${KQ_CASDOOR_POSTGRES_PASSWORD:?set independent SSO database password}
+    command: [postgres, -c, shared_buffers=16MB, -c, max_connections=15]
+    volumes: [casdoor-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U casdoor -d casdoor]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+  casdoor:
+    image: kq-offline/casdoor:${KQ_IMAGE_TAG:?set exact image tag}
+    mem_limit: 192m
+    ports: ["127.0.0.1:${KQ_CASDOOR_HTTP_PORT:-15180}:8000"]
+    volumes:
+      - type: bind
+        source: ${KQ_AIO_PRIVATE_DIRECTORY:?set private AIO directory}/casdoor
+        target: /conf
+        bind: {create_host_path: false}
+    depends_on:
+      casdoor-postgres: {condition: service_healthy}
+  edge:
+    image: nginx:1.27-alpine
+    mem_limit: 64m
+    ports: ["${KQ_AIO_BIND:-127.0.0.1}:${KQ_AIO_HTTPS_PORT:-443}:443"]
+    volumes:
+      - type: bind
+        source: ${KQ_AIO_PRIVATE_DIRECTORY:?}/edge
+        target: /etc/nginx/conf.d
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${KQ_AIO_PRIVATE_DIRECTORY:?}/tls
+        target: /run/kq-edge/tls
+        read_only: true
+        bind: {create_host_path: false}
+    depends_on:
+      web: {condition: service_started}
+      casdoor: {condition: service_started}
+  scheduler:
+    image: kq-offline/scheduler-${KQ_AIO_SCHEDULER:?select slurm or pbs}:${KQ_IMAGE_TAG:?}
+    hostname: scheduler
+    mem_limit: ${KQ_AIO_SCHEDULER_MEMORY:-384m}
+    cpus: 1
+    pids_limit: 256
+    environment:
+      NODE_ENV: production
+      SERVER_HTTP_URL: http://server:3000
+      SERVER_GRPC_URL: https://server:3001
+      AGENT_ID: ${KQ_AIO_AGENT_ID:?set preallocated Agent ID}
+      AGENT_SITE_NAME: ${KQ_AIO_CLUSTER_NAME:?set cluster name}
+      KQ_AGENT_REGISTRATION_SCHEDULER: ${KQ_AIO_SCHEDULER_TYPE:?select slurm or pbs-pro}
+      AGENT_SLURM_TERMINAL_STATUS_BACKEND: scontrol
+      AGENT_SPACK_ENABLED: "true"
+      AGENT_SPACK_PATH: /opt/spack/bin/spack
+      AGENT_SPACK_CACHE_DIR: /var/lib/kuintessence/spack-materials
+      AGENT_SPACK_MANAGED_MEMORY_MIB: "1024"
+    extra_hosts:
+      - "${KQ_AIO_STORAGE_HOST:?}:host-gateway"
+    volumes:
+      - scheduler-state:/var/lib/kuintessence
+      - scheduler-scratch:/scratch
+      - slurm-controller:/var/spool/slurmctld
+      - slurm-worker:/var/spool/slurmd
+      - slurm-munge:/etc/munge
+      - type: bind
+        source: ${KQ_AIO_PRIVATE_DIRECTORY:?}/agent-enrollment
+        target: /run/kq-agent-enrollment
+        read_only: true
+        bind: {create_host_path: false}
+    depends_on:
+      server: {condition: service_healthy}
+volumes:
+  casdoor-data:
+  scheduler-state:
+  scheduler-scratch:
+  slurm-controller:
+  slurm-worker:
+  slurm-munge:

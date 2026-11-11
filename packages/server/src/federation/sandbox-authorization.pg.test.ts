@@ -494,7 +494,11 @@ test("an existing Sandbox policy writer causes a transient retry rather than a p
   }
 });
 
-for (const mode of ["SelfAccount", "RootImpersonation"] as const) {
+for (const [mode, scheduler] of [
+  ["SelfAccount", "slurm"],
+  ["RootImpersonation", "slurm"],
+  ["SelfAccount", "pbs-pro"],
+] as const) {
   test.each([
     "expired",
     "replacement",
@@ -504,7 +508,7 @@ for (const mode of ["SelfAccount", "RootImpersonation"] as const) {
     "missing-queue",
     "dispatch-queue",
     "job-queue",
-  ] as const)(`${mode} keeps its original runtime proof and rejects %s changes`, async (change) => {
+  ] as const)(`${scheduler} ${mode} keeps its original runtime proof and rejects %s changes`, async (change) => {
     const f = await fixture();
     try {
       const expiry = Date.now() + 5_000;
@@ -524,10 +528,15 @@ for (const mode of ["SelfAccount", "RootImpersonation"] as const) {
       await db
         .update(agents)
         .set({
+          schedulerType: scheduler,
           sandboxCapabilities: capabilities,
           sandboxRuntimeCache: [{ kind: "OCI", digest: "unrelated-runtime" }, evidence],
         })
         .where(eq(agents.agentId, f.agentId));
+      await db
+        .update(sandboxRuntimeProfiles)
+        .set({ adapters: [scheduler] })
+        .where(eq(sandboxRuntimeProfiles.id, f.runtimeId));
       f.manifest.executionMode = mode;
       f.manifest.runtimeAttestationId = evidence.runtimeAttestationId;
       await f.persist();

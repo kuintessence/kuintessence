@@ -457,6 +457,10 @@ export class FederationMarketService {
       updatedAt: row.updatedAt,
     };
   }
+  async context(actor: FederationActor) {
+    await this.db.transaction((tx) => requireFederationCapability(tx, actor, "market.read"));
+    return { localSiteId: this.siteId, enabled: Boolean(this.client) };
+  }
   async query(actor: FederationActor, raw: MarketQueryInput) {
     const input = MarketQueryInputSchema.parse(raw);
     await this.db.transaction((tx) => requireFederationCapability(tx, actor, "market.read"));

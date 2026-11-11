@@ -33,6 +33,10 @@ import {
   CommercialDisputeDraftSchema,
   CommercialDisputeSchema,
 } from "@kuintessence/shared/federation/disputes";
+import {
+  CommercialHistoryRecoveryFileSchema,
+  CommercialHistoryRecoverySchema,
+} from "@kuintessence/shared/federation/history-recovery";
 import { MarketRequestSchema } from "@kuintessence/shared/federation/market-request";
 import { FederationTerminalProposalSchema } from "@kuintessence/shared/federation/terminal-proposal";
 import { Hono } from "hono";
@@ -65,6 +69,7 @@ import type { FederationExecutionStopService } from "../federation/execution-sto
 import type { FederationExecutionTerminalService } from "../federation/execution-terminal";
 import type { FederationTerminalExchange } from "../federation/execution-terminal-exchange";
 import { FabricClientFailure } from "../federation/fabric-client";
+import type { FederationCommercialHistoryService } from "../federation/history-recovery";
 import type { FederationMarketRequestService } from "../federation/market-requests";
 import type { FederationPaymentService } from "../federation/payment";
 import type { FederationActor } from "../federation/permissions";
@@ -117,6 +122,7 @@ export function createFederationCommercialRoutes(
   arbitrationDecisions?: FederationArbitrationDecisionDelivery,
   arbitrationResolution?: FederationArbitrationResolutionService,
   disputeResolution?: FederationDisputeResolutionService,
+  history?: FederationCommercialHistoryService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -133,7 +139,11 @@ export function createFederationCommercialRoutes(
   });
   r.use("/federation/commercial-agreements/*", (c, next) =>
     bodyLimit({
-      maxSize: c.req.path.endsWith("/terminal/countersign") ? 16 * 1024 * 1024 : 600000,
+      maxSize: c.req.path.endsWith("/terminal/countersign")
+        ? 16 * 1024 * 1024
+        : c.req.path.includes("/history-recovery")
+          ? 2 * 1024 * 1024
+          : 600000,
     })(c, next),
   );
   r.onError((error, c) => {
@@ -149,6 +159,93 @@ export function createFederationCommercialRoutes(
     throw error;
   });
   const id = z.object({ revisionId: z.uuid() });
+  if (history) {
+    const path =
+      "/federation/commercial-agreements/:revisionId/submissions/:submissionId/history-recovery";
+    const ids = z.object({ revisionId: z.uuid(), submissionId: z.uuid() });
+    r.get(path, kqValidator("param", ids), async (c) => {
+      const { revisionId, submissionId } = c.req.valid("param");
+      return c.json({
+        data: await history.get(c.get("federationActor"), revisionId, submissionId),
+      });
+    });
+    r.post(
+      `${path}/draft`,
+      kqValidator("param", ids),
+      kqValidator(
+        "json",
+        z.strictObject({ recoveryId: z.uuid(), reason: z.string().trim().min(1).max(4096) }),
+      ),
+      async (c) => {
+        const { revisionId, submissionId } = c.req.valid("param");
+        return c.json({
+          data: await history.draft(
+            c.get("federationActor"),
+            revisionId,
+            submissionId,
+            c.req.valid("json"),
+          ),
+        });
+      },
+    );
+    r.post(
+      path,
+      kqValidator("param", ids),
+      kqValidator("json", CommercialHistoryRecoverySchema),
+      async (c) => {
+        const { revisionId, submissionId } = c.req.valid("param");
+        return c.json({
+          data: await history.approve(
+            c.get("federationActor"),
+            revisionId,
+            submissionId,
+            c.req.valid("json"),
+          ),
+        });
+      },
+    );
+    r.post(
+      `${path}/counterparty`,
+      kqValidator("param", ids),
+      kqValidator("json", z.strictObject({ jws: z.string().min(1).max(524288) })),
+      async (c) => {
+        const { revisionId, submissionId } = c.req.valid("param");
+        return c.json({
+          data: await history.counterparty(
+            c.get("federationActor"),
+            revisionId,
+            submissionId,
+            c.req.valid("json").jws,
+          ),
+        });
+      },
+    );
+    r.post(
+      `${path}/reauthorize`,
+      kqValidator("param", ids),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        const { revisionId, submissionId } = c.req.valid("param");
+        return c.json({
+          data: await history.reauthorize(c.get("federationActor"), revisionId, submissionId),
+        });
+      },
+    );
+    r.post(
+      "/federation/commercial-agreements/:revisionId/history-recovery/import",
+      kqValidator("param", id),
+      kqValidator("json", CommercialHistoryRecoveryFileSchema),
+      async (c) => {
+        return c.json({
+          data: await history.importCounterparty(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("json"),
+          ),
+        });
+      },
+    );
+  }
   const page = z.object({
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
@@ -211,6 +308,12 @@ export function createFederationCommercialRoutes(
   if (disputeResolution) {
     const path = "/federation/commercial-agreements/:revisionId/disputes/:caseId/resolution";
     const params = z.object({ revisionId: z.uuid(), caseId: z.uuid() });
+    r.get(`${path}/context`, kqValidator("param", params), async (c) => {
+      const { revisionId, caseId } = c.req.valid("param");
+      return c.json({
+        data: await disputeResolution.context(c.get("federationActor"), revisionId, caseId),
+      });
+    });
     r.get(path, kqValidator("param", params), async (c) => {
       const { revisionId, caseId } = c.req.valid("param");
       return c.json({
@@ -1050,6 +1153,21 @@ export function createFederationCommercialRoutes(
           },
           202,
         );
+      },
+    );
+    r.get(
+      `${path}/:reservationId`,
+      kqValidator("param", id.extend({ reservationId: z.uuid() })),
+      async (c) => {
+        const params = c.req.valid("param");
+        return c.json({
+          success: true,
+          data: await marketRequests.get(
+            c.get("federationActor"),
+            params.revisionId,
+            params.reservationId,
+          ),
+        });
       },
     );
     r.post(

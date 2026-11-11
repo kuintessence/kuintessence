@@ -855,6 +855,25 @@ export class FederationMarketRequestService {
       return { enabled: !!this.send && !!this.market, records: rows.map(progress) };
     });
   }
+  async get(actor: FederationActor, revisionId: string, reservationId: string) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "agreement.read");
+      await this.contract(tx, revisionId, actor.orgId);
+      const [row] = await tx
+        .select()
+        .from(requests)
+        .where(
+          and(
+            this.key(reservationId),
+            eq(requests.localOrgId, actor.orgId),
+            eq(requests.agreementRevisionId, revisionId),
+          ),
+        );
+      if (!row) throw new FederationError("ASSET_UNAVAILABLE");
+      this.same(row, MarketRequestSchema.parse(row.payload), row.digest);
+      return { ...progress(row), request: row.payload };
+    });
+  }
   async retry(actor: FederationActor, revisionId: string, reservationId: string) {
     await this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.approve");

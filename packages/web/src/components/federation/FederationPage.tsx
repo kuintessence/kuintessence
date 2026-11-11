@@ -16,6 +16,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { AgreementPanel } from "./AgreementPanel";
 import { CommercialPanel } from "./CommercialPanel";
 import { FederationAssetsPanel } from "./FederationAssetsPanel";
+import { FederationEvidencePanel } from "./FederationEvidencePanel";
+import { FederationMarketPanel } from "./FederationMarketPanel";
 import { FederationTasksPanel } from "./FederationTasksPanel";
 import { MediaDeliveryPanel, type MediaWorkflowExport } from "./MediaDeliveryPanel";
 import { MediaLogisticsPanel } from "./MediaLogisticsPanel";
@@ -116,14 +118,22 @@ function OrganizationAgreements({
         >
           <TabsList aria-label={t("federation.agreements.title")}>
             <TabsTrigger value="tasks">{t("federation.tasks.title")}</TabsTrigger>
+            <TabsTrigger value="market">{t("federation.market.title")}</TabsTrigger>
             <TabsTrigger value="execution">{t("federation.agreements.agreements")}</TabsTrigger>
             <TabsTrigger value="assets">{t("federation.assets.title")}</TabsTrigger>
             <TabsTrigger value="commercial">{t("federation.commercial.title")}</TabsTrigger>
             <TabsTrigger value="delivery">{t("federation.delivery.title")}</TabsTrigger>
+            <TabsTrigger value="evidence">{t("federation.evidence.title")}</TabsTrigger>
             <TabsTrigger value="media">{t("federation.logistics.title")}</TabsTrigger>
           </TabsList>
           <TabsContent value="tasks">
             <FederationTasksPanel
+              scope={{ organizationId, authRevision: revision }}
+              switching={change.isPending || context.isFetching}
+            />
+          </TabsContent>
+          <TabsContent value="market">
+            <FederationMarketPanel
               scope={{ organizationId, authRevision: revision }}
               switching={change.isPending || context.isFetching}
             />
@@ -149,6 +159,12 @@ function OrganizationAgreements({
           <TabsContent value="delivery">
             <MediaDeliveryPanel
               exportFrom={mediaExport}
+              scope={{ organizationId, authRevision: revision }}
+              switching={change.isPending || context.isFetching}
+            />
+          </TabsContent>
+          <TabsContent value="evidence">
+            <FederationEvidencePanel
               scope={{ organizationId, authRevision: revision }}
               switching={change.isPending || context.isFetching}
             />

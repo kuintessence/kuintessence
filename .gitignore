@@ -61,3 +61,5 @@ gui/src-tauri/binaries/
 gui/src-tauri/gen/
 gui/node_modules/
 gui/dist/
+__pycache__/
+*.py[cod]

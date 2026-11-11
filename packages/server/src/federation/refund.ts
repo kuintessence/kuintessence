@@ -619,6 +619,7 @@ export class FederationRefundService {
           submissions,
           and(
             eq(submissions.localSiteId, refunds.localSiteId),
+            sql`${submissions.lastError} IS DISTINCT FROM 'HISTORY_ARCHIVE_ONLY'`,
             sql`${submissions.input}->>'operation' = 'record-refund'`,
             sql`${submissions.input}->>'recordId' = ${refunds.refundId}::text`,
           ),

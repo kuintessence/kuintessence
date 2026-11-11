@@ -4,8 +4,8 @@ set -euo pipefail
 /usr/local/bin/kq-verify-architecture /usr/local/bin/bun
 
 host_name="$(hostname -s)"
-cpu_count="$(nproc)"
-real_memory_mb="$(awk '/MemTotal/ { value = int($2 / 1024 * 0.8); if (value < 1024) value = 1024; print value }' /proc/meminfo)"
+read -r cpu_count real_memory_mb < <(python3 /usr/local/bin/kq-scheduler-capacity.py)
+[[ -n "$cpu_count" && -n "$real_memory_mb" ]] || exit 1
 
 mkdir -p /run/munge /var/log/munge /var/lib/kuintessence /etc/slurm-llnl /var/spool/slurmctld /var/spool/slurmd /var/log/slurm /scratch
 chmod 1777 /scratch
@@ -28,13 +28,14 @@ chown slurm:slurm /etc/slurm-llnl/slurm.conf
 slurmctld_pid=""
 slurmd_pid=""
 agent_pid=""
+accounting_pid=""
 shutdown() {
   local pid
   trap - EXIT
-  for pid in "${agent_pid}" "${slurmctld_pid}" "${slurmd_pid}"; do
+  for pid in "${agent_pid}" "${slurmctld_pid}" "${slurmd_pid}" "${accounting_pid}"; do
     [[ -z "${pid}" ]] || kill -TERM "${pid}" 2>/dev/null || true
   done
-  for pid in "${agent_pid}" "${slurmctld_pid}" "${slurmd_pid}"; do
+  for pid in "${agent_pid}" "${slurmctld_pid}" "${slurmd_pid}" "${accounting_pid}"; do
     [[ -z "${pid}" ]] || wait "${pid}" 2>/dev/null || true
   done
 }
@@ -43,6 +44,13 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 
 munged --force
+if [[ "${KQ_AIO_MANAGED_RUNTIME:-0}" == 1 ]]; then
+  python3 /usr/local/lib/kuintessence/managed.py slurm-accounting
+  slurmdbd -D &
+  accounting_pid="$!"
+  python3 /usr/local/lib/kuintessence/managed.py slurm-accounting-register
+  kill -0 "$accounting_pid"
+fi
 slurmctld -D &
 slurmctld_pid="$!"
 slurmd -D &
@@ -62,7 +70,14 @@ fi
 
 /usr/local/bin/kq-register-compose-agent
 
-/usr/local/bin/kq-start-agent &
+if [[ "${KQ_AIO_MANAGED_RUNTIME:-0}" == 1 ]]; then
+  chown -R kq:kq /var/lib/kuintessence /var/cache/bun
+  runuser -u kq --preserve-environment -- /usr/local/bin/kq-start-agent &
+else
+  /usr/local/bin/kq-start-agent &
+fi
 agent_pid="$!"
 
-wait -n "${slurmctld_pid}" "${slurmd_pid}" "${agent_pid}"
+children=("${slurmctld_pid}" "${slurmd_pid}" "${agent_pid}")
+[[ -z "${accounting_pid}" ]] || children+=("${accounting_pid}")
+wait -n "${children[@]}"

@@ -280,7 +280,10 @@ describe("SandboxManifestVerifier", () => {
     );
   });
 
-  test("permits only a current non-root Unix account with the matching runtime attestation", async () => {
+  test.each([
+    "slurm",
+    "pbs-pro",
+  ] as const)("%s requires a current non-root account and matching runtime proof", async (scheduler) => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const processIdentity = { username: "kqagent", uid: 2001, gid: 2001 };
     const value = unsigned();
@@ -321,7 +324,7 @@ describe("SandboxManifestVerifier", () => {
         },
       },
       accountVerifier: { verify: async () => true },
-      adapterType: "slurm",
+      adapterType: scheduler,
       localExecutionMode: "SelfAccount",
       processIdentity,
       rootImpersonationEnabled: false,
@@ -377,7 +380,7 @@ describe("SandboxManifestVerifier", () => {
       },
       nonceConsumer: { consume: async () => true },
       accountVerifier: { verify: async () => true },
-      adapterType: "pbs-pro",
+      adapterType: "torque",
       localExecutionMode: "SelfAccount",
       processIdentity,
       rootImpersonationEnabled: false,
@@ -385,7 +388,7 @@ describe("SandboxManifestVerifier", () => {
       now: () => NOW + 1,
     });
     await expect(wrongAdapter.verify(value.jobId, signed(privateKey, value))).rejects.toThrow(
-      "supported only by the Slurm adapter",
+      "supported only by Slurm and PBS Pro adapters",
     );
 
     const differentAccount = structuredClone(value);

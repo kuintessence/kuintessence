@@ -339,6 +339,31 @@ describe("HPC Sandbox adapters", () => {
         }),
       ),
     ).toThrow("does not match local execution facts");
+
+    const pbsCommands: string[][] = [];
+    const pbs = new PbsProAdapter("23", {
+      spawner: {
+        run: async (command) => {
+          pbsCommands.push(command);
+          return { exitCode: 0, stdout: "124.pbs\n", stderr: "" };
+        },
+      },
+    });
+    const pbsScript = pbs.buildSubmitScript(job(sandbox));
+    expect(pbsScript).toContain("select=1:ncpus=2:mem=512mb:host=slurm-2");
+    expect(pbsScript).toContain("PBS_JOBID");
+    expect(pbsScript).toContain("seccomp:/etc/kuintessence/seccomp.json");
+    expect(pbsScript).toContain("kq-sandbox-cgroup-check");
+    await expect(pbs.submit(job(sandbox))).resolves.toEqual({ schedulerJobId: "124.pbs" });
+    expect(pbsCommands).toEqual([["qsub"]]);
+    expect(() => pbs.buildSubmitScript({ ...job(sandbox), queueName: "other" })).toThrow(
+      "queue has not passed",
+    );
+    expect(() =>
+      pbs.buildSubmitScript(
+        job({ ...sandbox, selfAccount: { username: "other", uid: 2001, gid: 2001 } }),
+      ),
+    ).toThrow("local execution facts");
   });
 
   test("PBS Pro and Torque keep sandbox logs in the mapped account workdir", () => {

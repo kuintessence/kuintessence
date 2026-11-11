@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import {
   federationCommercialAdjustments as adjustments,
+  federationArbitrationResolutions as arbitrationExecutions,
   federationCommercialAttempts as attempts,
   auditLog,
   federationCommercialBills as bills,
@@ -17,6 +18,7 @@ import { FederationError, federationCanonicalJson } from "@kuintessence/shared/f
 import { assertCommercialSettlement } from "@kuintessence/shared/federation/billing";
 import {
   type CommercialDisputeResolution,
+  CommercialDisputeResolutionContextSchema,
   CommercialDisputeResolutionSchema,
   CommercialDisputeResolutionViewSchema,
 } from "@kuintessence/shared/federation/dispute-resolution";
@@ -28,6 +30,7 @@ import {
 } from "./arbitration-withdrawal";
 import { federationMaterialDigest } from "./assets";
 import { lockFederationDisputeTask } from "./dispute-freeze";
+import { FederationDisputeFreezeExchange } from "./dispute-freeze-exchange";
 import { completeDisputeResolution } from "./dispute-resolution-state";
 import { FederationDisputeService } from "./disputes";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -91,25 +94,34 @@ export class FederationDisputeResolutionService {
           eq(syncs.recordId, row.resolutionId),
         ),
       );
-    const [submission] = await tx
-      .select()
-      .from(submissions)
-      .where(
-        and(
-          eq(submissions.localSiteId, row.localSiteId),
-          eq(submissions.agreementRevisionId, row.agreementRevisionId),
-          sql`${submissions.input}->>'operation' = 'record-dispute-resolution'`,
-          sql`${submissions.input}->>'recordId' = ${row.resolutionId}`,
-        ),
-      );
-    const [attempt] = submission
-      ? await tx
-          .select()
-          .from(attempts)
-          .where(eq(attempts.submissionId, submission.id))
-          .orderBy(desc(attempts.number))
-          .limit(1)
-      : [];
+    const ledger = async (operation: string) => {
+      const [submission] = await tx
+        .select()
+        .from(submissions)
+        .where(
+          and(
+            eq(submissions.localSiteId, row.localSiteId),
+            sql`${submissions.lastError} IS DISTINCT FROM 'HISTORY_ARCHIVE_ONLY'`,
+            eq(submissions.agreementRevisionId, row.agreementRevisionId),
+            sql`${submissions.input}->>'operation' = ${operation}`,
+            sql`${submissions.input}->>'recordId' = ${row.resolutionId}`,
+          ),
+        );
+      if (!submission) return null;
+      const [attempt] = await tx
+        .select()
+        .from(attempts)
+        .where(eq(attempts.submissionId, submission.id))
+        .orderBy(desc(attempts.number))
+        .limit(1);
+      return {
+        id: submission.id,
+        state: submission.state,
+        lastError: submission.lastError,
+        transactionId: attempt?.transactionId ?? null,
+        blockNumber: attempt?.blockNumber ?? null,
+      };
+    };
     return CommercialDisputeResolutionViewSchema.parse({
       payload: row.payload,
       digest: row.digest,
@@ -119,15 +131,10 @@ export class FederationDisputeResolutionService {
       financialApproved,
       financialAppliedAt,
       exchange: exchange ?? null,
-      ledger: submission
-        ? {
-            id: submission.id,
-            state: submission.state,
-            lastError: submission.lastError,
-            transactionId: attempt?.transactionId ?? null,
-            blockNumber: attempt?.blockNumber ?? null,
-          }
-        : null,
+      ledger: await ledger(
+        row.payload.mode === "ledger_coordinated" ? "resolve-dispute" : "record-dispute-resolution",
+      ),
+      authorizationLedger: await ledger("authorize-dispute-resolution"),
     });
   }
   private async visible(
@@ -153,7 +160,7 @@ export class FederationDisputeResolutionService {
     if (!record) throw new FederationError("POLICY_DENIED");
     return record;
   }
-  private async boundary(tx: PgTransaction, caseId: string) {
+  private async boundary(tx: PgTransaction, caseId: string, applyWithdrawal = true) {
     const current = await new FederationDisputeService(this.db, this.signing).financialSnapshot(
       tx,
       caseId,
@@ -163,26 +170,93 @@ export class FederationDisputeResolutionService {
       .from(received)
       .where(and(eq(received.localSiteId, this.signing.siteId), eq(received.caseId, caseId)));
     if (
-      !original?.executionWithdrawal ||
-      !original.executionWithdrawalJws ||
       !current.view.localReady ||
       !current.view.headDigest ||
-      !["DISPUTED", "EVIDENCE_WAITING"].includes(current.record.state) ||
-      current.view.mode === "ledger_coordinated"
+      !["DISPUTED", "EVIDENCE_WAITING"].includes(current.record.state)
     )
       throw new FederationError("DATA_WAITING");
-    await applyArbitrationWithdrawal(
-      tx,
-      this.signing.siteId,
-      receivedArbitrationResolution(original.payload),
-      original.executionWithdrawal,
-      original.executionWithdrawalJws,
-    );
+    if (
+      original?.executionWithdrawal &&
+      original.executionWithdrawalJws &&
+      current.view.mode !== "ledger_coordinated"
+    ) {
+      if (applyWithdrawal)
+        await applyArbitrationWithdrawal(
+          tx,
+          this.signing.siteId,
+          receivedArbitrationResolution(original.payload),
+          original.executionWithdrawal,
+          original.executionWithdrawalJws,
+        );
+      return {
+        current,
+        protocolVersion: 1 as const,
+        decisionId: original.decisionId,
+        withdrawalDigest: federationMaterialDigest(original.executionWithdrawal),
+        freezeDigest: undefined,
+        withdrawnAt: original.executionWithdrawal.withdrawnAt,
+      };
+    }
+    const [execution] = await tx
+      .select({ id: arbitrationExecutions.decisionId })
+      .from(arbitrationExecutions)
+      .where(
+        and(
+          eq(arbitrationExecutions.localSiteId, this.signing.siteId),
+          eq(arbitrationExecutions.caseId, caseId),
+        ),
+      )
+      .limit(1);
+    // An execution intent may already have left this database; it cannot be superseded.
+    if (execution) throw new FederationError("DATA_WAITING");
+    let freezeDigest: string | null = null;
+    if (current.view.mode === "ledger_coordinated") {
+      const freeze = await new FederationDisputeFreezeExchange(
+        this.db,
+        this.signing,
+      ).arbitrationSnapshot(tx, caseId);
+      if (!freeze) throw new FederationError("DATA_WAITING");
+      freezeDigest = freeze.financial.freezeDigest;
+    }
     return {
       current,
-      original,
-      withdrawalDigest: federationMaterialDigest(original.executionWithdrawal),
+      protocolVersion: 2 as const,
+      decisionId: null,
+      withdrawalDigest: null,
+      freezeDigest,
+      withdrawnAt: null,
     };
+  }
+  async context(actor: FederationActor, revisionId: string, caseId: string) {
+    return this.db.transaction(async (tx) => {
+      const record = await this.visible(tx, actor, revisionId, caseId);
+      await lockFederationDisputeTask(tx, this.signing.siteId, record);
+      const [prior] = await tx.select().from(resolutions).where(this.key(caseId));
+      if (prior)
+        return CommercialDisputeResolutionContextSchema.parse({
+          canDraft: false,
+          blockedReason: "RESOLUTION_EXISTS",
+          protocolVersion: prior.payload.protocolVersion,
+          mode: prior.payload.mode,
+        });
+      try {
+        const boundary = await this.boundary(tx, caseId, false);
+        return CommercialDisputeResolutionContextSchema.parse({
+          canDraft: true,
+          blockedReason: null,
+          protocolVersion: boundary.protocolVersion,
+          mode: boundary.current.view.mode,
+        });
+      } catch (error) {
+        if (!(error instanceof FederationError)) throw error;
+        return CommercialDisputeResolutionContextSchema.parse({
+          canDraft: false,
+          blockedReason: error.code,
+          protocolVersion: null,
+          mode: null,
+        });
+      }
+    });
   }
   private async checkFinancial(
     tx: PgTransaction,
@@ -240,11 +314,12 @@ export class FederationDisputeResolutionService {
     return this.db.transaction(async (tx) => {
       const record = await this.visible(tx, actor, revisionId, caseId, true);
       await lockFederationDisputeTask(tx, this.signing.siteId, record);
-      const { current, original, withdrawalDigest } = await this.boundary(tx, caseId);
+      const boundary = await this.boundary(tx, caseId);
+      const { current, protocolVersion, decisionId, withdrawalDigest, freezeDigest } = boundary;
       const c = current.record.payload;
       const value = CommercialDisputeResolutionSchema.parse({
         ...input,
-        protocolVersion: 1,
+        protocolVersion,
         kind: "commercial-dispute-resolution",
         caseId,
         caseDigest: current.record.digest,
@@ -255,8 +330,9 @@ export class FederationDisputeResolutionService {
         taskId: c.taskId,
         attempt: c.attempt,
         mode: current.view.mode,
-        decisionId: original.decisionId,
+        decisionId,
         withdrawalDigest,
+        ...(protocolVersion === 2 ? { freezeDigest } : {}),
         headDigest: current.view.headDigest,
         issuedAt: new Date().toISOString(),
         salt: randomBytes(32).toString("hex"),
@@ -294,7 +370,8 @@ export class FederationDisputeResolutionService {
           throw new FederationError("OPERATION_CONFLICT");
         return this.view(tx, prior);
       }
-      const { current, original, withdrawalDigest } = await this.boundary(tx, caseId);
+      const boundary = await this.boundary(tx, caseId);
+      const { current, protocolVersion, decisionId, withdrawalDigest, freezeDigest } = boundary;
       const c = current.record.payload;
       if (
         value.caseDigest !== current.record.digest ||
@@ -305,10 +382,13 @@ export class FederationDisputeResolutionService {
         value.attempt !== c.attempt ||
         value.mode !== current.view.mode ||
         value.headDigest !== current.view.headDigest ||
-        value.decisionId !== original.decisionId ||
+        value.protocolVersion !== protocolVersion ||
+        value.decisionId !== decisionId ||
         value.withdrawalDigest !== withdrawalDigest ||
+        value.freezeDigest !== freezeDigest ||
         Date.parse(value.issuedAt) > Date.now() + 60000 ||
-        Date.parse(value.issuedAt) < Date.parse(original.executionWithdrawal?.withdrawnAt ?? "")
+        Date.parse(value.issuedAt) <
+          Date.parse(boundary.withdrawnAt ?? current.record.payload.issuedAt)
       )
         throw new FederationError("OPERATION_CONFLICT");
       await this.checkFinancial(tx, value, actor.orgId);

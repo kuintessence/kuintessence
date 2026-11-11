@@ -42,8 +42,9 @@ def signal_group(process, signum):
 
 def main():
     prepare_database(Path(os.environ["AGENT_DB_PATH"]))
-    entry = "/workspace/packages/agent/src/index.ts"
-    commands = {"agent": ["bun", entry], "watchdog": ["bun", entry, "--federation-watchdog"]}
+    binary = os.environ.get("KQ_AGENT_BINARY")
+    entry = [binary] if binary else ["bun", "/workspace/packages/agent/src/index.ts"]
+    commands = {"agent": entry, "watchdog": [*entry, "--federation-watchdog"]}
     processes = {}
     restart_at = {name: 0 for name in commands}
     stopping = False

@@ -10,6 +10,7 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import {
   type CommercialDisputeResolution,
+  CommercialDisputeResolutionContextSchema,
   CommercialDisputeResolutionSchema,
   CommercialDisputeResolutionViewSchema,
 } from "@kuintessence/shared/federation/dispute-resolution";
@@ -52,7 +53,7 @@ type Props = {
 type Intent =
   | { kind: "approve"; value: CommercialDisputeResolution }
   | { kind: "financial"; value: CommercialDisputeResolution }
-  | { kind: "withdraw" | "exchange" | "ledger" };
+  | { kind: "withdraw" | "exchange" | "ledger" | "authorization" };
 const prefix = "federation.dispute";
 
 export function CommercialDisputePanel(props: Props) {
@@ -221,9 +222,11 @@ function DisputeDetail({
   const id = useId();
   const base = `/federation/commercial-agreements/${approval.revisionId}`;
   const path = `${base}/disputes/${dispute.caseId}`;
-  const supported = approval.terms.agreement.mode !== "ledger_coordinated";
-  const canResolve = supported && grants.includes("dispute.resolve") && !readOnly;
-  const canExecute = supported && grants.includes("arbitration.execute") && !readOnly;
+  const canResolve = grants.includes("dispute.resolve") && !readOnly;
+  const canExecute =
+    approval.terms.agreement.mode !== "ledger_coordinated" &&
+    grants.includes("arbitration.execute") &&
+    !readOnly;
   const allowed = useRef({ resolve: canResolve, execute: canExecute, grants, readOnly, busy });
   allowed.current = { resolve: canResolve, execute: canExecute, grants, readOnly, busy };
   const focus = useRef<HTMLElement | null>(null);
@@ -266,6 +269,16 @@ function DisputeDetail({
       return value;
     },
     refetchInterval: intent || creating ? false : 10000,
+    refetchOnWindowFocus: false,
+    refetchIntervalInBackground: false,
+  });
+  const context = useQuery({
+    queryKey: [...queryKey, dispute.caseId, "resolution-context"],
+    queryFn: async () =>
+      CommercialDisputeResolutionContextSchema.parse(
+        (await api.get<{ data: unknown }>(`${path}/resolution/context`, scope)).data,
+      ),
+    refetchInterval: intent || creating || resolved ? false : 10000,
     refetchOnWindowFocus: false,
     refetchIntervalInBackground: false,
   });
@@ -325,7 +338,8 @@ function DisputeDetail({
       if (
         !allowed.current.resolve ||
         allowed.current.busy ||
-        !execution.data?.withdrawnAt ||
+        !context.data?.canDraft ||
+        context.isError ||
         !financial.data?.localReady
       )
         throw new Error("Resolution drafting unavailable");
@@ -398,6 +412,8 @@ function DisputeDetail({
         if (
           !f ||
           !resolution.data?.counterpartyApproved ||
+          (value.mode === "ledger_coordinated" &&
+            resolution.data.authorizationLedger?.state !== "committed") ||
           federationCanonicalJson(value) !== federationCanonicalJson(resolution.data.payload) ||
           !allowed.current.grants.includes(
             f.kind === "commercial-settlement" ? "settlement.approve" : "adjustment.approve",
@@ -417,9 +433,14 @@ function DisputeDetail({
             {},
             scope,
           );
-        else if (action.kind === "ledger" && resolution.data?.ledger)
-          await api.post(`${base}/submissions/${resolution.data.ledger.id}/retry`, {}, scope);
-        else throw new Error("Retry unavailable");
+        else if (action.kind === "ledger" || action.kind === "authorization") {
+          const ledger =
+            action.kind === "authorization"
+              ? resolution.data?.authorizationLedger
+              : resolution.data?.ledger;
+          if (!ledger) throw new Error("Retry unavailable");
+          await api.post(`${base}/submissions/${ledger.id}/retry`, {}, scope);
+        } else throw new Error("Retry unavailable");
       }
     },
     onSuccess: async () => {
@@ -449,9 +470,21 @@ function DisputeDetail({
       setIntent(null);
   }, [canResolve, readOnly, grants, intent]);
   const blocked =
-    busy || mutation.isPending || generate.isPending || resolution.isError || execution.isError;
+    busy ||
+    mutation.isPending ||
+    generate.isPending ||
+    resolution.isError ||
+    execution.isError ||
+    context.isError ||
+    context.isPending;
   const value = resolution.data?.payload ?? draft;
   const f = value?.financial;
+  const chainWaiting =
+    resolution.data?.counterpartyApproved &&
+    value?.mode === "ledger_coordinated" &&
+    (!f ||
+      resolution.data.authorizationLedger?.state !== "committed" ||
+      !!resolution.data.financialAppliedAt);
   const canFinancial =
     !!f &&
     !readOnly &&
@@ -528,29 +561,33 @@ function DisputeDetail({
           {message}
         </p>
       ) : null}
-      {resolution.isError || execution.isError ? (
+      {resolution.isError || execution.isError || context.isError ? (
         <p role="alert">{t("federation.loadFailed")}</p>
-      ) : resolution.isPending || execution.isPending ? (
+      ) : resolution.isPending || execution.isPending || context.isPending ? (
         <p role="status">{t("federation.loading")}</p>
       ) : (
         <>
-          <ol className="grid gap-4 border-y border-border py-4 text-sm sm:grid-cols-3">
-            <li>
-              <span className="block font-medium">{t(`${prefix}.withdrawal`)}</span>
-              <span>
-                {t(
-                  `${prefix}.${execution.data?.withdrawnAt ? "withdrawn" : execution.data?.withdrawalRequestedAt ? "withdrawing" : "notWithdrawn"}`,
-                )}
-              </span>
-              {execution.data?.withdrawnAt ? (
-                <time
-                  className="block text-xs text-muted-foreground"
-                  dateTime={execution.data.withdrawnAt}
-                >
-                  {new Date(execution.data.withdrawnAt).toLocaleString(i18n.language)}
-                </time>
-              ) : null}
-            </li>
+          <ol
+            className={`grid gap-4 border-y border-border py-4 text-sm ${execution.data ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}
+          >
+            {execution.data ? (
+              <li>
+                <span className="block font-medium">{t(`${prefix}.withdrawal`)}</span>
+                <span>
+                  {t(
+                    `${prefix}.${execution.data?.withdrawnAt ? "withdrawn" : execution.data?.withdrawalRequestedAt ? "withdrawing" : "notWithdrawn"}`,
+                  )}
+                </span>
+                {execution.data?.withdrawnAt ? (
+                  <time
+                    className="block text-xs text-muted-foreground"
+                    dateTime={execution.data.withdrawnAt}
+                  >
+                    {new Date(execution.data.withdrawnAt).toLocaleString(i18n.language)}
+                  </time>
+                ) : null}
+              </li>
+            ) : null}
             <li>
               <span className="block font-medium">{t(`${prefix}.agreement`)}</span>
               <span>
@@ -563,7 +600,7 @@ function DisputeDetail({
               <span className="block font-medium">{t(`${prefix}.closure`)}</span>
               <span>
                 {t(
-                  `${prefix}.${resolution.data?.appliedAt ? "closed" : execution.data?.appliedAt ? "arbitrated" : resolution.data?.counterpartyApproved && f ? "financialWaiting" : resolved ? "alreadyResolved" : "open"}`,
+                  `${prefix}.${resolution.data?.appliedAt ? "closed" : execution.data?.appliedAt ? "arbitrated" : chainWaiting ? "chainWaiting" : resolution.data?.counterpartyApproved && f ? "financialWaiting" : resolved ? "alreadyResolved" : "open"}`,
                 )}
               </span>
               {resolution.data?.appliedAt ? (
@@ -576,9 +613,15 @@ function DisputeDetail({
               ) : null}
             </li>
           </ol>
-          {supported && !resolution.data && !resolved && !execution.data?.withdrawnAt ? (
+          {!resolution.data && !resolved && !context.data.canDraft ? (
             <div className="space-y-3">
-              <p className="text-sm text-muted-foreground">{t(`${prefix}.withdrawalRequired`)}</p>
+              <p className="text-sm text-muted-foreground">
+                {execution.data && !execution.data.withdrawnAt
+                  ? t(`${prefix}.withdrawalRequired`)
+                  : t(`${prefix}.errors.${context.data.blockedReason}`, {
+                      defaultValue: t(`${prefix}.notReady`),
+                    })}
+              </p>
               {canExecute &&
               execution.data &&
               !execution.data.appliedAt &&
@@ -593,12 +636,9 @@ function DisputeDetail({
               ) : null}
             </div>
           ) : null}
-          {approval.terms.agreement.mode === "ledger_coordinated" ? (
-            <p className="text-sm text-muted-foreground">{t(`${prefix}.unsupported`)}</p>
-          ) : null}
           {!resolution.data &&
           !resolved &&
-          execution.data?.withdrawnAt &&
+          context.data.canDraft &&
           canResolve &&
           !creating &&
           !draft ? (
@@ -770,12 +810,21 @@ function DisputeDetail({
                   <AgreementFact label={t(`${prefix}.resolutionId`)}>
                     {value.resolutionId}
                   </AgreementFact>
-                  <AgreementFact label={t(`${prefix}.decisionId`)}>
-                    {value.decisionId}
-                  </AgreementFact>
-                  <AgreementFact label={t(`${prefix}.withdrawalDigest`)}>
-                    {value.withdrawalDigest}
-                  </AgreementFact>
+                  {value.decisionId ? (
+                    <AgreementFact label={t(`${prefix}.decisionId`)}>
+                      {value.decisionId}
+                    </AgreementFact>
+                  ) : null}
+                  {value.withdrawalDigest ? (
+                    <AgreementFact label={t(`${prefix}.withdrawalDigest`)}>
+                      {value.withdrawalDigest}
+                    </AgreementFact>
+                  ) : null}
+                  {value.protocolVersion === 2 && value.freezeDigest ? (
+                    <AgreementFact label={t(`${prefix}.freezeDigest`)}>
+                      {value.freezeDigest}
+                    </AgreementFact>
+                  ) : null}
                   <AgreementFact label={t(`${prefix}.headDigest`)}>
                     {value.headDigest}
                   </AgreementFact>
@@ -793,6 +842,8 @@ function DisputeDetail({
               ) : null}
               {resolution.data?.counterpartyApproved &&
               f &&
+              (value.mode !== "ledger_coordinated" ||
+                resolution.data.authorizationLedger?.state === "committed") &&
               !resolution.data.financialApproved &&
               canFinancial ? (
                 <div className="space-y-3">
@@ -825,41 +876,69 @@ function DisputeDetail({
                   ) : null}
                 </div>
               ) : null}
-              {value.mode === "bilateral_attested" && resolution.data?.appliedAt ? (
-                <section className="space-y-3 border-t border-border pt-4">
-                  <h4 className="font-semibold">{t("federation.commercial.ledger")}</h4>
-                  <p role="status" className="text-sm">
-                    {t(
-                      `${prefix}.ledger.${resolution.data.ledger?.state ?? (approval.localSiteId === value.sourceSiteId ? "notQueued" : "remote")}`,
-                    )}
-                  </p>
-                  {resolution.data.ledger?.lastError ? (
-                    <p role="alert" className="break-words text-sm">
-                      {resolution.data.ledger.lastError}
-                    </p>
-                  ) : null}
-                  {resolution.data.ledger?.transactionId ? (
-                    <dl className="grid gap-4 sm:grid-cols-2">
-                      <AgreementFact label={t("federation.commercial.transaction")}>
-                        {resolution.data.ledger.transactionId}
-                      </AgreementFact>
-                      <AgreementFact label={t("federation.commercial.block")}>
-                        {resolution.data.ledger.blockNumber ??
-                          t("federation.commercial.unconfirmed")}
-                      </AgreementFact>
-                    </dl>
-                  ) : null}
-                  {resolution.data.ledger?.state === "needs_review" && canResolve ? (
-                    <Button
-                      variant="outline"
-                      disabled={blocked}
-                      onClick={() => review({ kind: "ledger" })}
-                    >
-                      {t(`${prefix}.retryLedger`)}
-                    </Button>
-                  ) : null}
-                </section>
-              ) : null}
+              {resolution.data && value.mode !== "bilateral_direct"
+                ? (["authorization", "ledger"] as const).map((stage) => {
+                    const ledger =
+                      stage === "authorization"
+                        ? resolution.data?.authorizationLedger
+                        : resolution.data?.ledger;
+                    if (
+                      stage === "authorization" &&
+                      (!ledger || value.mode !== "ledger_coordinated")
+                    )
+                      return null;
+                    if (
+                      stage === "ledger" &&
+                      value.mode === "bilateral_attested" &&
+                      !resolution.data?.appliedAt
+                    )
+                      return null;
+                    return (
+                      <section key={stage} className="space-y-3 border-t border-border pt-4">
+                        <h4 className="font-semibold">
+                          {t(
+                            value.mode === "ledger_coordinated"
+                              ? `${prefix}.${stage === "authorization" ? "chainAuthorization" : "chainClosure"}`
+                              : "federation.commercial.ledger",
+                          )}
+                        </h4>
+                        <p role="status" className="text-sm">
+                          {t(
+                            `${prefix}.${value.mode === "ledger_coordinated" ? "chainStates" : "ledger"}.${ledger?.state ?? (approval.localSiteId === value.sourceSiteId ? "notQueued" : "remote")}`,
+                          )}
+                        </p>
+                        {ledger?.lastError ? (
+                          <p role="alert" className="break-words text-sm">
+                            {ledger.lastError}
+                          </p>
+                        ) : null}
+                        {ledger?.transactionId ? (
+                          <dl className="grid gap-4 sm:grid-cols-2">
+                            <AgreementFact label={t("federation.commercial.transaction")}>
+                              {ledger.transactionId}
+                            </AgreementFact>
+                            <AgreementFact label={t("federation.commercial.block")}>
+                              {ledger.blockNumber ?? t("federation.commercial.unconfirmed")}
+                            </AgreementFact>
+                          </dl>
+                        ) : null}
+                        {ledger?.state === "needs_review" && canResolve ? (
+                          <Button
+                            variant="outline"
+                            disabled={blocked}
+                            onClick={() => review({ kind: stage })}
+                          >
+                            {t(
+                              value.mode === "ledger_coordinated"
+                                ? "federation.commercial.actions.retry"
+                                : `${prefix}.retryLedger`,
+                            )}
+                          </Button>
+                        ) : null}
+                      </section>
+                    );
+                  })
+                : null}
             </div>
           ) : null}
         </>

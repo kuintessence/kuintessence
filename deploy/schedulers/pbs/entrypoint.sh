@@ -33,7 +33,8 @@ fi
 mkdir -p /var/lib/kuintessence /scratch
 chmod 1777 /scratch
 
-if [[ ! -f /etc/pbs.conf ]]; then
+# pbs.conf is recreated with the container; the database belongs to the persistent PBS_HOME.
+if [[ ! -f /var/spool/pbs/server_priv/db_password ]]; then
   /opt/pbs/libexec/pbs_postinstall
 fi
 
@@ -77,10 +78,16 @@ fi
 
 qmgr -c "create node ${host_name}" >/dev/null 2>&1 || true
 qmgr -c "set node ${host_name} queue=workq" >/dev/null 2>&1 || true
-qmgr -c "set node ${host_name} resources_available.ncpus=2" >/dev/null 2>&1 || true
-qmgr -c "set node ${host_name} resources_available.mem=2gb" >/dev/null 2>&1 || true
-qmgr -c "set server job_history_enable = True" >/dev/null 2>&1 || true
-qmgr -c "set server job_history_duration = 01:00:00" >/dev/null 2>&1 || true
+read -r cpu_count real_memory_mb < <(python3 /usr/local/bin/kq-scheduler-capacity.py)
+[[ -n "$cpu_count" && -n "$real_memory_mb" ]] || exit 1
+qmgr -c "set node ${host_name} resources_available.ncpus=${cpu_count}"
+qmgr -c "set node ${host_name} resources_available.mem=${real_memory_mb}mb"
+qmgr -c "set server job_history_enable = True"
+qmgr -c "set server job_history_duration = 24:00:00"
+
+if [[ "${KQ_AIO_MANAGED_RUNTIME:-0}" == 1 ]]; then
+  python3 /usr/local/lib/kuintessence/managed.py pbs-hook
+fi
 
 mkdir -p /var/lib/kuintessence /var/cache/bun
 chown -R "${agent_user}:${agent_user}" /var/lib/kuintessence /var/cache/bun

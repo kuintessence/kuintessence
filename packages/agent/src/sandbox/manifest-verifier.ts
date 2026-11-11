@@ -162,8 +162,8 @@ function validateIdentity(
     throw new Error("HPC Sandbox requires a Unix execution account");
   }
   if (manifest.executionMode === "SelfAccount") {
-    if (options.adapterType !== "slurm") {
-      throw new Error("SelfAccount Sandbox is supported only by the Slurm adapter");
+    if (options.adapterType !== "slurm" && options.adapterType !== "pbs-pro") {
+      throw new Error("SelfAccount Sandbox is supported only by Slurm and PBS Pro adapters");
     }
     if (manifest.executionProfile) {
       throw new Error("SelfAccount Sandbox cannot use a restricted execution profile");

@@ -410,7 +410,7 @@ export async function attestSandboxRuntimeEnvironment(
   }
   if (
     (adapterType !== "slurm" && adapterType !== "pbs-pro" && adapterType !== "torque") ||
-    (config.AGENT_SANDBOX_EXECUTION_MODE === "self-account" && adapterType !== "slurm")
+    (config.AGENT_SANDBOX_EXECUTION_MODE === "self-account" && adapterType === "torque")
   ) {
     return {
       runtimeCache,

@@ -19,7 +19,10 @@ describe("buildSandboxCapability", () => {
     expect(capability.missingRequirements).toContain("sandbox-disabled");
   });
 
-  test("reports ready only with the complete scheduler-specific security posture", () => {
+  test.each([
+    "slurm",
+    "pbs-pro",
+  ])("%s reports ready only with native security evidence", (scheduler) => {
     const digest = `sha256:${"1".repeat(64)}`;
     const config = loadAgentConfig({
       ...BASE,
@@ -37,7 +40,7 @@ describe("buildSandboxCapability", () => {
     });
     const capability = buildSandboxCapability(
       config,
-      "slurm",
+      scheduler,
       { username: "kqagent", uid: 2001, gid: 2001 },
       {
         runtimeCache: {
@@ -209,7 +212,7 @@ describe("buildSandboxCapability", () => {
     expect(capability.missingRequirements).toContain("kubernetes-seccomp-sha256-mismatch");
   });
 
-  test("does not advertise SelfAccount on an adapter without Slurm attestation and node pinning", () => {
+  test("does not advertise SelfAccount on an unsupported adapter", () => {
     const capability = buildSandboxCapability(
       loadAgentConfig({
         ...BASE,

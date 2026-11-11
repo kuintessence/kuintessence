@@ -487,6 +487,63 @@ os.execl("/bin/bash", "bash", "-c", script)
     );
   });
 
+  test("PBS SelfAccount requires a successful native job before publishing runtime evidence", async () => {
+    const { config, digest, inspectFile } = await fixture();
+    let submittedScript = "";
+    const spawner: Spawner = {
+      run: async (command, options) => {
+        expect(command[0]).not.toBe("setpriv");
+        if (command[1] === "verify" || command[1] === "sif")
+          return { exitCode: 0, stdout: "verified", stderr: "" };
+        if (command[0] === "qsub") {
+          const path = /\/bin\/bash '([^']+)'/.exec(options?.stdin ?? "")?.[1];
+          const output = /^#PBS -o (.+)$/m.exec(options?.stdin ?? "")?.[1];
+          if (!path || !output) throw new Error("Missing native PBS probe paths");
+          submittedScript = await readFile(path, "utf8");
+          await writeFile(output, "KQ_ATTESTED_NODE=pbs-1\n");
+          return { exitCode: 0, stdout: "42.pbs\n", stderr: "" };
+        }
+        if (command[0] === "qstat")
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({ Jobs: { "42.pbs": { job_state: "F", Exit_status: 0 } } }),
+            stderr: "",
+          };
+        throw new Error(`Unexpected probe command: ${command[0]}`);
+      },
+    };
+    const deps = { inspectFile, validateAncestors: async () => undefined };
+    const result = await attestSandboxRuntimeEnvironment(
+      config,
+      "pbs-pro",
+      spawner,
+      identity,
+      deps,
+    );
+    expect(result.missingRequirements).toEqual([]);
+    expect(result.runtimeCache[digest]?.attestedNodes).toEqual(["pbs-1"]);
+    expect(result.runtimeCache[digest]?.attestedQueue).toBe("compute");
+    expect(result.runtimeCache[digest]?.runtimeAttestationId).toMatch(/^[0-9a-f]{64}$/);
+    expect(submittedScript).toContain("PBS_JOBID");
+    expect(submittedScript).toContain("'--scheduler' 'pbs-pro'");
+    expect(submittedScript.indexOf("--job-id")).toBeLessThan(submittedScript.indexOf("/bin/true"));
+    const failed = await attestSandboxRuntimeEnvironment(
+      config,
+      "pbs-pro",
+      {
+        run: (command, options) =>
+          command[0] === "qsub"
+            ? Promise.resolve({ exitCode: 1, stdout: "", stderr: "cgroup unavailable" })
+            : spawner.run(command, options),
+      },
+      identity,
+      deps,
+    );
+    expect(failed.runtimeCache).toEqual({});
+    expect(failed.cgroups).toBe(false);
+    expect(failed.missingRequirements.length).toBeGreaterThan(0);
+  });
+
   test("missing checker/queue or a failed native probe cannot publish cgroup readiness", async () => {
     const { config, inspectFile } = await fixture();
     for (const configured of [

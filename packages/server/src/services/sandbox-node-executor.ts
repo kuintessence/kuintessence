@@ -825,8 +825,8 @@ export class SandboxNodeExecutor {
     if (!input.policy.selfAccountEnabled) {
       throw new Error("Self-account Sandbox execution is disabled by effective policy");
     }
-    if (input.schedulerType !== "slurm") {
-      throw new Error("Self-account Sandbox execution is currently limited to Slurm");
+    if (input.schedulerType !== "slurm" && input.schedulerType !== "pbs-pro") {
+      throw new Error("Self-account Sandbox execution is limited to Slurm and PBS Pro");
     }
     if (input.identity.backend !== "Unix" || input.identity.mode !== "MappedAccount") {
       throw new Error("Self-account Sandbox execution requires a mapped Unix identity");

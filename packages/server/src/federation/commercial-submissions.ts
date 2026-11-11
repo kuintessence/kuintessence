@@ -3,6 +3,7 @@ import {
   federationCommercialAdjustments as adjustments,
   federationCommercialAgreements as agreements,
   federationCommercialExecutionApprovals as approvals,
+  federationArbitrationResolutions as arbitrationExecutions,
   federationArbitrationPolicies as arbitrationPolicies,
   federationCommercialAttempts as attempts,
   auditLog,
@@ -11,6 +12,7 @@ import {
   federationDisputeResolutions as disputeResolutions,
   federationDisputes as disputes,
   federationDisputeFreezes as freezes,
+  federationCommercialHistoryRecoveries as historyRecoveries,
   federationMarketSubmissions as marketSubmissions,
   type PgDb,
   type PgTransaction,
@@ -51,8 +53,14 @@ import { z } from "zod";
 import { applyFederationAdjustment } from "./adjustment";
 import type { FederationArbitrationResolutionService } from "./arbitration-resolution";
 import type { CommercialClient } from "./commercial-client";
+import { lockFederationDisputeTask } from "./dispute-freeze";
+import {
+  applyCoordinatedDisputeResolution,
+  coordinatedDisputeResolutionForFinancial,
+} from "./dispute-resolution-state";
 import { enqueueExecutionClosure } from "./execution-closure";
 import { FabricClientFailure } from "./fabric-client";
+import { assertCommercialHistorySubmission } from "./history-recovery";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { applyFederationSettlement } from "./settlement";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
@@ -65,7 +73,10 @@ type Lease = { id: string; token: string };
 class LeaseLost extends Error {}
 const MvccReconciling = "MVCC_RECONCILING";
 const recordTypes = {
+  "record-historical-commercial": "historical-commercial",
   "record-dispute-resolution": "dispute-resolution",
+  "authorize-dispute-resolution": "dispute-resolution-authorization",
+  "resolve-dispute": "dispute-resolution",
   "resolve-arbitrated-case": "arbitration-resolution",
   "record-arbitration-resolution": "arbitration-resolution",
   "revoke-arbitration-policy": "arbitration-revocation",
@@ -102,6 +113,9 @@ export class FederationCommercialSubmissionService {
         .where(
           and(
             eq(submissions.localSiteId, this.siteId),
+            sql`NOT EXISTS (SELECT 1 FROM ${historyRecoveries} recovered
+              WHERE recovered.local_site_id=${submissions.localSiteId}
+                AND recovered.submission_id=${submissions.id})`,
             sql`(${submissions.state} = 'pending' OR (
               ${submissions.state} = 'committed'
               AND ${submissions.input}->>'operation' IN ('record-execution-terminal','release-execution')
@@ -111,7 +125,7 @@ export class FederationCommercialSubmissionService {
                   AND closure.local_site_id = ${submissions.localSiteId}
                   AND closure.input->>'operation' = 'close-demand')
             ))`,
-            sql`(${submissions.input}->>'operation' = 'register-agreement' OR EXISTS (
+            sql`(${submissions.input}->>'operation' IN ('register-agreement','record-historical-commercial') OR EXISTS (
               SELECT 1 FROM ${submissions} dependency
               WHERE dependency.local_site_id = ${submissions.localSiteId}
                 AND dependency.agreement_revision_id = ${submissions.agreementRevisionId}
@@ -324,9 +338,13 @@ export class FederationCommercialSubmissionService {
         );
         await this.fenced(claimed, async (tx, current) => {
           if (
-            ["reserve-execution", "release-execution", "resolve-arbitrated-case"].includes(
-              current.input.operation,
-            )
+            [
+              "reserve-execution",
+              "release-execution",
+              "resolve-arbitrated-case",
+              "authorize-dispute-resolution",
+              "resolve-dispute",
+            ].includes(current.input.operation)
           )
             await this.beforeDisclosure(current.input, tx);
           if (receipt) {
@@ -378,7 +396,9 @@ export class FederationCommercialSubmissionService {
       } else {
         if (attempt.stage === "proposal") await this.beforeDisclosure(submission.input);
         if (
-          submission.input.operation === "resolve-arbitrated-case" &&
+          ["resolve-arbitrated-case", "authorize-dispute-resolution", "resolve-dispute"].includes(
+            submission.input.operation,
+          ) &&
           attempt.stage === "transaction" &&
           !attempt.dispatchAuthorizedAt
         ) {
@@ -454,6 +474,13 @@ export class FederationCommercialSubmissionService {
               if (!this.arbitration) throw new FederationError("ASSET_UNAVAILABLE");
               await this.arbitration.apply(tx, submission.input.recordId, submission.input.digest);
             }
+            if (result.state === "committed" && submission.input.operation === "resolve-dispute")
+              await applyCoordinatedDisputeResolution(
+                tx,
+                this.siteId,
+                submission.input.recordId,
+                submission.input.digest,
+              );
             if (
               result.state === "committed" &&
               submission.input.operation === "adjust-settlement"
@@ -480,8 +507,7 @@ export class FederationCommercialSubmissionService {
                     eq(settlements.localSiteId, this.siteId),
                     eq(settlements.settlementId, submission.input.recordId),
                   ),
-                )
-                .for("update");
+                );
               if (!settlement || settlement.digest !== submission.input.digest)
                 throw new FederationError("OPERATION_CONFLICT");
               const [bill] = await tx
@@ -491,7 +517,20 @@ export class FederationCommercialSubmissionService {
                   and(eq(bills.localSiteId, this.siteId), eq(bills.billId, settlement.billId)),
                 );
               if (!bill) throw new FederationError("ASSET_UNAVAILABLE");
-              await applyFederationSettlement(tx, settlement, bill);
+              await lockFederationDisputeTask(tx, this.siteId, bill.payload.request);
+              const [locked] = await tx
+                .select()
+                .from(settlements)
+                .where(
+                  and(
+                    eq(settlements.localSiteId, this.siteId),
+                    eq(settlements.settlementId, submission.input.recordId),
+                  ),
+                )
+                .for("update");
+              if (!locked || locked.digest !== submission.input.digest)
+                throw new FederationError("OPERATION_CONFLICT");
+              await applyFederationSettlement(tx, locked, bill);
             }
             if (
               result.state === "committed" &&
@@ -559,6 +598,34 @@ export class FederationCommercialSubmissionService {
 
   /** The source commits terminal evidence; the provider must query that original private receipt. */
   private async requireBillTerminal(input: CommercialAdapterProposalInput) {
+    if (input.operation === "settle-bill" || input.operation === "adjust-settlement") {
+      const table = input.operation === "settle-bill" ? settlements : adjustments;
+      const id =
+        input.operation === "settle-bill" ? settlements.settlementId : adjustments.adjustmentId;
+      const [posting] = await this.db
+        .select()
+        .from(table)
+        .where(and(eq(table.localSiteId, this.siteId), eq(id, input.recordId)));
+      if (!posting) throw new FederationError("ASSET_UNAVAILABLE");
+      const resolution = await this.db.transaction((tx) =>
+        coordinatedDisputeResolutionForFinancial(tx, this.siteId, posting.payload),
+      );
+      if (resolution) {
+        if (!this.client?.receipt)
+          throw new FabricClientFailure("RESOLUTION_RECEIPT_UNAVAILABLE", true);
+        const { receipt } = CommercialReceiptQueryResultSchema.parse(
+          await this.client.receipt({
+            operation: "get-commercial-receipt",
+            domainId: input.domainId,
+            recordType: "dispute-resolution-authorization",
+            recordId: resolution.resolutionId,
+          }),
+        );
+        if (!receipt) throw new FabricClientFailure("LEDGER_PENDING", false);
+        if (receipt.recordId !== resolution.resolutionId || receipt.digest !== resolution.digest)
+          throw new FederationError("OPERATION_CONFLICT");
+      }
+    }
     if (input.operation === "adjust-settlement") {
       const [row] = await this.db
         .select()
@@ -697,14 +764,96 @@ export class FederationCommercialSubmissionService {
     return true;
   }
 
-  private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {
+  private async beforeDisclosure(
+    raw: CommercialAdapterProposalInput,
+    tx?: PgTransaction,
+  ): Promise<void> {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
+    if (input.operation === "record-historical-commercial")
+      return assertCommercialHistorySubmission(this.db, this.siteId, input, tx);
     if (
       input.operation === "resolve-arbitrated-case" ||
       input.operation === "record-arbitration-resolution"
     ) {
       if (!this.arbitration) throw new FederationError("ASSET_UNAVAILABLE");
       return this.arbitration.beforeDisclosure(input, tx);
+    }
+    if (
+      input.operation === "authorize-dispute-resolution" ||
+      input.operation === "resolve-dispute"
+    ) {
+      if (!tx) return this.db.transaction((scope) => this.beforeDisclosure(input, scope));
+      const [row] = await tx
+        .select()
+        .from(disputeResolutions)
+        .where(
+          and(
+            eq(disputeResolutions.localSiteId, this.siteId),
+            eq(disputeResolutions.resolutionId, input.recordId),
+          ),
+        );
+      if (
+        !row?.counterpartyJws ||
+        row.digest !== input.digest ||
+        row.payload.mode !== "ledger_coordinated" ||
+        row.payload.protocolVersion !== 2 ||
+        row.payload.domainId !== input.domainId ||
+        row.payload.sourceSiteId !== input.envelope.sourceSiteId ||
+        row.payload.targetSiteId !== input.envelope.targetSiteId ||
+        (this.siteId === row.payload.sourceSiteId
+          ? row.approvalJws !== input.envelope.sourceJws ||
+            row.counterpartyJws !== input.envelope.targetJws
+          : row.approvalJws !== input.envelope.targetJws ||
+            row.counterpartyJws !== input.envelope.sourceJws) ||
+        (input.operation === "authorize-dispute-resolution" && !row.payload.financial)
+      )
+        throw new FederationError("POLICY_DENIED");
+      await lockFederationDisputeTask(tx, this.siteId, row.payload);
+      const [execution] = await tx
+        .select({ id: arbitrationExecutions.decisionId })
+        .from(arbitrationExecutions)
+        .where(
+          and(
+            eq(arbitrationExecutions.localSiteId, this.siteId),
+            eq(arbitrationExecutions.caseId, row.caseId),
+          ),
+        );
+      const [record] = await tx
+        .select()
+        .from(disputes)
+        .where(and(eq(disputes.localSiteId, this.siteId), eq(disputes.caseId, row.caseId)));
+      if (
+        execution ||
+        !record ||
+        record.digest !== row.payload.caseDigest ||
+        !["DISPUTED", "EVIDENCE_WAITING"].includes(record.state)
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      if (input.operation === "resolve-dispute" && row.payload.financial) {
+        const financial = row.payload.financial;
+        const table = financial.kind === "commercial-settlement" ? settlements : adjustments;
+        const id =
+          financial.kind === "commercial-settlement"
+            ? settlements.settlementId
+            : adjustments.adjustmentId;
+        const identity =
+          financial.kind === "commercial-settlement"
+            ? financial.settlementId
+            : financial.adjustmentId;
+        const [posting] = await tx
+          .select()
+          .from(table)
+          .where(and(eq(table.localSiteId, this.siteId), eq(id, identity)));
+        if (
+          !posting?.appliedAt ||
+          !posting.counterpartyJws ||
+          posting.arbitrationDecisionId ||
+          posting.localOrgId !== row.localOrgId ||
+          posting.agreementRevisionId !== row.agreementRevisionId ||
+          federationCanonicalJson(posting.payload) !== federationCanonicalJson(financial)
+        )
+          throw new FederationError("DATA_WAITING");
+      }
     }
     if (input.operation === "revoke-arbitration-policy") {
       const jws = input.envelope.revocationJws,
@@ -1001,6 +1150,8 @@ export class FederationCommercialSubmissionService {
         "record-payment": "commercial-payment",
         "record-dispute-freeze": "commercial-dispute-freeze",
         "record-dispute-resolution": "commercial-dispute-resolution",
+        "authorize-dispute-resolution": "commercial-dispute-resolution",
+        "resolve-dispute": "commercial-dispute-resolution",
         "freeze-disputed-task": "commercial-dispute-freeze",
       } as const;
       for (const [siteId, jws] of [
@@ -1086,6 +1237,7 @@ export class FederationCommercialSubmissionService {
           and(
             eq(submissions.localSiteId, this.siteId),
             eq(submissions.agreementRevisionId, revisionId),
+            sql`${submissions.lastError} IS DISTINCT FROM 'HISTORY_ARCHIVE_ONLY'`,
             arbitrationPolicyId
               ? and(
                   sql`${submissions.input}->>'operation' = 'revoke-arbitration-policy'`,
@@ -1132,38 +1284,61 @@ export class FederationCommercialSubmissionService {
         )
         .for("update");
       if (!row || row.state !== "needs_review") throw new FederationError("OPERATION_CONFLICT");
+      const [recovered] = await tx
+        .select({ id: historyRecoveries.recoveryId })
+        .from(historyRecoveries)
+        .where(
+          and(
+            eq(historyRecoveries.localSiteId, this.siteId),
+            eq(historyRecoveries.submissionId, row.id),
+          ),
+        );
+      if (recovered) throw new FederationError("OPERATION_CONFLICT");
       await requireFederationCapability(
         tx,
         actor,
-        row.input.operation === "record-dispute-resolution"
-          ? "dispute.resolve"
-          : row.input.operation === "resolve-arbitrated-case" ||
-              row.input.operation === "record-arbitration-resolution"
-            ? "arbitration.execute"
-            : row.input.operation === "revoke-arbitration-policy"
-              ? "arbitration.approve"
-              : row.input.operation === "record-dispute-freeze" ||
-                  row.input.operation === "freeze-disputed-task"
-                ? "dispute.open"
-                : row.input.operation === "record-payment"
-                  ? "payment.approve"
-                  : row.input.operation === "adjust-settlement"
-                    ? "adjustment.approve"
-                    : row.input.operation === "settle-bill" ||
-                        row.input.operation === "record-refund"
-                      ? "settlement.approve"
-                      : ["confirm-bill", "record-discount"].includes(row.input.operation)
-                        ? "billing.approve"
-                        : "agreement.approve",
+        row.input.operation === "record-historical-commercial"
+          ? "attestation.recover"
+          : [
+                "record-dispute-resolution",
+                "authorize-dispute-resolution",
+                "resolve-dispute",
+              ].includes(row.input.operation)
+            ? "dispute.resolve"
+            : row.input.operation === "resolve-arbitrated-case" ||
+                row.input.operation === "record-arbitration-resolution"
+              ? "arbitration.execute"
+              : row.input.operation === "revoke-arbitration-policy"
+                ? "arbitration.approve"
+                : row.input.operation === "record-dispute-freeze" ||
+                    row.input.operation === "freeze-disputed-task"
+                  ? "dispute.open"
+                  : row.input.operation === "record-payment"
+                    ? "payment.approve"
+                    : row.input.operation === "adjust-settlement"
+                      ? "adjustment.approve"
+                      : row.input.operation === "settle-bill" ||
+                          row.input.operation === "record-refund"
+                        ? "settlement.approve"
+                        : ["confirm-bill", "record-discount"].includes(row.input.operation)
+                          ? "billing.approve"
+                          : "agreement.approve",
       );
       const [attempt] = await this.latest(tx, id);
+      if (
+        row.input.operation === "record-historical-commercial" &&
+        attempt?.stage !== "transaction"
+      )
+        await this.beforeDisclosure(row.input, tx);
       if (
         ["reserve-execution", "release-execution"].includes(row.input.operation) &&
         attempt?.stage !== "transaction"
       )
         await this.beforeDisclosure(row.input, tx);
       if (
-        row.input.operation === "resolve-arbitrated-case" &&
+        ["resolve-arbitrated-case", "authorize-dispute-resolution", "resolve-dispute"].includes(
+          row.input.operation,
+        ) &&
         (!attempt?.dispatchAuthorizedAt || attempt.stage === "invalid")
       )
         await this.beforeDisclosure(row.input, tx);

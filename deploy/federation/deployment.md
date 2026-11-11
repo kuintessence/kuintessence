@@ -1,5 +1,7 @@
 # 两种 Docker Compose 部署
 
+三台新增虚拟机的独立平台、容器测试集群、本机构建与离线传输使用 [AIO 离线入口](aio/README.md)。支持东京 containerd 构建机的 nerdctl/BuildKit；下文原在线入口保持原行为，不用于本轮腾讯云离线交付。
+
 共用 [基础平台](../main/compose.yml)，通过 [compose.sh](compose.sh) 选择部署。镜像由 [production images](../../.github/workflows/build-images.yml) 发布；PR 的 [Compose delivery](../../.github/workflows/federation-compose.yml) 检查配置并实际启动新增镜像入口。
 
 | 入口 | 服务 | 能力 |
@@ -140,6 +142,45 @@ bash deploy/federation/compose.sh fabric --profile fabric-admin run --rm fabric-
 管理员的 Fabric 签名证书必须同时具有 `kq.federation.site=<本站 UUID>` 和 `kq.federation.role=trust-admin` 属性，并属于本站 MSP；字段名不能缩写为 `kq.role`。四类 Adapter 分别使用 `attestor`、`commercial`、`market`、`case` 业务角色，不能复用管理员身份。属性由机构 CA 签发并限制签发权限，写入 `adapter.json` 或平台信任记录不能替代证书属性。Init 会设置组织信任与私有数据策略，不是健康探针。首次 Init 后不能在例行 CD 中重复运行；重复通道加入、已安装相同包可查询恢复，生命周期批准、commit、Init 的结果不确定时先查询原状态，不盲目重做。
 
 常规更新只拉取固定版本并重建容器。链码升级另行批准新定义，验证 PDC 和信任代际后操作；不删除账本、不重建密钥、不自动改变组织策略。只有受治理允许的组织签名才可推进通道或定义。此交付不提供证书颁发机构、跨机构治理批准或多 Orderer 容灾的自动安装。
+
+
+### 商业链同代际信任追加
+
+商业链增加显式 `UpdateTrust(previousDigest,nextDigest)`。它只允许在同一 `generationId` 下追加业务公钥或签署用途；机构的 site/MSP 归属、domain/PDC 成员与名称保持原样，原公钥内容、有效期和用途不能删除或改写。旧 key 的 `revoked` 链状态保留，追加用途不会将其重新激活。成员、PDC 或代际变更仍走联盟原治理流程，不能借此入口完成。
+
+更新由已存前配置中的本站 `trust-admin` Fabric 身份提交，`ConfigKey` 既有的全组织 Peer 背书策略批准整笔交易。新公钥的撤销状态受其原机构 Peer 策略管理，保存前配置与前后摘要的不可变回执仍受全组织策略保护。精确重复只返回原回执，不退回后续已批准的配置。
+
+操作前暂停新的商业链提交，各机构使用**原 Adapter 配置和原恢复密钥**恢复所有未知交易，或按原流程确认其已 INVALID／尚未发送并明确终结。已发交易未知时不能通过改配置、清队列或重建恢复密钥跳过确认。Adapter 检查点继续绑定整份配置，此入口不放宽解封校验；保留原配置、检查点、恢复密钥与历史公钥供审计。链端公钥追加与 Server 本地信任登记分别批准，不能只修改一端假称另一端完成。
+
+部署方在本机构建仓库中准备经评审的 `reviewed-previous-trust.json` 与 `reviewed-next-trust.json`。下面命令按链契约生成标准字节及摘要，输出已存在时拒绝覆盖：
+
+```sh
+bun -e '
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { FabricCommercialTrustSchema } from "./packages/shared/src/federation/commercial";
+for (const name of ["previous", "next"]) {
+  const value = FabricCommercialTrustSchema.parse(JSON.parse(readFileSync(`reviewed-${name}-trust.json`, "utf8")));
+  const bytes = JSON.stringify(value);
+  writeFileSync(`trust-update.${name}.json`, bytes, { flag: "wx", mode: 0o600 });
+  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}\n`;
+  writeFileSync(`trust-update.${name === "previous" ? "before" : "after"}.sha256`, digest, { flag: "wx", mode: 0o600 });
+}'
+```
+
+将 `trust-update.next.json`、`trust-update.before.sha256`、`trust-update.after.sha256` 放入本站 `admin/commercial/`。`trust-update.args` 采用一行一个参数，明确列出通道、商业链码、Orderer/TLS/mTLS，以及**所有已配置机构**的 `--peerAddresses`／`--tlsRootCertFiles`；不能只列当前商业 PDC 的两家，也不能覆盖工具固定的 constructor、Init 标志或等待提交参数。
+
+所有商业 CCAAS 使用同一经评审的 next 配置后，独立执行：
+
+```sh
+bash deploy/federation/compose.sh fabric --profile fabric-admin run --rm fabric-admin trust-update commercial
+# AIO 离线交付使用原配置文件、原交付包及其可信摘要：
+python3 deploy/federation/offline.py admin --bundle /交付目录 --manifest-sha256 <可信摘要> \
+  --config /本站私有配置.json --operation trust-update --kind commercial
+```
+
+工具核对原 CCAAS package ID、next 文件 SHA-256 和预期前后摘要，不替机构生成批准或自动改动链码定义。链端独立核对进程实际 next 配置、已存前驱及追加约束，缺少原生背书不会成为 VALID。配置切换期间普通业务入口保持拒绝，不做无链降级；确认回执后再按经批准的 next 配置恢复 Adapter 与新提交。新功能的真实多 Peer 更新和故障恢复仍须现场验收，命令夹具与内存账本测试不能替代该证据。
+
 
 ## CI/CD 与现有腾讯云部署
 

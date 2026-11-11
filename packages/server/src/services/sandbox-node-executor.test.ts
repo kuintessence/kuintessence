@@ -714,10 +714,21 @@ describe("SandboxNodeExecutor", () => {
       restrictedNoEgress: false,
     };
 
-    await expect(resolveExecutionMode.executionModeForSelectedAgent(input)).resolves.toEqual({
-      executionMode: "SelfAccount",
-      runtimeAttestationId: "8".repeat(64),
-    });
+    for (const schedulerType of ["slurm", "pbs-pro"]) {
+      await expect(
+        resolveExecutionMode.executionModeForSelectedAgent({ ...input, schedulerType }),
+      ).resolves.toEqual({
+        executionMode: "SelfAccount",
+        runtimeAttestationId: "8".repeat(64),
+      });
+      await expect(
+        resolveExecutionMode.executionModeForSelectedAgent({
+          ...input,
+          schedulerType,
+          identity: { ...input.identity, uid: 1002 },
+        }),
+      ).rejects.toThrow("does not exactly match");
+    }
     await expect(
       resolveExecutionMode.executionModeForSelectedAgent({
         ...input,
@@ -733,8 +744,8 @@ describe("SandboxNodeExecutor", () => {
       resolveExecutionMode.executionModeForSelectedAgent({ ...input, restrictedNoEgress: true }),
     ).rejects.toThrow("cannot use SelfAccount");
     await expect(
-      resolveExecutionMode.executionModeForSelectedAgent({ ...input, schedulerType: "pbs-pro" }),
-    ).rejects.toThrow("currently limited to Slurm");
+      resolveExecutionMode.executionModeForSelectedAgent({ ...input, schedulerType: "torque" }),
+    ).rejects.toThrow("limited to Slurm and PBS Pro");
   });
 
   test("requires root HPC proof while keeping Kubernetes on its own verification path", async () => {

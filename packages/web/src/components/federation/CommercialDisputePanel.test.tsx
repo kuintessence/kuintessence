@@ -136,7 +136,9 @@ const dispute: CommercialDispute = {
 };
 let saved: CommercialDisputeResolutionView | null,
   grants: FederationCapability[],
-  withdrawn: boolean;
+  withdrawn: boolean,
+  hasExecution: boolean,
+  agreementMode: "bilateral_attested" | "ledger_coordinated";
 function view(value = proposal): CommercialDisputeResolutionView {
   return {
     payload: value,
@@ -148,6 +150,7 @@ function view(value = proposal): CommercialDisputeResolutionView {
     financialAppliedAt: null,
     exchange: null,
     ledger: null,
+    authorizationLedger: null,
   };
 }
 function mount() {
@@ -157,7 +160,13 @@ function mount() {
   const element = (readOnly = false, capabilities = grants) => (
     <QueryClientProvider client={client}>
       <CommercialDisputePanel
-        approval={approval}
+        approval={{
+          ...approval,
+          terms: {
+            ...approval.terms,
+            agreement: { ...approval.terms.agreement, mode: agreementMode },
+          },
+        }}
         scope={scope}
         grants={capabilities}
         readOnly={readOnly}
@@ -170,7 +179,9 @@ function mount() {
 async function open() {
   mount();
   fireEvent.click(await screen.findByRole("button", { name: /Reconcile disputed charge/ }));
-  await screen.findByText(withdrawn ? "Permanently withdrawn" : "Not withdrawn", { exact: true });
+  if (hasExecution)
+    await screen.findByText(withdrawn ? "Permanently withdrawn" : "Not withdrawn", { exact: true });
+  else await screen.findByText(saved ? "Both parties approved" : "Not approved", { exact: true });
 }
 async function importProposal(value: unknown = proposal) {
   const file = new File([JSON.stringify(value)], "proposal.json", { type: "application/json" });
@@ -186,6 +197,8 @@ beforeEach(async () => {
   await i18n.changeLanguage("en");
   saved = null;
   withdrawn = true;
+  hasExecution = true;
+  agreementMode = "bilateral_attested";
   grants = [
     "agreement.read",
     "dispute.read",
@@ -194,6 +207,19 @@ beforeEach(async () => {
     "arbitration.execute",
   ];
   vi.mocked(api.get).mockImplementation(async (path) => {
+    if (path.endsWith("/resolution/context"))
+      return {
+        data: {
+          canDraft: !saved && (!hasExecution || withdrawn),
+          blockedReason: saved
+            ? "RESOLUTION_EXISTS"
+            : hasExecution && !withdrawn
+              ? "DATA_WAITING"
+              : null,
+          protocolVersion: hasExecution ? 1 : 2,
+          mode: agreementMode,
+        },
+      };
     if (path.includes("disputes?"))
       return {
         data: {
@@ -238,38 +264,40 @@ beforeEach(async () => {
       };
     if (path.endsWith("/arbitration-decision")) return { data: null };
     if (path.endsWith("/arbitration-resolution"))
-      return {
-        data: {
-          payload: {
-            decisionId: proposal.decisionId,
-            decisionDigest: digest,
-            caseId,
-            caseDigest: digest,
-            domainId: proposal.domainId,
-            agreementRevisionId: revisionId,
-            sourceSiteId: source,
-            targetSiteId: target,
-            taskId,
-            attempt: 1,
-            mode: "bilateral_attested",
-            headDigest: digest,
-            freezeDigest: digest,
-            outcome: {
-              action: "settle",
-              bill: { recordId: uuid(15), recordDigest: digest },
-              chargedAmount: "50",
+      return !hasExecution
+        ? { data: null }
+        : {
+            data: {
+              payload: {
+                decisionId: proposal.decisionId,
+                decisionDigest: digest,
+                caseId,
+                caseDigest: digest,
+                domainId: proposal.domainId,
+                agreementRevisionId: revisionId,
+                sourceSiteId: source,
+                targetSiteId: target,
+                taskId,
+                attempt: 1,
+                mode: "bilateral_attested",
+                headDigest: digest,
+                freezeDigest: digest,
+                outcome: {
+                  action: "settle",
+                  bill: { recordId: uuid(15), recordDigest: digest },
+                  chargedAmount: "50",
+                },
+              },
+              approvedHeldAmount: "0",
+              lastError: null,
+              nextAttemptAt: null,
+              ledger: null,
+              appliedAt: null,
+              createdAt: date,
+              withdrawalRequestedAt: withdrawn ? date : null,
+              withdrawnAt: withdrawn ? date : null,
             },
-          },
-          approvedHeldAmount: "0",
-          lastError: null,
-          nextAttemptAt: null,
-          ledger: null,
-          appliedAt: null,
-          createdAt: date,
-          withdrawalRequestedAt: withdrawn ? date : null,
-          withdrawnAt: withdrawn ? date : null,
-        },
-      };
+          };
     if (path.endsWith("/financial-view"))
       return {
         data: {
@@ -291,13 +319,105 @@ beforeEach(async () => {
   });
   vi.mocked(api.post).mockImplementation(async (path, body) => {
     if (path.endsWith("/resolution/draft"))
-      return { data: { ...proposal, reason: (body as { reason: string }).reason } };
+      return {
+        data: {
+          ...proposal,
+          ...(!hasExecution
+            ? {
+                protocolVersion: 2,
+                decisionId: null,
+                withdrawalDigest: null,
+                freezeDigest: agreementMode === "ledger_coordinated" ? digest : null,
+                mode: agreementMode,
+              }
+            : {}),
+          reason: (body as { reason: string }).reason,
+        },
+      };
     if (path.endsWith("/resolution")) {
       saved = view(CommercialDisputeResolutionSchema.parse(body));
       return { data: saved };
     }
     return { data: {} };
   });
+});
+test("proposes a general settlement without inventing an old decision or withdrawal", async () => {
+  hasExecution = false;
+  withdrawn = false;
+  await open();
+  expect(screen.queryByText("Execution withdrawal")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Propose settlement" }));
+  fireEvent.change(screen.getByLabelText("Settlement reason"), {
+    target: { value: "Both institutions reconciled the originals" },
+  });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Review proposal" })).toHaveProperty(
+      "disabled",
+      false,
+    ),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Review proposal" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Approve settlement" }));
+  await confirm();
+  await waitFor(() => expect(saved?.payload.protocolVersion).toBe(2));
+  expect(saved?.payload.decisionId).toBeNull();
+  expect(saved?.payload.withdrawalDigest).toBeNull();
+  expect(
+    vi.mocked(api.post).mock.calls.some(([path]) => path.includes("arbitration-resolution")),
+  ).toBe(false);
+});
+test("coordinated settlement waits for its exact chain authorization before financial approval", async () => {
+  hasExecution = false;
+  agreementMode = "ledger_coordinated";
+  saved = {
+    ...view(
+      CommercialDisputeResolutionSchema.parse({
+        ...proposal,
+        protocolVersion: 2,
+        decisionId: null,
+        withdrawalDigest: null,
+        freezeDigest: digest,
+        mode: agreementMode,
+        financial,
+      }),
+    ),
+    counterpartyApproved: true,
+    authorizationLedger: {
+      id: uuid(25),
+      state: "pending",
+      lastError: null,
+      transactionId: "f".repeat(64),
+      blockNumber: null,
+    },
+  };
+  const m = mount();
+  fireEvent.click(await screen.findByRole("button", { name: /Reconcile disputed charge/ }));
+  await screen.findByText("Settlement chain authorization");
+  expect(screen.getByText("Awaiting chain confirmation to continue")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Approve financial record" })).toBeNull();
+  saved = {
+    ...saved,
+    authorizationLedger: {
+      id: uuid(25),
+      state: "committed",
+      lastError: null,
+      transactionId: "f".repeat(64),
+      blockNumber: "4",
+    },
+  };
+  await act(async () => {
+    await m.client.invalidateQueries({ queryKey: ["federation"] });
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "Approve financial record" }));
+  expect(api.post).not.toHaveBeenCalled();
+  await confirm();
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      `/federation/commercial-agreements/${revisionId}/adjustments/approve`,
+      financial,
+      scope,
+    ),
+  );
 });
 test("proposes a readable no-finance settlement, preserves exact intent after unknown failure, and never approves money", async () => {
   await open();

@@ -43,6 +43,12 @@ export function createFederationMarketRoutes(service: FederationMarketService) {
       limit: z.coerce.number().int().min(1).max(100).default(50),
       offset: z.coerce.number().int().min(0).default(0),
     });
+  r.get("/federation/market/context", async (c) =>
+    c.json({
+      success: true,
+      data: await service.context(c.get("federationActor")),
+    }),
+  );
   r.get(
     "/federation/market/demands",
     kqValidator(

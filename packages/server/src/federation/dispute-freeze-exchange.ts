@@ -659,6 +659,7 @@ export class FederationDisputeFreezeExchange {
         .where(
           and(
             eq(submissions.localSiteId, this.signing.siteId),
+            sql`${submissions.lastError} IS DISTINCT FROM 'HISTORY_ARCHIVE_ONLY'`,
             eq(submissions.agreementRevisionId, revisionId),
             sql`${submissions.input}->>'operation' IN ('record-dispute-freeze','freeze-disputed-task')`,
             sql`${submissions.input}->>'recordId' = ${caseId}`,

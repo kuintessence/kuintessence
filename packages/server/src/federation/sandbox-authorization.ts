@@ -239,7 +239,7 @@ export async function checkFederationSandboxJob(
     const self = SandboxSelfAccountSchema.safeParse(capabilities.data.selfAccount);
     if (
       job.restrictedNoEgress ||
-      agent.schedulerType !== "slurm" ||
+      (agent.schedulerType !== "slurm" && agent.schedulerType !== "pbs-pro") ||
       !policy.selfAccountEnabled ||
       currentIdentity.backend !== "Unix" ||
       currentIdentity.mode !== "MappedAccount" ||

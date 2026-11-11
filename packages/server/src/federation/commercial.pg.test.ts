@@ -13546,12 +13546,6 @@ test("arbitration decision requires separate signer capability, current evidence
       outcome: { ...f.input.outcome, chargedAmount: "61" },
     }),
   ).rejects.toThrow("POLICY_DENIED");
-  await expect(
-    f.decisions.approve(f.owner.actor, f.scope.caseId, {
-      ...intent,
-      outcome: { action: "resolve-without-financial-change" },
-    }),
-  ).rejects.toThrow("POLICY_DENIED");
   await db
     .update(federationSigningKeys)
     .set({ allowedKinds: sql`${federationSigningKeys.allowedKinds} - 'arbitration-decision'` })
@@ -13570,6 +13564,13 @@ test("arbitration decision concurrent approvals save once and reject a second de
     f.decisions.approve(f.owner.actor, f.scope.caseId, intent),
   ]);
   expect(outcomes[0]).toEqual(outcomes[1]);
+  await expect(
+    f.decisions.approve(f.owner.actor, f.scope.caseId, {
+      ...intent,
+      outcome: { action: "resolve-without-financial-change" },
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect((await f.decisions.read(f.owner.actor, f.scope.caseId))?.payload.intent).toEqual(intent);
   expect(
     await db
       .select()
@@ -13673,8 +13674,16 @@ test("arbitration decision outcome checks exact financial relationships and fina
   if (!review.context.financial) throw new Error("Missing financial view");
   const target = review.context.financial.targets[0];
   if (!target) throw new Error("Missing financial target");
-  review.context.policy.actions = ["settle", "adjust", "resolve-without-financial-change"];
   const salt = "a".repeat(64);
+  review.context.policy.actions = ["settle", "adjust"];
+  expect(() =>
+    arbitrationDecisionIntent(
+      review,
+      { ...f.input, outcome: { action: "resolve-without-financial-change" } },
+      salt,
+    ),
+  ).toThrow("POLICY_DENIED");
+  review.context.policy.actions = ["settle", "adjust", "resolve-without-financial-change"];
   expect(
     arbitrationDecisionIntent(
       review,
@@ -16238,13 +16247,20 @@ test("dispute settlement rejects unconfirmed withdrawal, stale heads, missing pu
     f.actor.userId,
   );
   const input = { resolutionId: randomUUID(), reason: "和解", financial: null };
+  expect((await service.draft(f.actor, f.revisionId, f.scope.caseId, input)).protocolVersion).toBe(
+    2,
+  );
+  await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
   await expect(service.draft(f.actor, f.revisionId, f.scope.caseId, input)).rejects.toThrow(
     "DATA_WAITING",
   );
-  await f.resolveA.execute(f.actor, f.revisionId, f.scope.caseId);
   await f.resolveA.withdraw(f.actor, f.revisionId, f.scope.caseId);
+  await expect(service.draft(f.actor, f.revisionId, f.scope.caseId, input)).rejects.toThrow(
+    "DATA_WAITING",
+  );
   await new FederationArbitrationExecutionExchange(db, f.a.signing, f.ingress).advanceNext();
   const draft = await service.draft(f.actor, f.revisionId, f.scope.caseId, input);
+  expect(draft.protocolVersion).toBe(1);
   await expect(
     service.approve(f.actor, f.revisionId, f.scope.caseId, {
       ...draft,

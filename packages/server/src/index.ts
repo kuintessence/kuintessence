@@ -105,6 +105,7 @@ import { FederationExecutionMonitor } from "./federation/execution-monitor";
 import { FederationExecutionStopService } from "./federation/execution-stop";
 import { FederationExecutionTerminalService } from "./federation/execution-terminal";
 import { FederationTerminalExchange } from "./federation/execution-terminal-exchange";
+import { FederationCommercialHistoryService } from "./federation/history-recovery";
 import { FederationInputImports } from "./federation/input-imports";
 import { FederationInputPublication } from "./federation/input-publication";
 import { FederationInputReader } from "./federation/input-reader";
@@ -2031,6 +2032,7 @@ if (federationSigningKey && federationCommercial)
       federationArbitrationDecisions,
       federationArbitrationResolution,
       new FederationDisputeResolutionService(db, federationSigningKey),
+      new FederationCommercialHistoryService(db, federationSigningKey),
     ),
   );
 const federationPreparation = federationSigningKey

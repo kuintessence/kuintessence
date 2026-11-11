@@ -34,6 +34,7 @@ describe("loadAgentConfig", () => {
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(30);
     expect(cfg.AGENT_QUEUE_INVENTORY_INTERVAL_SEC).toBe(30);
     expect(cfg.AGENT_SCHEDULER_METRICS_INTERVAL_SEC).toBe(120);
+    expect(cfg.AGENT_SLURM_TERMINAL_STATUS_BACKEND).toBe("sacct");
     expect(cfg.AGENT_GRPC_PING_INTERVAL_SEC).toBe(30);
     expect(cfg.AGENT_GRPC_PING_TIMEOUT_SEC).toBe(10);
     expect(cfg.AGENT_REGISTRATION_TIMEOUT_SEC).toBe(30);
@@ -43,6 +44,16 @@ describe("loadAgentConfig", () => {
     expect(cfg.AGENT_FILE_TRANSFER_CONNECT_TO).toBe("localhost:9000:host.docker.internal:9000");
     expect(cfg.AGENT_CONTAINER_FILE_TRANSFER_CONNECT_TO).toBeUndefined();
     expect(cfg.AGENT_K8S_DEFAULT_IMAGE).toBe("busybox:latest");
+  });
+
+  test("allows explicit retained Slurm status without pretending accounting exists", () => {
+    expect(
+      loadAgentConfig({ ...baseEnv, AGENT_SLURM_TERMINAL_STATUS_BACKEND: "scontrol" })
+        .AGENT_SLURM_TERMINAL_STATUS_BACKEND,
+    ).toBe("scontrol");
+    expect(() =>
+      loadAgentConfig({ ...baseEnv, AGENT_SLURM_TERMINAL_STATUS_BACKEND: "auto" }),
+    ).toThrow();
   });
 
   test("result copy defaults off and requires private staging capacity and explicit HTTPS origins", () => {

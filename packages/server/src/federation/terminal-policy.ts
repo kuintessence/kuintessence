@@ -9,19 +9,15 @@ import {
   federationExecutionTerminals as terminals,
 } from "@kuintessence/db";
 import { FederationError } from "@kuintessence/shared/federation";
-import { CommercialAgreementSchema } from "@kuintessence/shared/federation/commercial";
+import {
+  CommercialAgreementSchema,
+  TerminalPolicyInputSchema,
+} from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { z } from "zod";
+import type { z } from "zod";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 
-export const TerminalPolicyInputSchema = z.strictObject({
-  outcomes: z
-    .array(z.enum(["completed", "failed", "cancelled"]))
-    .min(1)
-    .max(3)
-    .refine((values) => new Set(values).size === values.length),
-  validUntil: z.iso.datetime({ offset: true }),
-});
+export { TerminalPolicyInputSchema } from "@kuintessence/shared/federation/commercial";
 
 export function assertTerminalPolicyActive(
   policy: typeof policies.$inferSelect,

@@ -1,4 +1,5 @@
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, mkdir, open, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { generateCsr, persistCertBundle } from "@kuintessence/agent/auth";
@@ -105,7 +106,8 @@ export function registerAgentCommand(program: Command): void {
     .description("Register this node as a Server Agent with a one-time registration token")
     .requiredOption("--url <url>", "Server HTTP URL, for example https://server.example.com")
     .requiredOption("--grpc-url <url>", "Server connectRPC URL used by the Agent runtime")
-    .requiredOption("--token <token>", "One-time Agent registration token")
+    .option("--token <token>", "One-time Agent registration token")
+    .option("--token-file <path>", "Private file containing a one-time registration token")
     .option("--output-dir <path>", "Output directory (default ~/.kuintessence/agent/<agentId>)")
     .option(
       "--scheduler <type>",
@@ -115,15 +117,17 @@ export function registerAgentCommand(program: Command): void {
       async (opts: {
         url: string;
         grpcUrl: string;
-        token: string;
+        token?: string;
+        tokenFile?: string;
         outputDir?: string;
         scheduler?: string;
       }) => {
+        const token = await readRegistrationToken(opts);
         const scheduler = opts.scheduler ? parseScheduler(opts.scheduler) : undefined;
         const metadata = await registrationPost<AgentRegistrationMetadataResponse>(
           opts.url,
           "/agent-registration/metadata",
-          { token: opts.token },
+          { token },
         );
         const adapter = await detectLocalAdapter(scheduler).catch((err) => {
           throw new Error(
@@ -139,7 +143,7 @@ export function registerAgentCommand(program: Command): void {
           opts.url,
           "/agent-registration/complete",
           {
-            token: opts.token,
+            token,
             csrPem,
             schedulerType: adapter.type,
             schedulerVersion: adapter.version,
@@ -275,6 +279,34 @@ async function registrationPost<T>(serverUrl: string, path: string, body: unknow
     throw new Error(`Agent registration failed: ${message}`);
   }
   return (await res.json()) as T;
+}
+
+export async function readRegistrationToken(opts: {
+  token?: string;
+  tokenFile?: string;
+}): Promise<string> {
+  if ((opts.token !== undefined) === (opts.tokenFile !== undefined))
+    throw new Error("Provide exactly one of --token or --token-file");
+  if (opts.token !== undefined) {
+    if (!opts.token.trim()) throw new Error("Registration token must not be empty");
+    return opts.token.trim();
+  }
+  const file = await open(opts.tokenFile ?? "", constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const info = await file.stat();
+    if (
+      !info.isFile() ||
+      info.uid !== process.getuid?.() ||
+      (info.mode & 0o077) !== 0 ||
+      info.size > 16384
+    )
+      throw new Error("Token file must be private, owned by this user and at most 16 KiB");
+    const token = (await file.readFile("utf8")).trim();
+    if (!token) throw new Error("Registration token must not be empty");
+    return token;
+  } finally {
+    await file.close();
+  }
 }
 
 export function parsePositiveInt(value: string, label: string): number {

@@ -1,0 +1,6 @@
+[Unit]
+Description=KQ AIO PBS job cgroups
+
+[Slice]
+CPUAccounting=yes
+MemoryAccounting=yes

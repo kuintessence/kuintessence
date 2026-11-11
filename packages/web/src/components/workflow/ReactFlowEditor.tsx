@@ -49,6 +49,7 @@ import {
 
 /** Node types the palette can drag-create. A subset of all nine types. */
 const CREATABLE_KINDS: ReadonlyArray<GraphNodeKind> = [
+  "Federation",
   "SoftwareUsecaseComputing",
   "Script",
   "NoAction",
@@ -109,6 +110,25 @@ function makeRawNode(
                 : { type: "Text" as const, descriptor, optional: !spec.required },
             )
           : undefined,
+      };
+    case "Federation":
+      return {
+        ...common,
+        type: "Federation",
+        agreementRevisionId: PLACEHOLDER_UUID,
+        template: {
+          kind: "workflow",
+          originSiteId: PLACEHOLDER_UUID,
+          id: PLACEHOLDER_UUID,
+          revision: "1",
+          digest: `sha256:${"0".repeat(64)}`,
+        },
+        inputManifestDigest: `sha256:${"0".repeat(64)}`,
+        environmentLockDigest: `sha256:${"0".repeat(64)}`,
+        resources: { cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 60 },
+        maxAmount: "0",
+        admissionWindowSec: 600,
+        outputs: [],
       };
     case "Milestone":
       return { ...common, type: "Milestone", url: "", customMessage: "" };

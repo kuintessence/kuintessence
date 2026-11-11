@@ -819,6 +819,7 @@ export class FederationAdjustmentService {
           submissions,
           and(
             eq(submissions.localSiteId, adjustments.localSiteId),
+            sql`${submissions.lastError} IS DISTINCT FROM 'HISTORY_ARCHIVE_ONLY'`,
             sql`${submissions.input}->>'operation' = CASE WHEN ${adjustments.arbitrationDecisionId} IS NULL THEN 'adjust-settlement' ELSE 'resolve-arbitrated-case' END`,
             sql`${submissions.input}->>'recordId' = ${adjustments.adjustmentId}::text`,
           ),

@@ -37,7 +37,12 @@ export function isMobileHighRiskMutationBlocked(path: string): boolean {
   } catch {
     return false;
   }
-  if (/^\/federation\/(?:agreements|commercial-agreements)(?:\/|$)/.test(path)) return true;
+  if (
+    /^\/federation\/(?:agreements|commercial-agreements|market|evidence-cases|case-publications)(?:\/|$)/.test(
+      path,
+    )
+  )
+    return true;
   if (APPROVAL_PATHS.some((pattern) => pattern.test(path))) return false;
   return HIGH_RISK_PATHS.some((pattern) => pattern.test(path));
 }

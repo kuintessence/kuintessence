@@ -29,7 +29,7 @@ case "$action" in
       fi
     done <<< "$joined"
     exec peer channel join -b /run/kq-admin/channel.block ;;
-  install|approve|readiness|commit|initialize|verify)
+  install|approve|readiness|commit|initialize|verify|trust-update)
     case "$kind" in evidence|commercial|market|case) ;; *) fail "Specify evidence, commercial, market or case." ;; esac
     directory=/run/kq-admin/$kind
     [[ -f "$directory/package.id" && -f "$directory/package.tgz" ]] || fail "Missing approved CCAAS package."
@@ -37,6 +37,20 @@ case "$action" in
     actual=$(peer lifecycle chaincode calculatepackageid "$directory/package.tgz")
     [[ "$expected" == "$actual" ]] || fail "CCAAS package ID mismatch."
     case "$action" in
+      trust-update)
+        [[ "$kind" == commercial ]] || fail "Trust append is limited to the commercial chaincode."
+        read_args "$directory/trust-update.args"
+        [[ -f "$directory/trust-update.before.sha256" && -f "$directory/trust-update.after.sha256" && -f "$directory/trust-update.next.json" ]] || fail "Missing approved trust append artifacts."
+        previous=$(cat "$directory/trust-update.before.sha256")
+        next=$(cat "$directory/trust-update.after.sha256")
+        [[ "$previous" =~ ^sha256:[a-f0-9]{64}$ && "$next" =~ ^sha256:[a-f0-9]{64}$ && "$previous" != "$next" ]] || fail "Invalid trust append digests."
+        actual=$(sha256sum "$directory/trust-update.next.json")
+        [[ "$next" == "sha256:${actual%% *}" ]] || fail "Approved trust file digest mismatch."
+        for argument in "${args[@]}"; do
+          case "$argument" in -c*|--ctor|--ctor=*|--isInit|--isInit=*|--waitForEvent|--waitForEvent=*) fail "Trust append arguments cannot replace the fixed operation." ;; esac
+        done
+        constructor=$(printf '{"Args":["UpdateTrust","%s","%s"]}' "$previous" "$next")
+        exec peer chaincode invoke --waitForEvent -c "$constructor" "${args[@]}" ;;
       install)
         installed=$(peer lifecycle chaincode queryinstalled)
         while IFS= read -r line; do
@@ -62,5 +76,5 @@ case "$action" in
         read_args "$directory/verify.args"
         exec peer lifecycle chaincode querycommitted "${args[@]}" --output json ;;
     esac ;;
-  *) fail 'Usage: fabric-admin orderer-join|peer-join|install|approve|readiness|commit|initialize|verify [kind]' ;;
+  *) fail 'Usage: fabric-admin orderer-join|peer-join|install|approve|readiness|commit|initialize|verify|trust-update [kind]' ;;
 esac
