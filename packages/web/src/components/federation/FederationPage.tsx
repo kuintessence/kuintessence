@@ -15,6 +15,7 @@ import { PageHeader, PageShell } from "../ui/page";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { AgreementPanel } from "./AgreementPanel";
 import { CommercialPanel } from "./CommercialPanel";
+import { FederationAssetsPanel } from "./FederationAssetsPanel";
 import { FederationTasksPanel } from "./FederationTasksPanel";
 import { MediaDeliveryPanel, type MediaWorkflowExport } from "./MediaDeliveryPanel";
 import { MediaLogisticsPanel } from "./MediaLogisticsPanel";
@@ -116,6 +117,7 @@ function OrganizationAgreements({
           <TabsList aria-label={t("federation.agreements.title")}>
             <TabsTrigger value="tasks">{t("federation.tasks.title")}</TabsTrigger>
             <TabsTrigger value="execution">{t("federation.agreements.agreements")}</TabsTrigger>
+            <TabsTrigger value="assets">{t("federation.assets.title")}</TabsTrigger>
             <TabsTrigger value="commercial">{t("federation.commercial.title")}</TabsTrigger>
             <TabsTrigger value="delivery">{t("federation.delivery.title")}</TabsTrigger>
             <TabsTrigger value="media">{t("federation.logistics.title")}</TabsTrigger>
@@ -134,6 +136,12 @@ function OrganizationAgreements({
           </TabsContent>
           <TabsContent value="commercial">
             <CommercialPanel
+              scope={{ organizationId, authRevision: revision }}
+              switching={change.isPending || context.isFetching}
+            />
+          </TabsContent>
+          <TabsContent value="assets">
+            <FederationAssetsPanel
               scope={{ organizationId, authRevision: revision }}
               switching={change.isPending || context.isFetching}
             />

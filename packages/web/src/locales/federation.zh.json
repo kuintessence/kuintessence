@@ -1250,6 +1250,55 @@
       },
       "arbitration": "仲裁授权",
       "noArbitration": "未附带"
+    },
+    "assets": {
+      "title": "联邦资产",
+      "materials": "输入与环境",
+      "mappings": "资产映射",
+      "add": {
+        "material": "导入材料",
+        "mapping": "登记映射"
+      },
+      "origin": "来源站点 ID",
+      "file": "JSON 文件",
+      "content": "材料原件",
+      "kind": "类型",
+      "id": "来源资产 ID",
+      "revision": "来源版本",
+      "digest": "SHA-256",
+      "localRevision": "本地不可变版本 ID",
+      "review": "核对",
+      "tooLarge": "材料不得超过 1 MiB，请缩小文件后重试。",
+      "invalid": "材料格式或字段无效，请检查站点、版本、摘要及原件格式。",
+      "readFailed": "文件读取失败，请重新选择文件。",
+      "noPermission": "没有查看联邦资产的权限。",
+      "unknown": "响应尚未确认，请保留当前材料并重试原请求。",
+      "failed": "操作未完成，请检查权限、资产状态及内容摘要后重试。",
+      "retry": "重试原请求",
+      "saved": "已保存。",
+      "back": "返回材料",
+      "detailFailed": "无法读取或校验材料，请刷新重试。",
+      "download": "导出材料",
+      "mappingDetails": "映射明细",
+      "revoke": "撤销映射",
+      "active": "有效",
+      "revoked": "已撤销",
+      "empty": {
+        "material": "暂无输入快照或环境锁。",
+        "mapping": "暂无资产映射。"
+      },
+      "kinds": {
+        "inputs": "输入快照",
+        "environment-lock": "软件环境锁"
+      },
+      "revokeEffect": "撤销后，使用此映射的新任务将无法解析资产。此操作不可恢复。",
+      "importEffect": "材料与映射仅用于版本解析，不授予软件许可、数据使用权或执行权限。",
+      "parameters": "参数数",
+      "datasets": "数据集数",
+      "bindings": "版本绑定数",
+      "target": "目标平台",
+      "software": "软件数",
+      "nativeLock": "原生依赖锁 SHA-256"
     }
   }
 }

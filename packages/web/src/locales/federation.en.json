@@ -1250,6 +1250,55 @@
       },
       "arbitration": "Arbitration authorization",
       "noArbitration": "Not attached"
+    },
+    "assets": {
+      "title": "Federation assets",
+      "materials": "Inputs and environments",
+      "mappings": "Asset mappings",
+      "add": {
+        "material": "Import material",
+        "mapping": "Register mapping"
+      },
+      "origin": "Origin site ID",
+      "file": "JSON file",
+      "content": "Original material",
+      "kind": "Type",
+      "id": "Origin asset ID",
+      "revision": "Origin revision",
+      "digest": "SHA-256",
+      "localRevision": "Local immutable revision ID",
+      "review": "Review",
+      "tooLarge": "Material must be at most 1 MiB. Choose a smaller file and retry.",
+      "invalid": "Invalid material or fields. Check the site, revision, digest and original format.",
+      "readFailed": "Could not read the file. Select it again.",
+      "noPermission": "You do not have permission to view federation assets.",
+      "unknown": "The response is unconfirmed. Keep this material and retry the original request.",
+      "failed": "The operation did not complete. Check permissions, asset status and content digests, then retry.",
+      "retry": "Retry original request",
+      "saved": "Saved.",
+      "back": "Back to materials",
+      "detailFailed": "Could not read or verify this material. Refresh to retry.",
+      "download": "Export material",
+      "mappingDetails": "Mapping details",
+      "revoke": "Revoke mapping",
+      "active": "Active",
+      "revoked": "Revoked",
+      "empty": {
+        "material": "No input snapshots or environment locks.",
+        "mapping": "No asset mappings."
+      },
+      "kinds": {
+        "inputs": "Input snapshot",
+        "environment-lock": "Software environment lock"
+      },
+      "revokeEffect": "New tasks using this mapping will no longer resolve the asset. Revocation is permanent.",
+      "importEffect": "Materials and mappings resolve versions. They do not grant software licenses, data use or execution permissions.",
+      "parameters": "Parameters",
+      "datasets": "Datasets",
+      "bindings": "Revision bindings",
+      "target": "Target platform",
+      "software": "Software entries",
+      "nativeLock": "Native dependency lock SHA-256"
     }
   }
 }

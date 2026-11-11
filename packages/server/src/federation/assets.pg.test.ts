@@ -611,7 +611,9 @@ test("asset API takes organization from the session, refuses automation and vali
     r.route("/api", createFederationAssetRoutes(assets));
     return r;
   };
-  expect((await app().request("/api/federation/assets/mappings")).status).toBe(200);
+  const mappings = await app().request("/api/federation/assets/mappings");
+  expect(mappings.status).toBe(200);
+  expect(mappings.headers.get("cache-control")).toBe("no-store");
   const content = {
     protocolVersion: 1,
     kind: "inputs",
@@ -619,7 +621,13 @@ test("asset API takes organization from the session, refuses automation and vali
     datasets: [],
     bindings: [],
   };
-  await assets.putMaterial(actor, scriptRef.originSiteId, content);
+  const stored = await assets.putMaterial(actor, scriptRef.originSiteId, content);
+  const original = await app().request(
+    `/api/federation/assets/materials/${scriptRef.originSiteId}/${stored.digest}`,
+  );
+  expect(original.status).toBe(200);
+  expect(original.headers.get("cache-control")).toBe("no-store");
+  expect(await original.json()).toEqual({ success: true, data: content });
   const materials = await app().request("/api/federation/assets/materials?limit=1");
   expect(materials.status).toBe(200);
   expect(materials.headers.get("cache-control")).toBe("no-store");

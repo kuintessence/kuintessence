@@ -21,6 +21,7 @@ export function createFederationAssetRoutes(
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/assets/*", async (c, next) => {
+    c.header("cache-control", "no-store");
     const principal = c.get("principal" as never) as BoundPrincipal | undefined;
     if (!principal?.userId || !principal.orgId || c.get("automation" as never))
       throw new AppError(
