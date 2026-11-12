@@ -99,7 +99,7 @@ async function fixture(
     async install(_prepared, input) {
       calls.push(`install:${input.spec}`);
       signals.push({ stage: "install", signal: input.signal });
-      return success;
+      return { ...success, stdout: JSON.stringify(f.report("verify", "/srv/kq/releases/test")) };
     },
     async installedList() {
       return [managed];
@@ -166,21 +166,27 @@ describe("managed Spack manager integration", () => {
     expect(f.calls.includes("install:hello@1.0")).toBe(false);
   });
 
-  test("audit-only and successful build paths preserve a bound source proof without claiming installation", async () => {
-    for (const backend of [false, true]) {
-      const f = await fixture({ backend, proof: true });
-      const result = await f.manager.runSoftwareOperation("install", f.input.spec, f.input);
-      expect(result.outcome).toBe(backend ? "succeeded" : "rejected");
-      if (result.outcome === "failed") throw new Error("Unexpected audit failure");
-      expect(result.stdout?.startsWith(SPACK_SOURCE_PROOF_PREFIX)).toBe(true);
-      const proof = SpackSourceAuditEnvelopeSchema.parse(
-        JSON.parse((result.stdout ?? "").slice(SPACK_SOURCE_PROOF_PREFIX.length)),
-      );
-      expect(proof.operationId).toBe(f.input.operationId);
-      expect(proof.spec).toBe(f.input.spec);
-      expect(proof.report.passed).toBe(true);
-      expect(f.calls.includes("install:hello@1.0")).toBe(backend);
-    }
+  test("a successful source audit preserves the installation JSON report", async () => {
+    const f = await fixture({ proof: true });
+    const result = await f.manager.runSoftwareOperation("install", f.input.spec, f.input);
+    expect(result.outcome).toBe("succeeded");
+    if (result.outcome !== "succeeded") throw new Error("Unexpected installation failure");
+    expect(JSON.parse(result.stdout ?? "")).toEqual(f.report("verify", "/srv/kq/releases/test"));
+    expect(f.calls.indexOf("audit")).toBeLessThan(f.calls.indexOf("install:hello@1.0"));
+  });
+
+  test("audit-only backend configuration preserves a bound source proof", async () => {
+    const f = await fixture({ backend: false, proof: true });
+    const result = await f.manager.runSoftwareOperation("install", f.input.spec, f.input);
+    expect(result.outcome).toBe("rejected");
+    if (result.outcome !== "rejected") throw new Error("Unexpected audit failure");
+    const proof = SpackSourceAuditEnvelopeSchema.parse(
+      JSON.parse((result.stdout ?? "").slice(SPACK_SOURCE_PROOF_PREFIX.length)),
+    );
+    expect(proof.operationId).toBe(f.input.operationId);
+    expect(proof.spec).toBe(f.input.spec);
+    expect(proof.report.passed).toBe(true);
+    expect(f.calls.includes("install:hello@1.0")).toBe(false);
   });
 
   test("explicit audit-only mode never calls an enabled installation backend", async () => {

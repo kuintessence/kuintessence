@@ -327,12 +327,7 @@ export class SpackManager {
           };
         }
         if (this.managedInstallation) {
-          const outcome = await this.withLegacyInventory(
-            await this.managedInstallation.install(prepared, input),
-          );
-          return report.proof && outcome.outcome === "succeeded"
-            ? { ...outcome, stdout: SPACK_SOURCE_PROOF_PREFIX + JSON.stringify(report.proof) }
-            : outcome;
+          return this.withLegacyInventory(await this.managedInstallation.install(prepared, input));
         }
         return {
           outcome: "rejected",

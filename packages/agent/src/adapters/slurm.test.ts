@@ -1144,11 +1144,45 @@ describe("SlurmAdapter status uncertainty and cancellation confirmation", () => 
     await expect(new SlurmAdapter("23", { spawner }).status("123")).rejects.toThrow("unknown");
   });
 
-  test("completed without an exit code is not assumed successful", async () => {
-    const { spawner } = mockSpawner([
-      { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_id: 123, job_state: "COMPLETED" }] }) },
+  test.each([
+    0, 7,
+  ])("completed squeue without exit code uses controller exit code %i", async (code) => {
+    const { spawner, calls } = mockSpawner([
+      { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_id: 42, job_state: "COMPLETED" }] }) },
+      { exitCode: 0, stdout: SCONTROL_COMPLETED.replace("ExitCode=0:0", `ExitCode=${code}:0`) },
     ]);
-    await expect(new SlurmAdapter("23", { spawner }).status("123")).rejects.toThrow("exit code");
+    const result = await new SlurmAdapter("21.08.5", {
+      spawner,
+      terminalStatusBackend: "scontrol",
+    }).status("42");
+    expect(result.status).toBe(code === 0 ? "completed" : "failed");
+    expect(result.exitCode).toBe(code);
+    expect(calls.map((command) => command[0])).toEqual(["squeue", "scontrol"]);
+  });
+
+  test("completed squeue without exit code uses the exact accounting allocation", async () => {
+    const { spawner, calls } = mockSpawner([
+      { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_id: 123, job_state: "COMPLETED" }] }) },
+      { exitCode: 0, stdout: "999|COMPLETED|0:0\n123|COMPLETED|0:0\n" },
+    ]);
+    expect(await new SlurmAdapter("23", { spawner }).status("123")).toEqual({
+      status: "completed",
+      exitCode: 0,
+    });
+    expect(calls.map((command) => command[0])).toEqual(["squeue", "sacct"]);
+  });
+
+  test("completed without an exit code in either source is not assumed successful", async () => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_id: 42, job_state: "COMPLETED" }] }) },
+      { exitCode: 0, stdout: SCONTROL_COMPLETED.replace("ExitCode=0:0", "") },
+    ]);
+    await expect(
+      new SlurmAdapter("21.08.5", {
+        spawner,
+        terminalStatusBackend: "scontrol",
+      }).status("42"),
+    ).rejects.toThrow("exit code");
   });
 
   test("COMPLETING array flag is nonterminal even alongside a terminal base state", async () => {

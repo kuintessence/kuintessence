@@ -1,4 +1,4 @@
-import { SiteOperationsSchema } from "@kuintessence/shared";
+import { SiteOperationsSchema } from "@kuintessence/shared/browser";
 import { useTranslation } from "react-i18next";
 import { relativeFromNow } from "../../lib/format";
 

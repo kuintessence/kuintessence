@@ -153,6 +153,9 @@ jobs:
       - name: Verify shared UI and key page screenshots
         working-directory: packages/web
         run: bunx --no-install patchright test --config=e2e/ui-components.config.ts
+      - name: Verify Vite development login entry
+        working-directory: packages/web
+        run: bunx --no-install patchright test --config=e2e/dev-login.config.ts
       - name: Upload UI browser results
         if: always()
         uses: actions/upload-artifact@v4

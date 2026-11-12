@@ -766,7 +766,11 @@ export class SlurmAdapter implements SchedulerAdapter {
     const state = slurmStateName(job.job_state);
     const returnCode = slurmJsonNumber(job.exit_code?.return_code);
     const signal = slurmJsonNumber(job.exit_code?.signal);
-    const result = mapSlurmState(state, returnCode === 0 && signal ? 128 + signal : returnCode);
+    // Older squeue JSON can retain COMPLETED jobs without their exit code.
+    const result =
+      state === "COMPLETED" && returnCode === undefined
+        ? await this.checkCompleted(schedulerJobId)
+        : mapSlurmState(state, returnCode === 0 && signal ? 128 + signal : returnCode);
     const node = typeof job.nodes === "string" && job.nodes.trim() ? job.nodes : undefined;
     const startedAt = slurmEpochToIso(job.start_time);
     const reason = job.state_reason && job.state_reason !== "None" ? job.state_reason : undefined;
