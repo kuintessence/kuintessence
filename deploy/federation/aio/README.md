@@ -2,7 +2,7 @@
 
 三台新增虚拟机运行独立 A/B/C 平台、Fabric 和容器测试集群，A/B 使用 Slurm，C 使用 PBS；R 按需在 A 主机运行独立项目。现有集群不变，主平台只新增第四个 Orderer。完整范围见[实施清单](../../../docs/design/federation/aio-delivery.md)。
 
-候选 `8531c2c` 的 21 镜像归档已真实导出并核验；目标观察和 SIF 提取修复仍待新候选构建／导出验证。未启动 AIO 平台／测试集群、部署或合并，不能据此声明三机构、SmartBFT、容量或科研验收通过。
+固定候选 `b54743b` 的 21 镜像归档已真实导出并核验，两类调度器的正式 target／runtime 入口均已实证。但其中 Spack 1.0.3 不符合生产安装 worker 的 1.0.0 契约；AIO 新构建已显式固定 `SPACK_REF=v1.0.0`，新候选的镜像、SIF 和扩充观察结果仍待构建／导出核验。未启动 AIO 平台／测试集群、部署或合并，不能据此声明三机构、SmartBFT、容量或科研验收通过。
 
 ## 本机构建与导出
 
@@ -79,7 +79,7 @@ python3 /受信任工具/offline.py load --bundle /目标交付目录 --manifest
 
 ## 最终镜像的目标信息
 
-镜像完成构建、导出后，在本机运行下面的显式观察命令。它会创建短期容器，不启动 KQ、调度器或 Agent。两类镜像的完整 collect 已在相同隔离条件验证；Slurm 版本读取使用 `slurmd --version`，避免 `sinfo` 依赖本站配置。修复后的固定候选入口仍须重新验证。
+镜像完成构建、导出后，在本机运行下面的显式观察命令。它会创建短期容器，不启动 KQ、调度器或 Agent。`b54743b` 的两类正式 target 入口已在相同隔离条件通过；Slurm 版本读取使用 `slurmd --version`，避免 `sinfo` 依赖本站配置。Spack 1.0.0 新候选须重新记录观察结果。
 
 ```sh
 python3 deploy/federation/offline.py \
@@ -91,13 +91,13 @@ python3 deploy/federation/offline.py \
 
 PBS 再执行一次并选择 `--scheduler pbs` 和独立输出。目标 Docker 端省略 nerdctl 全局选项。命令只使用已核对 ID 的镜像，禁止拉取，禁网、只读根目录、非 root、无挂载、无额外 capability，限制 1 CPU/256 MiB/120 秒。输出保存为新的 0600 文件，已有记录不覆盖；缺工具、命令失败或观察结果不匹配不会生成成功记录。
 
-记录绑定提交和镜像 ID，包含 OS、glibc、Spack 版本/架构、GCC/G++/Fortran/Python 等工具版本及实际可执行文件摘要。`hostTarget` 是运行观察容器那台主机的 CPU 观察值；它不保证其他主机支持同一指令集。按三机共同 CPU 能力选择最终 target，随后通过既有材料生产工具生成 profile 和 native lock，不能把本文件直接当作它们导入。
+记录绑定提交和镜像 ID，包含 OS、glibc、Spack 版本/架构，以及 GCC/G++/Fortran/Python 等工具事实。观察实现现补齐 Apptainer、Perl 的 path、canonicalPath、SHA-256 和版本，供验签配置与 profile 使用；新候选中同样要求这些工具存在。`hostTarget` 是运行观察容器那台主机的 CPU 观察值；它不保证其他主机支持同一指令集。按三机共同 CPU 能力选择最终 target，随后通过既有材料生产工具生成 profile 和 native lock，不能把本文件直接当作它们导入。
 
-`runtimeToolsPresent` 只表示镜像内可找到 Apptainer/systemd 命令；不证明用户服务、cgroup 委派、签名 SIF、受限作业或安装 store 已配置。普通模式的 `AGENT_SPACK_ENABLED=true` 只打开探测。需要托管安装和 SelfAccount 联邦任务时使用下面的显式配置；目标平台原生运行与内核隔离仍须现场验收。
+`runtimeToolsPresent` 保留兼容，只表示镜像内可找到 Apptainer/systemd 命令；不替代工具摘要，也不证明用户服务、cgroup 委派、签名 SIF、受限作业或安装 store 已配置。普通模式的 `AGENT_SPACK_ENABLED=true` 只打开探测。需要托管安装和 SelfAccount 联邦任务时使用下面的显式配置；目标平台原生运行与内核隔离仍须现场验收。
 
 ## 托管安装与联邦任务运行时
 
-AIO 调度器使用 Ubuntu 24.04、同提交的编译 Agent、Apptainer 1.4.3 和 systemd。普通调度器基础镜像默认仍为 Ubuntu 20.04；旧宿主或旧镜像的 native lock 不能直接套用。公共 SIF 仅包含系统与编译/Spack 工具，不预装待验收的科学软件。提取先用与目标观察相同的限额、禁网、只读、非 root 观察容器读取镜像内 SIF 的字节数／SHA-256 小 JSON，再以受限 create 建立但不启动临时容器，通过 cp 复制文件，并在 finally 删除该容器：
+AIO 调度器使用 Ubuntu 24.04、生产安装 worker 支持的 Spack 1.0.0、同提交的编译 Agent、Apptainer 1.4.3 和 systemd。AIO 构建显式指定 Spack 版本，普通调度器基础镜像的 Ubuntu 20.04／Spack 1.0.3 默认值不变；旧宿主或旧镜像的 native lock 不能直接套用。公共 SIF 仅包含系统与编译/Spack 工具，不预装待验收的科学软件。提取先用与目标观察相同的限额、禁网、只读、非 root 观察容器读取镜像内 SIF 的字节数／SHA-256 小 JSON，再以受限 create 建立但不启动临时容器，通过 cp 复制文件，并在 finally 删除该容器：
 
 ```sh
 python3 deploy/federation/offline.py runtime \
@@ -105,9 +105,25 @@ python3 deploy/federation/offline.py runtime \
   --scheduler slurm --output /受控材料/spack-unsigned.sif
 ```
 
-containerd 构建机在 `runtime` 前加前述 nerdctl 全局参数。复制后的字节数和 SHA-256 必须与镜像内记录完全一致，才发布只读 SIF 及旁边的 0600 metadata JSON；记录绑定提交、镜像 ID、字节数和 SHA-256，并明确标记尚未签名、尚未通过软件安装。失败留下 `.creating`，不会覆盖已有文件或盲目重试。先核对失败记录再人工处置；不把残留文件当作可用材料。实际发现过 stdout 命令退出 0 但 SIF 少 57,344 字节，原件留证且不得签名；create／cp 对照已经匹配镜像内摘要，修复后的固定候选完整入口仍待验证。
+containerd 构建机在 `runtime` 前加前述 nerdctl 全局参数。复制后的字节数和 SHA-256 必须与镜像内记录完全一致，才发布只读 SIF 及旁边的 0600 metadata JSON；记录绑定提交、镜像 ID、字节数和 SHA-256，并明确标记尚未签名、尚未通过软件安装。失败留下 `.creating`，不会覆盖已有文件或盲目重试。先核对失败记录再人工处置；不把残留文件当作可用材料。实际发现过 stdout 命令退出 0 但 SIF 少 57,344 字节，原件留证且不得签名；`b54743b` 两类正式 runtime 入口已通过完整复制校验。固定 Spack 1.0.0 后的新 SIF 摘要与入口结果须重新取得。
 
-各机构在独立受控环境批准并签名副本，例如使用已交付的 Apptainer 执行 `apptainer sign --key <私钥> <SIF副本>`，再用 `apptainer verify --all --key <公钥> <已签SIF>` 核对。私钥不进入通用包、调度器或 Agent。签名会改变文件摘要，保留原始提取记录和签后摘要，最终 SIF 归 root、0444。构建公共 SIF 不授予软件安装或数据访问权。
+各机构在独立受控环境批准签署，先核对原始提取记录，再在已存在的私有签署目录独占创建可写副本。下面只使用机构自行持有的 PEM 密钥，不创建密钥或覆盖原件：
+
+```sh
+(
+  set -euC
+  umask 077
+  cat /受控材料/spack-unsigned.sif > /机构签署目录/spack-signed.sif
+  apptainer sign --key /机构密钥/runtime-private.pem /机构签署目录/spack-signed.sif
+  apptainer verify --all --key /机构信任/runtime-public.pem /机构签署目录/spack-signed.sif
+  sha256sum /受控材料/spack-unsigned.sif /机构签署目录/spack-signed.sif > /机构签署目录/sif-sha256.txt
+  chmod 0444 /机构签署目录/spack-signed.sif
+)
+```
+
+`noclobber` 与 umask 保证副本以 0600 新建，已有副本或摘要记录会令流程失败；失败残留须先核对，不能直接重跑覆盖。私钥不进入通用包、调度器或 Agent。签名会改变文件摘要，保留原始提取记录和签后摘要，部署后的 SIF 须归 root、0444。构建公共 SIF 不授予软件安装或数据访问权。
+
+SIF 的 `runtime.pub` 是 PEM 验签公钥；`AGENT_SANDBOX_PUBLIC_KEYS_JSON` 信任本站 Server 的派发签名；Registry 的 Workflow 信任键用于资产发布。三种公钥不能混用，PR 专用 `workflow-signing.ts` 不能替机构配置 SIF 信任。
 
 在本站私有目录下准备 `runtime/`，目录归 root、0755，所有父目录禁止组/其他用户写入；公共配置、公钥、profile 归 root、0444，容器只读挂载到 `/opt/kq/runtime`。`agent.json` 采用下面的结构，摘要与公钥替换为实际值：
 

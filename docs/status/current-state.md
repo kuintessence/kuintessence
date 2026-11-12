@@ -1,5 +1,7 @@
 # 当前功能与使用边界
 
+2026-11-12：准备科研材料时发现 AIO 的 Spack 1.0.3 与生产材料／安装 worker 仅支持 1.0.0 的契约不一致。AIO 构建现显式固定 `SPACK_REF=v1.0.0`，普通调度器基础镜像默认不变，不放宽锁或 worker 校验；新候选待真实构建及材料原生复核。目标观察补充 Apptainer／Perl 的路径、版本与 SHA-256，供机构准备签名及 site profile。旧 `b54743b` 的构建／归档证据保持有效，但不能据此通过科研安装验收。
+
 AIO 交付继续补齐 Casdoor 不可变来源与别名镜像 ID 的导出核对，manifest 保留来源 ref／ID；公开操作说明、部署契约和三份环境变量示例随包逐文件校验。Bun、Spack、OpenPBS 下载归档现按固定 SHA-256 校验后才解包，未知版本须显式提供摘要。APT 包和基础镜像尚未全部固定，因此不承诺从源码重建获得相同二进制。构建仍要求干净固定提交；已通过独立 BuildKit 完成固定候选镜像、归档核验和正式提取，真实加载及三机容量仍未完成，亦未完成 [38 项现场验收](../design/federation/acceptance.md)。本轮详情见 [交付来源与公开操作材料收尾](../design/federation/progress.md#交付来源与公开操作材料收尾)。
 
 本次交付增量检查通过离线工具 38 项、SchedulerDownloadTests 下载夹具 3 项；全仓 lint 为 0 errors（保留既有 47 warnings／1 info），离线文档 102 文件／1194 目标、workflow 引用及 diff 检查通过。本轮没有 TypeScript 改动，沿用上一轮类型与业务检查，不重复运行。固定代码候选 `b54743b2320bd6c678e9492df81fe3e153e640c1` 的全部 21 镜像已真实 build／export，约 2.6 GiB 归档及 verify 通过；21 个标签、ConfigID、linux/amd64 和 OCI layout 已核对。正式 CLI 的 Slurm／PBS target 各一次成功，两类 runtime 均通过 create／cp 和源／目标字节数、SHA-256 校验，仍标记 unsigned／softwareInstallationAccepted=false。本轮仅复验受影响范围及真实构建／提取，没有重复业务矩阵；后续文档记录提交不改变镜像来源。原 `8531c2c` 截断 SIF 与证据保留，不得使用。真实 Docker load、目标 profile／native lock、机构签名、三机容量与 38 项现场验收尚未完成，不推送、合并或部署；构建机 CPU 观察不能替代三台目标机器的 CPU 信息。

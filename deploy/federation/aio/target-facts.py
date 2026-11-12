@@ -52,6 +52,7 @@ def collect(scheduler):
         ("gcc", ["-dumpfullversion"]), ("g++", ["-dumpfullversion"]),
         ("gfortran", ["-dumpfullversion"]), ("make", ["--version"]),
         ("python3", ["--version"]), ("spack", ["--version"]),
+        ("apptainer", ["--version"]), ("perl", ["-e", "print $^V"]),
         # Slurm clients load cluster configuration even for --version; the daemon does not.
         ("slurmd" if scheduler == "slurm" else "qstat", ["--version"]),
     )}

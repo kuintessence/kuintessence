@@ -3831,3 +3831,8 @@ Bun、Spack、OpenPBS 下载增加解包前 SHA-256 核对。已知版本内置�
 2026-11-11：固定代码候选 `b54743b2320bd6c678e9492df81fe3e153e640c1` 的全部 21 镜像已真实 build／export，约 2.6 GiB 归档及 verify 通过；21 个标签、ConfigID、linux/amd64 和 OCI layout 已核对。正式 CLI 的 Slurm／PBS target 各一次成功，两类 runtime 均通过 create／cp 和源／目标字节数、SHA-256 校验，仍标记 unsigned／softwareInstallationAccepted=false。本轮仅复验受影响范围及真实构建／提取，没有重复业务矩阵；后续文档记录提交不改变镜像来源。原 `8531c2c` 截断 SIF 与证据保留，不得使用。真实 Docker load、目标 profile／native lock、机构签名、三机容量与 38 项现场验收尚未完成，不推送、合并或部署；构建机 CPU 观察不能替代三台目标机器的 CPU 信息。
 
 两份正式 CLI 提取的公共 SIF 均为 299,589,632 字节，SHA-256 为 `fc26d597b34bc9c291cca8d30545501d351b9ef31d2e644f1e11d106186286d7`，与镜像内记录一致。临时容器未启动，复制与清理后才发布 metadata；此完整性结果不表示已签名、安装科学软件或通过目标平台原生运行验收。
+
+
+### AIO 安装版本与签名前材料
+
+2026-11-12：材料准备发现 AIO 镜像的 Spack 1.0.3 不符合生产 native lock 和安装 worker 仅接受 1.0.0 的契约。构建入口现明确传入 `SPACK_REF=v1.0.0`，保留普通 base 默认与严格校验；新候选待真实构建及材料复核。目标观察增加 Apptainer、Perl 的实际路径、版本与 SHA-256。已确认交付 Apptainer 1.4.3 支持现有 PEM 签署／验签参数；文档补齐独占可写副本、签后摘要和公钥用途，未生成机构密钥或签名。版本参数夹具 1 项、受影响观察夹具 2 项通过，新观察脚本在旧镜像原隔离下完整 collect 成功；未重复业务矩阵。

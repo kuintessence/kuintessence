@@ -255,6 +255,23 @@ class ManagedRuntimeTests(unittest.TestCase):
 
 
 class SchedulerDownloadTests(unittest.TestCase):
+    def test_aio_build_pins_the_spack_version_supported_by_managed_workers(self):
+        spec = importlib.util.spec_from_file_location("offline", ROOT / "deploy/federation/offline.py")
+        offline = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(offline)
+        args = SimpleNamespace(revision="a" * 40, minimum_free_gib=40,
+                               casdoor_image="casbin/casdoor@sha256:" + "b" * 64)
+        with patch.object(offline, "source_revision"), \
+             patch.object(offline.shutil, "disk_usage", return_value=SimpleNamespace(free=50 * 1024 ** 3)), \
+             patch.object(offline, "run") as commands:
+            offline.build(args)
+        base = [call.args[0] for call in commands.call_args_list
+                if "deploy/schedulers/base/Dockerfile" in call.args[0]]
+        self.assertEqual(len(base), 1)
+        self.assertIn("SPACK_REF=v1.0.0", base[0])
+        self.assertEqual(base[0][base[0].index("SPACK_REF=v1.0.0") - 1], "--build-arg")
+        self.assertIn("SCHEDULER_OS_IMAGE=ubuntu:24.04", base[0])
+
     def download(self, component, overrides=None, expected_default=None):
         source = ROOT / "deploy/schedulers" / ("pbs/Dockerfile" if component == "OPENPBS" else "base/Dockerfile")
         text = source.read_text()

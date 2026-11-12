@@ -117,6 +117,7 @@ def build(args):
     scheduler_base = image_name("scheduler-base", args.revision)
     run([*IMAGE_ENGINE, "build", *BUILD_OPTIONS, "--platform", "linux/amd64", "-t", scheduler_base,
          "--build-arg", "SCHEDULER_OS_IMAGE=ubuntu:24.04",
+         "--build-arg", "SPACK_REF=v1.0.0",
          "-f", "deploy/schedulers/base/Dockerfile", "deploy/schedulers"], cwd=ROOT)
     managed_base = image_name("scheduler-managed-base", args.revision)
     run([*IMAGE_ENGINE, "build", *BUILD_OPTIONS, "--platform", "linux/amd64", "-t", managed_base,

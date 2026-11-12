@@ -284,9 +284,9 @@ published revision 仅在 source hash、runtime digest、扫描和有效 platfor
 attestation 都匹配时可用 SharedService；attestation 不跨 revision 或 CP 继承。
 原始 command 与 terminal 只用映射账号，执行前核对 username/uid/gid，拒绝 root 身份。
 
-SelfAccount 默认关闭，只适用于 Slurm 且映射 Unix 身份等于 Agent 自身非 root 身份。
+SelfAccount 默认关闭，支持 Slurm 和 PBS Pro；映射的 Unix 用户名、UID、GID 必须精确匹配 Agent 自身非 root 身份。
 须有匹配 runtime、签名、compute node、有效 evidence ID/有效期的 attestation；
-PBS/Torque 不可用，restrictedNoEgress 也不可用。
+Torque 与 restrictedNoEgress 不支持 SelfAccount；该模式不授予 root impersonation 权限。
 另须配置 `AGENT_SANDBOX_CGROUP_CHECK_PATH`、`AGENT_SANDBOX_CGROUP_CHECK_SHA256` 和
 `AGENT_SANDBOX_ATTESTATION_QUEUE`。检查器须为 root 管理的规范绝对路径，完整父目录链
 不可被组或其他用户写入；节点提供 Python 3.8+。启动探测在该明确队列申请 1 CPU/128 MiB，
@@ -328,7 +328,7 @@ Server 首次签发、Agent 验签/提交及联邦续租均绑定相同证明；
 Slurm 使用 nodelist，PBS Pro 使用 host 资源，Torque 使用 nodes，选择证明中的首个节点；
 执行前再次核对 hostname。当前证明来自单节点探测，尚不表示整个队列或其他节点通过验证。
 PBS host/Torque 节点名须与实际 hostname 一致；别名不一致会拒绝执行，不能去掉节点约束绕过。
-SelfAccount 仍仅支持 Slurm；Kubernetes 保持其独立的 OCI/节点策略验证路径。
+PBS Pro 的 SelfAccount 同样要求已证明的队列／节点、逐作业 cgroup 检查、签名派发和联邦续租约束；不扩大 Torque 或 root 权限。Kubernetes 保持其独立的 OCI/节点策略验证路径。
 
 真实 Slurm 已通过 root 普通账户签名任务执行及输入/输出校验；PBS 双平台链路已通过真实
 启动证明、加密介质交付、DATA_WAITING 自动恢复、受限作业读取数据及来源撤权后确认停机。

@@ -311,6 +311,8 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(result["os"]["libc"], "glibc 2.31")
         self.assertEqual(result["spackArchitecture"]["hostTarget"], "haswell")
         self.assertEqual(result["executables"]["gcc"]["version"], "actual")
+        self.assertEqual(result["executables"]["apptainer"]["version"], "actual")
+        self.assertEqual(result["executables"]["perl"]["version"], "actual")
         self.assertIn("qstat", result["executables"])
         self.assertIs(result["softwareInstallationAccepted"], False)
         with patch.object(module.Path, "read_text") as read:
@@ -333,6 +335,8 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn("slurmd", result["executables"])
         self.assertNotIn("sinfo", result["executables"])
         self.assertIn(call("slurmd", ["--version"]), observed.call_args_list)
+        self.assertIn(call("apptainer", ["--version"]), observed.call_args_list)
+        self.assertIn(call("perl", ["-e", "print $^V"]), observed.call_args_list)
         with patch.object(module.shutil, "which", return_value="/usr/sbin/slurmd") as lookup, \
              patch.object(module.Path, "resolve", return_value=Path("/usr/sbin/slurmd")), \
              patch.object(module, "sha256", return_value="c" * 64), \
