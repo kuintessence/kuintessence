@@ -17,6 +17,7 @@ test("AIO CI builds an opt-in offline artifact without publication or deployment
   expect(delivery.on.workflow_dispatch.inputs.build_offline_bundle.default).toBe(false);
   expect(delivery.permissions).toEqual({ contents: "read" });
   expect(bundle.needs).toBe("configuration");
+  expect(JSON.stringify(bundle.env)).not.toContain("runner.temp");
   expect(delivery.jobs.images.if).toBe("inputs.build_offline_bundle != true");
   const commands = bundle.steps.map((step) => step.run || "").join("\n");
   for (const action of ["build", "export", "verify"]) {

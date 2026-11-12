@@ -105,7 +105,6 @@ jobs:
       DOCKER_BUILDKIT: "1"
       SPACK_VERSION: ${{ inputs.spack_version }}
       CASDOOR_IMAGE: casbin/casdoor@sha256:7e8ab89f046b24960a2a6ccab338935d787f21c55690114478dd3cae604631cf
-      BUNDLE: ${{ runner.temp }}/federation-aio-${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -116,6 +115,7 @@ jobs:
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          echo "BUNDLE=$RUNNER_TEMP/federation-aio-$GITHUB_SHA" >> "$GITHUB_ENV"
       - name: Build all AIO images sequentially
         run: >-
           python3 deploy/federation/offline.py build
