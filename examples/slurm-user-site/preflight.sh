@@ -98,4 +98,4 @@ done
 echo 'compute ABI / scratch / user-manager / cgroup isolation: not-tested on login node'
 echo '在计算节点执行 modules-smoke.sh，采集 result.json；module show/avail 不能证明运行能力。'
 echo '受管安装由 bootstrap install / stage 检查持久条件与新鲜inventory；不会自动修改linger或管理员策略。'
-echo '预检采集结束；本输出不是部署通过报告。' 
+echo '预检采集结束；本输出不是部署通过报告。'
