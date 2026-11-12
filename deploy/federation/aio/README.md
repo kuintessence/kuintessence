@@ -2,7 +2,7 @@
 
 三台新增虚拟机运行独立 A/B/C 平台、Fabric 和容器测试集群，A/B 使用 Slurm，C 使用 PBS；R 按需在 A 主机运行独立项目。现有集群不变，主平台只新增第四个 Orderer。完整范围见[实施清单](../../../docs/design/federation/aio-delivery.md)。
 
-固定候选 `b54743b` 的 21 镜像归档已真实导出并核验，两类调度器的正式 target／runtime 入口均已实证；其中 Spack 为 1.0.3，旧 Agent 只接受 1.0.0。新研发候选已接通[多版本严格绑定](../../../docs/spack-compatible-versions.md)，不追改旧镜像。固定旧工具镜像的 GNU Hello 原生审计、冷安装及只读 verify／Spack load 已通过；新候选镜像/SIF 交付与正式托管验收仍待完成，不能据此声明三机构、SmartBFT、容量或科研验收通过。未部署或合并。
+当前固定候选 `92c31a8` 的 21 镜像归档已完成交付和身份核对，并在一台新增主机受限试运行平台与全部链组件，真实 SSO 和机构读取权限检查通过；未启用调度器或 Agent，Peer／Orderer 尚未加入通道。镜像使用 Spack 1.0.3，兼容规则见[多版本严格绑定](../../../docs/spack-compatible-versions.md)。旧 `b54743b` 的两类 target／runtime 入口和 GNU Hello 原生检查保留为历史证据，不追改旧镜像。正式托管、三机构、SmartBFT、容量准入及科研验收仍待完成，PR 未合并；后续源码修复未自动进入该固定归档。
 
 ## 本机构建与导出
 
@@ -106,7 +106,9 @@ python3 /受信任工具/offline.py verify --bundle /目标交付目录 --manife
 python3 /受信任工具/offline.py load --bundle /目标交付目录 --manifest-sha256 <可信摘要>
 ```
 
-加载前检查全部文件，以及 Docker 数据盘可用空间（镜像展开大小总和的两倍加 1 GiB，不假设共享层能节省空间）；须在目标 Docker 主机本地执行。加载后复核镜像 ID。缺项、摘要不符、链接或错误架构均拒绝。nerdctl 归档与目标 Docker load 的实际联合验证仍待执行。
+加载前检查全部文件，以及 Docker 数据盘可用空间（镜像展开大小总和的两倍加 1 GiB，不假设共享层能节省空间）；须在目标 Docker 主机本地执行。加载后复核镜像 ID。缺项、摘要不符、链接或错误架构均拒绝。固定候选 `92c31a8` 的 21 个镜像已通过 nerdctl 归档至目标 Docker 29 的实际加载与身份核对；该结果不替代平台、通道或计算验收。
+
+Ubuntu Docker 29 的 containerd 镜像存储可能以 manifest digest 作为 inspect ID；工具通过本站 `ctr --namespace moby` 读取内容，核对 manifest／config 的 SHA-256 与平台，再用 config digest 对照交付记录，不放宽身份比对。该路径要求可访问默认 containerd socket 的 `ctr`，已含在上述 Ubuntu 运行时包中；未知多平台清单或内容不匹配仍拒绝，不自动连接其他 socket。
 
 ## 最终镜像的目标信息
 
@@ -214,8 +216,9 @@ privileged 测试容器不能抵御宿主管理员或容器 root 越权，不能
 
 `KQ_AIO_PRIVATE_DIRECTORY` 下准备：
 
-- `casdoor/app.conf`：独立 SSO 数据库连接、origin、初始化数据和客户端。`staticBaseUrl` 使用本站资源，不能依赖国外 CDN；不使用开发免密登录。
+- `casdoor/app.conf`：独立 SSO 数据库连接、origin、初始化数据和客户端。`staticBaseUrl` 使用本站资源，不能依赖国外 CDN；不使用开发免密登录。用户 `groups` 使用完整的 `机构/组名`；应用显式设置 `tokenGroupFormat: "Name"`，使令牌的组名与 KQ 的 SSO 映射一致。已有库的 `initDataNewOnly` 不会修复旧组关系，须由 SSO 管理员通过正常接口更新后重新登录。平台角色不隐含联邦业务权限，机构成员仍须在“设置 → 安全 → 联邦权限”独立授权。
 - `edge/`、`tls/`：参考[HTTPS 示例](edge.conf.example)配置平台、SSO、对象存储三类域名；SAN 和 DNS 匹配。受控 CA 加入浏览器/Server/Agent 信任，不关闭 TLS 校验。
+- `grpc/server.crt`、`grpc/server.key`：Server direct mTLS 的服务端证书和私钥，只读挂载；SAN 覆盖 Agent 实际连接名，由 Agent 信任的 CA 签发。客户端验证仍使用本站持久 Server CA。即使不启用调度器，Server 启动也需要这两个文件；私钥只供 Server 读取，不把 CA 私钥挂给 Agent。
 - `agent-enrollment/token`：经本站正式 API 签发的单次注册令牌，归容器执行账号所有、0600；Slurm 为 root，PBS 默认为 kq。
 
 机构 mTLS、Fabric 及治理材料沿[部署契约](../deployment.md)配置，端点必须是可达 VPC 地址。调度器预置 Agent 和注册工具，没有源码挂载、Bun 在线安装或开发登录。注册成功持久化；未知结果留下 `registration.attempt`，管理员核对原 Agent/证书后才可再次登记，不能反复生成身份绕过。
@@ -238,6 +241,12 @@ python3 /受信任工具/offline.py config \
 
 C 使用 `--scheduler pbs`。普通模式只有 PBS 测试容器获得 privilege；托管模式两类测试调度器均需要该权限，按上节准备运行时后为机构配置显式加 `--managed`。独立无链验收使用 `--mode direct`，没有 Fabric 服务/连接。R 使用 `--role arbitrator --mode fabric`，不包含调度器或 Orderer，移除非案件链能力；使用独立项目、私有目录及全部端口。
 
+只验收平台与联盟链时，为机构的 `config` 命令增加 `--no-scheduler`。平台、登录、权限、存储、Registry、Peer、Orderer 及四组 Adapter／链码保持启用；生成配置不包含 Slurm/PBS、Agent、记账数据库或调度器专用卷，也不需要 Agent ID、注册令牌、签名 SIF、site profile 或 native lock。该选项不能与 `--managed` 或非机构角色同时使用，`--scheduler` 在此模式不启用任何调度服务。无链模式同样可用。
+
+此模式的默认预算为 direct 2848 MiB、fabric 4640 MiB，均含 512 MiB 系统余量，未计同机其他容器及可选 observer。完整 fabric 平台仍超过当前 4 GiB 主机预算；不自动降低限额或裁剪链能力。无 Agent 时不验收任务执行、科研软件安装、实际计算用量或跨机构计算 Workflow。切换已有项目的调度器参与状态须先维护、处理原任务并保留状态卷；启动工具拒绝直接覆盖，不自动停止或删除旧容器／卷。
+
+该选项只改变 Compose 渲染，无需重建平台或链镜像。已导出的旧交付包及其摘要保持不变，可用包外另行取得并信任的新版 `offline.py` 读取原包；单独记录工具版本，旧包内的脚本不会自动新增此选项。
+
 第四排序节点使用 `--role orderer --mode fabric --project kq-fed-orderer-four`；只需要 Fabric 私有目录、bind 和端口。其配置仅包含 Orderer 与独立卷，不导入原平台或 `/opt/deploy`。
 
 得到部署授权、准备备份后才能启动：
@@ -251,6 +260,21 @@ python3 /受信任工具/offline.py up \
 启动重新核对交付/镜像和项目范围，固定 `pull_policy: never` 与 `--no-build --pull never --wait`。模式、角色和交付版本在启动前持久化；失败后不能换模式/版本覆盖在途状态。升级另走维护、备份和兼容性核对，不提供强制跳过。
 
 容量按常驻服务限额加 512 MiB 系统余量、当前可用内存做保守检查，不等于峰值实测。完整默认 Fabric AIO 预算可能超过 4 GiB，工具会拒绝启动；须测量调优或申请扩容，不能删除必要组件伪造成功。
+
+## 首次登录与权限就绪
+
+`up --wait` 只确认容器启动与各服务自身的健康检查；Server 的 `/api/health` 也只表示 HTTP 进程可用，不能据此宣布用户权限或联盟通道就绪。
+
+1. 完成真实 SSO 登录，检查 `/api/auth/session` 中的角色是否与本站已批准的组映射一致。OIDC 登录只同步平台角色，不自动创建开发机构或赋予机构成员身份；管理员通过平台的机构管理和成员管理建立正式归属，再单独授予所需联邦能力。旧机构和成员不会因升级删除，SSO 登录也不会覆盖其成员角色。开发免密登录仍保留历史默认机构行为，仅在开发环境可用。
+2. 打开“设置”的权限管理面板（`/settings#security/authz`），查看现有就绪结果，或用当前管理员会话请求 `GET /api/admin/authz/readiness`。AIO edge 的 API 前缀是 `/platform/api`。验收要求 `mode=enforce`、`healthy/schemaWritten/schemaMatches=true`、`outbox.pending/processing/dead=0`、`shadowDiffs=0`、`enforceReady=true`；接口的 `externalSmokeRequired=true` 表示还需验证实际授权操作。
+3. 首次软件目录初始化会生成大量权限投影，新管理员的投影可能仍在队列中。若管理接口暂时返回 403，用已有 Compose 配置执行下面的只读队列查询；有积压且持续下降时等待后台处理，不能删除队列或关闭 enforce。队列清空后仍为 403，回查 SSO 角色和管理员授权；有 dead 行时在管理入口核查失败原因并按原记录恢复。
+
+```sh
+docker compose --project-name <本站项目> -f /本站私有配置/compose.json \
+  exec -T postgres sh -ec 'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT status, count(*) FROM authz_outbox GROUP BY status ORDER BY status"'
+```
+
+查询不输出连接密码、授权原件或用户资料。随后只验证本站需要的授予／撤销及跨机构拒绝；已有未受影响的验收证据直接引用。权限就绪与 Fabric 通道加入、指定机构背书和 VALID 交易分别验收。
 
 ## 离线机构管理操作
 

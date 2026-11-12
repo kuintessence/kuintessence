@@ -93,6 +93,24 @@ def inspect_image(name):
     record = records[0]
     if by_digest and not any(reference.rsplit("@", 1)[-1] == query for reference in record.get("RepoDigests", [])):
         raise ValueError("Inspected image does not match the requested source digest")
+    descriptor = record.get("Descriptor", {})
+    if Path(IMAGE_ENGINE[0]).name == "docker" and descriptor.get("digest") == record["Id"]:
+        # Docker 29's containerd store reports a manifest ID instead of the config ID.
+        if descriptor.get("mediaType") not in ("application/vnd.oci.image.manifest.v1+json",
+                                                "application/vnd.docker.distribution.manifest.v2+json"):
+            raise ValueError("Offline identity verification requires a single-platform image manifest")
+        manifest_bytes = run(["ctr", "--namespace", "moby", "content", "get", record["Id"]], capture_output=True).stdout
+        if "sha256:" + hashlib.sha256(manifest_bytes).hexdigest() != record["Id"]:
+            raise ValueError("Loaded image manifest content digest mismatch")
+        config_id = json.loads(manifest_bytes)["config"]["digest"]
+        if not re.fullmatch(r"sha256:[a-f0-9]{64}", config_id):
+            raise ValueError("Invalid loaded image config digest")
+        config_bytes = run(["ctr", "--namespace", "moby", "content", "get", config_id], capture_output=True).stdout
+        config = json.loads(config_bytes)
+        if ("sha256:" + hashlib.sha256(config_bytes).hexdigest() != config_id
+                or config.get("os") != record["Os"] or config.get("architecture") != record["Architecture"]):
+            raise ValueError("Loaded image config content or platform mismatch")
+        record["Id"] = config_id
     return {"name": name, "id": record["Id"], "size": record["Size"],
             "repoDigests": record.get("RepoDigests", []),
             "source": (record.get("Config", {}).get("Labels") or {}).get("org.opencontainers.image.source"),
@@ -386,6 +404,9 @@ def render_config(bundle, manifest, args):
         raise ValueError("Arbitrator and Orderer deployments require fabric mode")
     if getattr(args, "managed", False) and args.role != "institution":
         raise ValueError("Managed compute is limited to an institution's test scheduler")
+    no_scheduler = getattr(args, "no_scheduler", False)
+    if no_scheduler and (args.role != "institution" or getattr(args, "managed", False)):
+        raise ValueError("--no-scheduler requires an institution without --managed")
     storage_guard = getattr(args, "storage_guard", False)
     public_ca = getattr(args, "public_ca_file", None)
     if args.role == "orderer" and (storage_guard or public_ca is not None):
@@ -396,11 +417,14 @@ def render_config(bundle, manifest, args):
     env["KQ_IMAGE_TAG"] = f"sha-{manifest['revision']}"
     env["KQ_AIO_SCHEDULER"] = args.scheduler
     env["KQ_AIO_SCHEDULER_TYPE"] = "slurm" if args.scheduler == "slurm" else "pbs-pro"
+    if no_scheduler:
+        # Compose interpolates even the scheduler that is removed before saving.
+        env.update(KQ_AIO_AGENT_ID="unused-without-scheduler", KQ_AIO_CLUSTER_NAME="unused-without-scheduler")
     files = ["deploy/main/compose.yml", "deploy/federation/compose.ingress.yml",
              "deploy/federation/aio/compose.yml"]
     if args.mode == "fabric":
         files.append("deploy/federation/compose.fabric.yml")
-    if args.scheduler == "pbs" and args.role != "arbitrator":
+    if args.scheduler == "pbs" and args.role != "arbitrator" and not no_scheduler:
         files.append("deploy/federation/aio/pbs.yml")
     if getattr(args, "managed", False):
         files.append("deploy/federation/aio/managed.yml")
@@ -420,6 +444,13 @@ def render_config(bundle, manifest, args):
     if args.mode == "fabric" and args.role != "orderer":
         command += ["--profile", "fabric-admin"]
     config = json.loads(run([*command, "config", "--format", "json"], env=env, capture_output=True, text=True).stdout)
+    if no_scheduler:
+        scheduler = config["services"].pop("scheduler")
+        used_volumes = {v["source"] for s in config["services"].values()
+                        for v in s.get("volumes", []) if v["type"] == "volume"}
+        for volume in scheduler.get("volumes", []):
+            if volume["type"] == "volume" and volume["source"] not in used_volumes:
+                config.get("volumes", {}).pop(volume["source"], None)
     if args.role == "arbitrator":
         del config["services"]["scheduler"]
         del config["services"]["fabric-orderer"]
@@ -653,6 +684,7 @@ def main():
             command.add_argument("--destination", required=True)
         if action == "config":
             command.add_argument("--managed", action="store_true", help="Enable the isolated AIO managed compute runtime")
+            command.add_argument("--no-scheduler", action="store_true", help="Institution platform only; omit the test scheduler and Agent")
             command.add_argument("--storage-guard", action="store_true", help="Enable the provisioned storage admission guard")
             command.add_argument("--public-ca-file", type=Path, help="Existing approved public CA bundle for AIO HTTPS clients")
             command.add_argument("--mode", choices=("direct", "fabric"), required=True)
@@ -705,6 +737,7 @@ def main():
         config = render_config(bundle, manifest, args)
         private_write(args.output, {"deliveryManifest": args.manifest_sha256, "mode": args.mode,
                                     "role": args.role, "managedRuntime": args.managed,
+                                    "schedulerEnabled": "scheduler" in config["services"],
                                     "storageGuard": args.storage_guard, "compose": config})
         print(json.dumps(capacity(config)))
         print("Private config written; this is not a runtime readiness result")
@@ -736,6 +769,7 @@ def main():
             state_path = args.config.parent / f"{config['name']}.deployment.json"
             state = {"mode": saved["mode"], "role": saved["role"], "manifest": args.manifest_sha256,
                      "managedRuntime": saved.get("managedRuntime", False),
+                     "schedulerEnabled": "scheduler" in config["services"],
                      "storageGuard": saved.get("storageGuard", False), "phase": "starting"}
             if state_path.exists():
                 require_private_file(state_path)
@@ -744,6 +778,8 @@ def main():
                     raise ValueError("Existing deployment requires explicit backup/maintenance before changing mode, role or release")
                 if previous.get("managedRuntime", False) != state["managedRuntime"]:
                     raise ValueError("Changing the compute runtime requires explicit backup/maintenance")
+                if previous.get("schedulerEnabled", previous["role"] == "institution") != state["schedulerEnabled"]:
+                    raise ValueError("Changing scheduler participation requires explicit backup/maintenance")
                 if previous.get("storageGuard", False) != state["storageGuard"]:
                     raise ValueError("Changing storage admission protection requires explicit maintenance")
             elif args.action == "admin":

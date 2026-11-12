@@ -70,6 +70,7 @@
         "http://localhost:3000/api/auth/oidc/callback"
       ],
       "tokenFormat": "JWT",
+      "tokenGroupFormat": "Name",
       "tokenFields": ["email", "name", "displayName", "owner", "groups"],
       "expireInHours": 168,
       "failedSigninLimit": 5,
@@ -100,7 +101,7 @@
       "isDeleted": false,
       "signupApplication": "kuintessence-server",
       "createdIp": "",
-      "groups": ["kq-platform-admins"]
+      "groups": ["kuintessence/kq-platform-admins"]
     },
     {
       "owner": "kuintessence",
@@ -125,7 +126,7 @@
       "isDeleted": false,
       "signupApplication": "kuintessence-server",
       "createdIp": "",
-      "groups": ["kq-platform-admins"]
+      "groups": ["kuintessence/kq-platform-admins"]
     },
     {
       "owner": "kuintessence",
@@ -150,7 +151,7 @@
       "isDeleted": false,
       "signupApplication": "kuintessence-server",
       "createdIp": "",
-      "groups": ["kq-operators"]
+      "groups": ["kuintessence/kq-operators"]
     }
   ],
   "groups": [

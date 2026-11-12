@@ -20,12 +20,15 @@ services:
     cpus: 1
     environment:
       MTLS_MODE: direct
+      SERVER_GRPC_TLS_CERT_FILE: /run/kq-grpc/server.crt
+      SERVER_GRPC_TLS_KEY_FILE: /run/kq-grpc/server.key
       DB_MAX_CONNECTIONS: "6"
       NETDRIVE_ENABLED: "true"
       NETDRIVE_ENDPOINT: rustfs
       NETDRIVE_PORT: "9000"
       NETDRIVE_USE_SSL: "false"
       NETDRIVE_ACCESS_KEY: ${KQ_DATA_MARKET_COMMITTER_ACCESS_KEY:?set committer access key}
+      DATA_MARKET_COMMITTER_ACCESS_KEY: ${KQ_DATA_MARKET_COMMITTER_ACCESS_KEY:?set committer access key}
       NETDRIVE_SECRET_KEY: ${KQ_DATA_MARKET_COMMITTER_SECRET_KEY:?set committer secret}
       NETDRIVE_BUCKET: kq-netdrive
       DATA_MARKET_STAGING_BUCKET: kq-data-market-staging
@@ -35,6 +38,17 @@ services:
       - "${KQ_AIO_SSO_HOST:?set SSO DNS name}:host-gateway"
       - "${KQ_AIO_PUBLIC_HOST:?set platform DNS name}:host-gateway"
       - "${KQ_AIO_STORAGE_HOST:?set object storage DNS name}:host-gateway"
+    volumes:
+      - type: bind
+        source: ${KQ_AIO_PRIVATE_DIRECTORY:?set private AIO directory}/grpc/server.crt
+        target: /run/kq-grpc/server.crt
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${KQ_AIO_PRIVATE_DIRECTORY:?set private AIO directory}/grpc/server.key
+        target: /run/kq-grpc/server.key
+        read_only: true
+        bind: {create_host_path: false}
     depends_on:
       rustfs-init: {condition: service_completed_successfully}
   registry:

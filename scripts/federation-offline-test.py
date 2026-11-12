@@ -1,5 +1,6 @@
 """Offline delivery boundaries; no daemon, containers or deployment credentials."""
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -44,6 +45,25 @@ class DeliveryTests(unittest.TestCase):
 
     def test_complete_delivery(self):
         self.assertEqual(offline.verify_bundle(self.bundle, self.write_manifest())["revision"], REVISION)
+
+    def test_docker_containerd_identity_uses_verified_config_content(self):
+        config = json.dumps({"os": "linux", "architecture": "amd64"}).encode()
+        config_id = "sha256:" + hashlib.sha256(config).hexdigest()
+        manifest = json.dumps({"config": {"digest": config_id}}).encode()
+        manifest_id = "sha256:" + hashlib.sha256(manifest).hexdigest()
+        inspected = {"Id": manifest_id, "Os": "linux", "Architecture": "amd64", "Size": 1024,
+                     "Descriptor": {"digest": manifest_id, "mediaType": "application/vnd.oci.image.manifest.v1+json"}}
+        for manifest_content, config_content, error in ((manifest, config, None),
+                (manifest + b" ", config, "manifest content"), (manifest, config + b" ", "config content")):
+            with self.subTest(error=error), patch.object(offline, "run", side_effect=[
+                    SimpleNamespace(stdout=json.dumps([inspected])), SimpleNamespace(stdout=manifest_content),
+                    SimpleNamespace(stdout=config_content)]) as engine:
+                if error:
+                    with self.assertRaisesRegex(ValueError, error):
+                        offline.inspect_image("test:offline")
+                else:
+                    self.assertEqual(offline.inspect_image("test:offline")["id"], config_id)
+                    self.assertEqual(engine.call_args.args[0], ["ctr", "--namespace", "moby", "content", "get", config_id])
 
     def test_manifest_requires_an_immutable_casdoor_source_bound_to_its_alias(self):
         for source in (None, {"source": "casbin/casdoor:latest", "id": "sha256:" + "b" * 64},
@@ -891,6 +911,48 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(helper["pull_policy"], "never")
         self.assertEqual(helper["image"], offline.image_name("fabric-tools", REVISION))
 
+    def test_no_scheduler_rejects_managed_compute_and_other_roles(self):
+        env = self.root / "deployment.env"
+        env.write_text("# fixture only")
+        env.chmod(0o600)
+        args = argparse.Namespace(env_file=env, project="kq-fed-test", mode="fabric", role="institution",
+                                  scheduler="slurm", managed=True, no_scheduler=True)
+        for role, managed in (("institution", True), ("arbitrator", False), ("orderer", False)):
+            args.role, args.managed = role, managed
+            with self.subTest(role=role), patch.object(offline, "run") as engine, \
+                 self.assertRaisesRegex(ValueError, "--no-scheduler"):
+                offline.render_config(ROOT, self.manifest, args)
+            engine.assert_not_called()
+
+    def test_scheduler_participation_changes_require_maintenance(self):
+        trusted = self.write_manifest()
+        config_path = self.root / "config.json"
+        saved = {"deliveryManifest": trusted, "mode": "fabric", "role": "institution", "compose": {
+            "name": "kq-fed-test", "services": {"server": {
+                "image": offline.image_name("server", REVISION), "pull_policy": "never"}}}}
+        offline.private_write(config_path, saved)
+        state_path = self.root / "kq-fed-test.deployment.json"
+        state = {"mode": "fabric", "role": "institution", "manifest": trusted, "phase": "complete"}
+        offline.private_write(state_path, state)
+        argv = ["offline.py", "up", "--bundle", str(self.bundle), "--manifest-sha256", trusted,
+                "--config", str(config_path)]
+        for previous_enabled, next_enabled in ((None, False), (True, False), (False, True)):
+            if previous_enabled is not None:
+                state["schedulerEnabled"] = previous_enabled
+            state_path.write_text(json.dumps(state))
+            if next_enabled:
+                saved["compose"]["services"]["scheduler"] = {
+                    "image": offline.image_name("scheduler-slurm", REVISION), "pull_policy": "never"}
+            config_path.write_text(json.dumps(saved))
+            with self.subTest(previous=previous_enabled), patch("sys.argv", argv), \
+                 patch.object(offline, "other_container_limits", return_value=0), \
+                 patch.object(offline, "capacity", return_value={"fitsReservedBudget": True, "fitsAvailableBudget": True}), \
+                 patch.object(offline, "validate_images"), patch.object(offline, "run") as engine, \
+                 self.assertRaisesRegex(ValueError, "scheduler participation"):
+                offline.main()
+            engine.assert_not_called()
+            self.assertEqual(json.loads(state_path.read_text()), state)
+
     def test_trust_append_checks_approved_artifacts_and_cannot_replace_the_fixed_operation(self):
         binaries = self.root / "bin"
         binaries.mkdir()
@@ -986,6 +1048,16 @@ class ConfigurationTests(unittest.TestCase):
             args = argparse.Namespace(env_file=env_file, project="kq-fed-test-a", mode="direct", role="institution", scheduler="slurm")
             config = offline.render_config(ROOT, manifest, args)
             self.assertFalse(any(name.startswith("fabric-") for name in config["services"]))
+            server_env = config["services"]["server"]["environment"]
+            self.assertEqual(server_env["DATA_MARKET_COMMITTER_ACCESS_KEY"], server_env["NETDRIVE_ACCESS_KEY"])
+            self.assertEqual(server_env["DATA_MARKET_COMMITTER_ACCESS_KEY"],
+                             config["services"]["rustfs-init"]["environment"]["DATA_MARKET_COMMITTER_ACCESS_KEY"])
+            self.assertNotEqual(server_env["NETDRIVE_ACCESS_KEY"], env["RUSTFS_ACCESS_KEY"])
+            for key in ("SERVER_GRPC_TLS_CERT_FILE", "SERVER_GRPC_TLS_KEY_FILE"):
+                mount = next(v for v in config["services"]["server"]["volumes"] if v["target"] == server_env[key])
+                self.assertTrue(mount["read_only"])
+                self.assertFalse(mount.get("bind", {}).get("create_host_path", False))
+            self.assertEqual(server_env["MTLS_MODE"], "direct")
             self.assertNotIn("FEDERATION_COMMERCIAL_SOCKET_PATH", config["services"]["server"]["environment"])
             self.assertFalse(config["services"]["scheduler"].get("privileged", False))
             self.assertNotIn("scheduler-accounting", config["services"])
@@ -997,6 +1069,33 @@ class ConfigurationTests(unittest.TestCase):
             for service in config["services"].values():
                 self.assertNotIn("build", service)
                 self.assertEqual(service["pull_policy"], "never")
+            original_env = env_file.read_text()
+            env_file.write_text("\n".join(line for line in original_env.splitlines()
+                                          if not line.startswith(("KQ_AIO_AGENT_ID=", "KQ_AIO_CLUSTER_NAME="))))
+            args.no_scheduler = True
+            for mode in ("direct", "fabric"):
+                for scheduler in ("slurm", "pbs"):
+                    args.mode, args.scheduler = mode, scheduler
+                    config = offline.render_config(ROOT, manifest, args)
+                    self.assertNotIn("scheduler", config["services"])
+                    self.assertNotIn("scheduler-accounting", config["services"])
+                    self.assertFalse(any(s.get("privileged") for s in config["services"].values()))
+                    self.assertFalse(any(name.startswith(("scheduler-", "slurm-", "pbs-", "managed-"))
+                                         for name in config.get("volumes", {})))
+                    self.assertNotIn("agent-enrollment", json.dumps(config))
+                    self.assertNotIn("unused-without-scheduler", json.dumps(config))
+                    self.assertIn("registry", config["services"])
+                    self.assertEqual(offline.capacity(config)["requiredMiB"], 2848 if mode == "direct" else 4640)
+                    if mode == "fabric":
+                        for kind in offline.KINDS:
+                            self.assertIn(f"fabric-{kind}-adapter", config["services"])
+                            self.assertIn(f"fabric-{kind}-chaincode", config["services"])
+                    rendered_file = directory / "platform-only.json"
+                    rendered_file.write_text(json.dumps(offline.escape_interpolation(config)))
+                    offline.run(["docker", "compose", "-f", rendered_file, "config", "--quiet"],
+                                capture_output=True, text=True)
+            args.no_scheduler, args.mode, args.scheduler = False, "direct", "slurm"
+            env_file.write_text(original_env)
             args.managed = True
             config = offline.render_config(ROOT, manifest, args)
             self.assertTrue(config["services"]["scheduler"]["privileged"])
