@@ -892,10 +892,57 @@
     },
     "scheduler": "Scheduler",
     "heartbeat": "Heartbeat",
-    "never": "Never"
+    "never": "Never",
+    "operations": {
+      "title": "Site operations",
+      "notReported": "Site operations have not been reported",
+      "stale": "Disconnected or stale; last observation ({{time}})",
+      "observed": "Last observed: {{time}}",
+      "connection": "Connection",
+      "trust": "Software trust",
+      "executor": "Installation executor",
+      "local": "Local host",
+      "materials": "Material downloads",
+      "installation": "Install and verify",
+      "jobs": "Compute jobs",
+      "transfers": "File transfers",
+      "update": "Client updates",
+      "release": "Release",
+      "transport": {
+        "ssh-forward": "SSH port forwarding",
+        "http-proxy": "HTTP CONNECT proxy",
+        "direct": "Direct"
+      },
+      "trustMode": {
+        "single-user": "Single user (same account trust boundary)",
+        "administrator": "Administrator protected"
+      },
+      "states": {
+        "unknown": "Unknown",
+        "disabled": "Disabled",
+        "idle": "Idle",
+        "running": "In progress",
+        "ready": "Last operation succeeded",
+        "blocked": "Reconciliation needed",
+        "failed": "Last operation failed"
+      },
+      "updates": {
+        "unknown": "Not reported",
+        "staged": "Downloaded; awaiting maintenance",
+        "activated": "Activated",
+        "rolled-back": "Rolled back",
+        "failed": "Check or activation failed"
+      },
+      "reconcileJobs": "Submission outcome is uncertain. Reconcile the Slurm ID and restart Agent recovery before submitting again.",
+      "reconcileInstallation": "Inspect the failed software operation. Reconcile retained workers before retrying installation.",
+      "resumeTransfer": "Inspect the failed transfer. Resume the same transfer when authorization and source content are still valid.",
+      "updateChecked": "Update checked"
+    }
   },
   "software": {
     "availabilityReason": {
+      "offlineMaterialClosure": "Offline material closure is unverified. Start an explicit installation from CP Software to run the isolated audit.",
+      "offlineTelemetry": "Offline site telemetry is stale or invalid and cannot establish installation readiness.",
       "offline": "This agent's control channel is offline. Wait for it to recover or choose another agent.",
       "usePermission": "Your account cannot use this software yet. Request access before running it.",
       "providerDenyList": "The compute provider's deny-list policy blocks this software.",

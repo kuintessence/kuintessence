@@ -93,3 +93,32 @@ describe("streamUploadToPresignedUrl", () => {
     expect(await exists(tmpPath)).toBe(false);
   });
 });
+
+test("spool capacity failure aborts before consuming source or PUT and removes the temporary file", async () => {
+  const tmpPath = tmpFile();
+  let consumed = false;
+  let put = false;
+  async function* source() {
+    consumed = true;
+    yield new Uint8Array([1]);
+  }
+  await expect(
+    streamUploadToPresignedUrl({
+      source: source(),
+      uploadUrl: "https://object.invalid/?secret",
+      tmpPath,
+      expectedBytes: 100,
+      capacity: async (request) => {
+        expect(request.additionalBytes).toBe(100);
+        throw new Error("STORAGE_CAPACITY_INODES");
+      },
+      put: async () => {
+        put = true;
+        return { ok: true, status: 200, statusText: "OK" };
+      },
+    }),
+  ).rejects.toThrow("STORAGE_CAPACITY_INODES");
+  expect(consumed).toBe(false);
+  expect(put).toBe(false);
+  expect(await Bun.file(tmpPath).exists()).toBe(false);
+});

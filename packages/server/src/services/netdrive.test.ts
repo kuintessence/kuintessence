@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import {
   createPgDb,
+  fileTransfers,
   netdriveFiles,
   netdriveReplicas,
   netdriveTransferLog,
@@ -13,6 +14,7 @@ import { and, eq } from "drizzle-orm";
 import * as jose from "jose";
 import { FakeMinioBackend } from "../storage/minio-client.test";
 import { NetDriveService } from "./netdrive";
+import { PgTransferSessionStore } from "./transfer-session-store";
 
 const TEST_DB_URL = process.env.DATABASE_URL ?? "postgres://kq:kq@localhost:5432/kuintessence";
 const COMMIT_SECRET = "netdrive-service-test-commit-secret-please-rotate-in-prod";
@@ -594,7 +596,7 @@ describe("NetDriveService", () => {
     const file = await service.completeMultipart(OWNER_ID, {
       path: "outputs/run1/big.dat",
       size: 6,
-      sha256: "c".repeat(64),
+      sha256: await sha256Hex("AAAABB"),
       storageKey: init.storageKey,
       uploadId: init.uploadId,
       commitToken: init.commitToken,
@@ -605,7 +607,7 @@ describe("NetDriveService", () => {
     });
     expect(file.path).toBe("outputs/run1/big.dat");
     expect(file.size).toBe(6);
-    expect(file.sha256).toBe("c".repeat(64));
+    expect(file.sha256).toBe(await sha256Hex("AAAABB"));
     // The assembled object is now retrievable from the backend.
     expect((await backend.getBlob(init.storageKey)).toString()).toBe("AAAABB");
   });
@@ -631,7 +633,7 @@ describe("NetDriveService", () => {
     const file = await service.completeMultipart(OWNER_ID, {
       path: "outputs/run1/unknown-size.dat",
       size: assembledSize,
-      sha256: "e".repeat(64),
+      sha256: await sha256Hex("AAAABB"),
       storageKey: init.storageKey,
       uploadId: init.uploadId,
       commitToken: init.commitToken,
@@ -693,6 +695,116 @@ describe("NetDriveService", () => {
         parts: [{ partNumber: 1, etag: e1.etag }],
       }),
     ).rejects.toThrow(/size/i);
+  });
+
+  test("concurrent multipart retries commit one row and enqueue authorization once", async () => {
+    const { service, backend } = makeService();
+    const init = await service.initiateMultipart(OWNER_ID, { path: "outputs/retry.dat", size: 4 });
+    const part = await backend.putUploadedPart(
+      init.storageKey,
+      init.uploadId,
+      1,
+      Buffer.from("real"),
+    );
+    const request = {
+      ...init,
+      path: "outputs/retry.dat",
+      size: 4,
+      sha256: await sha256Hex("real"),
+      parts: [{ partNumber: 1, etag: part.etag }],
+    };
+    let authorized = 0;
+    const onCommit = async () => {
+      authorized++;
+    };
+    const results = await Promise.all([
+      service.completeMultipartWithReplacements(OWNER_ID, request, undefined, onCommit),
+      service.completeMultipartWithReplacements(OWNER_ID, request, undefined, onCommit),
+    ]);
+    expect(results[0]?.file.id).toBe(results[1]?.file.id);
+    expect(authorized).toBe(1);
+    const rows = await db
+      .select()
+      .from(netdriveFiles)
+      .where(eq(netdriveFiles.storageKey, init.storageKey));
+    expect(rows).toHaveLength(1);
+  });
+
+  test("authorization failure rolls metadata back and leaves assembled object recoverable", async () => {
+    const { service, backend } = makeService();
+    const init = await service.initiateMultipart(OWNER_ID, {
+      path: "outputs/rollback.dat",
+      size: 4,
+    });
+    const part = await backend.putUploadedPart(
+      init.storageKey,
+      init.uploadId,
+      1,
+      Buffer.from("real"),
+    );
+    const request = {
+      ...init,
+      path: "outputs/rollback.dat",
+      size: 4,
+      sha256: await sha256Hex("real"),
+      parts: [{ partNumber: 1, etag: part.etag }],
+    };
+    await expect(
+      service.completeMultipartWithReplacements(OWNER_ID, request, undefined, async () => {
+        throw new Error("authorization outbox unavailable");
+      }),
+    ).rejects.toThrow("authorization outbox unavailable");
+    expect(
+      await db.select().from(netdriveFiles).where(eq(netdriveFiles.storageKey, init.storageKey)),
+    ).toHaveLength(0);
+    const recovered = await service.completeMultipart(OWNER_ID, request);
+    expect(recovered.sha256).toBe(request.sha256);
+  });
+
+  test("PG session row lock preserves completion across stale concurrent writers", async () => {
+    const [row] = await db
+      .insert(fileTransfers)
+      .values({
+        userId: OWNER_ID,
+        direction: "cluster_to_cloud",
+        source: "/output",
+        target: "output",
+        state: "running",
+      })
+      .returning();
+    if (!row) throw new Error("Missing transfer row");
+    try {
+      const store = new PgTransferSessionStore(db);
+      const session = {
+        storageKey: `netdrive/${OWNER_ID}/object`,
+        uploadId: "upload",
+        partSize: 5242880,
+        agentId: "agent",
+        source: "/output",
+        target: "output",
+        size: 4,
+      };
+      const completion = {
+        copiedBytes: 4,
+        sha256: await sha256Hex("real"),
+        parts: [{ partNumber: 1, etag: "part" }],
+      };
+      await store.save(OWNER_ID, row.id, session);
+      await Promise.all([
+        store.save(OWNER_ID, row.id, { ...session, completion }),
+        store.save(OWNER_ID, row.id, session),
+      ]);
+      expect((await store.load(OWNER_ID, row.id))?.completion).toEqual(completion);
+      expect((await store.save(OWNER_ID, row.id, session))?.completion).toEqual(completion);
+      await expect(store.save(OTHER_OWNER_ID, row.id, session)).rejects.toThrow(
+        "owner binding unavailable",
+      );
+      await expect(store.save(OWNER_ID, row.id, { ...session, uploadId: "other" })).rejects.toThrow(
+        "binding changed",
+      );
+    } finally {
+      await db.delete(fileTransfers).where(eq(fileTransfers.id, row.id));
+    }
   });
 
   test("abortMultipart discards the upload so list-parts then fails", async () => {

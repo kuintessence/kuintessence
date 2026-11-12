@@ -5,7 +5,9 @@ import {
   type SandboxJobSpec,
   type SchedulerAdapter,
   SchedulerSubmissionError,
+  SchedulerSubmissionUnknownError,
 } from "../adapters/base";
+import { createOutputCollector, type OutputReader } from "../output-collector";
 import { JobRunner, type JobStatusReport } from "./job-executor";
 
 function makeAdapter(opts: {
@@ -45,6 +47,98 @@ const baseSpec: JobSpec = {
 
 const noSleep = async (_ms: number) => {};
 
+test("completed job retains durable output recovery across a shared disk fault and Agent restart", async () => {
+  const { createSqliteDb } = await import("@kuintessence/db");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { ActiveRemoteJobs } = await import("../queue/active-remote-jobs");
+  const directory = await mkdtemp("/tmp/kq-output-recovery-");
+  let db = createSqliteDb(`${directory}/agent.db`);
+  try {
+    let store = new ActiveRemoteJobs(db);
+    let submissions = 0;
+    let releases = 0;
+    const reports: JobStatusReport[] = [];
+    const adapter = makeAdapter({
+      submit: async () => {
+        submissions++;
+        return { schedulerJobId: "original-123" };
+      },
+    });
+    adapter.releaseJob = async () => {
+      releases++;
+    };
+    const outputs = [{ descriptor: "result", path: "result.json", isBatch: false }];
+    const read: OutputReader = async () => "42";
+    let first: JobRunner;
+    read.readValidated = async () => {
+      first.cancel();
+      throw Object.assign(new Error("shared disk unavailable"), { code: "EIO" });
+    };
+    first = new JobRunner({
+      adapter,
+      sleep: noSleep,
+      collectOutputs: createOutputCollector(read),
+      onSchedulerSubmitted: (spec, schedulerJobId, expectedOutputs) =>
+        store.recordSubmitted({ spec, schedulerJobId, expectedOutputs }),
+      onJobFinished: (jobId) => store.markFinished(jobId),
+      onStatusUpdate: (report) => {
+        reports.push(report);
+      },
+    });
+    await first.run({ ...baseSpec, workingDir: "/shared/work" }, outputs);
+    expect(reports.map((report) => report.status)).toEqual(["queued"]);
+    expect(releases).toBe(0);
+    db.$client.close();
+    db = createSqliteDb(`${directory}/agent.db`);
+    store = new ActiveRemoteJobs(db);
+    const [recovered] = await store.listActive();
+    if (!recovered) throw new Error("output recovery record must survive restart");
+    expect(recovered.schedulerJobId).toBe("original-123");
+    read.readValidated = async () => "42";
+    await new JobRunner({
+      adapter,
+      sleep: noSleep,
+      collectOutputs: createOutputCollector(read),
+      onJobFinished: (jobId) => store.markFinished(jobId),
+      onStatusUpdate: (report) => {
+        reports.push(report);
+      },
+    }).resume(recovered.spec, recovered.schedulerJobId, recovered.expectedOutputs);
+    expect(reports.at(-1)).toMatchObject({
+      status: "completed",
+      schedulerJobId: "original-123",
+      collected: { result: "42" },
+    });
+    expect(await store.listActive()).toEqual([]);
+    expect(submissions).toBe(1);
+    expect(releases).toBe(1);
+  } finally {
+    db.$client.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("transient stdout I/O is retried before publishing a completed report", async () => {
+  const reports: JobStatusReport[] = [];
+  let reads = 0;
+  const runner = new JobRunner({
+    adapter: makeAdapter({
+      getJobLogs: async () => {
+        if (++reads === 1) throw Object.assign(new Error("stale log handle"), { code: "ESTALE" });
+        return "result=42";
+      },
+    }),
+    sleep: noSleep,
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+  });
+  await runner.run(baseSpec);
+  expect(reports.map((report) => report.status)).toEqual(["queued", "completed"]);
+  expect(reports.at(-1)?.collected).toEqual({ stdout: "result=42" });
+  expect(reads).toBe(2);
+});
+
 const kubernetesSandbox: SandboxJobSpec = {
   language: "python",
   entrypoint: "main.py",
@@ -65,6 +159,34 @@ const kubernetesSandbox: SandboxJobSpec = {
   limits: { pids: 16, outputBytes: 1_000, logBytes: 1_000 },
   kubernetesArtifactPvc: "artifacts",
 };
+
+test("Sandbox keeps its existing optional output read and stdout failure behavior", async () => {
+  const failure = Object.assign(new Error("shared disk unavailable"), { code: "EIO" });
+  const read: OutputReader = async () => {
+    throw failure;
+  };
+  read.readValidated = read;
+  const reports: JobStatusReport[] = [];
+  const runner = new JobRunner({
+    adapter: makeAdapter({
+      stageSandboxInputs: async () => {},
+      getJobLogs: async () => {
+        throw failure;
+      },
+    }),
+    sleep: noSleep,
+    collectOutputs: createOutputCollector(read),
+    validateSandboxOutputs: async () => ({ validated: "yes" }),
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+  });
+  await runner.run({ ...baseSpec, sandbox: kubernetesSandbox }, [
+    { descriptor: "optional", path: "optional.txt", isBatch: false },
+  ]);
+  expect(reports.map((report) => report.status)).toEqual(["queued", "completed"]);
+  expect(reports.at(-1)?.collected).toEqual({ validated: "yes" });
+});
 
 describe("JobRunner", () => {
   test("enforces a fresh queue rejection before scheduler submission", async () => {
@@ -159,6 +281,52 @@ describe("JobRunner", () => {
         failureCode: "SCHEDULER_SUBMIT_FAILED",
       }),
     ]);
+  });
+
+  test("unknown submission preserves the intent and does not emit a false terminal status", async () => {
+    const events: string[] = [];
+    const runner = new JobRunner({
+      adapter: makeAdapter({
+        submit: async () => {
+          events.push("sbatch-accepted");
+          throw new SchedulerSubmissionUnknownError();
+        },
+      }),
+      onSchedulerSubmitting: () => {
+        events.push("persist-intent");
+      },
+      onStatusUpdate: (report) => {
+        events.push(report.status);
+      },
+      onJobFinished: () => {
+        events.push("delete-intent");
+      },
+      sleep: noSleep,
+    });
+    expect(await runner.run(baseSpec)).toBeNull();
+    await runner.cancelAndKill();
+    await runner.waitForPendingCancellation();
+    expect(events).toEqual(["persist-intent", "sbatch-accepted"]);
+  });
+
+  test("queued status delivery failure cannot erase an already submitted job", async () => {
+    const events: string[] = [];
+    const runner = new JobRunner({
+      adapter: makeAdapter({}),
+      onSchedulerSubmitted: () => {
+        events.push("persist-id");
+      },
+      onStatusUpdate: (report) => {
+        events.push(report.status);
+        if (report.status === "queued") throw new Error("outbox temporarily unavailable");
+      },
+      onJobFinished: () => {
+        events.push("delete-record");
+      },
+      sleep: noSleep,
+    });
+    expect(await runner.run(baseSpec)).toBe("scheduler-1");
+    expect(events).toEqual(["persist-id", "queued", "completed", "delete-record"]);
   });
 
   test("suppresses logs and output collection for restricted no-egress jobs", async () => {
@@ -491,7 +659,10 @@ describe("JobRunner", () => {
     const runner = new JobRunner({
       adapter: makeAdapter({
         statuses: [{ status: "completed" }],
-        getJobLogs: async (schedulerJobId, lines) => `id=${schedulerJobId} lines=${lines}\n`,
+        getJobLogs: async (schedulerJobId, lines, jobId) => {
+          expect(jobId).toBe(baseSpec.jobId);
+          return `id=${schedulerJobId} lines=${lines}\n`;
+        },
       }),
       onStatusUpdate: (r) => {
         reports.push(r);
@@ -823,4 +994,68 @@ describe("JobRunner", () => {
     await runner.run(baseSpec);
     expect(cancelCalls).toEqual([]);
   });
+});
+
+test("cancel request acceptance does not release artifacts before confirmed termination", async () => {
+  const submitted = Promise.withResolvers<void>();
+  const poll = Promise.withResolvers<void>();
+  let finished = false;
+  const adapter = makeAdapter({});
+  adapter.confirmStopped = async () => false;
+  const runner = new JobRunner({
+    adapter,
+    sleep: () => poll.promise,
+    onStatusUpdate: () => {
+      submitted.resolve();
+    },
+    onJobFinished: () => {
+      finished = true;
+    },
+  });
+  const running = runner.run(baseSpec);
+  await submitted.promise;
+  await runner.cancelAndKill();
+  poll.resolve();
+  await running;
+  expect(finished).toBe(false);
+});
+
+test("resume reports the first real queued state and scheduler ID without waiting for running", async () => {
+  const reports: JobStatusReport[] = [];
+  const runner = new JobRunner({
+    adapter: makeAdapter({
+      submit: async () => {
+        throw new Error("must not resubmit");
+      },
+      statuses: [{ status: "queued" }, { status: "queued" }, { status: "completed", exitCode: 0 }],
+    }),
+    sleep: noSleep,
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+  });
+  await runner.resume(baseSpec, "original-123");
+  expect(reports.map((report) => report.status)).toEqual(["queued", "completed"]);
+  expect(reports[0]?.schedulerJobId).toBe("original-123");
+});
+
+test("uncertain post-submit persistence retains the scheduler job without a false terminal report", async () => {
+  const reports: JobStatusReport[] = [];
+  let finished = false;
+  const runner = new JobRunner({
+    adapter: makeAdapter({}),
+    sleep: noSleep,
+    onSchedulerSubmitted: async () => {
+      throw new SchedulerSubmissionUnknownError("persistence and stop outcome unknown");
+    },
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+    onJobFinished: () => {
+      finished = true;
+    },
+  });
+  expect(await runner.run(baseSpec)).toBe("scheduler-1");
+  expect(reports).toEqual([]);
+  expect(finished).toBe(false);
 });

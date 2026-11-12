@@ -53,8 +53,8 @@ function sameIdentity(before: BigIntStats, after: BigIntStats): boolean {
   );
 }
 
-function protectedEntry(entry: BigIntStats): boolean {
-  return entry.uid === 0n && (entry.mode & 0o022n) === 0n;
+function protectedEntry(entry: BigIntStats, owner = 0n): boolean {
+  return (entry.uid === 0n || entry.uid === owner) && (entry.mode & 0o022n) === 0n;
 }
 
 async function verifyResolution(
@@ -72,12 +72,13 @@ async function verifyResolution(
 async function resolveProtectedFile(
   path: string,
   signal: AbortSignal,
+  owner = 0n,
 ): Promise<ProtectedResolution> {
   signal.throwIfAborted();
   requireValid(SpackInstallPathSchema.safeParse(path).success);
   let current = "/";
   let entry = await lstat(current, { bigint: true });
-  requireValid(entry.isDirectory() && protectedEntry(entry));
+  requireValid(entry.isDirectory() && protectedEntry(entry, owner));
   const snapshots = new Map([[current, entry]]);
   const bindings = new Set([path]);
   const pending = path.split("/").slice(1);
@@ -100,14 +101,14 @@ async function resolveProtectedFile(
     if (entry.isSymbolicLink()) {
       // POSIX symlink mode bits are not access controls; the link's owner and
       // protected containing directory control replacement of the link.
-      requireValid(entry.uid === 0n && ++links <= 40);
+      requireValid((entry.uid === 0n || entry.uid === owner) && ++links <= 40);
       bindings.add(candidate);
       const target = await readlink(candidate);
       requireValid(target.length <= 4096 && /^[A-Za-z0-9_+./-]+$/.test(target));
       if (target.startsWith("/")) current = "/";
       pending.unshift(...target.split("/"));
     } else {
-      requireValid(protectedEntry(entry));
+      requireValid(protectedEntry(entry, owner));
       requireValid(pending.length ? entry.isDirectory() : entry.isFile());
       current = candidate;
     }
@@ -129,8 +130,9 @@ async function inspectProtectedFile(
   collect: boolean,
   signal: AbortSignal,
   resolutions: ProtectedResolution[],
+  owner = 0n,
 ): ReturnType<Inspect> {
-  const resolution = await resolveProtectedFile(path, signal);
+  const resolution = await resolveProtectedFile(path, signal, owner);
   const limit = Math.min(maximum, collect ? PROFILE_MAXIMUM : HOST_MAXIMUM);
   requireValid(resolution.entry.size >= 0n && resolution.entry.size <= BigInt(limit));
   signal.throwIfAborted();
@@ -269,12 +271,15 @@ async function inspectSiteProfile(
         digestPattern.test(runtime.sifSha256) &&
         runtime.apptainerPath !== runtime.sifPath,
     );
+    const uid = process.getuid?.() ?? 0;
+    requireValid(runtime.trustMode !== "single-user" || uid > 0);
+    const owner = BigInt(runtime.trustMode === "single-user" ? uid : 0);
     const resolutions: ProtectedResolution[] = [];
     const injected = options.inspect;
     const inspect: Inspect =
       injected ??
       ((file, maximum, collect, abortSignal) =>
-        inspectProtectedFile(file, maximum, collect, abortSignal, resolutions));
+        inspectProtectedFile(file, maximum, collect, abortSignal, resolutions, owner));
     const inspected = await inspectWithAbort(inspect, path, PROFILE_MAXIMUM, true, signal);
     requireValid(
       inspected.sha256 === sha256 &&
@@ -305,7 +310,7 @@ async function inspectSiteProfile(
       : await canonicalStorePath(profile.storeRoot, signal);
     if (!injected) {
       for (const file of [runtime.apptainerPath, runtime.sifPath]) {
-        resolutions.push(await resolveProtectedFile(file, signal));
+        resolutions.push(await resolveProtectedFile(file, signal, owner));
       }
     }
     for (const pin of [
@@ -318,7 +323,7 @@ async function inspectSiteProfile(
       } else if (!injected) {
         // A locator can only withdraw metadata, never authorize worker execution.
         // Retain every path/alias check even when host content has drifted.
-        resolutions.push(await resolveProtectedFile(pin.path, signal));
+        resolutions.push(await resolveProtectedFile(pin.path, signal, owner));
       }
     }
     if (!injected) {

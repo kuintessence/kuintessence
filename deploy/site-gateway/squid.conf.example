@@ -1,0 +1,9 @@
+# Replace the two names with actual platform/Agent TLS names. No ssl_bump.
+http_port 127.0.0.1:3128
+acl CONNECT method CONNECT
+acl TLS_port port 443
+acl platform dstdomain platform.example.com agent.example.com
+http_access allow CONNECT TLS_port platform
+http_access deny all
+cache deny all
+access_log none

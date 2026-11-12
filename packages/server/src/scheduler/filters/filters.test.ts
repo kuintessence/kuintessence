@@ -12,6 +12,7 @@ import { UrgencyFilter } from "./urgency";
 function makeAgent(overrides: Partial<AgentRow> = {}): AgentRow {
   const now = new Date();
   return {
+    siteOperations: null,
     agentId: "a-1",
     siteName: "site",
     schedulerType: "slurm",

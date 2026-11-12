@@ -18,6 +18,7 @@ export interface FileStagerDeps {
         sourceUrl?: string;
         targetPath?: string;
         totalBytes: number;
+        expectedSha256?: string;
       },
     ): boolean;
   };
@@ -32,7 +33,7 @@ export interface FileStagerDeps {
     actorUserId: string,
     fileId: string,
     context?: { jobId?: string; workflowRunId?: string; netdriveFileIds?: string[] },
-  ) => Promise<{ downloadUrl: string }>;
+  ) => Promise<{ downloadUrl: string; sha256?: string; size?: number }>;
   newTransferId: () => string;
 }
 
@@ -52,11 +53,15 @@ export function createFileStager(
   context?: { jobId?: string; workflowRunId?: string },
 ) => Promise<void> {
   return async (agentId, actorUserId, file, targetPath, context) => {
-    const { downloadUrl } = await deps.mintDownloadUrl(actorUserId, file.fileMetadataId, {
-      jobId: context?.jobId,
-      workflowRunId: context?.workflowRunId,
-      netdriveFileIds: [file.fileMetadataId],
-    });
+    const { downloadUrl, sha256, size } = await deps.mintDownloadUrl(
+      actorUserId,
+      file.fileMetadataId,
+      {
+        jobId: context?.jobId,
+        workflowRunId: context?.workflowRunId,
+        netdriveFileIds: [file.fileMetadataId],
+      },
+    );
     const transferId = deps.newTransferId();
     return new Promise<void>((resolve, reject) => {
       deps.transferRegistry.register(
@@ -74,7 +79,8 @@ export function createFileStager(
         direction: "cloud_to_cluster",
         sourceUrl: downloadUrl,
         targetPath,
-        totalBytes: 0,
+        totalBytes: size ?? 0,
+        ...(sha256 ? { expectedSha256: sha256 } : {}),
       });
       if (!queued) {
         reject(new Error("agent channel closed"));

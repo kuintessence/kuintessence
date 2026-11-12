@@ -11,6 +11,7 @@ import { AutoFilter } from "../auto";
 function makeAgent(overrides: Partial<AgentRow> = {}): AgentRow {
   const now = new Date();
   return {
+    siteOperations: null,
     agentId: "a-1",
     siteName: "groupa-site-1",
     schedulerType: "slurm",

@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import type { InstalledSpec, SpackPolicy } from "@kuintessence/shared";
+import {
+  type InstalledSpec,
+  SPACK_SOURCE_PROOF_PREFIX,
+  type SpackPolicy,
+  SpackSourceAuditEnvelopeSchema,
+  type SpackSourceAuditReport,
+} from "@kuintessence/shared";
 import { SpackManager } from "./index";
 import type { SpackManagedInstallation } from "./install-contract";
 import { installRootHash, makeInstallFixture } from "./install-test-fixture";
@@ -32,7 +38,13 @@ const success: SoftwareOperationOutcome = {
 };
 
 async function fixture(
-  options: { failedAudit?: boolean; failedInventory?: boolean; backend?: boolean } = {},
+  options: {
+    failedAudit?: boolean;
+    failedInventory?: boolean;
+    backend?: boolean;
+    proof?: boolean;
+    auditOnly?: boolean;
+  } = {},
 ) {
   const f = await makeInstallFixture();
   fixtures.push(f);
@@ -43,14 +55,17 @@ async function fixture(
     async prepare(input) {
       calls.push("prepare");
       signals.push({ stage: "prepare", signal: input.signal });
-      return f.client.prepare(input);
+      return {
+        ...(await f.client.prepare(input)),
+        ...(options.auditOnly ? { auditOnly: true } : {}),
+      };
     },
   };
   const materialAuditor: SpackMaterialAuditor = {
     async audit(_prepared, input) {
       calls.push("audit");
       signals.push({ stage: "audit", signal: input.signal });
-      return {
+      const report: SpackSourceAuditReport = {
         version: 1,
         validation: "isolated-source-audit",
         manifestDigest: f.input.manifestDigest,
@@ -62,13 +77,29 @@ async function fixture(
         passed: !options.failedAudit,
         issues: options.failedAudit ? [{ severity: "error", code: "source-mismatch" }] : [],
       };
+      return options.proof
+        ? {
+            ...report,
+            proof: {
+              version: 1,
+              operationId: input.operationId,
+              spec: input.spec,
+              nativeLockDigest: _prepared.manifest.lockfile.digest,
+              context: {
+                siteProfileDigest: `sha256:${"c".repeat(64)}`,
+                runtimeDigest: `sha256:${"d".repeat(64)}`,
+              },
+              report,
+            },
+          }
+        : report;
     },
   };
   const backend: SpackManagedInstallation = {
     async install(_prepared, input) {
       calls.push(`install:${input.spec}`);
       signals.push({ stage: "install", signal: input.signal });
-      return success;
+      return { ...success, stdout: JSON.stringify(f.report("verify", "/srv/kq/releases/test")) };
     },
     async installedList() {
       return [managed];
@@ -133,6 +164,44 @@ describe("managed Spack manager integration", () => {
       outcome: "rejected",
     });
     expect(f.calls.includes("install:hello@1.0")).toBe(false);
+  });
+
+  test("a successful source audit preserves the installation JSON report", async () => {
+    const f = await fixture({ proof: true });
+    const result = await f.manager.runSoftwareOperation("install", f.input.spec, f.input);
+    expect(result.outcome).toBe("succeeded");
+    if (result.outcome !== "succeeded") throw new Error("Unexpected installation failure");
+    expect(JSON.parse(result.stdout ?? "")).toEqual(f.report("verify", "/srv/kq/releases/test"));
+    expect(f.calls.indexOf("audit")).toBeLessThan(f.calls.indexOf("install:hello@1.0"));
+  });
+
+  test("audit-only backend configuration preserves a bound source proof", async () => {
+    const f = await fixture({ backend: false, proof: true });
+    const result = await f.manager.runSoftwareOperation("install", f.input.spec, f.input);
+    expect(result.outcome).toBe("rejected");
+    if (result.outcome !== "rejected") throw new Error("Unexpected audit failure");
+    const proof = SpackSourceAuditEnvelopeSchema.parse(
+      JSON.parse((result.stdout ?? "").slice(SPACK_SOURCE_PROOF_PREFIX.length)),
+    );
+    expect(proof.operationId).toBe(f.input.operationId);
+    expect(proof.spec).toBe(f.input.spec);
+    expect(proof.report.passed).toBe(true);
+    expect(f.calls.includes("install:hello@1.0")).toBe(false);
+  });
+
+  test("explicit audit-only mode never calls an enabled installation backend", async () => {
+    const f = await fixture({ backend: true, proof: true, auditOnly: true });
+    const result = await f.manager.runSoftwareOperation("install", f.input.spec, f.input);
+    expect(result.outcome).toBe("rejected");
+    expect(f.calls.includes("audit")).toBe(true);
+    expect(f.calls.includes("install:hello@1.0")).toBe(false);
+    if (result.outcome !== "rejected")
+      throw new Error("Audit-only must not report installation success");
+    const envelope = SpackSourceAuditEnvelopeSchema.parse(
+      JSON.parse((result.stdout ?? "").slice(SPACK_SOURCE_PROOF_PREFIX.length)),
+    );
+    expect(envelope.report.passed).toBe(true);
+    expect(result.reason).toContain("installation was not requested");
   });
 
   test("passes current policy for authoritative selector resolution and preserves legacy operations", async () => {

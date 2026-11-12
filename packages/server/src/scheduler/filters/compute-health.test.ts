@@ -6,6 +6,7 @@ const now = new Date("2026-08-03T08:00:00.000Z");
 
 function makeAgent(overrides: Partial<AgentRow> = {}): AgentRow {
   return {
+    siteOperations: null,
     agentId: "compute-health-agent",
     siteName: "site",
     providerOrgId: null,

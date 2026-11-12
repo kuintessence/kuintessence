@@ -66,9 +66,11 @@ export type InputUrlResolver = (args: {
   workflowRunId?: string;
   actorUserId: string;
   files: { fileMetadataId: string; stagePath: string }[];
-}) => Promise<Array<{ fileMetadataId: string; stagePath: string; sourceUrl: string }>>;
+}) => Promise<Array<DispatchInputStaging & { sourceUrl: string }>>;
 
 export type DispatchInputStaging = {
+  totalBytes?: number;
+  expectedSha256?: string;
   fileMetadataId: string;
   stagePath: string;
   sourceUrl?: string;

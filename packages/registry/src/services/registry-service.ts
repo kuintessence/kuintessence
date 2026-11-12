@@ -22,12 +22,16 @@ import {
   ociBlob,
   ociManifest,
   ociRepository,
+  ociRepositoryBlob,
+  ociRepositoryManifest,
+  ociRepositoryScope,
   ociTag,
   ociUploadSession,
   type PgDb,
   spackPackage,
 } from "@kuintessence/db";
 import { and, asc, desc, eq, lt, sql } from "drizzle-orm";
+import { z } from "zod";
 import {
   BlobDigestMismatchError,
   BlobNotFoundError,
@@ -95,6 +99,19 @@ export interface SpackIndexEntry {
 }
 
 const SHA_RE = /^sha256:[0-9a-f]{64}$/;
+const manifestBodySchema = z.object({
+  config: z.object({ digest: z.string().regex(SHA_RE) }).optional(),
+  layers: z
+    .array(
+      z.object({
+        digest: z.string().regex(SHA_RE),
+        mediaType: z.string(),
+        size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      }),
+    )
+    .default([]),
+  manifests: z.array(z.object({ digest: z.string().regex(SHA_RE) })).optional(),
+});
 
 function assertDigest(digest: string): void {
   if (!SHA_RE.test(digest)) {
@@ -217,6 +234,64 @@ export class RegistryService {
     this.limits = { ...DEFAULT_UPLOAD_LIMITS, ...limits };
   }
 
+  private async initializeRepositoryScope(repositoryId: string): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const [ready] = await tx
+        .select()
+        .from(ociRepositoryScope)
+        .where(eq(ociRepositoryScope.repositoryId, repositoryId));
+      if (ready) return;
+      const [repo] = await tx
+        .select({ id: ociRepository.id })
+        .from(ociRepository)
+        .where(eq(ociRepository.id, repositoryId))
+        .for("update");
+      if (!repo) throw new RegistryError("NAME_UNKNOWN", "repository not found", 404);
+      const [lockedReady] = await tx
+        .select()
+        .from(ociRepositoryScope)
+        .where(eq(ociRepositoryScope.repositoryId, repositoryId));
+      if (lockedReady) return;
+      // Existing tags and successful digest-only publications are provenance. Global presence and old mount claims are not.
+      await tx.execute(sql`INSERT INTO oci_repository_manifest (repository_id, digest, explicit)
+        SELECT DISTINCT t.repository_id, m.digest, false FROM oci_tag t JOIN oci_manifest m ON m.digest = t.manifest_digest
+        WHERE t.repository_id = ${repositoryId} ON CONFLICT DO NOTHING`);
+      await tx.execute(sql`INSERT INTO oci_repository_manifest (repository_id, digest, explicit)
+        SELECT DISTINCT r.id, m.digest, true FROM audit_release a
+        JOIN oci_repository r ON r.id = a.resource_id
+        JOIN oci_manifest m ON m.digest = a.metadata->>'digest'
+        WHERE r.id = ${repositoryId} AND a.resource_kind = 'oci-tag' AND a.action IN ('push','force-push')
+          AND a.metadata->>'kind' = 'manifest-only'
+          AND NOT EXISTS (SELECT 1 FROM audit_release d WHERE d.resource_id = a.resource_id AND d.resource_kind = 'oci-tag'
+            AND d.action = 'delete' AND d.metadata->>'digest' = a.metadata->>'digest' AND d.occurred_at >= a.occurred_at)
+        ON CONFLICT (repository_id, digest) DO UPDATE SET explicit = true`);
+      await tx.execute(sql`INSERT INTO oci_repository_blob (repository_id, digest)
+        SELECT DISTINCT rm.repository_id, b.digest FROM oci_repository_manifest rm JOIN oci_manifest m ON m.digest = rm.digest
+        CROSS JOIN LATERAL (
+          SELECT m.config_digest AS digest UNION ALL
+          SELECT item->>'digest' FROM jsonb_array_elements(CASE WHEN jsonb_typeof(m.layers) = 'array' THEN m.layers ELSE '[]'::jsonb END) AS descriptors(item)
+        ) descriptor JOIN oci_blob b ON b.digest = descriptor.digest
+        WHERE rm.repository_id = ${repositoryId} AND b.uploaded_at <= m.created_at ON CONFLICT DO NOTHING`);
+      await tx.insert(ociRepositoryScope).values({ repositoryId }).onConflictDoNothing();
+    });
+  }
+
+  private async uploadSession(repositoryId: string, uploadId: string) {
+    const [session] = await this.db
+      .select()
+      .from(ociUploadSession)
+      .where(
+        and(
+          eq(ociUploadSession.uuidToken, uploadId),
+          eq(ociUploadSession.repositoryId, repositoryId),
+        ),
+      )
+      .limit(1);
+    if (!session)
+      throw new RegistryError("BLOB_UPLOAD_UNKNOWN", "unknown upload in repository", 404);
+    return session;
+  }
+
   // ---------- Repositories ----------
 
   async ensureRepository(
@@ -332,27 +407,21 @@ export class RegistryService {
   }
 
   async appendChunk(
+    repositoryId: string,
     uploadId: string,
     chunk: ReadableStream<Uint8Array> | Uint8Array,
   ): Promise<{ totalUploaded: number }> {
-    return this.serializeUpload(uploadId, () => this.appendChunkUnlocked(uploadId, chunk));
+    return this.serializeUpload(uploadId, () =>
+      this.appendChunkUnlocked(repositoryId, uploadId, chunk),
+    );
   }
 
   private async appendChunkUnlocked(
+    repositoryId: string,
     uploadId: string,
     chunk: ReadableStream<Uint8Array> | Uint8Array,
   ): Promise<{ totalUploaded: number }> {
-    const [session] = await this.db
-      .select({
-        uuidToken: ociUploadSession.uuidToken,
-        totalUploaded: ociUploadSession.totalUploaded,
-      })
-      .from(ociUploadSession)
-      .where(eq(ociUploadSession.uuidToken, uploadId))
-      .limit(1);
-    if (!session) {
-      throw new RegistryError("BLOB_UPLOAD_UNKNOWN", `unknown upload ${uploadId}`, 404);
-    }
+    const session = await this.uploadSession(repositoryId, uploadId);
     let newSize: number;
     try {
       newSize = await this.blobs.appendUpload(uploadId, chunk, this.limits.maxUploadBytes);
@@ -385,13 +454,16 @@ export class RegistryService {
   }
 
   async completeUpload(
+    repositoryId: string,
     uploadId: string,
     expectedDigest: string,
     finalChunk?: ReadableStream<Uint8Array> | Uint8Array,
   ): Promise<{ digest: string; size: number }> {
     return this.serializeUpload(uploadId, async () => {
       assertDigest(expectedDigest);
-      if (finalChunk) await this.appendChunkUnlocked(uploadId, finalChunk);
+      await this.uploadSession(repositoryId, uploadId);
+      await this.initializeRepositoryScope(repositoryId);
+      if (finalChunk) await this.appendChunkUnlocked(repositoryId, uploadId, finalChunk);
       let stored: { digest: string; size: number };
       try {
         stored = await this.blobs.completeUpload(uploadId, expectedDigest);
@@ -401,21 +473,37 @@ export class RegistryService {
         }
         throw e;
       }
-      await this.db
-        .insert(ociBlob)
-        .values({
-          digest: stored.digest,
-          size: stored.size,
-          storageKey: digestToStorageKey(stored.digest),
-        })
-        .onConflictDoNothing();
-      await this.db.delete(ociUploadSession).where(eq(ociUploadSession.uuidToken, uploadId));
+      await this.db.transaction(async (tx) => {
+        await tx
+          .insert(ociBlob)
+          .values({
+            digest: stored.digest,
+            size: stored.size,
+            storageKey: digestToStorageKey(stored.digest),
+          })
+          .onConflictDoNothing();
+        await tx
+          .insert(ociRepositoryBlob)
+          .values({ repositoryId, digest: stored.digest })
+          .onConflictDoNothing();
+        await tx
+          .delete(ociUploadSession)
+          .where(
+            and(
+              eq(ociUploadSession.uuidToken, uploadId),
+              eq(ociUploadSession.repositoryId, repositoryId),
+            ),
+          );
+      });
       return stored;
     });
   }
 
-  async cancelUpload(uploadId: string): Promise<void> {
-    await this.serializeUpload(uploadId, () => this.cancelUploadUnlocked(uploadId));
+  async cancelUpload(repositoryId: string, uploadId: string): Promise<void> {
+    await this.serializeUpload(uploadId, async () => {
+      await this.uploadSession(repositoryId, uploadId);
+      await this.cancelUploadUnlocked(uploadId);
+    });
   }
 
   private async cancelUploadUnlocked(uploadId: string): Promise<void> {
@@ -447,32 +535,19 @@ export class RegistryService {
    */
   async sweepStaleUploads(nowMs: number = Date.now()): Promise<number> {
     const stale = await this.db
-      .select({ uuidToken: ociUploadSession.uuidToken })
+      .select({
+        uuidToken: ociUploadSession.uuidToken,
+        repositoryId: ociUploadSession.repositoryId,
+      })
       .from(ociUploadSession)
       .where(lt(ociUploadSession.createdAt, new Date(nowMs - this.limits.uploadIdleMs)));
     for (const session of stale) {
-      await this.cancelUpload(session.uuidToken);
+      await this.cancelUpload(session.repositoryId, session.uuidToken);
     }
     return stale.length;
   }
 
-  /**
-   * Distribution v2 §6.5.2 cross-repo blob mount.
-   *
-   * The data plane is content-addressed globally (`oci_blob` keys by digest,
-   * `BlobStore` keys by digest), so "mount" reduces to:
-   *
-   *   1. The blob already exists in the registry (i.e. some prior upload
-   *      promoted it from a session into `oci_blob` AND the configured
-   *      BlobStore can serve the bytes).
-   *   2. The destination repository row exists or can be created.
-   *   3. Audit a 'push' row carrying mount semantics so an operator can
-   *      reconstruct cross-repo provenance from the audit log alone.
-   *
-   * RBAC across the source/destination namespaces is the route layer's
-   * responsibility — this service entry point only refuses the mount when
-   * the underlying blob is not present.
-   */
+  /** Mount only a blob owned by the authorized source repository, then persist destination reachability. */
   async tryMountBlob(input: {
     dstNs: ParsedNamespace;
     srcNs?: ParsedNamespace;
@@ -480,15 +555,22 @@ export class RegistryService {
     principal: RbacPrincipal;
   }): Promise<{ mounted: true; repo: RegistryRepository } | { mounted: false }> {
     assertDigest(input.digest);
-    const meta = await this.db
-      .select()
-      .from(ociBlob)
-      .where(eq(ociBlob.digest, input.digest))
-      .limit(1);
-    if (!meta[0]) return { mounted: false };
-    const present = await this.blobs.exists(input.digest);
-    if (!present) return { mounted: false };
+    if (!input.srcNs) return { mounted: false };
+    const source = await this.findRepository(input.srcNs);
+    if (!source) return { mounted: false };
+    try {
+      await this.headBlob(source.id, input.digest);
+    } catch (error) {
+      if (error instanceof RegistryError && error.code === "BLOB_UNKNOWN")
+        return { mounted: false };
+      throw error;
+    }
     const repo = await this.ensureRepository(input.dstNs, input.principal);
+    await this.initializeRepositoryScope(repo.id);
+    await this.db
+      .insert(ociRepositoryBlob)
+      .values({ repositoryId: repo.id, digest: input.digest })
+      .onConflictDoNothing();
     await this.audit.recordPush({
       actor: input.principal.sub,
       resourceKind: "oci-repository",
@@ -505,13 +587,16 @@ export class RegistryService {
 
   async headBlob(repoId: string, digest: string): Promise<{ size: number }> {
     assertDigest(digest);
-    void repoId; // blobs are content-addressed globally; repo scoping is for audit only
-    const meta = await this.db.select().from(ociBlob).where(eq(ociBlob.digest, digest)).limit(1);
-    const row = meta[0];
-    if (row) return { size: row.size };
-    const stat = await this.blobs.head(digest);
-    if (!stat) throw new RegistryError("BLOB_UNKNOWN", `blob ${digest} not found`, 404);
-    return { size: stat.size };
+    await this.initializeRepositoryScope(repoId);
+    const [row] = await this.db
+      .select({ size: ociBlob.size })
+      .from(ociRepositoryBlob)
+      .innerJoin(ociBlob, eq(ociRepositoryBlob.digest, ociBlob.digest))
+      .where(and(eq(ociRepositoryBlob.repositoryId, repoId), eq(ociRepositoryBlob.digest, digest)))
+      .limit(1);
+    if (!row || !(await this.blobs.exists(digest)))
+      throw new RegistryError("BLOB_UNKNOWN", "blob not found in repository", 404);
+    return { size: row.size };
   }
 
   async getBlob(
@@ -519,7 +604,7 @@ export class RegistryService {
     digest: string,
   ): Promise<{ stream: ReadableStream<Uint8Array>; size: number }> {
     assertDigest(digest);
-    void repoId;
+    await this.headBlob(repoId, digest);
     try {
       return await this.blobs.get(digest);
     } catch (e) {
@@ -543,100 +628,105 @@ export class RegistryService {
     if (body.byteLength === 0) {
       throw new RegistryError("MANIFEST_INVALID", "manifest body is empty");
     }
-    let parsed: {
-      config?: { digest?: string };
-      layers?: Array<{ digest: string; mediaType: string; size: number }>;
-    };
+    let parsed: z.infer<typeof manifestBodySchema>;
     try {
-      parsed = JSON.parse(new TextDecoder().decode(body)) as typeof parsed;
+      parsed = manifestBodySchema.parse(JSON.parse(new TextDecoder().decode(body)));
     } catch {
-      throw new RegistryError("MANIFEST_INVALID", "manifest body is not valid JSON");
+      throw new RegistryError("MANIFEST_INVALID", "manifest body or descriptors are invalid");
     }
     const digest = `sha256:${await sha256Hex(body)}`;
-
-    // Insert content-addressed manifest row idempotently.
-    await this.db
-      .insert(ociManifest)
-      .values({
-        digest,
-        mediaType,
-        configDigest: parsed.config?.digest ?? null,
-        layers: parsed.layers ?? [],
-        size: body.byteLength,
-        body,
-      })
-      .onConflictDoNothing();
-
-    // Resolve the ref:
-    //  - sha256:<hex> ref must equal the computed digest (no-op tag write).
-    //  - tag ref must pass `validateTag` and obey immutability.
     const isDigestRef = SHA_RE.test(ref);
-    if (isDigestRef) {
-      if (ref !== digest) {
-        throw new RegistryError(
-          "DIGEST_INVALID",
-          `body digest ${digest} does not match ref ${ref}`,
-        );
+    if (isDigestRef && ref !== digest)
+      throw new RegistryError("DIGEST_INVALID", "manifest digest differs from reference");
+    const tagCheck = isDigestRef ? { ok: true as const, mutable: false } : validateTag(ref);
+    if (!tagCheck.ok) throw new RegistryError("TAG_INVALID", tagCheck.reason);
+    await this.initializeRepositoryScope(repo.id);
+    for (const blob of [parsed.config?.digest, ...parsed.layers.map((layer) => layer.digest)]) {
+      if (blob) await this.headBlob(repo.id, blob);
+    }
+    for (const child of parsed.manifests ?? []) await this.getManifestByRef(repo.id, child.digest);
+
+    const prior = await this.db.transaction(async (tx) => {
+      // Serialize tag immutability and reachability publication for this repository.
+      await tx
+        .select({ id: ociRepository.id })
+        .from(ociRepository)
+        .where(eq(ociRepository.id, repo.id))
+        .for("update");
+      const [existing] = isDigestRef
+        ? []
+        : await tx
+            .select()
+            .from(ociTag)
+            .where(and(eq(ociTag.repositoryId, repo.id), eq(ociTag.tag, ref)))
+            .limit(1);
+      if (existing && !tagCheck.mutable && existing.manifestDigest !== digest)
+        throw new RegistryError("TAG_IMMUTABLE", `tag ${ref} is immutable`, 409);
+      await tx
+        .insert(ociManifest)
+        .values({
+          digest,
+          mediaType,
+          configDigest: parsed.config?.digest ?? null,
+          layers: parsed.layers,
+          size: body.byteLength,
+          body,
+        })
+        .onConflictDoNothing();
+      if (isDigestRef) {
+        await tx
+          .insert(ociRepositoryManifest)
+          .values({ repositoryId: repo.id, digest, explicit: true })
+          .onConflictDoUpdate({
+            target: [ociRepositoryManifest.repositoryId, ociRepositoryManifest.digest],
+            set: { explicit: true },
+          });
+      } else {
+        await tx
+          .insert(ociRepositoryManifest)
+          .values({ repositoryId: repo.id, digest })
+          .onConflictDoNothing();
+        if (existing)
+          await tx
+            .update(ociTag)
+            .set({ manifestDigest: digest, pushedBy: principal.sub })
+            .where(eq(ociTag.id, existing.id));
+        else
+          await tx.insert(ociTag).values({
+            repositoryId: repo.id,
+            tag: ref,
+            manifestDigest: digest,
+            pushedBy: principal.sub,
+          });
       }
-      await this.audit.recordPush({
-        actor: principal.sub,
-        resourceKind: "oci-tag",
-        resourceId: repo.id,
-        metadata: { kind: "manifest-only", digest },
-      });
-      return { digest };
-    }
-
-    const tagCheck = validateTag(ref);
-    if (!tagCheck.ok) {
-      throw new RegistryError("TAG_INVALID", tagCheck.reason);
-    }
-
-    const existing = await this.db
-      .select()
-      .from(ociTag)
-      .where(and(eq(ociTag.repositoryId, repo.id), eq(ociTag.tag, ref)))
-      .limit(1);
-    const prior = existing[0];
-    if (prior && !tagCheck.mutable && prior.manifestDigest !== digest) {
-      throw new RegistryError(
-        "TAG_IMMUTABLE",
-        `tag ${ref} is immutable; existing digest ${prior.manifestDigest}`,
-        409,
-      );
-    }
-    if (prior) {
-      await this.db
-        .update(ociTag)
-        .set({ manifestDigest: digest, pushedBy: principal.sub })
-        .where(eq(ociTag.id, prior.id));
-    } else {
-      await this.db.insert(ociTag).values({
-        repositoryId: repo.id,
-        tag: ref,
-        manifestDigest: digest,
-        pushedBy: principal.sub,
-      });
-    }
+      return existing;
+    });
     await this.audit.recordPush({
       actor: principal.sub,
       resourceKind: "oci-tag",
       resourceId: repo.id,
-      metadata: { tag: ref, digest, previousDigest: prior?.manifestDigest ?? null },
+      metadata: isDigestRef
+        ? { kind: "manifest-only", digest }
+        : { tag: ref, digest, previousDigest: prior?.manifestDigest ?? null },
       forced: prior?.manifestDigest != null && prior.manifestDigest !== digest && tagCheck.mutable,
     });
-    if (prior?.manifestDigest && prior.manifestDigest !== digest) {
-      await this.pruneManifestIfUnreferenced(prior.manifestDigest);
-    }
+    if (prior?.manifestDigest && prior.manifestDigest !== digest)
+      await this.releaseManifestReference(repo.id, prior.manifestDigest);
     return { digest };
   }
 
   async getManifestByRef(repoId: string, ref: string): Promise<ManifestRecord> {
+    await this.initializeRepositoryScope(repoId);
     const digest = SHA_RE.test(ref) ? ref : await this.resolveTagToDigest(repoId, ref);
     const rows = await this.db
-      .select()
+      .select({
+        body: ociManifest.body,
+        digest: ociManifest.digest,
+        mediaType: ociManifest.mediaType,
+      })
       .from(ociManifest)
-      .where(eq(ociManifest.digest, digest))
+      .innerJoin(ociRepositoryManifest, eq(ociRepositoryManifest.digest, ociManifest.digest))
+      .where(and(eq(ociManifest.digest, digest), eq(ociRepositoryManifest.repositoryId, repoId)))
       .limit(1);
     const row = rows[0];
     if (!row) throw new RegistryError("MANIFEST_UNKNOWN", `manifest ${ref} not found`, 404);
@@ -649,6 +739,7 @@ export class RegistryService {
     principal: RbacPrincipal;
   }): Promise<void> {
     const { repo, ref, principal } = input;
+    await this.initializeRepositoryScope(repo.id);
     let digest: string;
     let metadata: Record<string, unknown>;
     if (SHA_RE.test(ref)) {
@@ -657,9 +748,7 @@ export class RegistryService {
         .select()
         .from(ociTag)
         .where(and(eq(ociTag.repositoryId, repo.id), eq(ociTag.manifestDigest, ref)));
-      if (tags.length === 0) {
-        throw new RegistryError("MANIFEST_UNKNOWN", `manifest ${ref} not found`, 404);
-      }
+      await this.getManifestByRef(repo.id, ref);
       for (const t of tags) {
         await this.db.delete(ociTag).where(eq(ociTag.id, t.id));
       }
@@ -676,7 +765,7 @@ export class RegistryService {
       digest = tag[0].manifestDigest;
       metadata = { tag: ref, digest };
     }
-    await this.pruneManifestIfUnreferenced(digest);
+    await this.releaseManifestReference(repo.id, digest, SHA_RE.test(ref));
     await this.pruneEmptyRepository(repo.id);
     await this.audit.recordDelete({
       actor: principal.sub,
@@ -869,7 +958,56 @@ export class RegistryService {
     });
   }
 
+  private async releaseManifestReference(
+    repositoryId: string,
+    digest: string,
+    force = false,
+  ): Promise<void> {
+    const tags = await this.db
+      .select({ id: ociTag.id })
+      .from(ociTag)
+      .where(and(eq(ociTag.repositoryId, repositoryId), eq(ociTag.manifestDigest, digest)))
+      .limit(1);
+    const [association] = await this.db
+      .select()
+      .from(ociRepositoryManifest)
+      .where(
+        and(
+          eq(ociRepositoryManifest.repositoryId, repositoryId),
+          eq(ociRepositoryManifest.digest, digest),
+        ),
+      );
+    if (force || (tags.length === 0 && !association?.explicit)) {
+      await this.db
+        .delete(ociRepositoryManifest)
+        .where(
+          and(
+            eq(ociRepositoryManifest.repositoryId, repositoryId),
+            eq(ociRepositoryManifest.digest, digest),
+          ),
+        );
+    }
+    await this.pruneManifestIfUnreferenced(digest);
+  }
+
+  private async hasLegacyRepositories(): Promise<boolean> {
+    const rows = await this.db
+      .select({ id: ociRepository.id })
+      .from(ociRepository)
+      .leftJoin(ociRepositoryScope, eq(ociRepositoryScope.repositoryId, ociRepository.id))
+      .where(sql`${ociRepositoryScope.repositoryId} IS NULL`)
+      .limit(1);
+    return rows.length > 0;
+  }
+
   private async pruneManifestIfUnreferenced(digest: string): Promise<void> {
+    if (await this.hasLegacyRepositories()) return;
+    const associations = await this.db
+      .select()
+      .from(ociRepositoryManifest)
+      .where(eq(ociRepositoryManifest.digest, digest))
+      .limit(1);
+    if (associations.length > 0) return;
     const referencedTags = await this.db
       .select({ id: ociTag.id })
       .from(ociTag)
@@ -902,6 +1040,13 @@ export class RegistryService {
   }
 
   private async pruneBlobIfUnreferenced(digest: string): Promise<void> {
+    if (await this.hasLegacyRepositories()) return;
+    const associations = await this.db
+      .select()
+      .from(ociRepositoryBlob)
+      .where(eq(ociRepositoryBlob.digest, digest))
+      .limit(1);
+    if (associations.length > 0) return;
     const manifests = await this.db
       .select({ configDigest: ociManifest.configDigest, layers: ociManifest.layers })
       .from(ociManifest);
@@ -934,6 +1079,17 @@ export class RegistryService {
   }
 
   private async pruneEmptyRepository(repositoryId: string): Promise<void> {
+    const manifests = await this.db
+      .select()
+      .from(ociRepositoryManifest)
+      .where(eq(ociRepositoryManifest.repositoryId, repositoryId))
+      .limit(1);
+    const blobs = await this.db
+      .select()
+      .from(ociRepositoryBlob)
+      .where(eq(ociRepositoryBlob.repositoryId, repositoryId))
+      .limit(1);
+    if (manifests.length > 0 || blobs.length > 0) return;
     const tags = await this.db
       .select({ id: ociTag.id })
       .from(ociTag)

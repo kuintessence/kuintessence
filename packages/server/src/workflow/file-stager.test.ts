@@ -43,6 +43,29 @@ function harness(over: Partial<FileStagerDeps> = {}) {
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 describe("createFileStager", () => {
+  test("forwards authorized content identity including empty NetDrive files", async () => {
+    const sha256 = "a".repeat(64);
+    const h = harness({
+      mintDownloadUrl: async () => ({ downloadUrl: "https://minio/input", sha256, size: 0 }),
+    });
+    const pending = h.stager(
+      "agent",
+      "owner",
+      { fileMetadataId: "file", stagePath: "input" },
+      "/run/input",
+    );
+    await tick();
+    expect(h.pushes[0]?.payload).toEqual({
+      direction: "cloud_to_cluster",
+      sourceUrl: "https://minio/input",
+      targetPath: "/run/input",
+      totalBytes: 0,
+      expectedSha256: sha256,
+    });
+    h.fire({ copiedBytes: 0, state: "succeeded" });
+    await pending;
+  });
+
   test("presigns + dispatches a cloud_to_cluster transfer and resolves on success", async () => {
     const h = harness();
     const p = h.stager(

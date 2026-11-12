@@ -1,4 +1,9 @@
-import type { InstalledSpec, MirrorSpec, SpackPolicy } from "@kuintessence/shared";
+import {
+  type InstalledSpec,
+  type MirrorSpec,
+  SPACK_SOURCE_PROOF_PREFIX,
+  type SpackPolicy,
+} from "@kuintessence/shared";
 import type { Spawner } from "../adapters/base";
 import { Buildcache, type ExportOutcome, type ImportResult } from "./buildcache";
 import { MANAGED_SPACK_EXECUTION_DISABLED, SpackCli } from "./cli";
@@ -307,13 +312,29 @@ export class SpackManager {
               .join("; ")}`,
           };
         }
+        if (prepared.auditOnly) {
+          if (!report.proof)
+            return {
+              outcome: "rejected",
+              reason: "Spack source audit proof requires a verified pinned site profile",
+            };
+          return {
+            outcome: "rejected",
+            reason: "Spack source audit completed; installation was not requested",
+            stdout: report.proof
+              ? SPACK_SOURCE_PROOF_PREFIX + JSON.stringify(report.proof)
+              : JSON.stringify(report),
+          };
+        }
         if (this.managedInstallation) {
           return this.withLegacyInventory(await this.managedInstallation.install(prepared, input));
         }
         return {
           outcome: "rejected",
           reason: MANAGED_SPACK_EXECUTION_DISABLED,
-          stdout: JSON.stringify(report),
+          stdout: report.proof
+            ? SPACK_SOURCE_PROOF_PREFIX + JSON.stringify(report.proof)
+            : JSON.stringify(report),
         };
       } catch {
         if (signal?.aborted) return cancelledSoftwareOperation();

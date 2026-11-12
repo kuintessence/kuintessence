@@ -1,6 +1,9 @@
 /// <reference path="./python.d.ts" />
+
+import { createHash } from "node:crypto";
 import { link, lstat, mkdir, mkdtemp, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { SpackAuditContext, SpackSourceAuditEnvelope } from "@kuintessence/shared";
 import { realSpackAuditProcess, type SpackAuditProcess } from "./audit-process";
 import {
   buildSpackAuditCommand,
@@ -9,9 +12,14 @@ import {
   type SpackAuditRuntimeProfile,
   verifySpackAuditRuntime,
 } from "./audit-runtime";
+import {
+  loadSpackInstallSiteProfile,
+  type SpackInstallSiteProfileOptions,
+} from "./install-site-profile";
 import { SpackMaterialCache } from "./material-cache";
 import type { PreparedSpackMaterials, SpackMaterialPrepareInput } from "./material-client";
 import { preflightSpackMaterials } from "./material-preflight";
+import { SpackWorkerUncertainError } from "./slurm-process";
 import {
   SPACK_AUDIT_RESULT_PREFIX,
   type SpackSourceAuditReport,
@@ -23,7 +31,7 @@ export interface SpackMaterialAuditor {
   audit(
     prepared: PreparedSpackMaterials,
     input: SpackMaterialPrepareInput,
-  ): Promise<SpackSourceAuditReport>;
+  ): Promise<SpackSourceAuditReport & { proof?: SpackSourceAuditEnvelope }>;
 }
 
 interface RuntimeContext {
@@ -33,6 +41,7 @@ interface RuntimeContext {
 
 export interface SpackSourceAuditorOptions {
   profile: SpackAuditRuntimeProfile;
+  site?: SpackInstallSiteProfileOptions;
   process?: SpackAuditProcess;
   runtimeDeps?: SpackAuditRuntimeDeps;
   runtimeContext?: () => Promise<RuntimeContext>;
@@ -72,16 +81,39 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
     this.process = options.process ?? realSpackAuditProcess;
   }
 
+  async context(signal = AbortSignal.timeout(30_000)): Promise<SpackAuditContext | undefined> {
+    if (!this.options.site) return undefined;
+    await verifySpackAuditRuntime(this.options.profile, signal, this.options.runtimeDeps);
+    const site = await loadSpackInstallSiteProfile(this.options.site, signal);
+    const profile = this.options.profile;
+    return {
+      siteProfileDigest: site.digest,
+      runtimeDigest: `sha256:${createHash("sha256")
+        .update(
+          JSON.stringify([
+            profile.trustMode ?? "administrator",
+            profile.apptainerSha256,
+            profile.sifSha256,
+          ]),
+        )
+        .digest("hex")}`,
+    };
+  }
+
   async audit(
     prepared: PreparedSpackMaterials,
     input: SpackMaterialPrepareInput,
-  ): Promise<SpackSourceAuditReport> {
+  ): Promise<SpackSourceAuditReport & { proof?: SpackSourceAuditEnvelope }> {
     if (this.active) throw new Error("Spack source audit is already running on this Agent");
     this.active = true;
     const deadline = AbortSignal.timeout(30 * 60_000);
     const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
+    let retainStaging = false;
     let directory: string | undefined;
+    let dispatched = false;
+    let result: Awaited<ReturnType<SpackAuditProcess["run"]>> | undefined;
     try {
+      const contextBefore = await this.context(signal);
       const preflight = await preflightSpackMaterials(prepared, { ...input, signal });
       if (!preflight.valid) throw new Error("Spack source audit requires a valid static lock");
       await verifySpackAuditRuntime(this.options.profile, signal, this.options.runtimeDeps);
@@ -100,6 +132,8 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
       await privateDirectory(runs);
       directory = await mkdtemp(join(runs, "run-"));
       const inputs = join(directory, "input");
+      const work = join(directory, "work");
+      await privateDirectory(work);
       await privateDirectory(inputs);
       await privateDirectory(join(inputs, "blobs"));
       const manifestBytes = await cache.readMetadata(
@@ -125,8 +159,9 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
       await verifySpackAuditRuntime(this.options.profile, signal, this.options.runtimeDeps);
       signal.throwIfAborted();
       const uid = this.options.runtimeDeps?.uid ?? process.getuid?.();
-      const result = await this.process.run(
-        buildSpackAuditCommand(this.options.profile, inputs, input.manifestDigest),
+      dispatched = true;
+      result = await this.process.run(
+        buildSpackAuditCommand(this.options.profile, inputs, input.manifestDigest, undefined, work),
         {
           cwd: directory,
           env: {
@@ -164,10 +199,44 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
       ) {
         throw new Error("Spack source audit report binding or exit status mismatch");
       }
-      return report;
+      const contextAfter = await this.context(signal);
+      if (JSON.stringify(contextBefore) !== JSON.stringify(contextAfter))
+        throw new Error("Spack source audit site context changed during execution");
+      return contextAfter
+        ? {
+            ...report,
+            proof: {
+              version: 1,
+              operationId: input.operationId,
+              spec: input.spec,
+              nativeLockDigest: prepared.manifest.lockfile.digest,
+              context: contextAfter,
+              report,
+            },
+          }
+        : report;
+    } catch (error) {
+      retainStaging = dispatched || error instanceof SpackWorkerUncertainError;
+      // An uncertain worker may still own this directory; leave its files untouched.
+      if (directory && dispatched && !(error instanceof SpackWorkerUncertainError)) {
+        await writeFile(
+          join(directory, "diagnostic.json"),
+          JSON.stringify({
+            version: 1,
+            phase: result ? "report" : "execution",
+            exitCode: result?.exitCode ?? null,
+            stdoutBytes: result ? Buffer.byteLength(result.stdout) : null,
+            stderrBytes: result ? Buffer.byteLength(result.stderr) : null,
+            stdout: result?.stdout.slice(0, 8192) ?? "",
+            stderr: result?.stderr.slice(0, 8192) ?? "",
+          }),
+          { flag: "wx", mode: 0o600 },
+        );
+      }
+      throw error;
     } finally {
       try {
-        if (directory) await rm(directory, { recursive: true, force: true });
+        if (directory && !retainStaging) await rm(directory, { recursive: true, force: true });
       } finally {
         this.active = false;
       }

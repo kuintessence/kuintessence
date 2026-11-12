@@ -30,6 +30,7 @@ export * from "./schemas/ssh";
 export * from "./schemas/sso";
 export * from "./schemas/template";
 export * from "./schemas/terminal";
+export * from "./site-operations";
 export * from "./software-governance";
 export * from "./spack";
 export * from "./spack-install-bindings";
@@ -41,6 +42,7 @@ export * from "./spack-material-management";
 export * from "./spack-material-visibility";
 export * from "./spack-materials";
 export * from "./spack-repositories";
+export * from "./spack-source-audit";
 export * from "./spack-upstream";
 export * from "./storage-quota";
 // P4 usecase→command materialization (namespaced).

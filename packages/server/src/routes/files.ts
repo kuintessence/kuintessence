@@ -298,6 +298,30 @@ export function createFileRoutes(service: FileService, options: FileRouteOptions
     },
   );
 
+  routes.post("/files/transfers/:id/resume", async (c) => {
+    const actorUserId = requireLegacyFileActorUserId(c);
+    const transfer = (await service.listTransfers(actorUserId)).find(
+      (item) => item.id === c.req.param("id"),
+    );
+    if (!transfer) throw new AppError(ErrorCode.NOT_FOUND, "Transfer not found", 404);
+    const data = TransferCreateSchema.parse({
+      ...transfer,
+      totalBytes: transfer.totalBytes ?? undefined,
+      agentId: transfer.agentId ?? undefined,
+      siteId: transfer.siteId ?? undefined,
+    });
+    await requireTransferAgentExists(options.resolveAgentProviderOrg, data.agentId ?? null);
+    await resolveCloudTransferSource(c, actorUserId, options, data);
+    const context = clusterFileRootAccessContext(c);
+    await requireTransferClusterPath(context, service, options, clusterFileRoots, data);
+    return c.json(
+      await service.resumeTransfer(actorUserId, transfer.id, {
+        beforeDispatch: () =>
+          requireTransferRootAuthorization(context, options, clusterFileRoots, data),
+      }),
+    );
+  });
+
   routes.post("/files/transfers/:id/cancel", async (c) => {
     const actorUserId = requireLegacyFileActorUserId(c);
     const transfer = (await service.listTransfers(actorUserId)).find(

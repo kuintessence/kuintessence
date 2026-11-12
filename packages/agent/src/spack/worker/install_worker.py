@@ -8,6 +8,7 @@ All native API usage below is pinned to spack/spack tag v1.0.0.
 
 import contextlib
 import copy
+import errno
 import hashlib
 import importlib
 import importlib.util
@@ -43,6 +44,16 @@ FORBIDDEN_STORE = (
     "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/proc", "/sys",
     "/dev", "/run", "/kq", "/opt/spack",
 )
+MINIMAL_DEVICES = {
+    "/dev/null": (1, 3), "/dev/zero": (1, 5),
+    "/dev/random": (1, 8), "/dev/urandom": (1, 9), "/dev/tty": (5, 0),
+}
+FAILURE_CODES = frozenset({
+    "runtime-boundary", "readonly-pin", "store-mount", "scratch-boundary",
+    "writable-host-mount", "os-pin", "external-prefix", "platform-mismatch",
+    "cpu-mismatch", "source-audit-failed", "compiler-pin", "target-mismatch", "native-binding",
+    "recovery-binding", "recovery-manifest", "recovery-content", "recovery-closure", "recovery-upstream",
+})
 CONFIRMATIONS = {
     "sharedStoreConfirmed", "compatibleComputeNodesConfirmed",
     "trustedRecipesConfirmed", "quotaEnforcedBySite",
@@ -75,13 +86,20 @@ def store_path(value: object) -> Path:
 
 def read_request(input_dir: Path) -> dict:
     request = audit.document(audit.read_regular(input_dir / "request.json", 2 * audit.MIB))
-    require(set(request) == {
+    require(set(request) in ({
         "version", "action", "manifestDigest", "siteProfileDigest", "storePath", "siteProfile",
-    })
+    }, {
+        "version", "action", "manifestDigest", "siteProfileDigest", "storePath", "siteProfile", "verifiedDependencyHashes",
+    }))
     require(type(request["version"]) is int and request["version"] == 1)
-    require(request["action"] in ("install", "verify", "load"))
+    require(request["action"] in ("install", "verify", "load", "verify-partial"))
     require(all(audit.matches(audit.DIGEST, request[k])
                 for k in ("manifestDigest", "siteProfileDigest")))
+    if "verifiedDependencyHashes" in request:
+        hashes = request["verifiedDependencyHashes"]
+        require(request["action"] == "install" and isinstance(hashes, list) and
+                len(hashes) <= 10000 and all(audit.matches(audit.HASH, h) for h in hashes) and
+                len(set(hashes)) == len(hashes), "recovery-binding")
     data = audit.read_regular(input_dir / "site-profile.json", 2 * audit.MIB)
     require("sha256:" + hashlib.sha256(data).hexdigest() == request["siteProfileDigest"])
     profile = audit.document(data)
@@ -160,6 +178,27 @@ def verify_store(request: dict, mounts: list) -> None:
     require(not any(m[0] != store and within(m[0], store) for m in mounts), "store-mount")
 
 
+def verify_minimal_device(mount: Path, mounts: list) -> None:
+    require(str(mount) in MINIMAL_DEVICES and
+            len([m for m in mounts if within(m[0], mount)]) == 1,
+            "writable-host-mount")
+    try:
+        info = mount.lstat()
+        require(stat.S_ISCHR(info.st_mode) and
+                (os.major(info.st_rdev), os.minor(info.st_rdev)) == MINIMAL_DEVICES[str(mount)],
+                "writable-host-mount")
+        if mount == Path("/dev/tty"):
+            try:
+                fd = os.open(mount, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+            except OSError as error:
+                require(error.errno == errno.ENXIO, "writable-host-mount")
+            else:
+                os.close(fd)
+                raise audit.AuditError("writable-host-mount")
+    except OSError as error:
+        raise audit.AuditError("writable-host-mount") from error
+
+
 def verify_scratch(input_dir: Path, work: Path, store: Path, mounts: list) -> None:
     require(input_dir.resolve(strict=True) == input_dir and input_dir.is_dir())
     readonly(input_dir, mounts, subtree=True)
@@ -170,8 +209,12 @@ def verify_scratch(input_dir: Path, work: Path, store: Path, mounts: list) -> No
     for mount, options, filesystem in mounts:
         # Other writable filesystems must be container-local kernel/tmpfs mounts.
         if "rw" in options and mount != store:
-            require(filesystem in {"tmpfs", "proc", "sysfs", "devpts", "mqueue"},
-                    "writable-host-mount")
+            if filesystem == "devtmpfs":
+                require(options.intersection({"rw", "ro"}) == {"rw"}, "writable-host-mount")
+                verify_minimal_device(mount, mounts)
+            else:
+                require(filesystem in {"tmpfs", "proc", "sysfs", "devpts", "mqueue"},
+                        "writable-host-mount")
     # v1.4.3 --scratch without --workdir bind-mounts a session tmpfs directory
     # created 0755. Tighten only after every mount check, never on a host workdir.
     require(resolved_path(work) == work, "scratch-boundary")
@@ -532,6 +575,78 @@ def verify_installed(store: object, root: object, nodes: dict, store_path: Path)
     return result
 
 
+def verify_partial(store: object, root: object, nodes: dict, store_path_value: Path) -> list:
+    """Only native installed records with a verified closed DAG may survive a retry."""
+    import spack.verify
+
+    installed = {}
+    with store.db.read_transaction():
+        for key, node in nodes.items():
+            if node.external:
+                continue
+            upstream, record = store.db.query_by_spec_hash(key)
+            require(not upstream, "recovery-upstream")
+            if record is None or record.installed is not True:
+                continue
+            # Check native lock identities and every non-external dependency before reuse.
+            closure = native_nodes(node)
+            verified = verify_installed(store, node, closure, store_path_value)
+            require(all(h in nodes for h in closure), "recovery-binding")
+            installed[key] = verified
+    for spec in installed.values():
+        closure = native_nodes(spec)
+        require(all(n.external or h in installed for h, n in closure.items()), "recovery-closure")
+        manifest_path = canonical(str(spec.prefix)) / ".spack/install_manifest.json"
+        # Bound metadata before invoking Spack's pinned file/content/mode verifier.
+        manifest = audit.document(audit.read_regular(manifest_path, MAX_SPEC_BYTES))
+        require(isinstance(manifest, dict) and 1 <= len(manifest) <= MAX_ENTRIES,
+                "recovery-manifest")
+        require(all(isinstance(path, str) and Path(path).is_absolute() and
+                    ".." not in Path(path).parts and within(Path(path), Path(spec.prefix))
+                    for path in manifest), "recovery-manifest")
+        require(not spack.verify.check_spec_manifest(spec).has_errors(), "recovery-content")
+    return sorted(installed)
+
+
+def dependency_evidence(nodes: dict, hashes: list) -> list:
+    """Emit only aggregate digests, never package paths or recipe/source data."""
+    evidence = []
+    for key in sorted(hashes):
+        prefix = Path(nodes[key].prefix)
+        manifest_bytes = audit.read_regular(prefix / ".spack/install_manifest.json", MAX_SPEC_BYTES)
+        manifest = audit.document(manifest_bytes)
+        require(isinstance(manifest, dict) and 1 <= len(manifest) <= MAX_ENTRIES,
+                "recovery-manifest")
+        files = hashlib.sha256()
+        for name in sorted(manifest):
+            path = Path(name)
+            require(path.is_absolute() and ".." not in path.parts and within(path, prefix),
+                    "recovery-manifest")
+            info = path.lstat()
+            entry = [str(path.relative_to(prefix)), info.st_mode]
+            if stat.S_ISREG(info.st_mode):
+                digest = hashlib.sha256()
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(descriptor, "rb") as stream:
+                    require(all(getattr(os.fstat(stream.fileno()), field) == getattr(info, field)
+                                for field in ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns")),
+                            "recovery-content")
+                    for chunk in iter(lambda: stream.read(audit.CHUNK), b""):
+                        digest.update(chunk)
+                    require(all(getattr(os.fstat(stream.fileno()), field) == getattr(info, field)
+                                for field in ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns")),
+                            "recovery-content")
+                entry.extend([info.st_size, info.st_mtime_ns, digest.hexdigest()])
+            elif stat.S_ISLNK(info.st_mode):
+                entry.extend([info.st_mtime_ns, os.readlink(path)])
+            else:
+                require(stat.S_ISDIR(info.st_mode), "recovery-content")
+            files.update(json.dumps(entry, separators=(",", ":")).encode() + b"\n")
+        evidence.append({"hash": key, "manifestSha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                         "filesSha256": files.hexdigest()})
+    return evidence
+
+
 def validate_load_shell(shell: object, store: Path) -> str:
     require(isinstance(shell, str) and len(shell) <= 256 * 1024 and
             "\x00" not in shell, "load-shell")
@@ -550,7 +665,7 @@ def validate_load_shell(shell: object, store: Path) -> str:
 def run(input_dir: Path, work: Path) -> dict:
     budget = audit.document(audit.read_regular(input_dir / "managed-memory.json", audit.CHUNK))
     require(set(budget) == {"memoryMib"} and type(budget["memoryMib"]) is int
-            and 1024 <= budget["memoryMib"] <= 4096, "runtime-boundary")
+            and 1024 <= budget["memoryMib"] <= 1048576, "runtime-boundary")
     audit.verify_runtime_boundary(input_dir, memory_limit=budget["memoryMib"] * audit.MIB)
     request = read_request(input_dir)
     profile, store_path_value = request["siteProfile"], Path(request["storePath"])
@@ -599,7 +714,23 @@ def run(input_dir: Path, work: Path) -> dict:
                         require(len(roots) == 1, "native-root")
                         root = roots[0]
                         nodes = bind_native(root, lock, profile)
+                        if request["action"] == "verify-partial":
+                            hashes = verify_partial(store, root, nodes, store_path_value)
+                            return {
+                                "version": 1, "validation": "isolated-install", "action": "verify-partial",
+                                "manifestDigest": request["manifestDigest"], "siteProfileDigest": request["siteProfileDigest"],
+                                "storePath": str(store_path_value), "root": {
+                                    "name": root.name, "version": str(root.version), "hash": root.dag_hash(),
+                                    "arch": str(root.architecture), "spec": manifest["spec"]},
+                                "prefix": str(root.prefix), "installedHashes": hashes,
+                                "dependencyEvidence": dependency_evidence(nodes, hashes),
+                            }
+                        recovery_evidence = None
                         if request["action"] == "install":
+                            if "verifiedDependencyHashes" in request:
+                                require(verify_partial(store, root, nodes, store_path_value) ==
+                                        sorted(request["verifiedDependencyHashes"]), "recovery-binding")
+                                recovery_evidence = dependency_evidence(nodes, request["verifiedDependencyHashes"])
                             # Fork is required for the Stage.fetch guard to reach build children.
                             multiprocessing.set_start_method("fork", force=True)
                             fetch = spack.stage.Stage.fetch
@@ -612,7 +743,8 @@ def run(input_dir: Path, work: Path) -> dict:
                                     [root.package], use_cache=False, fail_fast=True,
                                     package_use_cache=False, dependencies_use_cache=False,
                                     explicit=True, include_build_deps=True,
-                                    install_deps=True, install_package=True,
+                                    install_deps=True, install_package=True, keep_prefix=False,
+                                    restage="verifiedDependencyHashes" in request,
                                 ).install()
                         verify_tree(store_path_value, profile)
                         database_metadata(store_path_value)
@@ -630,6 +762,10 @@ def run(input_dir: Path, work: Path) -> dict:
                             "prefix": str(installed.prefix),
                             "installedHashes": sorted(k for k, n in nodes.items() if not n.external),
                         }
+                        if recovery_evidence is not None:
+                            after = dependency_evidence(nodes, request["verifiedDependencyHashes"])
+                            require(after == recovery_evidence, "recovery-content")
+                            result["dependencyEvidence"] = after
                         if request["action"] == "load":
                             modifications = spack.user_environment.environment_modifications_for_specs(
                                 installed
@@ -680,8 +816,10 @@ def main(input_dir: Path = Path("/kq/input"), work_dir: Path = Path("/kq/work"))
             result = run(Path(input_dir), Path(work_dir))
         print("KQ_SPACK_INSTALL_RESULT:" + json.dumps(result, separators=(",", ":")))
         return 0
-    except (Exception, SystemExit):
-        print("install-worker-failed", file=sys.stderr)
+    except (Exception, SystemExit) as error:
+        code = str(error) if isinstance(error, audit.AuditError) else None
+        suffix = ":" + code if code in FAILURE_CODES else ""
+        print("install-worker-failed" + suffix, file=sys.stderr)
         return 1
 
 

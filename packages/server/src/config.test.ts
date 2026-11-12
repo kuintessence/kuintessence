@@ -367,3 +367,16 @@ describe("queue inventory config", () => {
     ).toThrow();
   });
 });
+
+test("Spack material ticket lifetime defaults to 15 minutes and stays within 30..900 seconds", () => {
+  expect(loadServerConfig(VALID_BASE).SPACK_MATERIAL_TICKET_TTL_SEC).toBe(900);
+  expect(
+    loadServerConfig({ ...VALID_BASE, SPACK_MATERIAL_TICKET_TTL_SEC: "60" })
+      .SPACK_MATERIAL_TICKET_TTL_SEC,
+  ).toBe(60);
+  for (const value of ["0", "29", "901", "60.5", "invalid"]) {
+    expect(() =>
+      loadServerConfig({ ...VALID_BASE, SPACK_MATERIAL_TICKET_TTL_SEC: value }),
+    ).toThrow();
+  }
+});

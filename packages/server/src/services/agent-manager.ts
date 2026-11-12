@@ -150,6 +150,7 @@ export class AgentManager {
       memoryTotalMb: data.memoryTotalMb,
       lastHeartbeat: now,
       status: "online",
+      ...(data.siteOperations ? { siteOperations: data.siteOperations } : {}),
     };
     if (data.computeHealth !== undefined) {
       Object.assign(

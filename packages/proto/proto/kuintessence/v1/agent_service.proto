@@ -249,6 +249,8 @@ message Heartbeat {
   reserved 14 to 15;
   ComputeHealth compute_health = 16;
   QueueInventory queue_inventory = 17;
+  // Bounded, schema-validated optional site operations telemetry; no credentials or paths.
+  string site_operations_json = 18;
 }
 
 // A point-in-time scheduler controller observation. `reason` is a canonical
@@ -558,6 +560,8 @@ message InputStaging {
   string source_url = 3;
   string delivery_lease_id = 4;
   int64 delivery_lease_expires_at_unix_ms = 5;
+  int64 total_bytes = 6;
+  string expected_sha256 = 7;
 }
 
 // P4-f: one output the agent is expected to surface after the run.
@@ -890,6 +894,9 @@ message FileTransferRequest {
   string upload_id = 8;
   string commit_token = 9;
   int64 part_size = 10;
+  // Server-authorized content identity for resumable cloud_to_cluster downloads.
+  // Empty only for legacy senders; total_bytes is authoritative when present.
+  string expected_sha256 = 11;
 }
 
 // Server→Agent cooperative cancellation for an in-flight FileTransferRequest.
@@ -927,6 +934,8 @@ message UploadedPart {
 message PartUrlsRequest {
   string request_id = 1;
   repeated int32 part_numbers = 2;
+  string correlation_id = 3;
+  string upload_id = 4;
 }
 
 // One presigned part-upload URL keyed by its 1-based part number.
@@ -936,8 +945,10 @@ message PartUrl {
 }
 
 // Server→Agent: the presigned part URLs the agent requested, correlated back to
-// the originating PartUrlsRequest by `request_id`.
+// the originating PartUrlsRequest by `correlation_id`; request_id is the transfer ID.
 message PartUrlsResponse {
   string request_id = 1;
   repeated PartUrl urls = 2;
+  string correlation_id = 3;
+  string upload_id = 4;
 }

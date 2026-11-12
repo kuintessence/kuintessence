@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { rewriteUrlWithConnectTo } from "../staging/multipart-upload-from-file";
+import { assertStorageCapacity, normalizeStorageCapacityError } from "../storage-capacity";
 
 export interface SandboxInputDownload {
   sourceUrl: string;
@@ -18,6 +19,11 @@ export async function downloadSandboxInput(options: SandboxInputDownloaderOption
   if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0) {
     throw new Error("Sandbox input size limit is invalid");
   }
+  await assertStorageCapacity({
+    path: dirname(options.targetPath),
+    additionalBytes: options.maxBytes,
+    additionalInodes: 2,
+  });
   const source = new URL(options.sourceUrl);
   if (source.protocol !== "https:" && source.protocol !== "http:") {
     throw new Error("Sandbox input URL must use HTTP or HTTPS");
@@ -52,12 +58,19 @@ export async function downloadSandboxInput(options: SandboxInputDownloaderOption
         await reader.cancel();
         throw new Error("Sandbox input download exceeds its signed size limit");
       }
+      await assertStorageCapacity({
+        path: temporary,
+        additionalBytes: options.maxBytes - copiedBytes + chunk.value.byteLength,
+        additionalInodes: 0,
+      });
       await file.write(chunk.value);
     }
     await file.sync();
     await file.close();
     await rename(temporary, options.targetPath);
     completed = true;
+  } catch (error) {
+    throw normalizeStorageCapacityError(error);
   } finally {
     if (!completed) {
       await file.close().catch(() => undefined);

@@ -101,6 +101,39 @@ describe("createJobSubmitter", () => {
     ]);
   });
 
+  test.each([
+    { fileOutputDescriptors: undefined },
+    { fileOutputDescriptors: [] as string[] },
+  ])("completed jobs without File outputs need no working directory or file collector (%j)", async ({
+    fileOutputDescriptors,
+  }) => {
+    let collections = 0;
+    const submit = createJobSubmitter({
+      submit: async () => ({ id: "job-no-cwd" }),
+      dispatch: async () => {},
+      awaitCompletion: async () => ({ status: "completed", collected: { metric: "42" } }),
+      collectFiles: async () => {
+        collections++;
+        throw new Error("Workflow output job binding unavailable: no working directory");
+      },
+    });
+    const result = await submit({
+      nodeId: "metric",
+      name: "metric",
+      command: "printf 42",
+      envVars: {},
+      inputStaging: [],
+      expectedOutputs: [{ descriptor: "metric", path: "metric.txt", isBatch: false }],
+      fileOutputDescriptors,
+    });
+    expect(result).toEqual({
+      jobId: "job-no-cwd",
+      status: "completed",
+      collected: { metric: "42" },
+    });
+    expect(collections).toBe(0);
+  });
+
   test("surfaces a terminal failure status from the agent", async () => {
     const deps: JobSubmitterDeps = {
       submit: async () => ({ id: "job-2" }),
@@ -206,11 +239,14 @@ describe("createJobSubmitter", () => {
         targetPath: "inputs/training",
       },
     };
+    let collections = 0;
     const deps: JobSubmitterDeps = {
       prepare: async (spec) => ({
         ...spec,
         dataInputs: preparedDataInputs,
         licensedMaterials: [],
+        expectedOutputs: [{ descriptor: "model", path: "model.bin", isBatch: false }],
+        fileOutputDescriptors: ["model"],
       }),
       submit: async (spec) => {
         expect(spec.dataInputs).toEqual(preparedDataInputs);
@@ -222,6 +258,8 @@ describe("createJobSubmitter", () => {
       },
       awaitCompletion: async () => ({ status: "completed", collected: {} }),
       collectFiles: async (_jobId, spec) => {
+        collections++;
+        expect(spec.fileOutputDescriptors).toEqual(["model"]);
         expect(spec.dataInputs).toEqual(preparedDataInputs);
         expect(spec.licensedMaterials).toEqual([]);
         return {};
@@ -244,6 +282,7 @@ describe("createJobSubmitter", () => {
         },
       ],
     });
+    expect(collections).toBe(1);
   });
 
   test("passes preferred schedulingStrategy queues to dispatch", async () => {

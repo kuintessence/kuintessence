@@ -89,7 +89,7 @@ def read_regular(path: Path, maximum: int, expected: dict = None) -> bytes:
 def verify_runtime_boundary(input_dir: Path, *, memory_limit: int = 2147483648) -> None:
     """Fail closed on missing namespace/cgroup evidence; never probe a runtime."""
     try:
-        require(type(memory_limit) is int and 1024 * MIB <= memory_limit <= 4096 * MIB
+        require(type(memory_limit) is int and 1024 * MIB <= memory_limit <= 1048576 * MIB
                 and memory_limit % MIB == 0,
                 "runtime-boundary")
         require(sys.platform == "linux" and os.getuid() > 0, "runtime-boundary")
@@ -378,6 +378,7 @@ def audit(input_dir: Path, work_dir: Path, expected_digest: str) -> dict:
     import spack.environment
     import spack.fetch_strategy as fetch
     import spack.hash_types
+    import spack.patch
     import spack.repo
     import spack.spec
 
@@ -442,13 +443,24 @@ def audit(input_dir: Path, work_dir: Path, expected_digest: str) -> dict:
                     require(isinstance(nodes[key].get("package_hash"), str) and nodes[key]["package_hash"])
                     code = "source-verification-failed"
                     pkg = spec.package
-                    list(spec.patches)  # Native FilePatch lookup verifies its recorded SHA-256.
-                    stages = list(pkg.stage)
+                    patches = list(spec.patches)  # Native FilePatch lookup verifies its recorded SHA-256.
+                    stages = [(stage, False) for stage in pkg.stage]
                     require(stages)
-                    for stage in stages:
-                        if isinstance(stage.default_fetcher, fetch.BundleFetchStrategy):
+                    for patch in patches:
+                        code = "unsupported-patch"
+                        if isinstance(patch, spack.patch.FilePatch):
                             continue
+                        require(isinstance(patch, spack.patch.UrlPatch))
+                        # UrlPatch owns a separate stage; patch.fetch() can fall back to its upstream URL.
+                        stages.append((patch.stage, True))
+                    for stage, url_patch in stages:
+                        code = "unsupported-stage"
+                        require(all(callable(getattr(stage, method, None))
+                                    for method in ("create", "fetch", "check")))
                         code = "unsupported-fetcher"
+                        if isinstance(stage.default_fetcher, fetch.BundleFetchStrategy):
+                            require(not url_patch)
+                            continue
                         require(isinstance(stage.default_fetcher, fetch.URLFetchStrategy) and
                                 not isinstance(stage.default_fetcher, fetch.FetchAndVerifyExpandedFile) and
                                 stage.default_fetcher.digest and not stage.skip_checksum_for_mirror)

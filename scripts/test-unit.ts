@@ -31,6 +31,21 @@ const slices: TestSlice[] = [
   { name: "registry", paths: ["packages/registry"] },
 ];
 
+const offlineSlurmPg: TestSlice = {
+  name: "offline-slurm-pg",
+  paths: ["packages/server/src/services/offline-slurm.pg.test.ts"],
+};
+
+export function selectUnitTestSlices(args: string[]): TestSlice[] {
+  if (args.length === 0) return slices;
+  if (args.length !== 2 || args[0] !== "--suite") {
+    throw new Error("Usage: bun run test:unit [--suite core|server|registry|offline-slurm-pg]");
+  }
+  const selected = [...slices, offlineSlurmPg].find((slice) => slice.name === args[1]);
+  if (!selected) throw new Error("Unknown unit test suite");
+  return [selected];
+}
+
 export function databaseUrlWithName(baseUrl: string, databaseName: string): string {
   const url = new URL(baseUrl);
   if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
@@ -67,7 +82,7 @@ export function unitChildEnvironment(
   baseEnvironment: Record<string, string | undefined>,
   databaseUrl: string,
 ): Record<string, string | undefined> {
-  const environment = {
+  const environment: Record<string, string | undefined> = {
     ...baseEnvironment,
     DATABASE_URL: databaseUrl,
     KQ_PG_URL: databaseUrl,
@@ -116,6 +131,7 @@ export async function collectUnitTestFiles(paths: string[]): Promise<string[]> {
 }
 
 async function main(): Promise<void> {
+  const selected = selectUnitTestSlices(Bun.argv.slice(2));
   const sourceUrl = Bun.env.DATABASE_URL ?? defaultDatabaseUrl;
   const databaseName = unitDatabaseName(new Date(), globalThis.process.pid, randomUUID());
   const adminUrl = databaseUrlWithName(sourceUrl, "postgres");
@@ -130,7 +146,7 @@ async function main(): Promise<void> {
     process.stdout.write(`Unit test database created: ${databaseName}\n`);
     const childEnvironment = unitChildEnvironment(Bun.env, testUrl);
     await runCommand(["bun", "run", "db:migrate"], childEnvironment);
-    for (const slice of slices) {
+    for (const slice of selected) {
       const testFiles = await collectUnitTestFiles(slice.paths);
       process.stdout.write(
         `Running unit test slice: ${slice.name} (${testFiles.length} isolated files)\n`,

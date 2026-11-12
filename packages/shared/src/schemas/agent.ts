@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SiteOperationsSchema } from "../site-operations";
 import { SchedulerQueueInventorySchema } from "./queue";
 import { SchedulerTypeEnum } from "./scheduler";
 
@@ -59,6 +60,7 @@ export const AgentRegisterSchema = z.object({
 });
 
 export const AgentHeartbeatSchema = z.object({
+  siteOperations: SiteOperationsSchema.optional(),
   agentId: z.string().min(1),
   cpuUsagePercent: z.number().min(0).max(100),
   memoryUsedMb: z.number().nonnegative(),

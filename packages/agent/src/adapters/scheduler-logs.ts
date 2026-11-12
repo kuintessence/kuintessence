@@ -10,7 +10,7 @@ export async function readSchedulerLogs(
   const read = async (paths: Array<string | undefined>) => {
     for (const path of new Set(paths)) {
       if (!path) continue;
-      const result = await spawner.run(["tail", "-n", String(lines), path]);
+      const result = await spawner.run(["tail", "-n", String(lines), path], { timeoutMs: 10_000 });
       if (result.exitCode === 0) return { path, text: result.stdout };
       if (!/no such file(?: or directory)?/i.test(result.stderr)) {
         throw new Error(`tail job log failed (exit ${result.exitCode}): ${result.stderr.trim()}`);

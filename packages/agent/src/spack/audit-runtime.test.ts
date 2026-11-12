@@ -131,8 +131,29 @@ describe("Spack audit runtime identity and argv", () => {
     expect(command.some((arg) => arg.includes(":rw"))).toBe(false);
   });
 
+  test("adds only a separate writable work bind when requested", () => {
+    const digest = `sha256:${"d".repeat(64)}`;
+    const baseline = buildSpackAuditCommand(profile, "/srv/kq/input", digest);
+    const command = buildSpackAuditCommand(
+      profile,
+      "/srv/kq/input",
+      digest,
+      undefined,
+      "/srv/kq/work",
+    );
+    const index = command.indexOf("/srv/kq/work:/kq/work:rw");
+    expect(index).toBeGreaterThan(0);
+    expect(command[index - 1]).toBe("--bind");
+    expect([...command.slice(0, index - 1), ...command.slice(index + 1)]).toEqual(baseline);
+    for (const path of ["/srv/kq/input", "/srv/kq/input/work", "/srv/kq", "/tmp/work:rw"]) {
+      expect(() =>
+        buildSpackAuditCommand(profile, "/srv/kq/input", digest, undefined, path),
+      ).toThrow("work binding");
+    }
+  });
+
   test.each([
-    1024, 1537, 4096,
+    1024, 1537, 4096, 32768, 1048576,
   ])("allows a bounded integer MiB budget %i without changing other isolation arguments", (memoryMib) => {
     const baseline = buildSpackAuditCommand(profile, "/srv/kq/input", `sha256:${"d".repeat(64)}`);
     const managed = buildSpackAuditCommand(
@@ -164,4 +185,26 @@ describe("Spack audit runtime identity and argv", () => {
       ).toThrow("memory budget");
     }
   });
+});
+
+test("single-user trust accepts pinned private user runtime but never other owners or writable SIF", async () => {
+  const single = { ...profile, trustMode: "single-user" as const };
+  const inspect = async (path: string) => ({ ...identity(path), uid: 1000 });
+  await verifySpackAuditRuntime(single, AbortSignal.timeout(1000), { ...deps, inspect });
+  for (const change of [
+    { uid: 1001 },
+    { mode: 0o100666 },
+    { protectedParents: false },
+    { sha256: "0".repeat(64) },
+  ]) {
+    await expect(
+      verifySpackAuditRuntime(single, AbortSignal.timeout(1000), {
+        ...deps,
+        inspect: async (path) => ({ ...(await inspect(path)), ...change }),
+      }),
+    ).rejects.toThrow();
+  }
+  await expect(
+    verifySpackAuditRuntime(profile, AbortSignal.timeout(1000), { ...deps, inspect }),
+  ).rejects.toThrow();
 });

@@ -1,3 +1,4 @@
+import { siteFetch } from "@kuintessence/shared/site-transport";
 import type { EnrollmentClient } from "./bootstrap";
 
 /**
@@ -26,7 +27,7 @@ interface CertEnvelope {
 export function createHttpEnrollmentClient(
   input: CreateHttpEnrollmentClientInput,
 ): EnrollmentClient {
-  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = input.fetchImpl ?? siteFetch;
   const base = input.serverBaseUrl.replace(/\/+$/, "");
 
   return async ({ agentId, csrPem, enrollmentToken }) => {

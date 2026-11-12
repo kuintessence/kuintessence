@@ -43,3 +43,17 @@ test("missing streams and permission errors remain distinct", async () => {
     "Permission denied",
   );
 });
+
+test("shared stdout and stderr tail commands have a deadline and propagate timeout", async () => {
+  let reads = 0;
+  const spawner: Spawner = {
+    run: async (_argv, options) => {
+      expect(options?.timeoutMs).toBe(10_000);
+      reads++;
+      if (reads === 2) throw new Error("log read deadline exceeded");
+      return { exitCode: 0, stdout: "stdout", stderr: "" };
+    },
+  };
+  await expect(readSchedulerLogs(spawner, 10, ["out"], ["err"])).rejects.toThrow("deadline");
+  expect(reads).toBe(2);
+});

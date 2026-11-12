@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { multipartUploadFromFile, rewriteUrlWithConnectTo } from "./multipart-upload-from-file";
@@ -153,4 +153,98 @@ describe("rewriteUrlWithConnectTo", () => {
       url,
     });
   });
+});
+
+test("restart resumes the same uploadId using durable part hashes and fresh URLs", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kq-upload-resume-"));
+  try {
+    const filePath = join(directory, "source");
+    await writeFile(filePath, "AAAABBBB");
+    const checkpoint = { path: join(directory, "state.json"), uploadId: "same-upload" };
+    const opts = {
+      filePath,
+      size: 8,
+      partSize: 4,
+      checkpoint,
+      maxRetries: 0,
+      getPartUrls: async (numbers: number[]) =>
+        numbers.map((n) => ({ partNumber: n, url: `${PART_URL_PREFIX}${n}` })),
+    };
+    await expect(
+      multipartUploadFromFile({
+        ...opts,
+        put: async (url) => {
+          if (partNumberFromUrl(url) === 2) throw new Error("disconnected");
+          return { ok: true, status: 200, etag: "first" };
+        },
+      }),
+    ).rejects.toThrow("disconnected");
+    const uploaded: number[] = [];
+    const result = await multipartUploadFromFile({
+      ...opts,
+      put: async (url) => {
+        uploaded.push(partNumberFromUrl(url));
+        return { ok: true, status: 200, etag: "second" };
+      },
+    });
+    expect(uploaded).toEqual([2]);
+    expect(result.parts).toEqual([
+      { partNumber: 1, etag: "first" },
+      { partNumber: 2, etag: "second" },
+    ]);
+    await writeFile(filePath, "changed!");
+    await expect(multipartUploadFromFile(opts)).rejects.toThrow("source content changed");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  "timeout",
+  "cancel",
+])("stalled PUT %s retains completed checkpoint and releases the next resume", async (mode) => {
+  const directory = await mkdtemp(join(tmpdir(), "kq-upload-deadline-"));
+  try {
+    const filePath = join(directory, "source");
+    await writeFile(filePath, "AAAABBBB");
+    const checkpoint = { path: join(directory, "state.json"), uploadId: "upload" };
+    const controller = new AbortController();
+    const opts = {
+      filePath,
+      size: 8,
+      partSize: 4,
+      checkpoint,
+      maxRetries: 0,
+      getPartUrls: async (numbers: number[]) =>
+        numbers.map((partNumber) => ({ partNumber, url: `${PART_URL_PREFIX}${partNumber}` })),
+    };
+    await expect(
+      multipartUploadFromFile({
+        ...opts,
+        signal: controller.signal,
+        partTimeoutMs: 20,
+        put: async (url) => {
+          if (partNumberFromUrl(url) === 1) return { ok: true, status: 200, etag: "first" };
+          if (mode === "cancel") controller.abort(new Error("TRANSFER_CANCELLED"));
+          return new Promise(() => {});
+        },
+      }),
+    ).rejects.toThrow(mode === "timeout" ? "timed out" : "TRANSFER_CANCELLED");
+    expect(JSON.parse(await readFile(checkpoint.path, "utf8")).parts).toHaveLength(1);
+    const uploaded: number[] = [];
+    const resumed = await multipartUploadFromFile({
+      ...opts,
+      put: async (url) => {
+        uploaded.push(partNumberFromUrl(url));
+        return { ok: true, status: 200, etag: "second" };
+      },
+    });
+    expect(uploaded).toEqual([2]);
+    expect(resumed.parts).toEqual([
+      { partNumber: 1, etag: "first" },
+      { partNumber: 2, etag: "second" },
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

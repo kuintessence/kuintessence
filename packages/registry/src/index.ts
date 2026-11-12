@@ -318,7 +318,13 @@ app.use("/v2/", async (_c, next) => {
   return next();
 });
 const ociApp = new Hono({ router: new PatternRouter() });
-ociApp.use("*", createPrincipalMiddleware(principalOptions));
+ociApp.use(
+  "*",
+  createPrincipalMiddleware({
+    ...principalOptions,
+    ociPublicOrigin: config.REGISTRY_PUBLIC_ORIGIN,
+  }),
+);
 ociApp.route("/", createOciRoutes({ service: registryService, ...principalOptions }));
 app.route("/v2", ociApp);
 app.route("/v2/", ociApp);

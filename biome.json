@@ -10,6 +10,7 @@
     "includes": [
       "packages/**",
       "scripts/**",
+      "deploy/site-release/**",
       "test/**",
       "*.json",
       "*.ts",

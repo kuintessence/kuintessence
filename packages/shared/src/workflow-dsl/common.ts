@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { QueueIdSchema } from "../schemas/queue";
 
 /** Template-internal reference key — a CEL-safe identifier (F1). */
 export const SlugSchema = z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, {
@@ -16,9 +17,9 @@ export type Uuid = z.infer<typeof UuidSchema>;
 
 /** Where a node may run. */
 export const SchedulingStrategySchema = z.discriminatedUnion("type", [
-  z.strictObject({ type: z.literal("Manual"), queues: z.array(UuidSchema).length(1) }),
+  z.strictObject({ type: z.literal("Manual"), queues: z.array(QueueIdSchema).length(1) }),
   z.strictObject({ type: z.literal("Auto") }),
-  z.strictObject({ type: z.literal("Prefer"), queues: z.array(UuidSchema).min(1) }),
+  z.strictObject({ type: z.literal("Prefer"), queues: z.array(QueueIdSchema).min(1) }),
 ]);
 export type SchedulingStrategy = z.infer<typeof SchedulingStrategySchema>;
 

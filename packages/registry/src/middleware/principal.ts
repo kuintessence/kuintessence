@@ -50,6 +50,7 @@ export interface PrincipalMiddlewareOptions {
   requirePublisher?: boolean;
   requireCanonicalPrincipal?: boolean;
   publisherRoles?: RegistryRole[];
+  ociPublicOrigin?: string;
   resolveCanonicalPrincipal?: (
     subject: string,
   ) => Promise<{ sub: string; role: RegistryRole; orgIds: string[]; suspended: boolean } | null>;
@@ -63,6 +64,15 @@ export function createPrincipalMiddleware(
     opts.allowTestHeader ??
     (authMode === "dev" && process.env.REGISTRY_ALLOW_TEST_PRINCIPAL === "1");
   return async (c, next) => {
+    if (opts.ociPublicOrigin) {
+      const origin = new URL(opts.ociPublicOrigin);
+      const scope = repositoryRequestScope(c);
+      c.header("Docker-Distribution-API-Version", "registry/2.0");
+      c.header(
+        "WWW-Authenticate",
+        `Bearer realm="${origin.origin}/api/registry/token",service="${origin.host}"${scope ? `,scope="repository:${scope.name}:${scope.action}"` : ""}`,
+      );
+    }
     if (allowTestHeader) {
       const raw = c.req.header("X-Test-Principal");
       if (raw) {
@@ -106,6 +116,17 @@ export function createPrincipalMiddleware(
           role: canonical.role,
           orgIds: canonical.orgIds,
         };
+      }
+      if (
+        (opts.ociPublicOrigin && principal.access === undefined) ||
+        (principal.access !== undefined && !requestMatchesAccess(c, principal.access))
+      ) {
+        return ociErrorJson(
+          c,
+          401,
+          "UNAUTHORIZED",
+          "token does not grant the requested repository action",
+        );
       }
       assertPublisherIfNeeded(principal, opts);
       c.set("principal", principal);
@@ -151,6 +172,9 @@ export async function readOptionalPrincipal(
     issuer: opts.jwtIssuer,
     audience: opts.jwtAudience,
   });
+  if (principal.access !== undefined) {
+    throw new Error("Repository-scoped tokens cannot authenticate non-OCI APIs");
+  }
   if (opts.resolveCanonicalPrincipal) {
     const canonical = await opts.resolveCanonicalPrincipal(principal.sub);
     if (!canonical || canonical.suspended) throw new Error("principal is inactive");
@@ -195,6 +219,7 @@ interface JwtPayload {
   aud?: unknown;
   exp?: unknown;
   nbf?: unknown;
+  access?: unknown;
 }
 
 export function verifyJwtPrincipal(token: string, opts: JwtVerifyOptions): RbacPrincipal {
@@ -220,10 +245,17 @@ export function verifyJwtPrincipal(token: string, opts: JwtVerifyOptions): RbacP
   if (typeof payload.exp === "number" && payload.exp <= now) throw new Error("JWT expired");
   if (typeof payload.nbf === "number" && payload.nbf > now) throw new Error("JWT not yet valid");
 
+  if (
+    payload.access !== undefined &&
+    (typeof payload.exp !== "number" || !Number.isFinite(payload.exp))
+  ) {
+    throw new Error("Scoped JWT requires an expiry");
+  }
   const principal = {
     sub: payload.sub,
     role: payload.role,
     orgIds: normalizeOrgIds(payload.orgIds, payload.orgId),
+    ...(payload.access !== undefined ? { access: parseRepositoryAccess(payload.access) } : {}),
   };
   if (!isRbacPrincipal(principal)) throw new Error("JWT principal claims are invalid");
   return principal;
@@ -284,4 +316,53 @@ export function ociErrorJson(
     },
     status,
   );
+}
+
+interface RepositoryAccess {
+  type: "repository";
+  name: string;
+  actions: ("pull" | "push")[];
+}
+
+function parseRepositoryAccess(value: unknown): RepositoryAccess[] {
+  if (!Array.isArray(value)) throw new Error("Invalid repository access");
+  return value.map((item: unknown) => {
+    if (typeof item !== "object" || item === null) throw new Error("Invalid repository access");
+    const entry = item as Record<string, unknown>;
+    if (
+      entry.type !== "repository" ||
+      typeof entry.name !== "string" ||
+      !/^(public|org|user)\/[a-z0-9._/-]+$/.test(entry.name) ||
+      !Array.isArray(entry.actions) ||
+      entry.actions.some((action: unknown) => action !== "pull" && action !== "push")
+    ) {
+      throw new Error("Invalid repository access");
+    }
+    return {
+      type: "repository" as const,
+      name: entry.name,
+      actions: entry.actions as ("pull" | "push")[],
+    };
+  });
+}
+
+function repositoryRequestScope(c: Context): { name: string; action: "pull" | "push" } | null {
+  const match = /^\/v2\/(.+)\/(?:manifests\/[^/]+|blobs\/.+|tags\/list)$/.exec(c.req.path);
+  if (!match?.[1] || !/^(public|org|user)\/[a-z0-9._/-]+$/.test(match[1])) return null;
+  return {
+    name: match[1],
+    action: c.req.method === "GET" || c.req.method === "HEAD" ? "pull" : "push",
+  };
+}
+
+function requestMatchesAccess(c: Context, access: RepositoryAccess[]): boolean {
+  if (c.req.path === "/v2" || c.req.path === "/v2/") return true;
+  const scope = repositoryRequestScope(c);
+  if (
+    !scope ||
+    !access.some((entry) => entry.name === scope.name && entry.actions.includes(scope.action))
+  )
+    return false;
+  const source = c.req.query("from");
+  return !source || access.some((entry) => entry.name === source && entry.actions.includes("pull"));
 }

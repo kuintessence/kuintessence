@@ -426,6 +426,39 @@ describe("loadMinioConfigFromEnv", () => {
     expect(cfg.useSSL).toBe(false);
   });
 
+  test("explicit public URL rejects invalid origins rather than falling back to internal storage", () => {
+    const base = {
+      NETDRIVE_ENDPOINT: "internal.invalid",
+      NETDRIVE_ACCESS_KEY: "ak",
+      NETDRIVE_SECRET_KEY: "sk",
+      NETDRIVE_BUCKET: "b",
+      DATA_MARKET_STAGING_BUCKET: "staging",
+      DATA_MARKET_IMMUTABLE_BUCKET: "immutable",
+      DATA_MARKET_COMMITTER_ACCESS_KEY: "ak",
+    };
+    for (const value of [
+      "not-a-url",
+      "ftp://public.invalid",
+      "https://user:secret@public.invalid",
+      "https://public.invalid/s3",
+      "https://public.invalid?secret=bad",
+      "https://public.invalid#fragment",
+    ]) {
+      expect(() => loadMinioConfigFromEnv({ ...base, NETDRIVE_PUBLIC_URL: value })).toThrow(
+        "NETDRIVE_PUBLIC_URL must be",
+      );
+    }
+    for (const value of [
+      undefined,
+      "",
+      "http://localhost:9000",
+      "https://public.invalid",
+      "https://public.invalid/",
+    ]) {
+      expect(loadMinioConfigFromEnv({ ...base, NETDRIVE_PUBLIC_URL: value }).publicUrl).toBe(value);
+    }
+  });
+
   test("throws with each missing var listed", () => {
     expect(() => loadMinioConfigFromEnv({})).toThrow(/NETDRIVE_ENDPOINT/);
     expect(() => loadMinioConfigFromEnv({})).toThrow(/NETDRIVE_BUCKET/);

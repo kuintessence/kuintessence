@@ -1,7 +1,7 @@
 import { type SqliteDb, softwareExecutions } from "@kuintessence/db";
 import { SoftwareOperationAction, SoftwareOperationStatus } from "@kuintessence/proto";
-import { InstalledSpecSchema } from "@kuintessence/shared";
-import { and, asc, eq, gt, isNotNull, isNull } from "drizzle-orm";
+import { InstalledSpecSchema, type SiteChannel } from "@kuintessence/shared";
+import { and, asc, count, eq, gt, isNotNull, isNull } from "drizzle-orm";
 import { z } from "zod";
 import {
   type ExecutionIdentity,
@@ -32,6 +32,19 @@ const ResultSchema = z.object({
 
 export class SoftwareOperations {
   constructor(private readonly db: SqliteDb) {}
+
+  async siteSummary(): Promise<SiteChannel> {
+    const [pending] = await this.db
+      .select({ total: count() })
+      .from(softwareExecutions)
+      .where(isNull(softwareExecutions.result));
+    const [history] = await this.db
+      .select({ id: softwareExecutions.operationId })
+      .from(softwareExecutions)
+      .limit(1);
+    // Receipts have no chronological field; never guess the latest state by UUID ordering.
+    return { state: history ? "unknown" : "idle", active: Math.min(pending?.total ?? 0, 100000) };
+  }
 
   async receive(
     input: Pick<SoftwareResult, "operationId" | "action" | "spec">,
@@ -68,7 +81,13 @@ export class SoftwareOperations {
   }
 
   async finish(result: SoftwareResult): Promise<SoftwareResult> {
-    if (result.status === SoftwareOperationStatus.RUNNING) return result;
+    if (result.status === SoftwareOperationStatus.RUNNING) {
+      const [saved] = await this.db
+        .select({ result: softwareExecutions.result })
+        .from(softwareExecutions)
+        .where(eq(softwareExecutions.operationId, result.operationId));
+      return saved?.result ? ResultSchema.parse(saved.result) : result;
+    }
     // Terminal-only receipts also cover preflight refusal and legacy operations without Linux identity.
     await this.db
       .insert(softwareExecutions)

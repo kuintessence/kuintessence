@@ -1,0 +1,22 @@
+services:
+  site-gateway:
+    image: nginx:1.27-alpine
+    environment:
+      PLATFORM_HOST: ${PLATFORM_HOST:?required}
+      AGENT_HOST: ${AGENT_HOST:?required}
+      HTTP_GATEWAY_UPSTREAM: ${HTTP_GATEWAY_UPSTREAM:?required}
+      AGENT_MTLS_UPSTREAM: ${AGENT_MTLS_UPSTREAM:?required}
+    command:
+      - /bin/sh
+      - -ec
+      - envsubst '$$PLATFORM_HOST $$AGENT_HOST $$HTTP_GATEWAY_UPSTREAM $$AGENT_MTLS_UPSTREAM' < /site/nginx.conf.template > /etc/nginx/nginx.conf; exec nginx -g 'daemon off;'
+    volumes:
+      - ./nginx.conf.template:/site/nginx.conf.template:ro
+    ports:
+      - ${KQ_SITE_BIND:-127.0.0.1:18443}:443
+    networks: [platform]
+    restart: unless-stopped
+networks:
+  platform:
+    external: true
+    name: ${PLATFORM_NETWORK:?required}

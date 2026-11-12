@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,6 +13,7 @@ import {
   ComputeHealthState,
   DataDeliveryBindingSchema,
   DataScanRequestSchema,
+  type DispatchJob,
   DispatchJobSchema,
   FileTransferCancelSchema,
   HeartbeatAckSchema,
@@ -53,6 +54,7 @@ import {
   type KuintessenceJobLookup,
   type KuintessenceJobLookupResult,
   type SchedulerAdapter,
+  SchedulerSubmissionUnknownError,
   type Spawner,
 } from "./adapters/base";
 import type { JobStatusReport } from "./embedded/job-executor";
@@ -2254,6 +2256,12 @@ describe("AgentStream", () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db);
     const inboundAcks = new InboundAcks(db);
+    await inboundAcks.persistInbound({
+      dispatchId: "terminal-order:2",
+      jobId: "terminal-order",
+      payload: {},
+    });
+    const originalAck = inboundAcks.markAcked.bind(inboundAcks);
     const originalEnqueue = outboundQueue.enqueueJobStatus.bind(outboundQueue);
     let finishPersist: (() => void) | undefined;
     const persistGate = new Promise<void>((resolve) => {
@@ -2266,8 +2274,10 @@ describe("AgentStream", () => {
       return originalEnqueue(report);
     };
     let markedAcked = false;
-    inboundAcks.markAcked = async () => {
+    inboundAcks.markAcked = async (dispatchId) => {
+      expect(dispatchId).toBe("terminal-order:2");
       markedAcked = true;
+      await originalAck(dispatchId);
     };
     const { client } = makeMockClient([]);
     const stream = new AgentStream({
@@ -2294,6 +2304,7 @@ describe("AgentStream", () => {
 
     expect(await outboundQueue.pendingCount()).toBe(1);
     expect(markedAcked).toBe(true);
+    expect(await inboundAcks.pendingInbound()).toHaveLength(0);
     stream.stop();
   });
 
@@ -7984,4 +7995,1209 @@ describe("jobStatusReportToProto", () => {
     const value = (msg.payload as { value: { status: ProtoJobStatus } }).value;
     expect(value.status).toBe(ProtoJobStatus.CANCELLED);
   });
+});
+
+test("restart between sbatch and result persistence recovers the same scheduler job without submitting again", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const spec: JobSpec = {
+    jobId: "crash-gap",
+    name: "gap",
+    command: "true",
+    cpus: 1,
+    memoryMb: 64,
+    wallTimeSec: 60,
+    gpus: 0,
+    workingDir: "/tmp/gap",
+    envVars: {},
+  };
+  await records.recordSubmissionIntent(spec, []);
+  let submitted = 0;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submitted++;
+        return { schedulerJobId: "wrong" };
+      },
+      findByKuintessenceJobId: async (lookup) => {
+        expect(lookup.includeCompleted).toBe(true);
+        return { status: "found", schedulerJobId: "existing-123" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+  });
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: {
+      resume(spec: JobSpec, schedulerJobId: string): Promise<void>;
+      stopAll(): void;
+      get(jobId: string): undefined;
+    };
+  };
+  const recovered: string[] = [];
+  harness.pool = {
+    get: () => undefined,
+    resume: async (_spec, id) => {
+      recovered.push(id);
+    },
+    stopAll() {},
+  };
+  await harness.recoverActiveRemoteJobs();
+  expect(submitted).toBe(0);
+  expect(recovered).toEqual(["existing-123"]);
+  expect((await records.listActive())[0]?.schedulerJobId).toBe("existing-123");
+  stream.stop();
+});
+
+test("unresolved submission keeps its inbound receipt without replaying a false failure", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const inbound = new InboundAcks(db);
+  const spec: JobSpec = {
+    jobId: "uncertain",
+    name: "uncertain",
+    command: "true",
+    cpus: 1,
+    memoryMb: 64,
+    gpus: 0,
+    wallTimeSec: 60,
+    workingDir: "/shared/uncertain",
+    envVars: {},
+  };
+  await records.recordSubmissionIntent(spec, []);
+  await inbound.persistInbound({ dispatchId: "uncertain:1", jobId: spec.jobId, payload: {} });
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+    inboundAcks: inbound,
+  });
+  const attempt = new AbortController();
+  const iterator = (
+    stream as unknown as {
+      generateOutbound(
+        registration: Promise<boolean>,
+        attempt: AbortController,
+      ): AsyncGenerator<AgentMessage>;
+    }
+  ).generateOutbound(Promise.resolve(true), attempt);
+  expect((await iterator.next()).value?.payload.case).toBe("register");
+  const pending = iterator.next();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await stream.stop();
+  expect((await pending).done).toBe(true);
+  expect(await inbound.pendingInbound()).toHaveLength(1);
+});
+
+test("site heartbeat distinguishes unresolved submissions from active transfers", async () => {
+  const db = createSqliteDb(":memory:");
+  const active = new ActiveRemoteJobs(db);
+  await active.recordSubmissionIntent(
+    {
+      jobId: "site-uncertain",
+      name: "test",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/test",
+      envVars: {},
+    },
+    [],
+  );
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: active,
+    readSiteOperations: async () => ({
+      version: 1,
+      observedAt: Date.now(),
+      transport: "ssh-forward",
+      trust: "single-user",
+      executor: "slurm",
+      materials: { state: "ready", active: 0 },
+      installation: { state: "disabled", active: 0 },
+      jobs: { state: "unknown", active: 0 },
+      transfers: { state: "unknown", active: 0 },
+      update: { phase: "staged" },
+    }),
+  });
+  const report = JSON.parse(
+    await (stream as unknown as { siteOperationsJson(): Promise<string> }).siteOperationsJson(),
+  );
+  expect(report.jobs).toEqual({ state: "blocked", active: 1 });
+  expect(report.transfers).toEqual({ state: "idle", active: 0 });
+  expect(report.installation.state).toBe("disabled");
+  expect(JSON.stringify(report)).not.toContain("/shared/test");
+  await stream.stop();
+});
+
+test("site snapshots preserve unknown durable installations, normalized receipts and unadopted jobs", async () => {
+  const db = createSqliteDb(":memory:");
+  const outboundQueue = new OutboundQueue(db);
+  const active = new ActiveRemoteJobs(db);
+  await active.recordSubmitted({
+    schedulerJobId: "123",
+    spec: {
+      jobId: "not-adopted",
+      name: "test",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/test",
+      envVars: {},
+    },
+    expectedOutputs: [],
+  });
+  const pending = {
+    operationId: "pending-install",
+    action: SoftwareOperationAction.INSTALL,
+    spec: "zlib",
+  };
+  await outboundQueue.softwareOperations.receive(pending);
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: active,
+    outboundQueue,
+    readSiteOperations: async () => ({
+      version: 1,
+      observedAt: Date.now(),
+      transport: "ssh-forward",
+      trust: "single-user",
+      executor: "slurm",
+      materials: { state: "idle", active: 0 },
+      installation: { state: "idle", active: 0 },
+      jobs: { state: "unknown", active: 0 },
+      transfers: { state: "unknown", active: 0 },
+      update: { phase: "unknown" },
+    }),
+  });
+  const internals = stream as unknown as {
+    siteOperationsJson(): Promise<string>;
+    enqueueSoftwareOperationResult(
+      item: {
+        operationId: string;
+        action: SoftwareOperationAction;
+        spec: string;
+        status: SoftwareOperationStatus;
+      },
+      replayed?: boolean,
+    ): Promise<void>;
+  };
+  try {
+    const first = JSON.parse(await internals.siteOperationsJson());
+    expect(first.installation).toEqual({ state: "unknown", active: 1 });
+    expect(first.jobs).toEqual({ state: "blocked", active: 1 });
+    await internals.enqueueSoftwareOperationResult({
+      ...pending,
+      status: SoftwareOperationStatus.SUCCEEDED,
+    });
+    await internals.enqueueSoftwareOperationResult({
+      ...pending,
+      status: SoftwareOperationStatus.FAILED,
+    });
+    expect(JSON.parse(await internals.siteOperationsJson()).installation.state).toBe("ready");
+    await internals.enqueueSoftwareOperationResult({
+      ...pending,
+      status: SoftwareOperationStatus.RUNNING,
+    });
+    expect(JSON.parse(await internals.siteOperationsJson()).installation.state).toBe("ready");
+    await internals.enqueueSoftwareOperationResult({
+      ...pending,
+      operationId: "new-operation",
+      status: SoftwareOperationStatus.RUNNING,
+    });
+    await internals.enqueueSoftwareOperationResult(
+      { ...pending, status: SoftwareOperationStatus.SUCCEEDED },
+      true,
+    );
+    expect(JSON.parse(await internals.siteOperationsJson()).installation.state).toBe("running");
+    await internals.enqueueSoftwareOperationResult({
+      ...pending,
+      operationId: "new-operation",
+      status: SoftwareOperationStatus.FAILED,
+    });
+    await internals.enqueueSoftwareOperationResult(
+      { ...pending, status: SoftwareOperationStatus.SUCCEEDED },
+      true,
+    );
+    expect(JSON.parse(await internals.siteOperationsJson()).installation.state).toBe("failed");
+  } finally {
+    await stream.stop();
+  }
+});
+
+for (const found of [false, true]) {
+  test(`pending scheduler submission cancellation reconciles its stable tag (found=${found})`, async () => {
+    const db = createSqliteDb(":memory:");
+    const records = new ActiveRemoteJobs(db);
+    const spec: JobSpec = {
+      jobId: "cancel-pending",
+      name: "pending",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/pending",
+      envVars: {},
+    };
+    await records.recordSubmissionIntent(spec, []);
+    const cancelled: string[] = [];
+    const { client } = makeMockClient([]);
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter({
+        cancel: async (id) => {
+          cancelled.push(id);
+        },
+        findByKuintessenceJobId: async (lookup) => {
+          expect(lookup.jobId).toBe(spec.jobId);
+          expect(lookup.includeCompleted).toBe(true);
+          return found ? { status: "found", schedulerJobId: "321" } : { status: "not_found" };
+        },
+      }),
+      agentId: "agent",
+      siteName: "site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      activeRemoteJobs: records,
+    });
+    activeStreams.push(stream);
+    const harness = stream as unknown as { settleJobCancellation(jobId: string): Promise<void> };
+    if (found) {
+      await harness.settleJobCancellation(spec.jobId);
+      expect(cancelled).toEqual(["321"]);
+      expect(await records.listActive()).toEqual([]);
+    } else {
+      await expect(harness.settleJobCancellation(spec.jobId)).rejects.toThrow("outcome unknown");
+      expect(cancelled).toEqual([]);
+      expect(await records.listActive()).toHaveLength(1);
+    }
+  });
+}
+
+test("durable unresolved submission fences a dispatch with a new delivery epoch", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  await records.recordSubmissionIntent(
+    {
+      jobId: "pending-duplicate",
+      name: "pending",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/pending",
+      envVars: {},
+    },
+    [],
+  );
+  let submissions = 0;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submissions++;
+        return { schedulerJobId: "wrong" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    activeRemoteJobs: records,
+  });
+  activeStreams.push(stream);
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "dispatchJob",
+        value: create(DispatchJobSchema, {
+          jobId: "pending-duplicate",
+          dispatchEpoch: 2n,
+          command: "true",
+        }),
+      },
+    }),
+  );
+  await settle();
+  expect(submissions).toBe(0);
+  expect(await records.listActive()).toHaveLength(1);
+});
+
+test("lost sbatch response retains the actual dispatch until accounting can recover it", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const outbound = new OutboundQueue(db);
+  let submissions = 0;
+  let visible = false;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submissions++;
+        throw new SchedulerSubmissionUnknownError("response lost after acceptance");
+      },
+      findByKuintessenceJobId: async () =>
+        visible ? { status: "found", schedulerJobId: "12345" } : { status: "not_found" },
+      statusSeq: [{ status: "running" }],
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    activeRemoteJobs: records,
+    outboundQueue: outbound,
+    inboundAcks: new InboundAcks(db),
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: { await(jobId: string): Promise<void>; get(jobId: string): unknown };
+  };
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "dispatchJob",
+        value: create(DispatchJobSchema, {
+          jobId: "lost-response",
+          name: "lost",
+          dispatchEpoch: 1n,
+          command: "true",
+          cpus: 1,
+          memoryMb: 64n,
+          wallTimeSec: 60n,
+          workingDir: "/shared/lost",
+        }),
+      },
+    }),
+  );
+  await waitForCondition(() => submissions === 1);
+  await harness.pool.await("lost-response");
+  expect(submissions).toBe(1);
+  expect((await records.listActive())[0]?.schedulerJobId).toBe("__kq_submission_pending__");
+  expect(await outbound.loadForReplay()).toEqual([]);
+  await harness.recoverActiveRemoteJobs();
+  expect((await records.listActive())[0]?.schedulerJobId).toBe("__kq_submission_pending__");
+  visible = true;
+  await harness.recoverActiveRemoteJobs();
+  expect((await records.listActive())[0]?.schedulerJobId).toBe("12345");
+  expect(harness.pool.get("lost-response")).toBeDefined();
+  await harness.recoverActiveRemoteJobs();
+  expect(submissions).toBe(1);
+});
+
+test("reconnect while ordinary inputs are staging does not replay a false failure", async () => {
+  const db = createSqliteDb(":memory:");
+  const inbound = new InboundAcks(db);
+  const staging = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  let submissions = 0;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submissions++;
+        return { schedulerJobId: "12345" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    inboundAcks: inbound,
+    prepareJobWorkRoot: async () => "/shared/staging",
+    removeJobWorkRoot: async () => {},
+    stageInputFile: async () => {
+      started.resolve();
+      await staging.promise;
+    },
+  });
+  activeStreams.push(stream);
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "dispatchJob",
+        value: create(DispatchJobSchema, {
+          jobId: "staging-reconnect",
+          name: "staging",
+          dispatchEpoch: 1n,
+          command: "true",
+          inputStaging: [{ stagePath: "input.txt", sourceUrl: "https://platform.example/input" }],
+        }),
+      },
+    }),
+  );
+  await started.promise;
+  const attempt = new AbortController();
+  const iterator = (
+    stream as unknown as {
+      generateOutbound(
+        registration: Promise<boolean>,
+        attempt: AbortController,
+      ): AsyncGenerator<AgentMessage>;
+    }
+  ).generateOutbound(Promise.resolve(true), attempt);
+  expect((await iterator.next()).value?.payload.case).toBe("register");
+  let prematureReport = false;
+  const pending = iterator.next().then((result) => {
+    if (!result.done) prematureReport = true;
+    return result;
+  });
+  await settle();
+  expect(prematureReport).toBe(false);
+  expect(await inbound.pendingInbound()).toHaveLength(1);
+  expect(submissions).toBe(0);
+  attempt.abort();
+  await pending.catch((error: unknown) => {
+    expect(error).toBeInstanceOf(DOMException);
+    expect((error as DOMException).name).toBe("AbortError");
+  });
+  staging.resolve();
+  await waitForCondition(() => submissions === 1);
+  expect(submissions).toBe(1);
+});
+
+test("periodic reconciliation is serial and recovers delayed accounting without a reconnect", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  await records.recordSubmissionIntent(
+    {
+      jobId: "periodic",
+      name: "periodic",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/periodic",
+      envVars: {},
+    },
+    [],
+  );
+  const first = Promise.withResolvers<void>();
+  let queries = 0;
+  let submissions = 0;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submissions++;
+        return { schedulerJobId: "wrong" };
+      },
+      findByKuintessenceJobId: async () => {
+        queries++;
+        if (queries === 1) {
+          await first.promise;
+          return { status: "not_found" };
+        }
+        return { status: "found", schedulerJobId: "501" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    remoteJobRecoveryIntervalMs: 5,
+    logger: silent,
+    activeRemoteJobs: records,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    startRemoteJobRecoveryTimer(): void;
+    remoteJobRecoveryTimer?: unknown;
+    pool: { get(jobId: string): unknown };
+  };
+  harness.startRemoteJobRecoveryTimer();
+  await waitForCondition(() => queries === 1);
+  await Bun.sleep(20);
+  expect(queries).toBe(1);
+  first.resolve();
+  await waitForCondition(async () => (await records.get("periodic"))?.schedulerJobId === "501");
+  expect(harness.pool.get("periodic")).toBeDefined();
+  expect(submissions).toBe(0);
+  await stream.stop();
+  expect(harness.remoteJobRecoveryTimer).toBeUndefined();
+});
+
+test("shutdown during accounting lookup retains the intent without attaching a runner", async () => {
+  const records = new ActiveRemoteJobs(createSqliteDb(":memory:"));
+  await records.recordSubmissionIntent(
+    {
+      jobId: "stop-lookup",
+      name: "lookup",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/lookup",
+      envVars: {},
+    },
+    [],
+  );
+  const entered = Promise.withResolvers<void>();
+  const lookup = Promise.withResolvers<void>();
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      findByKuintessenceJobId: async () => {
+        entered.resolve();
+        await lookup.promise;
+        return { status: "found", schedulerJobId: "502" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+  });
+  const harness = stream as unknown as {
+    reconcileRemoteJobs(): Promise<void>;
+    pool: { get(jobId: string): unknown };
+  };
+  const cycle = harness.reconcileRemoteJobs();
+  await entered.promise;
+  const stopping = stream.stop();
+  lookup.resolve();
+  await Promise.all([cycle, stopping]);
+  expect((await records.get("stop-lookup"))?.schedulerJobId).toBe("__kq_submission_pending__");
+  expect(harness.pool.get("stop-lookup")).toBeUndefined();
+});
+
+test("durable cancellation retries epoch zero and waits for confirmed termination before cleanup and ACK", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const tombstones = new JobRevocationTombstones(db);
+  const intents = new JobCleanupIntents(db);
+  const spec: JobSpec = {
+    jobId: "cancel-periodic",
+    name: "cancel",
+    command: "true",
+    cpus: 1,
+    memoryMb: 64,
+    gpus: 0,
+    wallTimeSec: 60,
+    workingDir: "/shared/cancel",
+    envVars: {},
+  };
+  await records.recordSubmitted({ spec, schedulerJobId: "503", expectedOutputs: [] });
+  await intents.recordSchedulerSubmitted(spec.jobId, "503");
+  await tombstones.record(spec.jobId, 0);
+  let terminated = false;
+  let cancellations = 0;
+  const adapter = makeAdapter({
+    cancel: async () => {
+      cancellations++;
+    },
+  });
+  adapter.confirmStopped = async () => terminated;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter,
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+    revocationTombstones: tombstones,
+    cleanupIntents: intents,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    reconcileRemoteJobs(): Promise<void>;
+    outboundQueue: Array<{ kind: string }>;
+    pool: { get(jobId: string): unknown };
+  };
+  await harness.reconcileRemoteJobs();
+  expect(cancellations).toBe(1);
+  expect(await records.get(spec.jobId)).toBeDefined();
+  expect(await intents.list()).toHaveLength(1);
+  expect(harness.outboundQueue.some((item) => item.kind === "cancelJobAck")).toBe(false);
+  expect(harness.pool.get(spec.jobId)).toBeUndefined();
+  terminated = true;
+  await harness.reconcileRemoteJobs();
+  expect(cancellations).toBe(2);
+  expect(await records.get(spec.jobId)).toBeUndefined();
+  expect(await intents.list()).toHaveLength(0);
+  expect(harness.outboundQueue.filter((item) => item.kind === "cancelJobAck")).toHaveLength(1);
+});
+
+test("cancellation arriving during accounting lookup prevents reattachment and cleans only after confirmation", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const tombstones = new JobRevocationTombstones(db);
+  await records.recordSubmissionIntent(
+    {
+      jobId: "cancel-lookup",
+      name: "lookup",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/lookup",
+      envVars: {},
+    },
+    [],
+  );
+  const entered = Promise.withResolvers<void>();
+  const lookup = Promise.withResolvers<void>();
+  const cancelled: string[] = [];
+  const adapter = makeAdapter({
+    findByKuintessenceJobId: async () => {
+      entered.resolve();
+      await lookup.promise;
+      return { status: "found", schedulerJobId: "504" };
+    },
+    cancel: async (id) => {
+      cancelled.push(id);
+    },
+  });
+  adapter.confirmStopped = async () => true;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter,
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+    revocationTombstones: tombstones,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: { get(jobId: string): unknown };
+  };
+  const recovery = harness.recoverActiveRemoteJobs();
+  await entered.promise;
+  const cancellation = deliverServerMessage(stream, cancelJobMessage("cancel-lookup", 1));
+  await waitForCondition(async () => (await tombstones.revokedEpoch("cancel-lookup")) === 1);
+  expect(cancelled).toEqual([]);
+  lookup.resolve();
+  await Promise.all([recovery, cancellation]);
+  expect(cancelled).toEqual(["504"]);
+  expect(harness.pool.get("cancel-lookup")).toBeUndefined();
+  expect(await records.get("cancel-lookup")).toBeUndefined();
+});
+
+test("late accounting confirmation cannot resurrect a removed durable job record", async () => {
+  const records = new ActiveRemoteJobs(createSqliteDb(":memory:"));
+  await records.recordSubmissionIntent(
+    {
+      jobId: "removed-lookup",
+      name: "lookup",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/lookup",
+      envVars: {},
+    },
+    [],
+  );
+  const entered = Promise.withResolvers<void>();
+  const lookup = Promise.withResolvers<void>();
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      findByKuintessenceJobId: async () => {
+        entered.resolve();
+        await lookup.promise;
+        return { status: "found", schedulerJobId: "505" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: { get(jobId: string): unknown };
+  };
+  const recovery = harness.recoverActiveRemoteJobs();
+  await entered.promise;
+  await records.markFinished("removed-lookup");
+  lookup.resolve();
+  await recovery;
+  expect(await records.get("removed-lookup")).toBeUndefined();
+  expect(harness.pool.get("removed-lookup")).toBeUndefined();
+});
+
+test("submission persistence failure with unconfirmed cancellation preserves the job for reconciliation", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new FailingActiveRemoteJobs(db);
+  const outbound = new OutboundQueue(db);
+  let submitted = 0;
+  let cancelled = 0;
+  const adapter = makeAdapter({
+    submit: async () => {
+      submitted++;
+      return { schedulerJobId: "506" };
+    },
+    cancel: async () => {
+      cancelled++;
+    },
+    findByKuintessenceJobId: async () => ({ status: "found", schedulerJobId: "506" }),
+    statusSeq: [{ status: "running" }],
+  });
+  adapter.confirmStopped = async () => false;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter,
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+    outboundQueue: outbound,
+    cleanupIntents: new JobCleanupIntents(db),
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: { await(jobId: string): Promise<void>; get(jobId: string): unknown };
+    unreconciledSubmittedJobs: Map<string, string>;
+  };
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "dispatchJob",
+        value: create(DispatchJobSchema, {
+          jobId: "persist-unknown",
+          name: "persist",
+          command: "true",
+          cpus: 1,
+          memoryMb: 64n,
+          wallTimeSec: 60n,
+          workingDir: "/shared/persist",
+        }),
+      },
+    }),
+  );
+  await waitForCondition(() => submitted === 1);
+  await harness.pool.await("persist-unknown");
+  expect(cancelled).toBe(1);
+  expect((await records.get("persist-unknown"))?.schedulerJobId).toBe("__kq_submission_pending__");
+  expect(await outbound.loadForReplay()).toEqual([]);
+  expect(harness.unreconciledSubmittedJobs.get("persist-unknown")).toBe("506");
+  await harness.recoverActiveRemoteJobs();
+  expect((await records.get("persist-unknown"))?.schedulerJobId).toBe("506");
+  expect(harness.pool.get("persist-unknown")).toBeDefined();
+  expect(harness.unreconciledSubmittedJobs.has("persist-unknown")).toBe(false);
+  expect(submitted).toBe(1);
+});
+
+test("workflow host inputs pass trusted content binding and lifecycle cancellation while legacy inputs stay compatible", async () => {
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    stageDispatchInputs(dispatch: DispatchJob, spec: JobSpec): Promise<void>;
+    runHostCloudToCluster(...args: unknown[]): Promise<void>;
+    lifecycleController: AbortController;
+  };
+  const calls: unknown[][] = [];
+  harness.runHostCloudToCluster = async (...args) => {
+    calls.push(args);
+  };
+  await harness.stageDispatchInputs(
+    create(DispatchJobSchema, {
+      inputStaging: [
+        {
+          fileMetadataId: "netdrive",
+          sourceUrl: "https://storage/input",
+          stagePath: "input",
+          expectedSha256: "a".repeat(64),
+          totalBytes: 128n,
+        },
+        { fileMetadataId: "legacy", sourceUrl: "https://storage/legacy", stagePath: "legacy" },
+      ],
+    }),
+    { jobId: "bound-input", workingDir: "/managed" } as JobSpec,
+  );
+  expect(calls[0]?.slice(1)).toEqual([
+    "https://storage/input",
+    "/managed/input",
+    harness.lifecycleController.signal,
+    false,
+    { sha256: "a".repeat(64), size: 128 },
+  ]);
+  expect(calls[1]?.[5]).toBeUndefined();
+  expect(calls[1]?.[3]).toBe(harness.lifecycleController.signal);
+});
+
+test("container multipart rebuilds spool after Agent restart but reuses verified part receipts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kq-container-upload-resume-"));
+  const originalFetch = globalThis.fetch;
+  const uploaded: number[] = [];
+  let interrupted = true;
+  let source = "AAAABBBB";
+  const spools: string[] = [];
+  const fetchStub = (async (input: string | URL | Request) => {
+    const part = Number(String(input).split("/").at(-1));
+    uploaded.push(part);
+    if (interrupted && part === 2) throw new Error("disconnected");
+    return new Response("", { headers: { ETag: `etag-${part}` } });
+  }) as typeof fetch;
+  fetchStub.preconnect = originalFetch.preconnect;
+  globalThis.fetch = fetchStub;
+  try {
+    const states: string[] = [];
+    const makeStream = () => {
+      const { client } = makeMockClient([]);
+      const stream = new AgentStream({
+        client,
+        adapter: makeAdapter(),
+        agentId: "agent",
+        siteName: "site",
+        heartbeatIntervalMs: 60_000,
+        logger: silent,
+        fileTransferStateDir: directory,
+        fileTransferMaxRetries: 0,
+        fileTransferRetryBackoffSec: 0,
+      });
+      activeStreams.push(stream);
+      const harness = stream as unknown as {
+        runClusterToCloud(
+          requestId: string,
+          containerId: string,
+          sourcePath: string,
+          uploadUrl: string,
+          uploadId: string,
+          partSize: number,
+          signal: AbortSignal,
+        ): Promise<void>;
+        spoolFromContainer(
+          containerId: string,
+          sourcePath: string,
+          tmpPath: string,
+          signal: AbortSignal,
+        ): Promise<number>;
+        requestPartUrls(
+          requestId: string,
+          parts: number[],
+          signal: AbortSignal,
+        ): Promise<{ partNumber: number; url: string }[]>;
+        emitProgress(requestId: string, bytes: number, state: string): void;
+      };
+      harness.spoolFromContainer = async (_container, _source, path) => {
+        spools.push(path);
+        await writeFile(path, source);
+        return source.length;
+      };
+      harness.requestPartUrls = async (_request, parts) =>
+        parts.map((partNumber) => ({ partNumber, url: `https://object.example/${partNumber}` }));
+      harness.emitProgress = (_request, _bytes, state) => {
+        if (state !== "running") states.push(state);
+      };
+      return harness;
+    };
+    await makeStream().runClusterToCloud(
+      "same-request",
+      "container",
+      "/output",
+      "",
+      "same-upload",
+      4,
+      new AbortController().signal,
+    );
+    expect(uploaded).toEqual([1, 2]);
+    expect(states).toEqual(["failed"]);
+    uploaded.length = 0;
+    interrupted = false;
+    await makeStream().runClusterToCloud(
+      "same-request",
+      "container",
+      "/output",
+      "",
+      "same-upload",
+      4,
+      new AbortController().signal,
+    );
+    expect(uploaded).toEqual([2]);
+    expect(states).toEqual(["failed", "succeeded"]);
+    source = "changed!";
+    uploaded.length = 0;
+    await makeStream().runClusterToCloud(
+      "same-request",
+      "container",
+      "/output",
+      "",
+      "same-upload",
+      4,
+      new AbortController().signal,
+    );
+    expect(uploaded).toEqual([]);
+    expect(states.at(-1)).toBe("failed");
+    const terminalCount = states.length;
+    const cancelled = new AbortController();
+    cancelled.abort(new Error("superseded transfer"));
+    await makeStream().runClusterToCloud(
+      "same-request",
+      "container",
+      "/output",
+      "",
+      "same-upload",
+      4,
+      cancelled.signal,
+    );
+    expect(states).toHaveLength(terminalCount);
+    expect(new Set(spools).size).toBe(4);
+    for (const path of spools) expect(await Bun.file(path).exists()).toBe(false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  "timeout",
+  "abort",
+])("part URL %s cleans only its own request; late replies cannot consume redispatched upload", async (expiry) => {
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    requestPartUrls(
+      requestId: string,
+      parts: number[],
+      signal: AbortSignal,
+      uploadId: string,
+      timeoutMs: number,
+    ): Promise<{ partNumber: number; url: string }[]>;
+    handleServerMessage(message: ServerMessage): Promise<void>;
+    outboundQueue: { kind: string; requestId: string; correlationId: string; uploadId: string }[];
+    pendingPartUrlRequests: Map<string, unknown>;
+  };
+  const old = new AbortController();
+  const remove = spyOn(old.signal, "removeEventListener");
+  try {
+    const previousUploadId = expiry === "timeout" ? "new-upload" : "old-upload";
+    const previous = harness
+      .requestPartUrls(
+        "transfer",
+        [1],
+        old.signal,
+        previousUploadId,
+        expiry === "timeout" ? 10 : 1000,
+      )
+      .catch((error: unknown) => error);
+    const current = harness.requestPartUrls(
+      "transfer",
+      [1],
+      new AbortController().signal,
+      "new-upload",
+      1000,
+    );
+    const requests = harness.outboundQueue.filter((item) => item.kind === "partUrlsRequest");
+    const first = requests[0];
+    const second = requests[1];
+    expect(first?.correlationId).toBeTruthy();
+    expect(first?.correlationId).not.toBe(second?.correlationId);
+    expect(second?.uploadId).toBe("new-upload");
+    if (expiry === "abort") old.abort();
+    expect(await previous).toBeInstanceOf(Error);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    expect(harness.pendingPartUrlRequests.size).toBe(1);
+    old.abort();
+    const reply = (correlationId: string, uploadId: string) =>
+      harness.handleServerMessage(
+        create(ServerMessageSchema, {
+          payload: {
+            case: "partUrlsResponse",
+            value: {
+              requestId: "transfer",
+              correlationId,
+              uploadId,
+              urls: [{ partNumber: 1, url: "https://object/part" }],
+            },
+          },
+        }),
+      );
+    let settled = false;
+    void current.then(() => {
+      settled = true;
+    });
+    await reply(first?.correlationId ?? "", previousUploadId);
+    await reply(second?.correlationId ?? "", "old-upload");
+    await reply("", "");
+    expect(settled).toBe(false);
+    expect(harness.pendingPartUrlRequests.size).toBe(1);
+    await reply(second?.correlationId ?? "", "new-upload");
+    expect(await current).toEqual([{ partNumber: 1, url: "https://object/part" }]);
+    expect(harness.pendingPartUrlRequests.size).toBe(0);
+  } finally {
+    remove.mockRestore();
+  }
+});
+
+test("maintenance fences in-flight incoming handlers and active transfers without aborting them", async () => {
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(),
+    adapter: makeAdapter(),
+    agentId: "agent-maintenance",
+    siteName: "test-site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    reconnectBackoffMs: 1,
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  await settle();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const internal = stream as unknown as {
+    handleServerMessageNow: (message: ServerMessage) => Promise<void>;
+    activeFileTransfers: Map<string, AbortController>;
+  };
+  const handler = spyOn(internal, "handleServerMessageNow").mockImplementation(async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  const incoming = deliverServerMessage(stream, heartbeatAck(1n));
+  await entered.promise;
+  expect(await stream.drainForMaintenance("a".repeat(32), () => true)).toBe(false);
+  release.resolve();
+  await incoming;
+  handler.mockRestore();
+  const transfer = new AbortController();
+  internal.activeFileTransfers.set("transfer", transfer);
+  expect(await stream.drainForMaintenance("b".repeat(32), () => true)).toBe(false);
+  expect(transfer.signal.aborted).toBe(false);
+  internal.activeFileTransfers.clear();
+  await stream.stop();
+  await running;
+});
+
+test("idle maintenance pauses reconnect and admission until the matching lease resumes", async () => {
+  const client = makePendingRegisteredClient() as AgentStreamDeps["client"];
+  const connects = spyOn(client, "connect");
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent-maintenance-idle",
+    siteName: "test-site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    reconnectBackoffMs: 1,
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  await settle();
+  expect(await stream.drainForMaintenance("a".repeat(32), () => false)).toBe(false);
+  expect(connects).toHaveBeenCalledTimes(1);
+  expect(await stream.drainForMaintenance("a".repeat(32), () => true)).toBe(true);
+  await settle();
+  const internal = stream as unknown as {
+    handleServerMessageNow: (message: ServerMessage) => Promise<void>;
+  };
+  const handler = spyOn(internal, "handleServerMessageNow");
+  await deliverServerMessage(stream, heartbeatAck(2n));
+  expect(handler).not.toHaveBeenCalled();
+  stream.resumeAfterMaintenance("b".repeat(32));
+  await settle();
+  expect(connects).toHaveBeenCalledTimes(1);
+  stream.resumeAfterMaintenance("a".repeat(32));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await settle();
+  expect(connects.mock.calls.length).toBeGreaterThan(1);
+  handler.mockRestore();
+  connects.mockRestore();
+  await stream.stop();
+  await running;
+});
+
+test("detached software policy work remains busy after its incoming handler returns", async () => {
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(),
+    adapter: makeAdapter(),
+    agentId: "agent-maintenance-software",
+    siteName: "test-site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    reconnectBackoffMs: 1,
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  await settle();
+  const finish = Promise.withResolvers<void>();
+  const internal = stream as unknown as { applyPolicyAndAck: () => Promise<void> };
+  const policy = spyOn(internal, "applyPolicyAndAck").mockImplementation(() => finish.promise);
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "softwarePolicyUpdate",
+        value: create(SoftwarePolicyUpdateSchema, { policyVersion: "maintenance-test" }),
+      },
+    }),
+  );
+  expect(await stream.drainForMaintenance("a".repeat(32), () => true)).toBe(false);
+  finish.resolve();
+  await settle();
+  expect(await stream.drainForMaintenance("b".repeat(32), () => true)).toBe(true);
+  stream.resumeAfterMaintenance("b".repeat(32));
+  policy.mockRestore();
+  await stream.stop();
+  await running;
 });

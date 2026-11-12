@@ -321,6 +321,7 @@ export const agents = pgTable(
       .default("unknown"),
     computeHealthObservedAt: timestamp("compute_health_observed_at"),
     computeHealthReason: varchar("compute_health_reason", { length: 64 }),
+    siteOperations: jsonb("site_operations").$type<Record<string, unknown>>(),
     computeHealthNodeCount: integer("compute_health_node_count"),
     computeHealthOperationalNodeCount: integer("compute_health_operational_node_count"),
     cpuUsagePercent: integer("cpu_usage_percent"),
@@ -2767,6 +2768,7 @@ export const fileTransfers = pgTable(
     agentId: varchar("agent_id", { length: 255 }),
     siteId: varchar("site_id", { length: 255 }),
     totalBytes: bigint("total_bytes", { mode: "number" }),
+    resumeSession: jsonb("resume_session").$type<unknown>(),
     copiedBytes: bigint("copied_bytes", { mode: "number" }).notNull().default(0),
     state: varchar("state", { length: 32 }).notNull(),
     startedAt: timestamp("started_at"),
@@ -3225,6 +3227,9 @@ export {
   ociBlob,
   ociManifest,
   ociRepository,
+  ociRepositoryBlob,
+  ociRepositoryManifest,
+  ociRepositoryScope,
   ociTag,
   ociUploadSession,
   spackPackage,
@@ -3297,4 +3302,67 @@ export const interconnectMapViews = pgTable(
     view: jsonb("view").$type<MapView>().notNull(),
   },
   (t) => ({ pk: primaryKey({ columns: [t.userId, t.scope] }) }),
+);
+
+/** Completed computation output delivery; independent of workflow/DAG execution. */
+export const workflowOutputPublicationIntents = pgTable(
+  "workflow_output_publication_intents",
+  {
+    jobId: uuid("job_id")
+      .primaryKey()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    // Preserve the original run binding even if the run is subsequently unavailable.
+    workflowRunId: uuid("workflow_run_id"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at").notNull().defaultNow(),
+    error: text("error"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    pendingIdx: index("workflow_output_publication_intents_pending_idx").on(
+      table.nextAttemptAt,
+      table.jobId,
+    ),
+  }),
+);
+
+export const workflowOutputPublications = pgTable(
+  "workflow_output_publications",
+  {
+    jobId: uuid("job_id")
+      .primaryKey()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    input: jsonb("input")
+      .$type<{
+        jobId: string;
+        ownerId: string;
+        agentId: string;
+        workflowRunId?: string;
+        outputs: Array<{ descriptor: string; path: string; isBatch: boolean; paths: string[] }>;
+        files: Array<{
+          descriptor: string;
+          batch: boolean;
+          source: string;
+          target: string;
+          fileName: string;
+          transferId: string;
+        }>;
+      }>()
+      .notNull(),
+    files: jsonb("files")
+      .$type<Record<string, { fileMetadataId: string; fileMetadataName: string }>>()
+      .notNull()
+      .default({}),
+    token: uuid("token"),
+    leaseUntil: timestamp("lease_until"),
+    nextAttemptAt: timestamp("next_attempt_at").notNull().defaultNow(),
+    error: text("error"),
+    releasedAt: timestamp("released_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    pendingIdx: index("workflow_output_publications_pending_idx")
+      .on(table.nextAttemptAt, table.jobId)
+      .where(sql`${table.releasedAt} IS NULL`),
+  }),
 );

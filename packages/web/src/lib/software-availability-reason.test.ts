@@ -5,6 +5,11 @@ const translate = (key: string) => key;
 
 describe("softwareAvailabilityReason", () => {
   test.each([
+    [
+      "offline site material closure has not been verified",
+      "software.availabilityReason.offlineMaterialClosure",
+    ],
+    ["offline site telemetry is stale or invalid", "software.availabilityReason.offlineTelemetry"],
     ["asset use permission denied", "software.availabilityReason.usePermission"],
     ["blocked by provider deny list", "software.availabilityReason.providerDenyList"],
     ["principal lacks install permission", "software.availabilityReason.installPermission"],

@@ -423,6 +423,8 @@ GHCR 拉取权限、首次启用、HTTPS、访问口令和清理策略。
 <a id="proxy"></a>
 ## 反向代理
 
+普通用户离线 Slurm 的统一 SNI 入口、SSH 转发、HTTP CONNECT 和签名初始化见 [离线 Slurm 站点](offline-slurm-site.md)。
+
 ### 公共路径契约
 
 | 公共路径 | 上游 |

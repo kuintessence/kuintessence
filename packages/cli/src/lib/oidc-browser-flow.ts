@@ -1,3 +1,4 @@
+import { siteFetch } from "@kuintessence/shared/site-transport";
 // OIDC Authorization-Code-Flow with PKCE for the CLI.
 //
 // 1. Spin up local HTTP listener on a random port.
@@ -40,7 +41,7 @@ export async function runOidcBrowserFlow(
   serverUrl: string,
   deps: OidcFlowDeps = {},
 ): Promise<OidcFlowResult> {
-  const fetchFn: FetchLike = deps.fetch ?? ((input, init) => fetch(input as string, init));
+  const fetchFn: FetchLike = deps.fetch ?? ((input, init) => siteFetch(input as string, init));
   const openBrowser = deps.openBrowser ?? defaultOpenBrowser;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
