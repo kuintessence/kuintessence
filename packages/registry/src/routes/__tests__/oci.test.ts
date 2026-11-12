@@ -184,13 +184,13 @@ describe("OCI v2 routes", () => {
       schemaVersion: 2,
       mediaType: "application/vnd.oci.image.manifest.v1+json",
       config: {
-        digest: `sha256:${"a".repeat(64)}`,
+        digest: await uploadBlobInto(repoPath, new Uint8Array(1), "platform_admin"),
         mediaType: "application/vnd.oci.image.config.v1+json",
         size: 1,
       },
       layers: [
         {
-          digest: `sha256:${"b".repeat(64)}`,
+          digest: await uploadBlobInto(repoPath, new Uint8Array(42), "platform_admin"),
           mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
           size: 42,
         },
@@ -239,7 +239,7 @@ describe("OCI v2 routes", () => {
       headers: { "X-Test-Principal": principal("platform_admin") },
     });
     const catalogBody = (await catalog.json()) as { repositories: string[] };
-    expect(catalogBody.repositories).not.toContain(repoPath);
+    expect(catalogBody.repositories).toContain(repoPath); // Untagged uploaded blobs still belong to this repository.
   });
 
   test("tag immutability: re-PUT of semver tag with different content returns 409", async () => {
@@ -247,7 +247,6 @@ describe("OCI v2 routes", () => {
     const m1 = {
       schemaVersion: 2,
       mediaType: "application/vnd.oci.image.manifest.v1+json",
-      config: { digest: `sha256:${"1".repeat(64)}`, mediaType: "x", size: 1 },
       layers: [],
     };
     const r1 = await app.request(`/v2/${repoPath}/manifests/1.2.3`, {
@@ -261,7 +260,7 @@ describe("OCI v2 routes", () => {
     expect(r1.status).toBe(201);
 
     // Different content under the same semver tag must fail.
-    const m2 = { ...m1, layers: [{ digest: `sha256:${"c".repeat(64)}`, mediaType: "x", size: 1 }] };
+    const m2 = { ...m1, annotations: { revision: "second" } };
     const r2 = await app.request(`/v2/${repoPath}/manifests/1.2.3`, {
       method: "PUT",
       headers: {
@@ -358,13 +357,7 @@ describe("OCI v2 routes", () => {
         body: new TextEncoder().encode(
           JSON.stringify({
             ...m,
-            layers: [
-              {
-                digest: `sha256:${tag.replace(/\./g, "0").padEnd(64, "f")}`,
-                mediaType: "x",
-                size: 1,
-              },
-            ],
+            annotations: { revision: tag },
           }),
         ),
       });
@@ -503,6 +496,114 @@ describe("OCI v2 routes", () => {
     expect(put.status).toBe(201);
     return digest;
   }
+
+  test("public repository paths cannot read private digest content or claim it through an unrelated mount source", async () => {
+    const owner = `user/${ROLE_UUID.platform_admin}/routetest-private-digests`;
+    const unrelated = "public/routetest-unrelated-digests";
+    const destination = "public/routetest-unrelated-mount";
+    const bytes = new TextEncoder().encode("private repository payload");
+    const digest = await uploadBlobInto(owner, bytes, "platform_admin");
+    const admin = { "X-Test-Principal": principal("platform_admin") };
+    const stranger = {
+      "X-Test-Principal": principal("user", { sub: "00000000-0000-0000-0000-000000000088" }),
+    };
+    const unrelatedStart = await app.request(`/v2/${unrelated}/blobs/uploads/`, {
+      method: "POST",
+      headers: admin,
+    });
+    expect(unrelatedStart.status).toBe(202);
+    await app.request(
+      `/v2/${unrelated}/blobs/uploads/${unrelatedStart.headers.get("Docker-Upload-UUID")}`,
+      { method: "DELETE", headers: admin },
+    );
+    const manifest = await app.request(`/v2/${owner}/manifests/1.0.0`, {
+      method: "PUT",
+      headers: {
+        "X-Test-Principal": principal("platform_admin"),
+        "Content-Type": "application/vnd.oci.image.manifest.v1+json",
+      },
+      body: JSON.stringify({
+        schemaVersion: 2,
+        layers: [{ digest, mediaType: "x", size: bytes.length }],
+      }),
+    });
+    expect(manifest.status).toBe(201);
+    const manifestDigest = manifest.headers.get("Docker-Content-Digest");
+    for (const method of ["HEAD", "GET"]) {
+      expect(
+        (await app.request(`/v2/${unrelated}/blobs/${digest}`, { method, headers: stranger }))
+          .status,
+      ).toBe(404);
+      expect(
+        (
+          await app.request(`/v2/${unrelated}/manifests/${manifestDigest}`, {
+            method,
+            headers: stranger,
+          })
+        ).status,
+      ).toBe(404);
+    }
+    const mount = await app.request(
+      `/v2/${destination}/blobs/uploads/?mount=${encodeURIComponent(digest)}&from=${encodeURIComponent(unrelated)}`,
+      { method: "POST", headers: admin },
+    );
+    expect(mount.status).toBe(202);
+    expect(
+      (await app.request(`/v2/${destination}/blobs/${digest}`, { headers: stranger })).status,
+    ).toBe(404);
+    const noSource = await app.request(
+      `/v2/${destination}/blobs/uploads/?mount=${encodeURIComponent(digest)}`,
+      { method: "POST", headers: admin },
+    );
+    expect(noSource.status).toBe(202);
+    expect(
+      (await app.request(`/v2/${destination}/blobs/${digest}`, { headers: stranger })).status,
+    ).toBe(404);
+    for (const response of [mount, noSource])
+      await app.request(
+        `/v2/${destination}/blobs/uploads/${response.headers.get("Docker-Upload-UUID")}`,
+        { method: "DELETE", headers: admin },
+      );
+  });
+
+  test("PATCH PUT and DELETE bind upload UUIDs to the authorized repository path", async () => {
+    const owner = "public/routetest-session-owner";
+    const unrelated = "public/routetest-session-unrelated";
+    const headers = { "X-Test-Principal": principal("platform_admin") };
+    const start = await app.request(`/v2/${owner}/blobs/uploads/`, { method: "POST", headers });
+    const uuid = start.headers.get("Docker-Upload-UUID");
+    const unrelatedStart = await app.request(`/v2/${unrelated}/blobs/uploads/`, {
+      method: "POST",
+      headers,
+    });
+    await app.request(
+      `/v2/${unrelated}/blobs/uploads/${unrelatedStart.headers.get("Docker-Upload-UUID")}`,
+      { method: "DELETE", headers },
+    );
+    const bytes = new TextEncoder().encode("owned upload");
+    const { createHash } = await import("node:crypto");
+    const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    for (const method of ["PATCH", "PUT", "DELETE"]) {
+      const response = await app.request(
+        `/v2/${unrelated}/blobs/uploads/${uuid}${method === "PUT" ? `?digest=${digest}` : ""}`,
+        { method, headers, ...(method !== "DELETE" ? { body: bytes } : {}) },
+      );
+      expect(response.status).toBe(404);
+      expect(((await response.json()) as { errors: Array<{ code: string }> }).errors[0]?.code).toBe(
+        "BLOB_UPLOAD_UNKNOWN",
+      );
+    }
+    expect(
+      (
+        await app.request(`/v2/${owner}/blobs/uploads/${uuid}?digest=${digest}`, {
+          method: "PUT",
+          headers,
+          body: bytes,
+        })
+      ).status,
+    ).toBe(201);
+    expect((await app.request(`/v2/${owner}/blobs/${digest}`, { headers })).status).toBe(200);
+  });
 
   test("blob mount happy path: 201 with Location + Docker-Content-Digest", async () => {
     const src = "public/routetest-mount-src";
@@ -658,13 +759,7 @@ describe("OCI v2 routes", () => {
         body: new TextEncoder().encode(
           JSON.stringify({
             ...m,
-            layers: [
-              {
-                digest: `sha256:${tag.replace(/\./g, "0").padEnd(64, "f")}`,
-                mediaType: "x",
-                size: 1,
-              },
-            ],
+            annotations: { revision: tag },
           }),
         ),
       });
@@ -695,13 +790,7 @@ describe("OCI v2 routes", () => {
         body: new TextEncoder().encode(
           JSON.stringify({
             ...m,
-            layers: [
-              {
-                digest: `sha256:${tag.replace(/\./g, "0").padEnd(64, "f")}`,
-                mediaType: "x",
-                size: 1,
-              },
-            ],
+            annotations: { revision: tag },
           }),
         ),
       });

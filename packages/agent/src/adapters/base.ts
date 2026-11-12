@@ -126,6 +126,14 @@ export class SchedulerSubmissionError extends Error {
   }
 }
 
+/** The scheduler may have accepted the job; reconcile its stable tag before retrying. */
+export class SchedulerSubmissionUnknownError extends Error {
+  constructor(message = "Scheduler submission outcome is unknown") {
+    super(message);
+    this.name = "SchedulerSubmissionUnknownError";
+  }
+}
+
 export function isSchedulerQueueName(value: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value);
 }
@@ -487,6 +495,8 @@ export interface ListedJob {
 
 /** Scheduler-specific context retained with a pre-submit cleanup intent. */
 export interface KuintessenceJobLookup {
+  includeCompleted?: boolean;
+  submittedAfter?: string;
   jobId: string;
   schedulerName?: string;
   schedulerAccount?: string;
@@ -542,6 +552,8 @@ export interface SchedulerAdapter {
 
   submit(spec: JobSpec): Promise<JobResult>;
   cancel(schedulerJobId: string): Promise<void>;
+  /** A successful cancel request alone may precede termination and resource cleanup. */
+  confirmStopped?(schedulerJobId: string): Promise<boolean>;
   status(schedulerJobId: string): Promise<JobStatusResult>;
 
   inspectQueues?(): Promise<SchedulerQueueInventory>;

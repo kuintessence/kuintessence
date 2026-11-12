@@ -73,6 +73,17 @@ cgroup 限额；现有进程传输仍是 detached process group，并没有启�
 不根据磁盘上似乎完整的 prefix 推断 succeeded。verify/load 在启动 worker 前先把
 ready 撤销为 unavailable，成功校验后才恢复，避免进程崩溃留下可用库存声明。
 
+## 显式重试与依赖复用
+
+锁与 worker 恢复不会自动重新编译。显式重试安装时，只有唯一的 failed 记录具有旧 worker
+已停止的可信证明，且 spec、root hash、manifest 和 site profile 与请求一致，才复用同一
+record 与 prefix；不满足条件时不把遗留文件当作可复用依赖。
+
+复用前先执行 `verify-partial`，校验已完成依赖并保存摘要证据，再将受验证的依赖传给
+安装 worker。安装结束必须仍包含这些依赖且证据一致，随后完成完整校验才能发布为 ready。
+失败记录本身不进入可用库存；未完成的包重新构建，不支持任意编译指令的断点续跑。
+这些新增记录采用 `slurm-site-v5`，不能与 v4 原地切换。
+
 ## operation 账本与结果
 
 Agent SQLite 的 `software_executions` 在接收 managed 请求、排队执行之前保存

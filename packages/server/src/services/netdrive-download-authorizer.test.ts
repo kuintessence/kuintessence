@@ -84,6 +84,8 @@ describe("createAuthorizedNetDriveDownloadMint", () => {
     await expect(h.mint(OWNER_ID, FILE_ID, context)).resolves.toEqual({
       downloadUrl: `https://minio.test/${FILE_ID}`,
       expiresAt: "2026-08-12T00:15:00.000Z",
+      sha256: file.sha256,
+      size: file.size,
     });
     expect(h.checks).toEqual([]);
     expect(h.resolveActors).toEqual([]);

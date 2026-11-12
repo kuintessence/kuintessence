@@ -327,10 +327,13 @@ export class AuthzService {
     });
   }
 
-  async enqueueMany(tuples: AuthzTuple[]): Promise<void> {
+  async enqueueMany(
+    tuples: AuthzTuple[],
+    db: Pick<PgDb, "insert"> = this.options.db,
+  ): Promise<void> {
     const coalesced = coalesceAuthzTuples(tuples);
     if (coalesced.length === 0) return;
-    await this.options.db.insert(authzOutbox).values(
+    await db.insert(authzOutbox).values(
       coalesced.map((tuple) => ({
         operation: tuple.operation,
         resourceType: tuple.resource.type,

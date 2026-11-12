@@ -31,15 +31,15 @@ describe("loadAgentConfig", () => {
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(60);
   });
 
-  test("managed memory defaults to 4096 MiB and accepts integer budgets from 1024 to 4096", () => {
+  test("managed memory defaults to 4096 MiB and accepts integer budgets from 1024 MiB to 1 TiB", () => {
     expect(loadAgentConfig(baseEnv).AGENT_SPACK_MANAGED_MEMORY_MIB).toBe(4096);
-    for (const memory of ["1024", "1537", "4096"]) {
+    for (const memory of ["1024", "1537", "4096", "32768", "1048576"]) {
       expect(
         loadAgentConfig({ ...baseEnv, AGENT_SPACK_MANAGED_MEMORY_MIB: memory })
           .AGENT_SPACK_MANAGED_MEMORY_MIB,
       ).toBe(Number(memory));
     }
-    for (const memory of ["", "bad", "0", "-1", "1023", "4097", "1024.5", "NaN", "Infinity"]) {
+    for (const memory of ["", "bad", "0", "-1", "1023", "1048577", "1024.5", "NaN", "Infinity"]) {
       expect(() =>
         loadAgentConfig({ ...baseEnv, AGENT_SPACK_MANAGED_MEMORY_MIB: memory }),
       ).toThrow();

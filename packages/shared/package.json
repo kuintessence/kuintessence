@@ -15,6 +15,14 @@
       "bun": "./src/browser.ts",
       "types": "./src/browser.ts",
       "default": "./src/browser.ts"
+    },
+    "./registry-namespace": {
+      "types": "./src/registry-namespace.ts",
+      "default": "./src/registry-namespace.ts"
+    },
+    "./site-transport": {
+      "types": "./src/site-transport.ts",
+      "default": "./src/site-transport.ts"
     }
   },
   "scripts": {

@@ -47,6 +47,7 @@ import type {
   QueueTargetMode,
   QueueValidationMode,
   SandboxSignedManifest,
+  SpackAuditContext,
   SpackExecution,
 } from "@kuintessence/shared";
 import { createLogger } from "@kuintessence/shared";
@@ -176,6 +177,8 @@ export interface AgentChannel {
   close(): void;
   spackMaterialDeliveryV1?: boolean;
   verifiedCertFingerprint?: string;
+  siteAuditContext?: SpackAuditContext;
+  siteAuditObservedAt?: number;
 }
 
 /**
@@ -272,6 +275,8 @@ export class AgentDispatcher {
       }>;
       restrictedNoEgress?: boolean;
       inputStaging?: Array<{
+        totalBytes?: number;
+        expectedSha256?: string;
         fileMetadataId: string;
         stagePath: string;
         sourceUrl?: string;
@@ -296,11 +301,15 @@ export class AgentDispatcher {
           envVars: job.envVars ?? {},
           inputStaging: (job.inputStaging ?? []).map((input) => {
             const staged = input as typeof input & {
+              totalBytes?: number;
+              expectedSha256?: string;
               deliveryLeaseId?: string;
               deliveryLeaseExpiresAtUnixMs?: number;
             };
             return create(InputStagingSchema, {
               fileMetadataId: staged.fileMetadataId,
+              totalBytes: BigInt(staged.totalBytes ?? 0),
+              expectedSha256: staged.expectedSha256 ?? "",
               stagePath: staged.stagePath,
               sourceUrl: staged.sourceUrl ?? "",
               deliveryLeaseId: staged.deliveryLeaseId ?? "",
@@ -480,6 +489,7 @@ export class AgentDispatcher {
       targetUrl?: string;
       targetPath?: string;
       totalBytes: number;
+      expectedSha256?: string;
       /** Multipart cluster_to_cloud: the Server-pre-initiated upload id. */
       uploadId?: string;
       /** Multipart cluster_to_cloud: the Server-signed multipart commit token. */
@@ -499,6 +509,7 @@ export class AgentDispatcher {
           targetUrl: payload.targetUrl ?? "",
           targetPath: payload.targetPath ?? "",
           totalBytes: BigInt(payload.totalBytes),
+          expectedSha256: payload.expectedSha256 ?? "",
           uploadId: payload.uploadId ?? "",
           commitToken: payload.commitToken ?? "",
           partSize: BigInt(payload.partSize ?? 0),
@@ -539,12 +550,16 @@ export class AgentDispatcher {
     agentId: string,
     requestId: string,
     urls: { partNumber: number; url: string }[],
+    correlationId = "",
+    uploadId = "",
   ): boolean {
     const msg = create(ServerMessageSchema, {
       payload: {
         case: "partUrlsResponse",
         value: create(PartUrlsResponseSchema, {
           requestId,
+          correlationId,
+          uploadId,
           urls: urls.map((u) => create(PartUrlSchema, { partNumber: u.partNumber, url: u.url })),
         }),
       },

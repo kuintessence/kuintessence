@@ -2,7 +2,9 @@
 // pre-initiates the multipart, dispatches uploadId/commitToken/partSize to the
 // agent, and on a terminal "succeeded" event (carrying part ETags) calls
 // completeMultipart, which inserts the netdrive_files row.
+
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   createPgDb,
   netdriveFiles,
@@ -344,7 +346,7 @@ describe("TransferRunner.startClusterToCloud (multipart)", () => {
     const updated = transferRegistry.update("transfer-b", {
       copiedBytes: 6,
       state: "succeeded",
-      sha256: "a".repeat(64),
+      sha256: createHash("sha256").update("AAAABB").digest("hex"),
       parts: [
         { partNumber: 1, etag: e1.etag },
         { partNumber: 2, etag: e2.etag },
@@ -369,7 +371,7 @@ describe("TransferRunner.startClusterToCloud (multipart)", () => {
       throw new Error("NetDrive row was not inserted");
     }
     expect(row.size).toBe(6);
-    expect(row.sha256).toBe("a".repeat(64));
+    expect(row.sha256).toBe(createHash("sha256").update("AAAABB").digest("hex"));
     expect(events.find((e) => e.state === "succeeded")?.netdriveFileIds).toEqual([row.id]);
   });
 
@@ -387,7 +389,7 @@ describe("TransferRunner.startClusterToCloud (multipart)", () => {
     const updated = transferRegistry.update("transfer-authz", {
       copiedBytes: 4,
       state: "succeeded",
-      sha256: "b".repeat(64),
+      sha256: createHash("sha256").update("CCCC").digest("hex"),
       parts: [{ partNumber: 1, etag: part.etag }],
     });
     expect(updated).toBe(true);

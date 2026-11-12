@@ -14,6 +14,30 @@ export interface ExpectedOutput {
   protectedMounts?: readonly ProtectedPathMount[];
 }
 
+export interface OutputCollectionOptions {
+  retryTransientIO?: boolean;
+}
+
+const retryableOutputCodes = new Set([
+  "EIO",
+  "ESTALE",
+  "EAGAIN",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ENOTCONN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+]);
+
+export function isRetryableOutputError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    retryableOutputCodes.has(error.code)
+  );
+}
+
 export interface ProtectedPathMount {
   selectorId: string;
   sourcePath: string;
@@ -121,12 +145,16 @@ export function createOutputCollector(
   read: OutputReader,
   logger?: Logger,
   scanGlob: GlobScanner = hostGlobScanner,
-): (outputs: ExpectedOutput[], workingDir: string) => Promise<Record<string, string>> {
+): (
+  outputs: ExpectedOutput[],
+  workingDir: string,
+  options?: OutputCollectionOptions,
+) => Promise<Record<string, string>> {
   const readValidated = read.readValidated;
   if (!readValidated) {
     throw new Error("Output reader must provide atomic path validation and reading");
   }
-  return async (outputs, workingDir) => {
+  return async (outputs, workingDir, { retryTransientIO = false } = {}) => {
     const collected: Record<string, string> = {};
     for (const out of outputs) {
       if (out.isBatch) {
@@ -139,6 +167,7 @@ export function createOutputCollector(
           readValidated,
           read.validatePath,
           scanGlob,
+          retryTransientIO,
           logger,
         );
         if (!out.pathsOnly) {
@@ -158,6 +187,7 @@ export function createOutputCollector(
             out.path,
           ]);
         } catch (err) {
+          if (retryTransientIO && isRetryableOutputError(err)) throw err;
           logger?.warn(
             { descriptor: out.descriptor, path: abs, err },
             "Failed to validate expected output",
@@ -168,6 +198,7 @@ export function createOutputCollector(
       try {
         collected[out.descriptor] = await readValidated(abs, workingDir, out.protectedPaths ?? []);
       } catch (err) {
+        if (retryTransientIO && isRetryableOutputError(err)) throw err;
         logger?.warn(
           { descriptor: out.descriptor, path: abs, err },
           "Failed to read expected output",
@@ -184,6 +215,7 @@ async function readBatch(
   readValidated: ValidatedOutputReader,
   validatePath: ValidatedOutputPathValidator | undefined,
   scanGlob: GlobScanner,
+  retryTransientIO: boolean,
   logger?: Logger,
 ): Promise<{ contents: string[]; paths: string[] }> {
   const matches = [...(await scanGlob(out.path, workingDir))].sort();
@@ -202,6 +234,7 @@ async function readBatch(
       }
       paths.push(rel);
     } catch (err) {
+      if (retryTransientIO && isRetryableOutputError(err)) throw err;
       logger?.warn(
         { descriptor: out.descriptor, path: abs, err },
         "Failed to read batched output match; skipping it",

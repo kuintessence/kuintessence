@@ -1,3 +1,5 @@
+import { readSiteTransport, siteCurlArgs } from "@kuintessence/shared/site-transport";
+
 /**
  * Builders for the `docker exec` argv used by the Agent's file-transfer paths.
  *
@@ -67,6 +69,8 @@ export function buildCloudToClusterArgv(
   backoffSec: number,
   connectTo = "",
 ): string[] {
+  if (readSiteTransport())
+    throw new Error("Site transport requires host staging before container execution");
   return [
     "docker",
     "exec",
@@ -92,6 +96,20 @@ export function buildHostCloudToClusterArgv(
   backoffSec: number,
   connectTo = "",
 ): string[] {
+  const site = readSiteTransport();
+  if (site) {
+    return [
+      "sh",
+      "-c",
+      'url=$1; target=$2; retries=$3; delay=$4; shift 4; mkdir -p "$(dirname "$target")" || exit; n=0; while ! curl -fsS -C - "$@" "$url" -o "$target"; do n=$((n+1)); [ "$n" -ge "$retries" ] && exit 1; sleep "$delay"; done',
+      "_",
+      url,
+      targetPath,
+      String(maxRetries),
+      String(backoffSec),
+      ...siteCurlArgs(url, site),
+    ];
+  }
   return [
     "sh",
     "-c",

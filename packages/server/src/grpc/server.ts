@@ -84,6 +84,8 @@ export function createGrpcConnectNodeHandler(
     writeMaxBytes: 0xffffffff,
   });
   const guard = mtlsHeaderGuard(mtlsConfig);
+  const diagnosticsByAgent = new Map<string, number>();
+  let activeDiagnostics = 0;
   const trustedProxyCidrs =
     mtlsConfig.trustedProxyCidrs === undefined
       ? null
@@ -123,6 +125,35 @@ export function createGrpcConnectNodeHandler(
       );
       if (!verdict.ok) {
         await writeFetchResponse(res, verdict.response);
+        return;
+      }
+      if (req.url === "/site-diagnostics/stream") {
+        if (
+          req.method !== "POST" ||
+          req.httpVersionMajor !== 2 ||
+          !verdict.agentId ||
+          !verdict.fingerprintSha256
+        ) {
+          res.writeHead(403);
+          res.end();
+          return;
+        }
+        if (res.destroyed) return;
+        const agentId = verdict.agentId;
+        const active = diagnosticsByAgent.get(agentId) ?? 0;
+        if (activeDiagnostics >= 64 || active >= 2) {
+          res.writeHead(429);
+          res.end();
+          return;
+        }
+        activeDiagnostics++;
+        diagnosticsByAgent.set(agentId, active + 1);
+        diagnosticDuplex(req, res, agentId, () => {
+          activeDiagnostics--;
+          const remaining = (diagnosticsByAgent.get(agentId) ?? 1) - 1;
+          if (remaining) diagnosticsByAgent.set(agentId, remaining);
+          else diagnosticsByAgent.delete(agentId);
+        });
         return;
       }
       await runWithMtlsContext(
@@ -206,4 +237,79 @@ async function writeFetchResponse(res: GrpcServerResponse, response: Response): 
   });
   res.writeHead(response.status, headers);
   res.end(Buffer.from(await response.arrayBuffer()));
+}
+
+/** A bounded echo channel proves bidirectional HTTP/2 without registering an Agent stream. */
+function diagnosticDuplex(
+  req: GrpcServerRequest,
+  res: GrpcServerResponse,
+  agentId: string,
+  release: () => void,
+): void {
+  let pending = "";
+  let received = 0;
+  let seq = 0;
+  res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
+  res.write("");
+  let stopped = false;
+  const timer = setTimeout(() => {
+    stop();
+    req.destroy();
+    res.destroy();
+  }, 20_000);
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearTimeout(timer);
+    release();
+  };
+  req.once("close", stop);
+  res.once("close", stop);
+  req.setEncoding("utf8");
+  req.on("data", (chunk: string) => {
+    received += Buffer.byteLength(chunk);
+    pending += chunk;
+    if (received > 4096) {
+      req.destroy();
+      res.destroy();
+      return;
+    }
+    while (pending.includes("\n")) {
+      const end = pending.indexOf("\n");
+      const line = pending.slice(0, end);
+      pending = pending.slice(end + 1);
+      let message: unknown;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        req.destroy();
+        res.destroy();
+        return;
+      }
+      if (
+        !message ||
+        typeof message !== "object" ||
+        !("challenge" in message) ||
+        typeof message.challenge !== "string" ||
+        !/^[a-f0-9]{48}$/.test(message.challenge) ||
+        !("seq" in message) ||
+        message.seq !== seq ||
+        seq > 1
+      ) {
+        req.destroy();
+        res.destroy();
+        return;
+      }
+      res.write(`${JSON.stringify({ challenge: message.challenge, seq, agentId })}\n`);
+      seq++;
+    }
+  });
+  req.once("end", () => {
+    stop();
+    res.end();
+  });
+  req.once("error", () => {
+    stop();
+    res.destroy();
+  });
 }

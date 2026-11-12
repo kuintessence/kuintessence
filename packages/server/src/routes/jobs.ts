@@ -38,6 +38,7 @@ import type {
 import type { PlacementOrchestrator } from "../services/placement-orchestrator";
 import { SelectableDatasetService } from "../services/selectable-datasets";
 import { assertUsecasePackageExecutionAccess } from "../services/usecase-execution-authorizer";
+import type { PublicationSummary } from "../workflow/output-publication";
 
 const JobListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -111,6 +112,7 @@ export interface JobRouteOptions {
   jobLogAccessAudit?: Pick<JobLogAccessAuditor, "record">;
   jobLogsPollIntervalMs?: number;
   governance?: LicenseRuntimeGovernanceService;
+  outputPublication?: { get(jobId: string): Promise<PublicationSummary | undefined> };
 }
 
 export function createJobRoutes(
@@ -457,6 +459,26 @@ export function createJobRoutes(
       recordAlias,
     });
     return c.json(body);
+  });
+
+  routes.get("/jobs/:id/output-publication", async (c) => {
+    const id = parseUuidParam(c.req.param("id"), "job id");
+    const viewer = requireCanonicalJobActor(c);
+    const job = await jobService.getById(id);
+    if (!job) throw new AppError(ErrorCode.NOT_FOUND, "Job not found", 404);
+    const canView = await authorizeJobViewThroughSpice(
+      c,
+      opts.authz,
+      id,
+      viewer.userId,
+      resolveLocalJobReadScope(viewer, job) !== null,
+    );
+    if (!canView || job.restrictedNoEgress)
+      throw new AppError(ErrorCode.FORBIDDEN, "Workflow output publication access denied", 403);
+    const summary = await opts.outputPublication?.get(id);
+    if (!summary)
+      throw new AppError(ErrorCode.NOT_FOUND, "Workflow output publication not recorded", 404);
+    return c.json(summary);
   });
 
   routes.get("/jobs/:id/logs", async (c) => {

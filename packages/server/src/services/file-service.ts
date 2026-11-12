@@ -108,13 +108,14 @@ export interface TransferDispatchAuthorization {
 
 export interface FileTransferRunner {
   canHandle(data: TransferCreate): boolean;
+  canResume?(ownerId: string, transferId: string, data: TransferCreate): Promise<boolean>;
   start(
     actorUserId: string | null | undefined,
     transferId: string,
     data: TransferCreate,
     onProgress: (event: TransferProgressEvent) => void,
   ): Promise<void>;
-  cancel(transferId: string): Promise<boolean>;
+  cancel(transferId: string, ownerId?: string): Promise<boolean>;
 }
 
 export interface TransferDispatchOptions {
@@ -448,11 +449,47 @@ export class FileService {
     return t;
   }
 
+  async resumeTransfer(
+    userId: string,
+    id: string,
+    options: TransferDispatchOptions,
+  ): Promise<Transfer> {
+    const transfer = await this.requireOwnedTransfer(userId, id);
+    if (transfer.state !== "failed")
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Only failed transfers can be resumed", 409);
+    const data: TransferCreate = {
+      direction: transfer.direction,
+      source: transfer.source,
+      target: transfer.target,
+      ...(transfer.agentId ? { agentId: transfer.agentId } : {}),
+      ...(transfer.siteId ? { siteId: transfer.siteId } : {}),
+      ...(transfer.totalBytes !== null ? { totalBytes: transfer.totalBytes } : {}),
+      ...(transfer.sourceFileId ? { sourceFileId: transfer.sourceFileId } : {}),
+      ...(transfer.jobId ? { jobId: transfer.jobId } : {}),
+      ...(transfer.workflowRunId ? { workflowRunId: transfer.workflowRunId } : {}),
+      ...(transfer.netdriveFileIds ? { netdriveFileIds: transfer.netdriveFileIds } : {}),
+    };
+    if (
+      !this.runner ||
+      (!this.runner.canHandle(data) && !(await this.runner.canResume?.(userId, id, data)))
+    )
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Transfer Agent is unavailable", 409);
+    const queued = await this.transferStore.transition(userId, id, "failed", {
+      state: "queued",
+      error: null,
+      finishedAt: null,
+    });
+    if (!queued)
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Transfer changed concurrently", 409);
+    void this.dispatchTransfer(userId, userId, id, data, options);
+    return queued;
+  }
+
   async cancelTransfer(userId: string, id: string): Promise<Transfer> {
     const t = await this.requireOwnedTransfer(userId, id);
-    if (t.state !== "running" && t.state !== "queued") return t;
-    if (t.state === "running") {
-      const accepted = (await this.runner?.cancel(id)) ?? true;
+    if (t.state !== "running" && t.state !== "queued" && t.state !== "failed") return t;
+    if (t.state === "running" || t.state === "failed") {
+      const accepted = (await this.runner?.cancel(id, userId)) ?? true;
       if (!accepted) {
         throw new AppError(
           ErrorCode.VALIDATION_ERROR,

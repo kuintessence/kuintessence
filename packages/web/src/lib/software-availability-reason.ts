@@ -2,6 +2,8 @@ type Translate = (key: string, options?: { defaultValue?: string }) => string;
 
 const EXACT_REASON_KEYS: Record<string, string> = {
   "agent control channel is offline": "offline",
+  "offline site material closure has not been verified": "offlineMaterialClosure",
+  "offline site telemetry is stale or invalid": "offlineTelemetry",
   "asset use permission denied": "usePermission",
   "blocked by provider deny list": "providerDenyList",
   "blocked by usecase deny list": "usecaseDenyList",

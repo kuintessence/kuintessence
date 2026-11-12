@@ -207,7 +207,13 @@ describe("AgentDispatcher", () => {
       command: "echo",
       resources: { cpus: 1, memoryMb: 512 },
       inputStaging: [
-        { fileMetadataId: "fm-1", stagePath: "mesh.tar.gz", sourceUrl: "https://minio/get/fm-1" },
+        {
+          fileMetadataId: "fm-1",
+          stagePath: "mesh.tar.gz",
+          sourceUrl: "https://minio/get/fm-1",
+          totalBytes: 128,
+          expectedSha256: "a".repeat(64),
+        },
       ],
       expectedOutputs: [
         { descriptor: "result", path: "out/result", isBatch: false, pathsOnly: true },
@@ -220,6 +226,8 @@ describe("AgentDispatcher", () => {
       expect(m.payload.value.inputStaging[0]?.fileMetadataId).toBe("fm-1");
       expect(m.payload.value.inputStaging[0]?.stagePath).toBe("mesh.tar.gz");
       expect(m.payload.value.inputStaging[0]?.sourceUrl).toBe("https://minio/get/fm-1");
+      expect(m.payload.value.inputStaging[0]?.totalBytes).toBe(128n);
+      expect(m.payload.value.inputStaging[0]?.expectedSha256).toBe("a".repeat(64));
       expect(m.payload.value.expectedOutputs[0]?.descriptor).toBe("result");
       expect(m.payload.value.expectedOutputs[0]?.pathsOnly).toBe(true);
       expect(m.payload.value.fileOutputDescriptors).toEqual(["result"]);
@@ -512,4 +520,31 @@ describe("AgentDispatcher", () => {
     expect(ch1.messages).toHaveLength(1);
     expect(ch2.messages).toHaveLength(1);
   });
+});
+
+test("part URL responses encode independent correlation and upload identity while legacy calls stay valid", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = mockChannel();
+  dispatcher.register("agent", channel);
+  const urls = [{ partNumber: 1, url: "https://object/part" }];
+  dispatcher.pushPartUrlsResponse("agent", "transfer", urls, "correlation", "upload");
+  dispatcher.pushPartUrlsResponse("agent", "legacy-transfer", urls);
+  const first = channel.messages[0];
+  const legacy = channel.messages[1];
+  expect(first?.payload.case).toBe("partUrlsResponse");
+  if (first?.payload.case === "partUrlsResponse")
+    expect(first.payload.value).toMatchObject({
+      requestId: "transfer",
+      correlationId: "correlation",
+      uploadId: "upload",
+      urls,
+    });
+  expect(legacy?.payload.case).toBe("partUrlsResponse");
+  if (legacy?.payload.case === "partUrlsResponse")
+    expect(legacy.payload.value).toMatchObject({
+      requestId: "legacy-transfer",
+      correlationId: "",
+      uploadId: "",
+      urls,
+    });
 });

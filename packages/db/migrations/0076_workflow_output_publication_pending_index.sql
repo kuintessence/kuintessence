@@ -1,0 +1,1 @@
+CREATE INDEX "workflow_output_publications_pending_idx" ON "workflow_output_publications" USING btree ("next_attempt_at","job_id") WHERE "workflow_output_publications"."released_at" IS NULL;

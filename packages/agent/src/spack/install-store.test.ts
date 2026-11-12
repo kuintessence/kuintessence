@@ -108,6 +108,60 @@ describe("SpackInstallStore transaction lifecycle", () => {
     });
   });
 
+  test("resumes only stopped identical failed records and preserves the old operation snapshot", async () => {
+    const oldOperation = randomUUID();
+    let record = await store.withLock(() => store.create(input), oldOperation);
+    const proof = {
+      schedulerJobId: "123",
+      schedulerJobName: `kq-build-${randomUUID()}`,
+      schedulerBinding: "c".repeat(64),
+      noRequeue: true as const,
+      schedulerState: "TIMEOUT" as const,
+      action: "install" as const,
+      stoppedAt: new Date().toISOString(),
+      manifestDigest: input.manifestDigest,
+      siteProfileDigest: input.siteProfileDigest,
+      storePath: store.path(record.id),
+    };
+    await store.withLock(async () => {
+      record = { ...record, state: "failed" };
+      await store.save(record);
+    });
+    const nextOperation = randomUUID();
+    await store.withLock(async () => {
+      await expect(store.resumeFailed(record.id, input)).rejects.toThrow("binding mismatch");
+      record = { ...record, workerStopped: proof };
+      await store.save(record);
+      for (const changed of [
+        { manifestDigest: `sha256:${"d".repeat(64)}` },
+        { siteProfileDigest: `sha256:${"e".repeat(64)}` },
+        { spec: "different@1" },
+        { rootHash: "b".repeat(32) },
+      ]) {
+        await expect(store.resumeFailed(record.id, { ...input, ...changed })).rejects.toThrow(
+          "binding mismatch",
+        );
+      }
+      const resumed = await store.resumeFailed(record.id, input);
+      expect(resumed).toMatchObject({
+        id: record.id,
+        state: "building",
+        operationId: nextOperation,
+        resumedFrom: { operationId: oldOperation, schedulerJobId: "123" },
+      });
+      expect(resumed.workerStopped).toBeUndefined();
+      const snapshot = await readFile(
+        join(root, "attempts", record.id, `${oldOperation}.json`),
+        "utf8",
+      );
+      expect(JSON.parse(snapshot)).toEqual(record);
+      expect(resumed.resumedFrom?.snapshotSha256).toBe(
+        new Bun.CryptoHasher("sha256").update(snapshot).digest("hex"),
+      );
+      expect(await mode(join(root, "attempts", record.id, `${oldOperation}.json`))).toBe(0o600);
+    }, nextOperation);
+  });
+
   test("persists private records and unpublished releases across restart", async () => {
     const record = await create();
     expect(record).toMatchObject({ ...input, state: "building", version: 1 });
@@ -395,4 +449,112 @@ describe("filesystem boundary", () => {
     expect(await readFile(temporary, "utf8")).toBe("{");
     expect((await lstat(orphan)).isDirectory()).toBe(true);
   });
+});
+
+test("explicit scheduler reconciliation fences by original operation and owner before releasing a failed build", async () => {
+  const { softwareExecution, installWorkerExecution } = await import("./execution-identity");
+  const operationId = randomUUID();
+  const identity = {
+    host: "a".repeat(64),
+    boot: randomUUID(),
+    pid: 2147480000,
+    start: "1",
+    token: randomUUID(),
+  };
+  let recordId = "";
+  await softwareExecution.run({ identity, operationId, bindStore: async () => {} }, () =>
+    store.withLock(async () => {
+      const record = await store.create(input);
+      recordId = record.id;
+      await installWorkerExecution.getStore()?.start(record.id, `${base}/cache/installs/run-test`);
+    }),
+  );
+  await softwareExecution.run(
+    {
+      identity: { ...identity, boot: randomUUID() },
+      operationId: randomUUID(),
+      bindStore: async () => {},
+    },
+    async () => {
+      await expect(store.withLock(async () => {})).rejects.toThrow();
+      expect((await store.list())[0]?.state).toBe("building");
+    },
+  );
+  const successor = { ...identity, pid: process.pid, token: randomUUID() };
+  let confirmed = 0;
+  const recovery = {
+    recordId,
+    operationId,
+    confirmStopped: async (path: string) => {
+      confirmed++;
+      expect(path).toBe(`${base}/cache/installs/run-test`);
+      return undefined;
+    },
+  };
+  await softwareExecution.run(
+    { identity: successor, operationId: randomUUID(), bindStore: async () => {} },
+    async () => {
+      await expect(
+        store.reconcileWorker({ ...recovery, operationId: randomUUID() }),
+      ).rejects.toThrow();
+      expect(confirmed).toBe(0);
+      await expect(
+        store.reconcileWorker({
+          ...recovery,
+          confirmStopped: async () => {
+            throw new Error("scheduler unavailable");
+          },
+        }),
+      ).rejects.toThrow();
+      expect((await store.list())[0]?.state).toBe("building");
+      await store.reconcileWorker(recovery);
+      expect((await store.list())[0]?.state).toBe("failed");
+      await store.withLock(async () => {});
+    },
+  );
+  expect(confirmed).toBe(1);
+});
+
+test("explicit recovery never queries a scheduler or steals a live owner", async () => {
+  const { softwareExecution, installWorkerExecution, processStart } = await import(
+    "./execution-identity"
+  );
+  const operationId = randomUUID();
+  const identity = {
+    host: "a".repeat(64),
+    boot: randomUUID(),
+    pid: process.pid,
+    start: (await processStart(process.pid)) ?? "0",
+    token: randomUUID(),
+  };
+  let recordId = "";
+  await softwareExecution.run({ identity, operationId, bindStore: async () => {} }, () =>
+    store.withLock(async () => {
+      const record = await store.create(input);
+      recordId = record.id;
+      await installWorkerExecution.getStore()?.start(record.id, `${base}/cache/installs/run-test`);
+    }),
+  );
+  await softwareExecution.run(
+    {
+      identity: { ...identity, token: randomUUID() },
+      operationId: randomUUID(),
+      bindStore: async () => {},
+    },
+    async () => {
+      let queried = false;
+      await expect(
+        store.reconcileWorker({
+          recordId,
+          operationId,
+          confirmStopped: async () => {
+            queried = true;
+            return undefined;
+          },
+        }),
+      ).rejects.toThrow();
+      expect(queried).toBe(false);
+      expect((await store.list())[0]?.state).toBe("building");
+    },
+  );
 });

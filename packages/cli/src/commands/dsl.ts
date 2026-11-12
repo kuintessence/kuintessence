@@ -1,3 +1,4 @@
+import { siteFetch } from "@kuintessence/shared/site-transport";
 // `kq dsl schema` subcommand.
 //
 // Fetches the workflow DSL JSON Schema the Server serves at
@@ -43,7 +44,7 @@ export function validateWorkflowYaml(content: string): string[] {
  */
 export async function fetchWorkflowDslSchema(serverUrl: string): Promise<string> {
   const url = `${serverUrl}/api/dsl/schema/workflow`;
-  const res = await fetch(url);
+  const res = await siteFetch(url);
   if (!res.ok) {
     throw new Error(`Server returned ${res.status} ${res.statusText} for ${url}`);
   }

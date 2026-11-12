@@ -81,6 +81,21 @@ const RegistryConfigSchema = z
     REGISTRY_MAX_ACTIVE_UPLOADS_PER_REPOSITORY: positiveInt(10),
     REGISTRY_MAX_INCOMPLETE_UPLOAD_BYTES: positiveInt(40 * 1024 * 1024 * 1024),
     REGISTRY_AUTH_MODE: z.enum(["dev", "jwt"]).default("dev"),
+    REGISTRY_PUBLIC_ORIGIN: z
+      .string()
+      .url()
+      .refine((value) => {
+        const url = new URL(value);
+        return (
+          url.protocol === "https:" &&
+          !url.username &&
+          !url.password &&
+          url.pathname === "/" &&
+          !url.search &&
+          !url.hash
+        );
+      }, "must be an HTTPS origin without credentials, path, query or fragment")
+      .optional(),
     REGISTRY_JWT_SECRET: z.string().optional(),
     REGISTRY_JWT_ISSUER: z.string().optional(),
     REGISTRY_JWT_AUDIENCE: z.string().optional(),
@@ -100,6 +115,13 @@ const RegistryConfigSchema = z
       .transform((value) => value === "true"),
   })
   .superRefine((cfg, ctx) => {
+    if (cfg.REGISTRY_PUBLIC_ORIGIN && cfg.REGISTRY_AUTH_MODE !== "jwt") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["REGISTRY_AUTH_MODE"],
+        message: "Native OCI requires JWT authentication",
+      });
+    }
     if (cfg.OFFLINE_DELIVERY_SEED) {
       if (!cfg.OFFLINE_DELIVERY_SEED_SUBJECT || !cfg.SPACK_MATERIAL_STORE_DIR)
         ctx.addIssue({

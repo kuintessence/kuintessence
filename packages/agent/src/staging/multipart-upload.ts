@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { assertStorageCapacity } from "../storage-capacity";
 import { createDefaultHttpClient, type HttpClient } from "./http-client";
 
 /**
@@ -80,6 +81,11 @@ export async function multipartStageOut(
       contentType,
       completed: [],
     };
+    await assertStorageCapacity({
+      path: sidecarPath,
+      additionalBytes: Buffer.byteLength(JSON.stringify(sidecar)),
+      additionalInodes: 1,
+    });
     await writeFile(sidecarPath, JSON.stringify(sidecar));
   }
 
@@ -121,6 +127,11 @@ export async function multipartStageOut(
       const etag = stripQuotes(put.headers.etag ?? put.headers.ETag ?? "");
       sidecar.completed.push({ partNumber, etag });
       done.set(partNumber, etag);
+      await assertStorageCapacity({
+        path: sidecarPath,
+        additionalBytes: Buffer.byteLength(JSON.stringify(sidecar)),
+        additionalInodes: 1,
+      });
       await writeFile(sidecarPath, JSON.stringify(sidecar));
     }
   } finally {

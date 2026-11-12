@@ -340,7 +340,9 @@ describe("main deployment wiring", () => {
       expect(service.build).toBeUndefined();
       expect(service.extends).toBeUndefined();
       expect(service.env_file).toBeUndefined();
-      for (const volume of service.volumes ?? []) expect(volume).not.toMatch(/^[./]/);
+      for (const volume of service.volumes ?? []) {
+        if (typeof volume === "string") expect(volume).not.toMatch(/^[./]/);
+      }
     }
     expect(compose.services.server.environment.NODE_ENV).toBe("production");
     expect(compose.services.server.environment.AUTHZ_MODE).toBe("enforce");
@@ -351,6 +353,44 @@ describe("main deployment wiring", () => {
       "service_completed_successfully",
     );
     expect(Object.keys(compose.volumes)).toContain("server-ca");
+  });
+
+  test("site releases and material authentication use persistent public delivery settings", () => {
+    const compose = parse(readFileSync(join(root, "deploy/main/compose.yml"), "utf8"));
+    const server = compose.services.server;
+    const registry = compose.services.registry;
+    expect(server.environment.SITE_RELEASES_DIR).toBe("/opt/kq-site-releases");
+    expect(server.volumes).toContainEqual({
+      type: "bind",
+      source: "${KQ_SITE_RELEASES_DIRECTORY:-/opt/deploy/site-releases}",
+      target: "/opt/kq-site-releases",
+      read_only: true,
+      bind: { create_host_path: false },
+    });
+    expect(server.environment.SPACK_MATERIAL_DELIVERY_ENABLED).toBe(
+      "${SPACK_MATERIAL_DELIVERY_ENABLED:-false}",
+    );
+    expect(server.environment.SPACK_REGISTRY_URL).toBe("${SPACK_REGISTRY_URL:-http://registry:3100}");
+    expect(server.environment.SPACK_REGISTRY_ALLOW_INSECURE_HTTP).toBe(
+      "${SPACK_REGISTRY_ALLOW_INSECURE_HTTP:-true}",
+    );
+    expect(server.environment.SPACK_MATERIAL_TICKET_SECRET).toBe(
+      "${SPACK_MATERIAL_TICKET_SECRET:?Set an independent SPACK_MATERIAL_TICKET_SECRET}",
+    );
+    for (const suffix of ["SECRET", "ISSUER", "AUDIENCE"]) {
+      expect(server.environment[`SPACK_REGISTRY_JWT_${suffix}`]).toBe(
+        registry.environment[`REGISTRY_JWT_${suffix}`],
+      );
+      expect(server.environment[`SPACK_REGISTRY_JWT_${suffix}`]).not.toContain(":-}");
+    }
+    expect(registry.environment.REGISTRY_JWT_SECRET).toBe(
+      "${REGISTRY_JWT_SECRET:?Set an independent REGISTRY_JWT_SECRET}",
+    );
+    expect(server.environment.REGISTRY_PUBLIC_ORIGIN).toBe(registry.environment.REGISTRY_PUBLIC_ORIGIN);
+    expect(server.environment.REGISTRY_PUBLIC_ORIGIN).toContain("${REGISTRY_PUBLIC_ORIGIN:?");
+    expect(server.environment.ECOSYSTEM_RELEASE_TRUSTED_KEYS).toBe(
+      registry.environment.ECOSYSTEM_RELEASE_TRUSTED_KEYS,
+    );
   });
 
   test("the environment example documents every required Compose variable", () => {

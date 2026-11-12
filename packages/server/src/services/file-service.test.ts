@@ -245,7 +245,10 @@ describe("FileService transfer dispatch lifecycle", () => {
     expect(cancelled).toEqual([created.id]);
   });
 
-  test("rejects cancellation when the runner has already entered terminal commit", async () => {
+  test.each([
+    "running",
+    "failed",
+  ])("rejects cancellation of a %s record when the runner has already entered terminal commit", async (state) => {
     const service = new FileService(new InMemoryFileTransferStore());
     service.attachRunner({
       canHandle: () => true,
@@ -255,11 +258,12 @@ describe("FileService transfer dispatch lifecycle", () => {
 
     const created = await service.createTransfer("user-a", transferData, "user-a");
     await waitForTransferState(service, "user-a", "running");
+    if (state === "failed") await service.reconcileInterruptedTransfers();
     await expect(service.cancelTransfer("user-a", created.id)).rejects.toMatchObject({
       statusCode: 409,
       details: { reason: "TRANSFER_CANCELLATION_NOT_ACCEPTED" },
     });
-    expect((await service.listTransfers("user-a"))[0]?.state).toBe("running");
+    expect((await service.listTransfers("user-a"))[0]?.state).toBe(state);
   });
 
   test("marks only running transfers dispatched through the changed root", async () => {
@@ -289,4 +293,57 @@ describe("FileService transfer dispatch lifecycle", () => {
     expect(affected).toHaveLength(1);
     expect(affected[0]?.rootPolicyChangedAt).toBe(changedAt);
   });
+});
+
+test("resume keeps transfer identity, reauthorizes before dispatch and rejects cross-owner access", async () => {
+  const store = new InMemoryFileTransferStore();
+  const service = new FileService(store);
+  const started: string[] = [];
+  service.attachRunner(recordingRunner(started));
+  const transfer = await service.createTransfer("owner", transferData, "owner");
+  await waitForTransferState(service, "owner", "running");
+  await service.reconcileInterruptedTransfers();
+  const guard = deferred();
+  await service.resumeTransfer("owner", transfer.id, {
+    beforeDispatch: () => guard.promise.then(() => undefined),
+  });
+  expect(started).toEqual([transfer.id]);
+  guard.resolve();
+  await waitForTransferState(service, "owner", "running");
+  expect(started).toEqual([transfer.id, transfer.id]);
+  await expect(service.resumeTransfer("other-owner", transfer.id, {})).rejects.toThrow("not found");
+  await service.reconcileInterruptedTransfers();
+  await service.resumeTransfer("owner", transfer.id, {
+    beforeDispatch: async () => {
+      throw new Error("TRANSFER_ROOT_AUTHORIZATION_REVOKED");
+    },
+  });
+  await waitForTransferState(service, "owner", "failed");
+  expect(started).toHaveLength(2);
+  service.shutdown();
+});
+
+test("resume finalizes a durable completion with an offline Agent while still reauthorizing", async () => {
+  const service = new FileService(new InMemoryFileTransferStore());
+  service.attachRunner(recordingRunner([]));
+  const transfer = await service.createTransfer("owner", transferData, "owner");
+  await waitForTransferState(service, "owner", "running");
+  await service.reconcileInterruptedTransfers();
+  const started: string[] = [];
+  service.attachRunner({
+    ...recordingRunner(started),
+    canHandle: () => false,
+    canResume: async () => true,
+  });
+  await service.resumeTransfer("owner", transfer.id, {
+    beforeDispatch: async () => {
+      throw new Error("TRANSFER_ROOT_AUTHORIZATION_REVOKED");
+    },
+  });
+  await waitForTransferState(service, "owner", "failed");
+  expect(started).toHaveLength(0);
+  await service.resumeTransfer("owner", transfer.id, { beforeDispatch: async () => undefined });
+  await waitForTransferState(service, "owner", "running");
+  expect(started).toEqual([transfer.id]);
+  service.shutdown();
 });

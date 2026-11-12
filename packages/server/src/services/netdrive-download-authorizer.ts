@@ -19,7 +19,7 @@ export type AuthorizedNetDriveDownloadMint = (
   actorUserId: string,
   fileId: string,
   context?: NetDriveTransferContext,
-) => Promise<{ downloadUrl: string; expiresAt: string }>;
+) => Promise<{ downloadUrl: string; expiresAt: string; sha256: string; size: number }>;
 
 export function createAuthorizedNetDriveDownloadMint(
   deps: NetDriveDownloadAuthorizerDeps,
@@ -32,7 +32,12 @@ export function createAuthorizedNetDriveDownloadMint(
       await requireSharedFileUse(deps, actorUserId, file);
     }
 
-    return deps.service.mintDownloadUrlForAuthorizedFile(actorUserId, file, context);
+    const download = await deps.service.mintDownloadUrlForAuthorizedFile(
+      actorUserId,
+      file,
+      context,
+    );
+    return { ...download, sha256: file.sha256, size: file.size };
   };
 }
 

@@ -106,6 +106,18 @@ jobs:
       - name: Check production image publication contracts
         run: bun test scripts/production-images.test.cjs scripts/main-deploy.test.cjs scripts/agent-bundle.test.cjs scripts/offline-delivery.test.cjs
 
+      - name: Check offline Slurm site bootstrap and maintenance
+        run: |
+          for test_file in tests/test_site_bootstrap.py tests/test_site_bootstrap_integration.py tests/test_site_maintenance.py tests/test_site_shared_recovery.py tests/test_slurm_user_site.py; do
+            python3 "$test_file" || exit
+          done
+
+      - name: Check signed site release preparation and publication contracts
+        run: bun test deploy/site-release/prepare.test.ts deploy/site-release/publish.test.ts
+
+      - name: Check disposable PostgreSQL acceptance contracts
+        run: bun test scripts/test-unit.test.ts
+
       - name: Check scientific workflow handoff templates
         run: bun test scripts/spack-workflow-handoff.test.ts
 
@@ -296,6 +308,12 @@ jobs:
 
       - name: Generate protobuf stubs
         run: bun run --filter @kuintessence/proto generate
+
+      - name: Verify offline Slurm PostgreSQL recovery in a disposable database
+        run: bun run test:unit --suite offline-slurm-pg
+        env:
+          DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
+          LOG_LEVEL: warn
 
       - name: Run database migrations
         run: bun run db:migrate

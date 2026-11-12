@@ -1,0 +1,1 @@
+ALTER TABLE "file_transfers" ADD COLUMN "resume_session" jsonb;

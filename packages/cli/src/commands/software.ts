@@ -1,3 +1,4 @@
+import { siteFetch } from "@kuintessence/shared/site-transport";
 // kq software <list|show|publish|install|lock|unlock|policy>
 //
 // Wraps the Server software-governance endpoints and the Registry
@@ -131,7 +132,7 @@ export function resolveRegistryApiBase(
 export async function fetchRemoteSoftwareCatalog(
   config: CliConfig,
   filters: { page?: number; pageSize?: number; query?: string; source?: RemoteCatalogSource } = {},
-  fetchFn: FetchLike = (input, init) => fetch(input, init),
+  fetchFn: FetchLike = (input, init) => siteFetch(input, init),
 ): Promise<RemoteCatalogPage> {
   const params = new URLSearchParams({
     page: String(filters.page ?? 1),

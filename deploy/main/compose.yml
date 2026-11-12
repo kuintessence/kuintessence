@@ -110,9 +110,27 @@ services:
       SSO_BOOTSTRAP_GROUP_MAPPING: "${SSO_BOOTSTRAP_GROUP_MAPPING:-{}}"
       SSO_BOOTSTRAP_AUTO_CREATE_USERS: "true"
       SPACK_MATERIAL_EPOCH: ${SPACK_MATERIAL_EPOCH:-}
+      SITE_RELEASES_DIR: /opt/kq-site-releases
+      SPACK_MATERIAL_DELIVERY_ENABLED: ${SPACK_MATERIAL_DELIVERY_ENABLED:-false}
+      SPACK_REGISTRY_URL: ${SPACK_REGISTRY_URL:-http://registry:3100}
+      SPACK_REGISTRY_ALLOW_INSECURE_HTTP: ${SPACK_REGISTRY_ALLOW_INSECURE_HTTP:-true}
+      SPACK_REGISTRY_JWT_SECRET: ${REGISTRY_JWT_SECRET:?Set an independent REGISTRY_JWT_SECRET}
+      SPACK_REGISTRY_JWT_ISSUER: ${REGISTRY_JWT_ISSUER:-kuintessence-server}
+      SPACK_REGISTRY_JWT_AUDIENCE: ${REGISTRY_JWT_AUDIENCE:-kuintessence-registry}
+      SPACK_MATERIAL_TICKET_SECRET: ${SPACK_MATERIAL_TICKET_SECRET:?Set an independent SPACK_MATERIAL_TICKET_SECRET}
+      SPACK_MATERIAL_TICKET_TTL_SEC: ${SPACK_MATERIAL_TICKET_TTL_SEC:-900}
+      SPACK_MATERIAL_RELEASES: "${SPACK_MATERIAL_RELEASES:-{}}"
+      REGISTRY_PUBLIC_ORIGIN: ${REGISTRY_PUBLIC_ORIGIN:?Set the public HTTPS Registry origin without a path}
+      ECOSYSTEM_RELEASE_TRUSTED_KEYS: "${ECOSYSTEM_RELEASE_TRUSTED_KEYS:-{}}"
       NETDRIVE_ENABLED: "false"
     volumes:
       - server-ca:/var/lib/kuintessence/server-ca
+      - type: bind
+        source: ${KQ_SITE_RELEASES_DIRECTORY:-/opt/deploy/site-releases}
+        target: /opt/kq-site-releases
+        read_only: true
+        bind:
+          create_host_path: false
     ports:
       - "127.0.0.1:${SERVER_HTTP_PORT:-3000}:3000"
       - "127.0.0.1:${SERVER_GRPC_PORT:-3001}:3001"
@@ -142,7 +160,10 @@ services:
       OFFLINE_DELIVERY_SEED: ${OFFLINE_DELIVERY_SEED:-}
       OFFLINE_DELIVERY_SEED_SUBJECT: ${OFFLINE_DELIVERY_SEED_SUBJECT:-}
       REGISTRY_AUTH_MODE: jwt
-      REGISTRY_JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      REGISTRY_JWT_SECRET: ${REGISTRY_JWT_SECRET:?Set an independent REGISTRY_JWT_SECRET}
+      REGISTRY_JWT_ISSUER: ${REGISTRY_JWT_ISSUER:-kuintessence-server}
+      REGISTRY_JWT_AUDIENCE: ${REGISTRY_JWT_AUDIENCE:-kuintessence-registry}
+      REGISTRY_PUBLIC_ORIGIN: ${REGISTRY_PUBLIC_ORIGIN:?Set the public HTTPS Registry origin without a path}
       BLOB_STORE_DIR: /var/lib/kuintessence/registry/blobs
       SPACK_RECIPE_STORE_DIR: /var/lib/kuintessence/registry/recipes
       SPACK_MATERIAL_STORE_DIR: /var/lib/kuintessence/registry/materials

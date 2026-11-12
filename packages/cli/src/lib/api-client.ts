@@ -1,4 +1,5 @@
 import { unwrapApiResponse } from "@kuintessence/shared";
+import { siteFetch } from "@kuintessence/shared/site-transport";
 import type { CliConfig } from "./config";
 
 export { ApiError } from "@kuintessence/shared";
@@ -20,7 +21,7 @@ export class ApiClient {
   }
 
   async post<T = unknown>(path: string, body: unknown): Promise<T> {
-    const res = await fetch(`${this.baseUrl}/api${path}`, {
+    const res = await siteFetch(`${this.baseUrl}/api${path}`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify(body),
@@ -29,14 +30,14 @@ export class ApiClient {
   }
 
   async get<T = unknown>(path: string): Promise<T> {
-    const res = await fetch(`${this.baseUrl}/api${path}`, {
+    const res = await siteFetch(`${this.baseUrl}/api${path}`, {
       headers: this.headers(),
     });
     return this.parseResponse<T>(res);
   }
 
   async delete<T = unknown>(path: string): Promise<T> {
-    const res = await fetch(`${this.baseUrl}/api${path}`, {
+    const res = await siteFetch(`${this.baseUrl}/api${path}`, {
       method: "DELETE",
       headers: this.headers(),
     });

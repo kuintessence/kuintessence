@@ -9,7 +9,11 @@ export async function admitSpackManagedMemory(
   deps: SpackAuditRuntimeDeps = {},
   managedMemoryMib = 4096,
 ): Promise<void> {
-  if (!Number.isInteger(managedMemoryMib) || managedMemoryMib < 1024 || managedMemoryMib > 4096) {
+  if (
+    !Number.isInteger(managedMemoryMib) ||
+    managedMemoryMib < 1024 ||
+    managedMemoryMib > 1048576
+  ) {
     throw new Error("Invalid managed Spack memory budget");
   }
   const requiredKib = (managedMemoryMib + 512) * 1024;

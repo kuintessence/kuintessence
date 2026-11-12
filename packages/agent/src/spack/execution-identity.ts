@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { lstat, open, readFile, readlink, statfs } from "node:fs/promises";
 import { hostname } from "node:os";
 import { z } from "zod";
+import type { SpackWorkerStopProof } from "./install-contract";
 
 export const RECOVERY_REQUIRED = "SPACK_RECOVERY_REQUIRED: store writer recovery required";
 export const LOCK_HELD = "SPACK_LOCK_HELD: store writer lock held";
@@ -127,6 +128,6 @@ export const softwareExecution = new AsyncLocalStorage<{
   bindStore: (root: string) => Promise<void>;
 }>();
 export const installWorkerExecution = new AsyncLocalStorage<{
-  start: (recordId: string) => Promise<void>;
-  finish: () => Promise<void>;
+  start: (recordId: string, stagingPath?: string) => Promise<void>;
+  finish: (proof?: SpackWorkerStopProof) => Promise<void>;
 }>();

@@ -1,7 +1,8 @@
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { generateCsr, persistCertBundle } from "@kuintessence/agent/auth";
+import { siteFetch } from "@kuintessence/shared/site-transport";
 import type { Command } from "commander";
 import { createAgentServer } from "../agent-serve/server";
 import { ApiClient } from "../lib/api-client";
@@ -104,7 +105,8 @@ export function registerAgentCommand(program: Command): void {
     .description("Register this node as a Server Agent with a one-time registration token")
     .requiredOption("--url <url>", "Server HTTP URL, for example https://server.example.com")
     .requiredOption("--grpc-url <url>", "Server connectRPC URL used by the Agent runtime")
-    .requiredOption("--token <token>", "One-time Agent registration token")
+    .option("--token <token>", "One-time Agent registration token (prefer --token-file)")
+    .option("--token-file <path>", "Read registration token from a private file, or - for stdin")
     .option("--output-dir <path>", "Output directory (default ~/.kuintessence/agent/<agentId>)")
     .option(
       "--scheduler <type>",
@@ -114,15 +116,26 @@ export function registerAgentCommand(program: Command): void {
       async (opts: {
         url: string;
         grpcUrl: string;
-        token: string;
+        token?: string;
+        tokenFile?: string;
         outputDir?: string;
         scheduler?: string;
       }) => {
+        if (!!opts.token === !!opts.tokenFile)
+          throw new Error("Provide exactly one of --token or --token-file");
+        const registrationToken =
+          opts.token ??
+          (opts.tokenFile === "-"
+            ? await Bun.stdin.text()
+            : await readFile(opts.tokenFile as string, "utf8")
+          ).trim();
+        if (!registrationToken || registrationToken.length > 16384)
+          throw new Error("Invalid registration token");
         const scheduler = opts.scheduler ? parseScheduler(opts.scheduler) : undefined;
         const metadata = await registrationPost<AgentRegistrationMetadataResponse>(
           opts.url,
           "/agent-registration/metadata",
-          { token: opts.token },
+          { token: registrationToken },
         );
         const adapter = await detectLocalAdapter(scheduler).catch((err) => {
           throw new Error(
@@ -138,7 +151,7 @@ export function registerAgentCommand(program: Command): void {
           opts.url,
           "/agent-registration/complete",
           {
-            token: opts.token,
+            token: registrationToken,
             csrPem,
             schedulerType: adapter.type,
             schedulerVersion: adapter.version,
@@ -256,7 +269,7 @@ export function registerAgentCommand(program: Command): void {
 
 async function registrationPost<T>(serverUrl: string, path: string, body: unknown): Promise<T> {
   const base = serverUrl.replace(/\/+$/, "");
-  const res = await fetch(`${base}/api${path}`, {
+  const res = await siteFetch(`${base}/api${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

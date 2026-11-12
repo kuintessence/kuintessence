@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, sign, X509Certificate } from "node:crypto";
 import { AppError, type SpackMaterialManifest } from "@kuintessence/shared";
 import { Hono } from "hono";
 import { decodeJwt, SignJWT } from "jose";
+import forge from "node-forge";
 import { createAgentSpackMaterialRoutes } from "../routes/agent-spack-materials";
 import {
   SpackMaterialDelivery,
@@ -19,7 +20,11 @@ const blob = { digest: hash(blobBytes), size: blobBytes.length };
 const ticketKey = "ticket-only-secret".repeat(3);
 const registryKey = "registry-secret".repeat(3);
 
-function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: number) {
+function fixture(
+  repository = "org/provider-a/sources",
+  downloadLifetimeMs?: number,
+  ticketLifetimeSec?: number,
+) {
   const manifest: SpackMaterialManifest = {
     version: 1,
     repository,
@@ -93,6 +98,7 @@ function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: num
     registryJwtSecret: registryKey,
     ticketSecret: ticketKey,
     downloadLifetimeMs,
+    ticketLifetimeSec,
     bindings,
     references,
     access: {
@@ -409,4 +415,117 @@ describe("Server Spack material delivery", () => {
       );
     }
   }, 1000);
+});
+
+test("authorized material resume preserves ETag, handles If-Range and rejects invalid offsets", async () => {
+  const f = fixture();
+  const { spackMaterialTicket } = await f.prepare();
+  const response = await f.delivery.download(operationId, spackMaterialTicket, blob.digest, {
+    range: "bytes=2-",
+    ifRange: `"${blob.digest}"`,
+  });
+  expect(response.status).toBe(206);
+  expect(response.headers.get("Content-Range")).toBe(`bytes 2-${blob.size - 1}/${blob.size}`);
+  expect(Buffer.from(await response.arrayBuffer())).toEqual(blobBytes.subarray(2));
+  const full = await f.delivery.download(operationId, spackMaterialTicket, blob.digest, {
+    range: "bytes=2-",
+    ifRange: '"old"',
+  });
+  expect(full.status).toBe(200);
+  await full.arrayBuffer();
+  const exhausted = await f.delivery.download(operationId, spackMaterialTicket, blob.digest, {
+    range: `bytes=${blob.size}-`,
+  });
+  expect(exhausted.status).toBe(416);
+  await expect(
+    f.delivery.download(operationId, spackMaterialTicket, blob.digest, { range: "bytes=0-1,3-4" }),
+  ).rejects.toThrow();
+});
+
+test("ticket renewal requires live certificate proof and preserves the pinned manifest", async () => {
+  const keys = forge.pki.rsa.generateKeyPair({ bits: 2048 });
+  const cert = forge.pki.createCertificate();
+  cert.publicKey = keys.publicKey;
+  cert.serialNumber = "01";
+  cert.validity.notBefore = new Date(Date.now() - 1000);
+  cert.validity.notAfter = new Date(Date.now() + 86400000);
+  cert.sign(keys.privateKey, forge.md.sha256.create());
+  const certificate = forge.pki.certificateToPem(cert);
+  const privateKey = forge.pki.privateKeyToPem(keys.privateKey);
+  const f = fixture();
+  f.channel.verifiedCertFingerprint = createHash("sha256")
+    .update(new X509Certificate(certificate).raw)
+    .digest("hex");
+  const original = await f.prepare();
+  const request = (manifestDigest = original.spackManifestDigest, timestamp = Date.now()) => ({
+    certificate,
+    manifestDigest,
+    timestamp,
+    signature: sign(
+      "sha256",
+      Buffer.from(`kq-material-refresh-v1\n${operationId}\n${manifestDigest}\n${timestamp}`),
+      privateKey,
+    ).toString("base64"),
+  });
+  expect((await f.delivery.refresh(operationId, request())).spackManifestDigest).toBe(
+    original.spackManifestDigest,
+  );
+  await expect(
+    f.delivery.refresh(operationId, request(undefined, Date.now() - 120000)),
+  ).rejects.toThrow();
+  await expect(
+    f.delivery.refresh(operationId, {
+      ...request(),
+      signature: Buffer.alloc(256).toString("base64"),
+    }),
+  ).rejects.toThrow();
+  await expect(
+    f.delivery.refresh(operationId, request(`sha256:${"0".repeat(64)}`)),
+  ).rejects.toThrow("pinned release");
+  f.setCertificate(false);
+  await expect(f.delivery.refresh(operationId, request())).rejects.toThrow();
+  f.setCertificate(true);
+  f.channel.verifiedCertFingerprint = "f".repeat(64);
+  await expect(f.delivery.refresh(operationId, request())).rejects.toThrow();
+});
+
+test("audit-only mode is signed from the persisted authorized operation and returned on its manifest", async () => {
+  const f = fixture();
+  f.setAccess({
+    agentId: "agent-a",
+    requestedBy: userId,
+    providerOrgId: "provider-a",
+    spec: "zlib@1.3.1",
+    auditOnly: true,
+  });
+  const ticket = await f.prepare();
+  expect(decodeJwt(ticket.spackMaterialTicket).material).toMatchObject({ auditOnly: true });
+  const response = await f.app.request(`/api/agent/spack/operations/${operationId}/manifest`, {
+    headers: { Authorization: `Bearer ${ticket.spackMaterialTicket}` },
+  });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Kq-Spack-Mode")).toBe("source-audit");
+  f.setAccess({
+    agentId: "agent-a",
+    requestedBy: userId,
+    providerOrgId: "provider-a",
+    spec: "zlib@1.3.1",
+  });
+  expect(
+    (
+      await f.app.request(`/api/agent/spack/operations/${operationId}/manifest`, {
+        headers: { Authorization: `Bearer ${ticket.spackMaterialTicket}` },
+      })
+    ).status,
+  ).toBe(403);
+});
+
+test("bounded ticket lifetime controls signed expiry without changing the default", async () => {
+  for (const lifetime of [undefined, 30, 60, 900]) {
+    const f = fixture(undefined, undefined, lifetime);
+    const claims = decodeJwt((await f.prepare()).spackMaterialTicket);
+    expect((claims.exp ?? 0) - (claims.iat ?? 0)).toBe(lifetime ?? 900);
+  }
+  for (const lifetime of [0, 29, 901, 30.5])
+    expect(() => fixture(undefined, undefined, lifetime)).toThrow();
 });

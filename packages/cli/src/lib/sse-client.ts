@@ -1,3 +1,4 @@
+import { siteFetch } from "@kuintessence/shared/site-transport";
 // Server-Sent Events client with Bearer header support.
 //
 // Browser EventSource cannot set custom headers — we need Bearer auth
@@ -32,7 +33,7 @@ export class SseClient {
   constructor(url: string, token?: string, opts: SseClientOptions = {}) {
     this.url = url;
     this.token = token;
-    this.fetchFn = opts.fetch ?? ((input, init) => fetch(input as string, init));
+    this.fetchFn = opts.fetch ?? ((input, init) => siteFetch(input as string, init));
     this.reconnectMs = opts.reconnectMs ?? 0;
   }
 

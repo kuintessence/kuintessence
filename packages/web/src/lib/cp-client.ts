@@ -359,6 +359,8 @@ export type SoftwareOperationAction = "install" | "uninstall" | "load" | "import
 export type SoftwareOperationStatus = "queued" | "running" | "succeeded" | "failed" | "rejected";
 
 export interface SoftwareOperation {
+  auditOnly?: boolean;
+  auditStatus?: "passed";
   id: string;
   agentId: string;
   requestedBy: string | null;

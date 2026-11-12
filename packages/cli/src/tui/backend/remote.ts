@@ -4,6 +4,7 @@ import type {
   WorkflowRunGraph,
   WorkflowRunRecordResult,
 } from "@kuintessence/shared";
+import { siteFetch } from "@kuintessence/shared/site-transport";
 import { type FetchLike, fetchRemoteSoftwareCatalog } from "../../commands/software";
 import type { ApiClient } from "../../lib/api-client";
 import type { CliConfig } from "../../lib/config";
@@ -138,7 +139,7 @@ export class RemoteBackend implements TuiBackend {
     private readonly client: ApiClient,
     private readonly config: CliConfig,
     wsFactory?: JobWsFactory,
-    private readonly softwareFetch: FetchLike = (input, init) => fetch(input, init),
+    private readonly softwareFetch: FetchLike = (input, init) => siteFetch(input, init),
   ) {
     this.info = { mode: "remote", target: config.serverUrl };
     this.serverUrl = config.serverUrl;

@@ -345,3 +345,59 @@ test("invalid host identity components fail closed", () => {
     expect(() => hostIdentity(machine, host)).toThrow(RECOVERY_REQUIRED);
   }
 });
+
+test("a durable terminal receipt survives staging deletion and is required to recover between workers", async () => {
+  const store = new SpackInstallStore(root);
+  const oldOperation = randomUUID();
+  const identity = {
+    host: "a".repeat(64),
+    boot: randomUUID(),
+    pid: 2147480000,
+    start: "1",
+    token: randomUUID(),
+  };
+  let id = "";
+  await softwareExecution.run(
+    { identity, operationId: oldOperation, bindStore: async () => {} },
+    () =>
+      store.withLock(async () => {
+        const record = await store.create(input);
+        id = record.id;
+        const worker = installWorkerExecution.getStore();
+        if (!worker) throw new Error("Missing install worker execution context");
+        await worker.start(id, `${base}/deleted/installs/run-terminal`);
+        await worker.finish({
+          schedulerJobId: "321",
+          schedulerJobName: `kq-build-${randomUUID()}`,
+          schedulerBinding: "d".repeat(64),
+          noRequeue: true,
+          schedulerState: "COMPLETED",
+          action: "install",
+          stoppedAt: new Date().toISOString(),
+          manifestDigest: input.manifestDigest,
+          siteProfileDigest: input.siteProfileDigest,
+          storePath: store.path(id),
+        });
+      }),
+  );
+  await rm(join(generation(0), "released.json"));
+  const receipt = await readFile(join(generation(0), "worker-finished.json"), "utf8");
+  const next = { ...identity, pid: process.pid, token: randomUUID() };
+  await softwareExecution.run(
+    { identity: next, operationId: randomUUID(), bindStore: async () => {} },
+    async () => {
+      const forged = JSON.parse(receipt);
+      forged.proof.noRequeue = false;
+      await writeFile(join(generation(0), "worker-finished.json"), JSON.stringify(forged));
+      await expect(store.withLock(async () => {})).rejects.toThrow(RECOVERY_REQUIRED);
+      await writeFile(join(generation(0), "worker-finished.json"), receipt);
+      await new SpackInstallStore(root).withLock(async () => {});
+    },
+  );
+  expect((await store.list())[0]).toMatchObject({
+    id,
+    state: "failed",
+    operationId: oldOperation,
+    workerStopped: { schedulerJobId: "321", noRequeue: true, schedulerState: "COMPLETED" },
+  });
+});

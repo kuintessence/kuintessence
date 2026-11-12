@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { lstat, mkdir, readdir, rename, rm, symlink } from "node:fs/promises";
+import { SPACK_WORKER_FAILURE_MESSAGES } from "./audit-process";
 import { installWorkerExecution, RECOVERY_REQUIRED } from "./execution-identity";
 import type { SpackInstallRunner } from "./install-runner";
 import { SpackInstallStore } from "./install-store";
@@ -19,6 +21,10 @@ async function fixture() {
 
 describe("managed Spack installation transaction", () => {
   test.each([
+    ...Object.values(SPACK_WORKER_FAILURE_MESSAGES),
+    ...Object.values(SPACK_WORKER_FAILURE_MESSAGES).map(
+      (message) => `${message}: private credential`,
+    ),
     "Invalid managed Spack memory budget",
     "Invalid managed Spack memory budget: private credential",
     "Managed Spack memory admission requires configured budget + 512 MiB available without swap: private credential",
@@ -46,6 +52,102 @@ describe("managed Spack installation transaction", () => {
     });
     expect((await new SpackInstallStore(f.site.profile.storeRoot).list())[0]?.state).toBe("failed");
     expect(await readdir(`${f.site.profile.storeRoot}/releases`)).toEqual([]);
+  });
+
+  test.each([
+    undefined,
+    "verify-partial",
+    "verify",
+  ] as const)("recovers a persisted stopped prefix only after independent dependency verification (failure=%s)", async (failurePhase) => {
+    const f = await fixture();
+    const store = new SpackInstallStore(f.site.profile.storeRoot);
+    await store.initialize();
+    let interrupted = await store.withLock(
+      () =>
+        store.create({
+          manifestDigest: f.input.manifestDigest,
+          manifestSize: f.prepared.manifestSize,
+          siteProfileDigest: f.site.digest,
+          spec: f.input.spec,
+          rootHash: "a".repeat(32),
+        }),
+      f.input.operationId,
+    );
+    interrupted = {
+      ...interrupted,
+      state: "failed",
+      workerStopped: {
+        schedulerJobId: "456",
+        schedulerJobName: `kq-build-${randomUUID()}`,
+        schedulerBinding: "c".repeat(64),
+        noRequeue: true,
+        schedulerState: "TIMEOUT",
+        action: "install",
+        stoppedAt: new Date().toISOString(),
+        manifestDigest: f.input.manifestDigest,
+        siteProfileDigest: f.site.digest,
+        storePath: store.path(interrupted.id),
+      },
+    };
+    await store.withLock(() => store.save(interrupted));
+    const calls: string[] = [];
+    const dependency = "b".repeat(32);
+    const backend = new ManagedSpackInstallation({
+      cacheDir: f.cacheDir,
+      site: f.siteOptions,
+      loadSite: async () => f.site,
+      runner: {
+        async run(action, _prepared, input, _site, path, recovery) {
+          calls.push(action);
+          expect(input.operationId).not.toBe(interrupted.operationId);
+          expect(path).toBe(store.path(interrupted.id));
+          expect(await backend.installedList()).toEqual([]);
+          if (action === failurePhase) throw new Error("independent verification failed");
+          if (action === "verify-partial")
+            return { ...f.report(action, path), installedHashes: [dependency] };
+          if (action === "install")
+            expect(recovery).toEqual({ verifiedDependencyHashes: [dependency] });
+          await mkdir(f.report(action, path).prefix, { recursive: true });
+          return { ...f.report(action, path), installedHashes: ["a".repeat(32), dependency] };
+        },
+      },
+    });
+    const operationId = randomUUID();
+    const result = await backend.install(f.prepared, { ...f.input, operationId });
+    const current = (await store.list())[0];
+    expect(
+      JSON.parse(
+        await fs.readFile(
+          `${f.site.profile.storeRoot}/attempts/${interrupted.id}/${f.input.operationId}.json`,
+          "utf8",
+        ),
+      ),
+    ).toEqual(interrupted);
+    expect(current?.operationId).toBe(operationId);
+    if (failurePhase) {
+      expect(result.outcome).toBe("failed");
+      expect(current?.state).toBe("failed");
+      expect(await backend.installedList()).toEqual([]);
+      expect(calls).toEqual(
+        failurePhase === "verify-partial"
+          ? ["verify-partial"]
+          : ["verify-partial", "install", "verify"],
+      );
+    } else {
+      expect(result.outcome).toBe("succeeded");
+      expect(calls).toEqual(["verify-partial", "install", "verify"]);
+      expect(current).toMatchObject({
+        state: "ready",
+        id: interrupted.id,
+        resumedFrom: {
+          operationId: interrupted.operationId,
+          schedulerJobId: "456",
+          verifiedDependencyHashes: [dependency],
+          reusedDependencyCount: 1,
+        },
+      });
+      expect(await backend.installedList()).toHaveLength(1);
+    }
   });
 
   test.each([

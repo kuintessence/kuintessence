@@ -2392,7 +2392,7 @@ function OperationHistoryRow({
     Boolean(operation.requestedBy) ||
     isFailedOperation(operation) ||
     operation.exitCode !== null;
-  const retryable = isFailedOperation(operation);
+  const retryable = !operation.auditOnly && isFailedOperation(operation);
   return (
     <>
       <tr className="border-t border-border" data-testid={`cp-software-operation-${operation.id}`}>
@@ -2400,7 +2400,9 @@ function OperationHistoryRow({
           <div className="flex flex-wrap items-center gap-1.5">
             <span>
               <OperationActionIcon action={operation.action} />
-              {t(`cp.software.operations.action.${operation.action}`)}
+              {operation.auditOnly
+                ? t("cp.software.operations.sourceAudit")
+                : t(`cp.software.operations.action.${operation.action}`)}
             </span>
             {retryable ? (
               <Button
@@ -2421,6 +2423,11 @@ function OperationHistoryRow({
         <td className="max-w-64 truncate px-2 py-2 font-mono">{operation.spec}</td>
         <td className="px-2 py-2" data-testid={`cp-software-operation-status-${operation.id}`}>
           <OperationStatusBadge operation={operation} />
+          {operation.auditStatus === "passed" ? (
+            <div className="mt-1 max-w-56 text-[11px] text-muted-foreground">
+              {t("cp.software.operations.auditNotInstalled")}
+            </div>
+          ) : null}
           {failureSummary ? (
             <div
               className="mt-1 max-w-56 truncate text-[11px] text-status-failed"
@@ -2517,7 +2524,9 @@ function OperationStatusBadge({ operation }: { operation: SoftwareOperation }) {
   return (
     <Badge variant={operationStatusVariant(operation.status)}>
       {operation.status === "running" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-      {t(`cp.software.operations.status.${operation.status}`)}
+      {operation.auditStatus === "passed"
+        ? t("cp.software.operations.auditPassed")
+        : t(`cp.software.operations.status.${operation.status}`)}
     </Badge>
   );
 }

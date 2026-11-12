@@ -192,3 +192,12 @@ test("a terminal refusal without a runnable identity is still durable", async ()
     { ...request, status: Status.FAILED, error: RECOVERY_REQUIRED },
   ]);
 });
+
+test("bounded site summary never invents healthy latest status from historical UUID order", async () => {
+  expect(await ledger.siteSummary()).toEqual({ state: "idle", active: 0 });
+  const request = input();
+  await ledger.receive(request);
+  expect(await ledger.siteSummary()).toEqual({ state: "unknown", active: 1 });
+  await ledger.finish({ ...request, status: Status.FAILED, error: RECOVERY_REQUIRED });
+  expect(await ledger.siteSummary()).toEqual({ state: "unknown", active: 0 });
+});

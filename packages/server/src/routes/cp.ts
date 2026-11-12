@@ -25,6 +25,7 @@ import type {
 } from "../services/data-market";
 import type { SoftwareAvailabilityService } from "../services/software-availability";
 import type { SoftwareOperationService, SoftwareOperationView } from "../software-governance";
+import type { SourceAuditProofs } from "../software-governance/source-audit-proofs";
 import type { CertIssuanceService } from "./admin-agents";
 import {
   CpDataImportInputSchema,
@@ -36,6 +37,7 @@ export interface CpRoutesDeps {
   consoleService: CpConsoleService;
   availability?: SoftwareAvailabilityService;
   softwareOperations?: SoftwareOperationService;
+  sourceAuditProofs?: SourceAuditProofs;
   agentRegistration?: AgentRegistrationService;
   agentCerts?: Pick<CertIssuanceService, "listCerts" | "revokeCert">;
   authz?: AuthzService;
@@ -519,6 +521,63 @@ export function buildCpRouter(deps: CpRoutesDeps) {
     return c.json(item, 202);
   });
 
+  r.post("/software/operations/source-audit", async (c) => {
+    const service = deps.softwareOperations;
+    if (!service) return c.notFound();
+    const body = z
+      .strictObject({ agentId: z.string().min(1), spec: z.string().trim().min(1).max(500) })
+      .parse(await c.req.json());
+    const scope = c.get("cpScope") as CpScope;
+    await verifyCpAgentScope(service, scope, deps.authz, c, body.agentId, "operate");
+    const item = await service.requestSourceAudit({
+      ...body,
+      scope,
+      requestedBy: requireCanonicalCpActor(c),
+      idempotencyKey: requireCpIdempotencyKey(c),
+      agentScopeVerified: true,
+    });
+    return c.json(item, 202);
+  });
+
+  r.get("/software/operations/:operationId/source-audit-proof", async (c) => {
+    const service = deps.softwareOperations;
+    if (!service || !deps.sourceAuditProofs) return c.notFound();
+    const operationId = z.string().uuid().parse(c.req.param("operationId"));
+    const operation = await service.getOperation(operationId);
+    if (!operation) return c.notFound();
+    await verifyCpAgentScope(
+      service,
+      c.get("cpScope") as CpScope,
+      deps.authz,
+      c,
+      operation.agentId,
+      "operate",
+    );
+    const proof = await deps.sourceAuditProofs.get(operationId);
+    return proof ? c.json(proof) : c.notFound();
+  });
+
+  r.post("/software/operations/:operationId/source-audit-proof/revoke", async (c) => {
+    const service = deps.softwareOperations;
+    if (!service || !deps.sourceAuditProofs) return c.notFound();
+    const operationId = z.string().uuid().parse(c.req.param("operationId"));
+    const operation = await service.getOperation(operationId);
+    if (!operation) return c.notFound();
+    await verifyCpAgentScope(
+      service,
+      c.get("cpScope") as CpScope,
+      deps.authz,
+      c,
+      operation.agentId,
+      "manage",
+    );
+    const { reason } = z
+      .strictObject({ reason: z.string().trim().min(1).max(500) })
+      .parse(await c.req.json());
+    await deps.sourceAuditProofs.revoke(operationId, requireCanonicalCpActor(c), reason);
+    return c.json({ revoked: true });
+  });
+
   r.post("/software/operations/:operationId/close-interrupted", async (c) => {
     const scope = c.get("cpScope") as CpScope;
     if (!scope.isPlatformWide) {
@@ -775,9 +834,17 @@ function cpResourceMutationAuthorization(
   const path = requestPath.replace(/^\/api\/cp(?=\/|$)/, "");
   if (
     method === "POST" &&
-    (path === "/software/operations" || path === "/software/operations/batch")
+    (path === "/software/operations" ||
+      path === "/software/operations/batch" ||
+      path === "/software/operations/source-audit")
   ) {
     return "operate";
+  }
+  if (
+    method === "POST" &&
+    /^\/software\/operations\/[^/]+\/source-audit-proof\/revoke$/.test(path)
+  ) {
+    return "manage";
   }
   if (method === "POST" && /^\/software\/preinstalled-mappings\/[^/]+\/review$/.test(path)) {
     return "manage";
@@ -1057,9 +1124,11 @@ function isDeferredCpAgentAuthorizationRoute(request: {
 }): boolean {
   const path = request.path.replace(/^\/api\/cp(?=\/|$)/, "");
   if (request.method === "GET" && path === "/agents") return true;
+  if (/^\/software\/operations\/[^/]+\/source-audit-proof(?:\/revoke)?$/.test(path)) return true;
   if (/^\/agents\/[^/]+\/certs(?:\/[^/]+(?:\/revoke)?)?$/.test(path)) return true;
   if (request.method === "POST" && path === "/software/operations") return true;
   if (request.method === "POST" && path === "/software/operations/batch") return true;
+  if (request.method === "POST" && path === "/software/operations/source-audit") return true;
   if (request.method === "GET" && path === "/software/operations") {
     return Boolean(new URL(request.url).searchParams.get("agentId")?.trim());
   }

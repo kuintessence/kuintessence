@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createServer, type Http2Server, type ServerHttp2Session } from "node:http2";
+import { connect, createServer, type Http2Server, type ServerHttp2Session } from "node:http2";
 import { create } from "@bufbuild/protobuf";
 import { createClient } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-node";
@@ -121,3 +121,88 @@ async function listenOnAvailablePort(server: Http2Server): Promise<void> {
   }
   throw new Error("test server could not find an available TCP port");
 }
+
+test("diagnostic stream echoes two rounds before request end without Agent registration", async () => {
+  let registrations = 0;
+  const handler = createGrpcConnectNodeHandler(
+    {
+      agentManager: {
+        register: async () => {
+          registrations++;
+          throw new Error("must not register");
+        },
+      } as unknown as AgentManager,
+      jobService: {} as JobService,
+      logger: pino({ level: "silent" }),
+      dispatcher: new AgentDispatcher(),
+    },
+    { enabled: true, lookup: async () => ({ agentId: "diagnostic-agent", revokedAt: null }) },
+  );
+  const server = createServer(handler);
+  server.on("session", (session) => sessions.push(session));
+  servers.push(server);
+  await listenOnAvailablePort(server);
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("test bind");
+  const client = connect(`http://127.0.0.1:${address.port}`);
+  try {
+    const stream = client.request({
+      ":method": "POST",
+      ":path": "/site-diagnostics/stream",
+      "x-agent-cert-fingerprint": "a".repeat(64),
+    });
+    stream.setEncoding("utf8");
+    const exchange = (seq: number) =>
+      new Promise<unknown>((resolve, reject) => {
+        let pending = "";
+        const timer = setTimeout(() => reject(new Error("diagnostic echo buffered")), 1000);
+        const onData = (chunk: string) => {
+          pending += chunk;
+          if (pending.includes("\n")) {
+            clearTimeout(timer);
+            stream.off("data", onData);
+            resolve(JSON.parse(pending.trim()));
+          }
+        };
+        stream.on("data", onData);
+        stream.write(`${JSON.stringify({ seq, challenge: "b".repeat(48) })}\n`);
+      });
+    expect(await exchange(0)).toEqual({
+      seq: 0,
+      challenge: "b".repeat(48),
+      agentId: "diagnostic-agent",
+    });
+    const extra = client.request({
+      ":method": "POST",
+      ":path": "/site-diagnostics/stream",
+      "x-agent-cert-fingerprint": "a".repeat(64),
+    });
+    const extraStatus = await new Promise<number>((resolve) =>
+      extra.once("response", (headers) => resolve(Number(headers[":status"]))),
+    );
+    expect(extraStatus).toBe(200);
+    const rejected = client.request({
+      ":method": "POST",
+      ":path": "/site-diagnostics/stream",
+      "x-agent-cert-fingerprint": "a".repeat(64),
+    });
+    const rejectedStatus = await new Promise<number>((resolve) =>
+      rejected.once("response", (headers) => resolve(Number(headers[":status"]))),
+    );
+    expect(rejectedStatus).toBe(429);
+    extra.end();
+    extra.close();
+    rejected.end();
+    rejected.close();
+    expect(await exchange(1)).toEqual({
+      seq: 1,
+      challenge: "b".repeat(48),
+      agentId: "diagnostic-agent",
+    });
+    expect(registrations).toBe(0);
+    stream.end();
+    stream.close();
+  } finally {
+    client.destroy();
+  }
+});

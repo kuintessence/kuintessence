@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "noEmit": true,
+    "types": ["bun-types"],
+    "lib": ["ESNext"]
+  },
+  "include": ["*.ts"]
+}

@@ -88,6 +88,18 @@ class FakeStage:
             raise RuntimeError("SECRET CHECKSUM")
 
 
+class FilePatch:
+    pass
+
+
+class UrlPatch:
+    def __init__(self, stage):
+        self.stage = stage
+
+    def fetch(self):
+        raise AssertionError("UrlPatch.fetch upstream fallback must never be invoked")
+
+
 class FakeSpec:
     def __init__(self, native, key, node):
         self.native, self.key, self.node = native, key, node
@@ -125,7 +137,7 @@ class FakeSpec:
         self.native.calls.append(("patches", self.key))
         if self.native.patch_error:
             raise RuntimeError("SECRET local FilePatch checksum mismatch")
-        return []
+        return self.native.patches
 
 
 class Native:
@@ -137,12 +149,14 @@ class Native:
         self.satisfies = True
         self.patch_error = self.check_error = False
         self.hash_descriptor = object()
-        self.stages = [FakeStage(self, name) for name in ("source.tar", "resource.tar", "patch.diff")]
+        self.stages = [FakeStage(self, name) for name in ("source.tar", "resource.tar")]
+        self.url_patch_stage = FakeStage(self, "patch.diff")
+        self.patches = [FilePatch(), UrlPatch(self.url_patch_stage)]
         self.nodes = {key: FakeSpec(self, key, node) for key, node in lock["concrete_specs"].items()}
         self.roots = [self.nodes[lock["roots"][0]["hash"]]]
         self.modules = {"spack": types.ModuleType("spack")}
         self.modules["spack"].__version__ = "1.0.0"
-        for name in ("config", "repo", "environment", "spec", "fetch_strategy", "hash_types"):
+        for name in ("config", "repo", "environment", "spec", "fetch_strategy", "hash_types", "patch"):
             module = types.ModuleType("spack." + name)
             self.modules["spack." + name] = module
             setattr(self.modules["spack"], name, module)
@@ -158,6 +172,8 @@ class Native:
         self.modules["spack.fetch_strategy"].BundleFetchStrategy = BundleFetcher
         self.modules["spack.fetch_strategy"].FetchAndVerifyExpandedFile = ExpandedFileFetcher
         self.modules["spack.hash_types"].dag_hash = self.hash_descriptor
+        self.modules["spack.patch"].FilePatch = FilePatch
+        self.modules["spack.patch"].UrlPatch = UrlPatch
 
     def get_config(self, path):
         section, key = path.split(":")
@@ -383,6 +399,43 @@ class AuditTests(unittest.TestCase):
         self.assertNotIn("SECRET", json.dumps(report))
         self.assertNotIn("https:", json.dumps(report))
 
+    def test_url_patch_stage_is_independent_and_missing_material_fails_without_origin_fetch(self):
+        self.manifest["sources"] = [item for item in self.manifest["sources"]
+                                    if item["path"] != "patch.diff"]
+        native = Native(self.work, self.lock)
+        self.assertNotIn(native.url_patch_stage, native.stages)
+        report, _ = self.run_audit(native)
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["verifiedNodeCount"], 0)
+        self.assertIn("source-verification-failed", self.codes(report))
+        self.assertIn(("fetch", "patch.diff", True), native.calls)
+        self.assertNotIn(("check", "patch.diff"), native.calls)
+        self.assertNotIn("SECRET", json.dumps(report))
+        self.assertNotIn("https:", json.dumps(report))
+
+    def test_unknown_patch_types_and_unsupported_url_patch_stages_fail_closed(self):
+        for value in (object(), UrlPatch(None), UrlPatch(object()),
+                      UrlPatch(types.SimpleNamespace(default_fetcher=URLFetcher()))):
+            with self.subTest(value=type(value).__name__), tempfile.TemporaryDirectory(dir=self.base) as work:
+                self.work = Path(work)
+                native = Native(self.work, self.lock)
+                native.patches = [value]
+                report, _ = self.run_audit(native)
+                self.assertFalse(report["passed"])
+                self.assertEqual(report["verifiedNodeCount"], 0)
+                self.assertTrue({"unsupported-patch", "unsupported-stage"} & set(self.codes(report)))
+
+    def test_url_patch_bundle_and_missing_digest_cannot_skip_verification(self):
+        for fetcher in (BundleFetcher(), URLFetcher(None)):
+            with self.subTest(fetcher=type(fetcher).__name__), tempfile.TemporaryDirectory(dir=self.base) as work:
+                self.work = Path(work)
+                native = Native(self.work, self.lock)
+                native.url_patch_stage.default_fetcher = fetcher
+                report, _ = self.run_audit(native)
+                self.assertFalse(report["passed"])
+                self.assertIn("unsupported-fetcher", self.codes(report))
+                self.assertNotIn(("fetch", "patch.diff", True), native.calls)
+
     def test_bundle_is_verified_without_fetching_but_resources_still_checked(self):
         native = Native(self.work, self.lock)
         native.stages[0].default_fetcher = BundleFetcher()
@@ -396,7 +449,7 @@ class AuditTests(unittest.TestCase):
             with self.subTest(stage=index), tempfile.TemporaryDirectory(dir=self.base) as work:
                 self.work = Path(work)
                 native = Native(self.work, self.lock)
-                stage = native.stages[index]
+                stage = [*native.stages, native.url_patch_stage][index]
                 stage.default_fetcher = ExpandedFileFetcher()
                 stage.fetcher = URLFetcher()  # Mirror fetchers only check the archive digest.
                 report, _ = self.run_audit(native)
@@ -812,6 +865,7 @@ class AuditTests(unittest.TestCase):
             self.lock["concrete_specs"][ROOT_HASH]["dependencies"].append({"name": "hello", "hash": key})
         native = Native(self.work, self.lock)
         native.stages[:] = [FakeStage(native, "no-source", BundleFetcher())]
+        native.patches = [FilePatch()]
         report, _ = self.run_audit(native)
         self.assertEqual(len(report["issues"]), 100)
         self.assertFalse(report["passed"])

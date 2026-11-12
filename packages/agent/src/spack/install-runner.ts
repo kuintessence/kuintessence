@@ -1,8 +1,10 @@
 /// <reference path="./python.d.ts" />
+
 import { link, lstat, mkdir, mkdtemp, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   realSpackAuditProcess,
+  SPACK_WORKER_FAILURE_MESSAGES,
   type SpackAuditProcess,
   SpackProcessNotStartedError,
 } from "./audit-process";
@@ -20,11 +22,13 @@ import {
   type SpackInstallReport,
   SpackInstallReportSchema,
   type SpackInstallSiteProfile,
+  SpackWorkerStopProofSchema,
 } from "./install-contract";
 import { admitSpackManagedMemory } from "./install-memory";
 import { SpackMaterialCache } from "./material-cache";
 import type { PreparedSpackMaterials, SpackMaterialPrepareInput } from "./material-client";
 import { preflightSpackMaterials } from "./material-preflight";
+import { SpackWorkerUncertainError } from "./slurm-process";
 import installWorker from "./worker/install_worker.py" with { type: "text" };
 import auditWorker from "./worker/source_audit.py" with { type: "text" };
 
@@ -41,6 +45,7 @@ export interface SpackInstallRunner {
     input: SpackMaterialPrepareInput,
     site: VerifiedSpackInstallSite,
     storePath: string,
+    recovery?: { verifiedDependencyHashes: string[] },
   ): Promise<SpackInstallReport>;
 }
 
@@ -60,7 +65,7 @@ export function buildSpackInstallCommand(
       storePath.slice(prefix.length),
     ) ||
     !isSpackAuditPath(storePath) ||
-    !["install", "verify", "load"].includes(action)
+    !["install", "verify", "load", "verify-partial"].includes(action)
   ) {
     throw new Error("Invalid managed Spack store binding");
   }
@@ -103,6 +108,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
   constructor(
     private readonly options: {
       runtime: SpackAuditRuntimeProfile;
+      scheduled?: boolean;
       installTimeoutMs?: number;
       managedMemoryMib?: number;
       process?: SpackAuditProcess;
@@ -117,9 +123,17 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
     input: SpackMaterialPrepareInput,
     site: VerifiedSpackInstallSite,
     storePath: string,
+    recovery?: { verifiedDependencyHashes: string[] },
   ): Promise<SpackInstallReport> {
+    if (action === "verify-partial" && !this.options.scheduled)
+      throw new Error("Interrupted Spack dependency verification requires Slurm");
+    if (recovery && action !== "install") throw new Error("Invalid Spack recovery action");
     const managedMemoryMib = this.options.managedMemoryMib ?? 4096;
-    if (!Number.isInteger(managedMemoryMib) || managedMemoryMib < 1024 || managedMemoryMib > 4096) {
+    if (
+      !Number.isInteger(managedMemoryMib) ||
+      managedMemoryMib < 1024 ||
+      managedMemoryMib > 1048576
+    ) {
       throw new Error("Invalid managed Spack memory budget");
     }
     const installTimeoutMs = this.options.installTimeoutMs ?? 6 * 60 * 60_000;
@@ -135,7 +149,10 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
     const deadline = AbortSignal.timeout(timeoutMs);
     const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
     signal.throwIfAborted();
+    let retainStaging = false;
     let directory: string | undefined;
+    let dispatched = false;
+    let result: Awaited<ReturnType<SpackAuditProcess["run"]>> | undefined;
     try {
       const preflight = await preflightSpackMaterials(prepared, { ...input, signal });
       if (!preflight.valid || site.profile.target !== prepared.manifest.target) {
@@ -196,6 +213,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
           siteProfileDigest: site.digest,
           storePath,
           siteProfile: site.profile,
+          ...(recovery ? { verifiedDependencyHashes: recovery.verifiedDependencyHashes } : {}),
         }),
         "source_audit.py": auditWorker,
         "install_worker.py": installWorker,
@@ -220,7 +238,8 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
         throw new Error("Unsafe managed Spack store directory");
       }
       await verifySpackAuditRuntime(this.options.runtime, signal, this.options.runtimeDeps);
-      await admitSpackManagedMemory(signal, this.options.runtimeDeps, managedMemoryMib);
+      if (!this.options.scheduled)
+        await admitSpackManagedMemory(signal, this.options.runtimeDeps, managedMemoryMib);
       signal.throwIfAborted();
       const remainingMs = Math.floor(expiresAt - performance.now());
       if (remainingMs <= 0) throw new Error("Managed Spack operation timed out");
@@ -235,8 +254,9 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
         managedMemoryMib,
       );
       const execution = installWorkerExecution.getStore();
-      await execution?.start(basename(storePath));
-      const result = await (this.options.process ?? realSpackAuditProcess)
+      await execution?.start(basename(storePath), this.options.scheduled ? directory : undefined);
+      dispatched = true;
+      result = await (this.options.process ?? realSpackAuditProcess)
         .run(command, {
           cwd: directory,
           env: {
@@ -255,8 +275,30 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
           if (error instanceof SpackProcessNotStartedError) await execution?.finish();
           throw error;
         });
-      await execution?.finish();
+      const terminal = result.slurmTerminal;
+      const proof =
+        terminal && action !== "load"
+          ? SpackWorkerStopProofSchema.parse({
+              schedulerJobId: terminal.jobId,
+              schedulerJobName: terminal.name,
+              schedulerBinding: terminal.binding,
+              schedulerState: terminal.state,
+              noRequeue: terminal.noRequeue,
+              action,
+              manifestDigest: input.manifestDigest,
+              siteProfileDigest: site.digest,
+              storePath,
+              stoppedAt: new Date().toISOString(),
+            })
+          : undefined;
+      await execution?.finish(proof);
       signal.throwIfAborted();
+      if (
+        result.exitCode !== 0 &&
+        (result.terminationReason === "out-of-memory" || result.terminationReason === "killed")
+      ) {
+        throw new Error(SPACK_WORKER_FAILURE_MESSAGES[result.terminationReason]);
+      }
       if (result.exitCode !== 0 || !result.stdout.trim().startsWith(SPACK_INSTALL_RESULT_PREFIX)) {
         throw new Error("Managed Spack worker did not complete successfully");
       }
@@ -278,13 +320,53 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
         report.root.name !== root.name ||
         report.root.version !== root.version ||
         report.root.arch !== prepared.manifest.target ||
-        JSON.stringify([...report.installedHashes].sort()) !== JSON.stringify(expectedHashes)
+        (action === "verify-partial"
+          ? report.installedHashes.some((hash) => !expectedHashes.includes(hash))
+          : JSON.stringify([...report.installedHashes].sort()) !== JSON.stringify(expectedHashes))
       ) {
         throw new Error("Managed Spack worker report binding mismatch");
       }
+      const evidenceHashes =
+        action === "verify-partial" ? report.installedHashes : recovery?.verifiedDependencyHashes;
+      if (
+        evidenceHashes &&
+        (!report.dependencyEvidence ||
+          JSON.stringify(report.dependencyEvidence.map((entry) => entry.hash).sort()) !==
+            JSON.stringify([...evidenceHashes].sort()))
+      ) {
+        throw new Error("Managed Spack dependency evidence binding mismatch");
+      }
       return report;
+    } catch (error) {
+      retainStaging = dispatched || error instanceof SpackWorkerUncertainError;
+      // An uncertain worker may still own this directory; leave its files untouched.
+      if (directory && dispatched && !(error instanceof SpackWorkerUncertainError)) {
+        await writeFile(
+          join(directory, "diagnostic.json"),
+          JSON.stringify({
+            version: 1,
+            phase: result ? "report" : "execution",
+            exitCode: result?.exitCode ?? null,
+            ...(result?.terminationReason ? { terminationReason: result.terminationReason } : {}),
+            ...(result?.scheduler
+              ? {
+                  scheduler: {
+                    state: result.scheduler.state.slice(0, 64),
+                    exitCode: result.scheduler.exitCode.slice(0, 64),
+                  },
+                }
+              : {}),
+            stdoutBytes: result ? Buffer.byteLength(result.stdout) : null,
+            stderrBytes: result ? Buffer.byteLength(result.stderr) : null,
+            stdout: result?.stdout.slice(0, 8192) ?? "",
+            stderr: result?.stderr.slice(0, 8192) ?? "",
+          }),
+          { flag: "wx", mode: 0o600 },
+        );
+      }
+      throw error;
     } finally {
-      if (directory) await rm(directory, { recursive: true, force: true });
+      if (directory && !retainStaging) await rm(directory, { recursive: true, force: true });
     }
   }
 }

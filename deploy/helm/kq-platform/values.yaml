@@ -66,6 +66,8 @@ registry:
     pullPolicy: IfNotPresent
   port: 3100
   auth:
+    # HTTPS platform origin serving both /v2/ and /api/registry/token.
+    publicOrigin: ""
     mode: jwt
     issuer: ""
     audience: ""

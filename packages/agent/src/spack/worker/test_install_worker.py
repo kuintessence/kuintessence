@@ -2,12 +2,14 @@
 
 import contextlib
 import copy
+import errno
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import stat
 import sys
 import types
 import unittest
@@ -87,10 +89,11 @@ class Native(fixtures.Native):
         self.solver_constraints = None
         self.shell = "export PATH='/approved/bin';\n"
         self.install_options = None
+        self.built_hashes = []
         for name in (
             "store", "concretize", "installer", "stage", "user_environment",
             "platforms", "compilers", "compilers.config", "solver", "solver.core",
-            "vendor", "vendor.archspec", "vendor.archspec.cpu",
+            "vendor", "vendor.archspec", "vendor.archspec.cpu", "verify",
         ):
             full = "spack." + name
             module = types.ModuleType(full)
@@ -100,6 +103,7 @@ class Native(fixtures.Native):
         self.modules["spack.store"].use_store = self.use_store
         self.modules["spack.concretize"].concretize_one = self.concretize
         self.modules["spack.installer"].PackageInstaller = self.installer
+        self.modules["spack.verify"].check_spec_manifest = self.check_manifest
         self.modules["spack.stage"].Stage = type("Stage", (), {"fetch": self.fetch})
         self.modules["spack.compilers.config"].all_compilers = lambda **kw: []
         self.modules["spack.solver.core"]._bootstrap_clingo = lambda: self.fail("bootstrap")
@@ -198,8 +202,23 @@ class Native(fixtures.Native):
             self.modules["spack.stage"].Stage().fetch(mirror_only=False)
             if self.install_error:
                 raise self.install_error
+            for key, record in self.records.items():
+                if record.installed is not True:
+                    self.built_hashes.append(key)
+                    record.installed = True
 
         return types.SimpleNamespace(install=install)
+
+    def check_manifest(self, spec):
+        self.calls.append(("verify-files", spec.key))
+        manifest = json.loads((Path(spec.prefix) / ".spack/install_manifest.json").read_text())
+        errors = []
+        for path, entry in manifest.items():
+            if entry.get("hash") is not None:
+                file = Path(path)
+                if not file.is_file() or hashlib.sha256(file.read_bytes()).hexdigest() != entry["hash"]:
+                    errors.append(path)
+        return types.SimpleNamespace(has_errors=lambda: bool(errors))
 
     def load(self, root):
         self.calls.append(("load", root.key))
@@ -329,13 +348,19 @@ class InstallTests(unittest.TestCase):
             boundary.assert_called_once_with(self.input, memory_limit=4294967296)
             return result
 
+    def next_worker_scratch(self):
+        # A separate worker gets a fresh scratch mount while retaining the native store.
+        self.work = self.base / (self.work.name + "-next")
+        self.work.mkdir(mode=0o700)
+        self.native.work = self.work
+
     def assert_no_recipes(self):
         self.assertFalse(any(c[0] in ("repositories", "solve", "installer")
                              for c in self.native.calls))
 
     def test_managed_memory_budget_is_private_strict_and_required(self):
         path = self.input / "managed-memory.json"
-        for value in (None, True, False, "1024", 1024.0, 1024.5, 1023, 4097, 0, -1, [], {}):
+        for value in (None, True, False, "1024", 1024.0, 1024.5, 1023, 1048577, 0, -1, [], {}):
             with self.subTest(value=value):
                 path.write_text(json.dumps({"memoryMib": value}))
                 with self.runtime() as boundary, self.assertRaises(audit.AuditError):
@@ -355,7 +380,7 @@ class InstallTests(unittest.TestCase):
         self.assert_no_recipes()
 
     def test_managed_memory_budget_reaches_boundary_for_all_actions(self):
-        for memory_mib in (1024, 1537, 4096):
+        for memory_mib in (1024, 1537, 4096, 32768, 1048576):
             for action in ("install", "verify", "load"):
                 with self.subTest(memory_mib=memory_mib, action=action):
                     self.setUp()
@@ -1138,6 +1163,86 @@ class InstallTests(unittest.TestCase):
             self.run_worker("load")
         self.assertFalse(any(c[0] == "load" for c in self.native.calls))
 
+    def partial_fixture(self):
+        node = self.add_external()
+        del node["external"]
+        self.profile["externals"] = []
+        self.native = Native(self.work, self.lock, self.store)
+        self.make_output()
+        self.native.records[fixtures.ROOT_HASH].installed = False
+        for record in self.native.records.values():
+            prefix = Path(record.path)
+            tool = prefix / "tool"
+            tool.write_bytes(b"completed immutable dependency")
+            manifest = {str(prefix): {}, str(tool): {"hash": hashlib.sha256(tool.read_bytes()).hexdigest()}}
+            (prefix / ".spack/install_manifest.json").write_text(json.dumps(manifest))
+
+    def test_partial_verify_returns_only_completed_dependency_without_building_or_publishing(self):
+        self.partial_fixture()
+        result = self.run_worker("verify-partial")
+        self.assertEqual(result["installedHashes"], [fixtures.DEP_HASH])
+        self.assertEqual(result["action"], "verify-partial")
+        self.assertEqual([item["hash"] for item in result["dependencyEvidence"]], [fixtures.DEP_HASH])
+        self.assertNotIn(str(self.store), json.dumps(result["dependencyEvidence"]))
+        self.assertFalse(self.native.records[fixtures.ROOT_HASH].installed)
+        self.assertNotIn(("installer",), self.native.calls)
+        self.assertIn(("verify-files", fixtures.DEP_HASH), self.native.calls)
+
+    def test_resume_install_rechecks_verified_set_and_builds_only_the_unfinished_root(self):
+        self.partial_fixture()
+        before = self.run_worker("verify-partial")["dependencyEvidence"]
+        self.next_worker_scratch()
+        self.request["verifiedDependencyHashes"] = [fixtures.DEP_HASH]
+        result = self.run_worker("install")
+        self.assertEqual(result["dependencyEvidence"], before)
+        self.assertEqual(self.native.built_hashes, [fixtures.ROOT_HASH])
+        self.assertEqual(result["installedHashes"], sorted([fixtures.ROOT_HASH, fixtures.DEP_HASH]))
+        self.assertIs(self.native.config["concretizer"]["reuse"], False)
+        self.assertIs(self.native.install_options["keep_prefix"], False)
+        self.assertIs(self.native.install_options["restage"], True)
+
+    def test_dependency_evidence_detects_mtime_change_without_content_change(self):
+        self.partial_fixture()
+        before = self.run_worker("verify-partial")["dependencyEvidence"]
+        tool = Path(self.native.records[fixtures.DEP_HASH].path) / "tool"
+        info = tool.stat()
+        os.utime(tool, ns=(info.st_atime_ns, info.st_mtime_ns + 1000000))
+        self.next_worker_scratch()
+        after = self.run_worker("verify-partial")["dependencyEvidence"]
+        self.assertEqual(before[0]["manifestSha256"], after[0]["manifestSha256"])
+        self.assertNotEqual(before[0]["filesSha256"], after[0]["filesSha256"])
+
+    def test_partial_verify_rejects_missing_completed_dependency_manifest(self):
+        self.partial_fixture()
+        prefix = Path(self.native.records[fixtures.DEP_HASH].path)
+        (prefix / ".spack/install_manifest.json").unlink()
+        with self.assertRaises((audit.AuditError, OSError)):
+            self.run_worker("verify-partial")
+        self.assertNotIn(("installer",), self.native.calls)
+
+    def test_partial_verify_rejects_corrupted_completed_dependency_contents(self):
+        self.partial_fixture()
+        prefix = Path(self.native.records[fixtures.DEP_HASH].path)
+        (prefix / "tool").write_bytes(b"damaged dependency")
+        with self.assertRaisesRegex(audit.AuditError, "recovery-content"):
+            self.run_worker("verify-partial")
+        self.assertNotIn(("installer",), self.native.calls)
+
+    def test_completed_root_with_incomplete_dependency_is_not_reusable(self):
+        self.partial_fixture()
+        self.native.records[fixtures.ROOT_HASH].installed = True
+        self.native.records[fixtures.DEP_HASH].installed = False
+        with self.assertRaises(audit.AuditError):
+            self.run_worker("verify-partial")
+        self.assertNotIn(("installer",), self.native.calls)
+
+    def test_changed_verified_dependency_set_never_reaches_installer(self):
+        self.partial_fixture()
+        self.request["verifiedDependencyHashes"] = []
+        with self.assertRaisesRegex(audit.AuditError, "recovery-binding"):
+            self.run_worker("install")
+        self.assertNotIn(("installer",), self.native.calls)
+
     def test_all_nonexternal_dependencies_must_be_installed(self):
         node = self.add_external()
         del node["external"]
@@ -1193,6 +1298,25 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
         self.assertNotIn("SECRET", errors.getvalue())
 
+    def test_main_reports_only_explicit_fixed_audit_error_codes(self):
+        for error, expected in (
+            (audit.AuditError("writable-host-mount"), "install-worker-failed:writable-host-mount"),
+            (audit.AuditError("scratch-boundary"), "install-worker-failed:scratch-boundary"),
+            (audit.AuditError("SECRET token=private"), "install-worker-failed"),
+            (audit.AuditError("writable-host-mount\nSECRET"), "install-worker-failed"),
+            (RuntimeError("SECRET token=private"), "install-worker-failed"),
+            (SystemExit("SECRET token=private"), "install-worker-failed"),
+        ):
+            with self.subTest(error=type(error).__name__, expected=expected):
+                output, errors = io.StringIO(), io.StringIO()
+                with patch.object(worker, "run", side_effect=error), patch.object(
+                    worker, "native_output", return_value=contextlib.nullcontext()
+                ), patch.object(sys, "argv", ["worker"]):
+                    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                        self.assertEqual(worker.main(self.input, self.work), 1)
+                self.assertEqual(output.getvalue(), "")
+                self.assertEqual(errors.getvalue(), expected + "\n")
+
     def test_mount_parser_reads_vfs_not_superblock_and_decodes_paths(self):
         mountinfo = (
             b"1 0 0:1 / / ro - squashfs image ro\n"
@@ -1220,6 +1344,58 @@ class InstallTests(unittest.TestCase):
         ):
             with self.subTest(mounts=invalid), self.assertRaises(audit.AuditError):
                 worker.verify_scratch(self.input, self.work, self.store, invalid)
+
+    def test_minimal_devtmpfs_character_devices_and_terminal_boundary(self):
+        original_lstat, original_open = Path.lstat, os.open
+        devices = {
+            name: types.SimpleNamespace(st_mode=stat.S_IFCHR | 0o666,
+                                        st_rdev=os.makedev(*number))
+            for name, number in worker.MINIMAL_DEVICES.items()
+        }
+
+        def device_lstat(path, *args, **kwargs):
+            if str(path) in devices:
+                return devices[str(path)]
+            return original_lstat(path, *args, **kwargs)
+
+        def no_terminal(path, flags, *args, **kwargs):
+            if str(path) == "/dev/tty":
+                self.assertEqual(flags, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+                raise OSError(errno.ENXIO, "fixture no terminal")
+            return original_open(path, flags, *args, **kwargs)
+
+        mounts = self.mounts() + [(Path(name), {"rw"}, "devtmpfs") for name in devices]
+        with patch.object(Path, "lstat", device_lstat), patch.object(os, "open", no_terminal):
+            worker.verify_scratch(self.input, self.work, self.store, mounts)
+            for name in devices:
+                good = devices[name]
+                for mode, number in ((stat.S_IFREG, good.st_rdev),
+                                     (stat.S_IFLNK, good.st_rdev),
+                                     (stat.S_IFCHR, os.makedev(1, 1))):
+                    with self.subTest(name=name, mode=mode, number=number):
+                        devices[name] = types.SimpleNamespace(st_mode=mode, st_rdev=number)
+                        with self.assertRaisesRegex(audit.AuditError, "^writable-host-mount$"):
+                            worker.verify_scratch(self.input, self.work, self.store, mounts)
+                devices[name] = good
+            for extra in (
+                (Path("/dev/sda"), {"rw"}, "devtmpfs"),
+                (Path("/dev/null/child"), {"ro"}, "tmpfs"),
+                (Path("/dev/tty"), {"rw"}, "devtmpfs"),
+                (Path("/host/file"), {"rw"}, "ext4"),
+            ):
+                with self.subTest(extra=extra), self.assertRaises(audit.AuditError):
+                    worker.verify_scratch(self.input, self.work, self.store, mounts + [extra])
+            with patch.object(Path, "lstat", side_effect=OSError(errno.EACCES, "private detail")):
+                with self.assertRaisesRegex(audit.AuditError, "^writable-host-mount$"):
+                    worker.verify_minimal_device(Path("/dev/null"), mounts)
+            for failure in (errno.EACCES, errno.ENOENT, errno.EIO):
+                with patch.object(os, "open", side_effect=OSError(failure, "private detail")):
+                    with self.assertRaisesRegex(audit.AuditError, "^writable-host-mount$"):
+                        worker.verify_minimal_device(Path("/dev/tty"), mounts)
+            with patch.object(os, "open", return_value=99), patch.object(os, "close") as close:
+                with self.assertRaisesRegex(audit.AuditError, "^writable-host-mount$"):
+                    worker.verify_minimal_device(Path("/dev/tty"), mounts)
+                close.assert_called_once_with(99)
 
     def test_apptainer_session_scratch_0755_is_tightened_before_audit_for_all_actions(self):
         for rootfs in ("squashfs", "overlay"):

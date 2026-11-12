@@ -970,6 +970,37 @@ describe("SoftwarePolicyTable", () => {
     expect(toast.error).toHaveBeenCalledWith("cp.software.operations.batchRawLimitExceeded");
   });
 
+  test("shows successful source audits as audited and uninstalled", async () => {
+    cpClient.getSoftwareOverview.mockResolvedValue(overview);
+    cpClient.listSoftwareOperations.mockResolvedValue([
+      {
+        id: "audit-only",
+        agentId: "agent-a",
+        requestedBy: "admin",
+        action: "install",
+        spec: "zlib",
+        status: "succeeded",
+        auditOnly: true,
+        auditStatus: "passed",
+        stdout: null,
+        stderr: null,
+        exitCode: null,
+        error: null,
+        requestedAt: "2026-06-22T00:00:00.000Z",
+        startedAt: null,
+        finishedAt: "2026-06-22T00:00:01.000Z",
+        updatedAt: "2026-06-22T00:00:01.000Z",
+      },
+    ]);
+    render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
+    fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
+    expect(await screen.findByText("cp.software.operations.sourceAudit")).toBeTruthy();
+    expect(screen.getByText("cp.software.operations.auditPassed")).toBeTruthy();
+    expect(screen.getByText("cp.software.operations.auditNotInstalled")).toBeTruthy();
+    expect(screen.queryByTestId("cp-software-operation-error-summary-audit-only")).toBeNull();
+    expect(screen.queryByTestId("cp-software-operation-retry-audit-only")).toBeNull();
+  });
+
   test("shows failed operation summaries directly in operation history", async () => {
     cpClient.getSoftwareOverview.mockResolvedValue(overview);
     cpClient.listSoftwareOperations.mockResolvedValue([

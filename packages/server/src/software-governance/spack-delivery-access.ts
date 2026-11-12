@@ -26,6 +26,7 @@ export function createSpackDeliveryAccess(
           requestedBy: softwareOperations.requestedBy,
           spec: softwareOperations.spec,
           action: softwareOperations.action,
+          idempotencyKey: softwareOperations.idempotencyKey,
           status: softwareOperations.status,
           providerOrgId: agents.providerOrgId,
         })
@@ -50,6 +51,7 @@ export function createSpackDeliveryAccess(
         requestedBy: row.requestedBy,
         providerOrgId: row.providerOrgId,
         spec: row.spec,
+        ...(row.idempotencyKey?.startsWith("source-audit:") ? { auditOnly: true } : {}),
       };
     },
     async certificate(agentId, fingerprint) {

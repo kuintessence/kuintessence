@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpackMaterialManifest } from "@kuintessence/shared";
+import { SpackMaterialCache } from "./material-cache";
 import {
   configureSpackMaterialClient,
   SpackMaterialClient,
@@ -64,6 +65,127 @@ async function fixture(fetchBlob: () => Response = () => new Response(body), tex
 }
 
 describe("SpackMaterialClient", () => {
+  test.each([
+    false,
+    true,
+  ])("resumes a clean truncated EOF (Content-Length=%s) using pinned range identity", async (withLength) => {
+    const f = await fixture();
+    let requests = 0;
+    const client = new SpackMaterialClient({
+      serverUrl: "https://server.example",
+      cacheDir: f.cacheDir,
+      fetch: async (url, init) => {
+        if (url.endsWith("/manifest")) return new Response(manifestBytes);
+        const headers = new Headers(init.headers);
+        if (++requests === 1) {
+          expect(headers.has("Range")).toBe(false);
+          return new Response(body.slice(0, 7), {
+            headers: withLength ? { "Content-Length": String(blob.size) } : {},
+          });
+        }
+        expect(headers.get("Range")).toBe("bytes=7-");
+        expect(headers.get("If-Range")).toBe(`"${blob.digest}"`);
+        return new Response(body.slice(7), {
+          status: 206,
+          headers: {
+            ETag: `"${blob.digest}"`,
+            "Content-Range": `bytes 7-${blob.size - 1}/${blob.size}`,
+          },
+        });
+      },
+    });
+    const prepared = await client.prepare(input);
+    expect(requests).toBe(2);
+    expect(await readFile(prepared.blobs[0]?.path ?? "", "utf8")).toBe(body);
+  });
+
+  test.each([
+    false,
+    true,
+  ])("persisted partial survives ticket expiry and renewal preserves manifest pin (changed=%s)", async (changed) => {
+    const f = await fixture();
+    const cache = new SpackMaterialCache(f.cacheDir);
+    await cache.initialize();
+    await expect(
+      cache.store(
+        blob,
+        AbortSignal.timeout(1000),
+        async (write) => {
+          await write(Buffer.from(body.slice(0, 7)));
+          throw new Error("interrupted before restart");
+        },
+        true,
+      ),
+    ).rejects.toThrow("interrupted");
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    let blobCalls = 0;
+    const client = new SpackMaterialClient({
+      serverUrl: "https://server.example",
+      cacheDir: f.cacheDir,
+      identity: {
+        certPem: "certificate",
+        keyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      },
+      fetch: async (url, init) => {
+        if (url.endsWith("/manifest")) return new Response(manifestBytes);
+        if (url.endsWith("/ticket")) {
+          expect(JSON.parse(String(init.body)).manifestDigest).toBe(input.manifestDigest);
+          return Response.json({
+            spackMaterialTicket: "renewed-ticket",
+            spackManifestDigest: changed ? digest("changed") : input.manifestDigest,
+          });
+        }
+        const headers = new Headers(init.headers);
+        expect(headers.get("Range")).toBe("bytes=7-");
+        expect(headers.get("If-Range")).toBe(`"${blob.digest}"`);
+        if (++blobCalls === 1) return new Response(null, { status: 401 });
+        expect(headers.get("Authorization")).toBe("Bearer renewed-ticket");
+        return new Response(body.slice(7), {
+          status: 206,
+          headers: {
+            ETag: `"${blob.digest}"`,
+            "Content-Range": `bytes 7-${blob.size - 1}/${blob.size}`,
+          },
+        });
+      },
+    });
+    if (changed) {
+      await expect(client.prepare(input)).rejects.toThrow("binding mismatch");
+      expect(blobCalls).toBe(1);
+    } else {
+      const prepared = await client.prepare(input);
+      expect(await readFile(prepared.blobs[0]?.path ?? "", "utf8")).toBe(body);
+      expect(blobCalls).toBe(2);
+    }
+  });
+
+  test.each([
+    "fetch",
+    "body",
+  ])("ticket renewal bounds an uncooperative %s by the request deadline", async (phase) => {
+    const f = await fixture();
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    let renewals = 0;
+    const client = new SpackMaterialClient({
+      serverUrl: "https://server.example",
+      cacheDir: f.cacheDir,
+      requestTimeoutMs: 20,
+      identity: {
+        certPem: "certificate",
+        keyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      },
+      fetch: async (url) => {
+        if (!url.endsWith("/ticket")) return new Response(null, { status: 401 });
+        renewals++;
+        if (phase === "fetch") return new Promise<Response>(() => {});
+        return new Response(new ReadableStream({ start() {} }));
+      },
+    });
+    await expect(client.prepare(input)).rejects.toThrow("timed out");
+    expect(renewals).toBe(1);
+    expect(client.status).toEqual({ state: "failed", active: 0 });
+  });
+
   test("platform configuration preserves Agent startup without permitting legacy HTTP tickets", () => {
     expect(
       configureSpackMaterialClient({ enabled: false, serverUrl: "invalid", cacheDir: "/" }),
@@ -233,7 +355,7 @@ describe("SpackMaterialClient", () => {
   test.each([
     ["checksum", () => new Response("x".repeat(blob.size)), "SHA-256"],
     ["oversize", () => new Response(`${body}!`), "size"],
-    ["partial", () => new Response(body.slice(1)), "size"],
+    ["partial", () => new Response(body.slice(1)), "HTTP 200"],
     ["missing", () => new Response(null, { status: 404 }), "404"],
     [
       "redirect",
@@ -483,4 +605,58 @@ test("v2 evidence is downloaded and a corrupt notice is rejected by the Agent ca
   await rm(f.cacheDir, { recursive: true, force: true });
   corrupt = true;
   await expect(client.prepare({ ...input, manifestDigest: digest(text) })).rejects.toThrow();
+});
+
+test("material capacity admission fails before producer IO and keeps interrupted partials", async () => {
+  const f = await fixture();
+  const cache = new SpackMaterialCache(f.cacheDir);
+  await cache.initialize();
+  await expect(
+    cache.store(
+      blob,
+      new AbortController().signal,
+      async (write) => {
+        await write(Buffer.from(body.slice(0, 7)));
+        throw new Error("interrupted");
+      },
+      true,
+    ),
+  ).rejects.toThrow("interrupted");
+  const additions: number[] = [];
+  const resumed = new SpackMaterialCache(f.cacheDir, async (request) => {
+    additions.push(request.additionalBytes);
+    if (request.additionalBytes === blob.size - 7) throw new Error("STORAGE_CAPACITY_BYTES");
+  });
+  let produced = false;
+  await expect(
+    resumed.store(
+      blob,
+      new AbortController().signal,
+      async () => {
+        produced = true;
+      },
+      true,
+    ),
+  ).rejects.toThrow("STORAGE_CAPACITY_BYTES");
+  expect(produced).toBe(false);
+  expect(additions).toContain(blob.size);
+  expect(additions).toContain(blob.size - 7);
+  expect(
+    (await readdir(join(f.cacheDir, "sha256"))).filter((name) => name.endsWith(".part")).length,
+  ).toBeGreaterThan(0);
+});
+
+test("audit-only mode comes from the authorized Server response and survives material verification", async () => {
+  const f = await fixture();
+  const client = new SpackMaterialClient({
+    serverUrl: "https://server.example",
+    cacheDir: f.cacheDir,
+    fetch: async (url) =>
+      url.endsWith("/manifest")
+        ? new Response(manifestBytes, { headers: { "X-Kq-Spack-Mode": "source-audit" } })
+        : new Response(body),
+  });
+  const prepared = await client.prepare(input);
+  expect(prepared.auditOnly).toBe(true);
+  expect(prepared.manifestDigest).toBe(input.manifestDigest);
 });

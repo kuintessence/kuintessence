@@ -1,6 +1,8 @@
 import { createClient } from "@connectrpc/connect";
 import { type ConnectTransportOptions, createConnectTransport } from "@connectrpc/connect-node";
 import { AgentService } from "@kuintessence/proto";
+import { readSiteTransport, siteFetch } from "@kuintessence/shared/site-transport";
+import { siteSessionManager } from "./site-session-manager";
 
 /**
  * mTLS-aware fetch builder for the connectRPC client.
@@ -98,7 +100,7 @@ export function createServerReachabilityProbe(
 }
 
 export function buildClientFetch(input: BuildClientFetchInput): typeof fetch {
-  const base = input.baseFetch ?? globalThis.fetch;
+  const base = input.baseFetch ?? (readSiteTransport() ? siteFetch : globalThis.fetch);
   if (!input.mtls.enabled) return base;
 
   const fp = input.mtls.fingerprintSha256;
@@ -174,7 +176,11 @@ export function buildServerTransportOptions(
         }
       : {}),
   };
+  const site = readSiteTransport();
   return {
+    ...(site
+      ? { sessionManager: siteSessionManager(serverGrpcUrl, site, liveness, nodeOptions) }
+      : {}),
     httpVersion: "2",
     baseUrl: serverGrpcUrl,
     pingIntervalMs: liveness.pingIntervalMs,

@@ -246,7 +246,7 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
   shared storage、compute ABI、quota、recipe trust 均需运维人工声明，不等于自动验证。
   managed install/verify/load 在 spawn 前要求 Linux `/proc/meminfo` 的 `MemTotal`、
   `MemAvailable` 均达到配置预算 + 512 MiB 宿主余量；swap 不计入。
-  `AGENT_SPACK_MANAGED_MEMORY_MIB` 默认 4096，仅允许整数 1024..4096；
+  `AGENT_SPACK_MANAGED_MEMORY_MIB` 默认 4096，允许整数 1024..1048576（最高 1 TiB）；
   同一预算用于宿主准入、Apptainer memory/memory-swap 和 Agent 私有只读输入中的 worker 期望值，
   worker 拒绝缺失/非法预算及实际 cgroup 超额，独立 source-auditor 仍固定 2 GiB。
   元数据缺失/重复/非法、读取失败、非 Linux 或取消均拒绝启动并清理暂存输入。
@@ -266,7 +266,7 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
   必须先升级 Server 再升级 Agent；旧端不识别历史标记，混合版本不具备完整防回滚保证。
   同 boot 的未知 worker、其他主机及旧空锁仍 fail closed；旧锁有明确停写、确认 worker、
   留存证据后的维护步骤。锁代次和无 ACK 终态历史不在线回收，需要监控元数据容量。
-  本次为本地针对性验证，目标 NFS、远端 kqagent 和真实软件安装未验收，详见[恢复边界](../spack-install-recovery.md)。
+  此机制最初仅做本地针对性验证；后续腾讯云实测范围见下方离线 Slurm 段，不能替代目标 NFS 或真实用户集群验收，详见[恢复边界](../spack-install-recovery.md)。
   降低额度可用于独立模拟包，但不承诺大型真实软件可用，尚未实测 1 GiB 安装；
   移除配置或设为 4096 后重启 Agent 即恢复默认预算，真实材料仍须独立验收。
   更长时限不增加内存或 tmpfs 容量，不代表完整工作流验收通过。
@@ -497,7 +497,7 @@ Server 内置 Agent 的构建校验随相关 PR 和生产镜像发布自动执�
 保留导入资产身份、许可证和精确安装 spec，签名项只能通过生态发布更新。
 数据库及 Registry 数据卷保留时，重新部署不需要重复导入已有交付。
 
-已支持共享合同的运行时导入和 Compose 只读启动 seed、逐项持久化收据、material v2 许可证/来源附件与签名生态材料关联。详见 [离线交付说明](../offline-delivery.md)。真实 samtools@1.23.1 离线安装与作业验收尚未执行，需材料端及获授权隔离站点补齐。
+已支持共享合同的运行时导入和 Compose 只读启动 seed、逐项持久化收据、material v2 许可证/来源附件与签名生态材料关联。详见 [离线交付说明](../offline-delivery.md)。samtools@1.23.1 已在获授权的腾讯云隔离站点完成离线安装与科学作业验收；材料闭包、目标 OS 与运行环境仍须逐站验证。
 
 离线交付接口在 Preview、Helm 与单域名/多域名外层代理上统一采用 1800 秒响应等待、
 2 MiB 请求上限和既有鉴权转发，避免大型 recipe 预检被外层默认 60 秒超时截断。
@@ -518,3 +518,35 @@ queued/running 软件操作。入口要求 Agent 离线、显式确认 worker �
 ## 平台全局资源运营
 
 平台运营工作区增加集群与代理、队列、执行账号、软件和平台用户入口。新增独立 `workspace.platform.operate` 能力，提供者隔离和管理员系统配置边界保持独立；执行账号启停及平台用户停用会话检查已接通。职责与使用范围见 [平台运营与算力提供者](../platform-operations.md)。
+
+
+### 离线 Slurm 普通用户接入（本轮云端验收完成，>4GiB实测暂缓）
+
+从 main 发布平台及保留已有 Agent 的部署边界见 [main 离线 Slurm 接入部署](../main-offline-slurm-rollout.md)。
+
+新增显式 SSH-forward/HTTP-proxy 传输、SNI 网关、签名发行接口、单用户 runtime 信任、Slurm 构建后端、材料 Range/签名续票、提交前恢复记录、持久 multipart 会话及恢复 API。部署与兼容边界见 [离线 Slurm 站点](../offline-slurm-site.md)。Server 先迁移 `file_transfers.resume_session`；旧 Agent 不识别提交中标记，禁止跨 stateFormat 二进制回滚。
+
+离线站点后续补全：Agent 运行状态经受限心跳报告持久化并展示，过期/未报告明确区分；`kq site doctor` 自动证书证明、独立 mTLS 双向流、材料链路及对象/分片诊断；`kq site recover-spack` 安全恢复已终止 worker；multipart completion 持久化、对象 SHA-256 校验、PG事务幂等与授权 outbox 原子提交。另需迁移 `agents.site_operations`。此阶段记录的是实现范围；后续云端站点与 PG 验收进展见本节末尾，不能据此推定真实用户集群已验收。
+
+初始化现已用真实 Ed25519 签名和回环 HTTPS 验证双文件上传、token 文件/stdin、注册身份复用、Range 恢复、更新暂存与维护切换；普通作业 sbatch 返回未知时保留提交记录，重连/重启对账，取消与跨 epoch 重派也不能绕过未决记录。新增[发行准备工具](../site-release-preparation.md)自动构建独立 CLI/Agent 和未签名清单，发布通道互斥。新增[隔离 PostgreSQL 验收入口](../offline-slurm-pg-acceptance.md)及 CI 接线，真实 PG suite 尚未在本地执行。
+
+离线作业恢复补充：默认每 30 秒串行对账持久作业和未确认取消，查询错误不伪装成终态；Slurm 取消须确认真实终态才清理记录与输入。恢复期间的未 ack 回执等待真实状态，不因暂缺 runner 合成失败。已报告离线传输的未安装软件不再仅凭权限标为可安装，见[材料就绪与闭包边界](../offline-slurm-material-readiness.md)。bootstrap 已覆盖真实回环 CONNECT、不旁路代理和 SSH 子进程生命周期；后续云端实测覆盖范围见本节末尾，未完成的故障场景仍须独立留证。
+
+登录节点 NetDrive 下载新增已授权大小/摘要绑定的持久断点、短读续传、空闲超时和整件校验后原子发布；旧兼容发送端与容器分支边界见[下载与上传恢复](../offline-slurm-multipart-recovery.md)。材料票据续期也纳入单请求超时，EOF短读可自动续传。Slurm提交和日志命令有期限，通信失败保留未知提交，账本禁止覆盖已确认执行；详见[提交恢复](../slurm-submission-recovery.md)。本地故障注入验证不替代真实云端、PostgreSQL或Slurm验收。
+
+后续恢复补全：两种站点网络模式下，HTTP/2 GOAWAY 后新请求另建验证隧道，旧流保留，重连失败不主动中断旧流；容器 multipart 也复用持久片回执并独立清理 spool，PUT 有期限且取消不再报告旧终态。Spack worker 固定禁止自动 requeue，清理前同时核对 accounting 终态与实时队列，旧 journal 须额外证明 controller 已禁用 requeue。详情见[站点接入](../offline-slurm-site.md)、[传输恢复](../offline-slurm-multipart-recovery.md)与[构建恢复](../offline-slurm-recovery.md)。
+
+本轮结果恢复补全：普通作业对已识别的临时输出 I/O 错误保留账本重试，重启后接管原 scheduler ID；Sandbox 保留原有可选输出语义。普通 Workflow 输出新增持久 publication outbox、逐文件固定 transferId、有限并发和租约保护，已上传文件不重传，全部提交后才释放工作目录。完成作业的文件可在 DAG 已中断时独立补传；不自动续跑 DAG。新版普通 Workflow 提交事务同时创建 intent，completed 与输出事实入库后、publication 尚未建立的崩溃可自动补建；升级前没有 intent 的旧作业仍需人工对账。新增授权只读 `GET /jobs/:id/output-publication`。需部署生成的 0075/0076/0077 migration，见[输出发布恢复](../workflow-output-recovery.md)。Sandbox 与普通输出共用先建传输行再启动上传的逻辑；分片 URL 请求独立绑定 correlation/upload ID，升级顺序为 Server → Agent。
+
+现场 modules 小作业现在生成版本化脱敏计算节点报告，包含 OS/CPU/libc、所选工具链及共享路径读写证据。报告用于选择站点 SIF/profile，本身不生成与真实集群匹配的完整软件材料；后续云端 PostgreSQL、Slurm/Apptainer 能力报告及安装验收分别记录于本节末尾，真实用户集群仍未验收。
+
+传输恢复的并发边界进一步收紧：Server 启动先完成旧传输清扫，输出传输 CAS 转为 running 后启动，终态提交期间取消返回冲突；旧超时和异步收尾按当前轮次身份过滤，避免中断新的恢复任务。publication 租约统一以 PostgreSQL 时钟计算，过期 owner 即使尚未被接管也不能复活或释放目录。
+
+本轮交付收口：Agent 将真实 completed 及原执行绑定持久保存为完成快照，再采集输出；新版快照重启恢复不依赖已清除的 accounting，旧记录仍需原调度器证明。当时发行 stateFormat 为 v4；新增安装依赖恢复记录的发行须使用 v5，拒绝未经迁移审查的跨格式切换。平台准备工具可绑定计算节点 inventory 并记录其摘要，`requireSpack` 拒绝缺少三项附件或 profile/SIF 绑定错误；初始化在消费 token、推进更新高水位之前校验 Spack 发行与共享 store。完整任务覆盖、平台准备、站点操作及集中故障验收见[交付清单](../offline-slurm-acceptance.md)。这些改动不生成虚构的本站 SIF/lock，也不替代真实 PostgreSQL、腾讯云或集群验收。
+
+
+获授权的腾讯云隔离站点已验证两种站点网络模式的完整 doctor、普通用户签名初始化、Slurm 作业在隧道断线及 Agent 进程中断后的恢复，以及全新 samtools 离线安装与科学作业。独立 PostgreSQL 验收、输出发布在 Server 重启后的恢复及签名发行维护切换也已取得云端结果。这些结果仅适用于已验证的隔离环境，不表示当前 main 已部署，也不替代其他站点的验收。
+
+失败安装的依赖复用已通过真实构建中断与重试验证：确认旧 worker 停止后，复用同一 record/prefix，先独立 partial verify，再构建未完成的包并执行 final verify，已复用依赖的内容、权限及修改时间保持一致。新增记录要求 `slurm-site-v5`，继续拒绝未经迁移审查的 v4/v5 原地切换。下载容量不足、短写与断点保留也有针对性验证，不代表所有材料缓存、上传、配额或 inode 故障均已实测。
+
+超过 4 GiB 的安装因缺少足够真实内存的节点暂缓。真实用户集群尚未验收，需先采集 inventory，逐站确认计算节点 ABI、可信 runtime、持久本地盘及用户服务常驻条件；不能直接沿用云端参数。实际票据过期、Agent 分片 checkpoint 跨服务重启、共享盘故障等未完成场景仍按[交付与现场验收清单](../offline-slurm-acceptance.md)独立留证，私密过程记录由站点保存。

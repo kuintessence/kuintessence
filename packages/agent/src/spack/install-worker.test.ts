@@ -46,10 +46,11 @@ test("mocked native worker reports match the TypeScript install contract for eve
         "sys.path.insert(0, '.')",
         "from test_install_worker import InstallTests",
         "reports = []",
-        "for action in ('install', 'verify', 'load'):",
+        "for action in ('install', 'verify', 'load', 'verify-partial'):",
         "    fixture = InstallTests()",
         "    try:",
         "        fixture.setUp()",
+        "        if action == 'verify-partial': fixture.partial_fixture()",
         "        reports.append(fixture.run_worker(action))",
         "    finally:",
         "        fixture.doCleanups()",
@@ -68,7 +69,12 @@ test("mocked native worker reports match the TypeScript install contract for eve
   ]);
   expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
   const reports = SpackInstallReportSchema.array().parse(JSON.parse(stdout));
-  expect(reports.map((report) => report.action)).toEqual(["install", "verify", "load"]);
+  expect(reports.map((report) => report.action)).toEqual([
+    "install",
+    "verify",
+    "load",
+    "verify-partial",
+  ]);
   for (const report of reports) {
     expect(report.root.spec).toBe("hello@1.0");
     expect(report.prefix.startsWith(`${report.storePath}/`)).toBe(true);

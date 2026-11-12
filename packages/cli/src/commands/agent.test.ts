@@ -1,8 +1,14 @@
-import { describe, expect, it } from "bun:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { describe, expect, it, test } from "bun:test";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { parsePositiveInt, parseServePort, writeAgentRegistrationFiles } from "./agent";
+import { Command } from "commander";
+import {
+  parsePositiveInt,
+  parseServePort,
+  registerAgentCommand,
+  writeAgentRegistrationFiles,
+} from "./agent";
 
 describe("parseServePort", () => {
   it("accepts a valid port", () => {
@@ -80,4 +86,46 @@ describe("kq agent serve error routing", () => {
     expect(out).not.toContain("Ensure a scheduler CLI");
     expect(out).not.toContain("--local");
   }, 30_000);
+});
+
+test("agent register forwards file token to metadata without completing registration", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kq-register-token-"));
+  const tokenFile = join(directory, "token");
+  await writeFile(tokenFile, "file-token\n");
+  const original = globalThis.fetch;
+  const mode = process.env.KQ_TRANSPORT_MODE;
+  delete process.env.KQ_TRANSPORT_MODE;
+  let requested = false;
+  globalThis.fetch = Object.assign(
+    async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({ token: "file-token" });
+      requested = true;
+      return Response.json({ error: { message: "metadata rejected" } }, { status: 403 });
+    },
+    { preconnect: original.preconnect },
+  );
+  try {
+    const program = new Command();
+    registerAgentCommand(program);
+    await expect(
+      program.parseAsync([
+        "bun",
+        "kq",
+        "agent",
+        "register",
+        "--url",
+        "https://platform.invalid",
+        "--grpc-url",
+        "https://agent.invalid",
+        "--token-file",
+        tokenFile,
+      ]),
+    ).rejects.toThrow();
+    expect(requested).toBe(true);
+  } finally {
+    globalThis.fetch = original;
+    if (mode === undefined) delete process.env.KQ_TRANSPORT_MODE;
+    else process.env.KQ_TRANSPORT_MODE = mode;
+    await rm(directory, { recursive: true, force: true });
+  }
 });

@@ -893,10 +893,57 @@
     },
     "scheduler": "调度器",
     "heartbeat": "最近心跳",
-    "never": "尚未上报"
+    "never": "尚未上报",
+    "operations": {
+      "title": "站点运行状态",
+      "notReported": "站点尚未上报运行状态",
+      "stale": "连接已断开或报告过期；以下为最后一次观测（{{time}}）",
+      "observed": "最近观测：{{time}}",
+      "connection": "连接方式",
+      "trust": "软件信任模式",
+      "executor": "安装执行位置",
+      "local": "本机",
+      "materials": "材料下载",
+      "installation": "安装与验证",
+      "jobs": "计算作业",
+      "transfers": "文件传输",
+      "update": "客户端更新",
+      "release": "发行版本",
+      "transport": {
+        "ssh-forward": "SSH 端口转发",
+        "http-proxy": "HTTP CONNECT 代理",
+        "direct": "直接连接"
+      },
+      "trustMode": {
+        "single-user": "单用户（同一账号信任边界）",
+        "administrator": "管理员保护"
+      },
+      "states": {
+        "unknown": "未确认",
+        "disabled": "未启用",
+        "idle": "空闲",
+        "running": "进行中",
+        "ready": "最近操作成功",
+        "blocked": "等待对账",
+        "failed": "最近操作失败"
+      },
+      "updates": {
+        "unknown": "未报告",
+        "staged": "已下载，等待维护切换",
+        "activated": "已激活",
+        "rolled-back": "已回滚",
+        "failed": "检查或切换失败"
+      },
+      "reconcileJobs": "存在提交结果不明的作业。先核对 Slurm ID，恢复 Agent 对账；不要重复提交。",
+      "reconcileInstallation": "查看软件操作失败记录；残留构建须先执行恢复对账，再重试安装。",
+      "resumeTransfer": "在文件传输记录中查看失败原因；权限与原文件有效时可恢复同一传输。",
+      "updateChecked": "更新检查时间"
+    }
   },
   "software": {
     "availabilityReason": {
+      "offlineMaterialClosure": "离线材料闭包尚未验证；请在 CP 软件页发起显式安装，执行隔离审计。",
+      "offlineTelemetry": "离线站点状态已过期或无效，不能据此确认可安装。",
       "offline": "该节点的控制通道离线，请等待恢复或选择其他节点。",
       "usePermission": "当前账号没有使用该软件的权限，请先申请授权。",
       "providerDenyList": "该软件被算力提供方的黑名单策略阻止。",

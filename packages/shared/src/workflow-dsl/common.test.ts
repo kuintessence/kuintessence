@@ -52,6 +52,23 @@ describe("SchedulingStrategySchema", () => {
     expect(r.type).toBe("Prefer");
   });
 
+  for (const type of ["Manual", "Prefer"] as const) {
+    test(`${type} accepts opaque queue IDs up to 255 characters`, () => {
+      for (const queueId of ["cloud-lab-bootstrap", "q", "q".repeat(255)]) {
+        expect(SchedulingStrategySchema.parse({ type, queues: [queueId] })).toEqual({
+          type,
+          queues: [queueId],
+        });
+      }
+    });
+
+    test(`${type} rejects empty and oversized queue IDs`, () => {
+      for (const queueId of ["", "q".repeat(256)]) {
+        expect(() => SchedulingStrategySchema.parse({ type, queues: [queueId] })).toThrow();
+      }
+    });
+  }
+
   test("rejects Manual without queues", () => {
     expect(() => SchedulingStrategySchema.parse({ type: "Manual" })).toThrow();
   });

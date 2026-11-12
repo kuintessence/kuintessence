@@ -63,3 +63,139 @@ describe("ActiveRemoteJobs", () => {
     ]);
   });
 });
+
+test("submission identity and inputs remain immutable across retries and concurrent confirmations", async () => {
+  const store = new ActiveRemoteJobs(createSqliteDb(":memory:"));
+  const spec = {
+    jobId: "immutable",
+    name: "fixture",
+    command: "true",
+    cpus: 1,
+    memoryMb: 64,
+    gpus: 0,
+    wallTimeSec: 60,
+    workingDir: "/shared/fixture",
+    envVars: { A: "one", B: "two" },
+  };
+  const outputs = [{ descriptor: "result", path: "result.txt", isBatch: false }];
+  await store.recordSubmissionIntent(spec, outputs);
+  const original = await store.get(spec.jobId);
+  await expect(store.recordSubmissionIntent(spec, outputs)).rejects.toThrow("already exists");
+  await expect(
+    store.recordSubmitted({
+      spec: { ...spec, command: "different" },
+      expectedOutputs: outputs,
+      schedulerJobId: "123",
+    }),
+  ).rejects.toThrow("binding");
+  await expect(
+    store.recordSubmitted({ spec, expectedOutputs: [], schedulerJobId: "123" }),
+  ).rejects.toThrow("binding");
+  expect(await store.get(spec.jobId)).toEqual(original);
+  const settled = await Promise.allSettled(
+    ["123", "456"].map((schedulerJobId) =>
+      store.recordSubmitted({ spec, expectedOutputs: outputs, schedulerJobId }),
+    ),
+  );
+  expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  expect(settled.filter((result) => result.status === "rejected")).toHaveLength(1);
+  const confirmed = await store.get(spec.jobId);
+  expect(["123", "456"]).toContain(confirmed?.schedulerJobId ?? "");
+  await store.recordSubmitted({
+    spec: { ...spec, envVars: { B: "two", A: "one" } },
+    expectedOutputs: outputs,
+    schedulerJobId: confirmed?.schedulerJobId ?? "",
+  });
+  await expect(store.recordSubmissionIntent(spec, outputs)).rejects.toThrow("already exists");
+  expect((await store.get(spec.jobId))?.schedulerJobId).toBe(confirmed?.schedulerJobId);
+  expect((await store.get(spec.jobId))?.submittedAfter).toBe(original?.submittedAfter);
+});
+
+test("late confirmation never recreates a finished or cancelled submission", async () => {
+  const store = new ActiveRemoteJobs(createSqliteDb(":memory:"));
+  const spec = {
+    jobId: "finished",
+    name: "fixture",
+    command: "true",
+    cpus: 1,
+    memoryMb: 64,
+    gpus: 0,
+    wallTimeSec: 60,
+    workingDir: "/shared/fixture",
+    envVars: {},
+  };
+  await store.recordSubmissionIntent(spec, []);
+  await store.markFinished(spec.jobId);
+  expect(await store.confirmSubmission(spec.jobId, "123")).toBe(false);
+  expect(await store.get(spec.jobId)).toBeUndefined();
+});
+
+test("an accepted submission with a lost CLI reply is recovered from disk and accounting without another sbatch", async () => {
+  const { Database } = await import("bun:sqlite");
+  const { drizzle } = await import("drizzle-orm/bun-sqlite");
+  const { runSqliteMigrations } = await import("@kuintessence/db");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { SlurmAdapter } = await import("../adapters/slurm");
+  const root = await mkdtemp("/tmp/kq-accepted-submission-");
+  let sqlite = new Database(`${root}/agent.db`);
+  try {
+    runSqliteMigrations(sqlite);
+    let store = new ActiveRemoteJobs(drizzle(sqlite));
+    const spec = {
+      jobId: "durable-uuid",
+      schedulerName: "stable-tag",
+      name: "fixture",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/fixture",
+      envVars: {},
+    };
+    let submissions = 0;
+    const adapter = new SlurmAdapter("23", {
+      spawner: {
+        run: async (argv) => {
+          if (argv[0] === "sbatch") {
+            submissions++;
+            return {
+              exitCode: 1,
+              stdout: "",
+              stderr:
+                "sbatch: error: Batch job submission failed: Socket timed out on send/recv operation",
+            };
+          }
+          return {
+            exitCode: 0,
+            stdout: argv[0] === "squeue" ? "" : "123|stable-tag|KQ_JOB_ID=durable-uuid|account\n",
+            stderr: "",
+          };
+        },
+      },
+    });
+    await store.recordSubmissionIntent(spec, []);
+    await expect(adapter.submit(spec)).rejects.toMatchObject({
+      name: "SchedulerSubmissionUnknownError",
+    });
+    sqlite.close();
+    sqlite = new Database(`${root}/agent.db`);
+    store = new ActiveRemoteJobs(drizzle(sqlite));
+    const pending = await store.get(spec.jobId);
+    const found = await adapter.findByKuintessenceJobId({
+      jobId: spec.jobId,
+      schedulerName: spec.schedulerName,
+      includeCompleted: true,
+      submittedAfter: pending?.submittedAfter,
+    });
+    expect(found.status).toBe("found");
+    if (found.status !== "found") throw new Error("expected uniquely recovered allocation");
+    expect(await store.confirmSubmission(spec.jobId, found.schedulerJobId)).toBe(true);
+    expect((await store.get(spec.jobId))?.schedulerJobId).toBe("123");
+    await expect(store.recordSubmissionIntent(spec, [])).rejects.toThrow("already exists");
+    expect(submissions).toBe(1);
+  } finally {
+    sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

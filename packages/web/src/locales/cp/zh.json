@@ -414,6 +414,9 @@
           "official": "Official",
           "vendor": "Vendor"
         },
+        "sourceAudit": "材料审计",
+        "auditPassed": "审计通过",
+        "auditNotInstalled": "材料审计已通过，尚未安装。",
         "action": {
           "install": "安装",
           "uninstall": "删除",

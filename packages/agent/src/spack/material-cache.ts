@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { link, lstat, mkdir, open, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, parse } from "node:path";
 import { type SpackMaterialBlob, SpackMaterialDigestSchema } from "@kuintessence/shared";
+import { assertStorageCapacity, normalizeStorageCapacityError } from "../storage-capacity";
 
 export interface SpackMaterialCacheRef extends SpackMaterialBlob {
   path: string;
@@ -43,6 +44,16 @@ async function secureDirectory(path: string): Promise<void> {
     current = join(current, segment);
     let created = false;
     try {
+      try {
+        await lstat(current);
+      } catch (error) {
+        if (!hasCode(error, "ENOENT")) throw error;
+        await assertStorageCapacity({
+          path: dirname(current),
+          additionalBytes: 0,
+          additionalInodes: 1,
+        });
+      }
       await mkdir(current, { mode: 0o700 });
       created = true;
     } catch (error) {
@@ -76,7 +87,10 @@ async function syncDirectory(path: string): Promise<void> {
 export class SpackMaterialCache {
   private readonly directory: string;
 
-  constructor(cacheDir: string) {
+  constructor(
+    cacheDir: string,
+    private readonly capacity: typeof assertStorageCapacity = assertStorageCapacity,
+  ) {
     if (!isSpackCacheDir(cacheDir)) {
       throw new Error("AGENT_SPACK_CACHE_DIR must be a dedicated absolute canonical path");
     }
@@ -180,12 +194,20 @@ export class SpackMaterialCache {
   async store(
     blob: SpackMaterialBlob,
     signal: AbortSignal,
-    produce: (write: (chunk: Uint8Array) => Promise<void>) => Promise<void>,
+    produce: (write: (chunk: Uint8Array) => Promise<void>, offset: number) => Promise<void>,
+    resume = false,
   ): Promise<SpackMaterialCacheRef> {
     const cached = await this.reuse(blob, signal);
     if (cached) return cached;
     const path = this.path(blob);
-    const temporary = join(this.directory, `.${randomUUID()}.tmp`);
+    const prefix = `.${blob.digest.slice(7)}.`;
+    const temporary = join(
+      this.directory,
+      resume ? `${prefix}${randomUUID()}.part` : `.${randomUUID()}.tmp`,
+    );
+    let published = false;
+    let previousPath: string | undefined;
+    await this.capacity({ path: this.directory, additionalBytes: 0, additionalInodes: 2 });
     const file = await open(
       temporary,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
@@ -194,21 +216,102 @@ export class SpackMaterialCache {
     try {
       const hash = createHash("sha256");
       let total = 0;
-      await produce(async (chunk) => {
-        signal.throwIfAborted();
-        total += chunk.byteLength;
-        if (total > blob.size) throw new Error("Spack material blob size exceeded");
-        hash.update(chunk);
-        let offset = 0;
-        while (offset < chunk.byteLength) {
-          signal.throwIfAborted();
-          const { bytesWritten } = await file.write(chunk, offset, chunk.byteLength - offset);
-          if (bytesWritten === 0) throw new Error("Spack material cache write made no progress");
-          offset += bytesWritten;
+      if (resume) {
+        const candidates = [];
+        const names = await readdir(this.directory);
+        for (const name of names.filter(
+          (name) => name.startsWith(prefix) && name.endsWith(".part"),
+        )) {
+          const candidate = join(this.directory, name);
+          if (candidate === temporary || names.includes(`${name}.rejected`)) continue;
+          const stat = await lstat(candidate);
+          if (
+            stat.isFile() &&
+            !stat.isSymbolicLink() &&
+            isAgentPrivate(stat) &&
+            stat.size > 0 &&
+            stat.size <= blob.size
+          )
+            candidates.push({ candidate, size: stat.size });
         }
+        candidates.sort((a, b) => b.size - a.size);
+        const previous = candidates[0];
+        if (previous) {
+          previousPath = previous.candidate;
+          const input = await open(
+            previous.candidate,
+            constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+          );
+          try {
+            const stat = await input.stat();
+            assertPrivateCacheFile(stat);
+            if (!stat.isFile()) throw new Error("Invalid partial material");
+            const buffer = Buffer.alloc(64 * 1024);
+            while (total < previous.size) {
+              signal.throwIfAborted();
+              const chunk = await input.read(
+                buffer,
+                0,
+                Math.min(buffer.length, previous.size - total),
+                total,
+              );
+              if (!chunk.bytesRead) throw new Error("Partial material changed during copy");
+              await this.capacity({
+                path: temporary,
+                additionalBytes: blob.size - total,
+                additionalInodes: 1,
+              });
+              const bytes = buffer.subarray(0, chunk.bytesRead);
+              let written = 0;
+              while (written < bytes.length) {
+                const part = await file.write(bytes, written, bytes.length - written);
+                if (!part.bytesWritten) throw new Error("Partial material write made no progress");
+                written += part.bytesWritten;
+              }
+              hash.update(bytes);
+              total += bytes.byteLength;
+            }
+          } finally {
+            await input.close();
+          }
+        }
+      }
+      await this.capacity({
+        path: temporary,
+        additionalBytes: blob.size - total,
+        additionalInodes: 1,
       });
+      const offset = total;
+      if (offset < blob.size)
+        await produce(async (chunk) => {
+          signal.throwIfAborted();
+          await this.capacity({
+            path: temporary,
+            additionalBytes: blob.size - total,
+            additionalInodes: 1,
+          });
+          total += chunk.byteLength;
+          if (total > blob.size) throw new Error("Spack material blob size exceeded");
+          hash.update(chunk);
+          let offset = 0;
+          while (offset < chunk.byteLength) {
+            signal.throwIfAborted();
+            const { bytesWritten } = await file.write(chunk, offset, chunk.byteLength - offset);
+            if (bytesWritten === 0) throw new Error("Spack material cache write made no progress");
+            offset += bytesWritten;
+          }
+        }, offset);
       if (total !== blob.size) throw new Error("Spack material blob size mismatch");
       if (`sha256:${hash.digest("hex")}` !== blob.digest) {
+        // Mark only our copied candidate; never rename another active writer's file.
+        if (previousPath)
+          await writeFile(`${previousPath}.rejected`, "digest mismatch\n", {
+            mode: 0o600,
+            flag: "wx",
+          }).catch((error) => {
+            if (!hasCode(error, "EEXIST")) throw error;
+          });
+        await unlink(temporary);
         throw new Error("Spack material blob SHA-256 mismatch");
       }
       signal.throwIfAborted();
@@ -225,12 +328,19 @@ export class SpackMaterialCache {
       }
       await syncDirectory(this.directory);
       await syncDirectory(dirname(this.directory));
+      published = true;
       return { ...blob, path };
+    } catch (error) {
+      throw normalizeStorageCapacityError(error);
     } finally {
       try {
+        if (resume) await file.sync();
         await file.close();
       } finally {
-        await unlink(temporary);
+        if (!resume || published)
+          await unlink(temporary).catch((error) => {
+            if (!hasCode(error, "ENOENT")) throw error;
+          });
       }
     }
   }

@@ -601,8 +601,37 @@ describe("SlurmAdapter.submit (with mock spawner)", () => {
     expect(result.schedulerJobId).toBe("12345");
   });
 
-  test("throws on sbatch failure", async () => {
-    const { spawner } = mockSpawner([{ exitCode: 1, stdout: "", stderr: "permission denied" }]);
+  test.each([
+    { exitCode: 0, stdout: "" },
+    { exitCode: 0, stdout: "not-a-job-id" },
+    { exitCode: 137, stdout: "" },
+    { exitCode: -1, stdout: "" },
+  ])("keeps ambiguous sbatch response %j recoverable", async (response) => {
+    const { spawner } = mockSpawner([response]);
+    const adapter = new SlurmAdapter("23.02.7", { spawner });
+    await expect(
+      adapter.submit({
+        jobId: "uncertain",
+        name: "test",
+        command: "true",
+        cpus: 1,
+        memoryMb: 64,
+        gpus: 0,
+        wallTimeSec: 60,
+        workingDir: "",
+        envVars: {},
+      }),
+    ).rejects.toMatchObject({ name: "SchedulerSubmissionUnknownError" });
+  });
+
+  test("reports an exact controller rejection as a definite sbatch failure", async () => {
+    const { spawner } = mockSpawner([
+      {
+        exitCode: 1,
+        stdout: "",
+        stderr: "sbatch: error: Batch job submission failed: Invalid partition name specified",
+      },
+    ]);
     const adapter = new SlurmAdapter("23.02.7", { spawner });
     await expect(
       adapter.submit({
@@ -619,7 +648,7 @@ describe("SlurmAdapter.submit (with mock spawner)", () => {
     ).rejects.toThrow(/sbatch failed/);
   });
 
-  test("maps a throwing spawner to SCHEDULER_SUBMIT_FAILED", async () => {
+  test("retains an unknown outcome when the submission response is lost", async () => {
     const spawner: Spawner = {
       async run() {
         throw new Error("spawn unavailable");
@@ -640,9 +669,8 @@ describe("SlurmAdapter.submit (with mock spawner)", () => {
         envVars: {},
       }),
     ).rejects.toMatchObject({
-      name: "SchedulerSubmissionError",
-      failureCode: "SCHEDULER_SUBMIT_FAILED",
-      message: "sbatch failed",
+      name: "SchedulerSubmissionUnknownError",
+      message: "sbatch result could not be confirmed",
     });
   });
 });
@@ -696,7 +724,7 @@ describe("SlurmAdapter — terminalStatusBackend: scontrol", () => {
     expect((await adapter.status("42")).status).toBe("running");
   });
 
-  test("scontrol non-zero exit -> failed with message", async () => {
+  test("scontrol non-zero exit is unknown and retried", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 0, stdout: "" }, // squeue empty
       { exitCode: 1, stdout: "", stderr: "Invalid job id specified" }, // scontrol
@@ -705,23 +733,19 @@ describe("SlurmAdapter — terminalStatusBackend: scontrol", () => {
       spawner,
       terminalStatusBackend: "scontrol",
     });
-    const r = await adapter.status("99");
-    expect(r.status).toBe("failed");
-    expect(r.message).toMatch(/scontrol show job failed/);
+    await expect(adapter.status("99")).rejects.toThrow("unavailable");
   });
 
-  test("scontrol output missing JobState -> failed with message", async () => {
+  test("scontrol output missing JobState is unknown and retried", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 0, stdout: "" }, // squeue empty
-      { exitCode: 0, stdout: "garbage output with no fields" }, // scontrol
+      { exitCode: 0, stdout: "JobId=77 garbage output with no fields" }, // scontrol
     ]);
     const adapter = new SlurmAdapter("23.02.7", {
       spawner,
       terminalStatusBackend: "scontrol",
     });
-    const r = await adapter.status("77");
-    expect(r.status).toBe("failed");
-    expect(r.message).toMatch(/JobState/);
+    await expect(adapter.status("77")).rejects.toThrow("JobState");
   });
 });
 
@@ -1022,7 +1046,7 @@ describe("SlurmAdapter.status", () => {
   test("falls back to sacct when squeue returns empty", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 0, stdout: "" }, // squeue empty
-      { exitCode: 0, stdout: "COMPLETED|0:0\n" }, // sacct
+      { exitCode: 0, stdout: "12345|COMPLETED|0:0\n" }, // sacct
     ]);
     const adapter = new SlurmAdapter("23.02.7", { spawner });
     const r = await adapter.status("12345");
@@ -1056,11 +1080,424 @@ describe("SlurmAdapter.status", () => {
   test("non-COMPLETED sacct state -> failed", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 0, stdout: "" },
-      { exitCode: 0, stdout: "FAILED|1:0\n" },
+      { exitCode: 0, stdout: "12345|FAILED|1:0\n" },
     ]);
     const adapter = new SlurmAdapter("23.02.7", { spawner });
     const r = await adapter.status("12345");
     expect(r.status).toBe("failed");
     expect(r.exitCode).toBe(1);
   });
+});
+
+test("completed submission is recovered by exact UUID from bounded Slurm accounting", async () => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: "" },
+    {
+      exitCode: 0,
+      stdout: "42|stable|KQ_JOB_ID=job-123|account\n43|stable|KQ_JOB_ID=other|account\n",
+    },
+  ]);
+  const adapter = new SlurmAdapter("23", { spawner });
+  expect(
+    await adapter.findByKuintessenceJobId({
+      jobId: "job-123",
+      schedulerName: "stable",
+      includeCompleted: true,
+      submittedAfter: "2026-11-10",
+    }),
+  ).toEqual({ status: "found", schedulerJobId: "42" });
+  expect(calls[1]).toContain("sacct");
+  expect(calls[1]).toContain("2026-11-10");
+});
+
+describe("SlurmAdapter status uncertainty and cancellation confirmation", () => {
+  test("a sole squeue row with a different explicit ID is never adopted", async () => {
+    const { spawner, calls } = mockSpawner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          jobs: [{ job_id: 999, job_state: "COMPLETED", exit_code: { return_code: 0 } }],
+        }),
+      },
+      { exitCode: 0, stdout: "123|RUNNING|0:0\n" },
+    ]);
+    expect((await new SlurmAdapter("23", { spawner }).status("123")).status).toBe("running");
+    expect(calls[1]?.[0]).toBe("sacct");
+  });
+
+  test("accounting selects only the exact allocation ID, ignoring unrelated and step rows", async () => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: "999|COMPLETED|0:0\n123.batch|FAILED|1:0\n123|RUNNING|0:0\n" },
+    ]);
+    expect((await new SlurmAdapter("23", { spawner }).status("123")).status).toBe("running");
+  });
+
+  test.each([
+    "",
+    "UNKNOWN",
+    "FUTURE_STATE",
+  ])("unknown state %s is retried rather than terminal", async (state) => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_id: 123, job_state: state }] }) },
+    ]);
+    await expect(new SlurmAdapter("23", { spawner }).status("123")).rejects.toThrow("unknown");
+  });
+
+  test("completed without an exit code is not assumed successful", async () => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_id: 123, job_state: "COMPLETED" }] }) },
+    ]);
+    await expect(new SlurmAdapter("23", { spawner }).status("123")).rejects.toThrow("exit code");
+  });
+
+  test("COMPLETING array flag is nonterminal even alongside a terminal base state", async () => {
+    const { spawner } = mockSpawner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          jobs: [
+            { job_id: 123, job_state: ["COMPLETED", "COMPLETING"], exit_code: { return_code: 0 } },
+          ],
+        }),
+      },
+    ]);
+    expect(await new SlurmAdapter("23", { spawner }).confirmStopped("123")).toBe(false);
+  });
+
+  test("missing controller/accounting records never confirm a cancelled job stopped", async () => {
+    const { spawner } = mockSpawner([
+      { exitCode: 1, stdout: "" },
+      { exitCode: 0, stdout: "" },
+      { exitCode: 1, stdout: "", stderr: "Invalid job id specified" },
+    ]);
+    await expect(new SlurmAdapter("23", { spawner }).confirmStopped("123")).rejects.toThrow(
+      "unavailable",
+    );
+  });
+
+  test("a mismatching scontrol identity cannot confirm termination", async () => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: SCONTROL_COMPLETED },
+    ]);
+    await expect(
+      new SlurmAdapter("23", { spawner, terminalStatusBackend: "scontrol" }).confirmStopped("123"),
+    ).rejects.toThrow("identity");
+  });
+
+  test("only an explicit matching terminal state confirms cancellation, including signal exits", async () => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: "123|CANCELLED by 1000|0:15\n" },
+    ]);
+    expect(await new SlurmAdapter("23", { spawner }).confirmStopped("123")).toBe(true);
+    const json = mockSpawner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          jobs: [
+            { job_id: 123, job_state: "COMPLETED", exit_code: { return_code: 0, signal: 15 } },
+          ],
+        }),
+      },
+    ]);
+    expect(await new SlurmAdapter("23", { spawner: json.spawner }).status("123")).toMatchObject({
+      status: "failed",
+      exitCode: 143,
+    });
+  });
+});
+
+test("status control commands have deadlines and accounting states are not truncated", async () => {
+  const commands: string[][] = [];
+  const spawner: Spawner = {
+    run: async (argv, options) => {
+      commands.push(argv);
+      expect(options?.timeoutMs).toBe(10_000);
+      if (argv[0] === "squeue") return { exitCode: 0, stdout: "", stderr: "" };
+      if (argv[0] === "sacct") {
+        expect(argv).toContain("--format=JobIDRaw,State%64,ExitCode");
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "JobId=123 JobState=OUT_OF_MEMORY ExitCode=0:9", stderr: "" };
+    },
+  };
+  expect(await new SlurmAdapter("23", { spawner }).confirmStopped("123")).toBe(true);
+  expect(commands.map((argv) => argv[0])).toEqual(["squeue", "sacct", "scontrol"]);
+});
+
+describe("Slurm submission reconciliation identity", () => {
+  test("live and accounting rows with the same UUID but different IDs are ambiguous", async () => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "123|stable|KQ_JOB_ID=job-123|account\n" },
+      { exitCode: 0, stdout: "456|stable|KQ_JOB_ID=job-123|account\n" },
+    ]);
+    expect(
+      await new SlurmAdapter("23", { spawner }).findByKuintessenceJobId({
+        jobId: "job-123",
+        schedulerName: "stable",
+        includeCompleted: true,
+        submittedAfter: "2026-11-10",
+      }),
+    ).toMatchObject({
+      status: "indeterminate",
+      reason: "multiple Slurm jobs share Kuintessence UUID",
+    });
+  });
+
+  test("the same allocation seen by both backends is confirmed only once", async () => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "123|stable|KQ_JOB_ID=job-123|account\n" },
+      { exitCode: 0, stdout: "123|stable|KQ_JOB_ID=job-123|account\n" },
+    ]);
+    expect(
+      await new SlurmAdapter("23", { spawner }).findByKuintessenceJobId({
+        jobId: "job-123",
+        schedulerName: "stable",
+        includeCompleted: true,
+        submittedAfter: "2026-11-10",
+      }),
+    ).toEqual({ status: "found", schedulerJobId: "123" });
+  });
+
+  test("invalid queue IDs and failed historical confirmation never prove absence or uniqueness", async () => {
+    const invalid = mockSpawner([
+      { exitCode: 0, stdout: "not-an-allocation|stable|KQ_JOB_ID=job-123|account\n" },
+    ]);
+    expect(
+      await new SlurmAdapter("23", { spawner: invalid.spawner }).findByKuintessenceJobId({
+        jobId: "job-123",
+        schedulerName: "stable",
+      }),
+    ).toMatchObject({ status: "indeterminate" });
+    const missing = mockSpawner([
+      { exitCode: 0, stdout: "123|stable|KQ_JOB_ID=job-123|account\n" },
+      { exitCode: 1, stdout: "", stderr: "accounting unavailable" },
+    ]);
+    expect(
+      await new SlurmAdapter("23", { spawner: missing.spawner }).findByKuintessenceJobId({
+        jobId: "job-123",
+        schedulerName: "stable",
+        includeCompleted: true,
+        submittedAfter: "2026-11-10",
+      }),
+    ).toMatchObject({ status: "indeterminate" });
+  });
+
+  test("sbatch and scancel have deadlines, and timed-out submission stays uncertain", async () => {
+    const adapter = new SlurmAdapter("23", {
+      spawner: {
+        run: async (argv, options) => {
+          expect(options?.timeoutMs).toBe(argv[0] === "sbatch" ? 30_000 : 10_000);
+          throw new Error("transport deadline exceeded");
+        },
+      },
+    });
+    await expect(
+      adapter.submit({
+        jobId: "bounded",
+        name: "fixture",
+        command: "true",
+        cpus: 1,
+        memoryMb: 64,
+        gpus: 0,
+        wallTimeSec: 60,
+        workingDir: "/shared/fixture",
+        envVars: {},
+      }),
+    ).rejects.toMatchObject({ name: "SchedulerSubmissionUnknownError" });
+    await expect(adapter.cancel("123")).rejects.toThrow("deadline");
+  });
+});
+
+test.each([
+  {
+    stderr: "sbatch: error: Batch job submission failed: Socket timed out on send/recv operation",
+    stdout: "",
+  },
+  { stderr: "permission denied", stdout: "" },
+  { stderr: "unrecognized scheduler error", stdout: "" },
+  {
+    stderr:
+      "other command: sbatch: error: Batch job submission failed: Invalid partition name specified",
+    stdout: "",
+  },
+  {
+    stderr:
+      "sbatch: error: Batch job submission failed: Invalid partition name specified\nconnection lost",
+    stdout: "",
+  },
+  {
+    stderr: "sbatch: error: Batch job submission failed: Invalid partition name specified",
+    stdout: "123\n",
+  },
+])("nonzero submission is uncertain unless its sole controller rejection is unambiguous: %j", async (response) => {
+  const { spawner } = mockSpawner([{ exitCode: 1, ...response }]);
+  await expect(
+    new SlurmAdapter("23", { spawner }).submit({
+      jobId: "uncertain-exit",
+      name: "fixture",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/fixture",
+      envVars: {},
+    }),
+  ).rejects.toMatchObject({ name: "SchedulerSubmissionUnknownError" });
+});
+
+test.each([
+  false,
+  true,
+])("Slurm log control and tail reads are bounded (includeStderr=%s)", async (includeStderr) => {
+  const commands: string[][] = [];
+  const adapter = new SlurmAdapter("23", {
+    spawner: {
+      run: async (argv, options) => {
+        commands.push(argv);
+        expect(options?.timeoutMs).toBe(10_000);
+        return {
+          exitCode: 0,
+          stdout:
+            argv[0] === "scontrol"
+              ? "JobId=123 StdOut=/shared/log.out StdErr=/shared/log.err"
+              : "logs",
+          stderr: "",
+        };
+      },
+    },
+  });
+  expect(await adapter.getJobLogs("123", 10, "fixture", includeStderr)).toContain("logs");
+  expect(commands[0]?.[0]).toBe("scontrol");
+  expect(commands[1]?.[0]).toBe("tail");
+});
+
+describe("Slurm controller submission reconciliation without accounting", () => {
+  const lookup = {
+    jobId: "job-123",
+    schedulerName: "stable",
+    includeCompleted: true,
+    submittedAfter: "2026-11-10",
+  };
+  const row = (id = "123", uid = process.getuid?.() ?? 0, account = "account") =>
+    `JobId=${id} JobName=stable Comment=KQ_JOB_ID=job-123 Account=${account} UserId=fixture(${uid}) JobState=COMPLETED`;
+
+  test.each([
+    "",
+    "123|stable|KQ_JOB_ID=job-123|account\n",
+  ])("recovers retained completed allocations and merges the same live allocation: %s", async (queue) => {
+    const { spawner, calls } = mockSpawner([
+      { exitCode: 0, stdout: queue },
+      { exitCode: 0, stdout: row() },
+    ]);
+    expect(
+      await new SlurmAdapter("23", {
+        spawner,
+        terminalStatusBackend: "scontrol",
+      }).findByKuintessenceJobId(lookup),
+    ).toEqual({ status: "found", schedulerJobId: "123" });
+    expect(calls).toEqual([
+      ["squeue", "--noheader", "--name", "stable", "--me", "--format=%i|%j|%k|%a"],
+      ["scontrol", "show", "job", "-o"],
+    ]);
+  });
+
+  test("preserves mapped account scope rather than guessing its uid", async () => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: `${row("123", 4321, "mapped")}\n${row("456", 4321, "other")}` },
+    ]);
+    expect(
+      await new SlurmAdapter("23", {
+        spawner,
+        terminalStatusBackend: "scontrol",
+      }).findByKuintessenceJobId({ ...lookup, schedulerAccount: "mapped" }),
+    ).toEqual({ status: "found", schedulerJobId: "123" });
+  });
+
+  test.each([
+    "",
+    "No jobs in the system",
+    row("123_2"),
+    row("0"),
+    row("9007199254740992"),
+    `${row()} JobId=456`,
+    `${row()} Comment=other`,
+    `${row()} UserId=other(123)`,
+    `${row()} Account=other`,
+    `${row()} JobName=other`,
+    row().replace(/UserId=\S+/, "UserId=invalid"),
+    row("123", (process.getuid?.() ?? 0) + 1),
+    row().replace("JobName=stable", "JobName=other"),
+    row().replace("KQ_JOB_ID=job-123", "KQ_JOB_ID=job-123-extra"),
+    `${row()}\n${row("456")}`,
+    `${row()}\n${row()}`,
+  ])("retained history cannot confirm ambiguous or unauthorized identities: %s", async (history) => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: history },
+    ]);
+    expect(
+      await new SlurmAdapter("23", {
+        spawner,
+        terminalStatusBackend: "scontrol",
+      }).findByKuintessenceJobId(lookup),
+    ).toMatchObject({ status: "indeterminate" });
+  });
+
+  test.each([
+    { exitCode: 1, stdout: "", stderr: "controller unavailable" },
+    { exitCode: 0, stdout: row("456") },
+    { exitCode: 0, stdout: row("123", (process.getuid?.() ?? 0) + 1) },
+  ])("a queue hit does not bypass failed or conflicting controller confirmation: %j", async (history) => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "123|stable|KQ_JOB_ID=job-123|account\n" },
+      history,
+    ]);
+    expect(
+      await new SlurmAdapter("23", {
+        spawner,
+        terminalStatusBackend: "scontrol",
+      }).findByKuintessenceJobId(lookup),
+    ).toMatchObject({ status: "indeterminate" });
+  });
+});
+
+test.each([
+  {
+    history:
+      "JobId=123 JobName=stable Comment=KQ_JOB_ID=job-123 Account=account UserId=fixture(UID)",
+    expected: "found",
+  },
+  {
+    history:
+      "JobId=456 JobName=stable Comment=KQ_JOB_ID=job-123 Account=account UserId=fixture(UID)",
+    expected: "indeterminate",
+  },
+  { history: "", expected: "indeterminate" },
+  { history: null, expected: "indeterminate" },
+])("default accounting lookup safely falls back to controller: %j", async ({
+  history,
+  expected,
+}) => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: "123|stable|KQ_JOB_ID=job-123|account\n" },
+    { exitCode: 1, stdout: "", stderr: "accounting disabled" },
+    {
+      exitCode: history === null ? 1 : 0,
+      stdout: (history ?? "").replace("UID", String(process.getuid?.() ?? 0)),
+    },
+  ]);
+  const result = await new SlurmAdapter("23", { spawner }).findByKuintessenceJobId({
+    jobId: "job-123",
+    schedulerName: "stable",
+    includeCompleted: true,
+    submittedAfter: "2026-11-10",
+  });
+  expect(result.status).toBe(expected);
+  if (expected === "found") expect(result).toEqual({ status: "found", schedulerJobId: "123" });
+  expect(calls.map((argv) => argv[0])).toEqual(["squeue", "sacct", "scontrol"]);
 });

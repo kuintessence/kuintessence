@@ -2,6 +2,8 @@
 
 ## 当前状态
 
+本站新增的普通用户信任模式、Slurm worker、材料 Range 与签名票据续期见 [离线 Slurm 站点](offline-slurm-site.md)。以下历史范围中的 Range 限制由该实现更新；真实软件闭包与集群验收仍须逐站完成。
+
 当前实现 **Registry 持久化材料与 lock 预检 → Server 授权转发 → Agent 校验缓存与 lock 预检
 → 可选的隔离 source audit**。
 recipe 继续保存在本地 bare Git；源码及其他材料不进入 Git。
@@ -33,7 +35,7 @@ TypeScript 已接入固定 site profile digest、持久化安装账本和
 附加[材料可见策略](spack-material-visibility.md)在 policy-ready 阶段提供用户/组织允许列表，
 只收紧 namespace/recipe 权限；安装准备与每次旧 ticket 下载重新检查，不提供跨组织授权。
 受限厂商安装包、许可证授权、buildcache 发布、大规模材料目录索引、
-物理删除、Range/恢复上传和垃圾回收尚未接入；15 个工作流的目标 Linux 材料、
+物理删除和垃圾回收尚未接入；材料下载已支持 open-ended Range，材料发布上传恢复仍未接入；15 个工作流的目标 Linux 材料、
 lock、安装及运行验收仍未完成。
 
 ## 存储与边界
@@ -458,8 +460,11 @@ Agent 拒绝重定向，按大小和 SHA-256 流式校验，临时文件完成�
 复用缓存前重新校验内容与权限。cache 根目录和 digest 目录禁止 group/other 权限，
 新文件发布为 `0400`；已有 `0755` 缓存目录会被拒绝，不自动修改运维目录的权限。
 网络超时、缺件、篡改或版本不符均失败，保留之前已校验缓存，
-不会回退公网。当前每请求最多 60 秒、整个准备过程最多 10 分钟，较大材料在慢链路上
-可能失败；Range/续传和可配置长传输窗口尚待实现。ticket 过期后需重新发起新操作。
+不会回退公网。当前请求与票据续期均有最多 60 秒的等待期限；下载每次写入会刷新空闲期限，
+整个准备过程最多 24 小时。blob 网络中断或提前 EOF 会保留私有 `.part`，最多自动重试两次，
+通过 open-ended Range 与固定 digest ETag/If-Range 续传，最后重验整个文件的大小与 SHA-256。
+Agent 重启后也可复用已持久化 partial；partial 不是可信缓存，整文件校验前不会发布。
+配置 Agent 证书私钥时，401 可签名续期同一 operation/manifest 的票据；续期不能切换 manifest。
 下载完成后，Agent 在安装入口核对所有缓存引用与固定 manifest 的对应关系，
 并从同一文件描述符读取、重验和解析 manifest/lock；拒绝 symlink、内容或权限变化、
 路径替换和不完整引用。此步骤不展开 recipe、不证明 source 覆盖完整，也不启动 Spack。
@@ -754,3 +759,9 @@ Web 导入采用 mock HTTP/临时 File 的组件与队列测试，不替代真�
 Agent 重启、共享 store 写锁及 operation 重报的身份要求、固定错误码、保守拒绝边界和
 旧锁维护步骤见[Spack 安装中断与写锁恢复](spack-install-recovery.md)。不要按锁年龄清理
 `.writer-lock`；同一 boot 内 Agent 退出不证明全部安装 worker 已停止。
+
+Source audit 在 Agent 私有的 `audits/run-*/work` 创建磁盘 scratch，显式以 rw 绑定到隔离容器的 `/kq/work`；材料输入仍是 readonly bind，不放宽网络、namespace 或 cgroup 限制。scratch 使用材料 cache 所在磁盘，避免受 Apptainer 默认 sessiondir tmpfs 容量限制；站点需为材料副本、解包和审计临时文件预留磁盘空间与配额。有效报告返回后清理整次 run；执行或报告失败保留 run、scratch 与私有 bounded 诊断，运维调查后清理。未知 worker 仍按恢复流程确认终止，不能直接删除其目录。
+
+Managed worker 对 Apptainer 默认最小设备的 writable devtmpfs bind 仅接受精确的 `/dev/null` (1,3)、`/dev/zero` (1,5)、`/dev/random` (1,8)、`/dev/urandom` (1,9)、`/dev/tty` (5,0)：必须由 lstat 确认为对应 major/minor 的字符设备，且没有子挂载或重复挂载。`/dev/tty` 还必须以 `O_RDONLY|O_NOCTTY|O_NONBLOCK` 打开时明确返回 `ENXIO`，证明 worker 没有 controlling terminal；能打开、权限错误或其他错误均拒绝。此例外不放行其他 devtmpfs、块设备、符号链接或可写宿主文件，不改变 scratch/store 和 readonly pins 的验证。
+
+安装 worker 的本地 stderr 只为显式白名单内的 `AuditError` 输出 `install-worker-failed:<固定码>`，帮助在保留的 staging 诊断中识别边界失败；未知码及任意异常仍只输出 `install-worker-failed`，不打印异常原文，不改变平台结果 JSON。
