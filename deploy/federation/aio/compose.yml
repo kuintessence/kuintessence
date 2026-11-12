@@ -122,6 +122,8 @@ services:
       AGENT_SPACK_PATH: /opt/spack/bin/spack
       AGENT_SPACK_CACHE_DIR: /var/lib/kuintessence/spack-materials
       AGENT_SPACK_MANAGED_MEMORY_MIB: "1024"
+      AGENT_FEDERATION_INPUT_COPY: ${AGENT_FEDERATION_INPUT_COPY:-null}
+      AGENT_FEDERATION_RESULT_COPY: ${AGENT_FEDERATION_RESULT_COPY:-null}
     extra_hosts:
       - "${KQ_AIO_STORAGE_HOST:?}:host-gateway"
     volumes:

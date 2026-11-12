@@ -1,6 +1,7 @@
 /// <reference path="./python.d.ts" />
 import { link, lstat, mkdir, mkdtemp, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { SPACK_COMPATIBILITY } from "@kuintessence/shared";
 import { ExecutionAuthorization } from "../execution-authorization";
 import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
 import {
@@ -138,6 +139,14 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
         mode: 0o400,
       });
       await writeFile(join(inputs, "source_audit.py"), workerSource, { flag: "wx", mode: 0o400 });
+      await writeFile(
+        join(inputs, "spack-compatibility.json"),
+        JSON.stringify(SPACK_COMPATIBILITY),
+        {
+          flag: "wx",
+          mode: 0o400,
+        },
+      );
       for (const blob of prepared.blobs) {
         const verified = await cache.reuse(blob, signal);
         if (!verified || verified.path !== blob.path)
@@ -222,6 +231,7 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
       }
       if (
         report.manifestDigest !== input.manifestDigest ||
+        report.spackVersion !== prepared.manifest.spackVersion ||
         report.rootHash !== preflight.rootHash ||
         report.nodeCount !== preflight.nodeCount ||
         report.externalCount !== preflight.externalCount ||

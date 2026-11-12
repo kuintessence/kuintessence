@@ -333,6 +333,21 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(any(c[0] in ("repositories", "solve", "installer")
                              for c in self.native.calls))
 
+    def test_compatible_version_runs_install_verify_and_load(self):
+        for action in ("install", "verify", "load"):
+            with self.subTest(action=action):
+                self.setUp()
+                self.lock["spack"]["version"] = "1.0.3"
+                self.manifest["spackVersion"] = "1.0.3"
+                self.native.modules["spack"].__version__ = "1.0.3"
+                self.assertEqual(self.run_worker(action)["action"], action)
+
+    def test_runtime_version_mismatch_stops_before_recipes(self):
+        self.native.modules["spack"].__version__ = "1.0.3"
+        with self.assertRaisesRegex(audit.AuditError, "spack-version-mismatch"):
+            self.run_worker()
+        self.assert_no_recipes()
+
     def test_managed_memory_budget_is_private_strict_and_required(self):
         path = self.input / "managed-memory.json"
         for value in (None, True, False, "1024", 1024.0, 1024.5, 1023, 4097, 0, -1, [], {}):

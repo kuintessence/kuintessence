@@ -2,7 +2,7 @@
 
 三台新增虚拟机运行独立 A/B/C 平台、Fabric 和容器测试集群，A/B 使用 Slurm，C 使用 PBS；R 按需在 A 主机运行独立项目。现有集群不变，主平台只新增第四个 Orderer。完整范围见[实施清单](../../../docs/design/federation/aio-delivery.md)。
 
-固定候选 `b54743b` 的 21 镜像归档已真实导出并核验，两类调度器的正式 target／runtime 入口均已实证。但其中 Spack 1.0.3 不符合生产安装 worker 的 1.0.0 契约；AIO 新构建已显式固定 `SPACK_REF=v1.0.0`，新候选的镜像、SIF 和扩充观察结果仍待构建／导出核验。未启动 AIO 平台／测试集群、部署或合并，不能据此声明三机构、SmartBFT、容量或科研验收通过。
+固定候选 `b54743b` 的 21 镜像归档已真实导出并核验，两类调度器的正式 target／runtime 入口均已实证；其中 Spack 为 1.0.3，旧 Agent 只接受 1.0.0。新研发候选已接通[多版本严格绑定](../../../docs/spack-compatible-versions.md)，不追改旧镜像。新候选的原生审计、冷安装及镜像/SIF 交付仍待完成，不能据此声明三机构、SmartBFT、容量或科研验收通过。未部署或合并。
 
 ## 本机构建与导出
 
@@ -34,7 +34,7 @@ python3 deploy/federation/offline.py \
   --image-engine nerdctl --containerd-address /run/k3s/containerd/containerd.sock \
   --namespace kq-federation-build \
   --buildkit-host unix:///run/kuintessence-buildkit/buildkitd.sock \
-  build --revision <完整提交> --casdoor-image casbin/casdoor@sha256:<已确认摘要>
+  build --revision <完整提交> --spack-version 1.0.0 --casdoor-image casbin/casdoor@sha256:<已确认摘要>
 
 python3 deploy/federation/offline.py \
   --image-engine nerdctl --containerd-address /run/k3s/containerd/containerd.sock \
@@ -42,6 +42,8 @@ python3 deploy/federation/offline.py \
   export --revision <完整提交> --casdoor-image casbin/casdoor@sha256:<同一已确认摘要> \
   --output /交付盘/指定版本
 ```
+
+`--spack-version` 默认为 1.0.0，可显式选择表内的 1.0.3 候选；这不代表新版本已通过原生安装验证。最终 Slurm/PBS 镜像版本须一致，导出清单保存 `spackVersion` 和共享兼容表，缺失或混用时拒绝。新版工具需连同表使用，交付包已包含该文件。
 
 原生 Docker 构建机可省略 engine 等全局选项。镜像串行构建，包含九类 KQ 镜像、两个内置编译 Agent 的调度器、经批准的登录镜像及第三方运行镜像。一个 gzip 归档保存全部镜像；manifest 记录 Git revision、架构、镜像 ID、来源 repo digest、文件大小与 SHA-256。
 
@@ -52,6 +54,18 @@ python3 deploy/federation/offline.py \
 保留工具输出的 manifest 摘要，通过独立受控通道交付接收方；随包校验和不是签名。本工具不生成机构授权或科研材料；材料、许可证、provenance、recipe 和 native lock 由既有 `kq-bundles` 兼容交付另行提供并关联，镜像包不是科学软件离线包。
 
 调度器封装时核对 Server 产出的 Agent manifest、同提交 revision、实际二进制长度和 SHA-256；不能仅给旧 Agent 镜像贴上新标签。OpenPBS 默认单进程编译。构建结束重新检查工作树；导出在生成最终 manifest 前复查源版本及镜像 ID，发现漂移不发布 ready 清单。压缩失败或磁盘写入失败会终止并回收导出进程，保留失败目录供核对，不自动删除原材料。
+
+## 文件搬运、公共 CA 与容量保护
+
+跨机构 Workflow 的网络输入／结果搬运通过 AIO `env.example` 中的 `AGENT_FEDERATION_INPUT_COPY`、`AGENT_FEDERATION_RESULT_COPY` 显式配置，默认均为 `null`。两项分别使用 `/var/lib/kuintessence/federation-input` 和 `/var/lib/kuintessence/federation-result`，保存在 `scheduler-state` 卷内；声明字节预算和允许的 HTTPS 来源／目标，不自动开放其他机构的 origin。托管模式也可在私有 `runtime/agent.json` 设置对应 JSON 字符串，此时 Compose 保持 null；两处均启用且内容不同时拒绝启动。
+
+仅开启搬运时，由实际 Agent 身份创建自己的 0700 暂存目录（托管模式为 kq）。已有目录的所有者、权限或符号链接不符时要求维护，不递归改属主或移动历史数据。切换普通／托管身份前单独处理已有暂存目录，不能靠重新部署覆盖。媒体交付配置不因网络搬运开启而启用。
+
+私有 CA 站点在 `config` 时显式添加 `--public-ca-file /绝对路径/public-ca.pem`，为 Server、Registry 和 Agent 只读挂载公共 CA bundle；不挂载包含私钥的整个 TLS 目录。文件应为规范绝对路径、普通非空文件、无组／其他用户写权限，且供容器用户读取。运行前再次检查；工具不生成或批准 CA。`CURL_CA_BUNDLE` 使用该文件作为信任集合，若需要同时访问其他可信站点，应预先提供包含所需 CA 的完整 bundle。托管 `agent.json` 不能覆盖 Compose 已选定的另一套 CA，冲突会阻止启动。
+
+容量保护在 `config` 时显式添加 `--storage-guard`，适用于 direct／fabric 机构和独立 R，独立 Orderer 不接受此参数。先按[存储容量说明](../storage-capacity.md)在包外提供 Server policy、observer 配置／Ed25519 key、卷 marker 及报告目录，并在私有 env 中配置 `FEDERATION_STORAGE_POLICY_FILE`、`FEDERATION_STORAGE_OBSERVER_CONFIG`、`FEDERATION_STORAGE_OBSERVER_KEY`、`FEDERATION_STORAGE_REPORT_DIRECTORY`、`FEDERATION_STORAGE_OBSERVER_UID` 和 `FEDERATION_STORAGE_REPORT_GID`。启动前检查 owner、权限与只读报告挂载，不制造密钥、政策或健康报告；缺失／过期报告继续由生产 Server 拒绝新接单。
+
+观测服务使用已交付镜像，无现场构建或拉取，另计 128 MiB 内存及 0.25 CPU 预算。上述可选入口补齐部署接线，尚未证明真实文件传输、TLS 登录、容量暂停恢复或现场故障验收通过。
 
 ## 目标容器运行时材料
 
@@ -79,7 +93,7 @@ python3 /受信任工具/offline.py load --bundle /目标交付目录 --manifest
 
 ## 最终镜像的目标信息
 
-镜像完成构建、导出后，在本机运行下面的显式观察命令。它会创建短期容器，不启动 KQ、调度器或 Agent。`b54743b` 的两类正式 target 入口已在相同隔离条件通过；Slurm 版本读取使用 `slurmd --version`，避免 `sinfo` 依赖本站配置。Spack 1.0.0 新候选须重新记录观察结果。
+镜像完成构建、导出后，在本机运行下面的显式观察命令。它会创建短期容器，不启动 KQ、调度器或 Agent。`b54743b` 的两类正式 target 入口已在相同隔离条件通过；Slurm 版本读取使用 `slurmd --version`，避免 `sinfo` 依赖本站配置。最终选定版本的新候选须重新记录观察结果。
 
 ```sh
 python3 deploy/federation/offline.py \
@@ -97,7 +111,7 @@ PBS 再执行一次并选择 `--scheduler pbs` 和独立输出。目标 Docker �
 
 ## 托管安装与联邦任务运行时
 
-AIO 调度器使用 Ubuntu 24.04、生产安装 worker 支持的 Spack 1.0.0、同提交的编译 Agent、Apptainer 1.4.3 和 systemd。AIO 构建显式指定 Spack 版本，普通调度器基础镜像的 Ubuntu 20.04／Spack 1.0.3 默认值不变；旧宿主或旧镜像的 native lock 不能直接套用。公共 SIF 仅包含系统与编译/Spack 工具，不预装待验收的科学软件。提取先用与目标观察相同的限额、禁网、只读、非 root 观察容器读取镜像内 SIF 的字节数／SHA-256 小 JSON，再以受限 create 建立但不启动临时容器，通过 cp 复制文件，并在 finally 删除该容器：
+AIO 调度器使用 Ubuntu 24.04、显式选择的 Spack 兼容版本、同提交的编译 Agent、Apptainer 1.4.3 和 systemd。AIO 构建显式指定 Spack 版本，普通调度器基础镜像的 Ubuntu 20.04／Spack 1.0.3 默认值不变；旧宿主或旧镜像的 native lock 不能直接套用。公共 SIF 仅包含系统与编译/Spack 工具，不预装待验收的科学软件。提取先用与目标观察相同的限额、禁网、只读、非 root 观察容器读取镜像内 SIF 的字节数／SHA-256 小 JSON，再以受限 create 建立但不启动临时容器，通过 cp 复制文件，并在 finally 删除该容器：
 
 ```sh
 python3 deploy/federation/offline.py runtime \
@@ -105,7 +119,7 @@ python3 deploy/federation/offline.py runtime \
   --scheduler slurm --output /受控材料/spack-unsigned.sif
 ```
 
-containerd 构建机在 `runtime` 前加前述 nerdctl 全局参数。复制后的字节数和 SHA-256 必须与镜像内记录完全一致，才发布只读 SIF 及旁边的 0600 metadata JSON；记录绑定提交、镜像 ID、字节数和 SHA-256，并明确标记尚未签名、尚未通过软件安装。失败留下 `.creating`，不会覆盖已有文件或盲目重试。先核对失败记录再人工处置；不把残留文件当作可用材料。实际发现过 stdout 命令退出 0 但 SIF 少 57,344 字节，原件留证且不得签名；`b54743b` 两类正式 runtime 入口已通过完整复制校验。固定 Spack 1.0.0 后的新 SIF 摘要与入口结果须重新取得。
+containerd 构建机在 `runtime` 前加前述 nerdctl 全局参数。复制后的字节数和 SHA-256 必须与镜像内记录完全一致，才发布只读 SIF 及旁边的 0600 metadata JSON；记录绑定提交、镜像 ID、字节数和 SHA-256，并明确标记尚未签名、尚未通过软件安装。失败留下 `.creating`，不会覆盖已有文件或盲目重试。先核对失败记录再人工处置；不把残留文件当作可用材料。实际发现过 stdout 命令退出 0 但 SIF 少 57,344 字节，原件留证且不得签名；`b54743b` 两类正式 runtime 入口已通过完整复制校验。新候选 SIF 的摘要与入口结果须重新取得。
 
 各机构在独立受控环境批准签署，先核对原始提取记录，再在已存在的私有签署目录独占创建可写副本。下面只使用机构自行持有的 PEM 密钥，不创建密钥或覆盖原件：
 
@@ -145,7 +159,7 @@ SIF 的 `runtime.pub` 是 PEM 验签公钥；`AGENT_SANDBOX_PUBLIC_KEYS_JSON` �
 }
 ```
 
-只接受这些运行时键及安装内存/超时、证明期限、可选公共 CA 路径 `NODE_EXTRA_CA_CERTS`/`CURL_CA_BUNDLE`。CA 文件同样受 root 路径保护。不能覆盖 Agent/Server 身份、开启 root impersonation 或注入 Node/shell 选项。不要把部署口令或任何私钥放入此 JSON。缓存中的 `signatureVerified` 不能代替实际验签和原生探测。
+只接受这些运行时键、显式网络输入／结果搬运 JSON，以及安装内存/超时、证明期限、可选公共 CA 路径 `NODE_EXTRA_CA_CERTS`/`CURL_CA_BUNDLE`。CA 文件同样受 root 路径保护。不能覆盖 Agent/Server 身份、开启 root impersonation 或注入 Node/shell 选项。不要把部署口令或任何私钥放入此 JSON。缓存中的 `signatureVerified` 不能代替实际验签和原生探测。
 
 `site.json` 沿用生产 [site profile 契约](../../../packages/agent/src/spack/install-contract.ts)，绑定签后 SIF、最终镜像 OS、编译器/外部工具摘要及目标 lock 的 external。固定 `storeRoot=/srv/kq/spack`；共享 store、节点兼容、可信 recipe、本站限额四项确认须由本站核对，启动脚本不替操作者填写。镜像观察结果不是完整 profile，也不能替代 lock 生成。Spack 仍须从平台导入的真实 recipe、源码和最终目标依赖锁完成冷安装。
 

@@ -141,7 +141,7 @@ class Native:
         self.nodes = {key: FakeSpec(self, key, node) for key, node in lock["concrete_specs"].items()}
         self.roots = [self.nodes[lock["roots"][0]["hash"]]]
         self.modules = {"spack": types.ModuleType("spack")}
-        self.modules["spack"].__version__ = "1.0.0"
+        self.modules["spack"].__version__ = lock["spack"]["version"]
         for name in ("config", "repo", "environment", "spec", "fetch_strategy", "hash_types"):
             module = types.ModuleType("spack." + name)
             self.modules["spack." + name] = module
@@ -350,6 +350,32 @@ class AuditTests(unittest.TestCase):
                     self.assertEqual(native.calls, [])
                     self.assertEqual(list(self.work.iterdir()), [])
                     path.write_bytes(original)
+
+    def test_supported_version_is_bound_to_lock_runtime_and_report(self):
+        self.lock["spack"]["version"] = "1.0.3"
+        self.manifest["spackVersion"] = "1.0.3"
+        report, _ = self.run_audit()
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["spackVersion"], "1.0.3")
+
+    def test_supported_versions_cannot_be_mixed(self):
+        self.manifest["spackVersion"] = "1.0.3"
+        with self.assertRaisesRegex(audit.AuditError, "spack-version-mismatch"):
+            self.run_audit()
+
+    def test_runtime_version_must_match_before_loading_recipes(self):
+        native = Native(self.work, self.lock)
+        native.modules["spack"].__version__ = "1.0.3"
+        with self.assertRaisesRegex(audit.AuditError, "spack-version-mismatch"):
+            self.run_audit(native)
+        self.assertEqual(native.calls, [])
+
+    def test_unknown_version_fails_before_loading_recipes(self):
+        self.manifest["spackVersion"] = "1.0.4"
+        native = Native(self.work, self.lock)
+        with self.assertRaisesRegex(audit.AuditError, "unsupported-spack-version"):
+            self.run_audit(native)
+        self.assertEqual(native.calls, [])
 
     def test_native_sources_resources_patches_and_exact_contract(self):
         report, native = self.run_audit()

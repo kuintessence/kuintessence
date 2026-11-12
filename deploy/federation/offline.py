@@ -34,7 +34,7 @@ COMPONENTS = {
 THIRD_PARTY = ("postgres:16-alpine", "redis:7-alpine", "authzed/spicedb:v1.54.0",
                "rustfs/rustfs:1.0.0", "rustfs/rc:v0.1.36", "mariadb:11.4.8",
                "hyperledger/fabric-peer:3.1.5", "hyperledger/fabric-orderer:3.1.5", "nginx:1.27-alpine")
-PUBLIC_FILES = ("deploy/main/compose.yml", "deploy/federation/compose.ingress.yml",
+LEGACY_PUBLIC_FILES = ("deploy/main/compose.yml", "deploy/federation/compose.ingress.yml",
                 "deploy/federation/compose.fabric.yml", "deploy/federation/fabric-init.sh",
                 "deploy/federation/offline.py", "deploy/rustfs/bootstrap-object-lock.sh",
                 "deploy/main/env.example", "deploy/federation/env.example",
@@ -44,6 +44,9 @@ PUBLIC_FILES = ("deploy/main/compose.yml", "deploy/federation/compose.ingress.ym
                 "deploy/federation/aio/pbs.yml", "deploy/federation/aio/managed.yml",
                 "deploy/federation/aio/accounting.yml",
                 "deploy/federation/aio/edge.conf.example")
+SPACK_POLICY_FILE = "packages/shared/src/spack-compatibility.json"
+PUBLIC_FILES = (*LEGACY_PUBLIC_FILES, SPACK_POLICY_FILE, "deploy/federation/compose.storage.yml",
+                "deploy/federation/aio/compose.trust.yml")
 
 
 def run(args, **kwargs):
@@ -93,10 +96,27 @@ def inspect_image(name):
     return {"name": name, "id": record["Id"], "size": record["Size"],
             "repoDigests": record.get("RepoDigests", []),
             "source": (record.get("Config", {}).get("Labels") or {}).get("org.opencontainers.image.source"),
-            "revision": (record.get("Config", {}).get("Labels") or {}).get("org.opencontainers.image.revision")}
+            "revision": (record.get("Config", {}).get("Labels") or {}).get("org.opencontainers.image.revision"),
+            "spackVersion": (record.get("Config", {}).get("Labels") or {}).get("org.kuintessence.spack.version", "").removeprefix("v") or None}
+
+
+def require_spack_version(version):
+    policy = json.loads((ROOT / SPACK_POLICY_FILE).read_text())
+    if not isinstance(version, str) or version not in policy:
+        raise ValueError("Unsupported Spack version; use an explicit compatibility-table entry")
+    return version
+
+
+def scheduler_spack_version(records, revision):
+    names = {image_name(f"scheduler-{scheduler}", revision) for scheduler in ("slurm", "pbs")}
+    versions = [record.get("spackVersion") for record in records if record["name"] in names]
+    if len(versions) != 2 or versions[0] != versions[1]:
+        raise ValueError("Scheduler images must use the same supported Spack version")
+    return require_spack_version(versions[0])
 
 
 def build(args):
+    spack_version = require_spack_version(getattr(args, "spack_version", "1.0.0"))
     source_revision(args.revision)
     if args.minimum_free_gib < 1:
         raise ValueError("Build space requirement must be positive")
@@ -117,7 +137,7 @@ def build(args):
     scheduler_base = image_name("scheduler-base", args.revision)
     run([*IMAGE_ENGINE, "build", *BUILD_OPTIONS, "--platform", "linux/amd64", "-t", scheduler_base,
          "--build-arg", "SCHEDULER_OS_IMAGE=ubuntu:24.04",
-         "--build-arg", "SPACK_REF=v1.0.0",
+         "--build-arg", f"SPACK_REF=v{spack_version}",
          "-f", "deploy/schedulers/base/Dockerfile", "deploy/schedulers"], cwd=ROOT)
     managed_base = image_name("scheduler-managed-base", args.revision)
     run([*IMAGE_ENGINE, "build", *BUILD_OPTIONS, "--platform", "linux/amd64", "-t", managed_base,
@@ -154,6 +174,7 @@ def export(args):
     for record in records:
         if record["name"] in names[:-1] and record["revision"] != args.revision:
             raise ValueError("Locally built image revision mismatch")
+    spack_version = scheduler_spack_version(records, args.revision)
     output = args.output.resolve()
     if output.exists():
         raise ValueError("Output must not already exist; incomplete deliveries are never overwritten")
@@ -193,7 +214,7 @@ def export(args):
              for name in ("images.tar.gz", *PUBLIC_FILES)}
     manifest = {"version": 1, "revision": args.revision, "platform": "linux/amd64",
                 "casdoor": {"source": args.casdoor_image, "id": casdoor["id"]},
-                "images": records, "files": files}
+                "images": records, "files": files, "spackVersion": spack_version}
     source_revision(args.revision)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"manifest-sha256: {digest(output / 'manifest.json')}")
@@ -211,8 +232,11 @@ def isolated_image_command(name, entrypoint, create_name=None):
 def scheduler_image(manifest, scheduler):
     name = image_name(f"scheduler-{scheduler}", manifest["revision"])
     record = next(record for record in manifest["images"] if record["name"] == name)
-    if inspect_image(name)["id"] != record["id"]:
+    actual = inspect_image(name)
+    if actual["id"] != record["id"]:
         raise ValueError("Target image does not match trusted manifest")
+    if "spackVersion" in manifest and actual.get("spackVersion") != manifest["spackVersion"]:
+        raise ValueError("Target Spack version does not match trusted manifest")
     return record
 
 
@@ -291,7 +315,8 @@ def verify_bundle(bundle, expected_digest):
     if manifest["version"] != 1 or manifest["platform"] != "linux/amd64":
         raise ValueError("Unsupported delivery version or architecture")
     require_revision(manifest["revision"])
-    if set(manifest["files"]) != {"images.tar.gz", *PUBLIC_FILES}:
+    public_files = PUBLIC_FILES if "spackVersion" in manifest else LEGACY_PUBLIC_FILES
+    if set(manifest["files"]) != {"images.tar.gz", *public_files}:
         raise ValueError("Unexpected or missing delivery payload")
     for name, expected in manifest["files"].items():
         path = bundle / name
@@ -319,6 +344,10 @@ def verify_bundle(bundle, expected_digest):
     alias = next(record for record in manifest["images"] if record["name"] == image_name("casdoor", manifest["revision"]))
     if casdoor.get("id") != alias["id"]:
         raise ValueError("Casdoor source identity does not match its alias")
+    if "spackVersion" in manifest:
+        require_spack_version(manifest["spackVersion"])
+        if scheduler_spack_version(manifest["images"], manifest["revision"]) != manifest["spackVersion"]:
+            raise ValueError("Manifest Spack version does not match scheduler images")
     return manifest
 
 
@@ -327,6 +356,8 @@ def validate_images(manifest):
         actual = inspect_image(record["name"])
         if actual["id"] != record["id"]:
             raise ValueError("Loaded image does not match trusted manifest")
+        if "spackVersion" in manifest and record.get("spackVersion") != actual.get("spackVersion"):
+            raise ValueError("Loaded image Spack version does not match trusted manifest")
 
 
 def load_images(bundle, manifest):
@@ -355,6 +386,12 @@ def render_config(bundle, manifest, args):
         raise ValueError("Arbitrator and Orderer deployments require fabric mode")
     if getattr(args, "managed", False) and args.role != "institution":
         raise ValueError("Managed compute is limited to an institution's test scheduler")
+    storage_guard = getattr(args, "storage_guard", False)
+    public_ca = getattr(args, "public_ca_file", None)
+    if args.role == "orderer" and (storage_guard or public_ca is not None):
+        raise ValueError("Storage guard and public CA apply only to institution or arbitrator platforms")
+    if public_ca is not None:
+        require_public_ca(public_ca)
     env = {k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"}}
     env["KQ_IMAGE_TAG"] = f"sha-{manifest['revision']}"
     env["KQ_AIO_SCHEDULER"] = args.scheduler
@@ -369,6 +406,11 @@ def render_config(bundle, manifest, args):
         files.append("deploy/federation/aio/managed.yml")
         if args.scheduler == "slurm":
             files.append("deploy/federation/aio/accounting.yml")
+    if storage_guard:
+        files.append("deploy/federation/compose.storage.yml")
+    if public_ca is not None:
+        env["KQ_AIO_PUBLIC_CA_FILE"] = str(public_ca)
+        files.append("deploy/federation/aio/compose.trust.yml")
     if args.role == "orderer":
         files = ["deploy/federation/aio/orderer.yml"]
     command = ["docker", "compose", "--project-directory", bundle, "--env-file", args.env_file,
@@ -400,14 +442,88 @@ def render_config(bundle, manifest, args):
             service.setdefault("mem_limit", (384 if name in ("fabric-peer", "fabric-orderer") else 128) * 1024 ** 2)
         if "privileged" in service and name != "scheduler":
             raise ValueError("Only the isolated test scheduler may be privileged")
+    if storage_guard:
+        if "federation-storage-observer" not in config["services"]:
+            raise ValueError("Storage guard requires the delivered observer service")
+        validate_storage_guard(config)
+    validate_public_ca(config)
     config["name"] = args.project
     return config
 
 
-def require_private_file(path):
+def require_private_file(path, owner=None):
     info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+    if owner is None:
+        owner = os.getuid()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_mode & 0o077:
         raise ValueError("Environment/config file must be private and owned by this user")
+
+
+
+def require_public_ca(path):
+    if not path.is_absolute() or path.resolve(strict=True) != path:
+        raise ValueError("Public CA path must be canonical")
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022 or not 0 < info.st_size <= 1024 ** 2:
+        raise ValueError("Public CA must be a nonempty regular file without group/world write permission")
+
+
+def validate_public_ca(config):
+    for service in config["services"].values():
+        for volume in service.get("volumes", []):
+            if volume["target"] == "/run/kq-public-trust/ca.pem":
+                if volume.get("type") != "bind" or not volume.get("read_only"):
+                    raise ValueError("Public CA requires a read-only file mount")
+                require_public_ca(Path(volume["source"]))
+
+
+def validate_storage_guard(config):
+    observer = config["services"].get("federation-storage-observer")
+    if observer is None:
+        return
+    server = config["services"]["server"]
+    identity = observer.get("user", "")
+    if not re.fullmatch(r"[0-9]+:[0-9]+", identity):
+        raise ValueError("Storage observer requires an explicit numeric UID:GID")
+    uid, gid = map(int, identity.split(":"))
+    server_identity = str(server.get("user", "0"))
+    if not re.fullmatch(r"[0-9]+(?::[0-9]+)?", server_identity):
+        raise ValueError("Storage policy requires a numeric Server UID")
+    server_uid = int(server_identity.split(":")[0])
+    if str(gid) not in [str(value) for value in server.get("group_add", [])]:
+        raise ValueError("Storage reports require the Server's dedicated shared group")
+
+    def mount(service, target, readonly):
+        volumes = [volume for volume in service.get("volumes", []) if volume["target"] == target]
+        if len(volumes) != 1:
+            raise ValueError("Missing storage guard mount")
+        volume = volumes[0]
+        if (volume.get("type") != "bind" or bool(volume.get("read_only")) != readonly
+                or volume.get("bind", {}).get("create_host_path", False) is not False):
+            raise ValueError("Storage guard mounts must use existing paths and the required read-only boundary")
+        path = Path(volume["source"])
+        if not path.is_absolute() or path.resolve(strict=True) != path:
+            raise ValueError("Storage guard paths must be canonical")
+        return path
+
+    for service, target, owner, maximum in (
+        (server, "/run/kq-storage/policy.json", server_uid, 131072),
+        (observer, "/run/kq-storage/observer.json", uid, 16384),
+        (observer, "/run/kq-storage/observer.key", uid, 16384),
+    ):
+        path = mount(service, target, True)
+        require_private_file(path, owner)
+        if not 0 < path.stat().st_size <= maximum:
+            raise ValueError("Storage guard file is empty or exceeds its runtime limit")
+    reports = mount(observer, "/run/kq-storage-reports", False)
+    if mount(server, "/run/kq-storage-reports", True) != reports:
+        raise ValueError("Server and observer must share the original storage report directory")
+    info = reports.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid
+            or info.st_mode & 0o027 or info.st_mode & 0o750 != 0o750):
+        raise ValueError("Storage reports require an observer-owned private directory and shared read group")
+    if server.get("environment", {}).get("FEDERATION_STORAGE_GUARD_FILE") != "/run/kq-storage/policy.json":
+        raise ValueError("Storage policy must be connected to the Server admission guard")
 
 
 def validate_accounting_credentials(config):
@@ -519,6 +635,8 @@ def main():
     build_parser.add_argument("--revision", required=True)
     build_parser.add_argument("--casdoor-image", required=True)
     build_parser.add_argument("--minimum-free-gib", type=int, default=40)
+    build_parser.add_argument("--spack-version", default="1.0.0",
+                              help="Exact compatible Spack version; 1.0.3 remains a native-validation candidate")
     exporter = commands.add_parser("export", help="Export the complete image set and public payload")
     exporter.add_argument("--revision", required=True)
     exporter.add_argument("--casdoor-image", required=True)
@@ -535,6 +653,8 @@ def main():
             command.add_argument("--destination", required=True)
         if action == "config":
             command.add_argument("--managed", action="store_true", help="Enable the isolated AIO managed compute runtime")
+            command.add_argument("--storage-guard", action="store_true", help="Enable the provisioned storage admission guard")
+            command.add_argument("--public-ca-file", type=Path, help="Existing approved public CA bundle for AIO HTTPS clients")
             command.add_argument("--mode", choices=("direct", "fabric"), required=True)
             command.add_argument("--role", choices=("institution", "arbitrator", "orderer"), default="institution")
             command.add_argument("--scheduler", choices=("slurm", "pbs"), default="slurm")
@@ -584,7 +704,8 @@ def main():
     elif args.action == "config":
         config = render_config(bundle, manifest, args)
         private_write(args.output, {"deliveryManifest": args.manifest_sha256, "mode": args.mode,
-                                    "role": args.role, "managedRuntime": args.managed, "compose": config})
+                                    "role": args.role, "managedRuntime": args.managed,
+                                    "storageGuard": args.storage_guard, "compose": config})
         print(json.dumps(capacity(config)))
         print("Private config written; this is not a runtime readiness result")
     elif args.action in ("up", "admin"):
@@ -604,6 +725,8 @@ def main():
             budget = capacity({"services": {"fabric-admin": service}}, other_container_limits(""))
         else:
             validate_accounting_credentials(config)
+            validate_storage_guard(config)
+            validate_public_ca(config)
             budget = capacity(config, other_container_limits(config["name"]))
         if not budget["fitsReservedBudget"] or not budget["fitsAvailableBudget"]:
             raise ValueError(f"Capacity preflight failed: {json.dumps(budget)}; measure/tune or expand before startup")
@@ -612,7 +735,8 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             state_path = args.config.parent / f"{config['name']}.deployment.json"
             state = {"mode": saved["mode"], "role": saved["role"], "manifest": args.manifest_sha256,
-                     "managedRuntime": saved.get("managedRuntime", False), "phase": "starting"}
+                     "managedRuntime": saved.get("managedRuntime", False),
+                     "storageGuard": saved.get("storageGuard", False), "phase": "starting"}
             if state_path.exists():
                 require_private_file(state_path)
                 previous = json.loads(state_path.read_text())
@@ -620,6 +744,8 @@ def main():
                     raise ValueError("Existing deployment requires explicit backup/maintenance before changing mode, role or release")
                 if previous.get("managedRuntime", False) != state["managedRuntime"]:
                     raise ValueError("Changing the compute runtime requires explicit backup/maintenance")
+                if previous.get("storageGuard", False) != state["storageGuard"]:
+                    raise ValueError("Changing storage admission protection requires explicit maintenance")
             elif args.action == "admin":
                 raise ValueError("Start the matching offline project before administration")
             else:

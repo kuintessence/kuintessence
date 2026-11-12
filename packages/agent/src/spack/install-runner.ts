@@ -1,6 +1,7 @@
 /// <reference path="./python.d.ts" />
 import { link, lstat, mkdir, mkdtemp, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { SPACK_COMPATIBILITY } from "@kuintessence/shared";
 import { ExecutionAuthorization } from "../execution-authorization";
 import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
 import {
@@ -209,6 +210,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
           storePath,
           siteProfile: site.profile,
         }),
+        "spack-compatibility.json": JSON.stringify(SPACK_COMPATIBILITY),
         "source_audit.py": auditWorker,
         "install_worker.py": installWorker,
       };

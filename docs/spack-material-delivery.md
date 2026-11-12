@@ -355,9 +355,9 @@ digest 和大小必须替换为真实返回值，不可直接提交：
 
 ### Lock 预检
 
-本批明确支持 **Spack 1.0.0 生成的 lock v6 / spec v5**。这是已核对的兼容组合，
-不是自动支持所有 Spack 版本。其他版本仍可上传 blob，但当前不能发布新的安装 release。
-已有不可变 manifest 不改写；Agent 在安装入口重新检查，不因它发布于旧版本而跳过。
+版本和格式采用[显式兼容表](spack-compatible-versions.md)，当前研发候选列出 Spack 1.0.0、1.0.3 的 lock v6 / spec v5。
+lock 生产者必须与材料 `spackVersion` 完全一致，Agent 再核对实际运行时；表内版本也不能混用。
+静态发布通过不代表新版本已通过原生安装验收。已有不可变 manifest 不改写，未知版本仍拒绝发布安装 release。
 
 - lock 限制为 16 MiB，必须是有效 UTF-8 JSON，重复键拒绝。
 - 只接受一个 root，其 `spec` 字符串须与 release 的 spec 完全一致。
@@ -494,7 +494,7 @@ Server ticket、下载校验和静态预检仍然必须先通过；没有 runtim
 - Agent 必须运行在 Linux、使用非 root 专用 UID。Apptainer 与 SIF 必须 root 所有，
   父目录逐级 root 所有且 group/other 不可写，不允许 symlink。SIF 所有写位必须清除。
   每次审计重新校验两者 SHA-256，执行前再次复验；不能填写未知来源文件的 digest 来代替信任审核。
-- runtime 的命令选项以 Apptainer 1.4.3 为兼容基线，SIF 固定包含 Spack 1.0.0，
+- runtime 的命令选项以 Apptainer 1.4.3 为兼容基线，每个 SIF 固定包含一个与材料完全一致的[兼容版本](spack-compatible-versions.md)，
   入口为 `/opt/spack/bin/spack`；包含其 Python 和本地 fetch 工具。镜像不含凭据、宿主配置、
   自动初始化脚本或需要在线 bootstrap 的运行依赖，recipe 必须由运维审核。
 - SIF 预建 `/kq/input`、`/sys/fs/cgroup` 和空的 `/kq/work`。`/kq/work` 必须为实际 Agent UID 所有、
@@ -581,7 +581,7 @@ install 的 runner 准备阶段和底层进程共享一个总 deadline，进程�
 不扩大 workflow activation 的排队/校验等待时间。运行中超时或取消仍终止进程组并清理暂存输入，
 PID namespace 隔离保持不变。更长时限不会增加内存或 tmpfs 容量，站点仍须按材料构建需求配置资源。
 
-SIF 必须预装 Spack 1.0.0 及可导入的 `clingo`/`clingo.ast`；
+SIF 必须预装材料所声明的确切 Spack 版本及可导入的 `clingo`/`clingo.ast`；
 worker 禁止 solver bootstrap，不会自动下载或安装缺失的 solver。
 安装/verify/load 命令使用只读 runtime、`--underlay` 和 `--scratch /kq/work`，
 避免 Apptainer 1.4.3 默认产生 VFS 标记为可写的隐式 overlay；

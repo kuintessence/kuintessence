@@ -18,6 +18,10 @@ IDENTITY = {"SERVER_GRPC_URL", "SERVER_HTTP_URL", "AGENT_ID", "AGENT_SITE_NAME",
             "KQ_AGENT_ENV_FILE", "KQ_AGENT_BINARY", "KQ_AGENT_REGISTRATION_SCHEDULER",
             "KQ_AIO_MANAGED_RUNTIME", "KQ_AIO_MANAGED_STORE_BYTES", "NODE_ENV",
             "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE"}
+TRANSFER_ROOTS = {
+    "AGENT_FEDERATION_INPUT_COPY": "/var/lib/kuintessence/federation-input",
+    "AGENT_FEDERATION_RESULT_COPY": "/var/lib/kuintessence/federation-result",
+}
 RUNTIME_KEYS = {
     "AGENT_SPACK_AUDIT_APPTAINER_PATH", "AGENT_SPACK_AUDIT_APPTAINER_SHA256",
     "AGENT_SPACK_AUDIT_SIF_PATH", "AGENT_SPACK_AUDIT_SIF_SHA256",
@@ -27,6 +31,7 @@ RUNTIME_KEYS = {
     "AGENT_SANDBOX_SIF_PUBLIC_KEY_PATH", "AGENT_SANDBOX_SIF_PUBLIC_KEY_SHA256",
     "AGENT_SANDBOX_ATTESTATION_TTL_SEC",
     "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE",
+    *TRANSFER_ROOTS,
 }
 
 
@@ -61,6 +66,36 @@ def sha256(path):
     return value.hexdigest()
 
 
+def transfer_environment(config):
+    values = {}
+    for key, root in TRANSFER_ROOTS.items():
+        inherited = json.loads(os.environ.get(key, "null"))
+        selected = json.loads(config[key]) if key in config else inherited
+        # Compose's default null permits a private file setting; conflicting opt-ins fail closed.
+        if key in config and inherited is not None and inherited != selected:
+            raise ValueError("Conflicting federation transfer configuration")
+        if selected is not None and (not isinstance(selected, dict) or selected.get("stagingRoot") != root):
+            raise ValueError("Federation transfer must use its dedicated persistent staging root")
+        # The production Agent owns the full JSON schema and HTTPS-origin validation.
+        values[key] = json.dumps(selected, separators=(",", ":"), allow_nan=False)
+    return values
+
+
+def prepare_transfer_directories(env):
+    for key, root in TRANSFER_ROOTS.items():
+        if json.loads(env.get(key, "null")) is None:
+            continue
+        path = Path(root)
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        info = path.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or path.resolve(strict=True) != path or
+                info.st_uid != os.getuid() or info.st_mode & 0o777 != 0o700):
+            raise ValueError("Federation staging must be a private directory owned by the current Agent; maintenance is required")
+
+
 def runtime_environment():
     config = read_json(RUNTIME / "agent.json")
     if not isinstance(config, dict) or set(config) != {"version", "environment"} or type(config["version"]) is not int or config["version"] != 1:
@@ -69,6 +104,7 @@ def runtime_environment():
     if not isinstance(env, dict) or not set(env).issubset(RUNTIME_KEYS) or any(
             not isinstance(v, str) or not v or "\0" in v or "\n" in v or "\r" in v for v in env.values()):
         raise ValueError("Invalid managed runtime environment")
+    env = {**env, **transfer_environment(env)}
     for stem in ("AGENT_SPACK_AUDIT_APPTAINER", "AGENT_SPACK_AUDIT_SIF",
                  "AGENT_SPACK_INSTALL_SITE_PROFILE", "AGENT_SANDBOX_SIF_PUBLIC_KEY"):
         path = Path(env.get(stem + "_PATH", ""))
@@ -86,6 +122,11 @@ def runtime_environment():
     if not all(env.get(key) for key in ("AGENT_SANDBOX_PUBLIC_KEYS_JSON", "AGENT_SANDBOX_RUNTIME_CACHE_JSON")):
         raise ValueError("Provision the Server public keys and approved runtime cache")
     for key in ("NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE"):
+        inherited = os.environ.get(key)
+        if inherited:
+            if key in env and env[key] != inherited:
+                raise ValueError("Conflicting public CA configuration")
+            env[key] = inherited
         if env.get(key):
             protected(Path(env[key]))
     checker = Path("/usr/libexec/kuintessence/kq-sandbox-cgroup-check")
@@ -224,6 +265,9 @@ def install_pbs_hook():
 def main(action):
     if os.environ.get("KQ_AIO_MANAGED_RUNTIME") != "1":
         if action == "agent":
+            values = transfer_environment({})
+            prepare_transfer_directories(values)
+            os.environ.update(values)
             os.execv(sys.executable, [sys.executable, "/usr/local/lib/kuintessence/start-agent.py"])
         raise ValueError("Managed bootstrap is limited to an explicit AIO test configuration")
     if action == "init":
@@ -272,7 +316,9 @@ def main(action):
     elif action == "agent":
         if os.getuid() != 1000:
             raise ValueError("Managed Agent must use the isolated kq account")
-        os.environ.update(runtime_environment())
+        values = runtime_environment()
+        prepare_transfer_directories(values)
+        os.environ.update(values)
         os.environ.update({"HOME": "/home/kq", "USER": "kq", "LOGNAME": "kq",
                            "XDG_RUNTIME_DIR": "/run/user/1000", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"})
         sandbox = Path("/scratch/sandbox")
@@ -287,6 +333,9 @@ if __name__ == "__main__":
         if len(sys.argv) != 2:
             raise ValueError("Select a managed operation")
         main(sys.argv[1])
-    except (ValueError, KeyError, OSError, subprocess.SubprocessError):
+    except ValueError as error:
+        print(f"Managed AIO setup failed: {error}; preserve state and reconcile configuration", file=sys.stderr)
+        sys.exit(1)
+    except (KeyError, OSError, subprocess.SubprocessError):
         print("Managed AIO setup failed; preserve state and reconcile configuration", file=sys.stderr)
         sys.exit(1)

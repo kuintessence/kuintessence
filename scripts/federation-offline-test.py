@@ -26,7 +26,7 @@ class DeliveryTests(unittest.TestCase):
         self.bundle.mkdir()
         self.manifest = {"version": 1, "revision": REVISION, "platform": "linux/amd64", "files": {}, "images": [],
                          "casdoor": {"source": CASDOOR_IMAGE, "id": "sha256:" + "b" * 64}}
-        for name in ("images.tar.gz", *offline.PUBLIC_FILES):
+        for name in ("images.tar.gz", *offline.LEGACY_PUBLIC_FILES):
             path = self.bundle / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"test-only")
@@ -76,13 +76,15 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(command, ["gzip", "-1"])
             kwargs["stdout"].write(b"fixture image archive")
         with patch.object(offline, "source_revision"), \
-             patch.object(offline, "inspect_image", side_effect=lambda name: {"name": name, "revision": REVISION, "size": 1, "id": "sha256:" + "b" * 64}), \
+             patch.object(offline, "inspect_image", side_effect=lambda name: {"name": name, "revision": REVISION, "size": 1, "spackVersion": "1.0.0", "id": "sha256:" + "b" * 64}), \
              patch.object(offline.shutil, "disk_usage", return_value=SimpleNamespace(free=10 * 1024 ** 3)), \
              patch.object(offline.subprocess, "Popen", return_value=exporter), \
              patch.object(offline, "run", side_effect=compress):
             offline.export(SimpleNamespace(revision=REVISION, casdoor_image=CASDOOR_IMAGE, output=output))
         saved = offline.verify_bundle(output, offline.digest(output / "manifest.json"))
         self.assertEqual(saved["casdoor"], {"source": CASDOOR_IMAGE, "id": "sha256:" + "b" * 64})
+        self.assertEqual(saved["spackVersion"], "1.0.0")
+        self.assertIn(offline.SPACK_POLICY_FILE, saved["files"])
         for name in ("deploy/federation/aio/README.md", "deploy/federation/aio/env.example",
                      "deploy/main/env.example", "deploy/federation/env.example", "deploy/federation/deployment.md"):
             self.assertIn(name, saved["files"])
@@ -91,6 +93,207 @@ class DeliveryTests(unittest.TestCase):
         (output / "deploy/federation/aio/env.example").write_text("changed template")
         with self.assertRaisesRegex(ValueError, "checksum"):
             offline.verify_bundle(output, offline.digest(output / "manifest.json"))
+
+    def test_versioned_delivery_requires_supported_matching_scheduler_versions(self):
+        for name in set(offline.PUBLIC_FILES) - set(offline.LEGACY_PUBLIC_FILES):
+            path = self.bundle / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((ROOT / name).read_bytes())
+            self.manifest["files"][name] = {"sha256": offline.digest(path), "bytes": path.stat().st_size}
+        schedulers = [record for record in self.manifest["images"]
+                      if record["name"] in {offline.image_name("scheduler-slurm", REVISION),
+                                            offline.image_name("scheduler-pbs", REVISION)}]
+        for version in ("1.0.0", "1.0.3"):
+            self.manifest["spackVersion"] = version
+            for record in schedulers:
+                record["spackVersion"] = version
+            self.assertEqual(offline.verify_bundle(self.bundle, self.write_manifest())["spackVersion"], version)
+        for version, left, right in (("9.0.0", "9.0.0", "9.0.0"),
+                                     ("1.0.0", "1.0.0", "1.0.3"),
+                                     ("1.0.0", "1.0.3", "1.0.3"),
+                                     ("1.0.0", None, None)):
+            with self.subTest(version=version, left=left, right=right):
+                self.manifest["spackVersion"] = version
+                schedulers[0]["spackVersion"], schedulers[1]["spackVersion"] = left, right
+                with self.assertRaisesRegex(ValueError, "Spack"):
+                    offline.verify_bundle(self.bundle, self.write_manifest())
+        del self.manifest["spackVersion"]
+        with self.assertRaisesRegex(ValueError, "payload"):
+            offline.verify_bundle(self.bundle, self.write_manifest())
+
+    def test_export_rejects_unknown_or_mixed_scheduler_versions_before_saving(self):
+        for versions in ((None, None), ("9.0.0", "9.0.0"), ("1.0.0", "1.0.3")):
+            def inspected(name):
+                version = versions[0 if "/scheduler-slurm:" in name else 1]
+                return {"name": name, "revision": REVISION, "size": 1,
+                        "spackVersion": version, "id": "sha256:" + "b" * 64}
+            output = self.root / "no-export"
+            with self.subTest(versions=versions), patch.object(offline, "source_revision"), \
+                 patch.object(offline, "inspect_image", side_effect=inspected), \
+                 patch.object(offline.subprocess, "Popen") as exporter:
+                with self.assertRaisesRegex(ValueError, "Spack"):
+                    offline.export(SimpleNamespace(revision=REVISION, casdoor_image=CASDOOR_IMAGE, output=output))
+            exporter.assert_not_called()
+            self.assertFalse(output.exists())
+
+    def storage_configuration(self):
+        reports = self.root / "reports"
+        reports.mkdir(mode=0o750)
+        reports.chmod(0o750)
+        def mount(name, target, readonly):
+            path = reports if name == "reports" else self.root / name
+            if name != "reports":
+                path.write_text("private fixture; native schema validation remains in the runtime")
+                path.chmod(0o600)
+            return {"type": "bind", "source": str(path), "target": target,
+                    "read_only": readonly, "bind": {"create_host_path": False}}
+        shared = mount("reports", "/run/kq-storage-reports", False)
+        return {"services": {
+            "server": {"user": str(os.getuid()), "image": offline.image_name("server", REVISION),
+                       "mem_limit": 256 * 1024 ** 2, "group_add": [str(os.getgid())],
+                       "environment": {"FEDERATION_STORAGE_GUARD_FILE": "/run/kq-storage/policy.json"},
+                       "volumes": [mount("policy.json", "/run/kq-storage/policy.json", True),
+                                   {**shared, "read_only": True}]},
+            "federation-storage-observer": {
+                "image": "ghcr.io/kuintessence/kuintessence-storage-observer:main",
+                "user": f"{os.getuid()}:{os.getgid()}", "mem_limit": 128 * 1024 ** 2,
+                "build": {"context": ".", "dockerfile": "deploy/federation/storage-observer.Dockerfile"},
+                "volumes": [mount("observer.json", "/run/kq-storage/observer.json", True),
+                            mount("observer.key", "/run/kq-storage/observer.key", True), shared]},
+        }}
+
+    def test_storage_guard_is_explicit_offline_budgeted_and_role_limited(self):
+        config = self.storage_configuration()
+        env = self.root / "deployment.env"
+        env.write_text("# fixture only")
+        env.chmod(0o600)
+        args = argparse.Namespace(env_file=env, project="kq-fed-test-a", mode="direct", role="institution",
+                                  scheduler="slurm", storage_guard=True)
+        with patch.object(offline, "run", return_value=SimpleNamespace(stdout=json.dumps(config))) as render:
+            result = offline.render_config(ROOT, self.manifest, args)
+        command = [str(value) for value in render.call_args.args[0]]
+        self.assertIn(str(ROOT / "deploy/federation/compose.storage.yml"), command)
+        observer = result["services"]["federation-storage-observer"]
+        self.assertEqual(observer["image"], offline.image_name("storage-observer", REVISION))
+        self.assertEqual(observer["pull_policy"], "never")
+        self.assertNotIn("build", observer)
+        self.assertEqual(offline.capacity(result)["serviceLimitsMiB"], 384)
+        args.role, args.mode = "orderer", "fabric"
+        with patch.object(offline, "run") as render, self.assertRaisesRegex(ValueError, "institution or arbitrator"):
+            offline.render_config(ROOT, self.manifest, args)
+        render.assert_not_called()
+        args.role = "arbitrator"
+        config["services"].update({name: {"image": offline.image_name("fabric-adapter", REVISION)}
+                                  for name in ["scheduler", "fabric-orderer", *(f"fabric-{kind}-{suffix}"
+                                      for kind in ("evidence", "commercial", "market") for suffix in ("adapter", "chaincode"))]})
+        config["services"]["server"]["environment"].update({key: "unused" for key in (
+            "FEDERATION_ATTESTATION_SOCKET_PATH", "FEDERATION_COMMERCIAL_SOCKET_PATH", "FEDERATION_MARKET_SOCKET_PATH")})
+        with patch.object(offline, "run", return_value=SimpleNamespace(stdout=json.dumps(config))):
+            result = offline.render_config(ROOT, self.manifest, args)
+        self.assertIn("federation-storage-observer", result["services"])
+        self.assertNotIn("scheduler", result["services"])
+
+    def test_storage_guard_rejects_unprotected_or_missing_materials(self):
+        config = self.storage_configuration()
+        offline.validate_storage_guard(config)
+        for name in ("policy.json", "observer.json", "observer.key", "reports"):
+            path = self.root / name
+            original = path.stat().st_mode & 0o777
+            path.chmod(0o777)
+            with self.subTest(path=name), self.assertRaises(ValueError):
+                offline.validate_storage_guard(config)
+            path.chmod(original)
+        reports = self.root / "reports"
+        for mode in (0o700, 0o550):
+            reports.chmod(mode)
+            with self.subTest(report_mode=oct(mode)), self.assertRaisesRegex(ValueError, "shared read group"):
+                offline.validate_storage_guard(config)
+        reports.chmod(0o750)
+        key = self.root / "observer.key"
+        key.rename(self.root / "saved-key")
+        with self.assertRaises(FileNotFoundError):
+            offline.validate_storage_guard(config)
+        key.symlink_to(self.root / "saved-key")
+        with self.assertRaisesRegex(ValueError, "canonical"):
+            offline.validate_storage_guard(config)
+        key.unlink()
+        (self.root / "saved-key").rename(key)
+        observer = config["services"]["federation-storage-observer"]
+        observer["user"] = "unresolved-account"
+        with self.assertRaisesRegex(ValueError, "numeric UID:GID"):
+            offline.validate_storage_guard(config)
+        observer["user"] = f"{os.getuid()}:{os.getgid()}"
+        observer["volumes"][0]["read_only"] = False
+        with self.assertRaisesRegex(ValueError, "read-only boundary"):
+            offline.validate_storage_guard(config)
+        observer["volumes"][0]["read_only"] = True
+        observer["volumes"][0]["bind"]["create_host_path"] = True
+        with self.assertRaisesRegex(ValueError, "existing paths"):
+            offline.validate_storage_guard(config)
+        observer["volumes"][0]["bind"]["create_host_path"] = False
+        config["services"]["server"]["group_add"] = []
+        with self.assertRaisesRegex(ValueError, "shared group"):
+            offline.validate_storage_guard(config)
+
+    def test_public_ca_is_explicit_readonly_and_rechecked(self):
+        cert = self.root / "public-ca.pem"
+        cert.write_text("PUBLIC CERTIFICATE FIXTURE")
+        cert.chmod(0o644)
+        offline.require_public_ca(cert)
+        env = self.root / "deployment.env"
+        env.write_text("# fixture only")
+        env.chmod(0o600)
+        volume = {"type": "bind", "source": str(cert), "target": "/run/kq-public-trust/ca.pem", "read_only": True}
+        config = {"services": {"server": {"image": offline.image_name("server", REVISION), "volumes": [volume]}}}
+        args = argparse.Namespace(env_file=env, project="kq-fed-test-a", mode="direct", role="institution",
+                                  scheduler="slurm", public_ca_file=cert)
+        with patch.object(offline, "run", return_value=SimpleNamespace(stdout=json.dumps(config))) as render:
+            result = offline.render_config(ROOT, self.manifest, args)
+        self.assertIn(str(ROOT / "deploy/federation/aio/compose.trust.yml"), [str(value) for value in render.call_args.args[0]])
+        self.assertEqual(render.call_args.kwargs["env"]["KQ_AIO_PUBLIC_CA_FILE"], str(cert))
+        self.assertEqual(result["services"]["server"]["volumes"][0]["source"], str(cert))
+        cert.chmod(0o666)
+        with self.assertRaisesRegex(ValueError, "Public CA"):
+            offline.validate_public_ca(result)
+        cert.chmod(0o644)
+        linked = self.root / "ca-link.pem"
+        linked.symlink_to(cert)
+        with self.assertRaisesRegex(ValueError, "canonical"):
+            offline.require_public_ca(linked)
+        args.role, args.mode = "orderer", "fabric"
+        with patch.object(offline, "run") as render, self.assertRaisesRegex(ValueError, "institution or arbitrator"):
+            offline.render_config(ROOT, self.manifest, args)
+        render.assert_not_called()
+
+    @unittest.skipUnless(shutil.which("docker"), "Docker Compose CLI required for overlay rendering")
+    def test_storage_guard_and_ca_overlays_render_without_daemon(self):
+        fixture = self.storage_configuration()
+        cert = self.root / "public-ca.pem"
+        cert.write_text("PUBLIC CERTIFICATE FIXTURE")
+        cert.chmod(0o644)
+        base = self.root / "base.json"
+        base.write_text(json.dumps({"services": {name: {"image": offline.image_name(name, REVISION)}
+                                                 for name in ("server", "registry", "scheduler")},
+                                    "volumes": {"pg-data": {}}}))
+        env = self.root / "overlay.env"
+        env.write_text("\n".join(f"{key}={value}" for key, value in {
+            "FEDERATION_STORAGE_REPORT_GID": os.getgid(), "FEDERATION_STORAGE_OBSERVER_UID": os.getuid(),
+            "FEDERATION_STORAGE_POLICY_FILE": self.root / "policy.json",
+            "FEDERATION_STORAGE_REPORT_DIRECTORY": self.root / "reports",
+            "FEDERATION_STORAGE_OBSERVER_CONFIG": self.root / "observer.json",
+            "FEDERATION_STORAGE_OBSERVER_KEY": self.root / "observer.key", "KQ_AIO_PUBLIC_CA_FILE": cert,
+        }.items()))
+        command = ["docker", "compose", "--project-directory", ROOT, "--env-file", env, "-f", base,
+                   "-f", ROOT / "deploy/federation/compose.storage.yml",
+                   "-f", ROOT / "deploy/federation/aio/compose.trust.yml", "config", "--format", "json"]
+        config = json.loads(offline.run(command, capture_output=True, text=True).stdout)
+        offline.validate_storage_guard(config)
+        offline.validate_public_ca(config)
+        observer = config["services"]["federation-storage-observer"]
+        self.assertEqual(int(observer["mem_limit"]), 128 * 1024 ** 2)
+        self.assertEqual(observer["user"], fixture["services"]["federation-storage-observer"]["user"])
+        for name in ("server", "registry", "scheduler"):
+            self.assertEqual(config["services"][name]["environment"]["NODE_EXTRA_CA_CERTS"], "/run/kq-public-trust/ca.pem")
 
     def test_requires_independently_trusted_manifest(self):
         self.write_manifest()
@@ -379,7 +582,7 @@ class DeliveryTests(unittest.TestCase):
         output = self.root / "export"
         exporter = Mock()
         exporter.poll.return_value = None
-        image = {"revision": REVISION, "size": 1, "id": "sha256:" + "b" * 64}
+        image = {"revision": REVISION, "size": 1, "spackVersion": "1.0.0", "id": "sha256:" + "b" * 64}
         with patch.object(offline, "source_revision"), \
              patch.object(offline, "inspect_image", side_effect=lambda name: {**image, "name": name}), \
              patch.object(offline.shutil, "disk_usage", return_value=SimpleNamespace(free=10 * 1024 ** 3)), \
@@ -398,7 +601,7 @@ class DeliveryTests(unittest.TestCase):
                 output = self.root / changed
                 exporter = Mock()
                 exporter.wait.return_value = 0
-                records = [{"name": name, "revision": REVISION, "size": 1, "id": "sha256:" + "b" * 64}
+                records = [{"name": name, "revision": REVISION, "size": 1, "spackVersion": "1.0.0", "id": "sha256:" + "b" * 64}
                            for name in [*(offline.image_name(c, REVISION) for c in (*offline.COMPONENTS, "scheduler-slurm", "scheduler-pbs", "casdoor")), *offline.THIRD_PARTY]]
                 inspected = [{**records[0], "name": CASDOOR_IMAGE}] + records + [{**records[0], "id": "sha256:" + "c" * 64}]
                 revisions = [None, ValueError("source changed")] if changed == "source" else [None, None]

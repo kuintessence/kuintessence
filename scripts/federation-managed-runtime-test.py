@@ -39,6 +39,18 @@ class ManagedRuntimeTests(unittest.TestCase):
              patch.dict(os.environ, {"KQ_AGENT_REGISTRATION_SCHEDULER": "slurm"}):
             return managed.runtime_environment()
 
+    def test_compose_public_ca_is_preserved_and_conflicting_file_ca_rejected(self):
+        inherited = {"NODE_EXTRA_CA_CERTS": "/run/kq-public-trust/ca.pem",
+                     "CURL_CA_BUNDLE": "/run/kq-public-trust/ca.pem"}
+        with patch.dict(os.environ, inherited):
+            env = self.environment()
+            for key, value in inherited.items():
+                self.assertEqual(env[key], value)
+                with self.subTest(key=key), self.assertRaisesRegex(ValueError, "Conflicting public CA"):
+                    self.environment({**self.env, key: "/other/ca.pem"})
+            self.assertEqual(self.environment({**self.env, **inherited})["NODE_EXTRA_CA_CERTS"],
+                             inherited["NODE_EXTRA_CA_CERTS"])
+
     def test_runtime_uses_production_checks_without_root_or_implicit_approvals(self):
         env = self.environment()
         self.assertEqual(env["AGENT_SPACK_INSTALL_ENABLED"], "true")
@@ -51,6 +63,16 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.assertNotIn("sharedStoreConfirmed", env)
         self.assertNotIn("quotaEnforcedBySite", env)
         self.assertNotIn("AGENT_ID", env)
+
+    def test_runtime_accepts_private_file_transfer_configuration_without_implicit_origins(self):
+        values = {key: json.dumps({"stagingRoot": root, "maxStagingBytes": 1024,
+                                   "allowedDestinationOrigins": ["https://storage.peer.example"]})
+                  for key, root in managed.TRANSFER_ROOTS.items()}
+        with patch.dict(os.environ, {key: "null" for key in managed.TRANSFER_ROOTS}):
+            configured = self.environment({**self.env, **values})
+        for key, expected in values.items():
+            self.assertEqual(json.loads(configured[key]), json.loads(expected))
+            self.assertNotIn("allowedSourceOrigins", json.loads(configured[key]))
 
     def test_runtime_file_cannot_override_identity_or_execute_shell_environment(self):
         for name, value in (("AGENT_ID", "other-agent"), ("NODE_OPTIONS", "--import malicious"),
@@ -254,23 +276,133 @@ class ManagedRuntimeTests(unittest.TestCase):
                 setup.assert_not_called()
 
 
+class FederationTransferTests(unittest.TestCase):
+    def settings(self, key, **patches):
+        return {"stagingRoot": managed.TRANSFER_ROOTS[key], "maxStagingBytes": 64 * 1024 ** 2,
+                "allowedSourceOrigins": ["https://storage.source.example"],
+                "allowedDestinationOrigins": ["https://storage.destination.example"], **patches}
+
+    def test_disabled_transfer_neither_creates_directories_nor_adds_origins(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(managed.Path, "mkdir") as create:
+            values = managed.transfer_environment({})
+            self.assertEqual(values, {key: "null" for key in managed.TRANSFER_ROOTS})
+            managed.prepare_transfer_directories(values)
+            create.assert_not_called()
+
+    def test_file_or_compose_can_explicitly_enable_the_same_configuration(self):
+        for key in managed.TRANSFER_ROOTS:
+            settings = self.settings(key)
+            encoded = json.dumps(settings)
+            with self.subTest(key=key), patch.dict(os.environ, {}, clear=True):
+                configured = managed.transfer_environment({key: encoded})
+                self.assertEqual(json.loads(configured[key]), settings)
+                os.environ[key] = encoded
+                self.assertEqual(managed.transfer_environment({}), configured)
+                self.assertEqual(managed.transfer_environment({key: json.dumps(settings, indent=1)}), configured)
+                with self.assertRaisesRegex(ValueError, "Conflicting"):
+                    managed.transfer_environment({key: json.dumps({**settings, "maxStagingBytes": 1})})
+                with self.assertRaisesRegex(ValueError, "Conflicting"):
+                    managed.transfer_environment({key: "null"})
+
+    def test_transfer_cannot_escape_or_share_its_dedicated_persistent_directory(self):
+        for key in managed.TRANSFER_ROOTS:
+            for value in [[], False, {"stagingRoot": "/tmp/input"},
+                          self.settings(key, stagingRoot="/var/lib/kuintessence/federation-other")]:
+                with self.subTest(key=key, value=value), patch.dict(os.environ, {}, clear=True), \
+                     self.assertRaisesRegex(ValueError, "dedicated persistent"):
+                    managed.transfer_environment({key: json.dumps(value)})
+
+    def test_staging_is_private_and_persistent_without_reowning_existing_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            roots = {key: str(Path(temporary) / str(index)) for index, key in enumerate(managed.TRANSFER_ROOTS)}
+            with patch.object(managed, "TRANSFER_ROOTS", roots), patch.dict(os.environ, {}, clear=True):
+                values = managed.transfer_environment({key: json.dumps(self.settings(key)) for key in roots})
+                managed.prepare_transfer_directories(values)
+                for root in roots.values():
+                    path = Path(root)
+                    self.assertEqual(path.stat().st_uid, os.getuid())
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+                    (path / "retained").write_text("pending transfer")
+                managed.prepare_transfer_directories(values)
+                for root in roots.values():
+                    self.assertEqual((Path(root) / "retained").read_text(), "pending transfer")
+                first = Path(next(iter(roots.values())))
+                first.chmod(0o755)
+                with self.assertRaisesRegex(ValueError, "maintenance"):
+                    managed.prepare_transfer_directories(values)
+                self.assertEqual(first.stat().st_mode & 0o777, 0o755)
+                first.chmod(0o700)
+                with patch.object(managed.os, "getuid", return_value=first.stat().st_uid + 1), \
+                     self.assertRaisesRegex(ValueError, "owned by the current Agent"):
+                    managed.prepare_transfer_directories(values)
+
+    def test_symlink_staging_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            key = next(iter(managed.TRANSFER_ROOTS))
+            destination = Path(temporary) / "retained"
+            destination.mkdir(mode=0o700)
+            link = Path(temporary) / "staging"
+            link.symlink_to(destination, target_is_directory=True)
+            with patch.object(managed, "TRANSFER_ROOTS", {key: str(link)}), \
+                 self.assertRaisesRegex(ValueError, "private directory"):
+                managed.prepare_transfer_directories({key: json.dumps({"stagingRoot": str(link)})})
+            self.assertEqual(list(destination.iterdir()), [])
+
+    def test_shipped_examples_match_production_agent_schema_and_origin_checks_remain_strict(self):
+        examples = {}
+        for line in (ROOT / "deploy/federation/aio/env.example").read_text().splitlines():
+            if line.startswith("# AGENT_FEDERATION_"):
+                key, value = line[2:].split("=", 1)
+                examples[key] = value.strip("'")
+        self.assertEqual(set(examples), set(managed.TRANSFER_ROOTS))
+        script = r'''import { loadAgentConfig } from "./packages/agent/src/config";
+const examples = JSON.parse(await Bun.stdin.text());
+const base = { SERVER_GRPC_URL: "https://server.example:3001", AGENT_ID: "aio", AGENT_SITE_NAME: "AIO" };
+const parsed = loadAgentConfig({ ...base, ...examples });
+for (const [key, encoded] of Object.entries(examples)) {
+  if (JSON.stringify(parsed[key]) !== JSON.stringify(JSON.parse(encoded))) throw new Error("example mismatch");
+  const settings = JSON.parse(encoded);
+  for (const invalid of [{ ...settings, maxStagingBytes: 0 },
+    { ...settings, allowedSourceOrigins: ["http://source.example"] },
+    { ...settings, allowedDestinationOrigins: [] }]) {
+    let rejected = false;
+    try { loadAgentConfig({ ...base, [key]: JSON.stringify(invalid) }); } catch { rejected = true; }
+    if (!rejected) throw new Error("origin/capacity policy bypass");
+  }
+}
+'''
+        subprocess.run(["bun", "--eval", script], input=json.dumps(examples), text=True,
+                       capture_output=True, timeout=30, check=True, cwd=ROOT)
+
+
 class SchedulerDownloadTests(unittest.TestCase):
-    def test_aio_build_pins_the_spack_version_supported_by_managed_workers(self):
+    def test_aio_build_pins_the_explicit_supported_spack_version(self):
         spec = importlib.util.spec_from_file_location("offline", ROOT / "deploy/federation/offline.py")
         offline = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(offline)
-        args = SimpleNamespace(revision="a" * 40, minimum_free_gib=40,
-                               casdoor_image="casbin/casdoor@sha256:" + "b" * 64)
-        with patch.object(offline, "source_revision"), \
-             patch.object(offline.shutil, "disk_usage", return_value=SimpleNamespace(free=50 * 1024 ** 3)), \
-             patch.object(offline, "run") as commands:
-            offline.build(args)
-        base = [call.args[0] for call in commands.call_args_list
-                if "deploy/schedulers/base/Dockerfile" in call.args[0]]
-        self.assertEqual(len(base), 1)
-        self.assertIn("SPACK_REF=v1.0.0", base[0])
-        self.assertEqual(base[0][base[0].index("SPACK_REF=v1.0.0") - 1], "--build-arg")
-        self.assertIn("SCHEDULER_OS_IMAGE=ubuntu:24.04", base[0])
+        for version in (None, "1.0.0", "1.0.3"):
+            args = SimpleNamespace(revision="a" * 40, minimum_free_gib=40,
+                                   casdoor_image="casbin/casdoor@sha256:" + "b" * 64)
+            if version is not None:
+                args.spack_version = version
+            with self.subTest(version=version), patch.object(offline, "source_revision"), \
+                 patch.object(offline.shutil, "disk_usage", return_value=SimpleNamespace(free=50 * 1024 ** 3)), \
+                 patch.object(offline, "run") as commands:
+                offline.build(args)
+            base = [call.args[0] for call in commands.call_args_list
+                    if "deploy/schedulers/base/Dockerfile" in call.args[0]]
+            self.assertEqual(len(base), 1)
+            selected = "SPACK_REF=v" + (version or "1.0.0")
+            self.assertIn(selected, base[0])
+            self.assertEqual(base[0][base[0].index(selected) - 1], "--build-arg")
+            self.assertIn("SCHEDULER_OS_IMAGE=ubuntu:24.04", base[0])
+        args.spack_version = "1.99.0"
+        with patch.object(offline, "run") as commands:
+            with self.assertRaisesRegex(ValueError, "Unsupported Spack"):
+                offline.build(args)
+        commands.assert_not_called()
+        self.assertIn('LABEL org.kuintessence.spack.version="${SPACK_REF}"',
+                      (ROOT / "deploy/schedulers/base/Dockerfile").read_text())
 
     def download(self, component, overrides=None, expected_default=None):
         source = ROOT / "deploy/schedulers" / ("pbs/Dockerfile" if component == "OPENPBS" else "base/Dockerfile")

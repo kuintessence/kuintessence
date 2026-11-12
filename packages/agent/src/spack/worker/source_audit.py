@@ -1,4 +1,4 @@
-"""Container-only Spack 1.0.0 source audit; never a recipe trust certificate.
+"""Container-only Spack source audit; never a recipe trust certificate.
 
 Entrypoint: spack python /kq/input/source_audit.py sha256:<manifest digest>.
 The parent owns isolation, timeout and report validation. Recipes are arbitrary
@@ -15,6 +15,12 @@ import socket
 import stat
 import sys
 import tarfile
+
+# The parent stages its compiled policy; standalone repository tools use the same source file.
+POLICY_PATH = Path(__file__).with_name("spack-compatibility.json")
+if not POLICY_PATH.exists():
+    POLICY_PATH = Path(__file__).resolve().parents[4] / "shared/src/spack-compatibility.json"
+SPACK_COMPATIBILITY = json.loads(POLICY_PATH.read_text())
 
 CHUNK = 64 * 1024
 MIB = 1024 ** 2
@@ -146,7 +152,9 @@ def validate_manifest(manifest: dict) -> dict:
     fields = {"version", "repository", "spec", "spackVersion", "target",
               "redistribution", "recipes", "sources", "lockfile"}
     require(set(manifest) == (fields | {"evidence"} if version == 2 else fields))
-    require(manifest["spackVersion"] == "1.0.0" and manifest["redistribution"] == "unrestricted")
+    require(isinstance(manifest["spackVersion"], str) and
+            manifest["spackVersion"] in SPACK_COMPATIBILITY, "unsupported-spack-version")
+    require(manifest["redistribution"] == "unrestricted")
     for field, limit in (("spec", 4096), ("target", 256), ("repository", 400)):
         require(isinstance(manifest[field], str) and 0 < len(manifest[field]) <= limit)
     require(manifest["spec"].strip() == manifest["spec"])
@@ -282,9 +290,14 @@ def extract_recipe(path: Path, destination: Path, remaining_budget: int) -> int:
 
 
 def validate_lock(lock: dict, manifest: dict) -> None:
-    require(lock.get("_meta") == {"file-type": "spack-lockfile", "lockfile-version": 6,
-                                 "specfile-version": 5})
-    require(isinstance(lock.get("spack"), dict) and lock["spack"].get("version") == "1.0.0")
+    version = manifest.get("spackVersion")
+    require(isinstance(version, str) and version in SPACK_COMPATIBILITY, "unsupported-spack-version")
+    format = SPACK_COMPATIBILITY[version]
+    require(lock.get("_meta") == {"file-type": "spack-lockfile",
+                                 "lockfile-version": format["lockfileVersion"],
+                                 "specfile-version": format["specfileVersion"]})
+    require(isinstance(lock.get("spack"), dict) and lock["spack"].get("version") == version,
+            "spack-version-mismatch")
     nodes, roots = lock.get("concrete_specs"), lock.get("roots")
     require(isinstance(nodes, dict) and 1 <= len(nodes) <= 10_000)
     require(isinstance(roots, list) and len(roots) == 1 and isinstance(roots[0], dict))
@@ -381,10 +394,10 @@ def audit(input_dir: Path, work_dir: Path, expected_digest: str) -> dict:
     import spack.repo
     import spack.spec
 
-    require(spack.__version__ == "1.0.0", "unsupported-spack-version")
+    require(spack.__version__ == manifest["spackVersion"], "spack-version-mismatch")
     nodes, root_hash = lock["concrete_specs"], lock["roots"][0]["hash"]
     report = {"version": 1, "validation": "isolated-source-audit", "manifestDigest": expected_digest,
-              "spackVersion": "1.0.0", "rootHash": root_hash, "nodeCount": len(nodes),
+              "spackVersion": spack.__version__, "rootHash": root_hash, "nodeCount": len(nodes),
               "externalCount": sum("external" in n for n in nodes.values()),
               "verifiedNodeCount": 0, "passed": True, "issues": []}
 

@@ -345,6 +345,7 @@ describe("SpackSourceAuditor input boundary", () => {
           "manifest.json",
           "runtime.json",
           "source_audit.py",
+          "spack-compatibility.json",
         ]);
         expect((await readdir(join(input, "blobs"))).sort()).toEqual(
           f.prepared.blobs.map((ref) => ref.digest.slice(7)).sort(),
@@ -639,6 +640,15 @@ describe("SpackSourceAuditor report boundary", () => {
     const h = harness(f, { run: async () => wire({ ...report(f), ...changed }) });
     await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow(
       /^Spack source audit returned an invalid report$/,
+    );
+    await expectClean(f);
+  });
+
+  test("rejects another supported version in a runtime report", async () => {
+    const f = await fixture();
+    const h = harness(f, { run: async () => wire({ ...report(f), spackVersion: "1.0.3" }) });
+    await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow(
+      "binding or exit status mismatch",
     );
     await expectClean(f);
   });
