@@ -370,7 +370,9 @@ describe("main deployment wiring", () => {
     expect(server.environment.SPACK_MATERIAL_DELIVERY_ENABLED).toBe(
       "${SPACK_MATERIAL_DELIVERY_ENABLED:-false}",
     );
-    expect(server.environment.SPACK_REGISTRY_URL).toBe("${SPACK_REGISTRY_URL:-http://registry:3100}");
+    expect(server.environment.SPACK_REGISTRY_URL).toBe(
+      "${SPACK_REGISTRY_URL:-http://registry:3100}",
+    );
     expect(server.environment.SPACK_REGISTRY_ALLOW_INSECURE_HTTP).toBe(
       "${SPACK_REGISTRY_ALLOW_INSECURE_HTTP:-true}",
     );
@@ -386,7 +388,9 @@ describe("main deployment wiring", () => {
     expect(registry.environment.REGISTRY_JWT_SECRET).toBe(
       "${REGISTRY_JWT_SECRET:?Set an independent REGISTRY_JWT_SECRET}",
     );
-    expect(server.environment.REGISTRY_PUBLIC_ORIGIN).toBe(registry.environment.REGISTRY_PUBLIC_ORIGIN);
+    expect(server.environment.REGISTRY_PUBLIC_ORIGIN).toBe(
+      registry.environment.REGISTRY_PUBLIC_ORIGIN,
+    );
     expect(server.environment.REGISTRY_PUBLIC_ORIGIN).toContain("${REGISTRY_PUBLIC_ORIGIN:?");
     expect(server.environment.ECOSYSTEM_RELEASE_TRUSTED_KEYS).toBe(
       registry.environment.ECOSYSTEM_RELEASE_TRUSTED_KEYS,

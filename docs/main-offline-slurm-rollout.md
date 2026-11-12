@@ -22,6 +22,8 @@ stage、安装或重启，不提交跨调度器验收任务。发布记录保存
 配置，覆盖旧 `site-base.json` 和交付模板中的同名值。这样可保留 signed release
 只读目录、材料票据密钥、Registry/OCI 鉴权和材料存储配置；私密值不得写入报告。
 部署前需离线解析候选 Compose，确认这些配置与现有运行配置一致。
+平台模式还保留当前 JWT issuer/audience 的缺省语义：旧配置未设置时，
+删除交付模板新增的同名默认值，不改变已有双方鉴权约束。
 
 镜像中的 Agent bundle 与独立 signed site release 是两条发布路径。
 合并 main 不会自动重新签名或切换站点 channel。需要证明 Agent 来自 main 时，
