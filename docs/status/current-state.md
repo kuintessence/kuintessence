@@ -1047,3 +1047,8 @@ PBS Pro 的能力证明、签名派发、Agent 验签与联邦续期共同支持
 2026-11-12：材料／锁静态预检、Python 审计／安装与报告改用同一显式兼容表，列出 1.0.0、1.0.3；生产者、材料、实际运行时与报告必须完全同版。Forge 同步支持精确版本／commit pin，从原锁记录导出版本，不改历史材料或制造目标确认。AIO `build --spack-version` 默认保留 1.0.0，支持显式选择，最终 Slurm/PBS 镜像版本须一致，交付清单记录版本并携带表；旧包仍可验证。无需数据库迁移，不实现同一 Agent 自动切换多套 Spack。验证和新版本准入见[兼容说明](../spack-compatible-versions.md)。新原生安装、最终镜像重建、三站 Fabric／科研及 38 项联合验收仍待执行；不合并、不推送、不部署。
 
 AIO 交付继续补齐网络输入／结果搬运与持久 0700 暂存目录、公共 CA 只读挂载，以及显式存储观测入口；均由机构选择配置，不自动开放 origin、生成政策或批准身份。存储观测沿用已交付镜像与生产准入，新增预算计入检查。配置、权限和失败路径已做定向验证，真实跨站传输／容量恢复／新版本原生安装仍待现场验收，见[AIO 操作](../../deploy/federation/aio/README.md#文件搬运公共-ca-与容量保护)。
+
+
+### Spack 1.0.3 真实原生兼容检查
+
+2026-11-12：真实官方 Git checkout 生成新 native lock；Ubuntu 24.04/GCC 13.3/Clingo 5.7.1 固定工具镜像的 GNU Hello 已完成禁网空 store 编译安装、缺源码拒绝、完整 DAG/recipe hash／重新求解、只读 verify／Spack load 后按名称调用真实 ELF，输出和 store 字节核对通过。新增检查入口复用生产 native helpers，不生成站点确认，仍标记 managed/site acceptance=false。Forge 的 0.3.13 条件 schema 与能力门槛遗漏已修复，新增完整计划回归和版本回归通过。新镜像构建导出受本机空间门禁约束，未绕过或删除原材料／备份；正式受管、调度、科研与三机构验收仍待推进。见[兼容结果](../spack-compatible-versions.md#103-原生检查结果)及[AIO 进展](../design/federation/aio-delivery.md#spack-103-真实原生进展)。未推送、合并或远端部署。

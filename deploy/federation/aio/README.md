@@ -2,7 +2,7 @@
 
 三台新增虚拟机运行独立 A/B/C 平台、Fabric 和容器测试集群，A/B 使用 Slurm，C 使用 PBS；R 按需在 A 主机运行独立项目。现有集群不变，主平台只新增第四个 Orderer。完整范围见[实施清单](../../../docs/design/federation/aio-delivery.md)。
 
-固定候选 `b54743b` 的 21 镜像归档已真实导出并核验，两类调度器的正式 target／runtime 入口均已实证；其中 Spack 为 1.0.3，旧 Agent 只接受 1.0.0。新研发候选已接通[多版本严格绑定](../../../docs/spack-compatible-versions.md)，不追改旧镜像。新候选的原生审计、冷安装及镜像/SIF 交付仍待完成，不能据此声明三机构、SmartBFT、容量或科研验收通过。未部署或合并。
+固定候选 `b54743b` 的 21 镜像归档已真实导出并核验，两类调度器的正式 target／runtime 入口均已实证；其中 Spack 为 1.0.3，旧 Agent 只接受 1.0.0。新研发候选已接通[多版本严格绑定](../../../docs/spack-compatible-versions.md)，不追改旧镜像。固定旧工具镜像的 GNU Hello 原生审计、冷安装及只读 verify／Spack load 已通过；新候选镜像/SIF 交付与正式托管验收仍待完成，不能据此声明三机构、SmartBFT、容量或科研验收通过。未部署或合并。
 
 ## 本机构建与导出
 
