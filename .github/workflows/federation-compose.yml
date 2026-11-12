@@ -49,6 +49,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install dependencies for Agent configuration validation
+        run: bun install --frozen-lockfile --ignore-scripts
       - name: Validate both Compose variants
         run: |
           bash -n deploy/federation/{compose,remote,apply,fabric-init}.sh
