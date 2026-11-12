@@ -398,7 +398,12 @@ export class SlurmAdapter implements SchedulerAdapter {
         // sbatch can exit nonzero after acceptance when the controller's reply is lost.
         const rejection =
           /^sbatch: error: Batch job submission failed: (Invalid partition name specified|Invalid account or account\/partition combination specified|Invalid qos specification|Requested node configuration is not available|Job violates accounting\/QOS policy \(job submit limit, user's size and\/or time limits\))$/i;
-        if (!stdout.trim() && rejection.test(stderr.trim()))
+        const invalidPartition =
+          /^sbatch: error: invalid partition specified: [A-Za-z0-9_.-]+\r?\nsbatch: error: Batch job submission failed: Invalid partition name specified$/i;
+        if (
+          !stdout.trim() &&
+          (rejection.test(stderr.trim()) || invalidPartition.test(stderr.trim()))
+        )
           throw new SchedulerSubmissionError("sbatch failed");
         throw new SchedulerSubmissionUnknownError(
           "sbatch failed without a confirmed controller rejection",

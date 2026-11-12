@@ -624,12 +624,15 @@ describe("SlurmAdapter.submit (with mock spawner)", () => {
     ).rejects.toMatchObject({ name: "SchedulerSubmissionUnknownError" });
   });
 
-  test("reports an exact controller rejection as a definite sbatch failure", async () => {
+  test.each([
+    "sbatch: error: Batch job submission failed: Invalid partition name specified",
+    "sbatch: error: invalid partition specified: kq_missing_partition\nsbatch: error: Batch job submission failed: Invalid partition name specified",
+  ])("reports a confirmed controller rejection as a definite sbatch failure: %s", async (stderr) => {
     const { spawner } = mockSpawner([
       {
         exitCode: 1,
         stdout: "",
-        stderr: "sbatch: error: Batch job submission failed: Invalid partition name specified",
+        stderr,
       },
     ]);
     const adapter = new SlurmAdapter("23.02.7", { spawner });
@@ -1349,6 +1352,21 @@ test.each([
   {
     stderr: "sbatch: error: Batch job submission failed: Socket timed out on send/recv operation",
     stdout: "",
+  },
+  {
+    stderr:
+      "sbatch: error: invalid partition specified: missing\nsbatch: error: Batch job submission failed: Invalid partition name specified\nconnection lost",
+    stdout: "",
+  },
+  {
+    stderr:
+      "sbatch: error: invalid partition specified: missing\nsbatch: error: Batch job submission failed: Socket timed out on send/recv operation",
+    stdout: "",
+  },
+  {
+    stderr:
+      "sbatch: error: invalid partition specified: missing\nsbatch: error: Batch job submission failed: Invalid partition name specified",
+    stdout: "123\n",
   },
   { stderr: "permission denied", stdout: "" },
   { stderr: "unrecognized scheduler error", stdout: "" },
