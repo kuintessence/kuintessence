@@ -272,7 +272,8 @@ class DeliveryTests(unittest.TestCase):
         cert.write_text("PUBLIC CERTIFICATE FIXTURE")
         cert.chmod(0o644)
         base = self.root / "base.json"
-        base.write_text(json.dumps({"services": {name: {"image": offline.image_name(name, REVISION)}
+        base.write_text(json.dumps({"services": {name: {"image": offline.image_name(name, REVISION),
+                                                     "user": str(os.getuid())}
                                                  for name in ("server", "registry", "scheduler")},
                                     "volumes": {"pg-data": {}}}))
         env = self.root / "overlay.env"
