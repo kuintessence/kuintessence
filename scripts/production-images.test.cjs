@@ -10,6 +10,22 @@ const job = workflow.jobs.images;
 const resolver = job.steps.find((step) => step.id === "image");
 const revision = "a".repeat(40);
 
+test("AIO CI builds an opt-in offline artifact without publication or deployment", () => {
+  const delivery = parse(readFileSync(resolve(root, ".github/workflows/federation-compose.yml"), "utf8"));
+  const bundle = delivery.jobs["offline-bundle"];
+  expect(bundle.if).toBe("github.event_name == 'workflow_dispatch' && inputs.build_offline_bundle == true");
+  expect(delivery.on.workflow_dispatch.inputs.build_offline_bundle.default).toBe(false);
+  expect(delivery.permissions).toEqual({ contents: "read" });
+  expect(bundle.needs).toBe("configuration");
+  expect(delivery.jobs.images.if).toBe("inputs.build_offline_bundle != true");
+  const commands = bundle.steps.map((step) => step.run || "").join("\n");
+  for (const action of ["build", "export", "verify"]) {
+    expect(commands).toContain(`python3 deploy/federation/offline.py ${action}`);
+  }
+  expect(commands).not.toMatch(/docker push|remote\.sh|offline\.py (up|admin|load)/);
+  expect(bundle.steps.find((step) => step.uses === "actions/upload-artifact@v4").with["if-no-files-found"]).toBe("error");
+});
+
 async function tags(eventName, ref, payload = {}, component = "server") {
   const outputs = {};
   await runInNewContext(`(async () => { ${resolver.with.script} })()`, {

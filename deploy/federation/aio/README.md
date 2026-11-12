@@ -55,6 +55,23 @@ python3 deploy/federation/offline.py \
 
 调度器封装时核对 Server 产出的 Agent manifest、同提交 revision、实际二进制长度和 SHA-256；不能仅给旧 Agent 镜像贴上新标签。OpenPBS 默认单进程编译。构建结束重新检查工作树；导出在生成最终 manifest 前复查源版本及镜像 ID，发现漂移不发布 ready 清单。压缩失败或磁盘写入失败会终止并回收导出进程，保留失败目录供核对，不自动删除原材料。
 
+## CI 构建交付包
+
+本机空间不足时，可在已推送的候选分支手动运行 `Federation Compose delivery`，
+选择 `build_offline_bundle=true` 和精确 `spack_version`（默认 1.0.3）。
+工作流复用同一 `offline.py build/export/verify`，在 GitHub 托管 Runner 串行构建，
+上传包含 21 个 linux/amd64 镜像、公共配置和逐文件摘要的 artifact，保留 14 天；
+运行摘要记录提交、Spack 版本和 manifest SHA-256。构建仅在一次性 Runner 回收未使用的 SDK，
+不清理本机材料，不发布 main/latest 标签，不部署，也不签署机构材料。
+
+```sh
+gh workflow run federation-compose.yml --ref <候选分支> \
+  -f build_offline_bundle=true -f spack_version=1.0.3
+```
+
+下载 artifact 后仍按下文提供可信 manifest 摘要完成校验和加载。
+镜像内含未签名的公共 SIF；科研软件材料、目标 lock、机构签署和现场验收单独准备。
+
 ## 文件搬运、公共 CA 与容量保护
 
 跨机构 Workflow 的网络输入／结果搬运通过 AIO `env.example` 中的 `AGENT_FEDERATION_INPUT_COPY`、`AGENT_FEDERATION_RESULT_COPY` 显式配置，默认均为 `null`。两项分别使用 `/var/lib/kuintessence/federation-input` 和 `/var/lib/kuintessence/federation-result`，保存在 `scheduler-state` 卷内；声明字节预算和允许的 HTTPS 来源／目标，不自动开放其他机构的 origin。托管模式也可在私有 `runtime/agent.json` 设置对应 JSON 字符串，此时 Compose 保持 null；两处均启用且内容不同时拒绝启动。

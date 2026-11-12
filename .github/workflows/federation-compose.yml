@@ -2,6 +2,16 @@ name: Federation Compose delivery
 
 on:
   workflow_dispatch:
+    inputs:
+      build_offline_bundle:
+        description: "串行构建完整 AIO 镜像并上传离线交付包（不部署）"
+        type: boolean
+        default: false
+      spack_version:
+        description: "AIO 调度器的精确 Spack 版本"
+        type: choice
+        options: ["1.0.3", "1.0.0"]
+        default: "1.0.3"
   pull_request:
     paths:
       - .github/workflows/federation-compose.yml
@@ -27,7 +37,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: federation-compose-${{ github.event.pull_request.number || github.ref }}
+  group: federation-compose-${{ github.event.pull_request.number || github.ref }}-${{ inputs.build_offline_bundle || false }}
   cancel-in-progress: true
 
 jobs:
@@ -49,6 +59,7 @@ jobs:
           python3 scripts/federation-offline-test.py
           python3 scripts/federation-managed-runtime-test.py
   images:
+    if: inputs.build_offline_bundle != true
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
@@ -84,3 +95,48 @@ jobs:
           cache-to: type=gha,mode=max,scope=compose-${{ matrix.component }}
       - name: Start the real image entrypoints with isolated test identities
         run: python3 scripts/federation-compose-smoke.py '${{ matrix.component }}' 'kuintessence-${{ matrix.component }}:compose-ci'
+
+  offline-bundle:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_offline_bundle == true
+    needs: configuration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      DOCKER_BUILDKIT: "1"
+      SPACK_VERSION: ${{ inputs.spack_version }}
+      CASDOOR_IMAGE: casbin/casdoor@sha256:7e8ab89f046b24960a2a6ccab338935d787f21c55690114478dd3cae604631cf
+      BUNDLE: ${{ runner.temp }}/federation-aio-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # Only reclaim unused SDKs on this disposable GitHub-hosted runner.
+      - name: Make room for image builds and the conservative export margin
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+      - name: Build all AIO images sequentially
+        run: >-
+          python3 deploy/federation/offline.py build
+          --revision "$GITHUB_SHA" --casdoor-image "$CASDOOR_IMAGE"
+          --spack-version "$SPACK_VERSION"
+      - name: Export and verify the complete offline bundle
+        run: |
+          python3 deploy/federation/offline.py export \
+            --revision "$GITHUB_SHA" --casdoor-image "$CASDOOR_IMAGE" --output "$BUNDLE"
+          manifest_sha="$(sha256sum "$BUNDLE/manifest.json" | cut -d ' ' -f 1)"
+          python3 deploy/federation/offline.py verify --bundle "$BUNDLE" --manifest-sha256 "$manifest_sha"
+          {
+            echo "Commit: $GITHUB_SHA"
+            echo "Spack: $SPACK_VERSION"
+            echo "Manifest SHA-256: $manifest_sha"
+            echo "21 linux/amd64 images; no deployment, institution keys or scientific software materials."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: federation-aio-${{ github.sha }}-spack-${{ inputs.spack_version }}
+          path: ${{ env.BUNDLE }}/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
