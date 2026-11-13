@@ -90,6 +90,9 @@ KQ_TEST_SYSTEMD_USER=1 bun test packages/agent/src/spack/supervised-process.inte
 
 该测试创建独立随机命名单元，使用轻量 Python 进程验证 cgroup 停止、晚到启动封锁、
 Agent SIGKILL 后的恢复与 SQLite 重开。它不是 Apptainer/Spack 编译或真实集群联合验收。
+监督命令对美元符号使用 systemd 的 `$$` 转义，兼容 systemd 245 起的用户管理器，
+不依赖 254 才引入的 `--expand-environment`。托管安装 CI 在实际管理器中验证命令参数与
+环境变量保持原值，并核对内存、swap 与进程数限制。
 
 恢复持锁后把遗留 `building`/`verifying` 记录变为 `failed`，保留部分文件作证据；
 继续已授权的 `removing` 清理并保存 `removed`。不删除 ready 软件，不自动重启编译，

@@ -202,9 +202,9 @@ describe("SandboxStager", () => {
     const input = fixture.unsigned.mounts[0];
     if (!input) throw new Error("Missing input fixture");
     input.relativePath = path;
-    await expect(new SandboxStager({ root }).prepare(fixture)).rejects.toThrow(
-      "dedicated input or output",
-    );
+    await expect(
+      new SandboxStager({ root, ownerUid: process.getuid?.() ?? 0 }).prepare(fixture),
+    ).rejects.toThrow("dedicated input or output");
   });
 
   test("removes the complete private work root after restricted execution", async () => {
@@ -282,6 +282,7 @@ describe("SandboxStager", () => {
     const jobId = "00000000-0000-0000-0000-000000000119";
     const stager = new SandboxStager({
       root,
+      ownerUid: process.getuid?.() ?? 0,
       downloadInput: async () => {
         throw new Error("download must not begin");
       },

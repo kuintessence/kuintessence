@@ -164,11 +164,11 @@ integration.each(["agent-exit", "guard-frozen", "operation-deadline"] as const)(
   15000,
 );
 
-integration(
-  "real systemd unit preserves literal arguments and clean env, enforces limits, and records stop",
-  async () => {
-    const f = await fixture();
-    const literal = `$HOME \${SECRET} %n ; $(id)`;
+integration.each([false, true])(
+  "real systemd unit preserves literal arguments and clean env, enforces limits, and records stop (authorized=%s)",
+  async (authorized) => {
+    const f = await fixture(authorized ? Date.now() + 20_000 : undefined);
+    const literals = ["$HOME", `\${HOME}`, "$$", "", "$", "a\nb", `$HOME \${SECRET} %n ; $(id)`];
     const result = await runSpackSupervisedProcess(
       [
         "/usr/bin/python3",
@@ -176,16 +176,17 @@ integration(
         `
 import json, os, pathlib, sys
 group = pathlib.Path('/sys/fs/cgroup') / pathlib.Path('/proc/self/cgroup').read_text().strip().split('::')[1].lstrip('/')
-print(json.dumps({'arg': sys.argv[1], 'secret': os.getenv('SECRET'), 'memory': (group / 'memory.max').read_text().strip(), 'swap': (group / 'memory.swap.max').read_text().strip(), 'tasks': (group / 'pids.max').read_text().strip()}))
+print(json.dumps({'args': sys.argv[1:], 'literalEnv': os.getenv('LITERAL'), 'secret': os.getenv('SECRET'), 'memory': (group / 'memory.max').read_text().strip(), 'swap': (group / 'memory.swap.max').read_text().strip(), 'tasks': (group / 'pids.max').read_text().strip()}))
 `,
-        literal,
+        ...literals,
       ],
-      f.options,
+      { ...f.options, env: { LITERAL: literals.join("=") } },
       f.ref,
     );
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
-      arg: literal,
+      args: literals,
+      literalEnv: literals.join("="),
       secret: null,
       memory: String(1024 ** 3),
       swap: "0",
