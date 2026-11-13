@@ -63,6 +63,7 @@ import {
   type KuintessenceJobLookup,
   type KuintessenceJobLookupResult,
   type SchedulerAdapter,
+  SchedulerSubmissionError,
   SchedulerSubmissionUnknownError,
   type Spawner,
 } from "./adapters/base";
@@ -10570,6 +10571,64 @@ test("durable unresolved submission fences a dispatch with a new delivery epoch"
   await settle();
   expect(submissions).toBe(0);
   expect(await records.listActive()).toHaveLength(1);
+});
+
+test("confirmed sbatch rejection clears the pending intent and persists failure without resubmission", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const outbound = new OutboundQueue(db);
+  let submissions = 0;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submissions++;
+        expect((await records.listActive())[0]?.schedulerJobId).toBe("__kq_submission_pending__");
+        throw new SchedulerSubmissionError("Invalid partition name specified");
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    activeRemoteJobs: records,
+    outboundQueue: outbound,
+    inboundAcks: new InboundAcks(db),
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: { await(jobId: string): Promise<void> };
+  };
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "dispatchJob",
+        value: create(DispatchJobSchema, {
+          jobId: "rejected-partition",
+          dispatchEpoch: 1n,
+          command: "true",
+          cpus: 1,
+          memoryMb: 64n,
+          wallTimeSec: 60n,
+          workingDir: "/shared/rejected",
+        }),
+      },
+    }),
+  );
+  await waitForCondition(() => submissions === 1);
+  await harness.pool.await("rejected-partition");
+  expect(await records.listActive()).toEqual([]);
+  const reports = (await outbound.loadForReplay()).flatMap(({ item }) =>
+    item.kind === "jobStatus" ? [item.report] : [],
+  );
+  expect(reports).toMatchObject([
+    { jobId: "rejected-partition", status: "failed", failureCode: "SCHEDULER_SUBMIT_FAILED" },
+  ]);
+  await harness.recoverActiveRemoteJobs();
+  expect(submissions).toBe(1);
 });
 
 test("lost sbatch response retains the actual dispatch until accounting can recover it", async () => {

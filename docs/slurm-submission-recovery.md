@@ -4,6 +4,8 @@ Agent 在执行 `sbatch` 前保存稳定 job UUID、scheduler name、命令、�
 
 `sbatch` 最长等待 30 秒，控制查询、取消及日志读取最长等待 10 秒。超时只表示本地没有得到确定响应，不能证明 controller 没有接受作业。`sbatch` 自身 exit 1 也可能是响应通信失败；只有空 stdout 加整行匹配的已知 controller 拒绝会直接判定提交失败，其余非零结果保持未知。
 
+已确认拒绝且尚未获得 scheduler ID 时，Runner 持久上报 `SCHEDULER_SUBMIT_FAILED` 并清理原 pending intent，工作流可进入失败终态。已获得 scheduler ID 后的回执写入失败仍保留原执行等待对账；不能仅凭错误类别把已接收的作业清理或重新提交。
+
 对账使用完整 `KQ_JOB_ID=UUID` comment 和稳定 scheduler name，而非短名称单独匹配。默认恢复请求会查询当前用户/指定 account 的 `squeue` 与提交日期范围内的 `sacct`。已配置 `scontrol` 终态后端的站点，改为合并 `squeue` 与 controller 保留的作业记录；严格验证完整 comment、稳定名称、account（未指定 account 时验证当前 UID）和唯一 ID，歧义仍拒绝确认：
 
 - 同一个 allocation ID 同时出现于队列和记账，只确认一次。

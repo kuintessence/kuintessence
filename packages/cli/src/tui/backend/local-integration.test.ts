@@ -40,6 +40,7 @@ const JOB_SPEC = JSON.stringify({ name: "wrf", command: "echo hi", cpus: 4, memo
 describe("LocalBackend × SlurmAdapter (full local stack)", () => {
   test("lists, submits, and tails logs through the real adapter", async () => {
     const { spawner, calls } = scriptedSpawner({
+      id: { stdout: "1000\n" },
       squeue: { stdout: "12345|wrf|RUNNING|compute|2026-05-30T10:00:00\n" },
       sbatch: { stdout: "67890\n" },
       scontrol: { stdout: "JobId=12345 JobName=wrf StdOut=/scratch/wrf.out" },
@@ -66,7 +67,15 @@ describe("LocalBackend × SlurmAdapter (full local stack)", () => {
     expect(await backend.getJobLogs("12345", 100)).toBe("epoch 1\nepoch 2\n");
     await backend.cancelJob("12345");
 
-    expect(calls.map((c) => c[0])).toEqual(["squeue", "sbatch", "scontrol", "tail", "scancel"]);
+    expect(calls.map((c) => c[0])).toEqual([
+      "id",
+      "squeue",
+      "sbatch",
+      "scontrol",
+      "tail",
+      "scancel",
+    ]);
+    expect(calls[1]?.slice(0, 3)).toEqual(["squeue", "--user", "1000"]);
   });
 
   test("surfaces node + start time in the job detail through the real adapter", async () => {
@@ -96,6 +105,7 @@ describe("LocalBackend × SlurmAdapter (full local stack)", () => {
 
   test("a submitted job persists and still lists after the queue empties (real SQLite)", async () => {
     const { spawner } = scriptedSpawner({
+      id: { stdout: "1000\n" },
       sbatch: { stdout: "67890\n" },
       squeue: { stdout: "" }, // empty queue — the job has been evicted
     });

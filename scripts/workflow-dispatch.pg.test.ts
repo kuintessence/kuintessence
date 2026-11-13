@@ -706,6 +706,7 @@ test("federation outbox requires fresh authorization on initial delivery and eve
   const delivered: ServerMessage[] = [];
   dispatcher.register(agentId, {
     federationExecutionV1: true,
+    federationComputeLeaseV1: true,
     verifiedCertFingerprint: "test-verified-certificate",
     push: (value) => {
       if (value.payload.case === "dispatchJob" && value.payload.value.jobId === jobId)
@@ -720,6 +721,7 @@ test("federation outbox requires fresh authorization on initial delivery and eve
     return async () => {
       checks++;
       if (revoked) throw new Error("Agreement revoked");
+      return Date.now() + 10_000;
     };
   };
   try {

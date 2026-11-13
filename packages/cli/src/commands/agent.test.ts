@@ -125,7 +125,7 @@ describe("kq agent serve error routing", () => {
 test("agent register forwards file token to metadata without completing registration", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kq-register-token-"));
   const tokenFile = join(directory, "token");
-  await writeFile(tokenFile, "file-token\n");
+  await writeFile(tokenFile, "file-token\n", { mode: 0o600 });
   const original = globalThis.fetch;
   const mode = process.env.KQ_TRANSPORT_MODE;
   delete process.env.KQ_TRANSPORT_MODE;

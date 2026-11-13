@@ -973,6 +973,7 @@ describe("JobRunner", () => {
 test.each([
   "submit",
   "receipt",
+  "receipt-submission-error",
 ] as const)("uncertain %s retains durable job inputs without publishing a failure", async (boundary) => {
   const reports: JobStatusReport[] = [];
   let cleaned = false;
@@ -985,6 +986,8 @@ test.each([
       },
     }),
     onSchedulerSubmitted: async () => {
+      if (boundary === "receipt-submission-error")
+        throw new SchedulerSubmissionError("receipt write failed after acceptance");
       throw new Error("receipt write failed");
     },
     onSubmissionUncertain: async (spec) => {
@@ -1004,6 +1007,36 @@ test.each([
   expect(reconciled).toBe(true);
   expect(reports).toEqual([]);
   expect(cleaned).toBe(false);
+});
+
+test("confirmed scheduler rejection reports failure despite a pending durable intent", async () => {
+  const reports: JobStatusReport[] = [];
+  let uncertainCalls = 0;
+  let cleanups = 0;
+  const runner = new JobRunner({
+    adapter: makeAdapter({
+      submit: async () => {
+        throw new SchedulerSubmissionError("Invalid partition name specified");
+      },
+    }),
+    onSubmissionUncertain: async () => {
+      uncertainCalls++;
+      return true;
+    },
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+    onJobFinished: () => {
+      cleanups++;
+    },
+    sleep: noSleep,
+  });
+  expect(await runner.run(baseSpec)).toBeNull();
+  expect(uncertainCalls).toBe(0);
+  expect(reports).toMatchObject([
+    { jobId: baseSpec.jobId, status: "failed", failureCode: "SCHEDULER_SUBMIT_FAILED" },
+  ]);
+  expect(cleanups).toBe(1);
 });
 
 test("a failed status query during recovery waits without releasing inputs or reporting failure", async () => {

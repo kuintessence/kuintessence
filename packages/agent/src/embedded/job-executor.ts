@@ -10,6 +10,7 @@ import {
   type JobStatusResult,
   QueueValidationError,
   type SchedulerAdapter,
+  SchedulerSubmissionError,
   SchedulerSubmissionUnknownError,
 } from "../adapters/base";
 import { queueFailureCode } from "../adapters/queue-inventory";
@@ -270,6 +271,7 @@ export class JobRunner {
     try {
       if (
         this.schedulerSubmissionStarted &&
+        !(err instanceof SchedulerSubmissionError && this.schedulerJobId === null) &&
         ((await this.deps.onSubmissionUncertain?.(spec, err)) ||
           err instanceof SchedulerSubmissionUnknownError)
       )
