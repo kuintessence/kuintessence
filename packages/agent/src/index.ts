@@ -1,6 +1,8 @@
 import { mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { createSqliteDb } from "@kuintessence/db";
 import { createLogger } from "@kuintessence/shared";
+import { sql } from "drizzle-orm";
 import { realSpawner, type SandboxJobSpec, type Spawner } from "./adapters/base";
 import { detectScheduler } from "./adapters/detect";
 import type { PbsProAdapterDeps } from "./adapters/pbs-pro";
@@ -21,6 +23,7 @@ import { createCpLocalDataScanner, createCpLocalDataScanSigner } from "./data-ma
 import { AgentDataRoots } from "./data-market/local-data-security";
 import { runFederationWatchdog } from "./federation-watchdog";
 import { LicensedMaterialResolver } from "./licensed-material-resolver";
+import { startMaintenanceControl } from "./maintenance-control";
 import {
   createOutputCollector,
   type GlobScanner,
@@ -60,9 +63,11 @@ import {
   createServerClient,
   createServerReachabilityProbe,
 } from "./server-client";
+import { readSiteUpdate } from "./site-operations";
 import { configureSpackMaterialClient, SpackManager } from "./spack";
 import { IsolatedSpackInstallRunner } from "./spack/install-runner";
 import { ManagedSpackInstallation } from "./spack/managed-installation";
+import { slurmSpackProcess } from "./spack/slurm-process";
 import { SpackSourceAuditor } from "./spack/source-auditor";
 import { SshHandler } from "./ssh";
 import { AgentStream } from "./stream";
@@ -476,6 +481,8 @@ async function main() {
     enabled: config.AGENT_SPACK_ENABLED,
     serverUrl: config.SERVER_HTTP_URL,
     cacheDir: config.AGENT_SPACK_CACHE_DIR,
+    identity:
+      mtls.certPem && mtls.keyPem ? { certPem: mtls.certPem, keyPem: mtls.keyPem } : undefined,
   });
   if (materialDelivery.unavailableReason) {
     logger.warn(
@@ -493,12 +500,38 @@ async function main() {
       throw new Error("Spack source audit runtime profile is incomplete");
     }
     const runtime = {
+      trustMode: config.AGENT_SPACK_TRUST_MODE,
       apptainerPath: config.AGENT_SPACK_AUDIT_APPTAINER_PATH,
       apptainerSha256,
       sifPath,
       sifSha256,
     };
-    materialAuditor = new SpackSourceAuditor({ profile: runtime });
+    if (config.AGENT_SPACK_EXECUTOR === "slurm" && adapter.type !== "slurm")
+      throw new Error("Spack Slurm executor requires Slurm");
+    const buildProcess =
+      config.AGENT_SPACK_EXECUTOR === "slurm"
+        ? slurmSpackProcess(config.AGENT_SPACK_BUILD_PARTITION, undefined, {
+            binDir: config.AGENT_SLURM_BIN_DIR,
+            account: config.AGENT_SPACK_BUILD_ACCOUNT,
+            qos: config.AGENT_SPACK_BUILD_QOS,
+            managedMemoryMib: config.AGENT_SPACK_MANAGED_MEMORY_MIB,
+            memoryLimitMib: config.AGENT_SPACK_SLURM_MEMORY_LIMIT_MIB,
+          })
+        : undefined;
+    materialAuditor = new SpackSourceAuditor({
+      profile: runtime,
+      process: buildProcess,
+      ...(config.AGENT_SPACK_INSTALL_SITE_PROFILE_PATH &&
+      config.AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256
+        ? {
+            site: {
+              path: config.AGENT_SPACK_INSTALL_SITE_PROFILE_PATH,
+              sha256: config.AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256,
+              runtime,
+            },
+          }
+        : {}),
+    });
     if (config.AGENT_SPACK_INSTALL_ENABLED) {
       const path = config.AGENT_SPACK_INSTALL_SITE_PROFILE_PATH;
       const sha256 = config.AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256;
@@ -510,6 +543,8 @@ async function main() {
         site: { path, sha256, runtime },
         runner: new IsolatedSpackInstallRunner({
           runtime,
+          process: buildProcess,
+          scheduled: !!buildProcess,
           installTimeoutMs: config.AGENT_SPACK_INSTALL_TIMEOUT_MS,
           managedMemoryMib: config.AGENT_SPACK_MANAGED_MEMORY_MIB,
         }),
@@ -594,6 +629,27 @@ async function main() {
       : undefined,
     client,
     clientFactory: () => createServerClient(config.SERVER_GRPC_URL, mtls, serverTransportLiveness),
+    readSiteOperations: async () => ({
+      version: 1,
+      observedAt: Date.now(),
+      transport:
+        process.env.KQ_TRANSPORT_MODE === "ssh-forward"
+          ? "ssh-forward"
+          : process.env.KQ_TRANSPORT_MODE === "http-proxy"
+            ? "http-proxy"
+            : "direct",
+      trust: config.AGENT_SPACK_TRUST_MODE,
+      executor: config.AGENT_SPACK_EXECUTOR,
+      materials: materialDelivery.client?.status ?? {
+        state: config.AGENT_SPACK_ENABLED ? "blocked" : "disabled",
+        active: 0,
+      },
+      installation: { state: config.AGENT_SPACK_INSTALL_ENABLED ? "idle" : "disabled", active: 0 },
+      jobs: { state: "unknown", active: 0 },
+      transfers: { state: "unknown", active: 0 },
+      update: await readSiteUpdate(config.AGENT_DB_PATH),
+      auditContext: await materialAuditor?.context().catch(() => undefined),
+    }),
     adapter,
     agentId: config.AGENT_ID,
     siteName: config.AGENT_SITE_NAME,
@@ -620,6 +676,7 @@ async function main() {
     fileTransferMaxRetries: config.AGENT_FILE_TRANSFER_MAX_RETRIES,
     fileTransferRetryBackoffSec: config.AGENT_FILE_TRANSFER_RETRY_BACKOFF_SEC,
     fileTransferConnectTo: config.AGENT_FILE_TRANSFER_CONNECT_TO,
+    fileTransferStateDir: join(dirname(config.AGENT_DB_PATH), "transfers"),
     containerFileTransferConnectTo:
       config.AGENT_CONTAINER_FILE_TRANSFER_CONNECT_TO ?? config.AGENT_FILE_TRANSFER_CONNECT_TO,
     sandboxCapability,
@@ -661,6 +718,36 @@ async function main() {
     managedDatasetRootIds: Object.keys(config.AGENT_DATASET_ROOTS_JSON),
   });
 
+  const maintenance = await startMaintenanceControl(
+    join(dirname(config.AGENT_DB_PATH), "maintenance.sock"),
+    {
+      drain: (lease) =>
+        stream.drainForMaintenance(lease, () => {
+          const conditions: Record<string, string> = {
+            active_remote_jobs: "1",
+            job_cleanup_intents: "1",
+            inbound_dispatch_pending: "acked_at IS NULL",
+            outbound_job_status: "1",
+            outbound_software_operation_result: "1",
+            outbound_queue_validation_shadow_rejection: "1",
+            software_executions: "result IS NULL",
+            queued_operations: "1",
+            local_jobs: "status NOT IN ('completed','failed','cancelled')",
+            local_workflow_runs: "status NOT IN ('completed','failed','cancelled')",
+          };
+          // Synchronous reads run while the stream admission gate is held. Unknown schemas fail closed.
+          for (const [table, condition] of Object.entries(conditions)) {
+            if (db.get(sql.raw(`SELECT 1 FROM ${table} WHERE ${condition} LIMIT 1`))) return false;
+          }
+          return true;
+        }),
+      resume: (lease) => stream.resumeAfterMaintenance(lease),
+    },
+  ).catch(() => {
+    logger.warn("Maintenance socket unavailable; automatic maintenance permission is disabled");
+    return undefined;
+  });
+
   process.on("SIGINT", () => {
     logger.info("SIGINT received — shutting down");
     if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
@@ -677,6 +764,7 @@ async function main() {
   } finally {
     if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
     await stream.stop();
+    await maintenance?.close();
   }
   logger.info("Agent stopped cleanly");
 }

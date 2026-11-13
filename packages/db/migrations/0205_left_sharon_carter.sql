@@ -1,1 +1,0 @@
-ALTER TABLE "federation_commercial_history_recoveries" ADD COLUMN "approval_history" jsonb DEFAULT '[]'::jsonb NOT NULL;

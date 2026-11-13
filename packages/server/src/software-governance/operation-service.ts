@@ -29,22 +29,25 @@ import {
   AppError,
   decideSpackPolicy,
   ErrorCode,
+  SPACK_SOURCE_PROOF_PREFIX,
   type SpackExecutionPin,
   SpackExecutionPinSchema,
   type SpackPolicy,
+  SpackSourceAuditEnvelopeSchema,
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
 import {
   federationCanonicalJson,
   federationExecutionDeadline,
 } from "@kuintessence/shared/federation";
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, like, or, sql } from "drizzle-orm";
 import { AuthorizationUnavailableError } from "../authz/service";
 import type { FederationDeliveryTarget } from "../federation/dispatch-authorization";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { CpScope } from "../middleware/cp-rbac";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { InstalledRegistry } from "./installed-registry";
+import type { SourceAuditProofs } from "./source-audit-proofs";
 import type { SpackInstallPreparation, SpackInstallTicket } from "./spack-material-delivery";
 
 export type SoftwareOperationAction = "install" | "uninstall" | "load" | "import_preinstalled";
@@ -62,6 +65,8 @@ export interface SoftwareOperationView {
   action: SoftwareOperationAction;
   spec: string;
   status: SoftwareOperationStatusValue;
+  auditOnly?: boolean;
+  auditStatus?: "passed";
   stdout: string | null;
   stderr: string | null;
   exitCode: number | null;
@@ -89,6 +94,7 @@ export class SoftwareOperationService {
       runId: string,
       target: FederationDeliveryTarget,
     ) => Promise<(tx: PgTransaction) => Promise<number>>,
+    private readonly sourceAuditProofs?: SourceAuditProofs,
   ) {}
 
   async closeInterruptedOperation(input: {
@@ -173,6 +179,22 @@ export class SoftwareOperationService {
     });
   }
 
+  async requestSourceAudit(input: {
+    scope: CpScope;
+    agentId: string;
+    spec: string;
+    requestedBy: string;
+    idempotencyKey: string;
+    agentScopeVerified?: boolean;
+  }): Promise<SoftwareOperationView> {
+    return this.requestOperation({
+      ...input,
+      action: "install",
+      sourceAuditOnly: true,
+      idempotencyKey: `source-audit:${createHash("sha256").update(input.idempotencyKey).digest("hex")}`,
+    });
+  }
+
   async requestOperation(input: {
     scope: CpScope;
     agentId: string;
@@ -182,8 +204,16 @@ export class SoftwareOperationService {
     idempotencyKey?: string;
     idempotencyItemIndex?: number;
     idempotencyItemCount?: number;
+    sourceAuditOnly?: true;
     agentScopeVerified?: boolean;
   }): Promise<SoftwareOperationView> {
+    if (input.idempotencyKey?.startsWith("source-audit:") && !input.sourceAuditOnly) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        "Idempotency-Key source-audit namespace is reserved",
+        400,
+      );
+    }
     const spec = normalizeSoftwareOperationSpec(input.spec);
     const action = normalizeSoftwareOperationAction(input.action);
     const idempotency = normalizeSoftwareOperationIdempotency(input);
@@ -897,7 +927,18 @@ export class SoftwareOperationService {
       where = and(where, eq(softwareOperations.action, input.action)) ?? where;
     }
     if (input.status) {
-      where = and(where, eq(softwareOperations.status, input.status)) ?? where;
+      const statusCondition =
+        input.status === "succeeded"
+          ? or(
+              eq(softwareOperations.status, "succeeded"),
+              and(
+                eq(softwareOperations.status, "rejected"),
+                like(softwareOperations.idempotencyKey, "source-audit:%"),
+                like(softwareOperations.stdout, `${SPACK_SOURCE_PROOF_PREFIX}%`),
+              ),
+            )
+          : eq(softwareOperations.status, input.status);
+      where = and(where, statusCondition) ?? where;
     }
     const rows = await this.db
       .select()
@@ -909,10 +950,16 @@ export class SoftwareOperationService {
         desc(softwareOperations.id),
       )
       .limit(input.limit ?? 100);
-    return rows.map(rowToView);
+    return rows
+      .map(rowToView)
+      .filter((operation) => !input.status || operation.status === input.status);
   }
 
-  async applyAgentResult(agentId: string, result: SoftwareOperationResult): Promise<void> {
+  async applyAgentResult(
+    agentId: string,
+    result: SoftwareOperationResult,
+    certificateFingerprint?: string,
+  ): Promise<void> {
     const status = statusFromProto(result.status);
     const action = softwareOperationActionFromProto(result.action);
     if (!action) return;
@@ -929,19 +976,34 @@ export class SoftwareOperationService {
         : {}),
       updatedAt: now,
     };
-    const updated = await this.db
-      .update(softwareOperations)
-      .set(values)
-      .where(
-        and(
-          eq(softwareOperations.id, result.operationId),
-          eq(softwareOperations.agentId, agentId),
-          eq(softwareOperations.action, action),
-          eq(softwareOperations.spec, result.spec),
-          inArray(softwareOperations.status, allowedCurrentStatusesForIncomingResult(status)),
-        ),
-      )
-      .returning({ id: softwareOperations.id, action: softwareOperations.action });
+    const apply = async (connection: Pick<PgDb, "update" | "select" | "insert">) => {
+      const updated = await connection
+        .update(softwareOperations)
+        .set(values)
+        .where(
+          and(
+            eq(softwareOperations.id, result.operationId),
+            eq(softwareOperations.agentId, agentId),
+            eq(softwareOperations.action, action),
+            eq(softwareOperations.spec, result.spec),
+            inArray(softwareOperations.status, allowedCurrentStatusesForIncomingResult(status)),
+          ),
+        )
+        .returning({ id: softwareOperations.id, action: softwareOperations.action });
+      if (
+        updated.length > 0 &&
+        action === "install" &&
+        (status === "succeeded" || status === "rejected")
+      ) {
+        await this.sourceAuditProofs
+          ?.withConnection(connection)
+          .accept(agentId, result.operationId, result.stdout, certificateFingerprint);
+      }
+      return updated;
+    };
+    const updated = this.sourceAuditProofs
+      ? await this.db.transaction(apply)
+      : await apply(this.db);
     if (shouldRefreshInstalledLedger(status, action, updated.length > 0, result.replayed)) {
       try {
         await this.installedRegistry.replaceForAgent(
@@ -1276,17 +1338,32 @@ function assertIdempotentOperationMatches(
 }
 
 function rowToView(row: typeof softwareOperations.$inferSelect): SoftwareOperationView {
+  const auditOnly = row.idempotencyKey?.startsWith("source-audit:") === true;
+  let auditPassed = false;
+  if (auditOnly && row.status === "rejected" && row.stdout?.startsWith(SPACK_SOURCE_PROOF_PREFIX)) {
+    try {
+      const envelope = SpackSourceAuditEnvelopeSchema.parse(
+        JSON.parse(row.stdout.slice(SPACK_SOURCE_PROOF_PREFIX.length)),
+      );
+      auditPassed =
+        envelope.operationId === row.id && envelope.spec === row.spec && envelope.report.passed;
+    } catch {
+      auditPassed = false;
+    }
+  }
   return {
     id: row.id,
     agentId: row.agentId,
     requestedBy: row.requestedBy,
     action: row.action as SoftwareOperationAction,
+    ...(auditOnly ? { auditOnly: true } : {}),
+    ...(auditPassed ? { auditStatus: "passed" as const } : {}),
     spec: row.spec,
-    status: row.status as SoftwareOperationStatusValue,
+    status: auditPassed ? "succeeded" : (row.status as SoftwareOperationStatusValue),
     stdout: row.stdout,
     stderr: row.stderr,
     exitCode: row.exitCode,
-    error: row.error,
+    error: auditPassed ? null : row.error,
     requestedAt: row.requestedAt.toISOString(),
     startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,

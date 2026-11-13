@@ -49,7 +49,6 @@ describe("AgentDispatcher", () => {
     expect(message.payload.value.command).toBe("exit 125");
     expect(message.payload.value.spackExecution).toMatchObject(spackExecution);
   });
-
   test("does not send material credentials to a replaced legacy or unverified channel", () => {
     const dispatcher = new AgentDispatcher();
     const payload = {
@@ -110,7 +109,6 @@ describe("AgentDispatcher", () => {
     dispatcher.register("a", mockChannel());
     expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(false);
   });
-
   const sandboxExecution: SandboxSignedManifest = {
     jobId: "00000000-0000-0000-0000-000000000111",
     script: {
@@ -158,7 +156,6 @@ describe("AgentDispatcher", () => {
       signatureBase64: Buffer.from("signature").toString("base64"),
     },
   };
-
   test("isOnline reflects registration", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -168,7 +165,6 @@ describe("AgentDispatcher", () => {
     d.unregister("a");
     expect(d.isOnline("a")).toBe(false);
   });
-
   test("re-register closes previous channel", () => {
     const d = new AgentDispatcher();
     const old = mockChannel();
@@ -176,7 +172,6 @@ describe("AgentDispatcher", () => {
     d.register("a", mockChannel());
     expect(old.isClosed()).toBe(true);
   });
-
   test("stale unregister does not remove a replacement channel", () => {
     const d = new AgentDispatcher();
     const old = mockChannel();
@@ -189,7 +184,6 @@ describe("AgentDispatcher", () => {
     d.unregister("a", replacement);
     expect(d.isOnline("a")).toBe(false);
   });
-
   test("pushDispatchJob enqueues DispatchJob payload", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -218,7 +212,6 @@ describe("AgentDispatcher", () => {
       expect(m.payload.value.dispatchEpoch).toBe(7n);
     }
   });
-
   test("pushDispatchJob carries additive queue target and validation modes", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -239,7 +232,6 @@ describe("AgentDispatcher", () => {
       expect(message.payload.value.queueValidationMode).toBe(QueueValidationMode.ENFORCE);
     }
   });
-
   test("pushDispatchJob carries input staging + expected outputs (P4-f)", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -250,7 +242,13 @@ describe("AgentDispatcher", () => {
       command: "echo",
       resources: { cpus: 1, memoryMb: 512 },
       inputStaging: [
-        { fileMetadataId: "fm-1", stagePath: "mesh.tar.gz", sourceUrl: "https://minio/get/fm-1" },
+        {
+          fileMetadataId: "fm-1",
+          stagePath: "mesh.tar.gz",
+          sourceUrl: "https://minio/get/fm-1",
+          totalBytes: 128,
+          expectedSha256: "a".repeat(64),
+        },
       ],
       expectedOutputs: [
         { descriptor: "result", path: "out/result", isBatch: false, pathsOnly: true },
@@ -263,12 +261,13 @@ describe("AgentDispatcher", () => {
       expect(m.payload.value.inputStaging[0]?.fileMetadataId).toBe("fm-1");
       expect(m.payload.value.inputStaging[0]?.stagePath).toBe("mesh.tar.gz");
       expect(m.payload.value.inputStaging[0]?.sourceUrl).toBe("https://minio/get/fm-1");
+      expect(m.payload.value.inputStaging[0]?.totalBytes).toBe(128n);
+      expect(m.payload.value.inputStaging[0]?.expectedSha256).toBe("a".repeat(64));
       expect(m.payload.value.expectedOutputs[0]?.descriptor).toBe("result");
       expect(m.payload.value.expectedOutputs[0]?.pathsOnly).toBe(true);
       expect(m.payload.value.fileOutputDescriptors).toEqual(["result"]);
     }
   });
-
   test("pushDispatchJob carries resolved Data Market entries without CP absolute paths", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -330,7 +329,6 @@ describe("AgentDispatcher", () => {
     expect(localDelivery?.relativePath).toBe("vasp/potcar-set");
     expect(localDelivery?.selectedEntries[0]?.objectDownloadUrl).toBe("");
   });
-
   test("pushDispatchJob carries a structured signed Sandbox manifest", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -356,7 +354,6 @@ describe("AgentDispatcher", () => {
     expect(sandbox?.envelope?.nonce).toBe("nonce-1234567890123456");
     expect(sandbox?.networkDisabled).toBe(true);
   });
-
   test("pushes a data delivery revocation without delivery URLs or paths", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -373,7 +370,6 @@ describe("AgentDispatcher", () => {
       }),
     });
   });
-
   test("pushDispatchJob returns false when agent not online", () => {
     const d = new AgentDispatcher();
     const ok = d.pushDispatchJob("nobody", "job-1", {
@@ -384,7 +380,6 @@ describe("AgentDispatcher", () => {
     });
     expect(ok).toBe(false);
   });
-
   test("failed channel push removes stale online state", () => {
     const d = new AgentDispatcher();
     d.register("a", {
@@ -404,7 +399,6 @@ describe("AgentDispatcher", () => {
     expect(ok).toBe(false);
     expect(d.isOnline("a")).toBe(false);
   });
-
   test("pushCancelJob enqueues CancelJob payload", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -417,12 +411,10 @@ describe("AgentDispatcher", () => {
       expect(ch.messages[0].payload.value.revokedEpoch).toBe(8n);
     }
   });
-
   test("pushCancelJob returns false when agent not online", () => {
     const d = new AgentDispatcher();
     expect(d.pushCancelJob("ghost", "job-99")).toBe(false);
   });
-
   test("pushReleaseJobWorkRoot targets the owning Agent", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -435,7 +427,6 @@ describe("AgentDispatcher", () => {
       expect(message.payload.value.jobId).toBe("job-output");
     }
   });
-
   test("redelivers pending durable cancellations after Agent registration", async () => {
     const dispatcher = new AgentDispatcher();
     const channel = mockChannel();
@@ -465,7 +456,6 @@ describe("AgentDispatcher", () => {
       ),
     ).toEqual([3n, 4n]);
   });
-
   test("redelivers pending durable Job work-root releases after Agent registration", async () => {
     const dispatcher = new AgentDispatcher();
     const channel = mockChannel();
@@ -487,7 +477,6 @@ describe("AgentDispatcher", () => {
       "releaseJobWorkRoot",
     ]);
   });
-
   test("pushSandboxArtifactRelease emits a structured managed-path request", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -504,7 +493,6 @@ describe("AgentDispatcher", () => {
       expect(message.payload.value.items[0]?.replicaId).toBe("replica-1");
     }
   });
-
   test("pushSoftwareOperation enqueues softwareOperationRequest payload", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -523,7 +511,6 @@ describe("AgentDispatcher", () => {
       expect(m.payload.value.spec).toBe("gromacs@2024.1");
     }
   });
-
   test("pushDispatchJob sets envVars and wallTimeSec", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -544,7 +531,6 @@ describe("AgentDispatcher", () => {
       expect(m.payload.value.workingDir).toBe("/scratch");
     }
   });
-
   test("multiple agents can be registered independently", () => {
     const d = new AgentDispatcher();
     const ch1 = mockChannel();
@@ -836,4 +822,31 @@ test("local Sandbox inputs require authenticated advertised capability and a liv
   message.payload.value.federationExecution = true;
   channel.verifiedCertFingerprint = "";
   expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+});
+
+test("part URL responses encode independent correlation and upload identity while legacy calls stay valid", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = mockChannel();
+  dispatcher.register("agent", channel);
+  const urls = [{ partNumber: 1, url: "https://object/part" }];
+  dispatcher.pushPartUrlsResponse("agent", "transfer", urls, "correlation", "upload");
+  dispatcher.pushPartUrlsResponse("agent", "legacy-transfer", urls);
+  const first = channel.messages[0];
+  const legacy = channel.messages[1];
+  expect(first?.payload.case).toBe("partUrlsResponse");
+  if (first?.payload.case === "partUrlsResponse")
+    expect(first.payload.value).toMatchObject({
+      requestId: "transfer",
+      correlationId: "correlation",
+      uploadId: "upload",
+      urls,
+    });
+  expect(legacy?.payload.case).toBe("partUrlsResponse");
+  if (legacy?.payload.case === "partUrlsResponse")
+    expect(legacy.payload.value).toMatchObject({
+      requestId: "legacy-transfer",
+      correlationId: "",
+      uploadId: "",
+      urls,
+    });
 });

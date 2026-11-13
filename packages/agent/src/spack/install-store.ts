@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, opendir, rename, rm, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -18,6 +18,8 @@ import {
   isSpackInstallRoot,
   type SpackInstallRecord,
   SpackInstallRecordSchema,
+  type SpackWorkerStopProof,
+  SpackWorkerStopProofSchema,
 } from "./install-contract";
 import { removeSpackSupervisedInputs, SpackProcessSupervisionSchema } from "./supervised-process";
 
@@ -30,7 +32,22 @@ const LockOwnerSchema = z.strictObject({
   identity: ExecutionIdentitySchema,
   operationId: z.string().uuid().optional(),
 });
-const WorkerSchema = z.strictObject({ execution: z.string().uuid(), recordId: z.string().uuid() });
+const WorkerSchema = z.strictObject({
+  execution: z.string().uuid(),
+  recordId: z.string().uuid(),
+  stagingPath: z
+    .string()
+    .regex(/^\/[A-Za-z0-9_./-]+$/)
+    .optional(),
+});
+export interface SpackWorkerRecovery {
+  recordId: string;
+  operationId: string;
+  confirmStopped: (
+    stagingPath: string,
+    record: SpackInstallRecord,
+  ) => Promise<SpackWorkerStopProof | undefined>;
+}
 const MAX_BYTES = 2 * 1024 ** 2;
 const MAX_RECORDS = 1024;
 const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
@@ -149,6 +166,7 @@ export class SpackInstallStore {
     workerPending: boolean;
     identity: ExecutionIdentity;
     operationId?: string;
+    stoppedWorker?: SpackWorkerStopProof;
   };
   private busy = false;
   private writing = false;
@@ -196,12 +214,17 @@ export class SpackInstallStore {
     }
     await syncDirectory(dirname(path));
   }
-  async withLock<T>(fn: () => Promise<T>, operationId?: string): Promise<T> {
+  async withLock<T>(
+    fn: () => Promise<T>,
+    operationId?: string,
+    recovery?: SpackWorkerRecovery,
+  ): Promise<T> {
     if (this.busy) throw new Error(LOCK_HELD);
     this.busy = true;
     let owned: Stats | undefined;
     let path: string | undefined;
     let recovering = false;
+    let stoppedRecord: { recordId: string; proof: SpackWorkerStopProof } | undefined;
     let reconciled = false;
     try {
       await this.layout();
@@ -270,10 +293,74 @@ export class SpackInstallStore {
           } else {
             recovering = true;
             const state = await executionState(owner.identity, identity);
+            let finished:
+              | { worker: z.infer<typeof WorkerSchema>; proof: SpackWorkerStopProof }
+              | undefined;
+            if (await optionalStat(join(previousPath, "worker-finished.json"))) {
+              finished = z
+                .strictObject({ worker: WorkerSchema, proof: SpackWorkerStopProofSchema })
+                .parse(await this.lockJson(join(previousPath, "worker-finished.json")));
+              const binding = WorkerSchema.parse(
+                await this.lockJson(join(previousPath, "worker.json")),
+              );
+              const record = (await this.list()).find((entry) => entry.id === binding.recordId);
+              if (JSON.stringify(finished.worker) !== JSON.stringify(binding)) {
+                // A new worker binding was committed before its predecessor's receipt was removed.
+                finished = undefined;
+              } else {
+                if (
+                  !record ||
+                  ((record.state === "building" || record.state === "verifying") &&
+                    record.operationId !== owner.operationId) ||
+                  finished.proof.manifestDigest !== record.manifestDigest ||
+                  finished.proof.siteProfileDigest !== record.siteProfileDigest ||
+                  finished.proof.storePath !== this.path(record.id)
+                )
+                  throw new Error(RECOVERY_REQUIRED);
+                stoppedRecord = { recordId: record.id, proof: finished.proof };
+              }
+            }
+            // A login host reboot cannot prove a compute-node Slurm worker stopped.
+            if (
+              worker &&
+              WorkerSchema.parse(await this.lockJson(join(previousPath, "worker.json")))
+                .stagingPath &&
+              !recovery &&
+              !finished
+            )
+              throw new Error(RECOVERY_REQUIRED);
+            let recoveredWorker = finished !== undefined;
+            if (recovery && !finished) {
+              const binding = WorkerSchema.parse(
+                await this.lockJson(join(previousPath, "worker.json")),
+              );
+              const record = (await this.list()).find((entry) => entry.id === recovery.recordId);
+              if (
+                (state !== "stopped" && state !== "rebooted") ||
+                owner.operationId !== recovery.operationId ||
+                binding.recordId !== recovery.recordId ||
+                !binding.stagingPath ||
+                !record ||
+                !["building", "verifying"].includes(record.state)
+              )
+                throw new Error(RECOVERY_REQUIRED);
+              const proof = await recovery.confirmStopped(binding.stagingPath, record);
+              if (proof) {
+                const parsed = SpackWorkerStopProofSchema.parse(proof);
+                if (
+                  parsed.manifestDigest !== record.manifestDigest ||
+                  parsed.siteProfileDigest !== record.siteProfileDigest ||
+                  parsed.storePath !== this.path(record.id)
+                )
+                  throw new Error(RECOVERY_REQUIRED);
+                stoppedRecord = { recordId: record.id, proof: parsed };
+              }
+              recoveredWorker = true;
+            }
             const settledOwner = uncertain && owner.identity.instance === identity.instance;
             if (state === "alive" && !settledOwner) throw new Error(LOCK_HELD);
             if (state === "unknown") throw new Error(RECOVERY_REQUIRED);
-            if (state !== "rebooted" && worker) {
+            if (state !== "rebooted" && worker && !recoveredWorker) {
               if (await optionalStat(join(previousPath, "unsupervised.json")))
                 throw new Error(RECOVERY_REQUIRED);
               const supervisors = join(previousPath, "supervisors");
@@ -308,7 +395,7 @@ export class SpackInstallStore {
       await syncDirectory(history);
       await this.lockWrite(join(path, "owner.json"), owner);
       const token = Symbol("writer");
-      const active = {
+      const active: NonNullable<SpackInstallStore["active"]> = {
         token,
         stat: owned,
         path,
@@ -321,7 +408,14 @@ export class SpackInstallStore {
         // An exclusive successor proves all predecessors stopped; preserve partial files as evidence.
         for (const record of recovering ? await this.list() : []) {
           if (record.state === "building" || record.state === "verifying") {
-            await this.save({ ...record, state: "failed", updatedAt: new Date().toISOString() });
+            await this.save({
+              ...record,
+              state: "failed",
+              ...(stoppedRecord?.recordId === record.id
+                ? { workerStopped: stoppedRecord.proof }
+                : {}),
+              updatedAt: new Date().toISOString(),
+            });
           } else if (record.state === "removing") {
             await this.removeFiles(record.id);
             await this.save({ ...record, state: "removed", updatedAt: new Date().toISOString() });
@@ -330,7 +424,7 @@ export class SpackInstallStore {
         reconciled = true;
         return installWorkerExecution.run(
           {
-            start: async (recordId, supervisor) => {
+            start: async (recordId, supervisor, stagingPath) => {
               await this.assertLocked();
               if (supervisor) {
                 const ref = SpackProcessSupervisionSchema.parse(supervisor);
@@ -341,15 +435,44 @@ export class SpackInstallStore {
                 await this.lockWrite(join(active.path, "unsupervised.json"), identity.token);
               }
               // Persist before spawn; even a crash in the spawn/PID-registration gap is fenced.
-              if (!(await optionalStat(join(active.path, "worker.json")))) {
-                await this.lockWrite(join(active.path, "worker.json"), {
-                  execution: identity.token,
-                  recordId: ID.parse(recordId),
-                });
-              }
+              if (active.workerPending) throw new Error(RECOVERY_REQUIRED);
+              active.stoppedWorker = undefined;
+              const workerPath = join(active.path, `worker-${randomUUID()}.tmp`);
+              await this.lockWrite(workerPath, {
+                execution: identity.token,
+                recordId: ID.parse(recordId),
+                ...(stagingPath
+                  ? { stagingPath: WorkerSchema.shape.stagingPath.parse(stagingPath) }
+                  : {}),
+              });
+              await rename(workerPath, join(active.path, "worker.json"));
+              await syncDirectory(active.path);
+              await unlink(join(active.path, "worker-finished.json")).catch((error: unknown) => {
+                if (!hasCode(error, "ENOENT")) throw error;
+              });
+              await syncDirectory(active.path);
               active.workerPending = true;
             },
-            finish: async () => {
+            finish: async (proof) => {
+              if (proof) {
+                await this.assertLocked();
+                const worker = WorkerSchema.parse(
+                  await this.lockJson(join(active.path, "worker.json")),
+                );
+                const record = await this.read(worker.recordId);
+                const parsed = SpackWorkerStopProofSchema.parse(proof);
+                if (
+                  parsed.manifestDigest !== record.manifestDigest ||
+                  parsed.siteProfileDigest !== record.siteProfileDigest ||
+                  parsed.storePath !== this.path(record.id)
+                )
+                  throw new Error(RECOVERY_REQUIRED);
+                const temporary = join(active.path, `worker-finished-${randomUUID()}.tmp`);
+                await this.lockWrite(temporary, { worker, proof: parsed });
+                await rename(temporary, join(active.path, "worker-finished.json"));
+                await syncDirectory(active.path);
+                active.stoppedWorker = parsed;
+              }
               active.workerPending = false;
             },
           },
@@ -373,6 +496,19 @@ export class SpackInstallStore {
         this.busy = false;
       }
     }
+  }
+  async reconcileWorker(recovery: SpackWorkerRecovery): Promise<void> {
+    await this.withLock(
+      async () => {
+        const record = (await this.list()).find((entry) => entry.id === recovery.recordId);
+        if (!record || record.state !== "failed") throw new Error(RECOVERY_REQUIRED);
+      },
+      undefined,
+      recovery,
+    );
+  }
+  stoppedWorker(): SpackWorkerStopProof | undefined {
+    return this.active?.stoppedWorker;
   }
   workerUncertain(): boolean {
     return this.active?.workerPending === true;
@@ -551,6 +687,58 @@ export class SpackInstallStore {
           await this.save({ ...record, state: "failed", updatedAt: new Date().toISOString() });
         }
       }
+    });
+  }
+
+  async resumeFailed(id: string, expected: CreateInput): Promise<SpackInstallRecord> {
+    return this.mutate(async () => {
+      const previous = await this.read(id);
+      const binding = CreateSchema.parse(expected);
+      if (
+        previous.state !== "failed" ||
+        !previous.workerStopped ||
+        !previous.operationId ||
+        previous.workerStopped.manifestDigest !== previous.manifestDigest ||
+        previous.workerStopped.siteProfileDigest !== previous.siteProfileDigest ||
+        previous.workerStopped.storePath !== this.path(id) ||
+        !this.active?.operationId ||
+        this.active.operationId === previous.operationId ||
+        Object.entries(binding).some(([key, value]) => previous[key as keyof CreateInput] !== value)
+      ) {
+        throw new Error("Spack interrupted installation recovery binding mismatch");
+      }
+      await directory(this.path(id));
+      const attempts = join(this.root, "attempts");
+      await directory(attempts, true, 0o700);
+      const history = join(attempts, id);
+      await directory(history, true, 0o700);
+      const snapshot = join(history, `${previous.operationId}.json`);
+      const bytes = JSON.stringify(previous);
+      if (await optionalStat(snapshot)) {
+        if (JSON.stringify(await this.lockJson(snapshot)) !== bytes)
+          throw new Error(RECOVERY_REQUIRED);
+      } else {
+        const temporary = join(history, `.${randomUUID()}.tmp`);
+        await this.lockWrite(temporary, previous);
+        await rename(temporary, snapshot);
+        await syncDirectory(history);
+      }
+      const record = this.validate({
+        ...previous,
+        state: "building",
+        operationId: this.active.operationId,
+        executionIdentity: this.active.identity,
+        workerStopped: undefined,
+        report: undefined,
+        resumedFrom: {
+          operationId: previous.operationId,
+          snapshotSha256: createHash("sha256").update(bytes).digest("hex"),
+          schedulerJobId: previous.workerStopped.schedulerJobId,
+        },
+        updatedAt: new Date().toISOString(),
+      });
+      await this.write(record);
+      return record;
     });
   }
   async save(value: SpackInstallRecord): Promise<void> {

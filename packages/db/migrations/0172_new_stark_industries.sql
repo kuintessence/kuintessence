@@ -1,4 +1,0 @@
-ALTER TABLE "federation_input_attempts" ADD COLUMN "media_claim_id" uuid;--> statement-breakpoint
-ALTER TABLE "federation_result_attempts" ADD COLUMN "media_claim_id" uuid;--> statement-breakpoint
-ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_attempts_media_claim_id_federation_task_media_claims_id_fk" FOREIGN KEY ("media_claim_id") REFERENCES "public"."federation_task_media_claims"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "federation_result_attempts" ADD CONSTRAINT "federation_result_attempts_media_claim_id_federation_task_media_claims_id_fk" FOREIGN KEY ("media_claim_id") REFERENCES "public"."federation_task_media_claims"("id") ON DELETE no action ON UPDATE no action;

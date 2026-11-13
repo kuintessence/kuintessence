@@ -1131,6 +1131,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertGreater(offline.capacity(config)["requiredMiB"], 4096)
             self.assertEqual(offline.capacity(config)["requiredMiB"], 7200)
             self.assertIn("fabric-orderer", config["services"])
+            self.assertEqual(config["services"]["fabric-orderer"]["environment"]["ORDERER_GENERAL_CLUSTER_REPLICATIONPOLICY"], "simple")
             self.assertIn("fabric-admin", config["services"])
             self.assertTrue(all(not svc.get("privileged") for name, svc in config["services"].items() if name != "scheduler"))
             args.role = "arbitrator"
@@ -1146,6 +1147,7 @@ class ConfigurationTests(unittest.TestCase):
             args.role = "orderer"
             config = offline.render_config(ROOT, manifest, args)
             self.assertEqual(set(config["services"]), {"fabric-orderer"})
+            self.assertEqual(config["services"]["fabric-orderer"]["environment"]["ORDERER_GENERAL_CLUSTER_REPLICATIONPOLICY"], "simple")
             self.assertNotIn("pg-data", config["volumes"])
             config["services"]["fabric-admin"] = offline.admin_service(
                 {"mode": "fabric", "role": "orderer", "compose": config}, "orderer-join", None, REVISION)

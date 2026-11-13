@@ -469,7 +469,7 @@ test.each([
         netdriveInput: true,
         stagePath,
         expectedSha256: mode === "hash" && index === 1 ? "f".repeat(64) : digest("data"),
-        expectedSizeBytes: mode === "size" && index === 1 ? 5n : 4n,
+        totalBytes: mode === "size" && index === 1 ? 5n : 4n,
         sourceUrl: "https://objects.test/input",
         deliveryLeaseId: crypto.randomUUID(),
         deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 60_000),

@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { createSecureServer, createServer } from "node:http2";
-import { posix as posixPath } from "node:path";
 import {
   createPgDb,
+  fileTransfers,
   type PgDb,
   SpackMaterialReferences,
   userOrgMemberships,
@@ -12,8 +12,8 @@ import {
 import {
   AppError,
   createLogger,
+  decideSpackPolicy,
   ErrorCode,
-  type JobSubmission,
   type RoleName,
   usecase,
   WorkflowExecutionInterrupted,
@@ -21,7 +21,7 @@ import {
   WorkflowPlacementConfigSchema,
 } from "@kuintessence/shared";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { cors } from "hono/cors";
@@ -224,10 +224,13 @@ import { createNetDriveRoutes } from "./routes/netdrive";
 import { createPlatformUserRoutes } from "./routes/platform-users";
 import { createPreferenceRoutes } from "./routes/preferences";
 import { createQueueRoutes } from "./routes/queues";
+import { createRegistryTokenRoutes } from "./routes/registry-token";
 import { createSandboxAccountRoutes } from "./routes/sandbox-accounts";
 import { createSandboxPolicyRoutes } from "./routes/sandbox-policy";
 import { createSandboxScriptRoutes } from "./routes/sandbox-scripts";
 import { createSchedulerRoutes } from "./routes/scheduler";
+import { siteDiagnosticsRoutes } from "./routes/site-diagnostics";
+import { createSiteReleaseRoutes } from "./routes/site-releases";
 import { createSoftwareRoutes } from "./routes/software";
 import { createSshRoutes } from "./routes/ssh";
 import { createStorageRoutes } from "./routes/storage";
@@ -297,6 +300,7 @@ import { SandboxManifestSigner } from "./services/sandbox-manifest-signer";
 import { SandboxNodeExecutor } from "./services/sandbox-node-executor";
 import { SandboxPolicyService } from "./services/sandbox-policy";
 import { ShellExecRegistry } from "./services/shell-exec-registry";
+import { createSiteDiagnosticsService } from "./services/site-diagnostics";
 import { SoftwareAvailabilityService } from "./services/software-availability";
 import { SshGateway } from "./services/ssh-gateway";
 import { makeObjectStoreRecordingSink } from "./services/ssh-recording";
@@ -304,6 +308,7 @@ import { StorageQuotaService } from "./services/storage-quota";
 import { TerminalService } from "./services/terminal-service";
 import { TransferRegistry } from "./services/transfer-registry";
 import { TransferRunner } from "./services/transfer-runner";
+import { PgTransferSessionStore } from "./services/transfer-session-store";
 import { assertUsecasePackageExecutionAccess } from "./services/usecase-execution-authorizer";
 import { PgArtifactStore, WorkflowArtifactService } from "./services/workflow-artifact";
 import { WorkflowArtifactFiles } from "./services/workflow-artifact-files";
@@ -316,6 +321,8 @@ import {
   PolicyStore,
   SoftwareOperationService,
 } from "./software-governance";
+import { resolveEffectiveSpackPolicy } from "./software-governance/operation-service";
+import { SourceAuditProofs } from "./software-governance/source-audit-proofs";
 import {
   canOperateSpackAgent,
   createSpackDeliveryAccess,
@@ -339,6 +346,22 @@ import {
   PgWorkflowNamedReferenceRepository,
   WorkflowNamedReferenceResolver,
 } from "./workflow/named-reference-resolver";
+import {
+  PgPublicationStore,
+  type PublicationFile,
+  type PublicationInput,
+  publicationRunAllowsDelivery,
+  WorkflowOutputPublisher,
+} from "./workflow/output-publication";
+import {
+  PgPublicationIntentStore,
+  WorkflowPublicationIntentRecovery,
+} from "./workflow/output-publication-intent";
+import {
+  type OutputTransferInput,
+  type OutputTransferStore,
+  waitForOutputTransfer,
+} from "./workflow/output-transfer";
 import { createPackageResolver } from "./workflow/package-resolver";
 import { parseWorkflowYaml } from "./workflow/parser";
 import { constrainWorkflowResources } from "./workflow/resource-limits";
@@ -528,6 +551,17 @@ const meteringCron = new MeteringCron({
 const installedRegistry = new InstalledRegistry(db);
 const policyStore = new PolicyStore(db);
 const policyPusher = new PolicyPusher(dispatcher);
+const spackDeliveryAccess = createSpackDeliveryAccess(db, authzService);
+const sourceAuditProofs = new SourceAuditProofs(
+  db,
+  dispatcher,
+  spackDeliveryAccess,
+  async (input) => {
+    if (!(await canOperateSpackAgent(db, authzService, input))) return false;
+    const policy = await resolveEffectiveSpackPolicy(db, input.agentId);
+    return decideSpackPolicy(input.spec, policy) === "allow";
+  },
+);
 const spackMaterialDelivery =
   config.SPACK_MATERIAL_DELIVERY_ENABLED &&
   config.SPACK_REGISTRY_URL &&
@@ -540,9 +574,11 @@ const spackMaterialDelivery =
         registryJwtIssuer: config.SPACK_REGISTRY_JWT_ISSUER,
         registryJwtAudience: config.SPACK_REGISTRY_JWT_AUDIENCE,
         ticketSecret: config.SPACK_MATERIAL_TICKET_SECRET,
+        ticketLifetimeSec: config.SPACK_MATERIAL_TICKET_TTL_SEC,
         bindings: config.SPACK_MATERIAL_RELEASES,
         references: new SpackMaterialReferences(db, config.SPACK_MATERIAL_EPOCH),
-        access: createSpackDeliveryAccess(db, authzService),
+        access: spackDeliveryAccess,
+        onPrepared: (input) => sourceAuditProofs.dispatched(input),
         dispatcher,
       })
     : undefined;
@@ -576,6 +612,7 @@ const softwareOperations = new SoftwareOperationService(
       );
     return federationDispatchAuthorization.prepare(runId, target);
   },
+  sourceAuditProofs,
 );
 const metricsRecorder = new PgAgentMetricsRecorder(db);
 const queueObservability = new QueueObservabilityService(db, queueInventory);
@@ -587,6 +624,7 @@ const softwareAvailability = new SoftwareAvailabilityService(
   {
     onlineAgentIds: () => dispatcher.onlineAgentIds(),
     governance: licenseRuntimeGovernance,
+    sourceAuditAvailable: (agentId, spec) => sourceAuditProofs.available(agentId, spec),
   },
   authzService,
 );
@@ -635,6 +673,80 @@ const placementPlanService = new PlacementPlanService(
 let netdriveServiceForWorkflowOutputs: NetDriveService | undefined;
 let dataMarketUploadPort: DataUploadPort = new UnavailableDataMarketUploadPort();
 let transferRunner: TransferRunner | undefined;
+const workflowOutputTransferBinding = (input: OutputTransferInput) =>
+  and(
+    eq(fileTransfers.id, input.transferId),
+    eq(fileTransfers.userId, input.ownerId),
+    eq(fileTransfers.direction, "cluster_to_cloud"),
+    eq(fileTransfers.source, input.source),
+    eq(fileTransfers.target, input.target),
+    eq(fileTransfers.agentId, input.agentId),
+    input.jobId ? eq(fileTransfers.jobId, input.jobId) : isNull(fileTransfers.jobId),
+    input.workflowRunId
+      ? eq(fileTransfers.workflowRunId, input.workflowRunId)
+      : isNull(fileTransfers.workflowRunId),
+    input.totalBytes !== undefined ? eq(fileTransfers.totalBytes, input.totalBytes) : undefined,
+  );
+const workflowOutputTransferStore: OutputTransferStore = {
+  ensure: async (input) => {
+    await db
+      .insert(fileTransfers)
+      .values({
+        id: input.transferId,
+        userId: input.ownerId,
+        direction: "cluster_to_cloud",
+        source: input.source,
+        target: input.target,
+        agentId: input.agentId,
+        jobId: input.jobId,
+        workflowRunId: input.workflowRunId,
+        totalBytes: input.totalBytes,
+        state: "queued",
+      })
+      .onConflictDoNothing();
+    const [saved] = await db
+      .select()
+      .from(fileTransfers)
+      .where(eq(fileTransfers.id, input.transferId))
+      .limit(1);
+    return saved;
+  },
+  activate: async (input, previousState) => {
+    const rows = await db
+      .update(fileTransfers)
+      .set({
+        state: "running",
+        startedAt: new Date(),
+        finishedAt: null,
+        error: null,
+        updatedAt: new Date(),
+      })
+      .where(and(workflowOutputTransferBinding(input), eq(fileTransfers.state, previousState)))
+      .returning({ id: fileTransfers.id });
+    return rows.length === 1;
+  },
+  finish: async (input, event) => {
+    const rows = await db
+      .update(fileTransfers)
+      .set({
+        state: event.state,
+        error: event.state === "failed" ? "Workflow output transfer retry required" : null,
+        copiedBytes: event.copiedBytes,
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+        ...(event.state === "succeeded" ? { netdriveFileIds: event.netdriveFileIds ?? [] } : {}),
+      })
+      .where(
+        and(
+          workflowOutputTransferBinding(input),
+          ne(fileTransfers.state, "cancelled"),
+          ne(fileTransfers.state, "succeeded"),
+        ),
+      )
+      .returning({ id: fileTransfers.id });
+    return rows.length === 1;
+  },
+};
 const sandboxArtifactReleaseService = new SandboxArtifactReleaseService(dispatcher);
 const workflowArtifactFiles = new WorkflowArtifactFiles(db, async (input) => {
   if (!transferRunner || !netdriveServiceForWorkflowOutputs)
@@ -739,6 +851,7 @@ app.route("/", createMetricsRoutes({ queueObservability }));
 // Public routes
 app.route("/api", healthRoutes);
 app.route("/api", createAgentBinaryRoutes(config.AGENT_BINARIES_DIR));
+if (config.SITE_RELEASES_DIR) app.route("/api", createSiteReleaseRoutes(config.SITE_RELEASES_DIR));
 if (spackMaterialDelivery) {
   // Dedicated operation credentials, not browser sessions. Never proxy to an external URL.
   app.route("/api", createAgentSpackMaterialRoutes(spackMaterialDelivery));
@@ -885,6 +998,19 @@ const cpConsoleService = new CpConsoleService(
   }),
 );
 
+if (config.REGISTRY_PUBLIC_ORIGIN && config.SPACK_REGISTRY_JWT_SECRET) {
+  app.route(
+    "/api",
+    createRegistryTokenRoutes(db, config.JWT_SECRET, {
+      publicOrigin: config.REGISTRY_PUBLIC_ORIGIN,
+      secret: config.SPACK_REGISTRY_JWT_SECRET,
+      issuer: config.SPACK_REGISTRY_JWT_ISSUER,
+      audience: config.SPACK_REGISTRY_JWT_AUDIENCE,
+      publisherRoles: config.REGISTRY_PUBLISHER_ROLES,
+    }),
+  );
+}
+
 // Protected routes
 const protectedApi = new Hono();
 protectedApi.use("*", authMiddleware(config.JWT_SECRET, db));
@@ -965,6 +1091,49 @@ async function assertWorkflowExecutionMembership(input: {
     );
   }
 }
+
+const workflowPublicationStore = new PgPublicationStore(db);
+const workflowPublicationIntentRecovery = new WorkflowPublicationIntentRecovery({
+  store: new PgPublicationIntentStore(db),
+  publications: workflowPublicationStore,
+});
+const workflowOutputPublisher = new WorkflowOutputPublisher({
+  store: workflowPublicationStore,
+  authorize: async (input) => {
+    const job = await jobService.getById(input.jobId);
+    const [owner] = await db.select().from(users).where(eq(users.id, input.ownerId)).limit(1);
+    if (
+      !owner ||
+      owner.suspended ||
+      !job ||
+      job.submittedBy !== input.ownerId ||
+      job.agentId !== input.agentId ||
+      job.status !== "completed" ||
+      job.restrictedNoEgress
+    )
+      throw new Error("Workflow output publication principal or completed job unavailable");
+    await assertWorkflowExecutionMembership({ userId: input.ownerId, orgId: job.orgId });
+    if (input.workflowRunId) {
+      const run = await workflowRegistry.getById(input.workflowRunId);
+      if (!run || !publicationRunAllowsDelivery(run, input.ownerId))
+        throw new Error("Workflow output publication cancelled or interrupted");
+    }
+    const check = {
+      actorUserId: input.ownerId,
+      resource: { type: "job", id: input.jobId },
+      permission: "view",
+      subject: { type: "user", id: input.ownerId },
+    };
+    if (authzService.mode === "shadow")
+      await authzService.shadowCheck({ ...check, localAllowed: true });
+    else await authzService.requirePermission(check, false);
+  },
+  publish: publishWorkflowPublicationFile,
+  release: async (input, token) => {
+    await workflowPublicationStore.enqueueRelease(input, token);
+    await jobWorkRootReleaseOutbox.redeliver(input.agentId);
+  },
+});
 
 const makeRunner =
   (
@@ -1334,6 +1503,7 @@ const makeRunner =
                 undefined,
                 undefined,
                 undefined,
+                undefined,
                 executionLease,
               )
               .catch((updateErr) => {
@@ -1356,14 +1526,10 @@ const makeRunner =
           }
         },
         awaitCompletion: awaitWorkflowJob,
-        collectFiles: async (jobId, spec, collected) => {
+        collectFiles: async (jobId, _spec, _collected) => {
           try {
             return await collectWorkflowOutputFiles({
               jobId,
-              spec,
-              collected,
-              ownerId: submittedBy,
-              workflowRunId: activeRunId,
               executionLease,
             });
           } catch (cause) {
@@ -1426,267 +1592,66 @@ const workflowAsyncRunner = new WorkflowAsyncRunner({
 
 async function collectWorkflowOutputFiles(input: {
   jobId: string;
-  spec: JobSubmission;
-  collected: Record<string, string>;
-  ownerId: string;
-  workflowRunId?: string;
   executionLease?: LeasedWorkflowJournal;
 }): Promise<Record<string, usecase.FileInputValue>> {
-  const saved = input.executionLease
-    ? await readWorkflowPublishedFiles(input.executionLease, input.jobId)
-    : null;
-  const job = await jobService.getById(input.jobId);
-  if (saved !== null) {
-    if (job?.agentId) {
-      await jobWorkRootReleaseOutbox.enqueue(job.agentId, input.jobId);
-      await jobWorkRootReleaseOutbox.redeliver(job.agentId);
-    }
-    return saved;
-  }
-  if (!job?.workingDir || !job.agentId) {
-    if (input.executionLease && (input.spec.fileOutputDescriptors?.length ?? 0) > 0)
-      throw new WorkflowExecutionInterrupted("Workflow output location is unavailable", {
-        retryable: false,
-      });
-    if (input.executionLease)
-      await saveWorkflowPublishedFiles(input.executionLease, input.jobId, {});
-    logger.warn({ jobId: input.jobId }, "Workflow output files cannot be published");
-    return {};
-  }
-  const outputJob = { workingDir: job.workingDir, agentId: job.agentId };
-  let releasable = !input.executionLease;
-  try {
-    if (!transferRunner || !netdriveServiceForWorkflowOutputs) {
-      if (input.executionLease && (input.spec.fileOutputDescriptors?.length ?? 0) > 0)
-        throw new WorkflowExecutionInterrupted("Workflow file publication is unavailable");
-      if (input.executionLease)
-        await saveWorkflowPublishedFiles(input.executionLease, input.jobId, {});
-      releasable = true;
-      return {};
-    }
-    if (job.restrictedNoEgress) {
-      if (input.executionLease)
-        await saveWorkflowPublishedFiles(input.executionLease, input.jobId, {});
-      releasable = true;
-      logger.warn({ jobId: input.jobId }, "Restricted no-egress job outputs cannot be published");
-      return {};
-    }
-    const files: Record<string, usecase.FileInputValue> = {};
-    const declared = new Set(input.spec.fileOutputDescriptors ?? []);
-    for (const out of input.spec.expectedOutputs) {
-      if (!declared.has(out.descriptor)) {
-        continue;
-      }
-      if (out.isBatch) {
-        const batch = await publishBatchWorkflowOutputFiles({
-          ...input,
-          job: outputJob,
-          out,
-        });
-        if (batch !== undefined) {
-          files[out.descriptor] = batch;
-        }
-        continue;
-      }
-      const pathMetadata = input.collected[usecase.batchOutputPathsDescriptor(out.descriptor)];
-      if (!(out.descriptor in input.collected) && !pathMetadata) {
-        logger.warn(
-          { jobId: input.jobId, descriptor: out.descriptor },
-          "Workflow output lacks validated path metadata; cannot publish artifact",
-        );
-        continue;
-      }
-      const file = await publishOneWorkflowOutputFile({
-        jobId: input.jobId,
-        ownerId: input.ownerId,
-        ...(input.workflowRunId ? { workflowRunId: input.workflowRunId } : {}),
-        job: outputJob,
-        source: out.path.startsWith("/") ? out.path : posixPath.join(job.workingDir, out.path),
-        target: workflowOutputPath(input.workflowRunId, input.jobId, out),
-        fileName: posixPath.basename(out.path) || out.descriptor,
-      });
-      if (!file && input.executionLease)
-        throw new WorkflowExecutionInterrupted("Published workflow file metadata is unavailable");
-      if (file) {
-        files[out.descriptor] = {
-          fileMetadataId: file.id,
-          fileMetadataName: file.name,
-        };
-      }
-    }
-    if (input.executionLease)
-      await saveWorkflowPublishedFiles(input.executionLease, input.jobId, files);
-    releasable = true;
-    return files;
-  } catch (cause) {
-    if (input.executionLease && !(cause instanceof WorkflowExecutionInterrupted))
-      throw new WorkflowExecutionInterrupted("Workflow file publication is pending", { cause });
-    throw cause;
-  } finally {
-    if (releasable) {
-      await jobWorkRootReleaseOutbox.enqueue(job.agentId, input.jobId);
-      await jobWorkRootReleaseOutbox.redeliver(job.agentId);
-    }
-  }
-}
-
-async function publishBatchWorkflowOutputFiles(input: {
-  jobId: string;
-  out: { descriptor: string; path: string; isBatch: boolean };
-  collected: Record<string, string>;
-  ownerId: string;
-  workflowRunId?: string;
-  executionLease?: LeasedWorkflowJournal;
-  job: { workingDir: string; agentId: string };
-}): Promise<usecase.FileValue[] | undefined> {
-  const pathsJson = input.collected[usecase.batchOutputPathsDescriptor(input.out.descriptor)];
-  if (!pathsJson) {
-    if (input.executionLease)
-      throw new WorkflowExecutionInterrupted("Workflow output batch path metadata is unavailable");
-    logger.warn(
-      { jobId: input.jobId, descriptor: input.out.descriptor },
-      "Batched workflow output lacks path metadata; cannot publish artifacts",
-    );
-    return undefined;
-  }
-  const paths = parseBatchOutputPaths(pathsJson, !!input.executionLease);
-  const files: usecase.FileValue[] = [];
-  for (const relPath of paths) {
-    const source = relPath.startsWith("/")
-      ? relPath
-      : posixPath.join(input.job.workingDir, relPath);
-    const target = workflowBatchOutputPath(
-      input.workflowRunId,
-      input.jobId,
-      input.out.descriptor,
-      relPath,
-    );
-    const file = await publishOneWorkflowOutputFile({
-      jobId: input.jobId,
-      ownerId: input.ownerId,
-      ...(input.workflowRunId ? { workflowRunId: input.workflowRunId } : {}),
-      source,
-      target,
-      job: input.job,
-      fileName: posixPath.basename(relPath) || input.out.descriptor,
-    });
-    if (!file && input.executionLease)
-      throw new WorkflowExecutionInterrupted("Published workflow batch metadata is unavailable");
-    if (file) {
-      files.push({ fileMetadataId: file.id, fileMetadataName: file.name });
-    }
-  }
+  const { jobId, executionLease } = input;
+  const saved = executionLease ? await readWorkflowPublishedFiles(executionLease, jobId) : null;
+  if (saved !== null) return saved;
+  const job = await jobService.getById(jobId);
+  if (!job?.workingDir || !job.agentId) throw new Error("Workflow output job binding unavailable");
+  if (job.restrictedNoEgress) return {};
+  await workflowPublicationIntentRecovery.enqueue(jobId);
+  const files = await workflowOutputPublisher.process(jobId);
+  if (executionLease) await saveWorkflowPublishedFiles(executionLease, jobId, files);
   return files;
 }
 
-function parseBatchOutputPaths(pathsJson: string, strict = false): string[] {
-  try {
-    const parsed = JSON.parse(pathsJson);
-    if (strict && (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")))
-      throw new Error("Invalid batch metadata");
-    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
-  } catch (cause) {
-    if (strict)
-      throw new WorkflowExecutionInterrupted("Workflow output batch metadata is invalid", {
-        cause,
-        retryable: false,
-      });
-    return [];
-  }
-}
-
-async function publishOneWorkflowOutputFile(input: {
-  jobId: string;
-  ownerId: string;
-  workflowRunId?: string;
-  job: { agentId: string };
-  source: string;
-  target: string;
-  fileName: string;
-}): Promise<{ id: string; name: string } | null> {
-  const transferId = crypto.randomUUID();
-  await waitForWorkflowOutputTransfer({
-    transferId,
-    ownerId: input.ownerId,
-    source: input.source,
-    target: input.target,
-    agentId: input.job.agentId,
-    jobId: input.jobId,
-    workflowRunId: input.workflowRunId,
-  });
-  const listed = (await netdriveServiceForWorkflowOutputs?.listFiles(input.ownerId, {
-    prefix: input.target,
-    limit: 1,
-    offset: 0,
-  })) ?? { files: [] };
-  const { files: committed } = listed;
-  const file = committed.find((item) => item.path === input.target);
-  return file ? { id: file.id, name: input.fileName } : null;
-}
-
-async function waitForWorkflowOutputTransfer(input: {
-  transferId: string;
-  ownerId: string;
-  source: string;
-  target: string;
-  agentId: string;
-  jobId?: string;
-  workflowRunId?: string;
-}): Promise<void> {
-  if (!transferRunner) {
-    return;
-  }
-  const runner = transferRunner;
-  await new Promise<void>((resolve, reject) => {
-    runner
-      .start(
-        input.ownerId,
-        input.transferId,
-        {
-          direction: "cluster_to_cloud",
-          source: input.source,
-          target: input.target,
-          agentId: input.agentId,
-          ...(input.jobId ? { jobId: input.jobId } : {}),
-          ...(input.workflowRunId ? { workflowRunId: input.workflowRunId } : {}),
-        },
-        (event) => {
-          if (event.state === "succeeded") {
-            resolve();
-          } else if (event.state === "failed") {
-            reject(new Error(event.error || "workflow output transfer failed"));
-          }
-        },
-      )
-      .catch(reject);
-  });
-}
-
-function workflowOutputPath(
-  workflowRunId: string | undefined,
-  jobId: string,
-  out: { descriptor: string; path: string },
-): string {
-  const safeDescriptor = out.descriptor.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const safeName = (posixPath.basename(out.path) || safeDescriptor).replace(
-    /[^a-zA-Z0-9._-]/g,
-    "_",
+async function publishWorkflowPublicationFile(
+  input: PublicationInput,
+  file: PublicationFile,
+  signal: AbortSignal,
+): Promise<usecase.FileValue> {
+  if (!transferRunner || !netdriveServiceForWorkflowOutputs)
+    throw new Error("Workflow output transfer backend unavailable");
+  const ids = await waitForWorkflowOutputTransfer(
+    {
+      transferId: file.transferId,
+      ownerId: input.ownerId,
+      source: file.source,
+      target: file.target,
+      agentId: input.agentId,
+      jobId: input.jobId,
+      workflowRunId: input.workflowRunId,
+    },
+    signal,
   );
-  return `workflow-runs/${workflowRunId ?? "sync"}/jobs/${jobId}/${safeDescriptor}-${safeName}`;
+  const committed = ids[0]
+    ? await netdriveServiceForWorkflowOutputs.getFileById(ids[0])
+    : undefined;
+  if (!committed || committed.ownerId !== input.ownerId || committed.path !== file.target)
+    throw new Error("Workflow output commit receipt unavailable");
+  return { fileMetadataId: committed.id, fileMetadataName: file.fileName };
 }
 
-function workflowBatchOutputPath(
-  workflowRunId: string | undefined,
-  jobId: string,
-  descriptor: string,
-  relPath: string,
-): string {
-  const safeDescriptor = descriptor.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const safeName = relPath.replace(/[^a-zA-Z0-9._-]/g, "_") || safeDescriptor;
-  return `workflow-runs/${workflowRunId ?? "sync"}/jobs/${jobId}/${safeDescriptor}/${safeName}`;
+async function waitForWorkflowOutputTransfer(
+  input: OutputTransferInput,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  if (!transferRunner) {
+    throw new Error("Workflow output transfer backend unavailable");
+  }
+  return waitForOutputTransfer(
+    { store: workflowOutputTransferStore, runner: transferRunner },
+    input,
+    signal,
+  );
 }
 
 const workflowSyncEnabled = config.NODE_ENV !== "production" || config.WORKFLOW_SYNC_ENABLED;
+// Finish the old-process sweep before recovery or either listener admits new transfers.
+const interruptedTransfers = await fileService.reconcileInterruptedTransfers();
+if (interruptedTransfers > 0)
+  logger.warn({ interrupted: interruptedTransfers }, "Marked interrupted file transfers");
 workflowAsyncRunner
   .recoverInterruptedRuns()
   .then((report) => {
@@ -1696,14 +1661,6 @@ workflowAsyncRunner
   })
   .catch((err) => logger.error({ err }, "Failed to recover interrupted workflow runs"))
   .finally(() => workflowAsyncRunner.startRecovery());
-fileService
-  .reconcileInterruptedTransfers()
-  .then((interrupted) => {
-    if (interrupted > 0) {
-      logger.warn({ interrupted }, "Marked interrupted file transfers");
-    }
-  })
-  .catch((err) => logger.error({ err }, "Failed to reconcile interrupted file transfers"));
 protectedApi.route(
   "/",
   createWorkflowRoutes({
@@ -2188,6 +2145,7 @@ protectedApi.route("/", createAgentRoutes(agentManager, { authz: authzService })
 protectedApi.route(
   "/",
   createJobRoutes(jobService, db, orchestrator, {
+    outputPublication: { get: (jobId) => workflowOutputPublisher.inspect(jobId) },
     authz: authzService,
     defaultRunBase: config.WORKFLOW_RUN_BASE,
     jobLogs: jobLogsService,
@@ -2354,6 +2312,16 @@ if (config.NETDRIVE_ENABLED) {
       federationResults,
     );
   }
+  app.route(
+    "/api",
+    siteDiagnosticsRoutes(
+      createSiteDiagnosticsService({
+        storage: minioBackend,
+        certificate: createSpackDeliveryAccess(db, authzService).certificate,
+        agentExists: async (agentId) => Boolean(await agentManager.getById(agentId)),
+      }),
+    ),
+  );
   await minioBackend.healthCheck();
   await minioBackend.assertDataMarketStagingSafety();
   await minioBackend.assertDataMarketImmutability();
@@ -2469,7 +2437,7 @@ if (config.NETDRIVE_ENABLED) {
             : undefined;
           if (federation && !snapshot)
             throw new Error("Federation NetDrive input must belong to its execution identity");
-          const { downloadUrl, expiresAt } = await mintAuthorizedNetDriveDownload(
+          const { downloadUrl, expiresAt, sha256, size } = await mintAuthorizedNetDriveDownload(
             actorUserId,
             file.fileMetadataId,
             {
@@ -2481,6 +2449,8 @@ if (config.NETDRIVE_ENABLED) {
           return {
             ...file,
             sourceUrl: downloadUrl,
+            expectedSha256: sha256,
+            totalBytes: size,
             ...(snapshot
               ? {
                   netdriveInput: true,
@@ -2496,6 +2466,7 @@ if (config.NETDRIVE_ENABLED) {
   );
   transferRunner = new TransferRunner({
     db,
+    sessionStore: new PgTransferSessionStore(db),
     dispatcher,
     netdriveService,
     transferRegistry,
@@ -2503,6 +2474,18 @@ if (config.NETDRIVE_ENABLED) {
   });
   fileService.attachRunner(transferRunner);
 }
+async function recoverWorkflowOutputPublications() {
+  await workflowPublicationIntentRecovery.recover();
+  await workflowOutputPublisher.recover();
+}
+void recoverWorkflowOutputPublications().catch((err) =>
+  logger.error({ err }, "Workflow output recovery failed"),
+);
+setInterval(() => {
+  void recoverWorkflowOutputPublications().catch((err) =>
+    logger.error({ err }, "Workflow output recovery failed"),
+  );
+}, 30_000).unref();
 const dataMarketService = new DataMarketService({
   repository: new PgDataMarketRepository(db),
   uploadPort: dataMarketUploadPort,
@@ -2623,6 +2606,7 @@ protectedApi.route(
     consoleService: cpConsoleService,
     availability: softwareAvailability,
     softwareOperations,
+    sourceAuditProofs,
     agentRegistration: agentRegistrationService,
     agentCerts: certService,
     authz: authzService,

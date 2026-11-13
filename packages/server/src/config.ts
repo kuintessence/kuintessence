@@ -102,9 +102,25 @@ const ServerConfigSchema = z.object({
       );
     }, "must be an HTTP(S) origin")
     .optional(),
+  REGISTRY_PUBLIC_ORIGIN: z
+    .string()
+    .url()
+    .refine((value) => {
+      const url = new URL(value);
+      return (
+        url.protocol === "https:" &&
+        !url.username &&
+        !url.password &&
+        url.pathname === "/" &&
+        !url.search &&
+        !url.hash
+      );
+    }, "must be an HTTPS origin")
+    .optional(),
   SPACK_REGISTRY_JWT_SECRET: z.string().min(32).optional(),
   SPACK_REGISTRY_JWT_ISSUER: z.string().min(1).optional(),
   SPACK_REGISTRY_JWT_AUDIENCE: z.string().min(1).optional(),
+  SPACK_MATERIAL_TICKET_TTL_SEC: z.coerce.number().int().min(30).max(900).default(900),
   SPACK_MATERIAL_TICKET_SECRET: z.string().min(32).optional(),
   SPACK_MATERIAL_RELEASES: z
     .string()
@@ -161,6 +177,7 @@ const ServerConfigSchema = z.object({
   SERVER_GRPC_TLS_KEY_FILE: z.string().min(1).optional(),
   /** Where the Server CA cert+key live on disk. Auto-generated on first start. */
   SERVER_CA_DIR: z.string().default("./server-ca"),
+  SITE_RELEASES_DIR: z.string().min(1).optional(),
   AGENT_BINARIES_DIR: z.string().min(1).default("/opt/kuintessence/agent"),
   /** Hint used to escalate the disabled-mTLS warning to a loud message in non-dev. */
   NODE_ENV: z.string().default("development"),
@@ -441,6 +458,13 @@ const ValidatedServerConfigSchema = ServerConfigSchema.superRefine((cfg, ctx) =>
           path: [key],
           message: "required for federation outbound mTLS",
         });
+  }
+  if (cfg.REGISTRY_PUBLIC_ORIGIN && !cfg.SPACK_REGISTRY_JWT_SECRET) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["SPACK_REGISTRY_JWT_SECRET"],
+      message: "required for native OCI token exchange",
+    });
   }
   if (!cfg.SPACK_MATERIAL_DELIVERY_ENABLED) return;
   for (const key of [

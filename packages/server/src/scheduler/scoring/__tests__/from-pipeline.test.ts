@@ -11,6 +11,7 @@ import { toAgentCandidate, toScoringContext } from "../from-pipeline";
 function makeAgent(overrides: Partial<AgentRow> = {}): AgentRow {
   const now = new Date();
   return {
+    siteOperations: null,
     agentId: "a-1",
     siteName: "site-x",
     schedulerType: "slurm",

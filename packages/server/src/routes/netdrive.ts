@@ -18,7 +18,7 @@ import { netdriveFileTuples, netdriveOwnerTuple } from "../authz/projection";
 import type { AuthzCheck, AuthzService, AuthzTuple } from "../authz/service";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
-import type { NetDriveCommitResult, NetDriveService } from "../services/netdrive";
+import type { NetDriveCommitDb, NetDriveCommitResult, NetDriveService } from "../services/netdrive";
 
 interface NetDriveActor {
   ownerId: string;
@@ -135,9 +135,14 @@ export function createNetDriveRoutes(deps: NetDriveRoutesDeps): Hono {
       const body = c.req.valid("json");
       const actor = requireNetDriveActor(c);
       const ownerId = actor.ownerId;
-      const commit = await service.completeMultipartWithReplacements(ownerId, body);
+      const commit = await service.completeMultipartWithReplacements(
+        ownerId,
+        body,
+        undefined,
+        (result, tx) =>
+          enqueueNetDriveCommitAuthorization(deps.authz, result, ownerId, actor.orgId, tx),
+      );
       const file = commit.file;
-      await enqueueNetDriveCommitAuthorization(deps.authz, commit, ownerId, actor.orgId);
       await db.insert(auditLog).values({
         actor: actor.ownerId,
         orgId: actor.orgId,
@@ -395,6 +400,7 @@ async function enqueueNetDriveCommitAuthorization(
   commit: NetDriveCommitResult,
   ownerId: string,
   orgId: string | null,
+  db?: NetDriveCommitDb,
 ): Promise<void> {
   const tuples = [
     ...commit.replacedFiles.flatMap((file) =>
@@ -402,7 +408,7 @@ async function enqueueNetDriveCommitAuthorization(
     ),
     ...netdriveFileTuples({ fileId: commit.file.id, userId: ownerId, orgId }),
   ];
-  await authz?.enqueueMany(tuples);
+  await authz?.enqueueMany(tuples, db);
 }
 
 /**

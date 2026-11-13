@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { SpackMaterialManifest } from "@kuintessence/shared";
 import { SpackInstallationPending } from "./execution-identity";
+import { SpackMaterialCache } from "./material-cache";
 import {
   configureSpackMaterialClient,
   SpackMaterialClient,
@@ -24,8 +25,11 @@ import {
 } from "./material-client";
 
 const digest = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
 const body = "verified archive bytes";
+
 const blob = { digest: digest(body), size: Buffer.byteLength(body) };
+
 const manifest: SpackMaterialManifest = {
   version: 1,
   repository: "public/test",
@@ -37,7 +41,9 @@ const manifest: SpackMaterialManifest = {
   sources: [{ path: "source/zlib.tar.gz", blob }],
   lockfile: blob,
 };
+
 const manifestBytes = JSON.stringify(manifest, null, 2);
+
 const input = {
   operationId: "00000000-0000-4000-8000-000000000001",
   ticket: "test-ticket",
@@ -45,7 +51,9 @@ const input = {
   spec: manifest.spec,
   spackVersion: manifest.spackVersion,
 };
+
 const roots: string[] = [];
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -66,6 +74,124 @@ async function fixture(fetchBlob: () => Response = () => new Response(body), tex
 }
 
 describe("SpackMaterialClient", () => {
+  test.each([
+    false,
+    true,
+  ])("resumes a clean truncated EOF (Content-Length=%s) using pinned range identity", async (withLength) => {
+    const f = await fixture();
+    let requests = 0;
+    const client = new SpackMaterialClient({
+      serverUrl: "https://server.example",
+      cacheDir: f.cacheDir,
+      fetch: async (url, init) => {
+        if (url.endsWith("/manifest")) return new Response(manifestBytes);
+        const headers = new Headers(init.headers);
+        if (++requests === 1) {
+          expect(headers.has("Range")).toBe(false);
+          return new Response(body.slice(0, 7), {
+            headers: withLength ? { "Content-Length": String(blob.size) } : {},
+          });
+        }
+        expect(headers.get("Range")).toBe("bytes=7-");
+        expect(headers.get("If-Range")).toBe(`"${blob.digest}"`);
+        return new Response(body.slice(7), {
+          status: 206,
+          headers: {
+            ETag: `"${blob.digest}"`,
+            "Content-Range": `bytes 7-${blob.size - 1}/${blob.size}`,
+          },
+        });
+      },
+    });
+    const prepared = await client.prepare(input);
+    expect(requests).toBe(2);
+    expect(await readFile(prepared.blobs[0]?.path ?? "", "utf8")).toBe(body);
+  });
+  test.each([
+    false,
+    true,
+  ])("persisted partial survives ticket expiry and renewal preserves manifest pin (changed=%s)", async (changed) => {
+    const f = await fixture();
+    const cache = new SpackMaterialCache(f.cacheDir);
+    await cache.initialize();
+    await expect(
+      cache.store(
+        blob,
+        AbortSignal.timeout(1000),
+        async (write) => {
+          await write(Buffer.from(body.slice(0, 7)));
+          throw new Error("interrupted before restart");
+        },
+        true,
+      ),
+    ).rejects.toThrow("interrupted");
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    let blobCalls = 0;
+    const client = new SpackMaterialClient({
+      serverUrl: "https://server.example",
+      cacheDir: f.cacheDir,
+      identity: {
+        certPem: "certificate",
+        keyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      },
+      fetch: async (url, init) => {
+        if (url.endsWith("/manifest")) return new Response(manifestBytes);
+        if (url.endsWith("/ticket")) {
+          expect(JSON.parse(String(init.body)).manifestDigest).toBe(input.manifestDigest);
+          return Response.json({
+            spackMaterialTicket: "renewed-ticket",
+            spackManifestDigest: changed ? digest("changed") : input.manifestDigest,
+          });
+        }
+        const headers = new Headers(init.headers);
+        expect(headers.get("Range")).toBe("bytes=7-");
+        expect(headers.get("If-Range")).toBe(`"${blob.digest}"`);
+        if (++blobCalls === 1) return new Response(null, { status: 401 });
+        expect(headers.get("Authorization")).toBe("Bearer renewed-ticket");
+        return new Response(body.slice(7), {
+          status: 206,
+          headers: {
+            ETag: `"${blob.digest}"`,
+            "Content-Range": `bytes 7-${blob.size - 1}/${blob.size}`,
+          },
+        });
+      },
+    });
+    if (changed) {
+      await expect(client.prepare(input)).rejects.toThrow("binding mismatch");
+      expect(blobCalls).toBe(1);
+    } else {
+      const prepared = await client.prepare(input);
+      expect(await readFile(prepared.blobs[0]?.path ?? "", "utf8")).toBe(body);
+      expect(blobCalls).toBe(2);
+    }
+  });
+  test.each([
+    "fetch",
+    "body",
+  ])("ticket renewal bounds an uncooperative %s by the request deadline", async (phase) => {
+    const f = await fixture();
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    let renewals = 0;
+    const client = new SpackMaterialClient({
+      serverUrl: "https://server.example",
+      cacheDir: f.cacheDir,
+      requestTimeoutMs: 20,
+      identity: {
+        certPem: "certificate",
+        keyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      },
+      fetch: async (url) => {
+        if (!url.endsWith("/ticket")) return new Response(null, { status: 401 });
+        renewals++;
+        if (phase === "fetch") return new Promise<Response>(() => {});
+        return new Response(new ReadableStream({ start() {} }));
+      },
+    });
+    await expect(client.prepare(input)).rejects.toThrow("timed out");
+    expect(renewals).toBe(1);
+    expect(client.status).toEqual({ state: "failed", active: 0 });
+  });
   test("platform configuration preserves Agent startup without permitting legacy HTTP tickets", () => {
     expect(
       configureSpackMaterialClient({ enabled: false, serverUrl: "invalid", cacheDir: "/" }),
@@ -86,7 +212,6 @@ describe("SpackMaterialClient", () => {
       }).client,
     ).toBeInstanceOf(SpackMaterialClient);
   });
-
   test("verifies exact manifest bytes, deduplicates blobs, and reuses a durable cache after restart", async () => {
     const f = await fixture();
     const result = await f.client.prepare(input);
@@ -106,7 +231,6 @@ describe("SpackMaterialClient", () => {
     await restarted.prepare(input);
     expect(f.calls.filter((url) => url.includes("/blobs/"))).toHaveLength(1);
   });
-
   test("publishes Agent-only directories and read-only 0400 manifest/blob files", async () => {
     const f = await fixture();
     const prepared = await f.client.prepare(input);
@@ -121,7 +245,6 @@ describe("SpackMaterialClient", () => {
       expect(stat.uid).toBe(process.getuid?.() ?? -1);
     }
   });
-
   test.each([
     "cache",
     "sha256",
@@ -137,7 +260,6 @@ describe("SpackMaterialClient", () => {
     }
     expect(f.calls).toEqual([]);
   });
-
   test.each([
     "manifest",
     "blob",
@@ -152,7 +274,6 @@ describe("SpackMaterialClient", () => {
     }
     expect(f.calls.filter((url) => url.includes("/blobs/"))).toHaveLength(1);
   });
-
   test.each([
     "https://user:pass@server.example",
     "https://server.example/path",
@@ -165,7 +286,6 @@ describe("SpackMaterialClient", () => {
   ])("rejects unsafe Server origin %s", (serverUrl) => {
     expect(() => new SpackMaterialClient({ serverUrl, cacheDir: "/tmp/cache" })).toThrow();
   });
-
   test.each([
     "https://server.example",
     "http://localhost:8080",
@@ -174,7 +294,6 @@ describe("SpackMaterialClient", () => {
   ])("accepts controlled Server origin %s", (serverUrl) => {
     expect(() => new SpackMaterialClient({ serverUrl, cacheDir: "/tmp/cache" })).not.toThrow();
   });
-
   test.each([
     "/",
     "relative",
@@ -185,7 +304,6 @@ describe("SpackMaterialClient", () => {
       () => new SpackMaterialClient({ serverUrl: "https://server.example", cacheDir }),
     ).toThrow();
   });
-
   test("rejects missing ticket/digest and operation path injection without fetching", async () => {
     const f = await fixture();
     for (const invalid of [
@@ -198,7 +316,6 @@ describe("SpackMaterialClient", () => {
     }
     expect(f.calls).toEqual([]);
   });
-
   test("rejects manifest checksum before parsing or fetching blobs", async () => {
     const f = await fixture();
     await expect(f.client.prepare({ ...input, manifestDigest: digest("wrong") })).rejects.toThrow(
@@ -206,7 +323,6 @@ describe("SpackMaterialClient", () => {
     );
     expect(f.calls).toHaveLength(1);
   });
-
   test.each([
     { spec: "zlib@1.2" },
     { spackVersion: "0.23.0" },
@@ -215,14 +331,12 @@ describe("SpackMaterialClient", () => {
     await expect(f.client.prepare({ ...input, ...mismatch })).rejects.toThrow("binding");
     expect(f.calls).toHaveLength(1);
   });
-
   test("rejects manifest URLs and invalid schema despite a valid digest", async () => {
     const text = JSON.stringify({ ...manifest, url: "https://outside.example/archive" });
     const f = await fixture(undefined, text);
     await expect(f.client.prepare({ ...input, manifestDigest: digest(text) })).rejects.toThrow();
     expect(f.calls).toHaveLength(1);
   });
-
   test("bounds manifest bytes to 2 MiB", async () => {
     const text = " ".repeat(2 * 1024 ** 2 + 1);
     const f = await fixture(undefined, text);
@@ -231,11 +345,10 @@ describe("SpackMaterialClient", () => {
     );
     expect(f.calls).toHaveLength(1);
   });
-
   test.each([
     ["checksum", () => new Response("x".repeat(blob.size)), "SHA-256"],
     ["oversize", () => new Response(`${body}!`), "size"],
-    ["partial", () => new Response(body.slice(1)), "size"],
+    ["partial", () => new Response(body.slice(1)), "HTTP 200"],
     ["missing", () => new Response(null, { status: 404 }), "404"],
     [
       "redirect",
@@ -249,7 +362,6 @@ describe("SpackMaterialClient", () => {
     expect(files.some((name) => name.endsWith(".tmp"))).toBe(false);
     expect(files).not.toContain(blob.digest.slice(7));
   });
-
   test("rejects manifest redirects before any blob request", async () => {
     const f = await fixture();
     const client = new SpackMaterialClient({
@@ -259,7 +371,6 @@ describe("SpackMaterialClient", () => {
     });
     await expect(client.prepare(input)).rejects.toThrow("redirect");
   });
-
   test("reverifies cached content and never replaces corrupt immutable entries", async () => {
     const f = await fixture();
     const prepared = await f.client.prepare(input);
@@ -269,7 +380,6 @@ describe("SpackMaterialClient", () => {
     await expect(f.client.prepare(input)).rejects.toThrow("SHA-256");
     expect(f.calls.filter((url) => url.includes("/blobs/"))).toHaveLength(1);
   });
-
   test("rejects cached-file and cache-directory symlinks", async () => {
     const f = await fixture();
     const prepared = await f.client.prepare(input);
@@ -283,7 +393,6 @@ describe("SpackMaterialClient", () => {
     await symlink(f.root, f.cacheDir);
     await expect(f.client.prepare(input)).rejects.toThrow("symlink");
   });
-
   test("aborts a stalled body and cleans its temporary file", async () => {
     const controller = new AbortController();
     const f = await fixture(
@@ -300,7 +409,6 @@ describe("SpackMaterialClient", () => {
     await expect(f.client.prepare({ ...input, signal: controller.signal })).rejects.toThrow();
     expect((await readdir(join(f.cacheDir, "sha256"))).some((p) => p.endsWith(".tmp"))).toBe(false);
   });
-
   test("times out stalled fetch and body implementations even if they ignore AbortSignal", async () => {
     const f = await fixture();
     for (const stalledBody of [false, true]) {
@@ -320,7 +428,6 @@ describe("SpackMaterialClient", () => {
       );
     }
   });
-
   test("rejects expired tickets even with a fully populated cache and never retries", async () => {
     const f = await fixture();
     await f.client.prepare(input);
@@ -336,7 +443,6 @@ describe("SpackMaterialClient", () => {
     await expect(restarted.prepare(input)).rejects.toThrow("401");
     expect(requests).toBe(1);
   });
-
   test("downloads distinct recipe archive, lockfile, and source blobs without extraction", async () => {
     const lock = "opaque lockfile bytes, not a concretization claim";
     const source = "source archive bytes";
@@ -371,7 +477,6 @@ describe("SpackMaterialClient", () => {
     }
     expect((await readdir(join(f.cacheDir, "sha256"))).length).toBe(4);
   });
-
   test("bounds concurrent preparations and releases slots after cancellation", async () => {
     const f = await fixture();
     const controller = new AbortController();
@@ -388,7 +493,6 @@ describe("SpackMaterialClient", () => {
     expect(outcomes.every((outcome) => outcome.status === "rejected")).toBe(true);
     await expect(client.prepare({ ...input, signal: AbortSignal.abort() })).rejects.toThrow();
   });
-
   test("two independent clients atomically publish identical immutable entries", async () => {
     const f = await fixture();
     const other = new SpackMaterialClient({
@@ -401,7 +505,6 @@ describe("SpackMaterialClient", () => {
     const files = await readdir(join(f.cacheDir, "sha256"));
     expect(files.sort()).toEqual([input.manifestDigest.slice(7), blob.digest.slice(7)].sort());
   });
-
   test("rejects digest aliases with inconsistent declared sizes before blob downloads", async () => {
     const text = JSON.stringify({ ...manifest, lockfile: { ...blob, size: blob.size + 1 } });
     const f = await fixture(undefined, text);
@@ -410,7 +513,6 @@ describe("SpackMaterialClient", () => {
     );
     expect(f.calls).toHaveLength(1);
   });
-
   test("rejects stream errors after partial writes and cleans the tempfile", async () => {
     const f = await fixture(
       () =>
@@ -428,7 +530,6 @@ describe("SpackMaterialClient", () => {
     await expect(f.client.prepare(input)).rejects.toThrow("connection interrupted");
     expect((await readdir(join(f.cacheDir, "sha256"))).some((p) => p.endsWith(".tmp"))).toBe(false);
   });
-
   test("rejects oversized Content-Length without reading and non-200 partial responses", async () => {
     for (const response of [
       () => new Response(body, { headers: { "Content-Length": String(blob.size + 1) } }),
@@ -506,7 +607,21 @@ test.each([
       headers.push(request.headers.get("authorization") ?? "");
       const isManifest = request.url.endsWith("/manifest");
       const content = isManifest ? manifestBytes : body;
-      if (resumed) return new Response(content);
+      if (resumed) {
+        const offset = Number(/^bytes=(\d+)-$/.exec(request.headers.get("range") ?? "")?.[1] ?? 0);
+        return new Response(
+          content.slice(offset),
+          offset
+            ? {
+                status: 206,
+                headers: {
+                  "Content-Range": `bytes ${offset}-${content.length - 1}/${content.length}`,
+                  ETag: `"${isManifest ? input.manifestDigest : blob.digest}"`,
+                },
+              }
+            : undefined,
+        );
+      }
       return new Response(
         new ReadableStream<Uint8Array>({
           start(controller) {
@@ -634,4 +749,58 @@ test("a progressing material body can outlast the request idle timeout", async (
   } finally {
     clearInterval(producing);
   }
+});
+
+test("material capacity admission fails before producer IO and keeps interrupted partials", async () => {
+  const f = await fixture();
+  const cache = new SpackMaterialCache(f.cacheDir);
+  await cache.initialize();
+  await expect(
+    cache.store(
+      blob,
+      new AbortController().signal,
+      async (write) => {
+        await write(Buffer.from(body.slice(0, 7)));
+        throw new Error("interrupted");
+      },
+      true,
+    ),
+  ).rejects.toThrow("interrupted");
+  const additions: number[] = [];
+  const resumed = new SpackMaterialCache(f.cacheDir, async (request) => {
+    additions.push(request.additionalBytes);
+    if (request.additionalBytes === blob.size - 7) throw new Error("STORAGE_CAPACITY_BYTES");
+  });
+  let produced = false;
+  await expect(
+    resumed.store(
+      blob,
+      new AbortController().signal,
+      async () => {
+        produced = true;
+      },
+      true,
+    ),
+  ).rejects.toThrow("STORAGE_CAPACITY_BYTES");
+  expect(produced).toBe(false);
+  expect(additions).toContain(blob.size);
+  expect(additions).toContain(blob.size - 7);
+  expect(
+    (await readdir(join(f.cacheDir, "sha256"))).filter((name) => name.endsWith(".part")).length,
+  ).toBeGreaterThan(0);
+});
+
+test("audit-only mode comes from the authorized Server response and survives material verification", async () => {
+  const f = await fixture();
+  const client = new SpackMaterialClient({
+    serverUrl: "https://server.example",
+    cacheDir: f.cacheDir,
+    fetch: async (url) =>
+      url.endsWith("/manifest")
+        ? new Response(manifestBytes, { headers: { "X-Kq-Spack-Mode": "source-audit" } })
+        : new Response(body),
+  });
+  const prepared = await client.prepare(input);
+  expect(prepared.auditOnly).toBe(true);
+  expect(prepared.manifestDigest).toBe(input.manifestDigest);
 });

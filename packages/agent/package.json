@@ -6,6 +6,11 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
+    "./spack-recovery": {
+      "bun": "./src/spack/recover-slurm-worker.ts",
+      "types": "./src/spack/recover-slurm-worker.ts",
+      "default": "./src/spack/recover-slurm-worker.ts"
+    },
     ".": {
       "bun": "./src/index.ts",
       "types": "./src/index.ts",

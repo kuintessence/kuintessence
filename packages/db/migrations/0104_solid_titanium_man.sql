@@ -1,2 +1,0 @@
-ALTER TABLE "federation_result_imports" ADD COLUMN "next_attempt_at" timestamp with time zone DEFAULT now() NOT NULL;--> statement-breakpoint
-ALTER TABLE "federation_result_imports" ADD COLUMN "last_error" varchar(64);

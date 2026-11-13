@@ -15,6 +15,15 @@ function admit(meminfo: string, memoryMib?: number) {
 
 describe("managed worker host memory admission", () => {
   test.each([
+    32768, 1048576,
+  ])("admits large bounded budget %i only with reserve", async (memoryMib) => {
+    const requiredKib = (memoryMib + 512) * 1024;
+    await admit(`MemTotal: ${requiredKib} kB\nMemAvailable: ${requiredKib} kB\n`, memoryMib);
+    await expect(
+      admit(`MemTotal: ${requiredKib} kB\nMemAvailable: ${requiredKib - 1} kB\n`, memoryMib),
+    ).rejects.toThrow("configured budget + 512 MiB");
+  });
+  test.each([
     "",
     "SwapTotal: 0 kB\nSwapFree: 0 kB\n",
     "SwapFree: 999999999 kB\n",
@@ -32,7 +41,7 @@ describe("managed worker host memory admission", () => {
         admit(`MemTotal: ${total} kB\nMemAvailable: ${available} kB\n`, 1024),
       ).rejects.toThrow("configured budget + 512 MiB");
     }
-    for (const memoryMib of [0, 1023, 4097, 1024.5, NaN, Infinity]) {
+    for (const memoryMib of [0, 1023, 1048577, 1024.5, NaN, Infinity]) {
       await expect(admit("", memoryMib)).rejects.toThrow("Invalid managed Spack memory budget");
     }
   });

@@ -140,6 +140,27 @@ export interface ImmutableObjectCommit {
   };
 }
 
+function publicOrigin(value: string | undefined): URL | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    )
+      throw new Error("Invalid origin");
+    return url;
+  } catch {
+    throw new Error(
+      "NETDRIVE_PUBLIC_URL must be an HTTP(S) origin without credentials, path, query or fragment",
+    );
+  }
+}
+
 /**
  * Lazy-loaded real backend backed by the `minio` npm package.
  *
@@ -148,6 +169,7 @@ export interface ImmutableObjectCommit {
  * `minio` package is absent from `node_modules` in deployments without MinIO.
  */
 export async function createRealMinioBackend(cfg: MinioBackendConfig): Promise<MinioBackend> {
+  const pub = publicOrigin(cfg.publicUrl);
   // A runtime import keeps MinIO optional for deployments that disable NetDrive.
   const importer = (specifier: string): Promise<unknown> =>
     Function("s", "return import(s)")(specifier) as Promise<unknown>;
@@ -174,20 +196,15 @@ export async function createRealMinioBackend(cfg: MinioBackendConfig): Promise<M
   // only presignedPutObject / presignedGetObject.
   // biome-ignore lint/suspicious/noExplicitAny: same untyped Client surface.
   let presignClient: any = client;
-  if (cfg.publicUrl) {
-    try {
-      const pub = new URL(cfg.publicUrl);
-      presignClient = new Client({
-        endPoint: pub.hostname,
-        port: pub.port ? Number(pub.port) : pub.protocol === "https:" ? 443 : 80,
-        useSSL: pub.protocol === "https:",
-        accessKey: cfg.accessKey,
-        secretKey: cfg.secretKey,
-        region: cfg.region,
-      });
-    } catch {
-      presignClient = client;
-    }
+  if (pub) {
+    presignClient = new Client({
+      endPoint: pub.hostname,
+      port: pub.port ? Number(pub.port) : pub.protocol === "https:" ? 443 : 80,
+      useSSL: pub.protocol === "https:",
+      accessKey: cfg.accessKey,
+      secretKey: cfg.secretKey,
+      region: cfg.region,
+    });
   }
 
   const backend: MinioBackend = {
@@ -487,6 +504,7 @@ function contentDispositionForDownload(filename: string): string {
  * error if the deployment hasn't configured MinIO yet.
  */
 export function loadMinioConfigFromEnv(env: NodeJS.ProcessEnv = process.env): MinioBackendConfig {
+  publicOrigin(env.NETDRIVE_PUBLIC_URL);
   const endpoint = env.NETDRIVE_ENDPOINT;
   const accessKey = env.NETDRIVE_ACCESS_KEY;
   const secretKey = env.NETDRIVE_SECRET_KEY;

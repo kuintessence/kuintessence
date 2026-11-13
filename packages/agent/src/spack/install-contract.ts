@@ -88,17 +88,24 @@ export const SpackInstallSiteProfileSchema = z
   });
 export type SpackInstallSiteProfile = z.infer<typeof SpackInstallSiteProfileSchema>;
 
+export const SpackDependencyEvidenceSchema = z.strictObject({
+  hash: SpackDagHashSchema,
+  manifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  filesSha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
 export const SpackInstallReportSchema = z
   .strictObject({
     version: z.literal(1),
     validation: z.literal("isolated-install"),
-    action: z.enum(["install", "verify", "load"]),
+    action: z.enum(["install", "verify", "load", "verify-partial"]),
     manifestDigest: SpackMaterialDigestSchema,
     siteProfileDigest: SpackMaterialDigestSchema,
     storePath: SpackInstallPathSchema,
     root: InstalledSpecSchema.extend({ hash: SpackDagHashSchema }).strict(),
     prefix: SpackInstallPathSchema,
-    installedHashes: z.array(SpackDagHashSchema).min(1).max(10_000),
+    installedHashes: z.array(SpackDagHashSchema).max(10_000),
+    dependencyEvidence: z.array(SpackDependencyEvidenceSchema).max(10_000).optional(),
     loadShell: z
       .string()
       .max(256 * 1024)
@@ -107,7 +114,7 @@ export const SpackInstallReportSchema = z
   .superRefine((value, ctx) => {
     if (
       !value.prefix.startsWith(`${value.storePath}/`) ||
-      !value.installedHashes.includes(value.root.hash) ||
+      (value.action !== "verify-partial" && !value.installedHashes.includes(value.root.hash)) ||
       new Set(value.installedHashes).size !== value.installedHashes.length ||
       (value.action === "load") !== (value.loadShell !== undefined)
     ) {
@@ -116,6 +123,30 @@ export const SpackInstallReportSchema = z
   });
 export type SpackInstallReport = z.infer<typeof SpackInstallReportSchema>;
 export const SPACK_INSTALL_RESULT_PREFIX = "KQ_SPACK_INSTALL_RESULT:";
+
+export const SpackWorkerStopProofSchema = z.strictObject({
+  schedulerJobId: z.string().regex(/^\d+$/),
+  schedulerJobName: z.string().regex(/^kq-build-[a-f0-9-]{36}$/),
+  schedulerBinding: z.string().regex(/^[a-f0-9]{64}$/),
+  noRequeue: z.literal(true),
+  schedulerState: z.enum([
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+    "TIMEOUT",
+    "OUT_OF_MEMORY",
+    "NODE_FAIL",
+    "PREEMPTED",
+    "BOOT_FAIL",
+    "DEADLINE",
+  ]),
+  manifestDigest: SpackMaterialDigestSchema,
+  siteProfileDigest: SpackMaterialDigestSchema,
+  storePath: SpackInstallPathSchema,
+  action: z.enum(["install", "verify", "verify-partial"]),
+  stoppedAt: z.string().datetime(),
+});
+export type SpackWorkerStopProof = z.infer<typeof SpackWorkerStopProofSchema>;
 
 export const SpackInstallRecordSchema = z.strictObject({
   version: z.literal(1),
@@ -142,6 +173,19 @@ export const SpackInstallRecordSchema = z.strictObject({
   rootHash: SpackDagHashSchema,
   operationId: z.string().uuid().optional(),
   executionIdentity: ExecutionIdentitySchema.optional(),
+  workerStopped: SpackWorkerStopProofSchema.optional(),
+  resumedFrom: z
+    .strictObject({
+      operationId: z.string().uuid(),
+      snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      schedulerJobId: z.string().regex(/^\d+$/),
+      verifiedDependencyHashes: z.array(SpackDagHashSchema).max(10_000).optional(),
+      reusedDependencyCount: z.number().int().nonnegative().max(10_000).optional(),
+      dependencyEvidence: z.array(SpackDependencyEvidenceSchema).max(10_000).optional(),
+      partialVerification: SpackWorkerStopProofSchema.optional(),
+      finalVerification: SpackWorkerStopProofSchema.optional(),
+    })
+    .optional(),
   updatedAt: z.string().datetime(),
   report: SpackInstallReportSchema.optional(),
   buildReport: SpackInstallReportSchema.optional(),

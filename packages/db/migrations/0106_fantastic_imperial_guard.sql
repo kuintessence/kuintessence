@@ -1,1 +1,0 @@
-ALTER TABLE "workflow_runs" ADD COLUMN "waiting_invocations" jsonb DEFAULT '[]'::jsonb NOT NULL;

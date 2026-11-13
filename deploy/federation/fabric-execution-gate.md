@@ -118,7 +118,7 @@ Server 从本组织原双签预留生成公开 gate，不接受调用者提交�
 
 现有 `/api/federation/agreements/approve` 与 `/:revisionId/counterparty` 支持为已商业双签的 ledger_coordinated 协议保存本地执行同意。两站分别使用当前组织的 agreement.approve；提供方显式选择受限 executionUserId。协议正文必须与本组织商业合同嵌入的 agreement 完全相同，双方商业签名及当前用途会重新验证。
 
-迁移 [0123](../../packages/db/migrations/0123_petite_wallop.sql) 只让协调协议的本地预算外键为空，完整预算标识仍在签署条款中；双边协议仍必须有预算。不要为协调协议人工插入本地余额。批准与安装不需要在线 Fabric，亦不证明商业合同/锁额已经上链；实际接单仍返回 LEDGER_REQUIRED，Web 的可运行模式暂不扩大。这一步不替代公开激活、当前链上运行许可或本地派发授权。
+迁移 [0123（已整合）](../../packages/db/migrations/0079_conscious_anthem.sql) 只让协调协议的本地预算外键为空，完整预算标识仍在签署条款中；双边协议仍必须有预算。不要为协调协议人工插入本地余额。批准与安装不需要在线 Fabric，亦不证明商业合同/锁额已经上链；实际接单仍返回 LEDGER_REQUIRED，Web 的可运行模式暂不扩大。这一步不替代公开激活、当前链上运行许可或本地派发授权。
 
 
 ## 有期限的链上执行确认
@@ -394,7 +394,7 @@ market:
 
 双方停止 worker 读取这种 CLOSED 后，逐项匹配原需求、双方、认领、gate 摘要和期限，再清除原停止交付待办。闭合记录错绑时保留重试与错误，不把其他任务的关闭当成本任务已停止。该步骤不新增计算、账单或付款，资金释放仍由原私有双签交易完成。
 
-升级须同步更新 Market 链码、共享 schema、Adapter/Server，并先应用迁移 [0149](../../packages/db/migrations/0149_youthful_abomination.sql)。原有 TERMINAL 闭合保持兼容；不让尚不理解 REVOKED 闭合的旧副本消费新记录。普通市场 HTTP 提交仍不接受 `close-demand`，后台仅从已确认的私有记录生成。
+升级须同步更新 Market 链码、共享 schema、Adapter/Server，并先应用迁移 [0149（已整合）](../../packages/db/migrations/0079_conscious_anthem.sql)。原有 TERMINAL 闭合保持兼容；不让尚不理解 REVOKED 闭合的旧副本消费新记录。普通市场 HTTP 提交仍不接受 `close-demand`，后台仅从已确认的私有记录生成。
 
 专项真实网络入口：`KQ_FABRIC_TOOLS=<Fabric 3.1.5目录> bun scripts/fabric-evidence-network.ts --gate --preexecution-closure`。它使用隔离的本机 Peer/Orderer，检查缺少 B 背书、释放/激活两种提交顺序、A/C 对公开关闭背书、关闭重放及旧激活拒绝；不启用 k3s、不运行科学计算，也不代替完整 Agent 联合验收。完整 `--gate` 仍包含原 Adapter 故障恢复矩阵。
 

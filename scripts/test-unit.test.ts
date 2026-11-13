@@ -1,12 +1,86 @@
 import { describe, expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { loadPgMigrationFiles } from "@kuintessence/db";
+import { parse } from "yaml";
 import {
   collectUnitTestFiles,
   databaseUrlWithName,
+  selectUnitTestSlices,
   unitChildEnvironment,
   unitDatabaseName,
 } from "./test-unit";
 
 describe("unit test database harness", () => {
+  test("suite selection is explicit, rejects unknown arguments and preserves the default slices", async () => {
+    expect(selectUnitTestSlices([]).map((slice) => slice.name)).toEqual([
+      "core",
+      "server",
+      "registry",
+    ]);
+    expect(selectUnitTestSlices(["--suite", "offline-slurm-pg"])).toEqual([
+      {
+        name: "offline-slurm-pg",
+        paths: ["packages/server/src/services/offline-slurm.pg.test.ts"],
+      },
+    ]);
+    expect(selectUnitTestSlices(["--suite", "server"])[0]?.name).toBe("server");
+    expect(() => selectUnitTestSlices(["--suite", "unknown"])).toThrow("Unknown unit test suite");
+    expect(() => selectUnitTestSlices(["packages/server"])).toThrow("Usage:");
+    expect(() => selectUnitTestSlices(["--suite", "server", "--unsafe"])).toThrow("Usage:");
+    const selected = selectUnitTestSlices(["--suite", "offline-slurm-pg"])[0];
+    expect(await collectUnitTestFiles(selected?.paths ?? [])).toHaveLength(1);
+  });
+
+  test("recovery migrations follow 0072 in journal order with strictly increasing timestamps", async () => {
+    const migrations = await loadPgMigrationFiles();
+    const index = migrations.findIndex((migration) => migration.tag === "0073_classy_dagger");
+    expect(index).toBeGreaterThan(0);
+    expect(migrations.slice(index - 1, index + 2).map((migration) => migration.tag)).toEqual([
+      "0072_odd_thunderbolt",
+      "0073_classy_dagger",
+      "0074_neat_zarda",
+    ]);
+    expect(migrations[index]?.folderMillis ?? 0).toBeGreaterThan(
+      migrations[index - 1]?.folderMillis ?? 0,
+    );
+    expect(migrations[index + 1]?.folderMillis ?? 0).toBeGreaterThan(
+      migrations[index]?.folderMillis ?? 0,
+    );
+    expect(migrations[index]?.statements.join("\n")).toMatch(
+      /ALTER TABLE "file_transfers" ADD COLUMN "resume_session" jsonb/,
+    );
+    expect(migrations[index + 1]?.statements.join("\n")).toMatch(
+      /ALTER TABLE "agents" ADD COLUMN "site_operations" jsonb/,
+    );
+  });
+
+  test("CI runs the focused disposable-database suite against its PostgreSQL service", async () => {
+    const workflow = parse(
+      await readFile(resolve(import.meta.dir, "../.github/workflows/ci.yml"), "utf8"),
+    ) as {
+      jobs: Record<
+        string,
+        {
+          services?: Record<string, { image?: string }>;
+          steps: { name?: string; run?: string; env?: Record<string, string> }[];
+        }
+      >;
+    };
+    const job = workflow.jobs.test;
+    expect(job?.services?.postgres?.image).toBe("postgres:16-alpine");
+    const focused = job?.steps.find(
+      (step) => step.run === "bun run test:unit --suite offline-slurm-pg",
+    );
+    expect(focused).toBeDefined();
+    expect(focused?.env?.DATABASE_URL).toBe("postgres://kq:kq@localhost:5432/kuintessence");
+    const stepIndex = focused ? (job?.steps.indexOf(focused) ?? -1) : -1;
+    const migrateIndex =
+      job?.steps.findIndex((step) => step.name === "Run database migrations") ?? -1;
+    expect(stepIndex).toBeGreaterThanOrEqual(0);
+    expect(migrateIndex).toBeGreaterThan(stepIndex);
+  });
+
   test("replaces only the database name and preserves connection options", () => {
     expect(
       databaseUrlWithName(

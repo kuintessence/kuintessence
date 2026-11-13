@@ -17,6 +17,27 @@ function makeTestReader(read: (path: string) => Promise<string>): OutputReader {
 }
 
 describe("createOutputCollector", () => {
+  test.each([
+    { isBatch: false, pathsOnly: false },
+    { isBatch: false, pathsOnly: true },
+    { isBatch: true, pathsOnly: false },
+    { isBatch: true, pathsOnly: true },
+  ])("does not publish incomplete output facts on transient I/O: %j", async (shape) => {
+    const failure = Object.assign(new Error("stale shared filesystem handle"), { code: "ESTALE" });
+    const fail = async () => {
+      throw failure;
+    };
+    const read: OutputReader = fail;
+    read.readValidated = fail;
+    read.validatePath = fail;
+    const collect = createOutputCollector(read, undefined, () => ["first", "second"]);
+    await expect(
+      collect([{ descriptor: "result", path: "result", ...shape }], "/shared/work", {
+        retryTransientIO: true,
+      }),
+    ).rejects.toBe(failure);
+  });
+
   test("reads each non-batch output file content into collected, keyed by descriptor", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kq-out-"));
     const files: Record<string, string> = {

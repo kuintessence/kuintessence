@@ -19,8 +19,8 @@ export function netdriveDeliveries(inputs: readonly InputStaging[]) {
       input.stagePath.includes("\0") ||
       input.stagePath.split("/").some((part) => !part || part === "." || part === "..") ||
       !/^[a-f0-9]{64}$/.test(input.expectedSha256) ||
-      input.expectedSizeBytes < 0n ||
-      input.expectedSizeBytes > BigInt(Number.MAX_SAFE_INTEGER)
+      input.totalBytes < 0n ||
+      input.totalBytes > BigInt(Number.MAX_SAFE_INTEGER)
     )
       throw new Error("NetDrive input is missing its immutable file binding");
     return create(DataDeliveryBindingSchema, {
@@ -36,7 +36,7 @@ export function netdriveDeliveries(inputs: readonly InputStaging[]) {
         {
           path: posix.basename(input.stagePath),
           sha256: input.expectedSha256,
-          sizeBytes: input.expectedSizeBytes,
+          sizeBytes: input.totalBytes,
           objectDownloadUrl: input.sourceUrl,
         },
       ],

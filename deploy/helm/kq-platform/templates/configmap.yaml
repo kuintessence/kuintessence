@@ -8,6 +8,9 @@ data:
   SERVER_GRPC_PORT: {{ .Values.server.grpcPort | quote }}
   REGISTRY_PORT: {{ .Values.registry.port | quote }}
   REGISTRY_PUBLISHER_ROLES: {{ .Values.registry.publisherRoles | quote }}
+  {{- if .Values.registry.auth.publicOrigin }}
+  REGISTRY_PUBLIC_ORIGIN: {{ .Values.registry.auth.publicOrigin | quote }}
+  {{- end }}
   REGISTRY_AUTH_MODE: {{ .Values.registry.auth.mode | quote }}
   REGISTRY_MAX_UPLOAD_BYTES: {{ .Values.registry.uploadLimits.maxUploadBytes | quote }}
   REGISTRY_MAX_ACTIVE_UPLOADS: {{ .Values.registry.uploadLimits.maxActiveUploads | quote }}
@@ -15,9 +18,11 @@ data:
   REGISTRY_MAX_INCOMPLETE_UPLOAD_BYTES: {{ .Values.registry.uploadLimits.maxIncompleteUploadBytes | quote }}
   {{- if .Values.registry.auth.issuer }}
   REGISTRY_JWT_ISSUER: {{ .Values.registry.auth.issuer | quote }}
+  SPACK_REGISTRY_JWT_ISSUER: {{ .Values.registry.auth.issuer | quote }}
   {{- end }}
   {{- if .Values.registry.auth.audience }}
   REGISTRY_JWT_AUDIENCE: {{ .Values.registry.auth.audience | quote }}
+  SPACK_REGISTRY_JWT_AUDIENCE: {{ .Values.registry.auth.audience | quote }}
   {{- end }}
   LOG_LEVEL: {{ .Values.server.env.LOG_LEVEL | default "info" | quote }}
   NODE_ENV: {{ .Values.server.env.NODE_ENV | quote }}

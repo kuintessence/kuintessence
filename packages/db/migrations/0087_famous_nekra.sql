@@ -1,1 +1,0 @@
-ALTER TABLE "workflow_execution_jobs" ADD COLUMN "published_files" jsonb;

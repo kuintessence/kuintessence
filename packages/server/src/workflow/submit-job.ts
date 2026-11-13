@@ -48,6 +48,7 @@ export async function submitWorkflowJob(input: {
   const options: JobSubmitOptions = {
     ...(input.orgId !== undefined ? { orgId: input.orgId } : {}),
     trustedMaterialization: true,
+    workflowOutputPublication: true,
     trustedUsecaseRevisionId:
       spec.usecaseVersionId !== spec.usecasePackageId ? spec.usecaseVersionId : undefined,
     ...(input.runId ? { workflow: { runId: input.runId, nodeId: spec.nodeId } } : {}),

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, verify, X509Certificate } from "node:crypto";
 import {
   AppError,
   createLogger,
@@ -27,10 +27,12 @@ const claimsSchema = SpackMaterialBindingSchema.extend({
   providerOrgId: z.string().nullable(),
   certificateFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   spec: z.string().min(1).max(4096),
+  auditOnly: z.boolean().optional(),
 });
 type MaterialClaims = z.infer<typeof claimsSchema>;
 
 export interface SpackOperationAccess {
+  auditOnly?: boolean;
   agentId: string;
   requestedBy: string;
   providerOrgId: string | null;
@@ -78,6 +80,14 @@ export interface SpackMaterialDeliveryOptions {
   dispatcher: Pick<AgentDispatcher, "getChannel">;
   fetch?: typeof fetch;
   downloadLifetimeMs?: number;
+  ticketLifetimeSec?: number;
+  onPrepared?: (
+    input: SpackInstallPreparation &
+      SpackMaterialBinding & {
+        nativeLockDigest: string;
+        certificateFingerprint: string;
+      },
+  ) => Promise<void>;
 }
 
 export class SpackMaterialDelivery {
@@ -89,6 +99,9 @@ export class SpackMaterialDelivery {
   private initialization?: Promise<void>;
 
   constructor(private readonly options: SpackMaterialDeliveryOptions) {
+    const ticketLifetimeSec = options.ticketLifetimeSec ?? 900;
+    if (!Number.isInteger(ticketLifetimeSec) || ticketLifetimeSec < 30 || ticketLifetimeSec > 900)
+      throw new Error("Spack material ticket lifetime must be between 30 and 900 seconds");
     const url = new URL(options.registryUrl);
     if (
       !["http:", "https:"].includes(url.protocol) ||
@@ -158,6 +171,7 @@ export class SpackMaterialDelivery {
       requestedBy: input.requestedBy,
       spec: input.spec,
       providerOrgId: access.providerOrgId,
+      auditOnly: access.auditOnly === true,
       certificateFingerprint: channel.verifiedCertFingerprint,
     });
     await this.authorize(claims);
@@ -174,18 +188,78 @@ export class SpackMaterialDelivery {
         throw denied("Spack material release differs from the authorized execution pin");
     }
     await this.acquireReference(claims);
+    await this.options.onPrepared?.({
+      ...input,
+      ...binding,
+      nativeLockDigest: manifest.value.lockfile.digest,
+      certificateFingerprint: claims.certificateFingerprint,
+    });
     const ticket = await new SignJWT({ material: claims })
       .setProtectedHeader({ alg: "HS256", typ: "JWT" })
       .setIssuer(ISSUER)
       .setAudience(AUDIENCE)
       .setSubject(input.agentId)
       .setIssuedAt()
-      .setExpirationTime("15m")
+      .setExpirationTime(`${this.options.ticketLifetimeSec ?? 900}s`)
       .sign(this.key);
     return { spackMaterialTicket: ticket, spackManifestDigest: claims.manifestDigest };
   }
 
-  async download(operationId: string, ticket: string, digest?: string): Promise<Response> {
+  async refresh(operationId: string, body: unknown): Promise<SpackInstallTicket> {
+    const input = z
+      .object({
+        certificate: z.string().max(8192),
+        manifestDigest: SpackMaterialDigestSchema,
+        timestamp: z.number().int(),
+        signature: z
+          .string()
+          .regex(/^[A-Za-z0-9+/]+=*$/)
+          .max(8192),
+      })
+      .strict()
+      .parse(body);
+    if (Math.abs(Date.now() - input.timestamp) > 60_000) throw denied();
+    let certificate: X509Certificate;
+    try {
+      certificate = new X509Certificate(input.certificate);
+    } catch {
+      throw denied();
+    }
+    const fingerprint = createHash("sha256").update(certificate.raw).digest("hex");
+    const access = await this.options.access.operation(operationId);
+    if (
+      !access ||
+      !(await this.options.access.certificate(access.agentId, fingerprint)) ||
+      this.options.dispatcher.getChannel(access.agentId)?.verifiedCertFingerprint !== fingerprint
+    )
+      throw denied();
+    const message = `kq-material-refresh-v1\n${operationId}\n${input.manifestDigest}\n${input.timestamp}`;
+    if (
+      !verify(
+        "sha256",
+        Buffer.from(message),
+        certificate.publicKey,
+        Buffer.from(input.signature, "base64"),
+      )
+    )
+      throw denied();
+    const ticket = await this.prepareOperation({
+      operationId,
+      agentId: access.agentId,
+      requestedBy: access.requestedBy,
+      spec: access.spec,
+    });
+    if (ticket.spackManifestDigest !== input.manifestDigest)
+      throw denied("Material renewal cannot change the pinned release");
+    return ticket;
+  }
+
+  async download(
+    operationId: string,
+    ticket: string,
+    digest?: string,
+    request: { range?: string; ifRange?: string } = {},
+  ): Promise<Response> {
     let claims: MaterialClaims;
     let expiresAt: number;
     try {
@@ -218,6 +292,7 @@ export class SpackMaterialDelivery {
         return new Response(manifest.bytes, {
           headers: {
             "Content-Type": "application/json",
+            "X-Kq-Spack-Mode": claims.auditOnly ? "source-audit" : "install",
             "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",
           },
@@ -229,20 +304,49 @@ export class SpackMaterialDelivery {
         : undefined;
       if (!blob)
         throw new AppError(ErrorCode.NOT_FOUND, "Material is not part of this release", 404);
+      const etag = `"${blob.digest}"`;
+      let offset = 0;
+      const range = request.ifRange && request.ifRange !== etag ? undefined : request.range;
+      if (range) {
+        const match = /^bytes=(0|[1-9][0-9]*)-$/.exec(range);
+        if (!match || !Number.isSafeInteger(Number(match[1])))
+          throw new AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "Only open-ended byte ranges are supported",
+            400,
+          );
+        offset = Number(match[1]);
+        if (offset >= blob.size)
+          return new Response(null, {
+            status: 416,
+            headers: { "Content-Range": `bytes */${blob.size}`, ETag: etag },
+          });
+      }
       const lifetimeMs = Math.max(
         1,
         Math.min(this.options.downloadLifetimeMs ?? 300_000, expiresAt - Date.now()),
       );
       const response = await this.registry(claims, `/blobs/${blob.digest}`, lifetimeMs);
       if (!response.body) throw upstreamFailure();
-      const stream = verifiedStream(response.body, blob.digest, blob.size, lifetimeMs, () => {
-        this.activeDownloads--;
-      });
+      const stream = verifiedStream(
+        response.body,
+        blob.digest,
+        blob.size,
+        lifetimeMs,
+        () => {
+          this.activeDownloads--;
+        },
+        offset,
+      );
       streaming = true;
       return new Response(stream, {
+        status: range ? 206 : 200,
         headers: {
           "Content-Type": "application/octet-stream",
-          "Content-Length": String(blob.size),
+          "Content-Length": String(blob.size - offset),
+          "Accept-Ranges": "bytes",
+          ETag: etag,
+          ...(range ? { "Content-Range": `bytes ${offset}-${blob.size - 1}/${blob.size}` } : {}),
           "Cache-Control": "private, no-store",
           "X-Content-Type-Options": "nosniff",
         },
@@ -275,6 +379,7 @@ export class SpackMaterialDelivery {
       current.requestedBy !== claims.requestedBy ||
       current.providerOrgId !== claims.providerOrgId ||
       current.spec !== claims.spec ||
+      (current.auditOnly === true) !== (claims.auditOnly === true) ||
       !(await this.options.access.certificate(claims.agentId, claims.certificateFingerprint))
     ) {
       throw denied();
@@ -379,6 +484,7 @@ function verifiedStream(
   size: number,
   lifetimeMs: number,
   finished: () => void,
+  offset = 0,
 ) {
   const reader = source.getReader();
   const hash = createHash("sha256");
@@ -415,7 +521,8 @@ function verifiedStream(
         received += part.value.byteLength;
         if (received > size) throw upstreamFailure();
         hash.update(part.value);
-        controller.enqueue(part.value);
+        const start = Math.max(0, offset - (received - part.value.byteLength));
+        if (start < part.value.byteLength) controller.enqueue(part.value.subarray(start));
       } catch {
         await finish();
         controller.error(upstreamFailure());

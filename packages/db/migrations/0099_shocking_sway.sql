@@ -1,2 +1,0 @@
-DROP INDEX "federation_result_import_manifest";--> statement-breakpoint
-CREATE UNIQUE INDEX "federation_result_import_manifest" ON "federation_result_imports" USING btree ("local_site_id","operation_id","requested_by","manifest_digest") WHERE "federation_result_imports"."state" <> 'cancelled';

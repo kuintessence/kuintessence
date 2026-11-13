@@ -307,6 +307,8 @@ services:
     environment:
       FABRIC_CFG_PATH: /run/kq-orderer
       ORDERER_FILELEDGER_LOCATION: /var/hyperledger/production/orderer
+      # Fabric 3.1.5 BFT sync omits the mTLS cert hash; simple still verifies BFT block signatures.
+      ORDERER_GENERAL_CLUSTER_REPLICATIONPOLICY: simple
       ORDERER_CONSENSUS_WALDIR: /var/hyperledger/production/etcdraft/wal
       ORDERER_CONSENSUS_SNAPDIR: /var/hyperledger/production/etcdraft/snapshot
     volumes:

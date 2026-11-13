@@ -15,6 +15,7 @@ import {
   ErrorCode,
   hasRole,
   matchesSpecPattern,
+  parseSiteOperations,
   type RoleName,
   type SoftwareAssetCapability,
   type SoftwareAssetSummary,
@@ -64,6 +65,7 @@ export interface AvailabilityPolicyLayer {
 export interface SoftwareAvailabilityRuntimeOptions {
   onlineAgentIds?: () => string[];
   governance?: LicenseRuntimeGovernanceService;
+  sourceAuditAvailable?: (agentId: string, spec: string) => Promise<boolean>;
 }
 
 const TERMINAL_BLOCKED_LIFECYCLES = new Set(["revoked", "archived"]);
@@ -140,6 +142,13 @@ export class SoftwareAvailabilityService {
     for (const agent of candidates) {
       const policy = policies.get(agent.agentId) ?? defaultPolicy();
       const installedSpec = findInstalledSpec(installed.byAgent.get(agent.agentId), spec);
+      const offline =
+        agent.siteOperations?.transport === "ssh-forward" ||
+        agent.siteOperations?.transport === "http-proxy";
+      const sourceAuditVerified =
+        !installedSpec &&
+        offline &&
+        (await this.runtime.sourceAuditAvailable?.(agent.agentId, spec)) === true;
       const reasons = this.evaluateAgent({
         agent,
         asset,
@@ -149,6 +158,7 @@ export class SoftwareAvailabilityService {
         installAllowed: installAccess.allowed,
         installRequested: input.installable,
         installedSpec: options.requireInstallation ? undefined : installedSpec,
+        sourceAuditVerified,
         usecaseRef: input.usecaseRef,
         controlChannelOnline: controlChannelOnline.get(agent.agentId) ?? null,
       });
@@ -257,6 +267,8 @@ export class SoftwareAvailabilityService {
       installRequested: installing,
       // Compute is already using this spec; this is not an inventory or installation claim.
       installedSpec: installing ? undefined : spec,
+      sourceAuditVerified:
+        !installing || (await this.runtime.sourceAuditAvailable?.(agentId, spec)) === true,
       usecaseRef: input.usecaseRef,
       controlChannelOnline: null,
     });
@@ -545,6 +557,7 @@ export class SoftwareAvailabilityService {
     installAllowed: boolean;
     installRequested: boolean;
     installedSpec?: string;
+    sourceAuditVerified: boolean;
     usecaseRef?: SoftwareAvailabilityUsecaseRef;
     controlChannelOnline: boolean | null;
   }): string[] {
@@ -567,6 +580,14 @@ export class SoftwareAvailabilityService {
       reasons.push("not present in provider allow list while lock is enabled");
     }
     if (input.installedSpec) return reasons;
+    const telemetry = input.agent.siteOperations;
+    if (telemetry?.transport === "ssh-forward" || telemetry?.transport === "http-proxy") {
+      if (!parseSiteOperations(JSON.stringify(telemetry))) {
+        reasons.push("offline site telemetry is stale or invalid");
+      }
+      if (!input.sourceAuditVerified)
+        reasons.push("offline site material closure has not been verified");
+    }
     if (input.policy.installMode === "preinstalled-only") {
       reasons.push("provider policy only allows preinstalled software");
     }

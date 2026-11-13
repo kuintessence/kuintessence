@@ -8,6 +8,7 @@ import {
   type SpackPolicy,
   spackMaterialBlobs,
 } from "@kuintessence/shared";
+import { SPACK_WORKER_FAILURE_MESSAGES } from "./audit-process";
 import {
   INTERRUPTED,
   LOCK_HELD,
@@ -48,6 +49,7 @@ const failure = (error?: unknown): Extract<SoftwareOperationOutcome, { outcome: 
       LOCK_HELD,
       RECOVERY_REQUIRED,
       INTERRUPTED,
+      ...Object.values(SPACK_WORKER_FAILURE_MESSAGES),
       "Invalid managed Spack memory budget",
       "Managed Spack memory admission metadata unavailable or invalid",
       "Managed Spack memory admission requires configured budget + 512 MiB available without swap",
@@ -256,15 +258,28 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           if ("invalidatedHashes" in result) invalidatedHashes = result.invalidatedHashes;
           return result;
         }
+        const binding = {
+          manifestDigest: input.manifestDigest,
+          manifestSize: prepared.manifestSize,
+          siteProfileDigest: site.digest,
+          spec: input.spec,
+          rootHash,
+        };
+        const interrupted = records.filter(
+          (record) =>
+            record.state === "failed" &&
+            record.workerStopped &&
+            record.spec === input.spec &&
+            record.rootHash === rootHash &&
+            record.manifestDigest === input.manifestDigest &&
+            record.siteProfileDigest === site.digest,
+        );
+        if (interrupted.length > 1) throw new Error("Ambiguous interrupted Spack installation");
         let record =
           pending ??
-          (await store.create({
-            manifestDigest: input.manifestDigest,
-            manifestSize: prepared.manifestSize,
-            siteProfileDigest: site.digest,
-            spec: input.spec,
-            rootHash,
-          }));
+          (interrupted[0]
+            ? await store.resumeFailed(interrupted[0].id, binding)
+            : await store.create(binding));
         try {
           input.signal?.throwIfAborted();
           if (record.state === "waiting_install" || record.state === "waiting_verify") {
@@ -272,6 +287,32 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
               ...record,
               state: record.state === "waiting_install" ? "building" : "verifying",
               updatedAt: new Date().toISOString(),
+            };
+            await store.save(record);
+          }
+          let recovery: { verifiedDependencyHashes: string[] } | undefined;
+          if (record.resumedFrom) {
+            const partial = await this.options.runner.run(
+              "verify-partial",
+              prepared,
+              input,
+              site,
+              store.path(record.id),
+            );
+            this.assertReport(record, partial, store, "verify-partial");
+            recovery = { verifiedDependencyHashes: partial.installedHashes };
+            record = {
+              ...record,
+              resumedFrom: {
+                ...record.resumedFrom,
+                ...(store.stoppedWorker() ? { partialVerification: store.stoppedWorker() } : {}),
+                dependencyEvidence: partial.dependencyEvidence,
+                reusedDependencyCount: partial.installedHashes.filter((hash) => hash !== rootHash)
+                  .length,
+                verifiedDependencyHashes: partial.installedHashes.filter(
+                  (hash) => hash !== rootHash,
+                ),
+              },
             };
             await store.save(record);
           }
@@ -283,8 +324,23 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
               input,
               site,
               store.path(record.id),
+              recovery,
             );
             this.assertReport(record, build, store, "install");
+            if (
+              recovery?.verifiedDependencyHashes.some(
+                (hash) => !build?.installedHashes.includes(hash),
+              )
+            ) {
+              throw new Error("Recovered Spack dependencies missing after installation");
+            }
+            if (
+              record.resumedFrom?.dependencyEvidence &&
+              JSON.stringify(record.resumedFrom.dependencyEvidence) !==
+                JSON.stringify(build.dependencyEvidence)
+            ) {
+              throw new Error("Recovered Spack dependency artifacts changed during installation");
+            }
             input.signal?.throwIfAborted();
             record = {
               ...record,
@@ -309,6 +365,12 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
               JSON.stringify([...report.installedHashes].sort())
           ) {
             throw new Error("Managed Spack build/verification mismatch");
+          }
+          if (record.resumedFrom && store.stoppedWorker()) {
+            record = {
+              ...record,
+              resumedFrom: { ...record.resumedFrom, finalVerification: store.stoppedWorker() },
+            };
           }
           await this.site(input.signal);
           input.signal?.throwIfAborted();
@@ -341,8 +403,14 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           // Publication can have succeeded before a later inventory error. Never delete a ready store here.
           const current = (await store.list()).find((entry) => entry.id === record.id);
           if (current && (current.state === "building" || current.state === "verifying")) {
-            await store.save({ ...current, state: "failed", updatedAt: new Date().toISOString() });
-            await store.removeFiles(current.id);
+            const stopped = store.stoppedWorker();
+            await store.save({
+              ...current,
+              state: "failed",
+              ...(stopped ? { workerStopped: stopped } : {}),
+              updatedAt: new Date().toISOString(),
+            });
+            if (!stopped) await store.removeFiles(current.id);
           } else if (current?.state === "ready" && input.signal?.aborted) {
             invalidatedHashes = [current.rootHash];
             await store.save({
@@ -364,7 +432,7 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
     record: SpackInstallRecord,
     value: unknown,
     store: SpackInstallStore,
-    action: "install" | "verify" | "load",
+    action: "install" | "verify" | "load" | "verify-partial",
   ): void {
     const report = SpackInstallReportSchema.parse(value);
     if (

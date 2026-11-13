@@ -70,7 +70,11 @@ test("dispute opening binds parties, a task attempt and a precise original witho
 });
 
 test("case read/open and signing purposes are independent of commercial approvals", () => {
-  expect(federationCapabilitySources("dispute.read")).toEqual(["dispute.read", "dispute.open"]);
+  expect(federationCapabilitySources("dispute.read")).toEqual([
+    "dispute.read",
+    "dispute.open",
+    "dispute.resolve",
+  ]);
   expect(federationCapabilitySources("dispute.open")).toEqual(["dispute.open"]);
   expect(federationCapabilitySources("agreement.read")).not.toContain("dispute.read");
   expect(federationCapabilitySources("agreement.read")).not.toContain("dispute.open");

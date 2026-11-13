@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,6 +15,7 @@ import {
   DataDeliveryBindingSchema,
   DataDeliveryMethod,
   DataScanRequestSchema,
+  type DispatchJob,
   DispatchJobSchema,
   FederationExecutionDecision,
   FederationExecutionResponseSchema,
@@ -62,6 +63,7 @@ import {
   type KuintessenceJobLookup,
   type KuintessenceJobLookupResult,
   type SchedulerAdapter,
+  SchedulerSubmissionUnknownError,
   type Spawner,
 } from "./adapters/base";
 import { AgentDataRoots } from "./data-market/local-data-security";
@@ -78,20 +80,15 @@ import { installWorkerExecution, SpackInstallationPending } from "./spack/execut
 import { SpackInstallStore } from "./spack/install-store";
 import type { SoftwareOperationOutcome } from "./spack/installer";
 import { SPACK_ACTIVATION_FAILURE, SPACK_ACTIVATION_TIMEOUT } from "./spack/workflow-activation";
-import type { Ssh2ClientLike, Ssh2Factory } from "./ssh";
-import { SshHandler } from "./ssh";
+import { type Ssh2ClientLike, type Ssh2Factory, SshHandler } from "./ssh";
 import { AgentStream, type AgentStreamDeps, jobStatusReportToProto } from "./stream";
 
-// Suppress log noise in tests
 const silent = pino({ level: "silent" });
+
 const FIND_JSON = readFileSync(
   join(import.meta.dir, "spack", "__fixtures__", "spack-find.json"),
   "utf-8",
 );
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function makeAdapter(
   opts: {
@@ -263,16 +260,6 @@ class DelayedReplayOutboundQueue extends OutboundQueue {
   }
 }
 
-/**
- * Build a mock ServerClient from a finite list of ServerMessages.
- * Collects all outbound AgentMessages into `sent`.
- * The outbound generator is drained in the background; the response stream
- * yields the provided server messages and then ends.
- *
- * `holdOpenMs` lets a test keep the response stream alive after yielding
- * the canned messages so the heartbeat timer (or other timer-driven outbound
- * traffic) actually has a window to fire.
- */
 function makeMockClient(serverMessages: unknown[], holdOpenMs = 0) {
   const sent: unknown[] = [];
   let drainDone = false;
@@ -414,10 +401,6 @@ function makePendingRegisteredClient(
   } as never;
 }
 
-/**
- * Yield to the event loop multiple times.
- * Used to allow background async work (job runners, generator drains) to settle.
- */
 async function settle(ticks = 10): Promise<void> {
   for (let i = 0; i < ticks; i++) {
     await new Promise<void>((r) => setImmediate(r));
@@ -487,11 +470,6 @@ function cancelJobMessage(jobId: string, revokedEpoch: number) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-// Track streams created in tests so we can stop them in afterEach
 const activeStreams: AgentStream[] = [];
 
 afterEach(() => {
@@ -500,6 +478,7 @@ afterEach(() => {
 });
 
 const softwareDatabases: Array<{ sqlite: Database; stream: AgentStream }> = [];
+
 function softwareStream(deps: AgentStreamDeps): AgentStream {
   if (!deps.spackManager?.requireServerMaterials || deps.outboundQueue)
     return new AgentStream(deps);
@@ -512,6 +491,7 @@ function softwareStream(deps: AgentStreamDeps): AgentStream {
   softwareDatabases.push({ sqlite, stream });
   return stream;
 }
+
 afterEach(async () => {
   for (const { sqlite, stream } of softwareDatabases.splice(0)) {
     await stream.stop();
@@ -560,7 +540,6 @@ describe("AgentStream", () => {
       payload: { value: { managedDatasetRootIds: ["00000000-0000-4000-8000-000000000001"] } },
     });
   });
-
   test("reports only unexpired runtime attestations without rejecting a fresh replacement", async () => {
     const now = Date.now();
     const capability: AgentSandboxCapability = {
@@ -657,7 +636,6 @@ describe("AgentStream", () => {
     expect(reported?.readiness).toBe("ready");
     expect(reported?.missingRequirements).not.toContain("runtime-attestation-expired");
   });
-
   test("rebuilds the Server client for every reconnect attempt", async () => {
     const { client } = makeMockClient([]);
     let factoryCalls = 0;
@@ -684,7 +662,6 @@ describe("AgentStream", () => {
 
     expect(factoryCalls).toBeGreaterThan(1);
   });
-
   test("stop interrupts a pending reconnect backoff", async () => {
     const { client } = makeMockClient([]);
     let beginSleep: (() => void) | undefined;
@@ -722,7 +699,6 @@ describe("AgentStream", () => {
 
     expect(stoppedPromptly).toBe(true);
   });
-
   test("aborts a pending registration stream and retries with a fresh client", async () => {
     let factoryCalls = 0;
     let observedSignal: AbortSignal | undefined;
@@ -798,7 +774,6 @@ describe("AgentStream", () => {
     expect(pendingBeforeStop).toBe(1);
     sqlite.close();
   });
-
   test("retries when response next and return both ignore the registration abort", async () => {
     let factoryCalls = 0;
     const client = {
@@ -836,7 +811,6 @@ describe("AgentStream", () => {
 
     expect(factoryCalls).toBeGreaterThanOrEqual(2);
   });
-
   test("persists status updates while registration is still pending", async () => {
     const sqlite = new Database(":memory:");
     runSqliteMigrations(sqlite);
@@ -926,7 +900,6 @@ describe("AgentStream", () => {
     await runPromise;
     sqlite.close();
   });
-
   test("clears the registration deadline after the Server accepts the stream", async () => {
     let factoryCalls = 0;
     const accepted = create(ServerMessageSchema, {
@@ -989,7 +962,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("uses strictly increasing heartbeat sequences and stays connected while ACKs arrive", async () => {
     let factoryCalls = 0;
     const sequences: bigint[] = [];
@@ -1081,7 +1053,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("rebuilds a permanently pending stream when negotiated HeartbeatAck is missing", async () => {
     let factoryCalls = 0;
     const client = makePendingRegisteredClient(true);
@@ -1108,7 +1079,6 @@ describe("AgentStream", () => {
 
     expect(factoryCalls).toBeGreaterThanOrEqual(2);
   });
-
   test("reconnects when the transport stops consuming outbound heartbeats", async () => {
     let factoryCalls = 0;
     const accepted = create(ServerMessageSchema, {
@@ -1168,7 +1138,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps the watchdog disabled for an older Server without heartbeat ACK support", async () => {
     let factoryCalls = 0;
     const client = makePendingRegisteredClient(false);
@@ -1194,7 +1163,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("reconnects when a negotiated durable job status acknowledgement is missing", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db, { createEventId: () => "event-timeout" });
@@ -1226,7 +1194,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("deletes a durable status after transport delivery when the Server lacks ACK support", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db, { createEventId: () => "event-legacy" });
@@ -1250,7 +1217,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("does not reconnect after one failed probe followed by healthy 404 windows", async () => {
     let factoryCalls = 0;
     let probes = 0;
@@ -1281,7 +1247,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("aborts a permanently pending response after two failed probes and rebuilds the client", async () => {
     let factoryCalls = 0;
     let probes = 0;
@@ -1313,7 +1278,6 @@ describe("AgentStream", () => {
 
     expect(factoryCalls).toBeGreaterThanOrEqual(2);
   });
-
   test("does not start reachability probes before registration is accepted", async () => {
     let probes = 0;
     const client = {
@@ -1357,7 +1321,6 @@ describe("AgentStream", () => {
 
     expect(probes).toBe(0);
   });
-
   test("stop aborts an in-flight reachability probe", async () => {
     let probeStarted = false;
     let probeAborted = false;
@@ -1392,7 +1355,6 @@ describe("AgentStream", () => {
 
     expect(probeAborted).toBe(true);
   });
-
   test("stop is bounded when the registered response iterator ignores abort and return", async () => {
     const accepted = create(ServerMessageSchema, {
       payload: {
@@ -1443,7 +1405,6 @@ describe("AgentStream", () => {
 
     expect(stopped).toBe(true);
   });
-
   test("retries immediately when the Server rejects registration", async () => {
     let factoryCalls = 0;
     const sqlite = new Database(":memory:");
@@ -1505,7 +1466,6 @@ describe("AgentStream", () => {
     expect(await outboundQueue.pendingCount()).toBe(1);
     sqlite.close();
   });
-
   test("dispatches a job and emits jobStatus outbound messages", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -1581,7 +1541,6 @@ describe("AgentStream", () => {
     expect(submittedSpecs[0]?.qos).toBe("normal");
     expect(submittedSpecs[0]?.stdinText).toBe("1\n2\n");
   });
-
   test("reports a shadow queue rejection with only its canonical failure code", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -1660,7 +1619,6 @@ describe("AgentStream", () => {
     expect(message?.payload.value).not.toHaveProperty("jobId");
     expect(message?.payload.value).not.toHaveProperty("queueName");
   });
-
   test("replays one durable shadow rejection until the Server acknowledges its event id", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db, {
@@ -1766,7 +1724,6 @@ describe("AgentStream", () => {
     secondStream.stop();
     await secondRun;
   });
-
   test("stages Workflow inputs into an Agent-managed working directory before submit", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -1849,7 +1806,6 @@ describe("AgentStream", () => {
     ).releaseImplicitJobWorkRoot("job-with-input");
     expect(steps.at(-1)).toBe("release-root");
   });
-
   test("assigns an Agent-managed working directory to output-only Workflow jobs", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -1914,7 +1870,6 @@ describe("AgentStream", () => {
     ).releaseImplicitJobWorkRoot("job-with-output");
     expect(released).toBe(true);
   });
-
   test("shutdown during pre-run preparation keeps the durable dispatch pending", async () => {
     const db = createSqliteDb(":memory:");
     const inboundAcks = new InboundAcks(db);
@@ -1997,7 +1952,6 @@ describe("AgentStream", () => {
       }),
     ]);
   });
-
   test.each([
     "job",
     "data",
@@ -2110,7 +2064,6 @@ describe("AgentStream", () => {
     expect(await inboundAcks.pendingInbound()).toEqual([]);
     stream.stop();
   });
-
   test("assigns a managed working directory to value-output Workflow jobs", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -2172,7 +2125,6 @@ describe("AgentStream", () => {
     expect(submitted[0]?.workingDir).toBe("/managed/jobs/job-with-value");
     expect(collectedFrom).toContain("/managed/jobs/job-with-value");
   });
-
   test("keeps Data Market work-root cleanup in the delivery lifecycle", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -2235,7 +2187,6 @@ describe("AgentStream", () => {
     expect(deliveryReleased).toBe(true);
     expect(removed).toBe(false);
   });
-
   test("releases a managed working directory after an Agent restart", async () => {
     const { client } = makeMockClient([]);
     const released: string[] = [];
@@ -2271,7 +2222,6 @@ describe("AgentStream", () => {
       jobId: "job-published",
     });
   });
-
   test("does not acknowledge a managed working directory that could not be removed", async () => {
     const { client } = makeMockClient([]);
     const stream = new AgentStream({
@@ -2302,11 +2252,16 @@ describe("AgentStream", () => {
 
     expect(harness.outboundQueue.some((item) => item.kind === "jobWorkRootReleaseAck")).toBe(false);
   });
-
   test("marks inbound dispatch acked only after terminal status persistence completes", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db);
     const inboundAcks = new InboundAcks(db);
+    await inboundAcks.persistInbound({
+      dispatchId: "terminal-order:2",
+      jobId: "terminal-order",
+      payload: {},
+    });
+    const originalAck = inboundAcks.markAcked.bind(inboundAcks);
     const originalEnqueue = outboundQueue.enqueueJobStatus.bind(outboundQueue);
     let finishPersist: (() => void) | undefined;
     const persistGate = new Promise<void>((resolve) => {
@@ -2319,8 +2274,10 @@ describe("AgentStream", () => {
       return originalEnqueue(report);
     };
     let markedAcked = false;
-    inboundAcks.markAcked = async () => {
+    inboundAcks.markAcked = async (dispatchId) => {
+      expect(dispatchId).toBe("terminal-order:2");
       markedAcked = true;
+      await originalAck(dispatchId);
     };
     const { client } = makeMockClient([]);
     const stream = new AgentStream({
@@ -2347,7 +2304,40 @@ describe("AgentStream", () => {
 
     expect(await outboundQueue.pendingCount()).toBe(1);
     expect(markedAcked).toBe(true);
+    expect(await inboundAcks.pendingInbound()).toHaveLength(0);
     stream.stop();
+  });
+  test.each([
+    true,
+    false,
+  ])("status cannot acknowledge another dispatch epoch (bound=%s)", async (bound) => {
+    const inboundAcks = new InboundAcks(createSqliteDb(":memory:"));
+    for (const epoch of [1, 2])
+      await inboundAcks.persistInbound({
+        jobId: "epoch-bound",
+        dispatchId: `epoch-bound:${epoch}`,
+        payload: {},
+      });
+    const { client } = makeMockClient([]);
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter(),
+      agentId: "agent-epoch-bound",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      inboundAcks,
+    });
+    activeStreams.push(stream);
+    const harness = stream as unknown as {
+      dispatchIdsByJob: Map<string, string>;
+      onJobTransition(report: JobStatusReport): Promise<void>;
+    };
+    if (bound) harness.dispatchIdsByJob.set("epoch-bound", "epoch-bound:1");
+    await harness.onJobTransition({ jobId: "epoch-bound", status: "running" });
+    expect((await inboundAcks.pendingInbound()).map((row) => row.dispatchId)).toEqual(
+      bound ? ["epoch-bound:2"] : ["epoch-bound:1", "epoch-bound:2"],
+    );
   });
 
   test("releases an implicit work root when cancellation short-circuits submission", async () => {
@@ -2381,7 +2371,6 @@ describe("AgentStream", () => {
       false,
     );
   });
-
   test("retains active job evidence when terminal outbox insertion fails", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db);
@@ -2430,7 +2419,6 @@ describe("AgentStream", () => {
     ]);
     stream.stop();
   });
-
   test("keeps a half-open terminal durable through replay until matching Server ACK", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db, { createEventId: () => "event-half-open" });
@@ -2514,7 +2502,6 @@ describe("AgentStream", () => {
     );
     expect(await outboundQueue.pendingCount()).toBe(0);
   });
-
   test("awaits durable inbound dispatch persistence before scheduler submission", async () => {
     let releasePersist: (() => void) | undefined;
     const persisted = new Promise<void>((resolve) => {
@@ -2567,7 +2554,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps shadow submission compatible while a failed first enqueue gates queue readiness", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new FailOnceShadowEnqueueOutboundQueue(db);
@@ -2738,7 +2724,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps outbox read failures unavailable until Server acknowledgement then reports ready", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new FailOncePendingCountOutboundQueue(db);
@@ -2873,7 +2858,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps a permanent shadow enqueue failure unavailable until the same event is persisted", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new ControllableShadowOutboundQueue(db);
@@ -2993,7 +2977,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("retries loadForReplay and replays the durable shadow event before recovering", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new ControllableShadowOutboundQueue(db);
@@ -3124,7 +3107,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps ACK deletion failures unavailable until the same event deletion succeeds", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new ControllableShadowOutboundQueue(db);
@@ -3234,7 +3216,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("replays the unavailable latch immediately after reconnect without waiting for the timer", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new ControllableShadowOutboundQueue(db);
@@ -3347,7 +3328,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("ignores a delayed heartbeat preparation from the old connection during recovery", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new FailOnceShadowEnqueueOutboundQueue(db);
@@ -3472,7 +3452,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps the new connection heartbeat timer after the old replay generator exits", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new DelayedReplayOutboundQueue(db, false);
@@ -3543,7 +3522,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("does not let an old replay read clear the current connection recovery obligation", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new DelayedReplayOutboundQueue(db, true);
@@ -3620,7 +3598,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("rejects a delayed dispatch after its revocation tombstone survives a restart", async () => {
     const db = createSqliteDb(":memory:");
     const tombstones = new JobRevocationTombstones(db);
@@ -3687,7 +3664,6 @@ describe("AgentStream", () => {
 
     expect(submitted).toBe(false);
   });
-
   test("reconciles an active runner before acknowledging cancellation", async () => {
     const db = createSqliteDb(":memory:");
     let markSchedulerCancelStarted: (() => void) | undefined;
@@ -3746,7 +3722,6 @@ describe("AgentStream", () => {
     ]);
     stream.stop();
   });
-
   test("does not acknowledge when an active runner cannot be reconciled", async () => {
     const db = createSqliteDb(":memory:");
     const { client } = makeMockClient([]);
@@ -3786,7 +3761,6 @@ describe("AgentStream", () => {
     expect(harness.outboundQueue).toEqual([]);
     stream.stop();
   });
-
   test("submits a repeated dispatch epoch only once", async () => {
     const db = createSqliteDb(":memory:");
     let submitted = 0;
@@ -3830,7 +3804,6 @@ describe("AgentStream", () => {
     expect(submitted).toBe(1);
     stream.stop();
   });
-
   test("recovers orphaned cleanup intents before job resumption and deletes only successful work", async () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
@@ -3882,7 +3855,6 @@ describe("AgentStream", () => {
     expect(events).toContain("release-license:/agent/jobs/orphan-1/POTCAR");
     expect(await intents.list()).toEqual([]);
   });
-
   test("retains an orphaned cleanup intent when recovery cleanup fails", async () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
@@ -3930,7 +3902,6 @@ describe("AgentStream", () => {
     expect(await intents.list()).toHaveLength(1);
     expect(licensedCleanupAttempted).toBe(true);
   });
-
   test("retains an orphaned cleanup intent when scheduler UUID lookup is indeterminate", async () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
@@ -3975,7 +3946,6 @@ describe("AgentStream", () => {
     expect(cleanupAttempted).toBe(false);
     expect(await intents.list()).toHaveLength(1);
   });
-
   test("only clears an orphaned intent after a found scheduler job is cancelled", async () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
@@ -4024,7 +3994,6 @@ describe("AgentStream", () => {
     expect(cleanupAttempted).toBe(false);
     expect(await intents.list()).toHaveLength(1);
   });
-
   test("resumes active jobs when no revocation tombstone exists", async () => {
     const db = createSqliteDb(":memory:");
     const activeRemoteJobs = new ActiveRemoteJobs(db);
@@ -4073,7 +4042,6 @@ describe("AgentStream", () => {
     expect(preparedReplacementRoot).toBe(false);
     stream.stop();
   });
-
   test("cancels a submitted scheduler job when active-job persistence fails", async () => {
     const db = createSqliteDb(":memory:");
     const cancelled: string[] = [];
@@ -4122,7 +4090,6 @@ describe("AgentStream", () => {
       cancelled.every((schedulerJobId) => schedulerJobId === "scheduler-persist-failure"),
     ).toBe(true);
   });
-
   test("clears a cleanup intent after normal preparation failure cleanup", async () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
@@ -4185,7 +4152,6 @@ describe("AgentStream", () => {
     expect(released).toBe(true);
     expect(await intents.list()).toEqual([]);
   });
-
   test("fails closed when restricted isolation is not advertised", async () => {
     let submitted = false;
     const serverMsgs = [
@@ -4243,7 +4209,6 @@ describe("AgentStream", () => {
     ) as { payload: { value: { message: string } } } | undefined;
     expect(failed?.payload.value.message).toContain("trusted execution profile");
   });
-
   test("rejects a raw scheduler command even when a trusted profile is advertised", async () => {
     let submitted = false;
     const { client, sent } = makeMockClient(
@@ -4317,7 +4282,6 @@ describe("AgentStream", () => {
     ) as { payload: { value: { message: string } } } | undefined;
     expect(failed?.payload.value.message).toContain("rejects raw scheduler commands");
   });
-
   test("uses the verified Sandbox processor result instead of DispatchJob.command", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -4438,7 +4402,6 @@ describe("AgentStream", () => {
       },
     ]);
   });
-
   test("fails closed when the Sandbox attestation verifier is unavailable", async () => {
     let submitted = false;
     const { client, sent } = makeMockClient(
@@ -4526,7 +4489,6 @@ describe("AgentStream", () => {
     ) as { payload: { value: { message: string } } } | undefined;
     expect(failed?.payload.value.message).toContain("attestation verifier is unavailable");
   });
-
   test("acknowledges Sandbox artifact release results", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -4583,7 +4545,6 @@ describe("AgentStream", () => {
     expect(ack?.payload.value.requestId).toBe("release-1");
     expect(ack?.payload.value.releasedReplicaIds).toEqual(["replica-1"]);
   });
-
   test("host-side multipart upload applies the configured connectTo rewrite", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kq-stream-multipart-"));
     const filePath = join(dir, "out.txt");
@@ -4647,7 +4608,6 @@ describe("AgentStream", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
-
   test("aborts an active file transfer when the Server sends FileTransferCancel", async () => {
     const { client } = makeMockClient([]);
     const stream = new AgentStream({
@@ -4677,7 +4637,6 @@ describe("AgentStream", () => {
     expect(controller.signal.aborted).toBe(true);
     stream.stop();
   });
-
   test("returns a bounded typed job-log response through the Agent stream", async () => {
     const calls: unknown[] = [];
     const serverMsgs = [
@@ -4745,7 +4704,6 @@ describe("AgentStream", () => {
     expect(response?.payload.value.error).toBe("");
     expect(response?.payload.value.unavailable).toBe(false);
   });
-
   test("reports a known missing job log without an adapter error", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -4797,7 +4755,6 @@ describe("AgentStream", () => {
     ) as { payload: { value: { text: string; error: string; unavailable: boolean } } } | undefined;
     expect(response?.payload.value).toMatchObject({ text: "", error: "", unavailable: true });
   });
-
   test("refuses restricted no-egress log requests without reading the adapter", async () => {
     let called = false;
     const serverMsgs = [
@@ -4854,7 +4811,6 @@ describe("AgentStream", () => {
     expect(response?.payload.value.error.toLowerCase()).toContain("restricted");
     expect(response?.payload.value.unavailable).toBe(false);
   });
-
   test("heartbeat carries gpu / disk / scheduler-queue / installed-software fields", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -4920,7 +4876,6 @@ describe("AgentStream", () => {
     expect(hb?.payload.value.schedulerQueuedJobs).toBe(7);
     expect(hb?.payload.value.installedSoftware[0]?.name).toBe("gromacs");
   });
-
   test.each([
     { name: "known empty inventory emits periodic empty reports", known: true },
     {
@@ -4980,7 +4935,6 @@ describe("AgentStream", () => {
       await running;
     }
   });
-
   test("retries known empty inventory on successive live heartbeats after reconnect", async () => {
     const closeFirst = Promise.withResolvers<void>();
     const reconnect = makeReplayReconnectClient(
@@ -5038,7 +4992,6 @@ describe("AgentStream", () => {
       await running;
     }
   });
-
   test("negotiates compute health and preserves the adapter observation timestamp on live heartbeats", async () => {
     const observedAtUnixMs = 1_725_000_000_123;
     let observations = 0;
@@ -5121,7 +5074,6 @@ describe("AgentStream", () => {
       reason: "",
     });
   });
-
   test("does not inspect or attach compute health until the Server negotiates it", async () => {
     let observations = 0;
     const { client, sent } = makeMockClient(
@@ -5175,7 +5127,6 @@ describe("AgentStream", () => {
     expect(observations).toBe(0);
     expect(heartbeat?.payload.value.computeHealth).toBeUndefined();
   });
-
   test("negotiates queue inventory and preserves scheduler facts on live heartbeats", async () => {
     const observedAt = new Date("2026-08-19T04:00:00.000Z");
     let inspections = 0;
@@ -5277,7 +5228,6 @@ describe("AgentStream", () => {
       ],
     });
   });
-
   test("does not inspect queue inventory until the Server negotiates it", async () => {
     let inspections = 0;
     const { client, sent } = makeMockClient(
@@ -5330,7 +5280,6 @@ describe("AgentStream", () => {
     expect(inspections).toBe(0);
     expect(heartbeat?.payload.value.queueInventory).toBeUndefined();
   });
-
   test("never adds compute health to persisted heartbeat replay", async () => {
     const sqlite = new Database(":memory:");
     runSqliteMigrations(sqlite);
@@ -5397,7 +5346,6 @@ describe("AgentStream", () => {
     expect(replay?.payload.value.computeHealth).toBeUndefined();
     sqlite.close();
   });
-
   test("inbound SoftwarePolicyUpdate triggers SpackManager.applyPolicy and emits ack", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -5467,7 +5415,6 @@ describe("AgentStream", () => {
     // The SpackManager should have stored the policy
     expect(spackManager.currentPolicyVersion()).toBe("v42");
   });
-
   test.each([
     "absent",
     "standalone",
@@ -5524,7 +5471,6 @@ describe("AgentStream", () => {
       );
     }
   });
-
   test.each([
     "missing",
     "expired",
@@ -5653,7 +5599,6 @@ describe("AgentStream", () => {
     if (mode !== "missing") expect(requests[0]?.signal?.aborted).toBe(true);
     expect(calls).toEqual([["spack", "--version"]]);
   });
-
   test("inbound SoftwareOperationRequest runs Spack operation and emits result", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -5728,7 +5673,6 @@ describe("AgentStream", () => {
       }
     }
   });
-
   test("source audit stdout is retained on rejected installation without success or inventory", async () => {
     const report = JSON.stringify({ validation: "isolated-source-audit", passed: true });
     const closeConnection = Promise.withResolvers<void>();
@@ -5805,7 +5749,6 @@ describe("AgentStream", () => {
     expect(results[1]?.stdout).toBe(report);
     expect(results[1]?.installed).toEqual([]);
   });
-
   test.each([
     { name: "does not turn unknown inventory into known empty", known: false, keepOther: false },
     {
@@ -5930,7 +5873,6 @@ describe("AgentStream", () => {
       await running;
     }
   });
-
   test("serializes software execution through inventory publication before later invalidation", async () => {
     const { client } = makeMockClient(
       [
@@ -6021,7 +5963,6 @@ describe("AgentStream", () => {
       await running;
     }
   });
-
   describe("software operation lifecycle cancellation", () => {
     async function lifecycleFixture(
       options: {
@@ -6103,7 +6044,6 @@ describe("AgentStream", () => {
         waitForRegistration,
       };
     }
-
     async function pendingSpillFixture(timeoutMs?: number) {
       const sqlite = new Database(":memory:");
       runSqliteMigrations(sqlite);
@@ -6187,7 +6127,6 @@ describe("AgentStream", () => {
         },
       };
     }
-
     test("shutdown waits for the final disconnect and delayed spill of a completed software result", async () => {
       const f = await pendingSpillFixture();
       let startFinished = false;
@@ -6226,7 +6165,6 @@ describe("AgentStream", () => {
         await f.dispose();
       }
     });
-
     test.each([
       "disconnect",
       "spill",
@@ -6257,7 +6195,6 @@ describe("AgentStream", () => {
         await f.dispose();
       }
     });
-
     test("stop and start wait for cleanup, withdrawal and persistence; queued work never starts", async () => {
       const sqlite = new Database(":memory:");
       runSqliteMigrations(sqlite);
@@ -6349,7 +6286,6 @@ describe("AgentStream", () => {
         sqlite.close();
       }
     });
-
     test("connection loss does not abort software and the new connection reports its result", async () => {
       const f = await lifecycleFixture();
       const entered = Promise.withResolvers<void>();
@@ -6386,7 +6322,6 @@ describe("AgentStream", () => {
       }
       expect(signals[0]?.aborted).toBe(true);
     });
-
     test("shutdown wait is bounded without cancelling later cleanup or result persistence", async () => {
       const sqlite = new Database(":memory:");
       runSqliteMigrations(sqlite);
@@ -6438,7 +6373,6 @@ describe("AgentStream", () => {
       }
     });
   });
-
   test("inbound SoftwareOperationRequest emits failed result when execution throws", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -6508,7 +6442,6 @@ describe("AgentStream", () => {
     );
     expect(failed?.payload.value.exitCode).toBe(0);
   });
-
   test("inbound load SoftwareOperationRequest is rejected by cached Spack policy", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -6590,7 +6523,6 @@ describe("AgentStream", () => {
     expect(rejected?.payload.value.error).toMatch(/denyList/);
     expect(calls).toEqual([["spack", "--version"]]);
   });
-
   test("inbound uninstall SoftwareOperationRequest is rejected by cached Spack policy", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -6672,7 +6604,6 @@ describe("AgentStream", () => {
     expect(rejected?.payload.value.error).toMatch(/lock enabled|allowList/);
     expect(calls).toEqual([["spack", "--version"]]);
   });
-
   test("inbound SoftwareOperationRequest rejects blank specs before invoking Spack", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -6744,7 +6675,6 @@ describe("AgentStream", () => {
     expect(rejected?.payload.value.error).toBe("spec is empty");
     expect(calls).toEqual([["spack", "--version"]]);
   });
-
   test("inbound SoftwareOperationRequest fails without running when Spack is unavailable", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -6809,7 +6739,6 @@ describe("AgentStream", () => {
     const failed = results.find((r) => r.payload.value.status === SoftwareOperationStatus.FAILED);
     expect(failed?.payload.value.error).toBe("spack is unavailable on this Agent");
   });
-
   test.each([
     false,
     true,
@@ -6928,7 +6857,6 @@ describe("AgentStream", () => {
       sqlite.close();
     }
   });
-
   for (const source of ["journal", "outbox"] as const) {
     for (const inventory of ["unknown", "empty", "populated"] as const) {
       test(`historical ${source} replay preserves ${inventory} current inventory`, async () => {
@@ -7006,7 +6934,6 @@ describe("AgentStream", () => {
       });
     }
   }
-
   test("persists software operation results while the stream is offline", async () => {
     const sqlite = new Database(":memory:");
     runSqliteMigrations(sqlite);
@@ -7048,11 +6975,197 @@ describe("AgentStream", () => {
     expect(replayed.installed?.[0]?.name).toBe("zlib");
     sqlite.close();
   });
+
+  test("durable cancellation during pre-run preparation emits cancelled after cleanup", async () => {
+    const db = createSqliteDb(":memory:");
+    const inboundAcks = new InboundAcks(db);
+    const outboundQueue = new OutboundQueue(db);
+    const revocationTombstones = new JobRevocationTombstones(db);
+    let submitCalls = 0;
+    let cancelCalls = 0;
+    let releaseCalls = 0;
+    let markPreparationStarted: (() => void) | undefined;
+    const preparationStarted = new Promise<void>((resolve) => {
+      markPreparationStarted = resolve;
+    });
+    let releasePreparation: (() => void) | undefined;
+    const preparation = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    const { client } = makeMockClient([]);
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter({
+        submit: async () => {
+          submitCalls += 1;
+          return { schedulerJobId: "must-not-submit" };
+        },
+        cancel: async () => {
+          cancelCalls += 1;
+        },
+      }),
+      agentId: "agent-cancel-preparation",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      inboundAcks,
+      outboundQueue,
+      revocationTombstones,
+      prepareJobWorkRoot: async () => {
+        markPreparationStarted?.();
+        await preparation;
+        return "/managed/jobs/cancel-preparation";
+      },
+      removeJobWorkRoot: async () => {
+        releaseCalls += 1;
+      },
+    });
+    const harness = stream as unknown as {
+      handleServerMessage: (message: ServerMessage) => Promise<void>;
+    };
+
+    await harness.handleServerMessage(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "dispatchJob",
+          value: create(DispatchJobSchema, {
+            jobId: "cancel-preparation",
+            name: "cancel preparation",
+            command: "true",
+            cpus: 1,
+            memoryMb: 64n,
+            wallTimeSec: 60n,
+            dispatchEpoch: 1n,
+            expectedOutputs: [
+              { descriptor: "result", path: "result.txt", isBatch: false, pathsOnly: true },
+            ],
+          }),
+        },
+      }),
+    );
+    await preparationStarted;
+
+    const cancellation = harness.handleServerMessage(cancelJobMessage("cancel-preparation", 1));
+    await waitForCondition(
+      async () => (await revocationTombstones.revokedEpoch("cancel-preparation")) === 1,
+    );
+    releasePreparation?.();
+    await cancellation;
+    await waitForCondition(async () => (await outboundQueue.pendingCount()) === 1);
+
+    const replay = (await outboundQueue.loadForReplay()).map((entry) => entry.item);
+    expect(submitCalls).toBe(0);
+    expect(cancelCalls).toBe(0);
+    expect(releaseCalls).toBe(1);
+    expect(replay).toEqual([
+      expect.objectContaining({
+        kind: "jobStatus",
+        report: expect.objectContaining({ jobId: "cancel-preparation", status: "cancelled" }),
+      }),
+    ]);
+    expect(await inboundAcks.pendingInbound()).toEqual([]);
+    stream.stop();
+  });
+
+  test("managed receipt survives online queue loss and replays without rerunning execution", async () => {
+    const sqlite = new Database(":memory:");
+    runSqliteMigrations(sqlite);
+    const db = drizzle(sqlite, { schema });
+    const outboundQueue = new OutboundQueue(db);
+    const operationId = "bbe907be-8f2d-40c6-984d-3156d83668ed";
+    const spackManager = await SpackManager.bootstrap({
+      requireServerMaterials: true,
+      spawner: { run: async () => ({ exitCode: 0, stdout: "1.0.0", stderr: "" }) },
+    });
+    let runs = 0;
+    spackManager.runSoftwareOperation = async () => {
+      const [receipt] = await db.select().from(schema.softwareExecutions);
+      expect(receipt?.operationId).toBe(operationId);
+      expect(receipt?.started).toBe(true);
+      runs++;
+      return { outcome: "succeeded", stdout: "verified", installed: [] };
+    };
+    const request = create(ServerMessageSchema, {
+      payload: {
+        case: "softwareOperationRequest",
+        value: create(SoftwareOperationRequestSchema, {
+          operationId,
+          action: SoftwareOperationAction.LOAD,
+          spec: "fixture@1",
+        }),
+      },
+    });
+    const closeConnection = Promise.withResolvers<void>();
+    const connection = makeReplayReconnectClient(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "registerResponse",
+          value: create(RegisterResponseSchema, { accepted: true }),
+        },
+      }),
+      closeConnection.promise,
+    );
+    const sent = connection.sentByConnection[0] ?? [];
+    const deps = {
+      client: connection.clientFactory(),
+      adapter: makeAdapter(),
+      agentId: "fixture-agent",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60000,
+      logger: silent,
+      outboundQueue,
+      spackManager,
+      reconnectBackoffMs: 1,
+      sleep: async () => {},
+    };
+    const before = new AgentStream(deps);
+    const state = before as unknown as {
+      connected: boolean;
+      softwareOperationQueue: Promise<void>;
+      outboundQueue: OutboundItem[];
+    };
+    state.connected = true;
+    await deliverServerMessage(before, request);
+    await state.softwareOperationQueue;
+    expect(
+      state.outboundQueue.some(
+        (item) =>
+          item.kind === "softwareOperationResult" &&
+          item.status === SoftwareOperationStatus.SUCCEEDED,
+      ),
+    ).toBe(true);
+    state.outboundQueue.length = 0;
+    await before.stop();
+    const restarted = new AgentStream(deps);
+    const running = restarted.start();
+    try {
+      await waitForCondition(() =>
+        (sent as AgentMessage[]).some(
+          (message) =>
+            message.payload.case === "softwareOperationResult" &&
+            message.payload.value.status === SoftwareOperationStatus.SUCCEEDED,
+        ),
+      );
+      await deliverServerMessage(restarted, request);
+      const results = () =>
+        (sent as AgentMessage[]).flatMap((message) =>
+          message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
+        );
+      await waitForCondition(() => results().length >= 2);
+      expect(results().map((result) => result.replayed)).toEqual([true, true]);
+      expect(runs).toBe(1);
+      const saved = [];
+      for await (const result of outboundQueue.softwareOperations.results()) saved.push(result);
+      expect(saved).toMatchObject([{ operationId, status: SoftwareOperationStatus.SUCCEEDED }]);
+    } finally {
+      closeConnection.resolve();
+      await restarted.stop();
+      await running;
+      sqlite.close();
+    }
+  });
 });
 
-// Minimal fake ssh2 client — same shape as ssh/handler.test.ts, trimmed to the
-// bits the stream-level wiring test needs: a `ready` event that opens a shell
-// channel so the session counts as active.
 function fakeSsh2Factory(): {
   factory: Ssh2Factory;
   fireReady: () => void;
@@ -7164,7 +7277,6 @@ describe("AgentStream SSH relay", () => {
     await settle(5);
     expect(handler?.activeCount()).toBe(0);
   });
-
   test("tears down ssh2 sessions when the Server stream drops, before reconnecting", async () => {
     const shutdownReasons: string[] = [];
     const spyHandler = {
@@ -7218,7 +7330,6 @@ describe("AgentStream SSH relay", () => {
     // leak on the login node after a Server↔Agent partition.
     expect(shutdownReasons).toContain("server stream lost");
   });
-
   test("routes a Server SshResize through to the ssh2 channel's setWindow", async () => {
     const { factory, fireReady, setWindowCalls } = fakeSsh2Factory();
 
@@ -7278,7 +7389,6 @@ describe("AgentStream SSH relay", () => {
 
     stream.stop();
   });
-
   test("routes Server SshData through to the ssh2 channel as stdin", async () => {
     const { factory, fireReady, writes } = fakeSsh2Factory();
 
@@ -7336,7 +7446,6 @@ describe("AgentStream SSH relay", () => {
 
     stream.stop();
   });
-
   test("routes a Server SshClose through to tear the session down", async () => {
     const { factory } = fakeSsh2Factory();
     let handler: SshHandler | undefined;
@@ -7395,7 +7504,6 @@ describe("AgentStream SSH relay", () => {
 
     stream.stop();
   });
-
   test("scans a CP-local dataset once and replays the metadata-only result for duplicate requests", async () => {
     const request = create(ServerMessageSchema, {
       payload: {
@@ -7483,7 +7591,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     installed: [installed],
   };
   const intent = { spec: "hello@1.0", command: "hello 'two words'" };
-
   function dispatch(overrides: Parameters<typeof create<typeof DispatchJobSchema>>[1] = {}) {
     return create(ServerMessageSchema, {
       payload: {
@@ -7501,7 +7608,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       },
     });
   }
-
   async function fixture(
     load: SpackManager["runSoftwareOperation"] = async () => loadSuccess,
     overrides: Partial<AgentStreamDeps> = {},
@@ -7562,7 +7668,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       drain: () => Promise.all([...harness.pendingSpackPreparations]),
     };
   }
-
   test("persists pinned execution and rejects a mismatched environment before scheduler submission", async () => {
     let legacy = 0;
     const f = await fixture(async () => {
@@ -7599,7 +7704,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       ),
     ).toBe(true);
   });
-
   test("pending load survives reconnect without false failure or duplicate submit", async () => {
     const closeFirst = Promise.withResolvers<void>();
     const finishLoad = Promise.withResolvers<SoftwareOperationOutcome>();
@@ -7673,7 +7777,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       await Promise.all(reconnect.requestDoneByConnection);
     }
   });
-
   test.each(["mock", "store"] as const)("serializes %s preparation", async (mode) => {
     const releaseFirstLoad = Promise.withResolvers<void>();
     const releaseFirstSyntax = Promise.withResolvers<void>();
@@ -7749,7 +7852,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       if (root) await rm(root, { recursive: true, force: true });
     }
   });
-
   test.each(["software-first", "workflow-first"] as const)("%s queue", async (order) => {
     const releaseFirst = Promise.withResolvers<void>();
     const releaseSyntax = Promise.withResolvers<void>();
@@ -7822,7 +7924,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       await f.stream.stop();
     }
   });
-
   test("cancelled load holds the queue until cleanup finishes before the next load", async () => {
     const releaseCleanup = Promise.withResolvers<void>();
     const calls: string[] = [];
@@ -7892,7 +7993,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       await f.stream.stop();
     }
   });
-
   test("durably records intent before loading and submits the managed environment command", async () => {
     let sawPending = false;
     const f = await fixture(async (action, spec, materials, signal) => {
@@ -7917,7 +8017,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     await waitForCondition(() => f.reports.some((report) => report.status === "completed"));
     expect(await f.inboundAcks.pendingInbound()).toEqual([]);
   });
-
   test.each([
     "failed",
     "rejected",
@@ -7961,7 +8060,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     ]);
     expect(await f.inboundAcks.pendingInbound()).toEqual([]);
   });
-
   test.each(["placeholder", "shape", "sandbox"] as const)("rejects %s", async (mode) => {
     let loads = 0;
     const f = await fixture(async () => {
@@ -7983,7 +8081,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     expect(f.submitted).toEqual([]);
     expect(f.reports[0]?.message).toBe(SPACK_ACTIVATION_FAILURE);
   });
-
   test("withdraws invalidated managed inventory even though the job fails", async () => {
     const f = await fixture(async () => ({
       outcome: "failed",
@@ -7997,7 +8094,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     expect(f.submitted).toEqual([]);
     expect(f.reports[0]?.message).toBe(SPACK_ACTIVATION_FAILURE);
   });
-
   test("a revoked dispatch never starts loading", async () => {
     let loads = 0;
     const f = await fixture(async () => {
@@ -8010,7 +8106,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     expect(loads).toBe(0);
     expect(f.submitted).toEqual([]);
   });
-
   test("rechecks revocation after load before submitting to the pool", async () => {
     const f = await fixture(async () => {
       await f.tombstones.record("workflow-spack", 1);
@@ -8021,7 +8116,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     expect(f.submitted).toEqual([]);
     expect(f.reports).toEqual([{ jobId: "workflow-spack", status: "cancelled" }]);
   });
-
   test.each(["cancel", "shutdown", "timeout"] as const)("%s blocks late submit", async (mode) => {
     let started: () => void = () => {};
     const loading = new Promise<void>((resolve) => {
@@ -8076,7 +8170,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       if (mode === "timeout") expect(f.reports[0]?.message).toBe(SPACK_ACTIVATION_TIMEOUT);
     }
   });
-
   test("checks the epoch again after asynchronous work-root preparation", async () => {
     const f = await fixture(undefined, {
       prepareJobWorkRoot: async () => {
@@ -8118,14 +8211,12 @@ describe("jobStatusReportToProto", () => {
     expect(value.failureCode).toBe("QUEUE_NOT_ACCEPTING");
     expect(value.workingDir).toBe("/managed/jobs/j-1");
   });
-
   test("defaults node/reason to empty strings when the report omits them", () => {
     const msg = jobStatusReportToProto({ jobId: "j-2", status: "queued" });
     const value = (msg.payload as { value: { node: string; reason: string } }).value;
     expect(value.node).toBe("");
     expect(value.reason).toBe("");
   });
-
   test("maps cancellation to the terminal proto status", () => {
     const msg = jobStatusReportToProto({ jobId: "j-cancelled", status: "cancelled" });
     const value = (msg.payload as { value: { status: ProtoJobStatus } }).value;
@@ -9690,7 +9781,7 @@ for (const kind of ["Sandbox", "Data Market", "NetDrive"] as const)
       input.fileMetadataId = crypto.randomUUID();
       input.netdriveInput = true;
       input.expectedSha256 = "a".repeat(64);
-      input.expectedSizeBytes = 1n;
+      input.totalBytes = 1n;
     }
     let released = 0;
     let requests = 0,
@@ -10123,3 +10214,1208 @@ for (const kind of ["task-input", "task-result"] as const) {
     }
   });
 }
+
+test("restart between sbatch and result persistence recovers the same scheduler job without submitting again", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const spec: JobSpec = {
+    jobId: "crash-gap",
+    name: "gap",
+    command: "true",
+    cpus: 1,
+    memoryMb: 64,
+    wallTimeSec: 60,
+    gpus: 0,
+    workingDir: "/tmp/gap",
+    envVars: {},
+  };
+  await records.recordSubmissionIntent(spec, []);
+  let submitted = 0;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submitted++;
+        return { schedulerJobId: "wrong" };
+      },
+      findByKuintessenceJobId: async (lookup) => {
+        expect(lookup.includeCompleted).toBe(true);
+        return { status: "found", schedulerJobId: "existing-123" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+  });
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: {
+      resume(spec: JobSpec, schedulerJobId: string): Promise<void>;
+      stopAll(): void;
+      get(jobId: string): undefined;
+    };
+  };
+  const recovered: string[] = [];
+  harness.pool = {
+    get: () => undefined,
+    resume: async (_spec, id) => {
+      recovered.push(id);
+    },
+    stopAll() {},
+  };
+  await harness.recoverActiveRemoteJobs();
+  expect(submitted).toBe(0);
+  expect(recovered).toEqual(["existing-123"]);
+  expect((await records.listActive())[0]?.schedulerJobId).toBe("existing-123");
+  stream.stop();
+});
+
+test("unresolved submission keeps its inbound receipt without replaying a false failure", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const inbound = new InboundAcks(db);
+  const spec: JobSpec = {
+    jobId: "uncertain",
+    name: "uncertain",
+    command: "true",
+    cpus: 1,
+    memoryMb: 64,
+    gpus: 0,
+    wallTimeSec: 60,
+    workingDir: "/shared/uncertain",
+    envVars: {},
+  };
+  await records.recordSubmissionIntent(spec, []);
+  await inbound.persistInbound({ dispatchId: "uncertain:1", jobId: spec.jobId, payload: {} });
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+    inboundAcks: inbound,
+  });
+  const attempt = new AbortController();
+  const iterator = (
+    stream as unknown as {
+      generateOutbound(
+        registration: Promise<boolean>,
+        attempt: AbortController,
+      ): AsyncGenerator<AgentMessage>;
+    }
+  ).generateOutbound(Promise.resolve(true), attempt);
+  expect((await iterator.next()).value?.payload.case).toBe("register");
+  const pending = iterator.next();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await stream.stop();
+  expect((await pending).done).toBe(true);
+  expect(await inbound.pendingInbound()).toHaveLength(1);
+});
+
+test("site heartbeat distinguishes unresolved submissions from active transfers", async () => {
+  const db = createSqliteDb(":memory:");
+  const active = new ActiveRemoteJobs(db);
+  await active.recordSubmissionIntent(
+    {
+      jobId: "site-uncertain",
+      name: "test",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/test",
+      envVars: {},
+    },
+    [],
+  );
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: active,
+    readSiteOperations: async () => ({
+      version: 1,
+      observedAt: Date.now(),
+      transport: "ssh-forward",
+      trust: "single-user",
+      executor: "slurm",
+      materials: { state: "ready", active: 0 },
+      installation: { state: "disabled", active: 0 },
+      jobs: { state: "unknown", active: 0 },
+      transfers: { state: "unknown", active: 0 },
+      update: { phase: "staged" },
+    }),
+  });
+  const report = JSON.parse(
+    await (stream as unknown as { siteOperationsJson(): Promise<string> }).siteOperationsJson(),
+  );
+  expect(report.jobs).toEqual({ state: "blocked", active: 1 });
+  expect(report.transfers).toEqual({ state: "idle", active: 0 });
+  expect(report.installation.state).toBe("disabled");
+  expect(JSON.stringify(report)).not.toContain("/shared/test");
+  await stream.stop();
+});
+
+test("site snapshots preserve unknown durable installations, normalized receipts and unadopted jobs", async () => {
+  const db = createSqliteDb(":memory:");
+  const outboundQueue = new OutboundQueue(db);
+  const active = new ActiveRemoteJobs(db);
+  await active.recordSubmitted({
+    schedulerJobId: "123",
+    spec: {
+      jobId: "not-adopted",
+      name: "test",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/test",
+      envVars: {},
+    },
+    expectedOutputs: [],
+  });
+  const pending = {
+    operationId: "pending-install",
+    action: SoftwareOperationAction.INSTALL,
+    spec: "zlib",
+  };
+  await outboundQueue.softwareOperations.receive(pending);
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: active,
+    outboundQueue,
+    readSiteOperations: async () => ({
+      version: 1,
+      observedAt: Date.now(),
+      transport: "ssh-forward",
+      trust: "single-user",
+      executor: "slurm",
+      materials: { state: "idle", active: 0 },
+      installation: { state: "idle", active: 0 },
+      jobs: { state: "unknown", active: 0 },
+      transfers: { state: "unknown", active: 0 },
+      update: { phase: "unknown" },
+    }),
+  });
+  const internals = stream as unknown as {
+    siteOperationsJson(): Promise<string>;
+    enqueueSoftwareOperationResult(
+      item: {
+        operationId: string;
+        action: SoftwareOperationAction;
+        spec: string;
+        status: SoftwareOperationStatus;
+      },
+      replayed?: boolean,
+    ): Promise<void>;
+  };
+  try {
+    const first = JSON.parse(await internals.siteOperationsJson());
+    expect(first.installation).toEqual({ state: "unknown", active: 1 });
+    expect(first.jobs).toEqual({ state: "blocked", active: 1 });
+    await internals.enqueueSoftwareOperationResult({
+      ...pending,
+      status: SoftwareOperationStatus.SUCCEEDED,
+    });
+    await internals.enqueueSoftwareOperationResult({
+      ...pending,
+      status: SoftwareOperationStatus.FAILED,
+    });
+    expect(JSON.parse(await internals.siteOperationsJson()).installation.state).toBe("ready");
+    await internals.enqueueSoftwareOperationResult({
+      ...pending,
+      status: SoftwareOperationStatus.RUNNING,
+    });
+    expect(JSON.parse(await internals.siteOperationsJson()).installation.state).toBe("ready");
+    await internals.enqueueSoftwareOperationResult({
+      ...pending,
+      operationId: "new-operation",
+      status: SoftwareOperationStatus.RUNNING,
+    });
+    await internals.enqueueSoftwareOperationResult(
+      { ...pending, status: SoftwareOperationStatus.SUCCEEDED },
+      true,
+    );
+    expect(JSON.parse(await internals.siteOperationsJson()).installation.state).toBe("running");
+    await internals.enqueueSoftwareOperationResult({
+      ...pending,
+      operationId: "new-operation",
+      status: SoftwareOperationStatus.FAILED,
+    });
+    await internals.enqueueSoftwareOperationResult(
+      { ...pending, status: SoftwareOperationStatus.SUCCEEDED },
+      true,
+    );
+    expect(JSON.parse(await internals.siteOperationsJson()).installation.state).toBe("failed");
+  } finally {
+    await stream.stop();
+  }
+});
+
+for (const found of [false, true]) {
+  test(`pending scheduler submission cancellation reconciles its stable tag (found=${found})`, async () => {
+    const db = createSqliteDb(":memory:");
+    const records = new ActiveRemoteJobs(db);
+    const spec: JobSpec = {
+      jobId: "cancel-pending",
+      name: "pending",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/pending",
+      envVars: {},
+    };
+    await records.recordSubmissionIntent(spec, []);
+    const cancelled: string[] = [];
+    const { client } = makeMockClient([]);
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter({
+        cancel: async (id) => {
+          cancelled.push(id);
+        },
+        findByKuintessenceJobId: async (lookup) => {
+          expect(lookup.jobId).toBe(spec.jobId);
+          expect(lookup.includeCompleted).toBe(true);
+          return found ? { status: "found", schedulerJobId: "321" } : { status: "not_found" };
+        },
+      }),
+      agentId: "agent",
+      siteName: "site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      activeRemoteJobs: records,
+    });
+    activeStreams.push(stream);
+    const harness = stream as unknown as { settleJobCancellation(jobId: string): Promise<void> };
+    if (found) {
+      await harness.settleJobCancellation(spec.jobId);
+      expect(cancelled).toEqual(["321"]);
+      expect(await records.listActive()).toEqual([]);
+    } else {
+      await expect(harness.settleJobCancellation(spec.jobId)).rejects.toThrow("outcome unknown");
+      expect(cancelled).toEqual([]);
+      expect(await records.listActive()).toHaveLength(1);
+    }
+  });
+}
+
+test("durable unresolved submission fences a dispatch with a new delivery epoch", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  await records.recordSubmissionIntent(
+    {
+      jobId: "pending-duplicate",
+      name: "pending",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/pending",
+      envVars: {},
+    },
+    [],
+  );
+  let submissions = 0;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submissions++;
+        return { schedulerJobId: "wrong" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    activeRemoteJobs: records,
+  });
+  activeStreams.push(stream);
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "dispatchJob",
+        value: create(DispatchJobSchema, {
+          jobId: "pending-duplicate",
+          dispatchEpoch: 2n,
+          command: "true",
+        }),
+      },
+    }),
+  );
+  await settle();
+  expect(submissions).toBe(0);
+  expect(await records.listActive()).toHaveLength(1);
+});
+
+test("lost sbatch response retains the actual dispatch until accounting can recover it", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const outbound = new OutboundQueue(db);
+  let submissions = 0;
+  let visible = false;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submissions++;
+        throw new SchedulerSubmissionUnknownError("response lost after acceptance");
+      },
+      findByKuintessenceJobId: async () =>
+        visible ? { status: "found", schedulerJobId: "12345" } : { status: "not_found" },
+      statusSeq: [{ status: "running" }],
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    activeRemoteJobs: records,
+    outboundQueue: outbound,
+    inboundAcks: new InboundAcks(db),
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: { await(jobId: string): Promise<void>; get(jobId: string): unknown };
+  };
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "dispatchJob",
+        value: create(DispatchJobSchema, {
+          jobId: "lost-response",
+          name: "lost",
+          dispatchEpoch: 1n,
+          command: "true",
+          cpus: 1,
+          memoryMb: 64n,
+          wallTimeSec: 60n,
+          workingDir: "/shared/lost",
+        }),
+      },
+    }),
+  );
+  await waitForCondition(() => submissions === 1);
+  await harness.pool.await("lost-response");
+  expect(submissions).toBe(1);
+  expect((await records.listActive())[0]?.schedulerJobId).toBe("__kq_submission_pending__");
+  expect(await outbound.loadForReplay()).toEqual([]);
+  await harness.recoverActiveRemoteJobs();
+  expect((await records.listActive())[0]?.schedulerJobId).toBe("__kq_submission_pending__");
+  visible = true;
+  await harness.recoverActiveRemoteJobs();
+  expect((await records.listActive())[0]?.schedulerJobId).toBe("12345");
+  expect(harness.pool.get("lost-response")).toBeDefined();
+  await harness.recoverActiveRemoteJobs();
+  expect(submissions).toBe(1);
+});
+
+test("reconnect while ordinary inputs are staging does not replay a false failure", async () => {
+  const db = createSqliteDb(":memory:");
+  const inbound = new InboundAcks(db);
+  const staging = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  let submissions = 0;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submissions++;
+        return { schedulerJobId: "12345" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    inboundAcks: inbound,
+    prepareJobWorkRoot: async () => "/shared/staging",
+    removeJobWorkRoot: async () => {},
+    stageInputFile: async () => {
+      started.resolve();
+      await staging.promise;
+    },
+  });
+  activeStreams.push(stream);
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "dispatchJob",
+        value: create(DispatchJobSchema, {
+          jobId: "staging-reconnect",
+          name: "staging",
+          dispatchEpoch: 1n,
+          command: "true",
+          inputStaging: [{ stagePath: "input.txt", sourceUrl: "https://platform.example/input" }],
+        }),
+      },
+    }),
+  );
+  await started.promise;
+  const attempt = new AbortController();
+  const iterator = (
+    stream as unknown as {
+      generateOutbound(
+        registration: Promise<boolean>,
+        attempt: AbortController,
+      ): AsyncGenerator<AgentMessage>;
+    }
+  ).generateOutbound(Promise.resolve(true), attempt);
+  expect((await iterator.next()).value?.payload.case).toBe("register");
+  let prematureReport = false;
+  const pending = iterator.next().then((result) => {
+    if (!result.done) prematureReport = true;
+    return result;
+  });
+  await settle();
+  expect(prematureReport).toBe(false);
+  expect(await inbound.pendingInbound()).toHaveLength(1);
+  expect(submissions).toBe(0);
+  attempt.abort();
+  await pending.catch((error: unknown) => {
+    expect(error).toBeInstanceOf(DOMException);
+    expect((error as DOMException).name).toBe("AbortError");
+  });
+  staging.resolve();
+  await waitForCondition(() => submissions === 1);
+  expect(submissions).toBe(1);
+});
+
+test("periodic reconciliation is serial and recovers delayed accounting without a reconnect", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  await records.recordSubmissionIntent(
+    {
+      jobId: "periodic",
+      name: "periodic",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/periodic",
+      envVars: {},
+    },
+    [],
+  );
+  const first = Promise.withResolvers<void>();
+  let queries = 0;
+  let submissions = 0;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submissions++;
+        return { schedulerJobId: "wrong" };
+      },
+      findByKuintessenceJobId: async () => {
+        queries++;
+        if (queries === 1) {
+          await first.promise;
+          return { status: "not_found" };
+        }
+        return { status: "found", schedulerJobId: "501" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    remoteJobRecoveryIntervalMs: 5,
+    logger: silent,
+    activeRemoteJobs: records,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    startRemoteJobRecoveryTimer(): void;
+    remoteJobRecoveryTimer?: unknown;
+    pool: { get(jobId: string): unknown };
+  };
+  harness.startRemoteJobRecoveryTimer();
+  await waitForCondition(() => queries === 1);
+  await Bun.sleep(20);
+  expect(queries).toBe(1);
+  first.resolve();
+  await waitForCondition(async () => (await records.get("periodic"))?.schedulerJobId === "501");
+  expect(harness.pool.get("periodic")).toBeDefined();
+  expect(submissions).toBe(0);
+  await stream.stop();
+  expect(harness.remoteJobRecoveryTimer).toBeUndefined();
+});
+
+test("shutdown during accounting lookup retains the intent without attaching a runner", async () => {
+  const records = new ActiveRemoteJobs(createSqliteDb(":memory:"));
+  await records.recordSubmissionIntent(
+    {
+      jobId: "stop-lookup",
+      name: "lookup",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/lookup",
+      envVars: {},
+    },
+    [],
+  );
+  const entered = Promise.withResolvers<void>();
+  const lookup = Promise.withResolvers<void>();
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      findByKuintessenceJobId: async () => {
+        entered.resolve();
+        await lookup.promise;
+        return { status: "found", schedulerJobId: "502" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+  });
+  const harness = stream as unknown as {
+    reconcileRemoteJobs(): Promise<void>;
+    pool: { get(jobId: string): unknown };
+  };
+  const cycle = harness.reconcileRemoteJobs();
+  await entered.promise;
+  const stopping = stream.stop();
+  lookup.resolve();
+  await Promise.all([cycle, stopping]);
+  expect((await records.get("stop-lookup"))?.schedulerJobId).toBe("__kq_submission_pending__");
+  expect(harness.pool.get("stop-lookup")).toBeUndefined();
+});
+
+test("durable cancellation retries epoch zero and waits for confirmed termination before cleanup and ACK", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const tombstones = new JobRevocationTombstones(db);
+  const intents = new JobCleanupIntents(db);
+  const spec: JobSpec = {
+    jobId: "cancel-periodic",
+    name: "cancel",
+    command: "true",
+    cpus: 1,
+    memoryMb: 64,
+    gpus: 0,
+    wallTimeSec: 60,
+    workingDir: "/shared/cancel",
+    envVars: {},
+  };
+  await records.recordSubmitted({ spec, schedulerJobId: "503", expectedOutputs: [] });
+  await intents.recordSchedulerSubmitted(spec.jobId, "503");
+  await tombstones.record(spec.jobId, 0);
+  let terminated = false;
+  let cancellations = 0;
+  const adapter = makeAdapter({
+    cancel: async () => {
+      cancellations++;
+    },
+  });
+  adapter.confirmStopped = async () => terminated;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter,
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+    revocationTombstones: tombstones,
+    cleanupIntents: intents,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    reconcileRemoteJobs(): Promise<void>;
+    outboundQueue: Array<{ kind: string }>;
+    pool: { get(jobId: string): unknown };
+  };
+  await harness.reconcileRemoteJobs();
+  expect(cancellations).toBe(1);
+  expect(await records.get(spec.jobId)).toBeDefined();
+  expect(await intents.list()).toHaveLength(1);
+  expect(harness.outboundQueue.some((item) => item.kind === "cancelJobAck")).toBe(false);
+  expect(harness.pool.get(spec.jobId)).toBeUndefined();
+  terminated = true;
+  await harness.reconcileRemoteJobs();
+  expect(cancellations).toBe(2);
+  expect(await records.get(spec.jobId)).toBeUndefined();
+  expect(await intents.list()).toHaveLength(0);
+  expect(harness.outboundQueue.filter((item) => item.kind === "cancelJobAck")).toHaveLength(1);
+});
+
+test("cancellation arriving during accounting lookup prevents reattachment and cleans only after confirmation", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const tombstones = new JobRevocationTombstones(db);
+  await records.recordSubmissionIntent(
+    {
+      jobId: "cancel-lookup",
+      name: "lookup",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/lookup",
+      envVars: {},
+    },
+    [],
+  );
+  const entered = Promise.withResolvers<void>();
+  const lookup = Promise.withResolvers<void>();
+  const cancelled: string[] = [];
+  const adapter = makeAdapter({
+    findByKuintessenceJobId: async () => {
+      entered.resolve();
+      await lookup.promise;
+      return { status: "found", schedulerJobId: "504" };
+    },
+    cancel: async (id) => {
+      cancelled.push(id);
+    },
+  });
+  adapter.confirmStopped = async () => true;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter,
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+    revocationTombstones: tombstones,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: { get(jobId: string): unknown };
+  };
+  const recovery = harness.recoverActiveRemoteJobs();
+  await entered.promise;
+  const cancellation = deliverServerMessage(stream, cancelJobMessage("cancel-lookup", 1));
+  await waitForCondition(async () => (await tombstones.revokedEpoch("cancel-lookup")) === 1);
+  expect(cancelled).toEqual([]);
+  lookup.resolve();
+  await Promise.all([recovery, cancellation]);
+  expect(cancelled).toEqual(["504"]);
+  expect(harness.pool.get("cancel-lookup")).toBeUndefined();
+  expect(await records.get("cancel-lookup")).toBeUndefined();
+});
+
+test("late accounting confirmation cannot resurrect a removed durable job record", async () => {
+  const records = new ActiveRemoteJobs(createSqliteDb(":memory:"));
+  await records.recordSubmissionIntent(
+    {
+      jobId: "removed-lookup",
+      name: "lookup",
+      command: "true",
+      cpus: 1,
+      memoryMb: 64,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/shared/lookup",
+      envVars: {},
+    },
+    [],
+  );
+  const entered = Promise.withResolvers<void>();
+  const lookup = Promise.withResolvers<void>();
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      findByKuintessenceJobId: async () => {
+        entered.resolve();
+        await lookup.promise;
+        return { status: "found", schedulerJobId: "505" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: { get(jobId: string): unknown };
+  };
+  const recovery = harness.recoverActiveRemoteJobs();
+  await entered.promise;
+  await records.markFinished("removed-lookup");
+  lookup.resolve();
+  await recovery;
+  expect(await records.get("removed-lookup")).toBeUndefined();
+  expect(harness.pool.get("removed-lookup")).toBeUndefined();
+});
+
+test("submission persistence failure with unconfirmed cancellation preserves the job for reconciliation", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new FailingActiveRemoteJobs(db);
+  const outbound = new OutboundQueue(db);
+  let submitted = 0;
+  let cancelled = 0;
+  const adapter = makeAdapter({
+    submit: async () => {
+      submitted++;
+      return { schedulerJobId: "506" };
+    },
+    cancel: async () => {
+      cancelled++;
+    },
+    findByKuintessenceJobId: async () => ({ status: "found", schedulerJobId: "506" }),
+    statusSeq: [{ status: "running" }],
+  });
+  adapter.confirmStopped = async () => false;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter,
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    activeRemoteJobs: records,
+    outboundQueue: outbound,
+    cleanupIntents: new JobCleanupIntents(db),
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: { await(jobId: string): Promise<void>; get(jobId: string): unknown };
+    unreconciledSubmittedJobs: Map<string, string>;
+  };
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "dispatchJob",
+        value: create(DispatchJobSchema, {
+          jobId: "persist-unknown",
+          name: "persist",
+          command: "true",
+          cpus: 1,
+          memoryMb: 64n,
+          wallTimeSec: 60n,
+          workingDir: "/shared/persist",
+        }),
+      },
+    }),
+  );
+  await waitForCondition(() => submitted === 1);
+  await harness.pool.await("persist-unknown");
+  expect(cancelled).toBe(1);
+  expect((await records.get("persist-unknown"))?.schedulerJobId).toBe("__kq_submission_pending__");
+  expect(await outbound.loadForReplay()).toEqual([]);
+  expect(harness.unreconciledSubmittedJobs.get("persist-unknown")).toBe("506");
+  await harness.recoverActiveRemoteJobs();
+  expect((await records.get("persist-unknown"))?.schedulerJobId).toBe("506");
+  expect(harness.pool.get("persist-unknown")).toBeDefined();
+  expect(harness.unreconciledSubmittedJobs.has("persist-unknown")).toBe(false);
+  expect(submitted).toBe(1);
+});
+
+test("workflow host inputs pass trusted content binding and lifecycle cancellation while legacy inputs stay compatible", async () => {
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    stageDispatchInputs(dispatch: DispatchJob, spec: JobSpec): Promise<void>;
+    runHostCloudToCluster(...args: unknown[]): Promise<void>;
+    lifecycleController: AbortController;
+  };
+  const calls: unknown[][] = [];
+  harness.runHostCloudToCluster = async (...args) => {
+    calls.push(args);
+  };
+  await harness.stageDispatchInputs(
+    create(DispatchJobSchema, {
+      inputStaging: [
+        {
+          fileMetadataId: "netdrive",
+          sourceUrl: "https://storage/input",
+          stagePath: "input",
+          expectedSha256: "a".repeat(64),
+          totalBytes: 128n,
+        },
+        { fileMetadataId: "legacy", sourceUrl: "https://storage/legacy", stagePath: "legacy" },
+      ],
+    }),
+    { jobId: "bound-input", workingDir: "/managed" } as JobSpec,
+  );
+  expect(calls[0]?.slice(1)).toEqual([
+    "https://storage/input",
+    "/managed/input",
+    harness.lifecycleController.signal,
+    false,
+    { sha256: "a".repeat(64), size: 128 },
+  ]);
+  expect(calls[1]?.[5]).toBeUndefined();
+  expect(calls[1]?.[3]).toBe(harness.lifecycleController.signal);
+});
+
+test("container multipart rebuilds spool after Agent restart but reuses verified part receipts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kq-container-upload-resume-"));
+  const originalFetch = globalThis.fetch;
+  const uploaded: number[] = [];
+  let interrupted = true;
+  let source = "AAAABBBB";
+  const spools: string[] = [];
+  const fetchStub = (async (input: string | URL | Request) => {
+    const part = Number(String(input).split("/").at(-1));
+    uploaded.push(part);
+    if (interrupted && part === 2) throw new Error("disconnected");
+    return new Response("", { headers: { ETag: `etag-${part}` } });
+  }) as typeof fetch;
+  fetchStub.preconnect = originalFetch.preconnect;
+  globalThis.fetch = fetchStub;
+  try {
+    const states: string[] = [];
+    const makeStream = () => {
+      const { client } = makeMockClient([]);
+      const stream = new AgentStream({
+        client,
+        adapter: makeAdapter(),
+        agentId: "agent",
+        siteName: "site",
+        heartbeatIntervalMs: 60_000,
+        logger: silent,
+        fileTransferStateDir: directory,
+        fileTransferMaxRetries: 0,
+        fileTransferRetryBackoffSec: 0,
+      });
+      activeStreams.push(stream);
+      const harness = stream as unknown as {
+        runClusterToCloud(
+          requestId: string,
+          containerId: string,
+          sourcePath: string,
+          uploadUrl: string,
+          uploadId: string,
+          partSize: number,
+          signal: AbortSignal,
+        ): Promise<void>;
+        spoolFromContainer(
+          containerId: string,
+          sourcePath: string,
+          tmpPath: string,
+          signal: AbortSignal,
+        ): Promise<number>;
+        requestPartUrls(
+          requestId: string,
+          parts: number[],
+          signal: AbortSignal,
+        ): Promise<{ partNumber: number; url: string }[]>;
+        emitProgress(requestId: string, bytes: number, state: string): void;
+      };
+      harness.spoolFromContainer = async (_container, _source, path) => {
+        spools.push(path);
+        await writeFile(path, source);
+        return source.length;
+      };
+      harness.requestPartUrls = async (_request, parts) =>
+        parts.map((partNumber) => ({ partNumber, url: `https://object.example/${partNumber}` }));
+      harness.emitProgress = (_request, _bytes, state) => {
+        if (state !== "running") states.push(state);
+      };
+      return harness;
+    };
+    await makeStream().runClusterToCloud(
+      "same-request",
+      "container",
+      "/output",
+      "",
+      "same-upload",
+      4,
+      new AbortController().signal,
+    );
+    expect(uploaded).toEqual([1, 2]);
+    expect(states).toEqual(["failed"]);
+    uploaded.length = 0;
+    interrupted = false;
+    await makeStream().runClusterToCloud(
+      "same-request",
+      "container",
+      "/output",
+      "",
+      "same-upload",
+      4,
+      new AbortController().signal,
+    );
+    expect(uploaded).toEqual([2]);
+    expect(states).toEqual(["failed", "succeeded"]);
+    source = "changed!";
+    uploaded.length = 0;
+    await makeStream().runClusterToCloud(
+      "same-request",
+      "container",
+      "/output",
+      "",
+      "same-upload",
+      4,
+      new AbortController().signal,
+    );
+    expect(uploaded).toEqual([]);
+    expect(states.at(-1)).toBe("failed");
+    const terminalCount = states.length;
+    const cancelled = new AbortController();
+    cancelled.abort(new Error("superseded transfer"));
+    await makeStream().runClusterToCloud(
+      "same-request",
+      "container",
+      "/output",
+      "",
+      "same-upload",
+      4,
+      cancelled.signal,
+    );
+    expect(states).toHaveLength(terminalCount);
+    expect(new Set(spools).size).toBe(4);
+    for (const path of spools) expect(await Bun.file(path).exists()).toBe(false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  "timeout",
+  "abort",
+])("part URL %s cleans only its own request; late replies cannot consume redispatched upload", async (expiry) => {
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    requestPartUrls(
+      requestId: string,
+      parts: number[],
+      signal: AbortSignal,
+      uploadId: string,
+      timeoutMs: number,
+    ): Promise<{ partNumber: number; url: string }[]>;
+    handleServerMessage(message: ServerMessage): Promise<void>;
+    outboundQueue: { kind: string; requestId: string; correlationId: string; uploadId: string }[];
+    pendingPartUrlRequests: Map<string, unknown>;
+  };
+  const old = new AbortController();
+  const remove = spyOn(old.signal, "removeEventListener");
+  try {
+    const previousUploadId = expiry === "timeout" ? "new-upload" : "old-upload";
+    const previous = harness
+      .requestPartUrls(
+        "transfer",
+        [1],
+        old.signal,
+        previousUploadId,
+        expiry === "timeout" ? 10 : 1000,
+      )
+      .catch((error: unknown) => error);
+    const current = harness.requestPartUrls(
+      "transfer",
+      [1],
+      new AbortController().signal,
+      "new-upload",
+      1000,
+    );
+    const requests = harness.outboundQueue.filter((item) => item.kind === "partUrlsRequest");
+    const first = requests[0];
+    const second = requests[1];
+    expect(first?.correlationId).toBeTruthy();
+    expect(first?.correlationId).not.toBe(second?.correlationId);
+    expect(second?.uploadId).toBe("new-upload");
+    if (expiry === "abort") old.abort();
+    expect(await previous).toBeInstanceOf(Error);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    expect(harness.pendingPartUrlRequests.size).toBe(1);
+    old.abort();
+    const reply = (correlationId: string, uploadId: string) =>
+      harness.handleServerMessage(
+        create(ServerMessageSchema, {
+          payload: {
+            case: "partUrlsResponse",
+            value: {
+              requestId: "transfer",
+              correlationId,
+              uploadId,
+              urls: [{ partNumber: 1, url: "https://object/part" }],
+            },
+          },
+        }),
+      );
+    let settled = false;
+    void current.then(() => {
+      settled = true;
+    });
+    await reply(first?.correlationId ?? "", previousUploadId);
+    await reply(second?.correlationId ?? "", "old-upload");
+    await reply("", "");
+    expect(settled).toBe(false);
+    expect(harness.pendingPartUrlRequests.size).toBe(1);
+    await reply(second?.correlationId ?? "", "new-upload");
+    expect(await current).toEqual([{ partNumber: 1, url: "https://object/part" }]);
+    expect(harness.pendingPartUrlRequests.size).toBe(0);
+  } finally {
+    remove.mockRestore();
+  }
+});
+
+test("maintenance fences in-flight incoming handlers and active transfers without aborting them", async () => {
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(),
+    adapter: makeAdapter(),
+    agentId: "agent-maintenance",
+    siteName: "test-site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    reconnectBackoffMs: 1,
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  await settle();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const internal = stream as unknown as {
+    handleServerMessageNow: (message: ServerMessage) => Promise<void>;
+    activeFileTransfers: Map<string, AbortController>;
+  };
+  const handler = spyOn(internal, "handleServerMessageNow").mockImplementation(async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  const incoming = deliverServerMessage(stream, heartbeatAck(1n));
+  await entered.promise;
+  expect(await stream.drainForMaintenance("a".repeat(32), () => true)).toBe(false);
+  release.resolve();
+  await incoming;
+  handler.mockRestore();
+  const transfer = new AbortController();
+  internal.activeFileTransfers.set("transfer", transfer);
+  expect(await stream.drainForMaintenance("b".repeat(32), () => true)).toBe(false);
+  expect(transfer.signal.aborted).toBe(false);
+  internal.activeFileTransfers.clear();
+  await stream.stop();
+  await running;
+});
+
+test("idle maintenance pauses reconnect and admission until the matching lease resumes", async () => {
+  const client = makePendingRegisteredClient() as AgentStreamDeps["client"];
+  const connects = spyOn(client, "connect");
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent-maintenance-idle",
+    siteName: "test-site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    reconnectBackoffMs: 1,
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  await settle();
+  expect(await stream.drainForMaintenance("a".repeat(32), () => false)).toBe(false);
+  expect(connects).toHaveBeenCalledTimes(1);
+  expect(await stream.drainForMaintenance("a".repeat(32), () => true)).toBe(true);
+  await settle();
+  const internal = stream as unknown as {
+    handleServerMessageNow: (message: ServerMessage) => Promise<void>;
+  };
+  const handler = spyOn(internal, "handleServerMessageNow");
+  await deliverServerMessage(stream, heartbeatAck(2n));
+  expect(handler).not.toHaveBeenCalled();
+  stream.resumeAfterMaintenance("b".repeat(32));
+  await settle();
+  expect(connects).toHaveBeenCalledTimes(1);
+  stream.resumeAfterMaintenance("a".repeat(32));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await settle();
+  expect(connects.mock.calls.length).toBeGreaterThan(1);
+  handler.mockRestore();
+  connects.mockRestore();
+  await stream.stop();
+  await running;
+});
+
+test("detached software policy work remains busy after its incoming handler returns", async () => {
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(),
+    adapter: makeAdapter(),
+    agentId: "agent-maintenance-software",
+    siteName: "test-site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    reconnectBackoffMs: 1,
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  await settle();
+  const finish = Promise.withResolvers<void>();
+  const internal = stream as unknown as { applyPolicyAndAck: () => Promise<void> };
+  const policy = spyOn(internal, "applyPolicyAndAck").mockImplementation(() => finish.promise);
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "softwarePolicyUpdate",
+        value: create(SoftwarePolicyUpdateSchema, { policyVersion: "maintenance-test" }),
+      },
+    }),
+  );
+  expect(await stream.drainForMaintenance("a".repeat(32), () => true)).toBe(false);
+  finish.resolve();
+  await settle();
+  expect(await stream.drainForMaintenance("b".repeat(32), () => true)).toBe(true);
+  stream.resumeAfterMaintenance("b".repeat(32));
+  policy.mockRestore();
+  await stream.stop();
+  await running;
+});

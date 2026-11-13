@@ -122,7 +122,10 @@ export interface RecordReplicaInput {
   context?: NetDriveTransferContext;
 }
 
+export type NetDriveCommitDb = Pick<PgDb, "select" | "insert" | "update" | "execute">;
+
 interface CommitTokenPayload extends jose.JWTPayload {
+  path?: string;
   ownerId: string;
   storageKey: string;
   intendedSize: number;
@@ -214,6 +217,7 @@ export class NetDriveService {
 
     const tokenPayload: CommitTokenPayload = {
       kind: "multipart",
+      path: req.path,
       ownerId,
       storageKey,
       uploadId,
@@ -227,6 +231,45 @@ export class NetDriveService {
       .sign(this.commitSecret);
 
     return { storageKey, uploadId, commitToken, partSize: this.multipartPartSize, expiresAt };
+  }
+
+  /** Internal only: called after restoring an owner-bound, reauthorized database transfer session. */
+  async restoreMultipartSession(
+    ownerId: string,
+    session: {
+      storageKey: string;
+      uploadId: string;
+      partSize: number;
+      size: number;
+      target: string;
+    },
+  ) {
+    if (
+      !session.storageKey.startsWith(`${STORAGE_PREFIX}/${ownerId}/`) ||
+      !session.uploadId ||
+      !Number.isSafeInteger(session.partSize) ||
+      session.partSize < MIN_S3_PART_SIZE
+    )
+      throw new Error("Invalid persisted multipart session");
+    const commitToken = await new jose.SignJWT({
+      kind: "multipart",
+      path: session.target,
+      ownerId,
+      storageKey: session.storageKey,
+      uploadId: session.uploadId,
+      intendedSize: session.size,
+      partSize: session.partSize,
+    })
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuedAt()
+      .setExpirationTime(Math.floor(this.now() / 1000) + this.multipartTtlSec)
+      .sign(this.commitSecret);
+    return {
+      storageKey: session.storageKey,
+      uploadId: session.uploadId,
+      partSize: session.partSize,
+      commitToken,
+    };
   }
 
   /** Verify the commit token and persist a `netdrive_files` row. */
@@ -316,8 +359,10 @@ export class NetDriveService {
       storageVersionId?: string | null;
     },
     context?: NetDriveTransferContext,
+    db: NetDriveCommitDb = this.db,
+    recordUpload = true,
   ): Promise<NetDriveCommitResult> {
-    const { row, replacedRows } = await this.db.transaction(async (tx) => {
+    const persist = async (tx: NetDriveCommitDb) => {
       await lockCloudWrites(tx, ownerId);
       await new StorageQuotaService(tx, () => new Date(this.now())).assertCloudWriteAllowed(
         ownerId,
@@ -368,22 +413,25 @@ export class NetDriveService {
       }
 
       return { row, replacedRows };
-    });
+    };
+    const { row, replacedRows } =
+      db === this.db ? await this.db.transaction(persist) : await persist(db);
 
     // record real upload bytes against the transfer log so the
     // CP Console reads from a per-event ledger rather than approximating
     // bytes-transferred via `sum(netdrive_files.size)`. Best-effort: a
     // failed insert here must not poison the user-facing commit.
-    await this.recordTransfer({
-      fileId: row.id,
-      actorId: ownerId,
-      direction: "upload",
-      bytes: row.size,
-      context: {
-        ...context,
-        netdriveFileIds: context?.netdriveFileIds ?? [row.id],
-      },
-    });
+    if (recordUpload)
+      await this.recordTransfer({
+        fileId: row.id,
+        actorId: ownerId,
+        direction: "upload",
+        bytes: row.size,
+        context: {
+          ...context,
+          netdriveFileIds: context?.netdriveFileIds ?? [row.id],
+        },
+      });
 
     return { file: rowToFile(row), replacedFiles: replacedRows.map(rowToFile) };
   }
@@ -672,6 +720,7 @@ export class NetDriveService {
     ownerId: string,
     req: NetDriveMultipartCompleteRequest,
     context?: NetDriveTransferContext,
+    onCommit?: (result: NetDriveCommitResult, db: NetDriveCommitDb) => Promise<void>,
   ): Promise<NetDriveCommitResult> {
     const token = await this.verifyMultipartToken(
       ownerId,
@@ -679,47 +728,90 @@ export class NetDriveService {
       req.storageKey,
       req.uploadId,
     );
-    // Live cluster->cloud uploads don't know the size at init time, so the
-    // token binds intendedSize=0. In that case skip the token equality check
-    // and rely on the authoritative `stat.size === req.size` head-check below.
-    if (token.intendedSize !== 0 && token.intendedSize !== req.size) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, "Commit token size mismatch", 400);
+    if (token.path !== req.path || (token.intendedSize !== 0 && token.intendedSize !== req.size)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Commit token path or size mismatch", 400);
     }
-
-    await this.quotaGuard?.(ownerId, req.path, req.size);
-
-    const completed = await this.minio.completeMultipartUpload(
-      req.storageKey,
-      req.uploadId,
-      req.parts,
-    );
-
-    const stat = await this.minio.head(req.storageKey, completed.versionId);
-    if (!stat) {
-      throw new AppError(ErrorCode.NOT_FOUND, "Assembled object not found after complete", 404);
+    if (!/^[a-f0-9]{64}$/i.test(req.sha256) || (token.sha256 && token.sha256 !== req.sha256)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Invalid multipart sha256", 400);
     }
-    if (stat.size !== req.size) {
-      throw new AppError(
-        ErrorCode.VALIDATION_ERROR,
-        `Assembled size ${stat.size} does not match committed size ${req.size}`,
-        400,
-      );
-    }
-
     const contentType = req.contentType ?? "application/octet-stream";
-    return this.persistCommittedFile(
-      ownerId,
-      {
-        path: req.path,
-        size: req.size,
-        sha256: req.sha256,
-        contentType,
-        etag: completed.etag || stat.etag,
-        storageKey: req.storageKey,
-        storageVersionId: stat.versionId === "null" ? null : (stat.versionId ?? null),
-      },
-      context,
-    );
+    let inserted = false;
+    const committed = await this.db.transaction(async (tx) => {
+      // Serializes retries across Server processes; rolled-back commits leave no receipt or grants.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${req.storageKey}, 0))`);
+      const [existing] = await tx
+        .select()
+        .from(netdriveFiles)
+        .where(eq(netdriveFiles.storageKey, req.storageKey))
+        .limit(1);
+      if (existing) {
+        if (
+          existing.ownerId !== ownerId ||
+          existing.path !== req.path ||
+          existing.size !== req.size ||
+          existing.sha256 !== req.sha256.toLowerCase() ||
+          existing.contentType !== contentType ||
+          existing.deletedAt
+        ) {
+          throw new AppError(ErrorCode.VALIDATION_ERROR, "Multipart commit binding changed", 400);
+        }
+        return { file: rowToFile(existing), replacedFiles: [] };
+      }
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`${ownerId}/${req.path}`}, 0))`,
+      );
+      await this.quotaGuard?.(ownerId, req.path, req.size);
+      // Complete may have succeeded before the response was lost or this transaction rolled back.
+      let stat = await this.minio.head(req.storageKey);
+      if (!stat) {
+        try {
+          await this.minio.completeMultipartUpload(req.storageKey, req.uploadId, req.parts);
+        } catch (err) {
+          stat = await this.minio.head(req.storageKey);
+          if (!stat) throw err;
+        }
+        stat ??= await this.minio.head(req.storageKey);
+      }
+      if (!stat)
+        throw new AppError(ErrorCode.NOT_FOUND, "Assembled object not found after complete", 404);
+      if (stat.size !== req.size) {
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          `Assembled size ${stat.size} does not match committed size ${req.size}`,
+          400,
+        );
+      }
+      if ((await this.minio.sha256(req.storageKey))?.toLowerCase() !== req.sha256.toLowerCase()) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "Assembled object sha256 mismatch", 400);
+      }
+      const result = await this.persistCommittedFile(
+        ownerId,
+        {
+          path: req.path,
+          size: req.size,
+          sha256: req.sha256,
+          contentType,
+          etag: stat.etag,
+          storageKey: req.storageKey,
+          storageVersionId: stat.versionId === "null" ? null : (stat.versionId ?? null),
+        },
+        context,
+        tx,
+        false,
+      );
+      await onCommit?.(result, tx);
+      inserted = true;
+      return result;
+    });
+    if (inserted)
+      await this.recordTransfer({
+        fileId: committed.file.id,
+        actorId: ownerId,
+        direction: "upload",
+        bytes: committed.file.size,
+        context,
+      });
+    return committed;
   }
 
   /** Cancel an in-flight multipart upload (client gave up / restart). */

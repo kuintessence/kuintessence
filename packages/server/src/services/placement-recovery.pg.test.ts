@@ -343,6 +343,7 @@ test("losing the lease after the epoch check cannot commit or send a dispatch", 
       undefined,
       undefined,
       undefined,
+      undefined,
       f.lease,
     ),
   ).rejects.toBeInstanceOf(WorkflowExecutionInterrupted);

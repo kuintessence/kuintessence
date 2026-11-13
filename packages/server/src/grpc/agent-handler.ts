@@ -29,11 +29,13 @@ import {
   AppError,
   ErrorCode,
   ManagedDatasetRootIdsSchema,
+  parseSiteOperations,
   QueueFailureCodeSchema,
   SandboxRuntimeAttestationIdSchema,
   SandboxSelfAccountSchema,
   SandboxTrustedExecutionProfileSchema,
   SchedulerAccountingSchema,
+  type SpackAuditContext,
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
@@ -338,6 +340,8 @@ export interface AgentHandlerDeps {
     mintPartUrlsFor(
       requestId: string,
       partNumbers: number[],
+      agentId?: string,
+      expectedUploadId?: string,
     ): Promise<{ partNumber: number; url: string }[]>;
   };
   sandboxArtifactRelease?: Pick<SandboxArtifactReleaseService, "resolve">;
@@ -450,6 +454,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         federationInstallationLeaseV1: false,
         federationInstallationMaterialLeaseV1: false,
         verifiedCertFingerprint: undefined as string | undefined,
+        siteAuditContext: undefined as SpackAuditContext | undefined,
+        siteAuditObservedAt: undefined as number | undefined,
         push: (m: ServerMessage) => {
           if (!active) {
             throw new Error("agent stream closed");
@@ -697,12 +703,16 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               continue;
             }
             try {
+              const siteOperations = parseSiteOperations(hb.siteOperationsJson);
+              channel.siteAuditContext = siteOperations?.auditContext;
+              channel.siteAuditObservedAt = siteOperations?.observedAt;
               await agentManager.heartbeat({
                 agentId: registeredAgentId,
                 cpuUsagePercent: hb.cpuUsagePercent,
                 memoryUsedMb: Number(hb.memoryUsedMb),
                 memoryTotalMb: Number(hb.memoryTotalMb),
                 runningJobs: hb.runningJobs,
+                siteOperations,
                 queuedJobs: hb.queuedJobs,
                 restrictedDataIsolation: hb.restrictedDataIsolation,
                 ...sandboxCapabilityFacts(hb.sandboxCapability),
@@ -877,7 +887,11 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             }
             if (softwareOperations) {
               try {
-                await softwareOperations.applyAgentResult(registeredAgentId, payload.value);
+                await softwareOperations.applyAgentResult(
+                  registeredAgentId,
+                  payload.value,
+                  channel.verifiedCertFingerprint,
+                );
               } catch (err) {
                 logger.error(
                   { err, agentId: registeredAgentId, operationId: payload.value.operationId },
@@ -985,11 +999,9 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       }
                     : {}),
                 },
+                update.workingDir || undefined,
               );
               await jobDispatches?.acknowledge(registeredAgentId, update.jobId);
-              if (update.workingDir && !persistedJob.workingDir) {
-                await jobService.setWorkingDir(update.jobId, update.workingDir);
-              }
               if (failureCode.success && failureCode.data === "SCHEDULER_SUBMIT_FAILED") {
                 if (!update.eventId) {
                   logger.warn(
@@ -1569,11 +1581,35 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               logger.warn("partUrlsRequest before register — ignoring");
               continue;
             }
+            if (
+              Boolean(reqv.correlationId) !== Boolean(reqv.uploadId) ||
+              reqv.correlationId.length > 128 ||
+              reqv.uploadId.length > 1024
+            ) {
+              logger.warn(
+                { requestId: reqv.requestId },
+                "Invalid multipart URL request binding — ignoring",
+              );
+              continue;
+            }
             if (partUrlMinter) {
               const agentId = registeredAgentId;
               void partUrlMinter
-                .mintPartUrlsFor(reqv.requestId, reqv.partNumbers)
-                .then((urls) => dispatcher.pushPartUrlsResponse(agentId, reqv.requestId, urls))
+                .mintPartUrlsFor(
+                  reqv.requestId,
+                  reqv.partNumbers,
+                  agentId,
+                  reqv.uploadId || undefined,
+                )
+                .then((urls) =>
+                  dispatcher.pushPartUrlsResponse(
+                    agentId,
+                    reqv.requestId,
+                    urls,
+                    reqv.correlationId,
+                    reqv.uploadId,
+                  ),
+                )
                 .catch((err) =>
                   logger.error({ err, requestId: reqv.requestId }, "mintPartUrls failed"),
                 );

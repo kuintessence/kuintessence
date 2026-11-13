@@ -1,5 +1,0 @@
-DROP INDEX "workflow_artifacts_run_node_descriptor_idx";--> statement-breakpoint
-ALTER TABLE "workflow_artifacts" ADD COLUMN "producer_job_id" uuid;--> statement-breakpoint
-ALTER TABLE "workflow_artifacts" ADD CONSTRAINT "workflow_artifacts_producer_job_id_jobs_id_fk" FOREIGN KEY ("producer_job_id") REFERENCES "public"."jobs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "workflow_artifacts_job_descriptor_idx" ON "workflow_artifacts" USING btree ("producer_job_id","descriptor") WHERE "workflow_artifacts"."producer_job_id" IS NOT NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "workflow_artifacts_run_node_descriptor_idx" ON "workflow_artifacts" USING btree ("workflow_run_id","producer_node_id","descriptor") WHERE "workflow_artifacts"."producer_job_id" IS NULL;

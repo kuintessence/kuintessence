@@ -19,6 +19,7 @@ import {
   usecasePackageRevisions,
   usecasePackages,
   userOrgMemberships,
+  workflowOutputPublicationIntents,
   workflowRuns,
 } from "@kuintessence/db";
 import type {
@@ -129,6 +130,8 @@ export interface JobMutationFence {
 }
 
 export interface JobSubmitOptions {
+  /** Internal Workflow bridge only; never copied from a client JobSubmit payload. */
+  workflowOutputPublication?: true;
   orgId?: string | null;
   trustedMaterialization?: boolean;
   trustedUsecaseRevisionId?: string;
@@ -740,6 +743,11 @@ export class JobService {
       })
       .returning();
     if (!created) throw new AppError(ErrorCode.INTERNAL_ERROR, "Insert returned no rows", 500);
+    if (options.workflowOutputPublication && !restrictedNoEgress && !options.trustedSandboxScript) {
+      await tx
+        .insert(workflowOutputPublicationIntents)
+        .values({ jobId: created.id, workflowRunId: options.workflow?.runId ?? null });
+    }
     if (bindingValues.length > 0) {
       await tx
         .insert(jobDataBindings)
@@ -879,6 +887,7 @@ export class JobService {
     collectedOutputs?: Record<string, string>,
     agentEventId?: string,
     schedulerDetails?: SchedulerRuntimeDetails,
+    agentWorkingDir?: string,
     fence?: JobMutationFence,
   ) {
     const idWhere = expectedAgentId
@@ -892,9 +901,31 @@ export class JobService {
     const now = new Date();
     let changed = false;
     const updated = await (fence ?? this.db).transaction(async (tx) => {
-      const [current] = await tx.select().from(jobs).where(idWhere).limit(1).for("update");
+      let [current] = await tx.select().from(jobs).where(idWhere).limit(1).for("update");
       if (!current) {
         throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
+      }
+
+      if (agentWorkingDir !== undefined && !current.workingDir) {
+        if (
+          !expectedAgentId ||
+          !agentWorkingDir.startsWith("/") ||
+          agentWorkingDir === "/" ||
+          agentWorkingDir.split("/").includes("..") ||
+          Array.from(agentWorkingDir).some(
+            (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+          )
+        ) {
+          throw new AppError(ErrorCode.VALIDATION_ERROR, "Invalid Agent working directory", 400);
+        }
+        // Commit a missing directory before terminal notifications; preserve existing bindings.
+        const [bound] = await tx
+          .update(jobs)
+          .set({ workingDir: agentWorkingDir })
+          .where(idWhere)
+          .returning();
+        if (!bound) throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
+        current = bound;
       }
 
       if (agentEventId && expectedAgentId) {

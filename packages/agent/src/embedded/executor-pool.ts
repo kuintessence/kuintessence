@@ -1,5 +1,6 @@
 import type { JobSpec, SchedulerAdapter } from "../adapters/base";
 import type { ExpectedOutput } from "../output-collector";
+import type { CompletedJobSnapshot } from "../queue/active-remote-jobs";
 import { JobRunner, type JobRunnerDeps, type JobStatusReport } from "./job-executor";
 
 export interface ExecutorPoolDeps {
@@ -12,6 +13,7 @@ export interface ExecutorPoolDeps {
   onSchedulerSubmitted?: JobRunnerDeps["onSchedulerSubmitted"];
   onSchedulerSubmitting?: JobRunnerDeps["onSchedulerSubmitting"];
   onSubmissionUncertain?: JobRunnerDeps["onSubmissionUncertain"];
+  onSchedulerCompleted?: JobRunnerDeps["onSchedulerCompleted"];
   onQueueValidationShadowRejection?: JobRunnerDeps["onQueueValidationShadowRejection"];
   onJobFinished?: JobRunnerDeps["onJobFinished"];
   validateSandboxOutputs?: JobRunnerDeps["validateSandboxOutputs"];
@@ -54,6 +56,7 @@ export class ExecutorPool {
       onSchedulerSubmitted: this.deps.onSchedulerSubmitted,
       onSchedulerSubmitting: this.deps.onSchedulerSubmitting,
       onSubmissionUncertain: this.deps.onSubmissionUncertain,
+      onSchedulerCompleted: this.deps.onSchedulerCompleted,
       onQueueValidationShadowRejection: this.deps.onQueueValidationShadowRejection,
       onJobFinished: this.deps.onJobFinished,
       validateSandboxOutputs: this.deps.validateSandboxOutputs,
@@ -76,7 +79,11 @@ export class ExecutorPool {
   async resume(
     spec: JobSpec,
     schedulerJobId: string,
-    opts: { expectedOutputs?: ExpectedOutput[]; schedulerUid?: string } = {},
+    opts: {
+      expectedOutputs?: ExpectedOutput[];
+      schedulerUid?: string;
+      completionSnapshot?: CompletedJobSnapshot;
+    } = {},
   ): Promise<{ jobId: string }> {
     if (!this.accepting) throw new ExecutorPoolStoppedError();
     if (this.active.has(spec.jobId)) {
@@ -91,6 +98,7 @@ export class ExecutorPool {
       onSchedulerSubmitted: this.deps.onSchedulerSubmitted,
       onSchedulerSubmitting: this.deps.onSchedulerSubmitting,
       onSubmissionUncertain: this.deps.onSubmissionUncertain,
+      onSchedulerCompleted: this.deps.onSchedulerCompleted,
       onQueueValidationShadowRejection: this.deps.onQueueValidationShadowRejection,
       onJobFinished: this.deps.onJobFinished,
       validateSandboxOutputs: this.deps.validateSandboxOutputs,
@@ -99,7 +107,13 @@ export class ExecutorPool {
     });
     this.active.set(spec.jobId, runner);
     const p = runner
-      .resume(spec, schedulerJobId, opts.expectedOutputs ?? [], opts.schedulerUid)
+      .resume(
+        spec,
+        schedulerJobId,
+        opts.expectedOutputs ?? [],
+        opts.schedulerUid,
+        opts.completionSnapshot,
+      )
       .then(() => undefined)
       .catch(() => undefined)
       .finally(() => {

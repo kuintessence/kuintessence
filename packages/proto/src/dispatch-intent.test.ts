@@ -150,7 +150,7 @@ test("NetDrive renewal preserves file identity, digest, size, marker and target 
         stagePath: "input.txt",
         netdriveInput: true,
         expectedSha256: "a".repeat(64),
-        expectedSizeBytes: 4n,
+        totalBytes: 4n,
         sourceUrl: "https://objects.test/old",
         deliveryLeaseId: "old",
         deliveryLeaseExpiresAtUnixMs: 1n,
@@ -167,7 +167,7 @@ test("NetDrive renewal preserves file identity, digest, size, marker and target 
   for (const change of [
     { fileMetadataId: crypto.randomUUID() },
     { expectedSha256: "b".repeat(64) },
-    { expectedSizeBytes: 5n },
+    { totalBytes: 5n },
     { netdriveInput: false },
     { stagePath: "other.txt" },
   ]) {
@@ -179,7 +179,7 @@ test("NetDrive renewal preserves file identity, digest, size, marker and target 
   Object.assign(legacy.inputStaging[0] ?? {}, {
     netdriveInput: false,
     expectedSha256: "",
-    expectedSizeBytes: 0n,
+    totalBytes: 0n,
   });
   expect(sameDispatchIntent(legacy, renewed)).toBe(false);
 });

@@ -35,7 +35,10 @@ interface EffectivePolicy {
 export type StorageQuotaTransaction = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
 
 /** Shared by regular cloud commits and federation reservations/publication. */
-export async function lockCloudWrites(tx: StorageQuotaTransaction, userId: string) {
+export async function lockCloudWrites(
+  tx: Pick<StorageQuotaTransaction, "execute">,
+  userId: string,
+) {
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${"cloud-storage:"} || ${userId}, 0))`,
   );

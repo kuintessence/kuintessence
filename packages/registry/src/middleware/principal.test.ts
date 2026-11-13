@@ -249,3 +249,118 @@ describe("Registry principal middleware", () => {
     expect(body.principal.orgIds).toEqual([currentOrg]);
   });
 });
+
+describe("native OCI challenge and repository tokens", () => {
+  function scopedApp() {
+    const app = new Hono<RegistryEnv>();
+    app.use(
+      "*",
+      createPrincipalMiddleware({
+        authMode: "jwt",
+        jwtSecret: SECRET,
+        jwtIssuer: ISSUER,
+        jwtAudience: AUDIENCE,
+        ociPublicOrigin: "https://platform.example.com",
+        resolveCanonicalPrincipal: async () => ({
+          sub: "u1",
+          role: "user",
+          orgIds: [],
+          suspended: false,
+        }),
+      }),
+    );
+    app.all("*", (c) => c.json({ ok: true }));
+    return app;
+  }
+  const credential = (access: unknown) =>
+    sign({
+      sub: "u1",
+      role: "platform_admin",
+      orgIds: [],
+      iss: ISSUER,
+      aud: AUDIENCE,
+      exp: Math.floor(Date.now() / 1000) + 60,
+      access,
+    });
+  test("discovers HTTPS realm through an internal HTTP upstream without trusting forwarded host", async () => {
+    const response = await scopedApp().request(
+      "http://registry:3100/v2/public/image/manifests/latest",
+      {
+        headers: { "X-Forwarded-Host": "attacker.example", "X-Forwarded-Proto": "http" },
+      },
+    );
+    expect(response.status).toBe(401);
+    expect(response.headers.get("WWW-Authenticate")).toBe(
+      'Bearer realm="https://platform.example.com/api/registry/token",service="platform.example.com",scope="repository:public/image:pull"',
+    );
+    expect(response.headers.get("Docker-Distribution-API-Version")).toBe("registry/2.0");
+  });
+  test("repository pull cannot push, cross repositories, catalog, or mount without source pull", async () => {
+    const app = scopedApp();
+    const headers = {
+      Authorization: `Bearer ${credential([{ type: "repository", name: "public/image", actions: ["pull"] }])}`,
+    };
+    expect((await app.request("/v2/", { headers })).status).toBe(200);
+    const unscoped = sign({
+      sub: "u1",
+      role: "user",
+      orgIds: [],
+      iss: ISSUER,
+      aud: AUDIENCE,
+      exp: Math.floor(Date.now() / 1000) + 60,
+    });
+    expect(
+      (await app.request("/v2/", { headers: { Authorization: `Bearer ${unscoped}` } })).status,
+    ).toBe(401);
+    expect((await app.request("/v2/public/image/manifests/latest", { headers })).status).toBe(200);
+    expect((await app.request("/v2/public/other/manifests/latest", { headers })).status).toBe(401);
+    expect(
+      (await app.request("/v2/public/image/manifests/latest", { method: "PUT", headers })).status,
+    ).toBe(401);
+    expect((await app.request("/v2/_catalog", { headers })).status).toBe(401);
+    const pushHeaders = {
+      Authorization: `Bearer ${credential([{ type: "repository", name: "public/image", actions: ["push"] }])}`,
+    };
+    expect(
+      (
+        await app.request("/v2/public/image/blobs/uploads/?from=public/other&mount=sha256:123", {
+          method: "POST",
+          headers: pushHeaders,
+        })
+      ).status,
+    ).toBe(401);
+  });
+  test("malformed grants and missing expiry are rejected", () => {
+    expect(() =>
+      verifyJwtPrincipal(
+        credential([{ type: "repository", name: "public/image", actions: ["delete"] }]),
+        { secret: SECRET },
+      ),
+    ).toThrow();
+    expect(() =>
+      verifyJwtPrincipal(sign({ sub: "u1", role: "user", orgIds: [], access: [] }), {
+        secret: SECRET,
+      }),
+    ).toThrow();
+  });
+  test("repository token cannot become a general principal on catalog or usecase APIs", async () => {
+    const app = new Hono();
+    app.onError((_error, c) => c.json({ error: "unauthorized" }, 401));
+    app.get("*", async (c) =>
+      c.json({
+        principal: await readOptionalPrincipal(c, {
+          authMode: "jwt",
+          jwtSecret: SECRET,
+          jwtIssuer: ISSUER,
+          jwtAudience: AUDIENCE,
+        }),
+      }),
+    );
+    const headers = {
+      Authorization: `Bearer ${credential([{ type: "repository", name: "public/image", actions: ["pull"] }])}`,
+    };
+    expect((await app.request("/spack/catalog", { headers })).status).toBe(401);
+    expect((await app.request("/usecase-packages/private", { headers })).status).toBe(401);
+    expect((await app.request("/spack/catalog")).status).toBe(200);
+  });
+});

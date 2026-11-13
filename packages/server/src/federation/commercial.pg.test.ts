@@ -679,7 +679,7 @@ afterAll(async () => {
   if (arbitrationSites.length)
     await db.delete(federationSites).where(inArray(federationSites.id, arbitrationSites));
   await db.$client.end({ timeout: 5 });
-});
+}, 60_000);
 
 test("platform role cannot sign; current organization grant and explicit commercial key purpose are required", async () => {
   const f = await fixture("bilateral_attested", false);

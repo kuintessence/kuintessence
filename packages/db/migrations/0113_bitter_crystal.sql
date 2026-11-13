@@ -1,1 +1,0 @@
-ALTER TABLE "federation_input_attempts" ADD COLUMN "reconciliation" jsonb;

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { lstat, mkdir, readdir, rename, rm, symlink } from "node:fs/promises";
+import { SPACK_WORKER_FAILURE_MESSAGES } from "./audit-process";
 import {
   installWorkerExecution,
   RECOVERY_REQUIRED,
@@ -12,9 +14,11 @@ import { makeInstallFixture } from "./install-test-fixture";
 import { ManagedSpackInstallation } from "./managed-installation";
 
 const fixtures: Awaited<ReturnType<typeof makeInstallFixture>>[] = [];
+
 afterEach(async () => {
   await Promise.all(fixtures.splice(0).map((fixture) => fixture.dispose()));
 });
+
 async function fixture() {
   const value = await makeInstallFixture();
   fixtures.push(value);
@@ -23,6 +27,10 @@ async function fixture() {
 
 describe("managed Spack installation transaction", () => {
   test.each([
+    ...Object.values(SPACK_WORKER_FAILURE_MESSAGES),
+    ...Object.values(SPACK_WORKER_FAILURE_MESSAGES).map(
+      (message) => `${message}: private credential`,
+    ),
     "Invalid managed Spack memory budget",
     "Invalid managed Spack memory budget: private credential",
     "Managed Spack memory admission requires configured budget + 512 MiB available without swap: private credential",
@@ -51,7 +59,101 @@ describe("managed Spack installation transaction", () => {
     expect((await new SpackInstallStore(f.site.profile.storeRoot).list())[0]?.state).toBe("failed");
     expect(await readdir(`${f.site.profile.storeRoot}/releases`)).toEqual([]);
   });
-
+  test.each([
+    undefined,
+    "verify-partial",
+    "verify",
+  ] as const)("recovers a persisted stopped prefix only after independent dependency verification (failure=%s)", async (failurePhase) => {
+    const f = await fixture();
+    const store = new SpackInstallStore(f.site.profile.storeRoot);
+    await store.initialize();
+    let interrupted = await store.withLock(
+      () =>
+        store.create({
+          manifestDigest: f.input.manifestDigest,
+          manifestSize: f.prepared.manifestSize,
+          siteProfileDigest: f.site.digest,
+          spec: f.input.spec,
+          rootHash: "a".repeat(32),
+        }),
+      f.input.operationId,
+    );
+    interrupted = {
+      ...interrupted,
+      state: "failed",
+      workerStopped: {
+        schedulerJobId: "456",
+        schedulerJobName: `kq-build-${randomUUID()}`,
+        schedulerBinding: "c".repeat(64),
+        noRequeue: true,
+        schedulerState: "TIMEOUT",
+        action: "install",
+        stoppedAt: new Date().toISOString(),
+        manifestDigest: f.input.manifestDigest,
+        siteProfileDigest: f.site.digest,
+        storePath: store.path(interrupted.id),
+      },
+    };
+    await store.withLock(() => store.save(interrupted));
+    const calls: string[] = [];
+    const dependency = "b".repeat(32);
+    const backend = new ManagedSpackInstallation({
+      cacheDir: f.cacheDir,
+      site: f.siteOptions,
+      loadSite: async () => f.site,
+      runner: {
+        async run(action, _prepared, input, _site, path, recovery) {
+          calls.push(action);
+          expect(input.operationId).not.toBe(interrupted.operationId);
+          expect(path).toBe(store.path(interrupted.id));
+          expect(await backend.installedList()).toEqual([]);
+          if (action === failurePhase) throw new Error("independent verification failed");
+          if (action === "verify-partial")
+            return { ...f.report(action, path), installedHashes: [dependency] };
+          if (action === "install")
+            expect(recovery).toEqual({ verifiedDependencyHashes: [dependency] });
+          await mkdir(f.report(action, path).prefix, { recursive: true });
+          return { ...f.report(action, path), installedHashes: ["a".repeat(32), dependency] };
+        },
+      },
+    });
+    const operationId = randomUUID();
+    const result = await backend.install(f.prepared, { ...f.input, operationId });
+    const current = (await store.list())[0];
+    expect(
+      JSON.parse(
+        await fs.readFile(
+          `${f.site.profile.storeRoot}/attempts/${interrupted.id}/${f.input.operationId}.json`,
+          "utf8",
+        ),
+      ),
+    ).toEqual(interrupted);
+    expect(current?.operationId).toBe(operationId);
+    if (failurePhase) {
+      expect(result.outcome).toBe("failed");
+      expect(current?.state).toBe("failed");
+      expect(await backend.installedList()).toEqual([]);
+      expect(calls).toEqual(
+        failurePhase === "verify-partial"
+          ? ["verify-partial"]
+          : ["verify-partial", "install", "verify"],
+      );
+    } else {
+      expect(result.outcome).toBe("succeeded");
+      expect(calls).toEqual(["verify-partial", "install", "verify"]);
+      expect(current).toMatchObject({
+        state: "ready",
+        id: interrupted.id,
+        resumedFrom: {
+          operationId: interrupted.operationId,
+          schedulerJobId: "456",
+          verifiedDependencyHashes: [dependency],
+          reusedDependencyCount: 1,
+        },
+      });
+      expect(await backend.installedList()).toHaveLength(1);
+    }
+  });
   test.each([
     false,
     true,
@@ -117,7 +219,6 @@ describe("managed Spack installation transaction", () => {
       namespace.mockRestore();
     }
   });
-
   test.each([
     "install",
     "verify",
@@ -152,7 +253,6 @@ describe("managed Spack installation transaction", () => {
     expect(await readdir(`${f.site.profile.storeRoot}/releases`)).toEqual([]);
     expect(calls).toEqual(phase === "verify" ? ["install", "verify"] : ["install"]);
   });
-
   test("a crash-left writer lock is never stolen and no worker is dispatched", async () => {
     const f = await fixture();
     const store = new SpackInstallStore(f.site.profile.storeRoot);
@@ -174,7 +274,6 @@ describe("managed Spack installation transaction", () => {
     expect(runs).toBe(0);
     expect((await lstat(`${f.site.profile.storeRoot}/.writer-lock`)).isDirectory()).toBe(true);
   });
-
   test("withdraws an installation when removal fails, retaining its record for cleanup retry", async () => {
     const f = await fixture();
     const backend = new ManagedSpackInstallation({
@@ -209,7 +308,6 @@ describe("managed Spack installation transaction", () => {
       installed: [],
     });
   });
-
   test.each([
     "uninstall",
     "load",
@@ -255,7 +353,6 @@ describe("managed Spack installation transaction", () => {
       locked.mockRestore();
     }
   });
-
   test("missing published prefixes fail inventory instead of retaining false readiness", async () => {
     const f = await fixture();
     const backend = new ManagedSpackInstallation({
@@ -275,7 +372,6 @@ describe("managed Spack installation transaction", () => {
     await rm(record.report.prefix, { recursive: true });
     await expect(backend.installedList()).rejects.toThrow();
   });
-
   test.each([
     "load",
     "import_preinstalled",
@@ -319,7 +415,6 @@ describe("managed Spack installation transaction", () => {
     expect((await store.list())[0]?.state).toBe("ready");
     expect(await backend.installedList()).toHaveLength(1);
   });
-
   test("checks policy against the recorded software, including hash and name selectors", async () => {
     const f = await fixture();
     let runs = 0;
@@ -357,7 +452,6 @@ describe("managed Spack installation transaction", () => {
     ).toMatchObject({ outcome: "succeeded" });
     expect((await backend.installedList()).length).toBe(1);
   });
-
   test("reuses a verified identical release without a second build", async () => {
     const f = await fixture();
     const calls: string[] = [];
@@ -378,7 +472,6 @@ describe("managed Spack installation transaction", () => {
     expect(calls).toEqual(["install", "verify", "verify"]);
     expect(await new SpackInstallStore(f.site.profile.storeRoot).list()).toHaveLength(1);
   });
-
   test("refuses implicit replacement when the pinned site profile changes", async () => {
     const f = await fixture();
     let site = f.site;
@@ -403,7 +496,6 @@ describe("managed Spack installation transaction", () => {
     });
     expect(runs).toBe(2);
   });
-
   test("never deletes a published release after an unrelated inventory failure", async () => {
     const f = await fixture();
     const store = new SpackInstallStore(f.site.profile.storeRoot);
@@ -448,7 +540,6 @@ describe("managed Spack installation transaction", () => {
     if (!installed?.report) throw new Error("Missing published report");
     expect((await lstat(installed.report.prefix)).isDirectory()).toBe(true);
   });
-
   test("an older failed attempt does not shadow a successful retry and supports explicit cleanup", async () => {
     const f = await fixture();
     let fail = true;
@@ -486,7 +577,6 @@ describe("managed Spack installation transaction", () => {
       installed: [],
     });
   });
-
   test.each([
     "profile",
     "abort",
@@ -521,7 +611,6 @@ describe("managed Spack installation transaction", () => {
     expect((await new SpackInstallStore(f.site.profile.storeRoot).list())[0]?.state).toBe("failed");
     expect(await readdir(`${f.site.profile.storeRoot}/releases`)).toEqual([]);
   });
-
   test("refuses concurrent writers while an installation is building", async () => {
     const f = await fixture();
     const entered = Promise.withResolvers<void>();
@@ -553,7 +642,6 @@ describe("managed Spack installation transaction", () => {
       expect((await first).outcome).toBe("succeeded");
     }
   });
-
   test.each(["failed", "removing"] as const)("retries cleanup of a %s record", async (state) => {
     const f = await fixture();
     const store = new SpackInstallStore(f.site.profile.storeRoot);

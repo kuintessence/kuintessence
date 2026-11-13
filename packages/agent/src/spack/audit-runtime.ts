@@ -7,6 +7,7 @@ export const SPACK_AUDIT_MEMORY_BYTES = 2_147_483_648;
 export const SPACK_MANAGED_MEMORY_BYTES = 4_294_967_296;
 
 export interface SpackAuditRuntimeProfile {
+  trustMode?: "administrator" | "single-user";
   apptainerPath: string;
   apptainerSha256: string;
   sifPath: string;
@@ -54,6 +55,7 @@ function assertProfile(profile: SpackAuditRuntimeProfile): void {
 async function inspectPinnedFile(
   path: string,
   signal: AbortSignal,
+  owner = 0,
 ): Promise<SpackAuditFileIdentity> {
   signal.throwIfAborted();
   const canonicalPath = await realpath(path);
@@ -61,7 +63,10 @@ async function inspectPinnedFile(
   for (let parent = dirname(path); ; ) {
     const stat = await lstat(parent);
     protectedParents &&=
-      stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && (stat.mode & 0o022) === 0;
+      stat.isDirectory() &&
+      !stat.isSymbolicLink() &&
+      (stat.uid === 0 || stat.uid === owner) &&
+      (stat.mode & 0o022) === 0;
     const next = dirname(parent);
     if (next === parent) break;
     parent = next;
@@ -71,7 +76,7 @@ async function inspectPinnedFile(
     !protectedParents ||
     !entry.isFile() ||
     entry.isSymbolicLink() ||
-    entry.uid !== 0 ||
+    (entry.uid !== 0 && entry.uid !== owner) ||
     (entry.mode & 0o022) !== 0 ||
     entry.size > 16 * 1024 ** 3
   ) {
@@ -141,7 +146,11 @@ export async function verifySpackAuditRuntime(
     throw new Error("Spack audit requires a non-root Linux Agent");
   }
   assertProfile(profile);
-  const inspect = deps.inspect ?? inspectPinnedFile;
+  if (profile.trustMode && !["administrator", "single-user"].includes(profile.trustMode))
+    throw new Error("Invalid runtime trust mode");
+  const owner = profile.trustMode === "single-user" ? uid : 0;
+  const inspect =
+    deps.inspect ?? ((path: string, abort: AbortSignal) => inspectPinnedFile(path, abort, owner));
   for (const [path, digest, executable] of [
     [profile.apptainerPath, profile.apptainerSha256, true],
     [profile.sifPath, profile.sifSha256, false],
@@ -153,7 +162,7 @@ export async function verifySpackAuditRuntime(
       !identity.regular ||
       identity.symlink ||
       !identity.protectedParents ||
-      identity.uid !== 0 ||
+      (identity.uid !== 0 && identity.uid !== owner) ||
       (identity.mode & 0o022) !== 0 ||
       identity.sha256 !== digest ||
       (executable ? (identity.mode & 0o111) === 0 : (identity.mode & 0o222) !== 0)
@@ -166,10 +175,28 @@ export function buildSpackAuditCommand(
   profile: SpackAuditRuntimeProfile,
   inputDirectory: string,
   manifestDigest: string,
+  memoryLimitBytes: number = SPACK_AUDIT_MEMORY_BYTES,
+  workDirectory?: string,
 ): string[] {
   assertProfile(profile);
+  if (
+    !Number.isInteger(memoryLimitBytes / 1024 ** 2) ||
+    memoryLimitBytes < 1024 ** 3 ||
+    memoryLimitBytes > 1048576 * 1024 ** 2
+  ) {
+    throw new Error("Invalid Spack isolation memory budget");
+  }
   if (!isSpackAuditPath(inputDirectory) || !/^sha256:[a-f0-9]{64}$/.test(manifestDigest)) {
     throw new Error("Invalid Spack audit input binding");
+  }
+  if (
+    workDirectory !== undefined &&
+    (!isSpackAuditPath(workDirectory) ||
+      workDirectory === inputDirectory ||
+      workDirectory.startsWith(`${inputDirectory}/`) ||
+      inputDirectory.startsWith(`${workDirectory}/`))
+  ) {
+    throw new Error("Invalid Spack audit work binding");
   }
   return [
     profile.apptainerPath,
@@ -194,6 +221,7 @@ export function buildSpackAuditCommand(
     "/kq/work",
     "--bind",
     `${inputDirectory}:/kq/input:ro`,
+    ...(workDirectory ? ["--bind", `${workDirectory}:/kq/work:rw`] : []),
     "--bind",
     "/sys/fs/cgroup:/sys/fs/cgroup:ro",
     "--env",

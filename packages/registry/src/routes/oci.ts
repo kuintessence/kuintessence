@@ -175,10 +175,12 @@ export function createOciRoutes(options: CreateOciRoutesOptions): Hono<RegistryE
     try {
       const principal = readPrincipal(c);
       const { ns } = authorize(principal, c.req.param("rest") ?? "", "write", publisherRoles);
-      void ns;
+      const repo = await service.findRepository(ns);
+      if (!repo)
+        throw new RegistryError("BLOB_UPLOAD_UNKNOWN", "upload not found in repository", 404);
       const uploadId = c.req.param("uuid");
       const body = readBodyStream(c);
-      const r2 = await service.appendChunk(uploadId, body);
+      const r2 = await service.appendChunk(repo.id, uploadId, body);
       c.header("Location", `/v2/${c.req.param("rest")}/blobs/uploads/${uploadId}`);
       c.header("Range", `0-${Math.max(r2.totalUploaded - 1, 0)}`);
       c.header("Docker-Upload-UUID", uploadId);
@@ -192,7 +194,9 @@ export function createOciRoutes(options: CreateOciRoutesOptions): Hono<RegistryE
     try {
       const principal = readPrincipal(c);
       const { ns } = authorize(principal, c.req.param("rest") ?? "", "write", publisherRoles);
-      void ns;
+      const repo = await service.findRepository(ns);
+      if (!repo)
+        throw new RegistryError("BLOB_UPLOAD_UNKNOWN", "upload not found in repository", 404);
       const uploadId = c.req.param("uuid");
       const digest = c.req.query("digest");
       if (!digest || !SHA_RE.test(digest)) {
@@ -204,7 +208,7 @@ export function createOciRoutes(options: CreateOciRoutesOptions): Hono<RegistryE
         );
       }
       const body = readBodyStream(c);
-      const r2 = await service.completeUpload(uploadId, digest, body);
+      const r2 = await service.completeUpload(repo.id, uploadId, digest, body);
       c.header("Location", `/v2/${c.req.param("rest")}/blobs/${r2.digest}`);
       c.header("Docker-Content-Digest", r2.digest);
       return c.body(null, 201);
@@ -217,8 +221,10 @@ export function createOciRoutes(options: CreateOciRoutesOptions): Hono<RegistryE
     try {
       const principal = readPrincipal(c);
       const { ns } = authorize(principal, c.req.param("rest") ?? "", "write", publisherRoles);
-      void ns;
-      await service.cancelUpload(c.req.param("uuid"));
+      const repo = await service.findRepository(ns);
+      if (!repo)
+        throw new RegistryError("BLOB_UPLOAD_UNKNOWN", "upload not found in repository", 404);
+      await service.cancelUpload(repo.id, c.req.param("uuid"));
       return c.body(null, 204);
     } catch (e) {
       return ociError(c, e);
@@ -374,7 +380,7 @@ async function handleStartUpload(
       // Destination must be writable.
       const { ns: dstNs } = authorize(principal, rest, "write", publisherRoles);
       // Source must be readable when `from` is supplied; if it is
-      // omitted, the spec lets us still try to mount globally.
+      // omitted, fall back to a fresh upload without granting global digest access.
       let srcNs: ReturnType<typeof parseNamespace> | undefined;
       if (from) {
         const auth = authorize(principal, from, "read", publisherRoles);

@@ -1,2 +1,0 @@
-ALTER TABLE "software_operations" ADD COLUMN "federation_job_id" uuid;--> statement-breakpoint
-ALTER TABLE "software_operations" ADD CONSTRAINT "software_operations_federation_authority_check" CHECK ("software_operations"."federation_job_id" IS NULL OR ("software_operations"."action" = 'install' AND "software_operations"."replay_enabled" AND "software_operations"."requested_by" IS NOT NULL AND "software_operations"."manifest_digest" IS NOT NULL));

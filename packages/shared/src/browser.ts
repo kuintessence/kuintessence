@@ -23,6 +23,7 @@ export * from "./schemas/ssh";
 export * from "./schemas/sso";
 export * from "./schemas/template";
 export * from "./schemas/terminal";
+export * from "./site-operations";
 export * from "./software-governance";
 export * from "./spack";
 export * from "./spack-install-bindings";

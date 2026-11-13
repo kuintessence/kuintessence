@@ -1,8 +1,0 @@
-ALTER TABLE "federation_media_packages" DROP CONSTRAINT "federation_media_packages_agreement_revision_id_federation_agreements_revision_id_fk";
---> statement-breakpoint
-ALTER TABLE "federation_media_packages" ADD COLUMN "task_input_import_id" uuid;--> statement-breakpoint
-ALTER TABLE "federation_media_packages" ADD COLUMN "task_result_import_id" uuid;--> statement-breakpoint
-ALTER TABLE "federation_media_packages" ADD CONSTRAINT "federation_media_packages_task_input_import_id_federation_input_imports_id_fk" FOREIGN KEY ("task_input_import_id") REFERENCES "public"."federation_input_imports"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "federation_media_packages" ADD CONSTRAINT "federation_media_packages_task_result_import_id_federation_result_imports_id_fk" FOREIGN KEY ("task_result_import_id") REFERENCES "public"."federation_result_imports"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "federation_media_packages" ADD CONSTRAINT "federation_media_package_target" CHECK ((("federation_media_packages"."task_input_import_id" IS NULL OR ("federation_media_packages"."manifest"->'subject'->>'kind' = 'task-input' AND "federation_media_packages"."task_result_import_id" IS NULL))
-        AND ("federation_media_packages"."task_result_import_id" IS NULL OR ("federation_media_packages"."manifest"->'subject'->>'kind' = 'task-result' AND "federation_media_packages"."task_input_import_id" IS NULL))) IS TRUE);

@@ -6,6 +6,13 @@ import {
 import { isAbsolute } from "node:path";
 import type { Readable } from "node:stream";
 
+export const SPACK_WORKER_FAILURE_MESSAGES = {
+  "out-of-memory":
+    "Managed Spack worker exceeded its memory limit; increase the managed memory budget and matching Slurm allocation, or use a node with more available memory",
+  killed:
+    "Managed Spack worker was killed; check scheduler memory limits and node resource availability before retrying",
+} as const;
+
 /** Bounded process transport only. The caller must supply an isolation runtime. */
 export interface SpackAuditProcess {
   run(
@@ -17,7 +24,20 @@ export interface SpackAuditProcess {
       timeoutMs: number;
       maxOutputBytes: number;
     },
-  ): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  ): Promise<{
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+    terminationReason?: keyof typeof SPACK_WORKER_FAILURE_MESSAGES;
+    scheduler?: { state: string; exitCode: string };
+    slurmTerminal?: {
+      jobId: string;
+      name: string;
+      binding: string;
+      state: string;
+      noRequeue: true;
+    };
+  }>;
 }
 
 export class SpackProcessNotStartedError extends Error {}

@@ -939,6 +939,128 @@ describe("JobService", () => {
     expect(assigned.queueObservedAt?.toISOString()).toBe(observedAt.toISOString());
   });
 
+  test("Agent directory is committed before terminal subscribers and cannot be rebound by replay", async () => {
+    const job = await service.submit(
+      {
+        name: "test-job-svc-directory-binding",
+        command: "true",
+        resources: { cpus: 1, memoryMb: 128 },
+      },
+      testUserId,
+    );
+    testJobIds.push(job.id);
+    await service.assignToAgent(job.id, meteringAgentId);
+    const directory = `/shared/agent/jobs/${job.id}`;
+    const observed: Array<string | null | undefined> = [];
+    const unsubscribe = service.subscribe(async (id, status) => {
+      if (id === job.id && status === "completed")
+        observed.push((await service.getById(id))?.workingDir);
+    });
+    const report = (workingDir: string, agent = meteringAgentId) =>
+      service.updateStatus(
+        job.id,
+        "completed",
+        undefined,
+        agent,
+        undefined,
+        0,
+        {},
+        "directory-event",
+        undefined,
+        workingDir,
+      );
+    try {
+      await expect(report(directory, agentFilterOtherId)).rejects.toThrow("not found");
+      expect((await service.getById(job.id))?.workingDir).toBeNull();
+      for (const invalid of ["relative/path", "/shared/../secret", "/", "/shared/invalid\npath"]) {
+        await expect(report(invalid)).rejects.toThrow("Invalid Agent working directory");
+      }
+      expect((await service.getById(job.id))?.status).toBe("queued");
+      expect((await report(directory)).workingDir).toBe(directory);
+      expect(observed).toEqual([directory]);
+      expect((await report(directory)).workingDir).toBe(directory);
+      expect((await report("/shared/different-job")).workingDir).toBe(directory);
+      expect((await service.getById(job.id))?.workingDir).toBe(directory);
+      expect(observed).toEqual([directory]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test("prefilled directory survives different Agent-managed roots while status reports proceed", async () => {
+    const directory = "/server/staged/job-data";
+    const job = await service.submit(
+      {
+        name: "test-job-svc-prefilled-directory",
+        command: "true",
+        workingDir: directory,
+        resources: { cpus: 1, memoryMb: 128 },
+      },
+      testUserId,
+    );
+    testJobIds.push(job.id);
+    await service.assignToAgent(job.id, meteringAgentId);
+    for (const status of ["queued", "running", "completed"] as const) {
+      const updated = await service.updateStatus(
+        job.id,
+        status,
+        "slurm-prefilled",
+        meteringAgentId,
+        undefined,
+        status === "completed" ? 0 : undefined,
+        {},
+        `prefilled-${status}`,
+        undefined,
+        `/agent/jobs/${job.id}`,
+      );
+      expect(updated.status).toBe(status);
+      expect(updated.workingDir).toBe(directory);
+    }
+    const saved = await service.getById(job.id);
+    expect(saved?.status).toBe("completed");
+    expect(saved?.workingDir).toBe(directory);
+  });
+
+  test("terminal event replay backfills a missing Agent directory without changing status or epoch", async () => {
+    const job = await service.submit(
+      {
+        name: "test-job-svc-directory-backfill",
+        command: "true",
+        resources: { cpus: 1, memoryMb: 128 },
+      },
+      testUserId,
+    );
+    testJobIds.push(job.id);
+    await service.assignToAgent(job.id, meteringAgentId);
+    const first = await service.updateStatus(
+      job.id,
+      "completed",
+      undefined,
+      meteringAgentId,
+      undefined,
+      0,
+      {},
+      "directory-backfill-event",
+    );
+    const replay = await service.updateStatus(
+      job.id,
+      "completed",
+      undefined,
+      meteringAgentId,
+      undefined,
+      0,
+      {},
+      "directory-backfill-event",
+      undefined,
+      `/shared/agent/jobs/${job.id}`,
+    );
+    expect(replay.workingDir).toBe(`/shared/agent/jobs/${job.id}`);
+    expect(replay.status).toBe("completed");
+    expect(replay.completedAt).toEqual(first.completedAt);
+    expect(replay.dispatchEpoch).toBe(first.dispatchEpoch);
+    expect(replay.revokedEpoch).toBe(first.revokedEpoch);
+  });
+
   test("first terminal status is sticky and replayed or late reports are no-ops", async () => {
     const job = await service.submit(
       {

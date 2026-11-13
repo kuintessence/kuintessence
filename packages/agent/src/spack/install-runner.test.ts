@@ -3,15 +3,21 @@ import { chmod, lstat, mkdir, readdir, readFile, rm, symlink, writeFile } from "
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadAgentConfig } from "../config";
-import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
+import {
+  SPACK_WORKER_FAILURE_MESSAGES,
+  type SpackAuditProcess,
+  SpackProcessNotStartedError,
+} from "./audit-process";
 import { installWorkerExecution } from "./execution-identity";
 import { SPACK_INSTALL_RESULT_PREFIX } from "./install-contract";
 import { buildSpackInstallCommand, IsolatedSpackInstallRunner } from "./install-runner";
 import { SpackInstallStore } from "./install-store";
 import { installMemoryFixture, installRuntime, makeInstallFixture } from "./install-test-fixture";
+import { SpackWorkerUncertainError } from "./slurm-process";
 import { SpackProcessStoppedError } from "./supervised-process";
 
 const fixtures: Awaited<ReturnType<typeof makeInstallFixture>>[] = [];
+
 afterEach(async () => {
   await Promise.all(fixtures.splice(0).map((fixture) => fixture.dispose()));
 });
@@ -68,6 +74,7 @@ test.each([
   expect(stopped).toBe(kind !== "unknown-stop");
   expect(await readdir(join(f.cacheDir, "installs"))).toHaveLength(kind === "unknown-stop" ? 1 : 0);
 });
+
 async function fixture() {
   const f = await makeInstallFixture();
   fixtures.push(f);
@@ -84,6 +91,19 @@ async function fixture() {
   );
   return { ...f, path: store.path(record.id) };
 }
+
+async function retainedDiagnostic(f: Awaited<ReturnType<typeof fixture>>) {
+  const runs = await readdir(join(f.cacheDir, "installs"));
+  expect(runs).toHaveLength(1);
+  const directory = join(f.cacheDir, "installs", runs[0] ?? "missing");
+  const path = join(directory, "diagnostic.json");
+  expect((await lstat(path)).mode & 0o777).toBe(0o600);
+  const bytes = await readFile(path, "utf8");
+  expect(Buffer.byteLength(bytes)).toBeLessThan(100_000);
+  expect(bytes).not.toContain(f.input.ticket);
+  return { directory, diagnostic: JSON.parse(bytes) };
+}
+
 const runtimeDeps = {
   platform: "linux",
   uid: 1000,
@@ -101,6 +121,7 @@ const runtimeDeps = {
         : installRuntime.sifSha256,
   }),
 };
+
 function runner(
   process: SpackAuditProcess,
   options: Partial<ConstructorParameters<typeof IsolatedSpackInstallRunner>[0]> = {},
@@ -115,6 +136,92 @@ function runner(
 }
 
 describe("isolated persistent Spack worker", () => {
+  test("partial verification must run through Slurm and bind the interrupted prefix read-only", async () => {
+    const f = await fixture();
+    let runs = 0;
+    const process: SpackAuditProcess = {
+      async run(command, options) {
+        runs++;
+        expect(command).toContain(`${f.path}:${f.path}:ro`);
+        expect(
+          JSON.parse(await readFile(join(options.cwd, "input/request.json"), "utf8")).action,
+        ).toBe("verify-partial");
+        return {
+          exitCode: 0,
+          stdout:
+            SPACK_INSTALL_RESULT_PREFIX +
+            JSON.stringify({
+              ...f.report("verify-partial", f.path),
+              installedHashes: [],
+              dependencyEvidence: [],
+            }),
+          stderr: "",
+        };
+      },
+    };
+    await expect(
+      runner(process).run("verify-partial", f.prepared, f.input, f.site, f.path),
+    ).rejects.toThrow("requires Slurm");
+    expect(runs).toBe(0);
+    const report = await runner(process, { scheduled: true }).run(
+      "verify-partial",
+      f.prepared,
+      f.input,
+      f.site,
+      f.path,
+    );
+    expect(report.installedHashes).toEqual([]);
+    expect(runs).toBe(1);
+  });
+  test("Slurm terminal receipt is durable before successful staging is removed", async () => {
+    const f = await fixture();
+    const store = new SpackInstallStore(f.site.profile.storeRoot);
+    await store.withLock(async () => {
+      const record = await store.create({
+        manifestDigest: f.input.manifestDigest,
+        manifestSize: f.prepared.manifestSize,
+        siteProfileDigest: f.site.digest,
+        spec: f.input.spec,
+        rootHash: "a".repeat(32),
+      });
+      const path = store.path(record.id);
+      await runner(
+        {
+          async run() {
+            return {
+              exitCode: 0,
+              stdout: SPACK_INSTALL_RESULT_PREFIX + JSON.stringify(f.report("install", path)),
+              stderr: "",
+              slurmTerminal: {
+                jobId: "123",
+                name: "kq-build-12345678-1234-4123-8123-123456789012",
+                binding: "a".repeat(64),
+                state: "COMPLETED",
+                noRequeue: true,
+              },
+            };
+          },
+        },
+        { scheduled: true },
+      ).run("install", f.prepared, f.input, f.site, path);
+      const generations = join(f.site.profile.storeRoot, ".writer-lock/generations");
+      const latest = (await readdir(generations)).sort().at(-1);
+      if (!latest) throw new Error("Missing writer generation");
+      const receipt = JSON.parse(
+        await readFile(join(generations, latest, "worker-finished.json"), "utf8"),
+      );
+      expect(receipt.proof).toMatchObject({
+        schedulerJobId: "123",
+        schedulerState: "COMPLETED",
+        noRequeue: true,
+        storePath: path,
+        manifestDigest: f.input.manifestDigest,
+        siteProfileDigest: f.site.digest,
+      });
+      expect(receipt.worker.recordId).toBe(record.id);
+      expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
+    }, f.input.operationId);
+  });
   test.each([
     { "/proc/meminfo": "MemTotal: 3812352 kB\nMemAvailable: 3000000 kB\nSwapFree: 9999999 kB\n" },
     { "/proc/meminfo": "MemTotal: 8388608 kB\nMemAvailable: 4718591 kB\n" },
@@ -144,7 +251,6 @@ describe("isolated persistent Spack worker", () => {
     expect(invoked).toBe(false);
     expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
   });
-
   test.each([
     "install",
     "verify",
@@ -190,11 +296,10 @@ describe("isolated persistent Spack worker", () => {
     await r.run(action, f.prepared, f.input, f.site, f.path);
     expect(invoked).toBe(true);
   });
-
   test.each([
     0,
     1023,
-    4097,
+    1048577,
     1024.5,
     NaN,
     Infinity,
@@ -215,7 +320,6 @@ describe("isolated persistent Spack worker", () => {
     );
     expect(invoked).toBe(false);
   });
-
   test.each([
     "read-error",
     "cancel-read",
@@ -247,7 +351,6 @@ describe("isolated persistent Spack worker", () => {
     expect(invoked).toBe(false);
     expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
   });
-
   test.each([
     0,
     -1,
@@ -272,7 +375,6 @@ describe("isolated persistent Spack worker", () => {
     );
     expect(invoked).toBe(false);
   });
-
   test.each([
     ["install", undefined, 6 * 60 * 60_000],
     ["install", 24 * 60 * 60_000, 24 * 60 * 60_000],
@@ -311,7 +413,6 @@ describe("isolated persistent Spack worker", () => {
       now.mockRestore();
     }
   });
-
   test.each([
     "expired",
     "cancelled",
@@ -348,7 +449,6 @@ describe("isolated persistent Spack worker", () => {
       now.mockRestore();
     }
   });
-
   test.each([
     "timeout",
     "cancel",
@@ -377,7 +477,6 @@ describe("isolated persistent Spack worker", () => {
     expect(invoked).toBe(true);
     expect(await readdir(join(f.cacheDir, "installs"))).toHaveLength(1);
   });
-
   test.each([
     "install",
     "verify",
@@ -461,7 +560,6 @@ describe("isolated persistent Spack worker", () => {
     expect(invoked).toBe(true);
     expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
   });
-
   test.each([
     { manifestDigest: `sha256:${"f".repeat(64)}` },
     { siteProfileDigest: `sha256:${"f".repeat(64)}` },
@@ -485,15 +583,14 @@ describe("isolated persistent Spack worker", () => {
       },
     });
     await expect(r.run("verify", f.prepared, f.input, f.site, f.path)).rejects.toThrow();
-    expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
+    await retainedDiagnostic(f);
   });
-
   test.each([
     "exit",
     "no-report",
     "throw",
     "cancel",
-  ] as const)("cleans private staging only after confirmed process return: %s", async (kind) => {
+  ] as const)("retains private staging on %s without exposing worker output", async (kind) => {
     const f = await fixture();
     const controller = new AbortController();
     const r = runner({
@@ -513,9 +610,118 @@ describe("isolated persistent Spack worker", () => {
     await expect(
       r.run("verify", f.prepared, { ...f.input, signal: controller.signal }, f.site, f.path),
     ).rejects.toThrow();
-    expect(await readdir(join(f.cacheDir, "installs"))).toHaveLength(kind === "throw" ? 1 : 0);
+    if (kind === "throw") {
+      const runs = await readdir(join(f.cacheDir, "installs"));
+      expect(runs).toHaveLength(1);
+      expect(await readdir(join(f.cacheDir, "installs", runs[0] ?? "missing"))).not.toContain(
+        "diagnostic.json",
+      );
+    } else await retainedDiagnostic(f);
   });
-
+  test.each([
+    { reason: "out-of-memory", state: "OUT_OF_MEMORY", code: "0:9" },
+    { reason: "killed", state: "FAILED", code: "137:0" },
+  ] as const)("finishes the stopped worker before reporting safe %s diagnostics", async ({
+    reason,
+    state,
+    code,
+  }) => {
+    const f = await fixture();
+    const events: string[] = [];
+    const scheduler = { state, exitCode: code };
+    const r = runner({
+      async run() {
+        events.push("spawn");
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "private resource detail /secret",
+          terminationReason: reason,
+          scheduler,
+        };
+      },
+    });
+    await expect(
+      installWorkerExecution.run(
+        {
+          start: async () => {
+            events.push("start");
+          },
+          finish: async () => {
+            events.push("finish");
+          },
+        },
+        () => r.run("install", f.prepared, f.input, f.site, f.path),
+      ),
+    ).rejects.toThrow(SPACK_WORKER_FAILURE_MESSAGES[reason]);
+    expect(events).toEqual(["start", "spawn", "finish"]);
+    const { diagnostic } = await retainedDiagnostic(f);
+    expect(diagnostic.exitCode).toBe(1);
+    expect(diagnostic.terminationReason).toBe(reason);
+    expect(diagnostic.scheduler).toEqual(scheduler);
+  });
+  test("does not infer a resource failure from arbitrary stderr", async () => {
+    const f = await fixture();
+    const r = runner({
+      async run() {
+        return { exitCode: 1, stdout: "", stderr: "OUT_OF_MEMORY killed 137 /private" };
+      },
+    });
+    await expect(r.run("install", f.prepared, f.input, f.site, f.path)).rejects.toThrow(
+      /^Managed Spack worker did not complete successfully$/,
+    );
+    expect((await retainedDiagnostic(f)).diagnostic.terminationReason).toBeUndefined();
+  });
+  test("preserves failed scheduler logs and bounds private report diagnostics", async () => {
+    const f = await fixture();
+    const stderr = `private worker detail${"\u0000".repeat(20_000)}`;
+    const r = runner({
+      async run(_command, options) {
+        await writeFile(join(options.cwd, "slurm.stderr"), stderr, { mode: 0o600 });
+        return { exitCode: 1, stdout: "", stderr };
+      },
+    });
+    await expect(r.run("install", f.prepared, f.input, f.site, f.path)).rejects.toThrow(
+      /^Managed Spack worker did not complete successfully$/,
+    );
+    const { directory, diagnostic } = await retainedDiagnostic(f);
+    expect(diagnostic.phase).toBe("report");
+    expect(diagnostic.exitCode).toBe(1);
+    expect(diagnostic.stderrBytes).toBe(Buffer.byteLength(stderr));
+    expect(diagnostic.stderr).toBe(stderr.slice(0, 8192));
+    expect(await readFile(join(directory, "slurm.stderr"), "utf8")).toBe(stderr);
+  });
+  test("retains process rejection without copying arbitrary exception text", async () => {
+    const f = await fixture();
+    const failure = new Error("private transport credentials");
+    const r = runner({
+      async run() {
+        throw failure;
+      },
+    });
+    await expect(r.run("install", f.prepared, f.input, f.site, f.path)).rejects.toBe(failure);
+    const runs = await readdir(join(f.cacheDir, "installs"));
+    expect(runs).toHaveLength(1);
+    expect(await readdir(join(f.cacheDir, "installs", runs[0] ?? "missing"))).not.toContain(
+      "diagnostic.json",
+    );
+  });
+  test("leaves an uncertain worker directory untouched", async () => {
+    const f = await fixture();
+    const failure = new SpackWorkerUncertainError("fixture worker status uncertain");
+    const r = runner({
+      async run(_command, options) {
+        await writeFile(join(options.cwd, "worker-journal.json"), "fixture journal");
+        throw failure;
+      },
+    });
+    await expect(r.run("install", f.prepared, f.input, f.site, f.path)).rejects.toBe(failure);
+    const runs = await readdir(join(f.cacheDir, "installs"));
+    expect(runs).toHaveLength(1);
+    const directory = join(f.cacheDir, "installs", runs[0] ?? "missing");
+    expect((await readdir(directory)).sort()).toEqual(["input", "worker-journal.json"]);
+    expect(await readFile(join(directory, "worker-journal.json"), "utf8")).toBe("fixture journal");
+  });
   test("refuses replaced source bytes and a symlinked output prefix before starting a worker", async () => {
     const f = await fixture();
     let invoked = false;
@@ -541,7 +747,6 @@ describe("isolated persistent Spack worker", () => {
     await expect(r.run("install", g.prepared, g.input, g.site, g.path)).rejects.toThrow();
     expect(invoked).toBe(false);
   });
-
   test("cannot bind store parents, siblings, traversal, arbitrary UUIDs or system paths", async () => {
     const f = await fixture();
     for (const path of [
@@ -562,6 +767,81 @@ describe("isolated persistent Spack worker", () => {
         ),
       ).toThrow();
     }
+  });
+
+  test.each([
+    "install",
+    "verify",
+    "load",
+  ] as const)("passes configured 1024 MiB through admission, command and private worker input for %s", async (action) => {
+    const f = await fixture();
+    const config = loadAgentConfig({
+      SERVER_GRPC_URL: "http://localhost:3001",
+      AGENT_ID: "fixture",
+      AGENT_SITE_NAME: "fixture",
+      AGENT_SPACK_MANAGED_MEMORY_MIB: "1024",
+    });
+    let invoked = false;
+    const r = runner(
+      {
+        async run(command, options) {
+          invoked = true;
+          for (const flag of ["--memory", "--memory-swap"]) {
+            expect(command).not.toContain(flag);
+          }
+          const path = join(options.cwd, "input", "managed-memory.json");
+          expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ memoryMib: 1024 });
+          expect((await lstat(path)).mode & 0o777).toBe(0o400);
+          expect((await lstat(join(options.cwd, "input"))).mode & 0o777).toBe(0o700);
+          expect(command).toContain(`${options.cwd}/input:/kq/input:ro`);
+          return {
+            exitCode: 0,
+            stdout: SPACK_INSTALL_RESULT_PREFIX + JSON.stringify(f.report(action, f.path)),
+            stderr: "",
+          };
+        },
+      },
+      {
+        managedMemoryMib: config.AGENT_SPACK_MANAGED_MEMORY_MIB,
+        runtimeDeps: {
+          ...runtimeDeps,
+          readFile: installMemoryFixture({
+            "/proc/meminfo": "MemTotal: 3812352 kB\nMemAvailable: 1572864 kB\n",
+          }).readFile,
+        },
+      },
+    );
+    await r.run(action, f.prepared, f.input, f.site, f.path);
+    expect(invoked).toBe(true);
+  });
+
+  test.each([
+    "timeout",
+    "cancel",
+  ])("propagates %s to the running transport and retains staging", async (kind) => {
+    const f = await fixture();
+    const controller = new AbortController();
+    let invoked = false;
+    const r = runner(
+      {
+        async run(_command, options) {
+          invoked = true;
+          const signal = options.signal;
+          if (!signal) throw new Error("Missing signal");
+          const stopped = new Promise<never>((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+          if (kind === "cancel") controller.abort();
+          return stopped;
+        },
+      },
+      { installTimeoutMs: kind === "timeout" ? 1_000 : undefined },
+    );
+    await expect(
+      r.run("install", f.prepared, { ...f.input, signal: controller.signal }, f.site, f.path),
+    ).rejects.toThrow();
+    expect(invoked).toBe(true);
+    expect(await readdir(join(f.cacheDir, "installs"))).toHaveLength(1);
   });
 });
 
@@ -638,4 +918,34 @@ test.each([
   expect(authorized).toBe(true);
   expect(started).toBe(decision === "granted");
   expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
+});
+
+test.each([
+  true,
+  false,
+])("worker lifecycle distinguishes proven spawn failure: %s", async (neverStarted) => {
+  const f = await fixture();
+  const events: string[] = [];
+  const r = runner({
+    async run() {
+      events.push("spawn");
+      throw neverStarted
+        ? new SpackProcessNotStartedError("fixture")
+        : new Error("fixture uncertain worker");
+    },
+  });
+  await expect(
+    installWorkerExecution.run(
+      {
+        start: async () => {
+          events.push("persist");
+        },
+        finish: async () => {
+          events.push("stopped");
+        },
+      },
+      () => r.run("install", f.prepared, f.input, f.site, f.path),
+    ),
+  ).rejects.toThrow("fixture");
+  expect(events).toEqual(neverStarted ? ["persist", "spawn", "stopped"] : ["persist", "spawn"]);
 });

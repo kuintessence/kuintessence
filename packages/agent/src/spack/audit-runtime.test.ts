@@ -13,6 +13,7 @@ const profile: SpackAuditRuntimeProfile = {
   sifPath: "/srv/kq/runtime.sif",
   sifSha256: "b".repeat(64),
 };
+
 const identity = (path: string): SpackAuditFileIdentity => ({
   canonicalPath: path,
   uid: 0,
@@ -22,6 +23,7 @@ const identity = (path: string): SpackAuditFileIdentity => ({
   protectedParents: true,
   sha256: path === profile.apptainerPath ? profile.apptainerSha256 : profile.sifSha256,
 });
+
 const deps = { platform: "linux", uid: 1000, inspect: async (path: string) => identity(path) };
 
 describe("Spack audit runtime identity and argv", () => {
@@ -41,11 +43,9 @@ describe("Spack audit runtime identity and argv", () => {
       expect(inspected).toBe(false);
     }
   });
-
   test("accepts exact protected runtime identities without executing a probe", async () => {
     await verifySpackAuditRuntime(profile, AbortSignal.timeout(1000), deps);
   });
-
   test.each([
     { uid: 1000 },
     { mode: 0o100777 },
@@ -64,7 +64,6 @@ describe("Spack audit runtime identity and argv", () => {
       ).rejects.toThrow("identity");
     }
   });
-
   test("requires executable Apptainer and completely read-only SIF", async () => {
     for (const [target, mode] of [
       [profile.apptainerPath, 0o100644],
@@ -78,7 +77,6 @@ describe("Spack audit runtime identity and argv", () => {
       ).rejects.toThrow("identity");
     }
   });
-
   test.each([
     "relative",
     "/",
@@ -93,7 +91,6 @@ describe("Spack audit runtime identity and argv", () => {
     expect(isSpackAuditPath(path)).toBe(false);
     expect(() => buildSpackAuditCommand(profile, path, `sha256:${"d".repeat(64)}`)).toThrow();
   });
-
   test("builds only network-none, contained, bounded execution with one read-only input bind", () => {
     const command = buildSpackAuditCommand(profile, "/srv/kq/input", `sha256:${"d".repeat(64)}`);
     for (const flag of [
@@ -128,4 +125,79 @@ describe("Spack audit runtime identity and argv", () => {
     expect(command).not.toContain("install");
     expect(command.some((arg) => arg.includes(":rw"))).toBe(false);
   });
+  test("adds only a separate writable work bind when requested", () => {
+    const digest = `sha256:${"d".repeat(64)}`;
+    const baseline = buildSpackAuditCommand(profile, "/srv/kq/input", digest);
+    const command = buildSpackAuditCommand(
+      profile,
+      "/srv/kq/input",
+      digest,
+      undefined,
+      "/srv/kq/work",
+    );
+    const index = command.indexOf("/srv/kq/work:/kq/work:rw");
+    expect(index).toBeGreaterThan(0);
+    expect(command[index - 1]).toBe("--bind");
+    expect([...command.slice(0, index - 1), ...command.slice(index + 1)]).toEqual(baseline);
+    for (const path of ["/srv/kq/input", "/srv/kq/input/work", "/srv/kq", "/tmp/work:rw"]) {
+      expect(() =>
+        buildSpackAuditCommand(profile, "/srv/kq/input", digest, undefined, path),
+      ).toThrow("work binding");
+    }
+  });
+  test.each([
+    1024, 1537, 4096, 32768, 1048576,
+  ])("allows a bounded integer MiB budget %i without changing other isolation arguments", (memoryMib) => {
+    const baseline = buildSpackAuditCommand(profile, "/srv/kq/input", `sha256:${"d".repeat(64)}`);
+    const managed = buildSpackAuditCommand(
+      profile,
+      "/srv/kq/input",
+      `sha256:${"d".repeat(64)}`,
+      memoryMib * 1024 ** 2,
+    );
+    expect(managed).toEqual(
+      baseline.map((value, index) =>
+        ["--memory", "--memory-swap"].includes(baseline[index - 1] ?? "")
+          ? String(memoryMib * 1024 ** 2)
+          : value,
+      ),
+    );
+    for (const memory of [
+      0,
+      -1,
+      1.5,
+      NaN,
+      Infinity,
+      1023 * 1024 ** 2,
+      1024.5 * 1024 ** 2,
+      2_147_483_647,
+      4_294_967_297,
+    ]) {
+      expect(() =>
+        buildSpackAuditCommand(profile, "/srv/kq/input", `sha256:${"d".repeat(64)}`, memory),
+      ).toThrow("memory budget");
+    }
+  });
+});
+
+test("single-user trust accepts pinned private user runtime but never other owners or writable SIF", async () => {
+  const single = { ...profile, trustMode: "single-user" as const };
+  const inspect = async (path: string) => ({ ...identity(path), uid: 1000 });
+  await verifySpackAuditRuntime(single, AbortSignal.timeout(1000), { ...deps, inspect });
+  for (const change of [
+    { uid: 1001 },
+    { mode: 0o100666 },
+    { protectedParents: false },
+    { sha256: "0".repeat(64) },
+  ]) {
+    await expect(
+      verifySpackAuditRuntime(single, AbortSignal.timeout(1000), {
+        ...deps,
+        inspect: async (path) => ({ ...(await inspect(path)), ...change }),
+      }),
+    ).rejects.toThrow();
+  }
+  await expect(
+    verifySpackAuditRuntime(profile, AbortSignal.timeout(1000), { ...deps, inspect }),
+  ).rejects.toThrow();
 });

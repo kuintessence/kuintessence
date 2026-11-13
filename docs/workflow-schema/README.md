@@ -260,7 +260,9 @@ Server 使用进程内编排和完成通知，需单实例部署；暂不支持�
 
 ### 资源与环境
 
-`schedulingStrategy` 的 `Manual.queues` 必须恰好一个 UUID，作为硬 queue 选择；
+`schedulingStrategy` 的队列 ID 复用 queue registry 的 `QueueIdSchema`：1–255 字符的不透明字符串，
+允许命名 ID（例如 `cloud-lab-bootstrap`）及 UUID，不要求 UUID 格式；空字符串或超过 255 字符会被拒绝。
+`Manual.queues` 必须恰好一个队列 ID，作为硬 queue 选择；
 `Prefer.queues` 至少一项，作为软偏好，可跳过不可用项并 fallback；`Auto` 由 placement 选择。
 queue registry 提供 partition/QoS，仍受可见性、启用状态、`queue#submit`、用户偏好和可用资源约束。
 无可用 Agent、通道关闭或 stage-in 失败会回传失败，不自动等待 Agent 重连重试提交。

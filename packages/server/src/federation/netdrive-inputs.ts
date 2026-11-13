@@ -54,8 +54,8 @@ export async function assertNetdriveSnapshots(
         input.stagePath.split("/").some((part) => !part || part === "." || part === "..") ||
         !z.uuid().safeParse(input.deliveryLeaseId).success ||
         !/^[a-f0-9]{64}$/.test(input.expectedSha256) ||
-        input.expectedSizeBytes < 0n ||
-        input.expectedSizeBytes > BigInt(Number.MAX_SAFE_INTEGER),
+        input.totalBytes < 0n ||
+        input.totalBytes > BigInt(Number.MAX_SAFE_INTEGER),
     )
   )
     throw new FederationError("OPERATION_CONFLICT");
@@ -67,11 +67,7 @@ export async function assertNetdriveSnapshots(
   );
   for (const input of inputs) {
     const file = files.find((file) => file.id === input.fileMetadataId);
-    if (
-      !file ||
-      file.sha256 !== input.expectedSha256 ||
-      BigInt(file.size) !== input.expectedSizeBytes
-    )
+    if (!file || file.sha256 !== input.expectedSha256 || BigInt(file.size) !== input.totalBytes)
       throw new FederationError("POLICY_DENIED");
   }
   return files;

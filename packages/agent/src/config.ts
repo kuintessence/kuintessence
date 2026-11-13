@@ -11,6 +11,7 @@ import { z } from "zod";
 import { SandboxRuntimeCacheConfigSchema } from "./sandbox/runtime-reference";
 import { isSpackAuditPath } from "./spack/audit-runtime";
 import { isSpackCacheDir } from "./spack/material-cache";
+import { StorageCapacityConfigSchema } from "./storage-capacity";
 
 const dedicatedAbsolutePath = (name: string) =>
   z
@@ -123,6 +124,7 @@ const AgentConfigSchema = z
         .nullable(),
       "null",
     ),
+    ...StorageCapacityConfigSchema.shape,
     SERVER_GRPC_URL: z.string().url(),
     AGENT_ID: z.string().min(1),
     AGENT_SITE_NAME: z.string().min(1),
@@ -178,6 +180,15 @@ const AgentConfigSchema = z
       .string()
       .refine(isSpackCacheDir, "AGENT_SPACK_CACHE_DIR must be a dedicated absolute canonical path")
       .default("/var/lib/kuintessence/spack-materials"),
+    AGENT_SPACK_TRUST_MODE: z.enum(["administrator", "single-user"]).default("administrator"),
+    AGENT_SLURM_BIN_DIR: z.string().default("/usr/bin"),
+    AGENT_SPACK_BUILD_ACCOUNT: z.string().default(""),
+    AGENT_SPACK_BUILD_QOS: z.string().default(""),
+    AGENT_SPACK_EXECUTOR: z.enum(["local", "slurm"]).default("local"),
+    AGENT_SPACK_BUILD_PARTITION: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .default("cn"),
     AGENT_SPACK_AUDIT_ENABLED: envBool(false),
     AGENT_SPACK_AUDIT_APPTAINER_PATH: z
       .string()
@@ -193,7 +204,13 @@ const AgentConfigSchema = z
       .regex(/^[0-9a-f]{64}$/)
       .optional(),
     AGENT_SPACK_INSTALL_ENABLED: envBool(false),
-    AGENT_SPACK_MANAGED_MEMORY_MIB: z.coerce.number().int().min(1024).max(4096).default(4096),
+    AGENT_SPACK_SLURM_MEMORY_LIMIT_MIB: z.coerce
+      .number()
+      .int()
+      .min(2560)
+      .max(1049088)
+      .default(1049088),
+    AGENT_SPACK_MANAGED_MEMORY_MIB: z.coerce.number().int().min(1024).max(1048576).default(4096),
     AGENT_SPACK_INSTALL_TIMEOUT_MS: boundedPositiveInt(6 * 60 * 60_000, 24 * 60 * 60_000),
     AGENT_SPACK_INSTALL_SITE_PROFILE_PATH: z.string().refine(isSpackAuditPath).optional(),
     AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256: z

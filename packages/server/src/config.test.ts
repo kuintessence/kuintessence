@@ -127,7 +127,6 @@ describe("loadServerConfig (mTLS additions)", () => {
     expect(cfg.DB_MAX_CONNECTIONS).toBe(10);
     expect(cfg.DB_IDLE_TIMEOUT_SEC).toBe(0);
   });
-
   test("DB pool config honors operator overrides", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -137,7 +136,6 @@ describe("loadServerConfig (mTLS additions)", () => {
     expect(cfg.DB_MAX_CONNECTIONS).toBe(4);
     expect(cfg.DB_IDLE_TIMEOUT_SEC).toBe(30);
   });
-
   test("loads the Registry publisher role contract", () => {
     expect(
       loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv).REGISTRY_PUBLISHER_ROLES,
@@ -149,22 +147,18 @@ describe("loadServerConfig (mTLS additions)", () => {
       } as NodeJS.ProcessEnv).REGISTRY_PUBLISHER_ROLES,
     ).toEqual(["platform_admin", "operator"]);
   });
-
   test("MTLS_REQUIRED defaults to false", () => {
     const cfg = loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv);
     expect(cfg.MTLS_REQUIRED).toBe(false);
   });
-
   test("MTLS_REQUIRED parses 'true' to boolean", () => {
     const cfg = loadServerConfig({ ...VALID_BASE, MTLS_REQUIRED: "true" } as NodeJS.ProcessEnv);
     expect(cfg.MTLS_REQUIRED).toBe(true);
   });
-
   test("MTLS_REQUIRED parses case-insensitively", () => {
     const cfg = loadServerConfig({ ...VALID_BASE, MTLS_REQUIRED: "TRUE" } as NodeJS.ProcessEnv);
     expect(cfg.MTLS_REQUIRED).toBe(true);
   });
-
   test("MTLS_MODE accepts the production mode selector", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -176,7 +170,6 @@ describe("loadServerConfig (mTLS additions)", () => {
     expect(cfg.MTLS_TRUSTED_PROXY_CIDRS).toBe("10.0.0.0/8");
     expect(cfg.MTLS_HEADER_FINGERPRINT).toBe("x-client-cert-sha256");
   });
-
   test("keeps HTTP proxy CIDRs separate from the mTLS proxy boundary", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -184,7 +177,6 @@ describe("loadServerConfig (mTLS additions)", () => {
     } as NodeJS.ProcessEnv);
     expect(cfg.HTTP_TRUSTED_PROXY_CIDRS).toBe("10.42.7.18/32,fd00:42::/64");
   });
-
   test("direct mTLS preserves the HTTP/2 server certificate paths", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -195,18 +187,15 @@ describe("loadServerConfig (mTLS additions)", () => {
     expect(cfg.SERVER_GRPC_TLS_CERT_FILE).toBe("/etc/kq/grpc.crt");
     expect(cfg.SERVER_GRPC_TLS_KEY_FILE).toBe("/etc/kq/grpc.key");
   });
-
   test("WEB_CSP is optional but preserved when configured", () => {
     const policy = "default-src 'self'";
     const cfg = loadServerConfig({ ...VALID_BASE, WEB_CSP: policy } as NodeJS.ProcessEnv);
     expect(cfg.WEB_CSP).toBe(policy);
   });
-
   test("SERVER_CA_DIR defaults to ./server-ca", () => {
     const cfg = loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv);
     expect(cfg.SERVER_CA_DIR).toBe("./server-ca");
   });
-
   test("SERVER_CA_DIR honors override", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -223,7 +212,6 @@ describe("NetDrive multipart config", () => {
     expect(cfg.NETDRIVE_MULTIPART_THRESHOLD_MB).toBe(64);
     expect(cfg.NETDRIVE_MULTIPART_TTL_SEC).toBe(3600);
   });
-
   test("rejects a part size below the 5 MiB S3 floor", () => {
     expect(() =>
       loadServerConfig({
@@ -232,7 +220,6 @@ describe("NetDrive multipart config", () => {
       } as NodeJS.ProcessEnv),
     ).toThrow();
   });
-
   test("requires a positive immutable Data Market retention period", () => {
     expect(
       loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv).DATA_MARKET_IMMUTABLE_RETENTION_DAYS,
@@ -251,7 +238,6 @@ describe("workflow sync config", () => {
     const cfg = loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv);
     expect(cfg.WORKFLOW_SYNC_ENABLED).toBe(false);
   });
-
   test("parses WORKFLOW_SYNC_ENABLED as a boolean", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -280,7 +266,6 @@ describe("cluster file static roots config", () => {
     const cfg = loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv);
     expect(cfg.CLUSTER_FILE_STATIC_ROOTS).toEqual([]);
   });
-
   test("parses an explicit comma-separated development fallback", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -288,7 +273,6 @@ describe("cluster file static roots config", () => {
     } as NodeJS.ProcessEnv);
     expect(cfg.CLUSTER_FILE_STATIC_ROOTS).toEqual(["/home", "/scratch", "/work"]);
   });
-
   test("rejects relative and filesystem-wide static roots", () => {
     expect(() =>
       loadServerConfig({
@@ -304,7 +288,6 @@ describe("scheduler queue-wait aggregation config", () => {
     const cfg = loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv);
     expect(cfg.SCHEDULER_QUEUE_WAIT_AGG_SEC).toBe(0);
   });
-
   test("honors a positive SCHEDULER_QUEUE_WAIT_AGG_SEC override", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -320,7 +303,6 @@ describe("Agent heartbeat reconciliation config", () => {
     expect(cfg.AGENT_HEARTBEAT_TIMEOUT_SEC).toBe(90);
     expect(cfg.AGENT_HEARTBEAT_SWEEP_INTERVAL_SEC).toBe(30);
   });
-
   test("rejects non-positive heartbeat timeout and negative sweep intervals", () => {
     expect(() =>
       loadServerConfig({ ...VALID_BASE, AGENT_HEARTBEAT_TIMEOUT_SEC: "0" } as NodeJS.ProcessEnv),
@@ -341,7 +323,6 @@ describe("compute health config", () => {
     expect(cfg.COMPUTE_HEALTH_MAX_AGE_SEC).toBe(120);
     expect(cfg.COMPUTE_HEALTH_MAX_FUTURE_SKEW_SEC).toBe(5);
   });
-
   test("parses explicit enforcement and validates health time bounds", () => {
     const enforced = loadServerConfig({
       ...VALID_BASE,
@@ -377,7 +358,6 @@ describe("queue inventory config", () => {
     expect(cfg.QUEUE_INVENTORY_MAX_AGE_SEC).toBe(120);
     expect(cfg.QUEUE_INVENTORY_MAX_FUTURE_SKEW_SEC).toBe(5);
   });
-
   test("accepts enforce mode and validates observation bounds", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -516,4 +496,17 @@ test("case ledger socket requires federation and case trust with an absolute pat
     loadServerConfig({ ...configured, FEDERATION_CASE_SOCKET_PATH: "/run/private/case.sock" })
       .FEDERATION_CASE_SOCKET_PATH,
   ).toBe("/run/private/case.sock");
+});
+
+test("Spack material ticket lifetime defaults to 15 minutes and stays within 30..900 seconds", () => {
+  expect(loadServerConfig(VALID_BASE).SPACK_MATERIAL_TICKET_TTL_SEC).toBe(900);
+  expect(
+    loadServerConfig({ ...VALID_BASE, SPACK_MATERIAL_TICKET_TTL_SEC: "60" })
+      .SPACK_MATERIAL_TICKET_TTL_SEC,
+  ).toBe(60);
+  for (const value of ["0", "29", "901", "60.5", "invalid"]) {
+    expect(() =>
+      loadServerConfig({ ...VALID_BASE, SPACK_MATERIAL_TICKET_TTL_SEC: value }),
+    ).toThrow();
+  }
 });

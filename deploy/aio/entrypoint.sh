@@ -114,6 +114,13 @@ RUSTFS_ENDPOINT=http://127.0.0.1:9000 /usr/local/bin/bootstrap-object-lock
 log "object storage buckets ready"
 unset RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY DATA_MARKET_COMMITTER_SECRET_KEY
 
+# Native OCI exchange and Registry must use the same signing settings before Server starts.
+if [[ -n "${REGISTRY_PUBLIC_ORIGIN:-}" ]]; then
+    export SPACK_REGISTRY_JWT_SECRET=${REGISTRY_JWT_SECRET:-$JWT_SECRET}
+    if [[ -n "${REGISTRY_JWT_ISSUER:-}" ]]; then export SPACK_REGISTRY_JWT_ISSUER=$REGISTRY_JWT_ISSUER; fi
+    if [[ -n "${REGISTRY_JWT_AUDIENCE:-}" ]]; then export SPACK_REGISTRY_JWT_AUDIENCE=$REGISTRY_JWT_AUDIENCE; fi
+fi
+
 # 8. Start Server ---------------------------------------------------------------
 log "starting server"
 ( cd /app && exec bun packages/server/src/index.ts >/var/log/aio/server.log 2>&1 ) &

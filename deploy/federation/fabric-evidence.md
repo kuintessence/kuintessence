@@ -2,7 +2,7 @@
 
 当前已接通 Server 存证 outbox、批次/序号、数据库恢复检查点、独立 Node Adapter 和证据链码的代码路径。**证据链与 PostgreSQL 补交 worker 已通过 Fabric 3.1.5 联合验证，真实平台作业验收仍未完成**。配置私有 Adapter socket 后，后台 worker 会消费现有待办；此路径不创建联邦作业，也不修改任务额度。直接模式不创建待办、不调用 Adapter，不要求链连接。
 
-代码位置：[证据链码](../../contracts/fabric/evidence/src/contract.ts)、[Adapter](../../packages/fabric-adapter/src/evidence.ts)、[私有进程入口](../../packages/fabric-adapter/src/runtime.ts)、[协议与集合配置](../../packages/shared/src/federation/ledger.ts)。Linux 运行环境还须安装 util-linux（flock）。Node 至少 22.12，Gateway 固定 1.13.0，fabric-shim 固定 2.5.8。Peer/Orderer 已使用官方 Fabric 3.1.5 验证；测试证书由 cryptogen 与 OpenSSL 生成，没有运行 Fabric CA 服务，不代表生产 CA 运维或高可用共识已验收。
+代码位置：[证据链码](../../contracts/fabric/evidence/src/contract.ts)、[Adapter](../../packages/fabric-adapter/src/evidence.ts)、[私有进程入口](../../packages/fabric-adapter/src/runtime.ts)、[协议与集合配置](../../packages/shared/src/federation/ledger.ts)。Linux 运行环境还须安装 util-linux（flock）。Node 至少 22.12，Gateway 固定 1.13.0，fabric-shim 固定 2.5.8。Peer/Orderer 已使用官方 Fabric 3.1.5 验证；测试证书由 cryptogen 与 OpenSSL 生成，没有运行 Fabric CA 服务，不代表生产 CA 运维已验收；四节点受控故障结果见[四节点验收](four-node-acceptance.md)。
 
 ## 信任与原生策略
 
@@ -167,3 +167,9 @@ bun run test:fabric:integration
 [GitHub 检查](../../.github/workflows/fabric-evidence-network.yml)已加入 PostgreSQL 服务，相关 PR 改动运行相同联合入口，固定官方 Fabric 发布包 SHA-256，只上传无私有材料的断言摘要。本地已验证；远端 CI 尚待分支推送后执行。
 
 **仍不代表完整联邦业务闭环**：已验证接单和证据补交，但没有三套完整 KQ、真实 Slurm/PBS 作业、商业字段/日志/备份的全通道隐私测试或多 Orderer 容灾。完整 L02/L04/L05/L06 及 A02 等验收不能因此标为全部通过。
+
+## Fabric 3.1.5 排序节点追平
+
+带双向 TLS 的四节点 SmartBFT 配置固定 `General.Cluster.ReplicationPolicy: simple`（Compose 使用 `ORDERER_GENERAL_CLUSTER_REPLICATIONPOLICY`）。3.1.5 的 `BFTSynchronizer` 创建 `BFTDeliverer` 时未设置 TLS 证书摘要，重启后的 Deliver 请求被其他排序节点以 `BAD_REQUEST: client didn’t include its TLS cert hash` 拒绝。`simple` 是 Fabric 原生同步器，发送证书摘要，并通过 `VerifyBlocksBFT` 校验区块链和共识签名；共识仍为四节点 SmartBFT。此选择不含 `consensus` 同步器的独立头部审查检测，不能据此宣称通过恶意节点审查攻击验收。
+
+升级 Fabric 后，仅在双向 TLS 下完成落后节点追平测试后再切回 `consensus`。不得关闭 TLS、客户端证书检查或区块验证来恢复同步。管理员端口继续只在 Compose 网络内开放。

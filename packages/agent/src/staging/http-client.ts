@@ -1,3 +1,4 @@
+import { siteFetch } from "@kuintessence/shared/site-transport";
 /**
  * Minimal HTTP-client abstraction so the Agent staging helpers can be
  * tested without touching real network or MinIO. The default
@@ -44,7 +45,7 @@ export function createDefaultHttpClient(): HttpClient {
     if (req.body !== undefined) {
       init.body = req.body as RequestInit["body"];
     }
-    const res = await fetch(req.url, init);
+    const res = await siteFetch(req.url, init);
     const headers: Record<string, string> = {};
     res.headers.forEach((v, k) => {
       headers[k] = v;

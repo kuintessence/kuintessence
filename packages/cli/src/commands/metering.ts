@@ -1,3 +1,4 @@
+import { siteFetch } from "@kuintessence/shared/site-transport";
 // kq metering <query|export|webhook>
 //
 // Wraps the Server metering endpoints (`/api/metering/*`) for usage queries
@@ -102,7 +103,7 @@ export function registerMeteringCommand(program: Command): void {
           grouping: opts.grouping,
           period: opts.period,
         });
-        const r = await fetch(`${cfg.serverUrl}/api/metering/export?${params.toString()}`, {
+        const r = await siteFetch(`${cfg.serverUrl}/api/metering/export?${params.toString()}`, {
           headers: cfg.token ? { authorization: `Bearer ${cfg.token}` } : {},
         });
         if (!r.ok) {

@@ -414,6 +414,9 @@
           "official": "Official",
           "vendor": "Vendor"
         },
+        "sourceAudit": "Source audit",
+        "auditPassed": "Audit passed",
+        "auditNotInstalled": "Materials audited; software has not been installed.",
         "action": {
           "install": "Install",
           "uninstall": "Remove",

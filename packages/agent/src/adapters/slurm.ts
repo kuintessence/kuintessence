@@ -26,6 +26,7 @@ import {
   realSpawner,
   type SchedulerAdapter,
   SchedulerSubmissionError,
+  SchedulerSubmissionUnknownError,
   type Spawner,
   schedulerCommand,
   unknownComputeHealth,
@@ -228,7 +229,14 @@ function slurmJsonNumber(value: unknown): number | undefined {
 function slurmStateName(value: unknown): string {
   if (typeof value === "string") return value;
   if (!Array.isArray(value)) return "";
-  return value.find((state): state is string => typeof state === "string") ?? "";
+  return (
+    value.find(
+      (state): state is string =>
+        typeof state === "string" && (SLURM_RUNNING.has(state) || SLURM_QUEUED.has(state)),
+    ) ??
+    value.find((state): state is string => typeof state === "string") ??
+    ""
+  );
 }
 
 function slurmEpochToIso(value: unknown): string | undefined {
@@ -237,28 +245,43 @@ function slurmEpochToIso(value: unknown): string | undefined {
   return new Date(epoch * 1000).toISOString();
 }
 
-function mapSlurmState(state: string, exitCode: number): JobStatusResult {
-  const terminalState = state.trim().replace(/\+$/, "").split(" ")[0];
-  if (terminalState && SLURM_QUEUED.has(terminalState)) return { status: "queued" };
-  if (terminalState && SLURM_RUNNING.has(terminalState)) return { status: "running" };
-  if (terminalState === "COMPLETED" && exitCode === 0) return { status: "completed", exitCode: 0 };
-  if (
-    !terminalState ||
-    ![
-      "COMPLETED",
-      "CANCELLED",
-      "FAILED",
-      "TIMEOUT",
-      "NODE_FAIL",
-      "PREEMPTED",
-      "BOOT_FAIL",
-      "DEADLINE",
-      "OUT_OF_MEMORY",
-      "REVOKED",
-    ].includes(terminalState)
-  )
-    throw new Error(`Unknown Slurm job state: ${state}`);
-  return { status: "failed", exitCode, message: `Slurm state: ${state}` };
+const SLURM_TERMINAL = new Set([
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "TIMEOUT",
+  "OUT_OF_MEMORY",
+  "NODE_FAIL",
+  "PREEMPTED",
+  "BOOT_FAIL",
+  "DEADLINE",
+  "REVOKED",
+]);
+
+function mapSlurmState(rawState: string, exitCode?: number): JobStatusResult {
+  const state = rawState.trim().split(/[ +]/)[0] ?? "";
+  if (SLURM_QUEUED.has(state)) return { status: "queued" };
+  if (SLURM_RUNNING.has(state)) return { status: "running" };
+  if (!SLURM_TERMINAL.has(state))
+    throw new Error("Unknown Slurm job state; retry status reconciliation");
+  if (state === "COMPLETED" && exitCode === undefined)
+    throw new Error("Slurm completed job exit code is unavailable; retry status reconciliation");
+  if (state === "COMPLETED" && exitCode === 0) return { status: "completed", exitCode: 0 };
+  return {
+    status: "failed",
+    ...(exitCode === undefined ? {} : { exitCode }),
+    message: `Slurm state: ${state}`,
+  };
+}
+
+function slurmExitCode(value: string | undefined): number | undefined {
+  const match = /^(\d+):(\d+)$/.exec(value ?? "");
+  if (!match) return undefined;
+  const code = Number(match[1]);
+  const signal = Number(match[2]);
+  return Number.isSafeInteger(code) && Number.isSafeInteger(signal)
+    ? code || (signal ? 128 + signal : 0)
+    : undefined;
 }
 
 /**
@@ -363,27 +386,48 @@ export class SlurmAdapter implements SchedulerAdapter {
     const script = this.buildSubmitScript(spec);
     const command = schedulerCommand(spec, ["sbatch", "--parsable"]);
     try {
-      const { exitCode, stdout, stderr } = await this.spawner.run(command, { stdin: script });
+      const { exitCode, stdout, stderr } = await this.spawner.run(command, {
+        stdin: script,
+        timeoutMs: 30_000,
+      });
 
+      if (exitCode < 0 || exitCode >= 128) {
+        throw new SchedulerSubmissionUnknownError(
+          "sbatch interrupted before its result was confirmed",
+        );
+      }
       if (exitCode !== 0) {
         logger.warn(
           { jobId: spec.jobId, exitCode, stderr: stderr.trim() },
-          "Slurm submission rejected",
+          "Slurm submission returned a nonzero result",
         );
-        throw new SchedulerSubmissionError("sbatch failed");
+        // sbatch can exit nonzero after acceptance when the controller's reply is lost.
+        const rejection =
+          /^sbatch: error: Batch job submission failed: (Invalid partition name specified|Invalid account or account\/partition combination specified|Invalid qos specification|Requested node configuration is not available|Job violates accounting\/QOS policy \(job submit limit, user's size and\/or time limits\))$/i;
+        const invalidPartition =
+          /^sbatch: error: invalid partition specified: [A-Za-z0-9_.-]+\r?\nsbatch: error: Batch job submission failed: Invalid partition name specified$/i;
+        if (
+          !stdout.trim() &&
+          (rejection.test(stderr.trim()) || invalidPartition.test(stderr.trim()))
+        )
+          throw new SchedulerSubmissionError("sbatch failed");
+        throw new SchedulerSubmissionUnknownError(
+          "sbatch failed without a confirmed controller rejection",
+        );
       }
 
       const schedulerJobId = stdout.trim().split(";")[0]?.trim() ?? "";
-      if (!schedulerJobId) {
+      if (!/^\d+$/.test(schedulerJobId)) {
         logger.warn({ jobId: spec.jobId }, "Slurm submission returned no job id");
-        throw new SchedulerSubmissionError("sbatch returned no job id");
+        throw new SchedulerSubmissionUnknownError("sbatch returned no valid job id");
       }
       logger.info({ jobId: spec.jobId, schedulerJobId }, "Job submitted to Slurm");
       return { schedulerJobId };
     } catch (err) {
-      if (err instanceof SchedulerSubmissionError) throw err;
+      if (err instanceof SchedulerSubmissionError || err instanceof SchedulerSubmissionUnknownError)
+        throw err;
       logger.warn({ jobId: spec.jobId, err }, "Slurm submission command failed");
-      throw new SchedulerSubmissionError("sbatch failed");
+      throw new SchedulerSubmissionUnknownError("sbatch result could not be confirmed");
     }
   }
 
@@ -420,14 +464,10 @@ export class SlurmAdapter implements SchedulerAdapter {
 
   async listJobs(): Promise<ListedJob[]> {
     // --user and the old-style output template also work on Slurm versions without --me.
-    const { exitCode, stdout, stderr } = await this.spawner.run([
-      "squeue",
-      "--user",
-      await this.currentSchedulerUser(),
-      "--noheader",
-      "-o",
-      "%i|%j|%T|%P|%V",
-    ]);
+    const { exitCode, stdout, stderr } = await this.spawner.run(
+      ["squeue", "--user", await this.currentSchedulerUser(), "--noheader", "-o", "%i|%j|%T|%P|%V"],
+      { timeoutMs: 10_000 },
+    );
     if (exitCode !== 0) {
       throw new Error(`squeue failed (exit ${exitCode}): ${stderr.trim()}`);
     }
@@ -457,7 +497,14 @@ export class SlurmAdapter implements SchedulerAdapter {
         : lookup.schedulerAccount
           ? undefined
           : await this.currentSchedulerUser();
-      if (uid !== undefined && !/^\d+$/.test(uid)) throw new Error("Invalid Slurm execution UID");
+      if (uid !== undefined && !/^\d+$/.test(uid))
+        return { status: "indeterminate", reason: "Invalid Slurm execution UID" };
+      const includeCompleted = lookup.includeCompleted || lookup.submittedAfterUnixMs !== undefined;
+      const submittedAfter =
+        lookup.submittedAfter ??
+        (lookup.submittedAfterUnixMs !== undefined && Number.isFinite(lookup.submittedAfterUnixMs)
+          ? new Date(lookup.submittedAfterUnixMs - 86_400_000).toISOString().slice(0, 10)
+          : undefined);
       const command = [
         "squeue",
         "--noheader",
@@ -466,87 +513,125 @@ export class SlurmAdapter implements SchedulerAdapter {
         ...(uid !== undefined ? ["--user", uid] : []),
         "--format=%i|%j|%k|%a",
       ];
-      const { exitCode, stdout, stderr } = await this.spawner.run(command, { timeoutMs: 5_000 });
+      const { exitCode, stdout, stderr } = await this.spawner.run(command, { timeoutMs: 10_000 });
       if (exitCode !== 0) {
         return { status: "indeterminate", reason: `squeue failed: ${stderr.trim()}` };
       }
-      const exactIds = (output: string) => [
-        ...new Set(
-          output
-            .split("\n")
-            .map((line) =>
-              line
+      const expectedComment = `KQ_JOB_ID=${lookup.jobId}`;
+      const matches = stdout
+        .split("\n")
+        .map((line) =>
+          line
+            .trim()
+            .split("|")
+            .map((field) => field.trim()),
+        )
+        .filter(
+          ([schedulerJobId, name, comment, account]) =>
+            !!schedulerJobId &&
+            comment === expectedComment &&
+            (!lookup.schedulerName || name === lookup.schedulerName) &&
+            (!lookup.schedulerAccount || account === lookup.schedulerAccount),
+        );
+      if (lookup.includeCompleted || (includeCompleted && matches.length === 0)) {
+        if (!submittedAfter || !/^\d{4}-\d{2}-\d{2}$/.test(submittedAfter))
+          return { status: "indeterminate", reason: "submission time is unavailable" };
+        const reconcileController = async (): Promise<KuintessenceJobLookupResult | undefined> => {
+          if (!lookup.schedulerName)
+            return { status: "indeterminate", reason: "stable Slurm job name is unavailable" };
+          const history = await this.spawner.run(["scontrol", "show", "job", "-o"], {
+            timeoutMs: 10_000,
+          });
+          if (history.exitCode !== 0)
+            return { status: "indeterminate", reason: "Slurm controller lookup failed" };
+          if (!lookup.schedulerAccount && uid === undefined)
+            return { status: "indeterminate", reason: "Slurm lookup user is unavailable" };
+          const controllerIds = new Set<string>();
+          let controllerMatches = 0;
+          for (const line of history.stdout.split("\n").filter((line) => line.trim())) {
+            const fields: Record<string, string> = {};
+            for (const key of ["JobId", "JobName", "Comment", "Account", "UserId"]) {
+              const values = [...line.matchAll(new RegExp(`(?:^|\\s)${key}=([^\\s]*)`, "g"))];
+              const value = values[0]?.[1];
+              if (values.length !== 1 || value === undefined)
+                return { status: "indeterminate", reason: "ambiguous Slurm controller identity" };
+              fields[key] = value;
+            }
+            const id = fields.JobId ?? "";
+            const user = /^([^()\s]+)\((\d+)\)$/.exec(fields.UserId ?? "");
+            if (
+              !/^[1-9]\d*$/.test(id) ||
+              !Number.isSafeInteger(Number(id)) ||
+              !user ||
+              !Number.isSafeInteger(Number(user[2])) ||
+              controllerIds.has(id)
+            )
+              return { status: "indeterminate", reason: "invalid Slurm controller identity" };
+            controllerIds.add(id);
+            const matchesIdentity =
+              fields.Comment === expectedComment &&
+              fields.JobName === lookup.schedulerName &&
+              (!lookup.schedulerAccount || fields.Account === lookup.schedulerAccount) &&
+              (uid === undefined || user[2] === uid);
+            if (!matchesIdentity && matches.some((fields) => fields[0] === id))
+              return { status: "indeterminate", reason: "Slurm controller identity mismatch" };
+            if (matchesIdentity) {
+              controllerMatches++;
+              matches.push([id, fields.JobName ?? "", fields.Comment ?? "", fields.Account ?? ""]);
+            }
+          }
+          if (controllerMatches === 0)
+            return {
+              status: "indeterminate",
+              reason: "Slurm controller history cannot confirm submission",
+            };
+        };
+        if (this.terminalStatusBackend === "scontrol") {
+          const result = await reconcileController();
+          if (result) return result;
+        } else {
+          const history = await this.spawner.run(
+            [
+              "sacct",
+              "--noheader",
+              "--parsable2",
+              "--allocations",
+              "--starttime",
+              submittedAfter,
+              ...(lookup.schedulerName ? ["--name", lookup.schedulerName] : []),
+              ...(lookup.schedulerAccount ? ["--account", lookup.schedulerAccount] : []),
+              ...(uid !== undefined ? ["--user", uid] : []),
+              "--format=JobIDRaw,JobName%128,Comment%256,Account%128",
+            ],
+            { timeoutMs: 10_000 },
+          );
+          if (history.exitCode !== 0) {
+            const result = await reconcileController();
+            if (result) return result;
+          } else
+            for (const line of history.stdout.split("\n")) {
+              const fields = line
                 .trim()
                 .split("|")
-                .map((field) => field.trim()),
-            )
-            .filter(
-              ([id, name, comment, account]) =>
-                !!id &&
-                comment === `KQ_JOB_ID=${lookup.jobId}` &&
-                (!lookup.schedulerName || name === lookup.schedulerName) &&
-                (!lookup.schedulerAccount || account === lookup.schedulerAccount),
-            )
-            .map(([id]) => id),
-        ),
-      ];
-      let ids = exactIds(stdout);
-      if (ids.length === 0 && lookup.submittedAfterUnixMs !== undefined) {
-        if (!Number.isFinite(lookup.submittedAfterUnixMs))
-          throw new Error("Invalid submission receipt time");
-        const history = await this.spawner.run(
-          [
-            "sacct",
-            "--noheader",
-            "--parsable2",
-            "--allocations",
-            "--starttime",
-            new Date(lookup.submittedAfterUnixMs - 86_400_000).toISOString().slice(0, 10),
-            ...(lookup.schedulerName ? ["--name", lookup.schedulerName] : []),
-            ...(lookup.schedulerAccount
-              ? [
-                  ...(lookup.executionUser ? [] : ["--allusers"]),
-                  "--accounts",
-                  lookup.schedulerAccount,
-                ]
-              : []),
-            ...(lookup.executionUser ? ["--user", String(lookup.executionUser.uid)] : []),
-            "--format=JobIDRaw,JobName%128,Comment%128,Account%128",
-          ],
-          { timeoutMs: 5_000 },
-        );
-        if (history.exitCode === 0) ids = exactIds(history.stdout);
-        if (ids.length === 0) {
-          // A completed Job leaves squeue before the next stop check; AIO has no accounting DB.
-          const retained = await this.spawner.run(["scontrol", "show", "jobs", "-o"], {
-            timeoutMs: 5_000,
-          });
-          if (retained.exitCode !== 0) throw new Error("Slurm retained job lookup is unavailable");
-          ids = [
-            ...new Set(
-              retained.stdout
-                .split("\n")
-                .filter(
-                  (line) =>
-                    slurmField(line, "Comment") === `KQ_JOB_ID=${lookup.jobId}` &&
-                    (!lookup.schedulerName ||
-                      slurmField(line, "JobName") === lookup.schedulerName) &&
-                    (!lookup.schedulerAccount ||
-                      slurmField(line, "Account") === lookup.schedulerAccount) &&
-                    (uid === undefined ||
-                      /\((\d+)\)$/.exec(slurmField(line, "UserId") ?? "")?.[1] === uid),
-                )
-                .map((line) => slurmField(line, "JobId"))
-                .filter((id): id is string => !!id),
-            ),
-          ];
+                .map((field) => field.trim());
+              if (
+                fields[0] &&
+                fields[2] === expectedComment &&
+                (!lookup.schedulerName || fields[1] === lookup.schedulerName) &&
+                (!lookup.schedulerAccount || fields[3] === lookup.schedulerAccount)
+              )
+                matches.push(fields);
+            }
         }
       }
-      if (ids.length === 0) return { status: "not_found" };
-      if (ids.length !== 1) {
+      if (matches.some((fields) => !/^\d+$/.test(fields[0] ?? "")))
+        return { status: "indeterminate", reason: "Slurm lookup returned an invalid job id" };
+      const identifiers = [...new Set(matches.map((fields) => fields[0]))];
+      if (identifiers.length === 0) return { status: "not_found" };
+      if (identifiers.length !== 1) {
         return { status: "indeterminate", reason: "multiple Slurm jobs share Kuintessence UUID" };
       }
-      const schedulerJobId = ids[0];
+      const schedulerJobId = identifiers[0];
       if (!schedulerJobId) {
         return { status: "indeterminate", reason: "Slurm lookup returned an invalid job id" };
       }
@@ -560,7 +645,9 @@ export class SlurmAdapter implements SchedulerAdapter {
   }
 
   async cancel(schedulerJobId: string): Promise<void> {
-    const { exitCode, stderr } = await this.spawner.run(["scancel", schedulerJobId]);
+    const { exitCode, stderr } = await this.spawner.run(["scancel", schedulerJobId], {
+      timeoutMs: 10_000,
+    });
     if (exitCode !== 0) {
       throw new Error(`scancel failed (exit ${exitCode}): ${stderr.trim()}`);
     }
@@ -588,7 +675,9 @@ export class SlurmAdapter implements SchedulerAdapter {
     includeStderr = false,
   ): Promise<string> {
     // `scontrol show job -o` prints one line of key=value pairs incl. StdOut.
-    const scontrol = await this.spawner.run(["scontrol", "show", "job", schedulerJobId, "-o"]);
+    const scontrol = await this.spawner.run(["scontrol", "show", "job", schedulerJobId, "-o"], {
+      timeoutMs: 10_000,
+    });
     const retainedPath = isRetainedSchedulerLogJobId(jobId)
       ? join(this.logDir, `kq-${jobId}.out`)
       : undefined;
@@ -652,7 +741,7 @@ export class SlurmAdapter implements SchedulerAdapter {
   }
 
   private async tailLog(path: string, lines: number): Promise<JobLogReadResult> {
-    const tail = await this.spawner.run(["tail", "-n", String(lines), path]);
+    const tail = await this.spawner.run(["tail", "-n", String(lines), path], { timeoutMs: 10_000 });
     if (tail.exitCode === 0) return { kind: "available", text: tail.stdout };
     if (/no such file or directory/i.test(tail.stderr)) return { kind: "missing" };
     return {
@@ -673,7 +762,10 @@ export class SlurmAdapter implements SchedulerAdapter {
   }
 
   async status(schedulerJobId: string): Promise<JobStatusResult> {
-    const { exitCode, stdout } = await this.spawner.run(["squeue", "--json", "-j", schedulerJobId]);
+    const { exitCode, stdout } = await this.spawner.run(
+      ["squeue", "--json", "-j", schedulerJobId],
+      { timeoutMs: 10_000 },
+    );
 
     if (exitCode !== 0 || !stdout.trim()) {
       return this.checkCompleted(schedulerJobId);
@@ -690,7 +782,7 @@ export class SlurmAdapter implements SchedulerAdapter {
       jobs?: Array<{
         job_id?: number | string;
         job_state?: unknown;
-        exit_code?: { return_code?: unknown };
+        exit_code?: { return_code?: unknown; signal?: unknown };
         nodes?: string;
         start_time?: unknown;
         state_reason?: string;
@@ -708,14 +800,20 @@ export class SlurmAdapter implements SchedulerAdapter {
     if (!job) return this.checkCompleted(schedulerJobId);
 
     const state = slurmStateName(job.job_state);
-    const result = mapSlurmState(state, slurmJsonNumber(job.exit_code?.return_code) ?? 0);
+    const returnCode = slurmJsonNumber(job.exit_code?.return_code);
+    const signal = slurmJsonNumber(job.exit_code?.signal);
+    const result =
+      state === "COMPLETED" && returnCode === undefined
+        ? await this.checkCompleted(schedulerJobId)
+        : mapSlurmState(state, returnCode === 0 && signal ? 128 + signal : returnCode);
     const node = typeof job.nodes === "string" && job.nodes.trim() ? job.nodes : undefined;
     const startedAt = slurmEpochToIso(job.start_time);
     const reason = job.state_reason && job.state_reason !== "None" ? job.state_reason : undefined;
     let accounting: JobStatusResult["accounting"];
     if (
       (result.status === "completed" || result.status === "failed") &&
-      this.terminalStatusBackend === "sacct"
+      this.terminalStatusBackend === "sacct" &&
+      !(state === "COMPLETED" && returnCode === undefined)
     ) {
       try {
         accounting = (await this.sacctStatus(schedulerJobId)).accounting;
@@ -740,15 +838,18 @@ export class SlurmAdapter implements SchedulerAdapter {
   }
 
   private async sacctStatus(schedulerJobId: string): Promise<JobStatusResult> {
-    const { exitCode: sacctExitCode, stdout } = await this.spawner.run([
-      "sacct",
-      "-j",
-      schedulerJobId,
-      "--format=State%64,ExitCode,JobIDRaw,ElapsedRaw,AllocCPUS,TotalCPU",
-      "--duplicates",
-      "--noheader",
-      "--parsable2",
-    ]);
+    const { exitCode: sacctExitCode, stdout } = await this.spawner.run(
+      [
+        "sacct",
+        "-j",
+        schedulerJobId,
+        "--format=State%64,ExitCode,JobIDRaw,ElapsedRaw,AllocCPUS,TotalCPU",
+        "--duplicates",
+        "--noheader",
+        "--parsable2",
+      ],
+      { timeoutMs: 10_000 },
+    );
     if (sacctExitCode !== 0) {
       return this.scontrolStatus(schedulerJobId);
     }
@@ -761,10 +862,7 @@ export class SlurmAdapter implements SchedulerAdapter {
     if (matches.length !== 1) return this.scontrolStatus(schedulerJobId);
     const parts = matches[0];
     if (!parts) return this.scontrolStatus(schedulerJobId);
-    const result = mapSlurmState(
-      parts[0] ?? "",
-      Number.parseInt(parts[1]?.split(":")[0] ?? "1", 10),
-    );
+    const result = mapSlurmState(parts[0] ?? "", slurmExitCode(parts[1]));
     if (result.status !== "completed" && result.status !== "failed") return result;
     const elapsedSeconds = accountingInteger(parts[3]);
     const cpuTimeMilliseconds = accountingDuration(parts[5], true);
@@ -801,25 +899,17 @@ export class SlurmAdapter implements SchedulerAdapter {
   }
 
   private async scontrolStatus(schedulerJobId: string): Promise<JobStatusResult> {
-    const {
-      exitCode: spawnExit,
-      stdout,
-      stderr,
-    } = await this.spawner.run(["scontrol", "show", "job", schedulerJobId]);
-
-    if (spawnExit !== 0) {
-      throw new Error(`scontrol show job failed (exit ${spawnExit}): ${stderr.trim()}`);
-    }
-
-    const stateMatch = /JobState=(\w+)/.exec(stdout);
-    const exitCodeMatch = /ExitCode=(\d+):(\d+)/.exec(stdout);
-
-    if (!stateMatch) {
-      throw new Error("scontrol output did not contain JobState");
-    }
-
-    const jobState = stateMatch[1] ?? "";
-    const exitA = exitCodeMatch ? Number.parseInt(exitCodeMatch[1] ?? "1", 10) : 1;
-    return mapSlurmState(jobState, exitA);
+    const { exitCode: spawnExit, stdout } = await this.spawner.run(
+      ["scontrol", "show", "job", schedulerJobId],
+      { timeoutMs: 10_000 },
+    );
+    if (spawnExit !== 0) throw new Error("Slurm job status is unavailable; retry reconciliation");
+    const identifiers = [...stdout.matchAll(/\bJobId=([^\s]+)/g)];
+    if (identifiers.length !== 1 || identifiers[0]?.[1] !== schedulerJobId)
+      throw new Error("Slurm job status identity is unavailable; retry reconciliation");
+    const stateMatch = /\bJobState=(\w+)/.exec(stdout);
+    if (!stateMatch) throw new Error("Slurm output did not contain JobState; retry reconciliation");
+    const exitCodeMatch = /\bExitCode=(\d+:\d+)/.exec(stdout);
+    return mapSlurmState(stateMatch[1] ?? "", slurmExitCode(exitCodeMatch?.[1]));
   }
 }

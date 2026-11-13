@@ -23,20 +23,26 @@ import { JobRevocationTombstones } from "./job-cleanup-intents";
 import { SoftwareOperationIntentConflict, SoftwareOperations } from "./software-operations";
 
 let base: string;
+
 let sqlite: Database;
+
 let ledger: SoftwareOperations;
+
 const input = () => ({ operationId: randomUUID(), action: Action.INSTALL, spec: "fixture@1" });
+
 const results = async () => {
   const values = [];
   for await (const result of ledger.results()) values.push(result);
   return values;
 };
+
 beforeEach(async () => {
   base = await mkdtemp("/tmp/kq-operation-recovery-");
   sqlite = new Database(join(base, "agent.db"));
   runSqliteMigrations(sqlite);
   ledger = new SoftwareOperations(drizzle(sqlite));
 });
+
 afterEach(async () => {
   sqlite.close();
   await rm(base, { recursive: true, force: true });
@@ -480,4 +486,13 @@ test.each([
   await ledger.recover();
   expect(await results()).toEqual([]);
   expect(await ledger.receive(request)).toBeDefined();
+});
+
+test("bounded site summary never invents healthy latest status from historical UUID order", async () => {
+  expect(await ledger.siteSummary()).toEqual({ state: "idle", active: 0 });
+  const request = input();
+  await ledger.receive(request);
+  expect(await ledger.siteSummary()).toEqual({ state: "unknown", active: 1 });
+  await ledger.finish({ ...request, status: Status.FAILED, error: RECOVERY_REQUIRED });
+  expect(await ledger.siteSummary()).toEqual({ state: "unknown", active: 0 });
 });

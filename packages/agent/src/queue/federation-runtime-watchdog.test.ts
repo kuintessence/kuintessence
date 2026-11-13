@@ -190,6 +190,7 @@ describe("independent federation watchdog", () => {
   test("a different dispatch or scheduler identity is never cancelled", async () => {
     const f = await fixture();
     f.advance(1001);
+    await f.active.markFinished(f.dispatch.jobId);
     await f.active.recordSubmitted({
       dispatchId: `${f.dispatch.jobId}:6`,
       spec: f.spec,

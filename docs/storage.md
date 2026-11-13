@@ -63,6 +63,10 @@ bootstrap；轮换 `netdrive.secretKey` 后递增非敏感的 `netdrive.bootstra
 外部 S3/RustFS 必须在部署前完成[Helm 控制清单](../deploy/helm/kq-platform/README.md)。
 
 `NETDRIVE_PUBLIC_URL` 必须同时满足实际下载方的可达性和 SigV4 签名要求。
+显式设置时只允许 HTTP(S) origin（例如 `https://platform.example.com`），
+不能包含凭据、path 前缀、query 或 fragment；配置错误将阻止启动，不再回退内部存储 URL。
+旧配置若带 `/s3` 等前缀，需将 bucket 路由放到 origin 根路径再更新配置。
+未设置或设为空字符串时，保留通过 `NETDRIVE_ENDPOINT` 签名的旧部署行为。
 反向代理保留原始 Host、bucket path 和 query，不插入额外路径前缀。
 浏览器 PUT/GET/HEAD/OPTIONS 需要对象存储或代理提供 CORS。
 bootstrap 出现 CORS warning 时，需核对对象存储或代理的 CORS 配置，并验证浏览器上传。

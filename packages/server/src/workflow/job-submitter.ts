@@ -69,7 +69,9 @@ export function createJobSubmitter(deps: JobSubmitterDeps): (spec: JobSubmission
     const { status, collected, collectedFiles, errorMessage, reason, exitCode } =
       await deps.awaitCompletion(job.id);
     const publishedFiles =
-      status === "completed" && deps.collectFiles
+      status === "completed" &&
+      (prepared.fileOutputDescriptors?.length ?? 0) > 0 &&
+      deps.collectFiles
         ? await deps.collectFiles(job.id, prepared, collected)
         : undefined;
     const mergedFiles =

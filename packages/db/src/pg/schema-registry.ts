@@ -29,11 +29,13 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  boolean,
   check,
   customType,
   index,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -148,6 +150,47 @@ export const ociBlob = pgTable("oci_blob", {
   size: bigint("size", { mode: "number" }).notNull(),
   storageKey: varchar("storage_key", { length: 512 }).notNull(),
   uploadedAt: timestamp("uploaded_at").defaultNow().notNull(),
+});
+
+/** Explicit repository reachability; global digest storage never grants read access. */
+export const ociRepositoryBlob = pgTable(
+  "oci_repository_blob",
+  {
+    repositoryId: uuid("repository_id")
+      .references(() => ociRepository.id, { onDelete: "cascade" })
+      .notNull(),
+    digest: varchar("digest", { length: 80 })
+      .references(() => ociBlob.digest, { onDelete: "cascade" })
+      .notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.repositoryId, table.digest] }),
+    digestIdx: index("oci_repository_blob_digest_idx").on(table.digest),
+  }),
+);
+
+export const ociRepositoryManifest = pgTable(
+  "oci_repository_manifest",
+  {
+    repositoryId: uuid("repository_id")
+      .references(() => ociRepository.id, { onDelete: "cascade" })
+      .notNull(),
+    digest: varchar("digest", { length: 80 })
+      .references(() => ociManifest.digest, { onDelete: "cascade" })
+      .notNull(),
+    explicit: boolean("explicit").notNull().default(false),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.repositoryId, table.digest] }),
+    digestIdx: index("oci_repository_manifest_digest_idx").on(table.digest),
+  }),
+);
+
+/** Per-repository one-time legacy provenance backfill fence. */
+export const ociRepositoryScope = pgTable("oci_repository_scope", {
+  repositoryId: uuid("repository_id")
+    .primaryKey()
+    .references(() => ociRepository.id, { onDelete: "cascade" }),
 });
 
 /**

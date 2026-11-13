@@ -7,11 +7,19 @@ import type { Logger } from "pino";
 import {
   cancelAndConfirmStopped,
   type JobSpec,
+  type JobStatusResult,
   QueueValidationError,
   type SchedulerAdapter,
+  SchedulerSubmissionUnknownError,
 } from "../adapters/base";
 import { queueFailureCode } from "../adapters/queue-inventory";
-import type { ExpectedOutput } from "../output-collector";
+import {
+  type ExpectedOutput,
+  isRetryableOutputError,
+  type OutputCollectionOptions,
+} from "../output-collector";
+
+import { type CompletedJobSnapshot, validateCompletionSnapshot } from "../queue/active-remote-jobs";
 
 const moduleLogger = createLogger("job-runner");
 const STDOUT_CAPTURE_LINES = 200;
@@ -60,6 +68,7 @@ export interface JobRunnerDeps {
   collectOutputs?: (
     outputs: ExpectedOutput[],
     workingDir: string,
+    options?: OutputCollectionOptions,
   ) => Promise<Record<string, string>>;
   /** Ensures the job's working directory exists (container-aware `mkdir -p`)
    *  before submit, so `sbatch --chdir` and relative output collection work.
@@ -80,6 +89,13 @@ export interface JobRunnerDeps {
   ) => void | Promise<void>;
   /** True retains a durable submission for reconciliation instead of reporting failure/cleaning inputs. */
   onSubmissionUncertain?: (spec: JobSpec, error: unknown) => Promise<boolean>;
+  /** Persist the scheduler's real completion before reading or releasing outputs. */
+  onSchedulerCompleted?: (
+    spec: JobSpec,
+    schedulerJobId: string,
+    expectedOutputs: ExpectedOutput[],
+    result: JobStatusResult,
+  ) => void | Promise<void>;
   onQueueValidationShadowRejection?: (failureCode: QueueFailureCode) => void | Promise<void>;
   onJobFinished?: (jobId: string) => void | Promise<void>;
   validateSandboxOutputs?: (
@@ -137,6 +153,14 @@ export class JobRunner {
         await this.reportCancelledBeforeSubmission(spec);
         return null;
       }
+      if (err instanceof SchedulerSubmissionUnknownError) {
+        this.logger.warn(
+          { jobId: spec.jobId },
+          "Submission outcome unknown; retaining recovery intent",
+        );
+        this.markSchedulerSubmissionSettled();
+        return null;
+      }
       return this.reportSubmissionFailure(spec, err);
     }
 
@@ -160,14 +184,27 @@ export class JobRunner {
         expectedOutputs,
         this.schedulerUid,
       );
+    } catch (err) {
+      if (err instanceof SchedulerSubmissionUnknownError) {
+        this.markSchedulerSubmissionSettled();
+        return schedulerJobId;
+      }
+      return this.reportSubmissionFailure(spec, err);
+    }
+    let initialStatus: JobStatusReport["status"] | undefined;
+    try {
       await this.deps.onStatusUpdate({
         jobId: spec.jobId,
         status: "queued",
         schedulerJobId,
         workingDir: spec.workingDir,
       });
+      initialStatus = "queued";
     } catch (err) {
-      return this.reportSubmissionFailure(spec, err);
+      this.logger.warn(
+        { jobId: spec.jobId, err },
+        "Submitted job status delivery failed; retaining recovery record and polling",
+      );
     }
 
     try {
@@ -176,7 +213,7 @@ export class JobRunner {
       this.markSchedulerSubmissionSettled();
     }
 
-    await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs);
+    await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs, initialStatus);
     return schedulerJobId;
   }
 
@@ -231,7 +268,11 @@ export class JobRunner {
 
   private async reportSubmissionFailure(spec: JobSpec, err: unknown): Promise<null> {
     try {
-      if (this.schedulerSubmissionStarted && (await this.deps.onSubmissionUncertain?.(spec, err)))
+      if (
+        this.schedulerSubmissionStarted &&
+        ((await this.deps.onSubmissionUncertain?.(spec, err)) ||
+          err instanceof SchedulerSubmissionUnknownError)
+      )
         return null;
       this.logger.error({ jobId: spec.jobId, err }, "Job submission failed");
       await this.deps.onStatusUpdate({
@@ -293,14 +334,20 @@ export class JobRunner {
     schedulerJobId: string,
     expectedOutputs: ExpectedOutput[] = [],
     schedulerUid?: string,
+    completionSnapshot?: CompletedJobSnapshot,
   ): Promise<string> {
     this.jobId = spec.jobId;
     this.schedulerJobId = schedulerJobId;
     this.schedulerUid = schedulerUid;
     this.federationDispatchEpoch = spec.federationDispatchEpoch;
-    await this.deps.adapter.prepareResume?.(spec, schedulerJobId, schedulerUid);
+    const completed =
+      completionSnapshot === undefined
+        ? undefined
+        : validateCompletionSnapshot(completionSnapshot, spec, schedulerJobId, expectedOutputs)
+            .result;
+    if (!completed) await this.deps.adapter.prepareResume?.(spec, schedulerJobId, schedulerUid);
     this.logger.info({ jobId: spec.jobId, schedulerJobId }, "Resuming scheduler job polling");
-    await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs, true);
+    await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs, undefined, completed);
     return schedulerJobId;
   }
 
@@ -308,13 +355,12 @@ export class JobRunner {
     spec: JobSpec,
     schedulerJobId: string,
     expectedOutputs: ExpectedOutput[],
-    reportInitialStatus = false,
+    initialStatus?: JobStatusReport["status"],
+    completedResult?: JobStatusResult,
   ): Promise<void> {
     const { adapter, onStatusUpdate, pollIntervalMs = 10_000 } = this.deps;
     const sleep = this.deps.sleep ?? ((ms: number) => Bun.sleep(ms));
-    let lastStatus: JobStatusReport["status"] | undefined = reportInitialStatus
-      ? undefined
-      : "queued";
+    let lastStatus = initialStatus;
     // Also track node/reason: a queued job's `reason` ("why isn't it running")
     // and a running job's `node` often change *without* a status transition, and
     // the Server should see those updates too — emit on any of the three changing.
@@ -328,11 +374,25 @@ export class JobRunner {
 
       let result: Awaited<ReturnType<typeof adapter.status>>;
       try {
-        result = await adapter.status(schedulerJobId);
+        result = completedResult ?? (await adapter.status(schedulerJobId));
       } catch (err) {
         this.logger.warn({ jobId: spec.jobId, err }, "Status poll failed; will retry");
         continue;
       }
+
+      if (!completedResult && result.status === "completed" && !spec.sandbox) {
+        if (this.deps.onSchedulerCompleted) {
+          await this.deps.onSchedulerCompleted(spec, schedulerJobId, expectedOutputs, result);
+        } else {
+          this.logger.debug(
+            { jobId: spec.jobId },
+            "No durable completion hook configured; retaining only the in-process result",
+          );
+        }
+        // A configured durable hook must succeed before any output is read.
+        completedResult = result;
+      }
+      if (this.shouldStopPolling()) break;
 
       const statusChanged = result.status !== lastStatus;
       if (statusChanged || result.node !== lastNode || result.reason !== lastReason) {
@@ -363,10 +423,20 @@ export class JobRunner {
                   expectedOutputs,
                   spec.workingDir,
                   schedulerJobId,
+                  spec.jobId,
+                  !spec.sandbox,
                 )),
               };
             }
           } catch (err) {
+            if (!spec.sandbox && isRetryableOutputError(err)) {
+              this.logger.warn(
+                { jobId: spec.jobId, err },
+                "Scheduler job completed; retaining outputs and retrying collection",
+              );
+              lastStatus = undefined;
+              continue;
+            }
             const message = err instanceof Error ? err.message : "output collection failed";
             this.logger.error({ jobId: spec.jobId, err }, "Output collection failed");
             reportStatus = "failed";
@@ -407,10 +477,12 @@ export class JobRunner {
     expectedOutputs: ExpectedOutput[],
     workingDir: string,
     schedulerJobId: string,
+    jobId: string,
+    retryTransientIO: boolean,
   ): Promise<Record<string, string>> {
     const collected =
       this.deps.collectOutputs && expectedOutputs.length > 0
-        ? await this.deps.collectOutputs(expectedOutputs, workingDir)
+        ? await this.deps.collectOutputs(expectedOutputs, workingDir, { retryTransientIO })
         : {};
     if (!this.deps.adapter.getJobLogs || STDOUT_DESCRIPTOR in collected) {
       return collected;
@@ -419,8 +491,10 @@ export class JobRunner {
       collected[STDOUT_DESCRIPTOR] = await this.deps.adapter.getJobLogs(
         schedulerJobId,
         STDOUT_CAPTURE_LINES,
+        jobId,
       );
     } catch (err) {
+      if (retryTransientIO && isRetryableOutputError(err)) throw err;
       this.logger.warn(
         { schedulerJobId, err },
         "Failed to capture job stdout for value extraction",

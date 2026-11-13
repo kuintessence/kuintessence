@@ -477,7 +477,7 @@ API 基址为 `/api/federation/commercial-agreements/:revisionId/refunds`：
 
 提供方在与接单、最终执行准备相同的协议锁下重查永久取消、确认时间、原预留和文件清理，不允许有任何关联 Workflow、用量或账单。源方重查原出站、签名取消回执、原金额及预留身份。金额以十进制整数和 BigInt 运算；预算守恒、双签保存、已应用标记和审计同事务。换退款编号不能重复释放同一 operation；重放与重启沿用原记录，审计失败全部回滚。原接单、签名与取消防线保留，旧接单重放仍返回原编号，不能重新执行。
 
-新增 [0153 迁移](../../packages/db/migrations/0153_worried_bloodscream.sql)。退款首次批准纳入本地存储收尾预算，后启容量策略也补计没有接单的历史退款记录；资金归还不在同事务释放存储占额；原后台扫描在全部义务完成后回收，见[自动回收条件](storage-capacity.md#自动回收条件与边界)。
+新增 [0153 迁移（已整合）](../../packages/db/migrations/0079_conscious_anthem.sql)。退款首次批准纳入本地存储收尾预算，后启容量策略也补计没有接单的历史退款记录；资金归还不在同事务释放存储占额；原后台扫描在全部义务完成后回收，见[自动回收条件](storage-capacity.md#自动回收条件与边界)。
 
 双方独立批准后，后台复用机构通道自动交换原退款签名；对端未批准时等待，不代签、不自动授权。断线、丢响应与重启沿用原文和签名字节，过期交换租约不能记账。人工附签仍可用；交换重试要求 `settlement.approve`。
 
@@ -485,7 +485,7 @@ API 基址为 `/api/federation/commercial-agreements/:revisionId/refunds`：
 
 Fabric `RecordRefund` 只写双方 PDC 内的退款、任务索引和操作索引，验证双方退款批准及提供方嵌套的取消回执。商业 trust 必须显式授予 `commercial-refund` 与 `cancellation-receipt` 用途，集合继续要求双方组织背书。退款与首次用量/账单共享冲突索引；真实 Fabric 已验证退款/用量两种提交顺序、精确重放、替换编号拒绝及第三机构隔离。它不证明实际科研计算或银行付款。
 
-升级先应用 [0154 迁移](../../packages/db/migrations/0154_rainy_masked_marvel.sql)，再配套升级双方 Server、Adapter 和商业链码；双方业务密钥和商业 trust 均需配置显式用途。既有链的 Init 固化 trust，不能仅替换 trust 文件或再次 Init；旧链受治理迁移仍待接通，不得复制余额新建域规避。
+升级先应用 [0154 迁移（已整合）](../../packages/db/migrations/0079_conscious_anthem.sql)，再配套升级双方 Server、Adapter 和商业链码；双方业务密钥和商业 trust 均需配置显式用途。既有链的 Init 固化 trust，不能仅替换 trust 文件或再次 Init；旧链受治理迁移仍待接通，不得复制余额新建域规避。
 
 退款后的存储占额回收已接通：直接模式等待本地收尾，异步提供方另等原退款 VALID；源方退款同时停止无执行工作流的状态轮询，旧响应不能重新排队。退款 Web/CLI 已接通（见下文）；同机独立双 Server/数据库的直接及异步退款已通过真实 mTLS/Fabric 联合验收，覆盖断链、进程中断、原签名自动交换及重放不重复退款，见[执行前取消与退款验收](execution-lab.md#执行前取消与退款验收)。机构退款预授权见下节；跨主机独立信任及正式预览仍待完成。协调模式继续使用原 `ReleaseExecution` 或终态结算，不能绕过链上锁额。付款、部分退款和争议不由本接口隐式处理。
 
@@ -503,7 +503,7 @@ Fabric `RecordRefund` 只写双方 PDC 内的退款、任务索引和操作索�
 
 ## 执行前退款的机构预授权
 
-应用 Drizzle 生成的 [0155 迁移](../../packages/db/migrations/0155_blue_hitman.sql)，同步升级双方 Server 与对应 Web/CLI 后，可以在原 `closing-policies` 接口分别授予 `kind: "refund"`。原账单或结算政策不包含退款权，默认不启用退款预授权；授权人仍须具有 `settlement.approve`。授权必须明确单笔/累计金额、批准次数及到期时间，`outcomes` 固定为 `["cancelled"]`。这里只包含永久取消且从未创建执行工作流的原委派，已运行再取消不适用；链协调模式拒绝该政策。
+应用 Drizzle 生成的 [0155 迁移（已整合）](../../packages/db/migrations/0079_conscious_anthem.sql)，同步升级双方 Server 与对应 Web/CLI 后，可以在原 `closing-policies` 接口分别授予 `kind: "refund"`。原账单或结算政策不包含退款权，默认不启用退款预授权；授权人仍须具有 `settlement.approve`。授权必须明确单笔/累计金额、批准次数及到期时间，`outcomes` 固定为 `["cancelled"]`。这里只包含永久取消且从未创建执行工作流的原委派，已运行再取消不适用；链协调模式拒绝该政策。
 
 源方后台发现符合条件的原委派后，生成并签署退款，按原 operationId 保存收尾任务。提供方通过已有 mTLS 商业收尾接口验证同文、取消原件、归属和自己的独立退款政策后批准；任一方没有授权或额度不足时不能代批。退款及额度累计、审计与任务原编号在事务内提交，签署响应保留 `authorizationPolicyId`；人工批准为 null。批准次数不会因重试、丢响应或重启增加。已有人工签名可沿用，不追记为机构批准。
 

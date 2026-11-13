@@ -1,5 +1,8 @@
 # 算力联邦 V2：实现进展
 
+本轮四节点结果见[受控验收](../../../deploy/federation/four-node-acceptance.md)。下文为历史研发记录；历史联邦迁移已在合并 main 时整合为生成的 0079，旧迁移编号仅用于追溯，不代表现行升级顺序。
+
+
 完整目标仍以 [蓝图](blueprint.md) 和 [验收契约](acceptance.md) 为准。本文只记录分支实际完成的内容，不把内部模块等同于完整功能。
 
 ## 通用和解与历史存证恢复（研发候选）
@@ -71,7 +74,7 @@ R 裁决摘要另需当前 `case.publish`，只写入 A/B/R 集合的必要引�
 | [signatures](../../../packages/server/src/federation/signatures.ts) | JWS/RS256、固定 protected header、注册公钥及用途检查、撤销/有效期、消息体积限制、精确字节摘要；不接受请求携带的 JWK/公钥 URL |
 | [admission](../../../packages/server/src/federation/admission.ts) | 验证双方协议签名，绑定本地受限机器身份；机构请求验签；数据库事务内去重、额度预留、保存签名意图与证据；签名失败后可用原预留恢复 |
 | [schema-federation](../../../packages/db/src/pg/schema-federation.ts) | 协议、独立预算、预留/inbox、独立证据与待存证表；唯一请求/attempt、额度守恒、非负有限金额、签名与状态一致性约束 |
-| [0073](../../../packages/db/migrations/0073_true_sister_grimm.sql)、[0074](../../../packages/db/migrations/0074_flaky_quasar.sql) | 由 Drizzle 生成，已在隔离 PostgreSQL 从空库迁移验证；没有应用到部署库 |
+| [0073（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)、[0074（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql) | 由 Drizzle 生成，已在隔离 PostgreSQL 从空库迁移验证；没有应用到部署库 |
 
 `receive()` 返回的是 `RESERVED` 额度预留回执，不是已经创建或运行 Job。验签失败、协议范围不符、机器身份失效、超额或事务证据落库失败时，不创建可执行任务。签名失败留下 `pending_signature`，恢复补签不重新占额。
 
@@ -105,7 +108,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 - [admin-federation](../../../packages/server/src/routes/admin-federation.ts)：已挂到现有登录 API，统一使用平台 manage 权限。该入口只管理基础设施信任，不代替双方商业审批。
 - [gateway](../../../packages/server/src/federation/gateway.ts) 与 [runtime](../../../packages/server/src/federation/runtime.ts)：Node TLS 1.3 双向认证、身份头白名单；Bun 只开私有 Unix socket，启动检查目录/私钥所有者与权限。默认关闭，可显式启用，direct 无 Fabric 依赖。
 - [ingress](../../../packages/server/src/federation/ingress.ts)：真实证书登记与 JWS 绑定；调用额度预留事务返回原始签名回执；处理失败不向外泄露数据库错误或请求正文。
-- [0075](../../../packages/db/migrations/0075_panoramic_justice.sql)：Drizzle 生成的机构/公钥/证书迁移，已在隔离 PostgreSQL 从空库迁移。
+- [0075（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)：Drizzle 生成的机构/公钥/证书迁移，已在隔离 PostgreSQL 从空库迁移。
 - [部署说明与 Compose 叠加配置](../../../deploy/federation/README.md)：Gateway 构建、私有 socket、凭据挂载与登记接口。Docker 镜像/Compose/Helm/PR 预览仍待实际验证。
 
 新增验证：TLS 2 项、Unix runtime 2 项、PostgreSQL 信任/入口 5 项通过。包括真实 Node mTLS → Bun 私有 listener → PostgreSQL 预留及签名回执；不是只 mock TLS。另重跑受影响的原接单 12 项和签名 5 项，均通过。入口只证明到 RESERVED，不能据此宣称已经派发 Job 或完成链存证。新增回执用途检查在预留之前拒绝配置错误。全仓 lint 无错误，原有 47 个 warning 和 1 个 info 不变；全仓 typecheck 已通过，新增测试后的 Server 检查也通过。临时 PostgreSQL 已停止，数据与下载的二进制已清理。
@@ -116,7 +119,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 - [agreements](../../../packages/server/src/federation/agreements.ts) 与[审批 API](../../../packages/server/src/routes/federation-agreements.ts)：审批人只能使用会话中的活动组织；双方对同一不可变条款签名。接收方绑定本地受限服务账号后，导入另一方签名与建立协议/预算同事务；源方只保留签名，不复制接收方预算。
 - 同 revision 的条款和服务账号不可更换；并发重试保持原签名和预算。可以本地暂停/恢复、永久撤销；接收方状态同步到接单协议。**源方暂停不代表远端任务已停止**，跨站撤销及回执机制仍待接通。旧签名不会因审批人权限撤销而被删除。
 - [JobService.submitInTransaction](../../../packages/server/src/services/job-service.ts)：普通 submit 和联邦后续调用复用同一事务核心，保留原数据权限、不可变数据绑定、可信生态软件及受限输出检查。数据授权过期处理也参加调用方事务，避免使用另一条连接或并发嵌套 savepoint。
-- [0076](../../../packages/db/migrations/0076_curvy_senator_kelly.sql)：Drizzle 生成审批权限和双签记录表，隔离 PostgreSQL 从空库迁移通过。
+- [0076（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)：Drizzle 生成审批权限和双签记录表，隔离 PostgreSQL 从空库迁移通过。
 
 本轮 PostgreSQL 验证：审批 7 项、原接单 12 项、JobService 33 项，共 52 项通过；签名密钥加载改造后的 Unix runtime 2 项通过。新增覆盖组织隔离、平台角色不能替代审批权、失效权限、不可替换条款、重复激活、审计失败回滚，以及外层事务失败时 Job/数据绑定/工作流映射一起回滚。全仓 typecheck 通过，新增测试后再检查 Server；lint 沿用原有告警，无新增错误。
 
@@ -128,7 +131,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 - [assets](../../../packages/server/src/federation/assets.ts)：按本地组织登记来源机构/资源/版本到本地不可变版本的映射，摘要或类型不符拒绝，不覆盖旧映射。映射不授予使用权，执行身份解析时仍调用现有软件访问服务及数据授权服务；使用前可在事务内复查映射、版本摘要、生命周期与数据位置。
 - [资产管理 API](../../../packages/server/src/routes/federation-assets.ts)：`asset.read` / `asset.map` 独立授权；会话决定本地组织；登记/撤销与审计同事务。输入清单与环境锁保留规范字节，读取时重算摘要；不能按任意 URL 下载材料。
 - [preparation](../../../packages/server/src/federation/preparation.ts) 与[恢复 worker](../../../packages/server/src/federation/preparation-worker.ts)：已挂到启用联邦的 Server；签名预留完成后自动解析引用，缺材料/数据位置持久等待，协议失效或权限拒绝记录阻断，恢复后从数据库继续。每轮最多 8 项，无链连接和 Job 提交。协议 API 可分页查询预留及准备状态/更新时间。
-- [0077](../../../packages/db/migrations/0077_slippery_karnak.sql)、[0078](../../../packages/db/migrations/0078_nosy_masked_marvel.sql)：Drizzle 生成映射、材料和准备状态表，隔离 PostgreSQL 从空库迁移通过。
+- [0077（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)、[0078（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)：Drizzle 生成映射、材料和准备状态表，隔离 PostgreSQL 从空库迁移通过。
 
 本轮新增纯协议 4 项、数据库资产/准备 7 项通过；受影响的原协议 5 项、签名及 Node/Bun 互验 5 项、审批/查询 7 项通过。覆盖摘要/类型替换、修改/撤销版本、映射不越过使用授权、缺位置等待、重启后继续解析、审计回滚与机构隔离。准备测试确认没有创建占位 Job。lint 无错误（原有 47 个 warning、1 个 info）；全仓其余包 typecheck 通过，Server 两处材料返回类型及一处测试类型推导问题修正后重跑通过。465 个本地文档链接目标检查通过。隔离 PostgreSQL 已停止并清理。
 
@@ -139,7 +142,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 - [shared journal](../../../packages/shared/src/workflow/journal.ts) 和[现有引擎](../../../packages/shared/src/workflow/engine.ts)：可选的按运行隔离检查点；每次执行携带包含循环迭代、子工作流层级的稳定路径。保存根定义、首次解析的子工作流定义、分支选择及节点结果；恢复保留 Reduce 所需的收集值，不重复调用已有完成检查点的节点。
 - [execution-journal](../../../packages/server/src/workflow/execution-journal.ts)：PostgreSQL 租约，使用数据库时间和随机所有权 token；读写均检查当前运行状态、锁和租约。事务超时回滚，过期持有者不能续租、写入或释放新持有者的租约。检查点只允许相同内容重放；拒绝恢复时修改定义。
 - [execution-jobs](../../../packages/server/src/workflow/execution-jobs.ts)：用例执行意图、动态调用路径与 Job 在同一个受租约保护的事务中保存。通过现有 `JobService.submitInTransaction` 创建 Job；相同调用重试复用 Job，不同循环迭代分别记录，改变原调用输入拒绝。完整意图保留 Spack 参数、输入输出及软件要求，创建时派发状态为 `pending`；后续传输回执接入见下一节。
-- [0079](../../../packages/db/migrations/0079_nasty_korg.sql) 和 [0080](../../../packages/db/migrations/0080_material_randall.sql)：Drizzle 生成检查点、租约与作业意图表，已在隔离 PostgreSQL 从空库迁移。
+- [0079（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql) 和 [0080（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)：Drizzle 生成检查点、租约与作业意图表，已在隔离 PostgreSQL 从空库迁移。
 
 恢复接口沿用现有引擎，普通调用不传 journal 时保持原行为。数据库故障和执行权丢失以 `WorkflowExecutionInterrupted` 向上返回，不记成计算失败；并行循环等待已启动的分支退出后才返回中断，并停止推进新节点。用例和 Script 回调均能接收动态路径，但生产 Sandbox 执行器尚未使用该路径建立持久绑定。
 
@@ -152,7 +155,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 - [JobDispatchOutbox](../../../packages/server/src/grpc/job-dispatch-outbox.ts)：placement 完成软件、数据、队列等原有检查后，先将完整 protobuf 指令写入 PostgreSQL，再交给 Agent 连接。Server 定期扫描和 Agent 重连时重发；保留原 Agent、Job、dispatchEpoch、Spack 参数、签名及数据材料，不在重试时换资源或重签授权。真实 Agent 状态成功落库后才记录收件，并同步动态 invocation 的 `acknowledged` 状态。
 - [placement](../../../packages/server/src/services/placement-orchestrator.ts) 和 [Sandbox](../../../packages/server/src/services/sandbox-node-executor.ts)：连接在准备后断开时返回 `pendingDelivery`，工作流继续等结果，不把已持久接受的派发误判为计算失败。带有 runId 的普通工作流与 durable 工作流都将父 run 记录在待办中；父 run 失败/取消后停止新重发，已发出的取消仍由原取消 outbox 和 revokedEpoch 处理。
 - [JobCompletionRegistry](../../../packages/server/src/workflow/job-completion-registry.ts)：生产配置使用数据库终态与输出为依据，内存通知仅触发加速读取；支持通知丢失、完成早于订阅、重启后读取、多个等待者及独立取消/超时。读取暂时失败保留等待；受限输出仍被清空。普通作业与 Script 使用同一结果投影，不接受通知中的未落库结果。
-- [0081](../../../packages/db/migrations/0081_sweet_sentinel.sql)、[0082](../../../packages/db/migrations/0082_volatile_smiling_tiger.sql)：Drizzle 生成传输待办及父工作流关联；隔离 PostgreSQL 从空库迁移通过。后台扫描有批量上限和重试间隔，停止时等待当前扫描结束。此能力没有 Fabric 依赖。
+- [0081（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)、[0082（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)：Drizzle 生成传输待办及父工作流关联；隔离 PostgreSQL 从空库迁移通过。后台扫描有批量上限和重试间隔，停止时等待当前扫描结束。此能力没有 Fabric 依赖。
 
 验证覆盖：消息编码/身份/结果等待 54 项，Sandbox 7 项，原 placement 与断线回归 21 项，跨 PostgreSQL/Agent SQLite 的[派发恢复测试](../../../scripts/workflow-dispatch.pg.test.ts) 9 项，测试入口 9 项通过。包括保存失败不得发出指令、接收回执丢失后按原代次重发、真实 Agent inbox 只接纳一次、双 worker 争抢、错误 Agent/代次、撤销、父工作流超时结束后不得启动滞留 Job，以及重启后读取原终态。跨组件测试已加入 `test:unit`，不把 inbox 去重当成真实调度器端到端验收。全仓 lint 无错误（原有 47 个 warning、1 个 info），全仓 typecheck 通过；后续 Server/DB 和跨包脚本检查也通过。隔离 PostgreSQL 已停止，临时数据及二进制已清理。
 
@@ -198,7 +201,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 ## Server 存证批次、持久补交与人工重试
 
 - [attestation](../../../packages/server/src/federation/attestation.ts) 只组装 bilateral_attested 原证据；按合作域/本机构串行分配连续序号，批次限定同协议版本/epoch，最多 100 项。manifest、随机盐、成员映射及 nextSequence 同事务保存；独立批次签名需要 evidence-batch 用途。只签单方承诺，不改变原证据或任务预算。
-- [数据库 schema](../../../packages/db/src/pg/schema-federation.ts) 保存批次、序列、每次交易与加密恢复检查点。签名、proposal、transaction 分别落库后才能推进下一步；VALID 时原子完成批次、交易和 outbox。数据库时间/随机租约 token 隔离晚到 worker；INVALID 与未提交的 abandoned 保留历史。NULL 不能绕过签名配对、成员、manifest 或提交结果 SQL 约束。[0083](../../../packages/db/migrations/0083_spotty_wolfpack.sql)、[0084](../../../packages/db/migrations/0084_foamy_dazzler.sql) 均由 Drizzle 生成。
+- [数据库 schema](../../../packages/db/src/pg/schema-federation.ts) 保存批次、序列、每次交易与加密恢复检查点。签名、proposal、transaction 分别落库后才能推进下一步；VALID 时原子完成批次、交易和 outbox。数据库时间/随机租约 token 隔离晚到 worker；INVALID 与未提交的 abandoned 保留历史。NULL 不能绕过签名配对、成员、manifest 或提交结果 SQL 约束。[0083（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)、[0084（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql) 均由 Drizzle 生成。
 - [Unix client](../../../packages/server/src/federation/attestation-client.ts) 检查同 UID、0700/0600 文件边界、响应 schema 和大小/超时；Server 不导入 SDK。[worker](../../../packages/server/src/federation/attestation-worker.ts) 每十秒最多推进八步，错误至少间隔三十秒；可选 FEDERATION_ATTESTATION_SOCKET_PATH 决定是否启用，链不可用不阻塞接单。只有原 txId 的 VALID 才完成；不明结果保留原交易，不自动退款或重新执行任务。
 - [协议 API](../../../packages/server/src/routes/federation-agreements.ts) 新增 attestation 查询与 needs_review 人工重试。查询按本地组织/协议隔离；重试需人类 agreement.approve，和审计同事务。明确 INVALID 后才创建新交易；仅 proposal 状态可安全标记 abandoned 后换交易，已提交或不确定的 transaction 保留原检查点。
 - 新增工作区的 package.json 已补入九处 Docker 构建依赖层，避免 frozen-lock 安装遗漏 Fabric 包。十一份工作区清单的隔离 frozen-lock 检查通过；没有据此声称 Docker 镜像已运行。
@@ -238,7 +241,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 
 - [SandboxNodeExecutor](../../../packages/server/src/services/sandbox-node-executor.ts)接收既有引擎传递的动态 invocation path。传入内部 `executionLease` 时，复用[原子绑定方法](../../../packages/server/src/workflow/execution-jobs.ts)，在同一受租约保护的事务内创建 Job、保存完整意图和关联。意图包含脚本/运行环境、输入挂载与摘要、请求资源、输出定义、身份和限制；同路径改代码、runtime 或身份拒绝，循环/子工作流路径不同则分别创建。
 - 恢复已有终态 Job 时只读取原结果；已有同 Agent/epoch 的派发 outbox 时交给原待办重放，不重新选择 Agent 或签署指令。Job 尚未分配时可以继续原准备路径；初次实现中已分配但缺少完整派发检查点会等待准备恢复；下文已接通这一恢复路径，始终复用原 Job。授权检查保留，派发前与完成后重新核验租约；取消后的晚到结果不发布新产物。
-- 修复普通 Script 循环输出覆盖问题：[产物表](../../../packages/db/src/pg/schema.ts)增加可空 `producerJobId`，新产物按 Job＋输出名唯一；原节点 ID 保留用于展示。旧产物沿用 NULL 分组，不推断不存在的历史 Job 归属。[0085](../../../packages/db/migrations/0085_quick_psynapse.sql)由 Drizzle 生成，未手改迁移或快照。
+- 修复普通 Script 循环输出覆盖问题：[产物表](../../../packages/db/src/pg/schema.ts)增加可空 `producerJobId`，新产物按 Job＋输出名唯一；原节点 ID 保留用于展示。旧产物沿用 NULL 分组，不推断不存在的历史 Job 归属。[0085（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)由 Drizzle 生成，未手改迁移或快照。
 - [产物服务](../../../packages/server/src/services/workflow-artifact.ts)对同 Job 的既有内容、类型、大小和归属做不可变校验，并发注册返回同一 artifactId。不同 Job 的同名输出分别保存；重放不清空已持久化标记，也不重复复制已经持久化的文件。共享产物 schema 同步包含可选 Job ID。
 
 验证：新增 [Script/PostgreSQL](../../../packages/server/src/services/sandbox-recovery.pg.test.ts) 6 项、原 journal/原子 Job 绑定 9 项通过；Sandbox、共享执行器、产物服务共 47 项相关单元测试通过。覆盖完成后中断恢复、循环输出分离、准备前中断、已有派发待办、代码/runtime/身份改变、租约跨运行误用、取消、八路产物并发注册、旧 NULL 产物兼容及持久化标记保留。初轮仅测试清理顺序遇到已有 outbox 外键，调整清理顺序后通过。隔离数据库从空库应用迁移；调度和文件传输为受控测试边界，没有运行真实科学计算任务。
@@ -250,7 +253,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 ## Script 执行统计按 Job 去重
 
 - [统计服务](../../../packages/server/src/services/sandbox-execution-stats.ts)锁定终态 Job，在同一事务内写入统计标记与聚合值；重复完成回调和恢复重放只贡献一次。执行器传递实际 Job ID，普通生产调用同样生效；不引入独立记账队列。缺失/运行中的 Job 或与终态不一致的成功标记拒绝计数。
-- [0086](../../../packages/db/migrations/0086_gorgeous_pestilence.sql)由 Drizzle 生成，新增可空统计时间戳；不追溯归因旧聚合值。此统计用于输出量预测，不是联邦计费或结算账本。
+- [0086（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)由 Drizzle 生成，新增可空统计时间戳；不追溯归因旧聚合值。此统计用于输出量预测，不是联邦计费或结算账本。
 - 新增 [PostgreSQL 测试](../../../packages/server/src/services/sandbox-execution-stats.pg.test.ts) 3 项通过：24 路回调对成功、失败、取消的 3 个 Job 只累计 3 个样本；聚合写入外键失败回滚 Job 标记，重试成功；不存在/非终态 Job 拒绝。统计和执行器的 9 项相关单元测试通过。全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查发现测试数组索引可能为空，改用明确的成功 Job 参数后 Server 范围复查通过，其余包与 Fabric 脚本检查均通过。
 
 ## 派发取消检查覆盖最终投递
@@ -278,7 +281,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 - [异步运行器](../../../packages/server/src/workflow/async-runner.ts)支持内部 `executionModel: durable-v2`，保存显式组织范围，启动与每 5 秒扫描可恢复运行；执行期间续租，失去租约终止结果等待。生产工厂把同一租约传给引擎、用例和 Script。普通 API 提交仍沿用原行为，联邦 RESERVED 尚未映射到该入口。
 - [提交方法](../../../packages/server/src/workflow/submit-job.ts)原子绑定动态 invocation 与 Job，保留完整准备意图、授权材料、执行身份和工作目录。完成与错误写入受租约保护；暂时中断标记 `WORKFLOW_RECOVERY_PENDING`，不可变定义/意图冲突标记 `WORKFLOW_RECONCILING`，后者停止自动重试、仍可取消。
 - 取消读取全部动态 invocation Job，覆盖循环和并行节点，不再只依赖静态节点映射。正常关闭停止恢复扫描、心跳并释放本进程租约；旧 token 无权完成或中断新持有者的运行。
-- 用例文件清单在释放 Agent 工作目录前保存到不可变 Job 绑定；重放先读清单再补清理，发布失败保留源目录。缺少批次元数据不作为空输出成功处理。[0087](../../../packages/db/migrations/0087_famous_nekra.sql)由 Drizzle 生成，增加 `published_files`，隔离空库迁移通过。
+- 用例文件清单在释放 Agent 工作目录前保存到不可变 Job 绑定；重放先读清单再补清理，发布失败保留源目录。缺少批次元数据不作为空输出成功处理。[0087（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)由 Drizzle 生成，增加 `published_files`，隔离空库迁移通过。
 
 验证：[持久运行器 PostgreSQL 测试](../../../packages/server/src/workflow/durable-runner.pg.test.ts) 7 项、journal 9 项、运行登记 6 项，共 **22 项数据库检查**，另 **38 项相关单元测试**通过。覆盖循环中断后复用原 Job、全部动态调用取消、定义漂移停止重试、真实 5 秒扫描不影响 legacy 运行、500ms 租约实际续期、文件清单跨租约恢复和旧 token 写入拒绝。使用真实 PostgreSQL 与受控 Job 完成，不等同于完整 Server 进程重启、文件传输或 Slurm/PBS 验收。全仓 lint 无错误（原有 47 warnings、1 info）；类型检查中新增导出类型的可移植性问题已修正，DB、Server、shared 和脚本复查通过，其余包此前已通过。
 
@@ -299,7 +302,7 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 - [受管文件桥接](../../../packages/server/src/services/workflow-artifact-files.ts)将 Script 的 File/FileBatch 引用按当前 Workflow 和用户解析成下游输入。生产工厂同时传给软件节点和 Script；循环产生的引用数组逐项校验后解析。普通文件 ID 继续走原 Job 授权；不能用其他运行、其他用户的 artifactId 获取文件。
 - 发布前验证原 Job 已完成、归属一致且没有 `restrictedNoEgress`，生产传输携带原 Job/Workflow ID。Ephemeral 在被下游读取时才经既有 Agent → NetDrive 通道发布；Checkpoint/Persistent 仍按原持久化策略执行。暂时上传失败使持久运行等待恢复，不标成计算失败。
 - [成员校验](../../../packages/server/src/services/artifact-members.ts)保留 Agent 返回的每个相对路径、SHA-256 和大小，验证总大小/总摘要，拒绝越界、重复、文件/目录冲突；成员上限沿用 Sandbox 输入契约的 256 项。Script 与用例均保留批次目录结构，重复目标路径拒绝覆盖。
-- [0088](../../../packages/db/migrations/0088_quick_loki.sql)由 Drizzle 生成，增加批次不可变清单和逐文件发布映射，云盘文件删除会清空对应外键。完整发布前再校验归属、摘要和大小；失败后保留已发布成员，恢复只补缺失部分，空批次与缺少清单分开处理。旧批次没有清单或原 Job 归属时拒绝推断和导出。
+- [0088（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)由 Drizzle 生成，增加批次不可变清单和逐文件发布映射，云盘文件删除会清空对应外键。完整发布前再校验归属、摘要和大小；失败后保留已发布成员，恢复只补缺失部分，空批次与缺少清单分开处理。旧批次没有清单或原 Job 归属时拒绝推断和导出。
 - 同进程并发读取共享上传任务；不同实例的上传使用独立目标，数据库保留首个有效文件映射，避免后到上传覆盖下游已引用的文件。宕机留下的未绑定云盘副本和 Ephemeral 云盘字节回收仍需连接完整清理流程；当前没有宣称上传恰好一次或自动回收这些字节。同 Agent 的本地直读优化也尚未实现，当前均复用云盘传输路径。
 
 验证：**83 项相关单元测试**通过（包含 Agent 实际临时文件校验），另 **15 项 PostgreSQL 测试**覆盖完整迁移、Script 保存 Agent 批次事实、Script → Script 输入、Script → 软件输入、部分发布后的服务替换恢复、并发引用稳定、跨用户/运行拒绝、禁止导出、文件删除后补传及旧清单拒绝。初轮发现新测试 Job 缺少 CPU/内存必填字段、UUID schema 引用错误及数组解析未接入，均已修复；没有修改生产数据来使测试通过。
@@ -326,7 +329,7 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 - 每次补投重新授权并取得短期下载凭据，凭据不写数据库。材料 manifest 摘要首次发送时保存，后续不得替换。安装恰好完成导致凭据续期失败时，读取已有终态；不将这一竞争误报为准备失败。Server 的结果更新同时匹配 Agent、操作、动作和 spec。
 - [协议](../../../packages/proto/proto/kuintessence/v1/agent_service.proto)新增 `software_operation_replay_v1` 和请求的 `durable_replay`。只有启用受管材料且有 SQLite 安装账本的 Agent 才声明能力，Server 还要求当前连接经 mTLS 验证。旧 Agent、不具备账本的 Agent 和旧操作不自动获得可重放资格；普通非持久工作流仍沿用既有投递路径。
 - [Agent 收据](../../../packages/agent/src/queue/software-operations.ts)保存动作、spec、请求人和 manifest 摘要的请求指纹，排除可续期凭据。重复请求只恢复/返回原收据；改变意图的请求拒绝执行，也不覆盖原结果。同一操作实际执行中断时仍按既有进程身份和写锁规则报告失败或待人工恢复，不自动重新编译。
-- [0089](../../../packages/db/migrations/0089_simple_gamma_corps.sql)由 Drizzle 生成，增加 Server 投递标记、下次投递时间与 manifest 摘要；SQLite 升级为旧收据增加可空指纹，不推断历史身份。必须保留 Agent 的持久数据库；丢失账本不在此重放保证范围内。
+- [0089（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)由 Drizzle 生成，增加 Server 投递标记、下次投递时间与 manifest 摘要；SQLite 升级为旧收据增加可空指纹，不推断历史身份。必须保留 Agent 的持久数据库；丢失账本不在此重放保证范围内。
 
 验证：**253 项相关检查通过**：安装收据、通道和等待器 44 项，完整 Agent 消息处理 143 项，准备恢复 12 项、安装共享 4 项及安装服务 36 项，另有[派发与安装跨包联合测试](../../../scripts/workflow-dispatch.pg.test.ts) 14 项。使用隔离 PostgreSQL 完整迁移与真实 SQLite，覆盖材料准备前中断、服务/租约替换、8 路并发补投、丢失终态后只执行一次、票据更换、意图冲突、旧数据库升级、旧能力拒绝、取消、发送异常及完成/续期竞争。一个恢复用例等待数据库中真实 5 秒投递期限自然到期；其他并发/重发用例主动推进投递期限，未冒充实际耗时验证。临时 PostgreSQL 已停止并清理。
 
@@ -340,7 +343,7 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 - [准备服务](../../../packages/server/src/federation/preparation.ts)复用只读计划的物化逻辑，并重新验证接单回执签名与原请求、金额和预留身份一致。外部软件授权检查后，在绑定事务中锁定并复核协议、身份、机构密钥、原请求/回执、材料和映射；撤销、过期或改变意图不留下游离运行。快照恢复按解析后的内容摘要核对 YAML，避免 JSONB 字段重排被误认为定义变更。
 - [后台扫描](../../../packages/server/src/federation/preparation-worker.ts)已接入生产初始化，按既有每批 8 项的限制处理缺少绑定的预留。模板无法转换时记录 `WORKFLOW_INCOMPATIBLE`，缺少材料继续等待，其余授权冲突进入 blocked。它不调用链、不再扣预留额度，也不提交调度器作业。
 - [运行登记](../../../packages/server/src/workflow/run-registry.ts)支持调用方事务。普通排队方法拒绝带联邦标记的运行；[异步执行器](../../../packages/server/src/workflow/async-runner.ts)也拒绝未经联邦派发授权的运行，防止把“已经映射”当作“可执行”。本轮运行保持 `submitted`；**仍需将环境/资源约束、本地授权及每次派发检查接到这一运行，才能自动执行**。
-- [0090](../../../packages/db/migrations/0090_abandoned_impossible_man.sql)由 Drizzle 生成，新增绑定表、预留唯一键、运行唯一键及禁止级联删除的外键。迁移保留已有预留和运行，不推断旧关联。
+- [0090（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)由 Drizzle 生成，新增绑定表、预留唯一键、运行唯一键及禁止级联删除的外键。迁移保留已有预留和运行，不推断旧关联。
 
 验证：联邦资产/绑定 **18 项**、持久运行器 **8 项**、运行登记 **6 项** PostgreSQL 测试，以及物化与异步执行器 **30 项**单元测试通过。覆盖 8 路并发唯一绑定、运行插入后抛错的事务回滚、取消后重复准备、协议/身份/映射撤销和授权过期、错配的有效签名回执、运行身份/快照被篡改、扫描批次推进，以及误排队仍不能执行。隔离数据库从空库完整迁移；测试结束已停止临时 PostgreSQL 并清理数据。
 
@@ -438,7 +441,7 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 
 - [安装服务](../../../packages/server/src/software-governance/operation-service.ts)原先按 Agent/spec 合并所有活动安装操作。现在联邦安装记录保存原 `federationJobId`，只允许原 Job 和请求人复用；联邦与普通作业、不同联邦作业之间都不合并控制操作。普通作业之间原有的共享安装行为保留。
 - 补投先核对 Job 关联的操作归属，再在领取和发送事务中核对归属未变。外部材料票据准备期间替换或移除归属会拒绝发送；历史无归属安装不会被自动提升为联邦安装。普通派发入口拒绝带联邦归属的操作。
-- 新字段及约束由 Drizzle 生成[迁移 0091](../../../packages/db/migrations/0091_mean_darkstar.sql)。带联邦归属的记录必须为持久 install 操作，并已有请求人和材料摘要；不回填历史记录，也不随 Job 删除清空归属。
+- 新字段及约束由 Drizzle 生成[迁移 0091（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)。带联邦归属的记录必须为持久 install 操作，并已有请求人和材料摘要；不回填历史记录，也不随 Job 删除清空归属。
 
 验证：安装恢复、普通共享安装、操作服务与跨包派发共 **78 项检查**通过，其中新增 6 项覆盖不同联邦任务/普通任务隔离、原操作重试、错误/历史关联、票据准备期间归属变化及数据库约束。约束测试最初使用 Drizzle 惰性查询而非 Promise，修正为 `.execute()` 后单独通过；其余 77 项无须重复运行。隔离 PostgreSQL 已停止清理。全仓 lint 无错误（已有 47 warnings、1 info），全仓类型检查通过。
 
@@ -1099,7 +1102,7 @@ Server 的成员/尝试持久状态、源站授权响应验签与活动尝试绑
 
 ## 接收端输入传输代次与存储清理
 
-清单准备事务现同步登记输入成员，按 descriptor/path 固定大小、SHA-256、partSize；老的未开始清单可以初始化成员，部分/变更成员拒绝自动修复。独立 federation_input_transfers / federation_input_attempts 保存每代 Agent、对象 key、一次性分配许可、uploadId、截止和清理 token；[迁移 0110](../../../packages/db/migrations/0110_luxuriant_smasher.sql) 由 Drizzle 生成并已从空库执行。输入和结果开始传输共用 Agent advisory lock 与活动租约检查，防止两个方向或多个 Server 同时占用搬运资源。
+清单准备事务现同步登记输入成员，按 descriptor/path 固定大小、SHA-256、partSize；老的未开始清单可以初始化成员，部分/变更成员拒绝自动修复。独立 federation_input_transfers / federation_input_attempts 保存每代 Agent、对象 key、一次性分配许可、uploadId、截止和清理 token；[迁移 0110（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql) 由 Drizzle 生成并已从空库执行。输入和结果开始传输共用 Agent advisory lock 与活动租约检查，防止两个方向或多个 Server 同时占用搬运资源。
 
 input-storage 的分配在数据库锁外进行，前后复查原协议、执行身份、清单、Agent 归属和活动代次；不凭保存在内存的旧授权派发。未知分配结果保留配额和原 key，迟到响应写入原代次，重试同一成员前必须清理旧尝试；新代次使用新的 key。分配许可未发出时可以证明没有存储副作用；已发出但没有 uploadId 的情况不能凭一次空列表释放配额，自动发现与核对这类未知分配仍待完成。
 
@@ -1125,7 +1128,7 @@ input-storage 新增下载/上传 grant 路径，先按原尝试授权、在共�
 
 ## 接收端输入合并与目的验证收尾
 
-输入复制回报现持久固定分片列表，合并前保存一次性请求许可，重试只查原对象；完成响应丢失可按原 key 找回，迟到成功响应也登记到原代次。对象大小/真实版本通过后进入 verifying，按原版本发短期校验凭据，Agent 的独立目的读取回报通过成员/摘要/大小/版本核对后保存 verified。上传或 HEAD 成功不产生云盘文件；取消后回报不能重新启用输入。迁移 [0111](../../../packages/db/migrations/0111_charming_stone_men.sql) 由 Drizzle 生成，并已通过隔离空库迁移。
+输入复制回报现持久固定分片列表，合并前保存一次性请求许可，重试只查原对象；完成响应丢失可按原 key 找回，迟到成功响应也登记到原代次。对象大小/真实版本通过后进入 verifying，按原版本发短期校验凭据，Agent 的独立目的读取回报通过成员/摘要/大小/版本核对后保存 verified。上传或 HEAD 成功不产生云盘文件；取消后回报不能重新启用输入。迁移 [0111（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql) 由 Drizzle 生成，并已通过隔离空库迁移。
 
 未知合并结果不释放配额；后台查询取得正向完成证据后，才允许清理原对象及分片并确认。已 verified 的对象不会被普通传输租约过期清理；授权失效/取消仍需存储清理成功才能释放空间。清理失败保留原额度，恢复继续清理。若保存请求许可后尚未发出请求即崩溃，或请求未成功且没有对象，当前保守保留待核对；人工确认停止与安全释放入口仍待补齐，不能直接删除记录。
 
@@ -2246,7 +2249,7 @@ Server 查询新增可选 settlementId 及 summary，不改变旧列表调用，
 
 ## 跨副本数据库收尾预算（部分完成）
 
-新增 [completion-capacity](../../../packages/server/src/federation/completion-capacity.ts) 与 Drizzle 生成的 [0146](../../../packages/db/migrations/0146_worried_swarm.sql)。同站点各 Server 副本、各协议 revision 共用持久策略与完整请求绑定的占额；工作流绑定、市场请求、提案、批准与正式接单沿用一笔任务占额，手工公开发布/认领另计。策略启用补计历史记录，拒绝漏算既有任务；策略修改保留每笔原分配字节。原任务不受新分配锁竞争影响，容量分配失败与业务落库一起回滚，物理报告读取后重验授权期限。
+新增 [completion-capacity](../../../packages/server/src/federation/completion-capacity.ts) 与 Drizzle 生成的 [0146（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)。同站点各 Server 副本、各协议 revision 共用持久策略与完整请求绑定的占额；工作流绑定、市场请求、提案、批准与正式接单沿用一笔任务占额，手工公开发布/认领另计。策略启用补计历史记录，拒绝漏算既有任务；策略修改保留每笔原分配字节。原任务不受新分配锁竞争影响，容量分配失败与业务落库一起回滚，物理报告读取后重验授权期限。
 
 平台管理 API 可读写本地容量策略并记录审计。预算必须有健康的数据库物理预留报告支持，缺报告/配置的副本无法新接任务；副本争用可沿原 ID 重试。已有能力没有自动释放占额，也不提供按超时或作业状态强制清空的入口；历史完成任务仍保守计入，自动回收、增长预测、结果/取消完整满盘恢复和 O01 总验收仍待完成。此项保持可选，尚未应用到部署环境。
 
@@ -2256,7 +2259,7 @@ Server 查询新增可选 settlementId 及 summary，不改变旧列表调用，
 
 ## 收尾占额的后续写入保护
 
-新增 Drizzle [0147](../../../packages/db/migrations/0147_icy_penance.sql)：保留已释放状态和原占额身份，未释放记录有独立索引。新增恢复占额事务，与账务调整、用量更正/接收、新账单/减免、输入/结果导入和取消的首次写入接通；原字节数不因策略调低而减少，身份冲突拒绝，失败同时回滚存储占额与资金预留。精确业务重放不重复占额，仍在占额的任务只锁自己的占额，不阻塞无关任务的新接收。用量同步因容量不足保留原游标重试，已修正误转人工复核的分支。
+新增 Drizzle [0147（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)：保留已释放状态和原占额身份，未释放记录有独立索引。新增恢复占额事务，与账务调整、用量更正/接收、新账单/减免、输入/结果导入和取消的首次写入接通；原字节数不因策略调低而减少，身份冲突拒绝，失败同时回滚存储占额与资金预留。精确业务重放不重复占额，仍在占额的任务只锁自己的占额，不阻塞无关任务的新接收。用量同步因容量不足保留原游标重试，已修正误转人工复核的分支。
 
 生产仍没有自动释放入口。测试中的已释放状态是受控夹具，用于验证未来释放后不会漏算新义务；没有据此宣称作业/结算一结束就能释放空间。自动释放的完整判据、扫描 worker、市场撤销及真实满盘完整任务联合验收继续保留在 O01 范围内。
 
@@ -2320,7 +2323,7 @@ Node Adapter、Server 原持久市场提交/API 与重试接通。源方核对�
 
 ### 未锁额关闭的本地持久确认与队列终止
 
-新增 [unreserved-closure](../../../packages/server/src/federation/unreserved-closure.ts) 与 Drizzle [0151](../../../packages/db/migrations/0151_secret_ultimatum.sql)。商业 worker 按原本地发布/认领逐笔轮询本站受信任的 Adapter，核对完整身份与摘要，保存任意一方发起的最终关闭及审计。查询期间不占数据库事务，观测写入与同需求的新义务写入通过事务锁互斥；网络返回后重验原意图，缺失/异常不能被解释为关闭。
+新增 [unreserved-closure](../../../packages/server/src/federation/unreserved-closure.ts) 与 Drizzle [0151（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)。商业 worker 按原本地发布/认领逐笔轮询本站受信任的 Adapter，核对完整身份与摘要，保存任意一方发起的最终关闭及审计。查询期间不占数据库事务，观测写入与同需求的新义务写入通过事务锁互斥；网络返回后重验原意图，缺失/异常不能被解释为关闭。
 
 确认后，本地待办分批转为 closed 并保留签名字节和回执：未完成市场请求、提案、自动执行及预留/释放签名交换不再进入后台队列。活跃租约不被抢占，迟到批准/附签重新校验；发现过程跳过关闭需求，人工重试不能重新开放。已完成的市场请求和签名交换保留其原状态。停止 worker 接受严格绑定的未锁额关闭，结束原停止交付而不等待激活。市场和商业交易检查点在结果未知时仍按原交易恢复，只有需要新提案的路径拒绝重试。
 
@@ -2335,7 +2338,7 @@ Node Adapter、Server 原持久市场提交/API 与重试接通。源方核对�
 
 接通 [未锁额回收判据](../../../packages/server/src/federation/completion-unreserved.ts) 与 [原提交退役](../../../packages/server/src/federation/unreserved-ledger.ts)，由原商业 worker 执行。双方各自依据本站受信任 Adapter 保存的关闭事实，核对原市场意图、任务、商业域、摘要和签名字节；关联队列、停止交付、父工作流及租约全部收尾后，才能释放本地逻辑容量。矛盾私有提交、已正式接单、账单或终态证据保持阻断，不按年龄推断结束。
 
-未广播的 proposal 保留原交易编号和恢复字节并标 abandoned；安全结束的提交转 closed，退役与审计同事务。未知 transaction 必须按原 txId 恢复，不能借关闭提前抹去。已保存 committed 但进程未清理租约的记录，仅在租约到期后清理租约，成功状态及交易证据不变。新市场意图被关闭事实拦截，同原意图精确重放保留原结果。原任务新增写入共享占额行锁，回收持排他锁并跳过活动写入；Drizzle 生成 [0152](../../../packages/db/migrations/0152_next_quasimodo.sql)，没有新增依赖。
+未广播的 proposal 保留原交易编号和恢复字节并标 abandoned；安全结束的提交转 closed，退役与审计同事务。未知 transaction 必须按原 txId 恢复，不能借关闭提前抹去。已保存 committed 但进程未清理租约的记录，仅在租约到期后清理租约，成功状态及交易证据不变。新市场意图被关闭事实拦截，同原意图精确重放保留原结果。原任务新增写入共享占额行锁，回收持排他锁并跳过活动写入；Drizzle 生成 [0152（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)，没有新增依赖。
 
 新增 11 个数据库场景通过，覆盖提案退役、未知原交易、损坏或矛盾证据、活动工作流、审计失败回滚、活跃/过期租约及并发写入保护；相关市场、商业与容量回归通过。首次回归中一个新增断言误用了仅列合同登记的查询接口，修正测试后通过，未扩展无关接口。隔离 PostgreSQL 均已停止清理。
 
@@ -2347,7 +2350,7 @@ Node Adapter、Server 原持久市场提交/API 与重试接通。源方核对�
 
 ### 直接合作的执行前取消退款
 
-新增独立 `commercial-refund` 协议、[退款服务](../../../packages/server/src/federation/refund.ts)、人工 HTTP API 与 Drizzle [0153](../../../packages/db/migrations/0153_worried_bloodscream.sql)。固定原任务、合同摘要及提供方签名取消回执，双方分别使用 settlement.approve 与明确的新密钥用途签署。提供方在与接单/最终准备相同的协议锁内重查永久取消、原预留、零关联 Workflow 和清理状态；源方重查原出站与停止回执。不把 stopped 解释成零费用，不生成虚构用量。
+新增独立 `commercial-refund` 协议、[退款服务](../../../packages/server/src/federation/refund.ts)、人工 HTTP API 与 Drizzle [0153（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql)。固定原任务、合同摘要及提供方签名取消回执，双方分别使用 settlement.approve 与明确的新密钥用途签署。提供方在与接单/最终准备相同的协议锁内重查永久取消、原预留、零关联 Workflow 和清理状态；源方重查原出站与停止回执。不把 stopped 解释成零费用，不生成虚构用量。
 
 本站双签后只归还一次原预留金额，金额以 BigInt 计算，预算、签名、已应用标记和审计同事务；原任务/接单/签名/取消防线保留。没有接单的取消不增加提供方预算；原接单重放仍返回原编号。退款首次写入接入收尾占额，后启容量策略补计没有原接单的退款记录；资金归还不自动回收存储预算。新增密钥用途同步提供中英文平台管理标签。
 
@@ -2360,7 +2363,7 @@ Node Adapter、Server 原持久市场提交/API 与重试接通。源方核对�
 
 ### 退款原签名自动交换与异步私有存证
 
-已批准退款加入原机构签名交换通道，使用独立 refund 记录种类，核对合同摘要、完整任务及机构身份；只传原签名，不替代双方审批。自动附签复查交换租约并与退款同事务提交，旧响应不能越过已过期租约。新增 Drizzle [0154](../../../packages/db/migrations/0154_rainy_masked_marvel.sql) 扩展交换和提交约束。
+已批准退款加入原机构签名交换通道，使用独立 refund 记录种类，核对合同摘要、完整任务及机构身份；只传原签名，不替代双方审批。自动附签复查交换租约并与退款同事务提交，旧响应不能越过已过期租约。新增 Drizzle [0154（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql) 扩展交换和提交约束。
 
 异步提供方在本地额度归还事务中持久写入 record-refund；断链继续本地退款，待办保存失败整体回滚。原提交 worker 复用检查点、交易恢复和 MVCC 对账，提交前重查本地原双签与已应用记录；链确认不再改变额度。退款列表提供可空 ledger 状态及原提交编号，积压统计包含未完成退款凭证。
 
@@ -2418,7 +2421,7 @@ CLI 命令文件 32 项通过，新增实际 CLI 子进程、loopback HTTP、生
 
 ### 机构自动退款策略与原收尾通道
 
-复用 closing policies/tasks 扩展 refund；只允许 direct/attested 永久取消且从未创建执行工作流的任务。双方独立授予 settlement.approve 下的有限政策，源方自动发现并发起，提供方验证自己的政策和取消原件；原账单/结算授权不扩权。批准原件保留 authorizationPolicyId，人工为 null，政策计数/精确金额、任务引用、签名和审计同事务；已有签名沿用且不重复消费政策。未完成源方退款任务纳入原容量回收判据。迁移 [0155](../../../packages/db/migrations/0155_blue_hitman.sql) 由 Drizzle 生成，隔离 PostgreSQL 从空库迁移通过。
+复用 closing policies/tasks 扩展 refund；只允许 direct/attested 永久取消且从未创建执行工作流的任务。双方独立授予 settlement.approve 下的有限政策，源方自动发现并发起，提供方验证自己的政策和取消原件；原账单/结算授权不扩权。批准原件保留 authorizationPolicyId，人工为 null，政策计数/精确金额、任务引用、签名和审计同事务；已有签名沿用且不重复消费政策。未完成源方退款任务纳入原容量回收判据。迁移 [0155（已整合）](../../../packages/db/migrations/0079_conscious_anthem.sql) 由 Drizzle 生成，隔离 PostgreSQL 从空库迁移通过。
 
 新增自动退款数据库 14 项通过，覆盖双方独立授权、direct/attested、未接单不加提供方余额、财务权限/模式/结果范围、机构授权与个人权限分离、签名用途撤销、单笔/累计/次数限额、取消未完成、到期回滚、原人工批准复用、丢响应和撤销后重放、租约失效、收尾占额、审计失败回滚及显式替代政策恢复。原 bill/settlement 相关政策/收尾自动化 27 项回归通过。最初 3 个失败分别为测试漏导入丢响应异常及取消未完成的错误码预期不符，修正测试后受影响范围通过，没有降低生产校验。
 

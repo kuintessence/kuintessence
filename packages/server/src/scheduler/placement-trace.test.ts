@@ -16,6 +16,7 @@ import type { AgentRow, FilterStage, PlacementContext } from "./types";
 function makeAgent(id: string, cpu: number | null = 10): AgentRow {
   const now = new Date();
   return {
+    siteOperations: null,
     agentId: id,
     siteName: `site-${id}`,
     providerOrgId: null,

@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { DataAssetEntryPathSchema } from "@kuintessence/shared";
 import type { AgentDataRoots } from "../data-market/local-data-security";
 import { rewriteUrlWithConnectTo } from "../staging/multipart-upload-from-file";
+import { assertStorageCapacity, normalizeStorageCapacityError } from "../storage-capacity";
 
 export interface SandboxInputDownload {
   sourceUrl: string;
@@ -26,6 +27,11 @@ export async function downloadSandboxInput(options: SandboxInputDownloaderOption
   }
   options.signal?.throwIfAborted();
   if (options.localDataSource) return copyLocalInput(options);
+  await assertStorageCapacity({
+    path: dirname(options.targetPath),
+    additionalBytes: options.maxBytes,
+    additionalInodes: 2,
+  });
   const source = new URL(options.sourceUrl);
   if (source.protocol !== "https:" && source.protocol !== "http:") {
     throw new Error("Sandbox input URL must use HTTP or HTTPS");
@@ -70,6 +76,11 @@ export async function downloadSandboxInput(options: SandboxInputDownloaderOption
         await reader.cancel();
         throw new Error("Sandbox input download exceeds its signed size limit");
       }
+      await assertStorageCapacity({
+        path: temporary,
+        additionalBytes: options.maxBytes - copiedBytes + chunk.value.byteLength,
+        additionalInodes: 0,
+      });
       await file.writeFile(chunk.value);
     }
     await file.sync();
@@ -79,7 +90,7 @@ export async function downloadSandboxInput(options: SandboxInputDownloaderOption
     completed = true;
   } catch (error) {
     options.signal?.throwIfAborted();
-    throw error;
+    throw normalizeStorageCapacityError(error);
   } finally {
     options.signal?.removeEventListener("abort", abort);
     await reader.cancel().catch(() => undefined);

@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,6 +68,9 @@ import {
   type QueueFailureCode,
   type SchedulerQueueInventory,
   SchedulerQueueInventorySchema,
+  type SiteChannel,
+  type SiteOperations,
+  SiteOperationsSchema,
 } from "@kuintessence/shared";
 import { FederationAccountingRequestSchema } from "@kuintessence/shared/federation";
 import type { Logger } from "pino";
@@ -79,6 +83,7 @@ import {
   type KuintessenceJobLookup,
   type SandboxJobSpec,
   type SchedulerAdapter,
+  SchedulerSubmissionUnknownError,
   type Spawner,
   unknownComputeHealth,
 } from "./adapters/base";
@@ -124,7 +129,11 @@ import { readGpuMetrics as defaultReadGpuMetrics, type GpuMetric } from "./monit
 import { readMetrics } from "./monitor/metrics";
 import { createCachedSchedulerQueueDepthReader } from "./monitor/queue-depth";
 import type { ExpectedOutput } from "./output-collector";
-import { type ActiveRemoteJobs, jsonToPreparedRemoteJob } from "./queue/active-remote-jobs";
+import {
+  type ActiveRemoteJobs,
+  jsonToPreparedRemoteJob,
+  PENDING_SCHEDULER_SUBMISSION,
+} from "./queue/active-remote-jobs";
 import {
   FederationDispatchReceiptSchema,
   federationDispatchReceipt,
@@ -174,8 +183,10 @@ import {
   workflowSpackIntent,
 } from "./spack/workflow-activation";
 import type { SshHandler, SshOutgoingMessage } from "./ssh";
+import { downloadToFile } from "./staging/download-to-file";
 import { multipartUploadFromFile } from "./staging/multipart-upload-from-file";
 import { streamUploadToPresignedUrl } from "./staging/stream-upload";
+import { assertStorageCapacity, normalizeStorageCapacityError } from "./storage-capacity";
 
 // ---------------------------------------------------------------------------
 // Tagged-union outbound queue item (in-memory variant — see outbound-queue.ts
@@ -259,6 +270,8 @@ type OutboundItem =
       kind: "partUrlsRequest";
       requestId: string;
       partNumbers: number[];
+      correlationId: string;
+      uploadId: string;
     }
   | { kind: "federationMediaExportLeaseRequest"; request: FederationMediaExportLeaseRequest }
   | { kind: "federationMediaImportKeyRequest"; request: FederationMediaImportKeyRequest }
@@ -572,6 +585,7 @@ export interface AgentStreamDeps {
   federationMediaExport?: FederationMediaExportConfig;
   federationMediaImport?: FederationMediaImportConfig;
   assertFederationRuntimeWatchdog?: () => Promise<void>;
+  readSiteOperations?: () => Promise<SiteOperations>;
   client: ServerClient;
   /**
    * Rebuilds the HTTP/2 transport for each reconnect attempt. A transport
@@ -591,6 +605,8 @@ export interface AgentStreamDeps {
   logger?: Logger;
   /** Reconnect wait after a stream error or close. Default: 5000 ms. */
   reconnectBackoffMs?: number;
+  /** Durable scheduler reconciliation interval; defaults to 30 seconds. */
+  remoteJobRecoveryIntervalMs?: number;
   /** Maximum wait for RegisterResponse. The established stream has no total deadline. */
   registrationTimeoutMs?: number;
   /** Maximum wait for a negotiated primary-stream HeartbeatAck. */
@@ -700,6 +716,7 @@ export interface AgentStreamDeps {
   fileTransferMaxRetries?: number;
   fileTransferRetryBackoffSec?: number;
   fileTransferConnectTo?: string;
+  fileTransferStateDir?: string;
   containerFileTransferConnectTo?: string;
   sandboxProcessor?: Pick<SandboxDispatchProcessor, "prepare" | "cleanup">;
   assertSandboxRuntimeAttestation?: (
@@ -752,6 +769,16 @@ function throwIfTransferAborted(signal: AbortSignal): void {
  *      cleanly.
  */
 export class AgentStream {
+  private maintenanceGate:
+    | {
+        lease: string;
+        decision: ReturnType<typeof Promise.withResolvers<void>>;
+        released: ReturnType<typeof Promise.withResolvers<void>>;
+      }
+    | undefined;
+  private maintenanceIncoming = 0;
+  private maintenanceRecoveryReady = false;
+  private readonly maintenanceTasks = new Set<Promise<unknown>>();
   private running = true;
   private connected = false;
   private federationMediaExportSupported = false;
@@ -818,10 +845,15 @@ export class AgentStream {
   private readonly pendingPartUrlRequests = new Map<
     string,
     {
+      requestId: string;
+      uploadId: string;
       resolve: (urls: { partNumber: number; url: string }[]) => void;
       reject: (error: Error) => void;
     }
   >();
+  private lastTransferState: SiteChannel["state"] = "idle";
+  private installationState: SiteChannel | undefined;
+  private activeInstallationOperationId: string | undefined;
   private readonly activeFileTransfers = new Map<string, AbortController>();
   private pool: ExecutorPool;
   private logger: Logger;
@@ -837,6 +869,9 @@ export class AgentStream {
   private inboundAcks: InboundAcks | undefined;
   private activeRemoteJobs: ActiveRemoteJobs | undefined;
   private cleanupIntents: JobCleanupIntents | undefined;
+  private remoteJobRecoveryTimer: ReturnType<typeof setInterval> | undefined;
+  private remoteJobRecoveryCycle: Promise<void> | undefined;
+  private activeRemoteJobRecovery: Promise<void> | undefined;
   private revocationTombstones: JobRevocationTombstones | undefined;
   private spackManager: SpackManager | undefined;
   private installedSoftware: InstalledSpec[];
@@ -850,7 +885,7 @@ export class AgentStream {
   >();
   private readonly pendingSpackPreparations = new Set<Promise<void>>();
   private readonly pendingSpackLoadCleanups = new Set<Promise<void>>();
-  private readonly preparingSpackDispatches = new Set<string>();
+  private readonly preparingDispatches = new Set<string>();
   private readonly spackDispatchEpochs = new WeakMap<JobSpec, number>();
   private readGpuMetricsFn: () => Promise<GpuMetric[]>;
   private readDiskUsedPercentFn: () => Promise<number | null>;
@@ -1076,12 +1111,17 @@ export class AgentStream {
     // === report.jobId in this daemon path), so one shared onTransition is an
     // exact equivalent. Terminal-job removal from the active set is handled by
     // ExecutorPool's run().finally(), replacing the old `runners.delete(...)`.
+    const completionStore = this.activeRemoteJobs;
     this.pool = new ExecutorPool({
       adapter: deps.adapter,
       pollIntervalMs: deps.jobPollIntervalMs,
       sleep: deps.jobSleep,
       collectOutputs: deps.collectOutputs,
       ensureWorkingDir: deps.ensureWorkingDir,
+      onSchedulerCompleted: completionStore
+        ? (spec, schedulerJobId, expectedOutputs, result) =>
+            completionStore.recordCompleted({ spec, schedulerJobId, expectedOutputs }, result)
+        : undefined,
       onSchedulerSubmitting: async (spec, expectedOutputs) => {
         await this.cleanupIntents?.recordSchedulerSubmitting(
           spec.jobId,
@@ -1139,10 +1179,16 @@ export class AgentStream {
           pending.controller.signal.throwIfAborted();
           this.lifecycleController.signal.throwIfAborted();
         }
+        if (deps.adapter.type === "slurm" && !spec.sandbox && !this.federationSpecs.has(spec))
+          await this.activeRemoteJobs?.recordSubmissionIntent(spec, expectedOutputs);
       },
       onSubmissionUncertain: async (spec, err) => {
-        if (!this.federationSpecs.has(spec) && !this.unreconciledSubmittedJobs.has(spec.jobId))
-          return false;
+        if (!this.federationSpecs.has(spec) && !this.unreconciledSubmittedJobs.has(spec.jobId)) {
+          return (
+            (await this.activeRemoteJobs?.get(spec.jobId))?.schedulerJobId ===
+            PENDING_SCHEDULER_SUBMISSION
+          );
+        }
         this.federationDispatches.get(spec.jobId)?.controller.abort();
         this.federationDispatches.delete(spec.jobId);
         this.logger.warn(
@@ -1210,6 +1256,11 @@ export class AgentStream {
             },
             "Failed to persist active remote job; scheduler submission was cancelled or retained for recovery",
           );
+          if (this.unreconciledSubmittedJobs.has(spec.jobId)) {
+            throw new SchedulerSubmissionUnknownError(
+              "Submitted job persistence and cancellation remain unconfirmed",
+            );
+          }
           throw new AggregateError(recoveryErrors, "Active remote job persistence failed");
         }
       },
@@ -1320,11 +1371,21 @@ export class AgentStream {
       this.federationDispatches.get(report.jobId)?.controller.abort();
       this.federationDispatches.delete(report.jobId);
     }
-    const dispatchId = this.dispatchIdsByJob.get(report.jobId) ?? report.jobId;
+    const boundDispatchId = this.dispatchIdsByJob.get(report.jobId);
+    const dispatchId = boundDispatchId ?? report.jobId;
     await this.enqueueStatusUpdate(report);
     if (this.inboundAcks && !this.ackedDispatches.has(dispatchId)) {
       try {
-        await this.inboundAcks.markAcked(dispatchId);
+        const receipts = (await this.inboundAcks.pendingInbound()).filter(
+          (row) => row.jobId === report.jobId,
+        );
+        if (!boundDispatchId && receipts.length > 1)
+          throw new Error("Cannot acknowledge an ambiguous dispatch epoch");
+        for (const receipt of receipts) {
+          if (boundDispatchId && receipt.dispatchId !== boundDispatchId) continue;
+          await this.inboundAcks.markAcked(receipt.dispatchId);
+          this.ackedDispatches.add(receipt.dispatchId);
+        }
         this.ackedDispatches.add(dispatchId);
       } catch (err) {
         this.logger.error({ err, dispatchId }, "Failed to mark inbound dispatch acked");
@@ -1387,12 +1448,96 @@ export class AgentStream {
   // Public API
   // ---------------------------------------------------------------------------
 
+  private trackMaintenanceTask<T>(task: Promise<T>): Promise<T> {
+    this.maintenanceTasks.add(task);
+    void task.then(
+      () => this.maintenanceTasks.delete(task),
+      () => this.maintenanceTasks.delete(task),
+    );
+    return task;
+  }
+
+  private maintenanceBusy(): boolean {
+    return (
+      !this.running ||
+      !this.maintenanceRecoveryReady ||
+      this.maintenanceIncoming > 0 ||
+      this.activeFileTransfers.size > 0 ||
+      this.activeInstallationOperationId !== undefined ||
+      this.pool.listActive().length > 0 ||
+      this.maintenanceTasks.size > 0 ||
+      this.preparingDispatches.size > 0 ||
+      this.pendingSpackPreparations.size > 0 ||
+      this.pendingSpackLoadCleanups.size > 0 ||
+      this.pendingSoftwareResultSpills.size > 0 ||
+      this.pendingJobCancellations.size > 0 ||
+      this.pendingDataScans.size > 0 ||
+      this.pendingPartUrlRequests.size > 0 ||
+      this.spackActivations.size > 0 ||
+      this.unreconciledSubmittedJobs.size > 0 ||
+      this.managedWorkRootsAwaitingServerRelease.size > 0 ||
+      this.licensedMaterialMounts.size > 0 ||
+      this.restrictedWorkRoots.size > 0 ||
+      this.remoteJobRecoveryCycle !== undefined ||
+      this.activeRemoteJobRecovery !== undefined ||
+      (this.sshHandler?.activeCount() ?? 0) > 0 ||
+      this.pendingJobStatusAcks.size > 0 ||
+      this.pendingQueueValidationShadowRejectionAcks.size > 0 ||
+      this.pendingQueueValidationShadowRejectionEnqueues.size > 0 ||
+      this.pendingQueueValidationShadowRejectionDeletes.size > 0 ||
+      this.outboundQueue.some((item) => item.kind !== "heartbeat")
+    );
+  }
+
+  async drainForMaintenance(lease: string, ledgerIdle: () => boolean): Promise<boolean> {
+    if (this.maintenanceGate) return false;
+    const gate = {
+      lease,
+      decision: Promise.withResolvers<void>(),
+      released: Promise.withResolvers<void>(),
+    };
+    this.maintenanceGate = gate;
+    try {
+      if (this.maintenanceBusy() || !ledgerIdle()) {
+        this.resumeAfterMaintenance(lease);
+        return false;
+      }
+      // New handlers are fenced before this abort; existing work was proven idle above.
+      this.currentStreamController?.abort(new Error("maintenance drain"));
+      gate.decision.resolve();
+      await this.streamAttemptCompletion;
+      if (this.maintenanceGate !== gate) return false;
+      if (this.maintenanceBusy() || !ledgerIdle()) {
+        this.resumeAfterMaintenance(lease);
+        return false;
+      }
+      return true;
+    } catch {
+      this.resumeAfterMaintenance(lease);
+      return false;
+    }
+  }
+
+  resumeAfterMaintenance(lease: string): void {
+    const gate = this.maintenanceGate;
+    if (!gate || gate.lease !== lease) return;
+    this.maintenanceGate = undefined;
+    gate.decision.resolve();
+    gate.released.resolve();
+  }
+
   async start(): Promise<void> {
     await this.recoverSoftwareOperations();
     await this.reconcileFederationSubmissions();
     await this.recoverOrphanedCleanupIntents();
-    await this.recoverActiveRemoteJobs();
+    this.maintenanceRecoveryReady = true;
+    this.startRemoteJobRecoveryTimer();
     while (this.running) {
+      if (this.maintenanceGate) await this.maintenanceGate.released.promise;
+      if (!this.running) break;
+      await this.reconcileRemoteJobs();
+      if (this.maintenanceGate) continue;
+      if (!this.running) break;
       const attempt = Promise.withResolvers<void>();
       this.streamAttemptCompletion = attempt.promise;
       try {
@@ -1425,10 +1570,13 @@ export class AgentStream {
     void this.federationMediaExport?.disconnect();
     void this.federationMediaImport?.disconnect();
     void this.federationMediaUpload?.disconnect();
+    if (this.maintenanceGate) this.resumeAfterMaintenance(this.maintenanceGate.lease);
     this.lifecycleController.abort(new Error("agent shutdown"));
     for (const entry of this.federationRuntimes.values()) clearTimeout(entry.retry);
     this.currentStreamController?.abort(new Error("agent shutdown"));
     this.stopHeartbeatTimer();
+    if (this.remoteJobRecoveryTimer !== undefined) clearInterval(this.remoteJobRecoveryTimer);
+    this.remoteJobRecoveryTimer = undefined;
     this.clearHeartbeatAckDeadlines();
     this.clearJobStatusAckDeadlines();
     this.clearQueueValidationShadowRejectionAckDeadlines();
@@ -1449,6 +1597,7 @@ export class AgentStream {
     const drained = async () => {
       // The final disconnect must register its spills before an empty queue is considered drained.
       await this.streamAttemptCompletion;
+      await Promise.all([this.remoteJobRecoveryCycle, this.activeRemoteJobRecovery]);
       let pending: Promise<void>;
       do {
         pending = this.softwareOperationQueue;
@@ -1464,12 +1613,21 @@ export class AgentStream {
           ...this.pendingSpackPreparations,
           ...this.pendingSpackLoadCleanups,
           ...[...this.federationRuntimes.values()].map((entry) => entry.authorization?.close()),
+          ...[...this.pendingJobCancellations.values()].map((entry) =>
+            entry.settle.catch((err: unknown) => {
+              this.logger.warn(
+                { err },
+                "Cancellation remains unconfirmed at shutdown; durable records retained",
+              );
+            }),
+          ),
         ]);
       } while (
         pending !== this.softwareOperationQueue ||
         this.pendingSoftwareResultSpills.size > 0 ||
         this.pendingSpackPreparations.size > 0 ||
-        this.pendingSpackLoadCleanups.size > 0
+        this.pendingSpackLoadCleanups.size > 0 ||
+        this.pendingJobCancellations.size > 0
       );
     };
     try {
@@ -1515,7 +1673,11 @@ export class AgentStream {
   private reconcileFederationSubmissions(): Promise<void> {
     if (this.schedulerRecovery) return this.schedulerRecovery;
     const recover = async () => {
-      if (!this.inboundAcks || !this.activeRemoteJobs || !this.running) return;
+      if (!this.activeRemoteJobs || !this.running) return;
+      if (!this.inboundAcks) {
+        await this.recoverActiveRemoteJobs();
+        return;
+      }
       const pending = await this.inboundAcks.pendingInbound();
       const active = new Map(
         (await this.activeRemoteJobs.listActive()).map((job) => [job.jobId, job]),
@@ -1672,7 +1834,68 @@ export class AgentStream {
     return pending;
   }
 
+  private startRemoteJobRecoveryTimer(): void {
+    if (!this.running || this.remoteJobRecoveryTimer !== undefined || !this.activeRemoteJobs)
+      return;
+    this.remoteJobRecoveryTimer = setInterval(() => {
+      void this.reconcileRemoteJobs();
+    }, this.deps.remoteJobRecoveryIntervalMs ?? 30_000);
+  }
+
+  private reconcileRemoteJobs(): Promise<void> {
+    if (!this.running || this.maintenanceGate) return Promise.resolve();
+    if (this.remoteJobRecoveryCycle) return this.remoteJobRecoveryCycle;
+    this.remoteJobRecoveryCycle = (async () => {
+      await this.reconcileFederationSubmissions();
+      if (!this.running || !this.revocationTombstones) return;
+      const [active, intents] = await Promise.all([
+        this.activeRemoteJobs?.listActive() ?? [],
+        this.cleanupIntents?.list() ?? [],
+      ]);
+      for (const jobId of new Set([...active, ...intents].map((job) => job.jobId))) {
+        if (!this.running) return;
+        const epoch = await this.revocationTombstones.revokedEpoch(jobId);
+        if (epoch === undefined) continue;
+        try {
+          await this.requestJobCancellation(jobId, epoch);
+        } catch (err) {
+          this.logger.warn(
+            { err, jobId },
+            "Durable cancellation remains pending; will reconcile again",
+          );
+        }
+      }
+    })()
+      .catch((err: unknown) => {
+        this.logger.error({ err }, "Durable job reconciliation failed; will retry");
+      })
+      .finally(() => {
+        this.remoteJobRecoveryCycle = undefined;
+      });
+    return this.remoteJobRecoveryCycle;
+  }
+
   private async recoverActiveRemoteJobs(): Promise<void> {
+    if (this.activeRemoteJobRecovery) return this.activeRemoteJobRecovery;
+    // Restore authority before the recovery barrier: expiry cancels jobs and awaits that barrier.
+    const pending = (await this.inboundAcks?.pendingInbound()) ?? [];
+    for (const job of (await this.activeRemoteJobs?.listActive()) ?? []) {
+      if (!this.running) return;
+      const receipts = pending.filter((row) => row.jobId === job.jobId);
+      const dispatchId =
+        job.dispatchId ?? (receipts.length === 1 ? receipts[0]?.dispatchId : undefined);
+      if (dispatchId) {
+        this.dispatchIdsByJob.set(job.jobId, dispatchId);
+        await this.recoverFederationRuntime(job.jobId, dispatchId);
+      }
+    }
+    this.activeRemoteJobRecovery = this.recoverActiveRemoteJobsNow().finally(() => {
+      this.activeRemoteJobRecovery = undefined;
+    });
+    return this.activeRemoteJobRecovery;
+  }
+
+  private async recoverActiveRemoteJobsNow(): Promise<void> {
     if (!this.activeRemoteJobs) return;
     try {
       const active = await this.activeRemoteJobs.listActive();
@@ -1700,7 +1923,6 @@ export class AgentStream {
           this.logger.warn({ jobId: job.jobId }, "Skipping revoked job recovery");
           continue;
         }
-        if (dispatchId && !(await this.recoverFederationRuntime(job.jobId, dispatchId))) continue;
         if (
           dispatchId &&
           job.spec.federationDispatchEpoch !== undefined &&
@@ -1714,6 +1936,24 @@ export class AgentStream {
             saved.namespace !== (schedulerLookupForSpec(job.spec).namespace ?? "default")
           )
             throw new Error("Federation Kubernetes recovery identities disagree");
+        }
+        if (job.schedulerJobId === PENDING_SCHEDULER_SUBMISSION) {
+          const lookup = await this.deps.adapter.findByKuintessenceJobId?.({
+            ...schedulerLookupForSpec(job.spec),
+            includeCompleted: true,
+            submittedAfter: job.submittedAfter,
+          });
+          if (lookup?.status !== "found") {
+            this.logger.error(
+              { jobId: job.jobId },
+              "Submission outcome unknown; retaining intent without resubmitting",
+            );
+            continue;
+          }
+          if (!this.running) return;
+          if (!(await this.activeRemoteJobs.confirmSubmission(job.jobId, lookup.schedulerJobId)))
+            continue;
+          job.schedulerJobId = lookup.schedulerJobId;
         }
         const mounts =
           job.spec.licensedMaterialCleanup ??
@@ -1741,9 +1981,14 @@ export class AgentStream {
           ))
         )
           continue;
+        const retained = await this.activeRemoteJobs.get(job.jobId);
+        if (!retained || retained.schedulerJobId !== job.schedulerJobId || this.pool.get(job.jobId))
+          continue;
+        this.unreconciledSubmittedJobs.delete(job.jobId);
         await this.pool.resume(spec, job.schedulerJobId, {
           expectedOutputs: job.expectedOutputs,
           schedulerUid: job.schedulerUid,
+          completionSnapshot: retained.completionSnapshot,
         });
         recovered++;
       }
@@ -2254,10 +2499,16 @@ export class AgentStream {
     if (this.inboundAcks) {
       try {
         const pending = await this.inboundAcks.pendingInbound();
+        // A durable scheduler record remains authoritative even while resume is retrying.
+        const activeRemoteJobIds = new Set(
+          ((await this.activeRemoteJobs?.listActive()) ?? []).map((job) => job.jobId),
+        );
         for (const row of pending) {
           if (signal.aborted) return;
-          if (this.preparingSpackDispatches.has(row.dispatchId)) continue;
+          if (this.preparingDispatches.has(row.dispatchId)) continue;
           if (this.federationDispatches.has(row.jobId)) continue;
+          if (this.preparingDispatches.has(row.dispatchId) || activeRemoteJobIds.has(row.jobId))
+            continue;
           const haveLocalRunner = this.pool.get(row.jobId) !== undefined;
           if (row.payload.federationExecution === true) {
             if (!haveLocalRunner) this.recoverFederationDispatch(row);
@@ -2407,12 +2658,15 @@ export class AgentStream {
               },
             });
           } else if (item.kind === "partUrlsRequest") {
+            if (!this.pendingPartUrlRequests.has(item.correlationId)) continue;
             yield create(AgentMessageSchema, {
               payload: {
                 case: "partUrlsRequest",
                 value: create(PartUrlsRequestSchema, {
                   requestId: item.requestId,
                   partNumbers: item.partNumbers,
+                  correlationId: item.correlationId,
+                  uploadId: item.uploadId,
                 }),
               },
             });
@@ -2696,6 +2950,7 @@ export class AgentStream {
             memoryUsedMb: BigInt(m.memoryUsedMb),
             memoryTotalMb: BigInt(m.memoryTotalMb),
             runningJobs: this.pool.listActive().length,
+            siteOperationsJson: await this.siteOperationsJson(),
             queuedJobs,
             installedSoftware: this.installedSoftware.map((s) =>
               create(InstalledSpecSchema, {
@@ -2729,6 +2984,41 @@ export class AgentStream {
         },
       }),
     };
+  }
+
+  private async siteOperationsJson(): Promise<string> {
+    if (!this.deps.readSiteOperations) return "";
+    try {
+      const base = await this.deps.readSiteOperations();
+      const pending = (await this.activeRemoteJobs?.listActive()) ?? [];
+      const runningIds = new Set(this.pool.listActive());
+      const blocked = pending.filter(
+        (job) => job.schedulerJobId === PENDING_SCHEDULER_SUBMISSION || !runningIds.has(job.jobId),
+      ).length;
+      const running = runningIds.size;
+      const durableInstallation = await this.persistentQueue?.softwareOperations.siteSummary();
+      const installation =
+        durableInstallation &&
+        durableInstallation.active > (this.activeInstallationOperationId ? 1 : 0)
+          ? durableInstallation
+          : (this.installationState ?? durableInstallation ?? base.installation);
+      return JSON.stringify(
+        SiteOperationsSchema.parse({
+          ...base,
+          jobs: {
+            state: blocked ? "blocked" : running ? "running" : "idle",
+            active: new Set([...runningIds, ...pending.map((job) => job.jobId)]).size,
+          },
+          transfers: {
+            state: this.activeFileTransfers.size ? "running" : this.lastTransferState,
+            active: this.activeFileTransfers.size,
+          },
+          installation: base.installation.state === "disabled" ? base.installation : installation,
+        }),
+      );
+    } catch {
+      return "";
+    }
   }
 
   private sandboxCapabilityToProto() {
@@ -3244,6 +3534,23 @@ export class AgentStream {
     msg: ServerMessage,
     recoveredDispatchId?: string,
   ): Promise<void> {
+    const gate = this.maintenanceGate;
+    if (gate) {
+      await gate.decision.promise;
+      if (this.maintenanceGate || !this.running) return;
+    }
+    this.maintenanceIncoming += 1;
+    try {
+      await this.handleServerMessageNow(msg, recoveredDispatchId);
+    } finally {
+      this.maintenanceIncoming -= 1;
+    }
+  }
+
+  private async handleServerMessageNow(
+    msg: ServerMessage,
+    recoveredDispatchId?: string,
+  ): Promise<void> {
     const { payload } = msg;
     if (!payload || payload.case === undefined) {
       this.logger.warn("Received ServerMessage with no payload");
@@ -3381,6 +3688,13 @@ export class AgentStream {
           status: "failed",
           message: "Dispatch rejected: job was revoked before this dispatch epoch",
         });
+        return;
+      }
+      if ((await this.activeRemoteJobs?.listActive())?.some((job) => job.jobId === dj.jobId)) {
+        this.logger.warn(
+          { jobId: dj.jobId },
+          "Ignoring dispatch with an existing durable scheduler record",
+        );
         return;
       }
       this.logger.info({ jobId: dj.jobId, name: dj.name }, "Dispatching job");
@@ -3552,6 +3866,7 @@ export class AgentStream {
           });
           return;
         }
+        this.preparingDispatches.add(dispatchId);
         const preparation = this.prepareWithFederationAuthorization(
           dj,
           async (current, signal) => {
@@ -3695,6 +4010,9 @@ export class AgentStream {
             const message = err instanceof Error ? err.message : "Sandbox dispatch rejected";
             this.logger.warn({ jobId: dj.jobId, err }, "Sandbox dispatch rejected");
             await this.onJobTransition({ jobId: dj.jobId, status: "failed", message });
+          })
+          .finally(() => {
+            this.preparingDispatches.delete(dispatchId);
           });
         this.trackJobPreparation(dj.jobId, preparation);
         return;
@@ -3720,37 +4038,35 @@ export class AgentStream {
         stdinText: dj.stdinText || undefined,
         restrictedNoEgress: dj.restrictedNoEgress,
       };
-      if (dj.spackExecution) this.preparingSpackDispatches.add(dispatchId);
-      const preparation = this.submitWithLicensedMaterials(
-        dj,
-        spec,
-        expectedOutputs,
-        dispatchEpoch,
-      ).catch(async (err) => {
-        if (!this.running) {
-          this.logger.info({ jobId: dj.jobId }, "Job preparation stopped for shutdown");
-          return;
-        }
-        if (await this.reportCancelledDispatchIfRevoked(dj.jobId, dispatchEpoch)) return;
-        const message = dj.spackExecution
-          ? err instanceof Error && err.message === SPACK_ACTIVATION_TIMEOUT
-            ? SPACK_ACTIVATION_TIMEOUT
-            : SPACK_ACTIVATION_FAILURE
-          : err instanceof Error
-            ? err.message
-            : "Licensed material preparation failed";
-        this.logger.error(
-          { jobId: dj.jobId, ...(dj.spackExecution ? {} : { err }) },
-          "Job dispatch rejected",
-        );
-        await this.onJobTransition({ jobId: dj.jobId, status: "failed", message });
-      });
+      this.preparingDispatches.add(dispatchId);
+      const preparation = this.submitWithLicensedMaterials(dj, spec, expectedOutputs, dispatchEpoch)
+        .catch(async (err) => {
+          if (!this.running) {
+            this.logger.info({ jobId: dj.jobId }, "Job preparation stopped for shutdown");
+            return;
+          }
+          if (await this.reportCancelledDispatchIfRevoked(dj.jobId, dispatchEpoch)) return;
+          const message = dj.spackExecution
+            ? err instanceof Error && err.message === SPACK_ACTIVATION_TIMEOUT
+              ? SPACK_ACTIVATION_TIMEOUT
+              : SPACK_ACTIVATION_FAILURE
+            : err instanceof Error
+              ? err.message
+              : "Licensed material preparation failed";
+          this.logger.error(
+            { jobId: dj.jobId, ...(dj.spackExecution ? {} : { err }) },
+            "Job dispatch rejected",
+          );
+          await this.onJobTransition({ jobId: dj.jobId, status: "failed", message });
+        })
+        .finally(() => {
+          this.preparingDispatches.delete(dispatchId);
+        });
       const tracked = this.trackJobPreparation(dj.jobId, preparation);
       if (dj.spackExecution) {
         this.pendingSpackPreparations.add(tracked);
         void tracked.then(() => {
           this.pendingSpackPreparations.delete(tracked);
-          this.preparingSpackDispatches.delete(dispatchId);
         });
       }
       return;
@@ -3847,7 +4163,7 @@ export class AgentStream {
               request.items.map((item) => [item.replicaId, "Sandbox artifact GC is unavailable"]),
             ),
           });
-      execute
+      this.trackMaintenanceTask(execute)
         .then((result) => {
           this.outboundQueue.push({
             kind: "sandboxArtifactReleaseAck",
@@ -3893,7 +4209,7 @@ export class AgentStream {
         { policyVersion: update.policyVersion, lockEnabled: update.lockEnabled },
         "Software policy update received",
       );
-      this.applyPolicyAndAck(update).catch((err) => {
+      this.trackMaintenanceTask(this.applyPolicyAndAck(update)).catch((err) => {
         this.logger.error({ err }, "Failed to apply software policy");
       });
       return;
@@ -3905,7 +4221,9 @@ export class AgentStream {
         { spec: distribute.spec, buildcacheUrl: distribute.buildcacheUrl },
         "Spec distribute received",
       );
-      this.handleSpecDistribute(distribute.spec, distribute.buildcacheUrl).catch((err) => {
+      this.trackMaintenanceTask(
+        this.handleSpecDistribute(distribute.spec, distribute.buildcacheUrl),
+      ).catch((err) => {
         this.logger.error({ err, spec: distribute.spec }, "Failed to distribute spec");
       });
       return;
@@ -4094,6 +4412,7 @@ export class AgentStream {
         installation.settled = this.softwareOperationQueue;
         this.federationInstallations.set(request.operationId, installation);
       }
+      this.trackMaintenanceTask(this.softwareOperationQueue);
       return;
     }
 
@@ -4156,7 +4475,9 @@ export class AgentStream {
 
     if (payload.case === "shellExecRequest") {
       const req = payload.value;
-      void this.runShellExec(req.requestId, req.input, req.timeoutSec || 30);
+      void this.trackMaintenanceTask(
+        this.runShellExec(req.requestId, req.input, req.timeoutSec || 30),
+      );
       return;
     }
 
@@ -4200,11 +4521,8 @@ export class AgentStream {
         });
         this.wakeOutbound();
       } else {
-        void this.runJobLogs(
-          request.requestId,
-          request.schedulerJobId,
-          request.lines,
-          request.jobId,
+        void this.trackMaintenanceTask(
+          this.runJobLogs(request.requestId, request.schedulerJobId, request.lines, request.jobId),
         );
       }
       return;
@@ -4215,40 +4533,43 @@ export class AgentStream {
       this.activeFileTransfers.get(r.requestId)?.abort("superseded transfer request");
       const controller = new AbortController();
       this.activeFileTransfers.set(r.requestId, controller);
-      void this.runFileTransfer(
-        {
-          requestId: r.requestId,
-          direction: r.direction,
-          sourceUrl: r.sourceUrl,
-          sourcePath: r.sourcePath,
-          targetUrl: r.targetUrl,
-          targetPath: r.targetPath,
-          totalBytes: Number(r.totalBytes),
-          uploadId: r.uploadId,
-          partSize: Number(r.partSize),
-        },
-        controller.signal,
-      ).finally(() => {
-        if (this.activeFileTransfers.get(r.requestId) === controller) {
-          this.activeFileTransfers.delete(r.requestId);
-        }
-      });
+      void this.trackMaintenanceTask(
+        this.runFileTransfer(
+          {
+            requestId: r.requestId,
+            direction: r.direction,
+            sourceUrl: r.sourceUrl,
+            sourcePath: r.sourcePath,
+            targetUrl: r.targetUrl,
+            targetPath: r.targetPath,
+            totalBytes: Number(r.totalBytes),
+            expectedSha256: r.expectedSha256,
+            uploadId: r.uploadId,
+            partSize: Number(r.partSize),
+          },
+          controller.signal,
+        ).finally(() => {
+          if (this.activeFileTransfers.get(r.requestId) === controller) {
+            this.activeFileTransfers.delete(r.requestId);
+          }
+        }),
+      );
       return;
     }
 
     if (payload.case === "fileTransferCancel") {
       const requestId = payload.value.requestId;
       this.activeFileTransfers.get(requestId)?.abort("transfer cancelled by Server");
-      this.pendingPartUrlRequests.get(requestId)?.reject(new Error("TRANSFER_CANCELLED"));
-      this.pendingPartUrlRequests.delete(requestId);
+      for (const pending of this.pendingPartUrlRequests.values()) {
+        if (pending.requestId === requestId) pending.reject(new Error("TRANSFER_CANCELLED"));
+      }
       return;
     }
 
     if (payload.case === "partUrlsResponse") {
       const r = payload.value;
-      const pending = this.pendingPartUrlRequests.get(r.requestId);
-      if (pending) {
-        this.pendingPartUrlRequests.delete(r.requestId);
+      const pending = this.pendingPartUrlRequests.get(r.correlationId);
+      if (pending && pending.requestId === r.requestId && pending.uploadId === r.uploadId) {
         pending.resolve(r.urls.map((u) => ({ partNumber: u.partNumber, url: u.url })));
       }
       return;
@@ -4823,8 +5144,11 @@ export class AgentStream {
           `${spec.jobId}-input-${index}`,
           input.sourceUrl,
           targetPath,
-          new AbortController().signal,
+          this.lifecycleController.signal,
           false,
+          input.expectedSha256
+            ? { sha256: input.expectedSha256, size: Number(input.totalBytes) }
+            : undefined,
         );
       }
     }
@@ -4969,6 +5293,7 @@ export class AgentStream {
       await this.enqueueSoftwareOperationResult(result, true);
     await this.persistentQueue?.softwareOperations.assertJobStopped(jobId);
     await this.jobPreparations.get(jobId);
+    await this.activeRemoteJobRecovery;
     const hadActiveRunner = this.pool.get(jobId) !== undefined;
     const runnerCancelled = hadActiveRunner ? await this.pool.cancel(jobId) : false;
     if (hadActiveRunner) await this.pool.await(jobId);
@@ -5054,7 +5379,18 @@ export class AgentStream {
       const receipt = await this.inboundAcks.claimRuntime(runtimeDispatchId);
       this.startFederationRuntime(jobId, runtimeDispatchId, epoch, receipt);
     }
-    if (!runnerCancelled && !watchdogStopped) {
+    if (activeJob?.schedulerJobId === PENDING_SCHEDULER_SUBMISSION) {
+      const lookup = await this.deps.adapter.findByKuintessenceJobId?.({
+        ...schedulerLookupForSpec(activeJob.spec),
+        includeCompleted: true,
+        submittedAfter: activeJob.submittedAfter,
+      });
+      if (lookup?.status !== "found")
+        throw new Error(
+          "Submission outcome unknown; cancellation requires scheduler reconciliation",
+        );
+      await this.cancelSchedulerJobOrConfirmAbsent(jobId, lookup.schedulerJobId, intent);
+    } else if (!runnerCancelled && !watchdogStopped) {
       if (
         schedulerJobId &&
         !(this.deps.adapter.type === "kubernetes" && prepared && !schedulerUid)
@@ -5075,6 +5411,8 @@ export class AgentStream {
       }
     }
 
+    if (!this.running)
+      throw new Error("Agent shutdown; cancellation records retained for recovery");
     if (intent) await this.cleanupCancellationIntent(intent);
     await this.activeRemoteJobs?.markFinished(jobId);
     if (intent) await this.cleanupIntents?.clear(jobId);
@@ -5085,6 +5423,27 @@ export class AgentStream {
     if (runtime?.receipt.state === "stopping") {
       await this.onJobTransition({ jobId, status: "cancelled", schedulerJobId });
     }
+  }
+
+  private async cancelSchedulerJobOrConfirmAbsent(
+    jobId: string,
+    schedulerJobId: string,
+    intent: JobCleanupIntent | undefined,
+  ): Promise<void> {
+    const active = await this.activeRemoteJobs?.get(jobId);
+    if (active)
+      await this.deps.adapter.prepareResume?.(active.spec, schedulerJobId, active.schedulerUid);
+    await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, {
+      ...(active
+        ? schedulerLookupForSpec(active.spec)
+        : {
+            jobId,
+            schedulerName: intent?.schedulerSubmissionTag,
+            schedulerAccount: intent?.schedulerAccount,
+            namespace: intent?.schedulerNamespace,
+          }),
+      schedulerUid: active?.schedulerUid,
+    });
   }
 
   private async lookupSchedulerJob(
@@ -5243,6 +5602,8 @@ export class AgentStream {
     sha256 = "",
     parts: { partNumber: number; etag: string }[] = [],
   ): void {
+    this.lastTransferState =
+      state === "failed" ? "failed" : state === "running" ? "running" : "ready";
     this.outboundQueue.push({
       kind: "fileTransferProgress",
       requestId,
@@ -5264,6 +5625,7 @@ export class AgentStream {
       targetUrl: string;
       targetPath: string;
       totalBytes: number;
+      expectedSha256?: string;
       uploadId: string;
       partSize: number;
     },
@@ -5295,7 +5657,14 @@ export class AgentStream {
             signal,
           );
         } else {
-          await this.runHostCloudToCluster(req.requestId, req.sourceUrl, req.targetPath, signal);
+          await this.runHostCloudToCluster(
+            req.requestId,
+            req.sourceUrl,
+            req.targetPath,
+            signal,
+            true,
+            req.expectedSha256 ? { sha256: req.expectedSha256, size: req.totalBytes } : undefined,
+          );
         }
       } else if (req.direction === "cluster_to_cloud") {
         if (containerId) {
@@ -5322,6 +5691,7 @@ export class AgentStream {
         this.emitProgress(req.requestId, 0, "failed", `unsupported direction ${req.direction}`);
       }
     } catch (err) {
+      if (signal.aborted) return;
       this.emitProgress(
         req.requestId,
         0,
@@ -5411,7 +5781,29 @@ export class AgentStream {
     targetPath: string,
     signal: AbortSignal,
     reportProgress = true,
+    content?: { sha256: string; size: number },
   ): Promise<void> {
+    if (content) {
+      await downloadToFile({
+        url,
+        targetPath,
+        ...content,
+        signal,
+        connectTo: this.deps.fileTransferConnectTo,
+        maxAttempts: this.deps.fileTransferMaxRetries ?? DEFAULT_FILE_TRANSFER_MAX_RETRIES,
+        retryBackoffMs:
+          (this.deps.fileTransferRetryBackoffSec ?? DEFAULT_FILE_TRANSFER_RETRY_BACKOFF_SEC) * 1000,
+        onProgress: reportProgress
+          ? (bytes) => {
+              if (!signal.aborted) this.emitProgress(requestId, bytes, "running");
+            }
+          : undefined,
+      });
+      throwIfTransferAborted(signal);
+      if (reportProgress)
+        this.emitProgress(requestId, content.size, "succeeded", "", content.sha256);
+      return;
+    }
     const partialPath = `${targetPath}.kq-transfer-${requestId}.part`;
     const argv = buildHostCloudToClusterArgv(
       url,
@@ -5460,7 +5852,14 @@ export class AgentStream {
     signal: AbortSignal,
   ): Promise<void> {
     if (uploadId) {
-      await this.runClusterToCloudMultipart(requestId, containerId, sourcePath, partSize, signal);
+      await this.runClusterToCloudMultipart(
+        requestId,
+        containerId,
+        sourcePath,
+        partSize,
+        signal,
+        uploadId,
+      );
       return;
     }
     await this.runClusterToCloudSinglePut(requestId, containerId, sourcePath, uploadUrl, signal);
@@ -5475,7 +5874,7 @@ export class AgentStream {
     signal: AbortSignal,
   ): Promise<void> {
     if (uploadId) {
-      await this.runHostClusterToCloudMultipart(requestId, sourcePath, partSize, signal);
+      await this.runHostClusterToCloudMultipart(requestId, sourcePath, partSize, signal, uploadId);
       return;
     }
     await this.runHostClusterToCloudSinglePut(requestId, sourcePath, uploadUrl, signal);
@@ -5492,6 +5891,7 @@ export class AgentStream {
     try {
       const { size, sha256 } = await streamUploadToPresignedUrl({
         source: Bun.file(sourcePath).stream() as AsyncIterable<Uint8Array>,
+        expectedBytes: Bun.file(sourcePath).size,
         uploadUrl,
         tmpPath: join(tmpdir(), `kq-upload-${requestId}.bin`),
         signal,
@@ -5558,6 +5958,7 @@ export class AgentStream {
       });
       this.emitProgress(requestId, size, "succeeded", "", sha256);
     } catch (err) {
+      proc.kill();
       this.emitProgress(requestId, copied, "failed", normalizeClusterToCloudSourceError(err));
     }
   }
@@ -5575,23 +5976,35 @@ export class AgentStream {
     sourcePath: string,
     partSize: number,
     signal: AbortSignal,
+    uploadId: string,
   ): Promise<void> {
-    const tmpPath = join(tmpdir(), `kq-upload-${requestId}.bin`);
+    const tmpPath = join(tmpdir(), `kq-upload-${crypto.randomUUID()}.bin`);
     let copied = 0;
     try {
       const spooledSize = await this.spoolFromContainer(containerId, sourcePath, tmpPath, signal);
       let lastEmit = 0;
       const { parts, sha256, size } = await multipartUploadFromFile({
+        checkpoint: this.deps.fileTransferStateDir
+          ? {
+              path: join(
+                this.deps.fileTransferStateDir,
+                `${createHash("sha256").update(requestId).digest("hex")}.json`,
+              ),
+              uploadId,
+            }
+          : undefined,
         filePath: tmpPath,
         size: spooledSize,
         partSize,
-        getPartUrls: (partNumbers) => this.requestPartUrls(requestId, partNumbers, signal),
+        getPartUrls: (partNumbers) =>
+          this.requestPartUrls(requestId, partNumbers, signal, uploadId),
         connectTo: this.deps.fileTransferConnectTo ?? "",
         maxRetries: this.deps.fileTransferMaxRetries ?? DEFAULT_FILE_TRANSFER_MAX_RETRIES,
         retryBackoffMs:
           (this.deps.fileTransferRetryBackoffSec ?? DEFAULT_FILE_TRANSFER_RETRY_BACKOFF_SEC) * 1000,
         signal,
         onProgress: (bytes) => {
+          if (signal.aborted) return;
           copied = bytes;
           const now = Date.now();
           if (now - lastEmit > 400) {
@@ -5600,8 +6013,10 @@ export class AgentStream {
           }
         },
       });
+      throwIfTransferAborted(signal);
       this.emitProgress(requestId, size, "succeeded", "", sha256, parts);
     } catch (err) {
+      if (signal.aborted) return;
       this.emitProgress(requestId, copied, "failed", normalizeClusterToCloudSourceError(err));
     } finally {
       await rm(tmpPath, { force: true });
@@ -5613,22 +6028,34 @@ export class AgentStream {
     sourcePath: string,
     partSize: number,
     signal: AbortSignal,
+    uploadId: string,
   ): Promise<void> {
     let copied = 0;
     try {
       const sourceStat = await stat(sourcePath);
       let lastEmit = 0;
       const { parts, sha256, size } = await multipartUploadFromFile({
+        checkpoint: this.deps.fileTransferStateDir
+          ? {
+              path: join(
+                this.deps.fileTransferStateDir,
+                `${createHash("sha256").update(requestId).digest("hex")}.json`,
+              ),
+              uploadId,
+            }
+          : undefined,
         filePath: sourcePath,
         size: sourceStat.size,
         partSize,
-        getPartUrls: (partNumbers) => this.requestPartUrls(requestId, partNumbers, signal),
+        getPartUrls: (partNumbers) =>
+          this.requestPartUrls(requestId, partNumbers, signal, uploadId),
         connectTo: this.deps.fileTransferConnectTo ?? "",
         maxRetries: this.deps.fileTransferMaxRetries ?? DEFAULT_FILE_TRANSFER_MAX_RETRIES,
         retryBackoffMs:
           (this.deps.fileTransferRetryBackoffSec ?? DEFAULT_FILE_TRANSFER_RETRY_BACKOFF_SEC) * 1000,
         signal,
         onProgress: (bytes) => {
+          if (signal.aborted) return;
           copied = bytes;
           const now = Date.now();
           if (now - lastEmit > 400) {
@@ -5637,8 +6064,10 @@ export class AgentStream {
           }
         },
       });
+      throwIfTransferAborted(signal);
       this.emitProgress(requestId, size, "succeeded", "", sha256, parts);
     } catch (err) {
+      if (signal.aborted) return;
       this.emitProgress(requestId, copied, "failed", normalizeClusterToCloudSourceError(err));
     }
   }
@@ -5654,6 +6083,7 @@ export class AgentStream {
     tmpPath: string,
     signal: AbortSignal,
   ): Promise<number> {
+    await assertStorageCapacity({ path: tmpPath, additionalBytes: 0, additionalInodes: 1 });
     const proc = Bun.spawn(["docker", "exec", "-u", "root", containerId, "cat", sourcePath], {
       stdout: "pipe",
       stderr: "pipe",
@@ -5662,12 +6092,26 @@ export class AgentStream {
     const stderrText = new Response(proc.stderr).text().catch(() => "");
     const sink = Bun.file(tmpPath).writer();
     let spooledSize = 0;
+    let bufferedBytes = 0;
     try {
       for await (const chunk of proc.stdout as AsyncIterable<Uint8Array>) {
         throwIfTransferAborted(signal);
+        await assertStorageCapacity({
+          path: tmpPath,
+          additionalBytes: bufferedBytes + chunk.byteLength,
+          additionalInodes: 0,
+        });
         sink.write(chunk);
+        bufferedBytes += chunk.byteLength;
+        if (bufferedBytes >= 8 * 1024 * 1024) {
+          await sink.flush();
+          bufferedBytes = 0;
+        }
         spooledSize += chunk.byteLength;
       }
+    } catch (error) {
+      proc.kill();
+      throw normalizeStorageCapacityError(error);
     } finally {
       await sink.end();
     }
@@ -5690,32 +6134,43 @@ export class AgentStream {
     requestId: string,
     partNumbers: number[],
     signal: AbortSignal,
+    uploadId: string,
+    timeoutMs = PART_URL_TIMEOUT_MS,
   ): Promise<{ partNumber: number; url: string }[]> {
+    const correlationId = crypto.randomUUID();
     return new Promise((resolve, reject) => {
       throwIfTransferAborted(signal);
-      const timer = setTimeout(() => {
-        this.pendingPartUrlRequests.delete(requestId);
-        reject(new Error("timed out waiting for part URLs"));
-      }, PART_URL_TIMEOUT_MS);
-      const onAbort = () => {
+      const cleanup = () => {
+        signal.removeEventListener("abort", onAbort);
         clearTimeout(timer);
-        this.pendingPartUrlRequests.delete(requestId);
-        reject(new Error("TRANSFER_CANCELLED"));
+        this.pendingPartUrlRequests.delete(correlationId);
       };
-      signal.addEventListener("abort", onAbort, { once: true });
-      this.pendingPartUrlRequests.set(requestId, {
-        resolve: (urls) => {
-          signal.removeEventListener("abort", onAbort);
-          clearTimeout(timer);
+      const onAbort = () => pending.reject(new Error("TRANSFER_CANCELLED"));
+      const timer = setTimeout(
+        () => pending.reject(new Error("timed out waiting for part URLs")),
+        timeoutMs,
+      );
+      const pending = {
+        requestId,
+        uploadId,
+        resolve: (urls: { partNumber: number; url: string }[]) => {
+          cleanup();
           resolve(urls);
         },
-        reject: (error) => {
-          signal.removeEventListener("abort", onAbort);
-          clearTimeout(timer);
+        reject: (error: Error) => {
+          cleanup();
           reject(error);
         },
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.pendingPartUrlRequests.set(correlationId, pending);
+      this.outboundQueue.push({
+        kind: "partUrlsRequest",
+        requestId,
+        partNumbers,
+        correlationId,
+        uploadId,
       });
-      this.outboundQueue.push({ kind: "partUrlsRequest", requestId, partNumbers });
       this.wakeOutbound();
     });
   }
@@ -6000,6 +6455,22 @@ export class AgentStream {
   ): Promise<void> {
     if (this.persistentQueue) {
       item = await this.persistentQueue.softwareOperations.finish(item);
+    }
+    if (
+      !replayed &&
+      (!this.activeInstallationOperationId ||
+        this.activeInstallationOperationId === item.operationId)
+    ) {
+      const running = item.status === SoftwareOperationStatus.RUNNING;
+      this.activeInstallationOperationId = running ? item.operationId : undefined;
+      this.installationState = {
+        state: running
+          ? "running"
+          : item.status === SoftwareOperationStatus.SUCCEEDED
+            ? "ready"
+            : "failed",
+        active: running ? 1 : 0,
+      };
     }
     if (this.running && this.connected) {
       this.outboundQueue.push({ kind: "softwareOperationResult", ...item, replayed });

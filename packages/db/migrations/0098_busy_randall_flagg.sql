@@ -1,2 +1,0 @@
-DROP INDEX "federation_result_attempt_active_member";--> statement-breakpoint
-CREATE UNIQUE INDEX "federation_result_attempt_active_member" ON "federation_result_attempts" USING btree ("transfer_id") WHERE "federation_result_attempts"."state" NOT IN ('cleaned','cleanup_pending');

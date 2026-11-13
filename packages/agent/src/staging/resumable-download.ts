@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
+import { assertStorageCapacity, normalizeStorageCapacityError } from "../storage-capacity";
 import { createDefaultHttpClient, type HttpClient, type HttpResponse } from "./http-client";
 
 /** Range windows and prefix rehashing both use bounded memory. */
@@ -42,6 +43,11 @@ export async function resumableDownload(
   opts.signal?.throwIfAborted();
   const http = opts.http ?? createDefaultHttpClient();
   const sidecarPath = `${opts.localPath}${SIDECAR_SUFFIX}`;
+  await assertStorageCapacity({
+    path: dirname(opts.localPath),
+    additionalBytes: 0,
+    additionalInodes: 3,
+  });
   await mkdir(dirname(opts.localPath), { recursive: true, mode: 0o700 });
   const fh = await open(
     opts.localPath,
@@ -72,8 +78,23 @@ export async function resumableDownload(
       hash.update(prefix.subarray(0, bytesRead));
       at += bytesRead;
     }
+    const checkpoint = async () => {
+      await fh.sync();
+      await saveSidecar(sidecarPath, {
+        version: 1,
+        size: opts.size,
+        sha256: opts.sha256,
+        bytesWritten: offset,
+      });
+    };
+    await checkpoint();
     while (offset < opts.size) {
       opts.signal?.throwIfAborted();
+      await assertStorageCapacity({
+        path: opts.localPath,
+        additionalBytes: opts.size - offset,
+        additionalInodes: 1,
+      });
       const end = Math.min(offset + opts.window, opts.size) - 1;
       const res = await http({
         method: "GET",
@@ -83,30 +104,30 @@ export async function resumableDownload(
         redirect: "error",
       });
       const chunk = await readDownloadRange(res, offset, end, opts.size, opts.signal);
+      const previous = offset;
       let written = 0;
-      while (written < chunk.length) {
-        opts.signal?.throwIfAborted();
-        const { bytesWritten } = await fh.write(
-          chunk,
-          written,
-          chunk.length - written,
-          offset + written,
-        );
-        if (!bytesWritten) throw new Error("Download file write made no progress");
-        written += bytesWritten;
+      try {
+        while (written < chunk.length) {
+          opts.signal?.throwIfAborted();
+          const { bytesWritten } = await fh.write(chunk, written, chunk.length - written, offset);
+          if (
+            !Number.isInteger(bytesWritten) ||
+            bytesWritten <= 0 ||
+            bytesWritten > chunk.length - written
+          )
+            throw new Error("Resumable download: file write made no progress");
+          hash.update(chunk.subarray(written, written + bytesWritten));
+          written += bytesWritten;
+          offset += bytesWritten;
+        }
+      } finally {
+        if (offset > previous) await checkpoint();
       }
-      await fh.sync();
-      hash.update(chunk);
-      offset += chunk.length;
-      await saveSidecar(sidecarPath, {
-        version: 1,
-        size: opts.size,
-        sha256: opts.sha256,
-        bytesWritten: offset,
-      });
     }
     opts.signal?.throwIfAborted();
     actual = hash.digest("hex");
+  } catch (error) {
+    throw normalizeStorageCapacityError(error);
   } finally {
     await fh.close();
   }
@@ -214,6 +235,12 @@ async function saveSidecar(path: string, value: DownloadSidecar) {
       await file.close();
     }
     await rename(temporary, path);
+    const directory = await open(dirname(path), "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
   } finally {
     await rm(temporary, { force: true });
   }

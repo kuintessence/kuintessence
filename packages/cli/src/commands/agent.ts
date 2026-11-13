@@ -3,6 +3,7 @@ import { chmod, mkdir, open, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { generateCsr, persistCertBundle } from "@kuintessence/agent/auth";
+import { siteFetch } from "@kuintessence/shared/site-transport";
 import type { Command } from "commander";
 import { createAgentServer } from "../agent-serve/server";
 import { ApiClient } from "../lib/api-client";
@@ -106,8 +107,8 @@ export function registerAgentCommand(program: Command): void {
     .description("Register this node as a Server Agent with a one-time registration token")
     .requiredOption("--url <url>", "Server HTTP URL, for example https://server.example.com")
     .requiredOption("--grpc-url <url>", "Server connectRPC URL used by the Agent runtime")
-    .option("--token <token>", "One-time Agent registration token")
-    .option("--token-file <path>", "Private file containing a one-time registration token")
+    .option("--token <token>", "One-time Agent registration token (prefer --token-file)")
+    .option("--token-file <path>", "Read registration token from a private file, or - for stdin")
     .option("--output-dir <path>", "Output directory (default ~/.kuintessence/agent/<agentId>)")
     .option(
       "--scheduler <type>",
@@ -263,7 +264,7 @@ export function registerAgentCommand(program: Command): void {
 
 async function registrationPost<T>(serverUrl: string, path: string, body: unknown): Promise<T> {
   const base = serverUrl.replace(/\/+$/, "");
-  const res = await fetch(`${base}/api${path}`, {
+  const res = await siteFetch(`${base}/api${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -288,8 +289,16 @@ export async function readRegistrationToken(opts: {
   if ((opts.token !== undefined) === (opts.tokenFile !== undefined))
     throw new Error("Provide exactly one of --token or --token-file");
   if (opts.token !== undefined) {
-    if (!opts.token.trim()) throw new Error("Registration token must not be empty");
+    if (!opts.token.trim() || opts.token.length > 16384)
+      throw new Error("Registration token must not be empty");
     return opts.token.trim();
+  }
+  if (opts.tokenFile === "-") {
+    const bytes = await new Response(Bun.stdin.stream()).arrayBuffer();
+    if (bytes.byteLength > 16384) throw new Error("Invalid registration token");
+    const token = new TextDecoder().decode(bytes).trim();
+    if (!token) throw new Error("Registration token must not be empty");
+    return token;
   }
   const file = await open(opts.tokenFile ?? "", constants.O_RDONLY | constants.O_NOFOLLOW);
   try {

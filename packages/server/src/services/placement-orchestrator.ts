@@ -80,12 +80,14 @@ export type InputUrlResolver = (args: {
 }) => Promise<DispatchInputStaging[]>;
 
 export type DispatchInputStaging = {
+  totalBytes?: number;
+  expectedSha256?: string;
   fileMetadataId: string;
   stagePath: string;
   sourceUrl?: string;
   deliveryLeaseId?: string;
   deliveryLeaseExpiresAtUnixMs?: number;
-  expectedSha256?: string;
+
   expectedSizeBytes?: number;
   netdriveInput?: boolean;
   localDataSource?: { locationId: string; managedRootId: string; relativePath: string };
@@ -997,6 +999,7 @@ export class PlacementOrchestrator {
       undefined,
       agentId,
       reason,
+      undefined,
       undefined,
       undefined,
       undefined,

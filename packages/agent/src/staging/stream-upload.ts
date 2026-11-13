@@ -1,4 +1,6 @@
 import { rm } from "node:fs/promises";
+import { siteFetch } from "@kuintessence/shared/site-transport";
+import { assertStorageCapacity, normalizeStorageCapacityError } from "../storage-capacity";
 
 export interface StreamUploadResult {
   size: number;
@@ -13,6 +15,8 @@ export type FilePutter = (
 
 export interface StreamUploadOptions {
   source: AsyncIterable<Uint8Array>;
+  expectedBytes?: number;
+  capacity?: typeof assertStorageCapacity;
   uploadUrl: string;
   /** Temp file the bytes are spooled to (bounded memory). Always removed. */
   tmpPath: string;
@@ -33,7 +37,7 @@ const defaultPutter = async (
   contentType: string,
   signal?: AbortSignal,
 ): Promise<{ ok: boolean; status: number; statusText: string }> => {
-  const res = await fetch(uploadUrl, {
+  const res = await siteFetch(uploadUrl, {
     method: "PUT",
     headers: { "Content-Type": contentType },
     body: file,
@@ -55,6 +59,11 @@ export async function streamUploadToPresignedUrl(
   const contentType = opts.contentType ?? "application/octet-stream";
   try {
     throwIfAborted(opts.signal);
+    await (opts.capacity ?? assertStorageCapacity)({
+      path: opts.tmpPath,
+      additionalBytes: opts.expectedBytes ?? 0,
+      additionalInodes: 1,
+    });
     const hasher = new Bun.CryptoHasher("sha256");
     const sink = Bun.file(opts.tmpPath).writer();
     let copied = 0;
@@ -64,6 +73,14 @@ export async function streamUploadToPresignedUrl(
     try {
       for await (const chunk of opts.source) {
         throwIfAborted(opts.signal);
+        await (opts.capacity ?? assertStorageCapacity)({
+          path: opts.tmpPath,
+          additionalBytes: Math.max(
+            sinceFlush + chunk.byteLength,
+            (opts.expectedBytes ?? 0) - copied,
+          ),
+          additionalInodes: 0,
+        });
         hasher.update(chunk);
         sink.write(chunk);
         copied += chunk.byteLength;
@@ -91,6 +108,8 @@ export async function streamUploadToPresignedUrl(
     }
 
     return { size: copied, sha256: hasher.digest("hex") };
+  } catch (error) {
+    throw normalizeStorageCapacityError(error);
   } finally {
     await rm(opts.tmpPath, { force: true });
   }

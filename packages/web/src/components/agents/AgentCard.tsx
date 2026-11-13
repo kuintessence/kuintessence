@@ -14,9 +14,11 @@ import { relativeFromNow, statusLabel } from "../../lib/format";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader } from "../ui/card";
+import { AgentSiteOperations } from "./AgentSiteOperations";
 
 export interface AgentRow {
   agentId: string;
+  siteOperations?: unknown;
   clusterId?: string | null;
   siteName: string;
   schedulerType: string;
@@ -137,6 +139,7 @@ export function AgentCard({ agent, canOpenSsh }: { agent: AgentRow; canOpenSsh: 
               : t("agents.never")}
           </span>
         </div>
+        <AgentSiteOperations value={agent.siteOperations} online={agent.status === "online"} />
         <div className="mt-auto flex flex-wrap gap-3 pt-2">
           <Link
             to="/jobs"

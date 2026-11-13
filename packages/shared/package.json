@@ -180,6 +180,14 @@
       "bun": "./src/federation/arbitration-execution.ts",
       "types": "./src/federation/arbitration-execution.ts",
       "default": "./src/federation/arbitration-execution.ts"
+    },
+    "./registry-namespace": {
+      "types": "./src/registry-namespace.ts",
+      "default": "./src/registry-namespace.ts"
+    },
+    "./site-transport": {
+      "types": "./src/site-transport.ts",
+      "default": "./src/site-transport.ts"
     }
   },
   "scripts": {

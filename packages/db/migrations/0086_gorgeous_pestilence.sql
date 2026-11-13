@@ -1,1 +1,0 @@
-ALTER TABLE "jobs" ADD COLUMN "sandbox_stats_recorded_at" timestamp;

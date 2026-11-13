@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { lstat, open, readFile, readlink, statfs } from "node:fs/promises";
 import { hostname } from "node:os";
 import { z } from "zod";
+import type { SpackWorkerStopProof } from "./install-contract";
 import type { SpackProcessSupervision } from "./supervised-process";
 
 export const RECOVERY_REQUIRED = "SPACK_RECOVERY_REQUIRED: store writer recovery required";
@@ -134,6 +135,10 @@ export const softwareExecution = new AsyncLocalStorage<{
   bindSupervisor?: (ref: SpackProcessSupervision) => Promise<void>;
 }>();
 export const installWorkerExecution = new AsyncLocalStorage<{
-  start: (recordId: string, supervisor?: SpackProcessSupervision) => Promise<void>;
-  finish: () => Promise<void>;
+  start: (
+    recordId: string,
+    supervisor?: SpackProcessSupervision,
+    stagingPath?: string,
+  ) => Promise<void>;
+  finish: (proof?: SpackWorkerStopProof) => Promise<void>;
 }>();

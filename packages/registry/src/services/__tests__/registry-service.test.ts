@@ -3,7 +3,19 @@
 // derivation, and audit-port wiring.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createPgDb, ociRepository, ociUploadSession, type PgDb } from "@kuintessence/db";
+import { createHash } from "node:crypto";
+import {
+  auditRelease,
+  createPgDb,
+  ociBlob,
+  ociManifest,
+  ociRepository,
+  ociRepositoryBlob,
+  ociRepositoryManifest,
+  ociTag,
+  ociUploadSession,
+  type PgDb,
+} from "@kuintessence/db";
 import { eq, like } from "drizzle-orm";
 import { InMemoryBlobStore } from "../blob-store";
 import type { ParsedNamespace, RbacPrincipal } from "../namespace";
@@ -85,7 +97,8 @@ describe("RegistryService", () => {
     const m2 = new TextEncoder().encode(
       JSON.stringify({
         schemaVersion: 2,
-        layers: [{ digest: `sha256:${"a".repeat(64)}`, mediaType: "x", size: 1 }],
+        layers: [],
+        annotations: { revision: "second" },
       }),
     );
     await svc.putManifest({ repo, ref: "2.0.0", mediaType: "x", body: m1, principal: PRINCIPAL });
@@ -100,7 +113,8 @@ describe("RegistryService", () => {
     const m2 = new TextEncoder().encode(
       JSON.stringify({
         schemaVersion: 2,
-        layers: [{ digest: `sha256:${"b".repeat(64)}`, mediaType: "x", size: 1 }],
+        layers: [],
+        annotations: { revision: "second" },
       }),
     );
     await svc.putManifest({ repo, ref: "latest", mediaType: "x", body: m1, principal: PRINCIPAL });
@@ -145,6 +159,234 @@ describe("RegistryService", () => {
     expect(audit.pushes[0]?.resourceKind).toBe("oci-tag");
   });
 
+  test("repository ownership survives restart and rejects global blob and manifest digest substitution", async () => {
+    const blobs = new InMemoryBlobStore();
+    const scoped = new RegistryService(db, blobs, new NoopAuditPort());
+    const owner = await scoped.ensureRepository(
+      { ...NS, name: "regtest-isolation-owner" },
+      PRINCIPAL,
+    );
+    const unrelated = await scoped.ensureRepository(
+      { ...NS, name: "regtest-isolation-unrelated" },
+      PRINCIPAL,
+    );
+    const bytes = new TextEncoder().encode("private layer");
+    const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    const { uploadId } = await scoped.startUpload(owner.id);
+    await expect(scoped.appendChunk(unrelated.id, uploadId, bytes)).rejects.toMatchObject({
+      code: "BLOB_UPLOAD_UNKNOWN",
+    });
+    await expect(
+      scoped.completeUpload(unrelated.id, uploadId, digest, bytes),
+    ).rejects.toMatchObject({ code: "BLOB_UPLOAD_UNKNOWN" });
+    await expect(scoped.cancelUpload(unrelated.id, uploadId)).rejects.toMatchObject({
+      code: "BLOB_UPLOAD_UNKNOWN",
+    });
+    await scoped.completeUpload(owner.id, uploadId, digest, bytes);
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        schemaVersion: 2,
+        layers: [{ digest, size: bytes.length, mediaType: "x" }],
+      }),
+    );
+    const manifest = await scoped.putManifest({
+      repo: owner,
+      ref: "1.0.0",
+      mediaType: "x",
+      body,
+      principal: PRINCIPAL,
+    });
+    const restarted = new RegistryService(db, blobs, new NoopAuditPort());
+    expect((await restarted.headBlob(owner.id, digest)).size).toBe(bytes.length);
+    expect((await restarted.getManifestByRef(owner.id, manifest.digest)).digest).toBe(
+      manifest.digest,
+    );
+    await expect(restarted.headBlob(unrelated.id, digest)).rejects.toMatchObject({
+      code: "BLOB_UNKNOWN",
+    });
+    await expect(restarted.getBlob(unrelated.id, digest)).rejects.toMatchObject({
+      code: "BLOB_UNKNOWN",
+    });
+    await expect(restarted.getManifestByRef(unrelated.id, manifest.digest)).rejects.toMatchObject({
+      code: "MANIFEST_UNKNOWN",
+    });
+    await expect(
+      restarted.putManifest({
+        repo: unrelated,
+        ref: "1.0.0",
+        mediaType: "x",
+        body,
+        principal: PRINCIPAL,
+      }),
+    ).rejects.toMatchObject({ code: "BLOB_UNKNOWN" });
+    const deniedMount = await restarted.tryMountBlob({
+      dstNs: { ...NS, name: unrelated.name },
+      srcNs: { ...NS, name: unrelated.name },
+      digest,
+      principal: PRINCIPAL,
+    });
+    expect(deniedMount.mounted).toBe(false);
+    expect(
+      (
+        await restarted.tryMountBlob({
+          dstNs: { ...NS, name: unrelated.name },
+          digest,
+          principal: PRINCIPAL,
+        })
+      ).mounted,
+    ).toBe(false);
+    expect(
+      (
+        await restarted.tryMountBlob({
+          dstNs: { ...NS, name: unrelated.name },
+          srcNs: { ...NS, name: owner.name },
+          digest,
+          principal: PRINCIPAL,
+        })
+      ).mounted,
+    ).toBe(true);
+    expect((await restarted.headBlob(unrelated.id, digest)).size).toBe(bytes.length);
+    await restarted.putManifest({
+      repo: owner,
+      ref: manifest.digest,
+      mediaType: "x",
+      body,
+      principal: PRINCIPAL,
+    });
+    await restarted.deleteManifest({ repo: owner, ref: "1.0.0", principal: PRINCIPAL });
+    expect((await restarted.getManifestByRef(owner.id, manifest.digest)).digest).toBe(
+      manifest.digest,
+    );
+    await restarted.deleteManifest({ repo: owner, ref: manifest.digest, principal: PRINCIPAL });
+    await expect(restarted.getManifestByRef(owner.id, manifest.digest)).rejects.toMatchObject({
+      code: "MANIFEST_UNKNOWN",
+    });
+  });
+
+  test("legacy backfill trusts tagged descriptors once and never resurrects revoked associations", async () => {
+    const blobs = new InMemoryBlobStore();
+    const legacy = new RegistryService(db, blobs, new NoopAuditPort());
+    const repo = await legacy.ensureRepository(
+      { ...NS, name: "regtest-legacy-backfill" },
+      PRINCIPAL,
+    );
+    const bytes = new TextEncoder().encode("legacy tagged layer");
+    const blob = await blobs.put(bytes);
+    const secret = await blobs.put(new TextEncoder().encode("unreferenced legacy secret"));
+    const late = await blobs.put(new TextEncoder().encode("uploaded after legacy manifest"));
+    for (const item of [blob, secret])
+      await db
+        .insert(ociBlob)
+        .values({
+          digest: item.digest,
+          size: item.size,
+          storageKey: item.digest,
+          uploadedAt: new Date(1000),
+        })
+        .onConflictDoNothing();
+    await db.insert(ociBlob).values({
+      digest: late.digest,
+      size: late.size,
+      storageKey: late.digest,
+      uploadedAt: new Date(3000),
+    });
+    const layers = [blob, late].map((item) => ({
+      digest: item.digest,
+      size: item.size,
+      mediaType: "x",
+    }));
+    const body = new TextEncoder().encode(JSON.stringify({ schemaVersion: 2, layers }));
+    const digest = `sha256:${createHash("sha256").update(body).digest("hex")}`;
+    await db
+      .insert(ociManifest)
+      .values({
+        digest,
+        body,
+        size: body.length,
+        mediaType: "x",
+        layers,
+        createdAt: new Date(2000),
+      })
+      .onConflictDoNothing();
+    await db.insert(ociTag).values({ repositoryId: repo.id, tag: "1.0.0", manifestDigest: digest });
+    expect((await legacy.headBlob(repo.id, blob.digest)).size).toBe(blob.size);
+    expect((await legacy.getManifestByRef(repo.id, digest)).digest).toBe(digest);
+    await expect(legacy.headBlob(repo.id, secret.digest)).rejects.toMatchObject({
+      code: "BLOB_UNKNOWN",
+    });
+    await expect(legacy.headBlob(repo.id, late.digest)).rejects.toMatchObject({
+      code: "BLOB_UNKNOWN",
+    });
+    await db.delete(ociRepositoryBlob).where(eq(ociRepositoryBlob.repositoryId, repo.id));
+    await db.delete(ociRepositoryManifest).where(eq(ociRepositoryManifest.repositoryId, repo.id));
+    const restarted = new RegistryService(db, blobs, new NoopAuditPort());
+    await expect(restarted.headBlob(repo.id, blob.digest)).rejects.toMatchObject({
+      code: "BLOB_UNKNOWN",
+    });
+    await expect(restarted.getManifestByRef(repo.id, digest)).rejects.toMatchObject({
+      code: "MANIFEST_UNKNOWN",
+    });
+  });
+
+  test("legacy digest-only backfill requires a successful publication not followed by deletion", async () => {
+    const scoped = new RegistryService(db, new InMemoryBlobStore(), new NoopAuditPort());
+    const owner = await scoped.ensureRepository(
+      { ...NS, name: "regtest-legacy-audit-owner" },
+      PRINCIPAL,
+    );
+    const revoked = await scoped.ensureRepository(
+      { ...NS, name: "regtest-legacy-audit-revoked" },
+      PRINCIPAL,
+    );
+    const body = new TextEncoder().encode(
+      JSON.stringify({ schemaVersion: 2, layers: [], annotations: { revision: "legacy-audit" } }),
+    );
+    const digest = `sha256:${createHash("sha256").update(body).digest("hex")}`;
+    await db
+      .insert(ociManifest)
+      .values({ digest, body, size: body.length, mediaType: "x", layers: [] })
+      .onConflictDoNothing();
+    for (const repo of [owner, revoked])
+      await db.insert(auditRelease).values({
+        action: "push",
+        resourceKind: "oci-tag",
+        resourceId: repo.id,
+        actor: PRINCIPAL.sub,
+        metadata: { kind: "manifest-only", digest },
+        occurredAt: new Date(1000),
+      });
+    await db.insert(auditRelease).values({
+      action: "delete",
+      resourceKind: "oci-tag",
+      resourceId: revoked.id,
+      actor: PRINCIPAL.sub,
+      metadata: { digest },
+      occurredAt: new Date(2000),
+    });
+    expect((await scoped.getManifestByRef(owner.id, digest)).digest).toBe(digest);
+    await expect(scoped.getManifestByRef(revoked.id, digest)).rejects.toMatchObject({
+      code: "MANIFEST_UNKNOWN",
+    });
+    await scoped.putManifest({
+      repo: owner,
+      ref: "2.0.0",
+      mediaType: "x",
+      principal: PRINCIPAL,
+      body: new TextEncoder().encode(
+        JSON.stringify({
+          schemaVersion: 2,
+          layers: [],
+          annotations: { revision: "keep-repository" },
+        }),
+      ),
+    });
+    await scoped.deleteManifest({ repo: owner, ref: digest, principal: PRINCIPAL });
+    const restarted = new RegistryService(db, new InMemoryBlobStore(), new NoopAuditPort());
+    await expect(restarted.getManifestByRef(owner.id, digest)).rejects.toMatchObject({
+      code: "MANIFEST_UNKNOWN",
+    });
+  });
+
   test("NoopAuditPort is silent and never throws", async () => {
     const port = new NoopAuditPort();
     const r1 = await port.recordPush({
@@ -170,12 +412,12 @@ describe("RegistryService", () => {
     const repo = await capped.ensureRepository(NS, PRINCIPAL);
     const { uploadId } = await capped.startUpload(repo.id);
 
-    await capped.appendChunk(uploadId, new Uint8Array(4)); // 4 ≤ 8, ok
+    await capped.appendChunk(repo.id, uploadId, new Uint8Array(4)); // 4 ≤ 8, ok
 
     // 4 + 8 = 12 > 8 → reject with 413 and drop the slot.
     let caught: unknown;
     try {
-      await capped.appendChunk(uploadId, new Uint8Array(8));
+      await capped.appendChunk(repo.id, uploadId, new Uint8Array(8));
     } catch (e) {
       caught = e;
     }
@@ -184,7 +426,7 @@ describe("RegistryService", () => {
     expect((caught as RegistryError).status).toBe(413);
 
     // Slot evicted: a follow-up append is now UNKNOWN (404), and the session row is gone.
-    await expect(capped.appendChunk(uploadId, new Uint8Array(1))).rejects.toThrow(
+    await expect(capped.appendChunk(repo.id, uploadId, new Uint8Array(1))).rejects.toThrow(
       /unknown upload/i,
     );
     const rows = await db
@@ -204,11 +446,13 @@ describe("RegistryService", () => {
     // Fresh upload: a sweep at "now" must not touch it.
     const now = Date.now();
     expect(await swept.sweepStaleUploads(now)).toBe(0);
-    await swept.appendChunk(uploadId, new Uint8Array(2)); // still usable
+    await swept.appendChunk(repo.id, uploadId, new Uint8Array(2)); // still usable
 
     // Advance the clock past the idle window → evicted, row deleted.
     expect(await swept.sweepStaleUploads(now + 5000)).toBe(1);
-    await expect(swept.appendChunk(uploadId, new Uint8Array(1))).rejects.toThrow(/unknown upload/i);
+    await expect(swept.appendChunk(repo.id, uploadId, new Uint8Array(1))).rejects.toThrow(
+      /unknown upload/i,
+    );
     const rows = await db
       .select()
       .from(ociUploadSession)
@@ -226,7 +470,7 @@ describe("RegistryService", () => {
       code: "BLOB_UPLOAD_INVALID",
       status: 429,
     });
-    await limited.cancelUpload(first.uploadId);
+    await limited.cancelUpload(repo.id, first.uploadId);
   });
 
   test("cancels an upload that would exceed the global incomplete byte quota", async () => {
@@ -236,7 +480,7 @@ describe("RegistryService", () => {
     });
     const repo = await limited.ensureRepository(NS, PRINCIPAL);
     const { uploadId } = await limited.startUpload(repo.id);
-    await expect(limited.appendChunk(uploadId, new Uint8Array(5))).rejects.toMatchObject({
+    await expect(limited.appendChunk(repo.id, uploadId, new Uint8Array(5))).rejects.toMatchObject({
       code: "BLOB_UPLOAD_INVALID",
       status: 413,
     });

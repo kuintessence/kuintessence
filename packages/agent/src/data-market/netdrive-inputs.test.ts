@@ -9,7 +9,7 @@ function input() {
     netdriveInput: true,
     stagePath: "input.txt",
     expectedSha256: "a".repeat(64),
-    expectedSizeBytes: 4n,
+    totalBytes: 4n,
     sourceUrl: "https://objects.test/input",
     deliveryLeaseId: crypto.randomUUID(),
     deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 60_000),
@@ -62,8 +62,8 @@ test.each([
   const staged = input();
   if (field === "marker") staged.netdriveInput = false;
   if (field === "digest") staged.expectedSha256 = "";
-  if (field === "negative-size") staged.expectedSizeBytes = -1n;
-  if (field === "unsafe-size") staged.expectedSizeBytes = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+  if (field === "negative-size") staged.totalBytes = -1n;
+  if (field === "unsafe-size") staged.totalBytes = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
   if (field === "id") staged.fileMetadataId = "unbound";
   expect(() => netdriveDeliveries([staged])).toThrow("immutable file binding");
 });

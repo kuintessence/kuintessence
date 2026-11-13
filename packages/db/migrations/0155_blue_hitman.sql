@@ -1,8 +1,0 @@
-ALTER TABLE "federation_closing_policies" DROP CONSTRAINT "federation_closing_policy_kind";--> statement-breakpoint
-ALTER TABLE "federation_closing_policies" DROP CONSTRAINT "federation_closing_policy_outcomes";--> statement-breakpoint
-ALTER TABLE "federation_closing_tasks" DROP CONSTRAINT "federation_closing_task_kind";--> statement-breakpoint
-ALTER TABLE "federation_commercial_refunds" ADD COLUMN "authorization_policy_id" uuid;--> statement-breakpoint
-ALTER TABLE "federation_commercial_refunds" ADD CONSTRAINT "federation_commercial_refunds_authorization_policy_id_federation_closing_policies_id_fk" FOREIGN KEY ("authorization_policy_id") REFERENCES "public"."federation_closing_policies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "federation_closing_policies" ADD CONSTRAINT "federation_closing_policy_kind" CHECK ("federation_closing_policies"."kind" IN ('bill','settlement','refund'));--> statement-breakpoint
-ALTER TABLE "federation_closing_policies" ADD CONSTRAINT "federation_closing_policy_outcomes" CHECK (jsonb_typeof("federation_closing_policies"."outcomes") = 'array' AND jsonb_array_length("federation_closing_policies"."outcomes") BETWEEN 1 AND 3 AND "federation_closing_policies"."outcomes" <@ '["completed","failed","cancelled"]'::jsonb AND ("federation_closing_policies"."kind" <> 'refund' OR "federation_closing_policies"."outcomes" = '["cancelled"]'::jsonb));--> statement-breakpoint
-ALTER TABLE "federation_closing_tasks" ADD CONSTRAINT "federation_closing_task_kind" CHECK ("federation_closing_tasks"."kind" IN ('bill','settlement','refund'));
