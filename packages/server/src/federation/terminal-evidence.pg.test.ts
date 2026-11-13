@@ -3288,7 +3288,7 @@ test("settlement rollback preserves original approval and budget when local proj
   const f = await settlementFixture();
   const signed = await f.approve();
   await db.execute(
-    sql`alter table federation_budgets add constraint test_settlement_failure check (spent = 0)`,
+    sql`alter table federation_budgets add constraint test_settlement_failure check (domain_id <> ${sql.raw(`'${f.terms.budgetDomainId}'::uuid`)} or spent = 0)`,
   );
   try {
     await expect(
