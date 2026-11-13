@@ -40,6 +40,7 @@ with tempfile.TemporaryDirectory(prefix="kq-compose-") as directory:
         env[key] = str(Path(directory) / (key + ".test"))
     direct = render("direct", env)
     assert not any(name.startswith("fabric-") for name in direct["services"])
+    assert direct["services"]["registry"]["init"] is True
     server = direct["services"]["server"]
     assert not any(key in server["environment"] for key in (
         "FEDERATION_ATTESTATION_SOCKET_PATH", "FEDERATION_COMMERCIAL_SOCKET_PATH",
@@ -57,6 +58,7 @@ with tempfile.TemporaryDirectory(prefix="kq-compose-") as directory:
     for kind in KINDS:
         adapter = services[f"fabric-{kind}-adapter"]
         chaincode = services[f"fabric-{kind}-chaincode"]
+        assert chaincode["init"] is True
         assert not adapter.get("ports") and not chaincode.get("ports")
         assert adapter["environment"]["KQ_FABRIC_ADAPTER_KIND"] == kind
         assert chaincode["environment"]["CHAINCODE_ID"] == env[f"KQ_FABRIC_{kind.upper()}_PACKAGE_ID"]

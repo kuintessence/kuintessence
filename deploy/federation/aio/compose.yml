@@ -23,6 +23,7 @@ services:
       SERVER_GRPC_TLS_CERT_FILE: /run/kq-grpc/server.crt
       SERVER_GRPC_TLS_KEY_FILE: /run/kq-grpc/server.key
       DB_MAX_CONNECTIONS: "6"
+      AUTHZ_OUTBOX_INTERVAL_SEC: ${AUTHZ_OUTBOX_INTERVAL_SEC:-1}
       NETDRIVE_ENABLED: "true"
       NETDRIVE_ENDPOINT: rustfs
       NETDRIVE_PORT: "9000"
@@ -91,6 +92,7 @@ services:
       retries: 12
   casdoor:
     image: kq-offline/casdoor:${KQ_IMAGE_TAG:?set exact image tag}
+    init: true
     mem_limit: 192m
     ports: ["127.0.0.1:${KQ_CASDOOR_HTTP_PORT:-15180}:8000"]
     volumes:

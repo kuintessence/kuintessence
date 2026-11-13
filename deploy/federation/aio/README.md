@@ -2,7 +2,7 @@
 
 三台新增虚拟机运行独立 A/B/C 平台、Fabric 和容器测试集群，A/B 使用 Slurm，C 使用 PBS；R 按需在 A 主机运行独立项目。现有集群不变，主平台只新增第四个 Orderer。完整范围见[实施清单](../../../docs/design/federation/aio-delivery.md)。
 
-当前固定候选 `92c31a8` 的 21 镜像归档已完成交付和身份核对，并在一台新增主机受限试运行平台与全部链组件，真实 SSO 和机构读取权限检查通过；未启用调度器或 Agent，Peer／Orderer 尚未加入通道。镜像使用 Spack 1.0.3，兼容规则见[多版本严格绑定](../../../docs/spack-compatible-versions.md)。旧 `b54743b` 的两类 target／runtime 入口和 GNU Hello 原生检查保留为历史证据，不追改旧镜像。正式托管、三机构、SmartBFT、容量准入及科研验收仍待完成，PR 未合并；后续源码修复未自动进入该固定归档。
+当前固定候选 `038aa6f` 的 21 镜像归档已完成交付和身份核对，三个独立平台均通过受限启动、真实 SSO 和机构读取权限检查；未启用调度器或 Agent，Peer／Orderer 尚未加入通道。其中一个平台验收后停止，保留容器与卷，恢复该机原 CI Runner。镜像使用 Spack 1.0.3，兼容规则见[多版本严格绑定](../../../docs/spack-compatible-versions.md)。旧 `b54743b` 的两类 target／runtime 入口和 GNU Hello 原生检查保留为历史证据，不追改旧镜像。正式托管、三机构联合交易、SmartBFT、容量准入及科研验收仍待完成，PR 未合并；后续源码修复未自动进入该固定归档。
 
 ## 本机构建与导出
 
@@ -265,6 +265,8 @@ python3 /受信任工具/offline.py up \
 
 `up --wait` 只确认容器启动与各服务自身的健康检查；Server 的 `/api/health` 也只表示 HTTP 进程可用，不能据此宣布用户权限或联盟通道就绪。
 
+AIO 默认 `AUTHZ_OUTBOX_INTERVAL_SEC=1`，可在私有环境文件调整；普通平台的服务默认值仍为 5 秒。首次目录可能产生数万条投影，处理时间仍取决于数据库与 CPU 预算。调整轮询间隔不跳过授权或持久化，也不增加主机资源限额。
+
 1. 完成真实 SSO 登录，检查 `/api/auth/session` 中的角色是否与本站已批准的组映射一致。OIDC 登录只同步平台角色，不自动创建开发机构或赋予机构成员身份；管理员通过平台的机构管理和成员管理建立正式归属，再单独授予所需联邦能力。旧机构和成员不会因升级删除，SSO 登录也不会覆盖其成员角色。开发免密登录仍保留历史默认机构行为，仅在开发环境可用。
 2. 打开“设置”的权限管理面板（`/settings#security/authz`），查看现有就绪结果，或用当前管理员会话请求 `GET /api/admin/authz/readiness`。AIO edge 的 API 前缀是 `/platform/api`。验收要求 `mode=enforce`、`healthy/schemaWritten/schemaMatches=true`、`outbox.pending/processing/dead=0`、`shadowDiffs=0`、`enforceReady=true`；接口的 `externalSmokeRequired=true` 表示还需验证实际授权操作。
 3. 首次软件目录初始化会生成大量权限投影，新管理员的投影可能仍在队列中。若管理接口暂时返回 403，用已有 Compose 配置执行下面的只读队列查询；有积压且持续下降时等待后台处理，不能删除队列或关闭 enforce。队列清空后仍为 403，回查 SSO 角色和管理员授权；有 dead 行时在管理入口核查失败原因并按原记录恢复。
@@ -275,6 +277,18 @@ docker compose --project-name <本站项目> -f /本站私有配置/compose.json
 ```
 
 查询不输出连接密码、授权原件或用户资料。随后只验证本站需要的授予／撤销及跨机构拒绝；已有未受影响的验收证据直接引用。权限就绪与 Fabric 通道加入、指定机构背书和 VALID 交易分别验收。
+
+## 停止与恢复
+
+Registry 和四种链码服务使用 Compose `init: true`，由运行时转发停止信号并回收子进程，避免未处理信号的 Bun／Node.js 直接作为 PID 1 时一直等待到 SIGKILL。镜像内容不变；应用配置需要重建受影响容器，保留原命名卷、私有文件与镜像 ID。信号退出可能记录为 143，不能仅因退出码非零就认定 OOM；同时检查 `OOMKilled`、停止耗时与日志。这一设置不提供在途交易排空或数据库恢复证明。
+
+Casdoor 同样启用 `init: true`。固定镜像中的 Go runtime 在进程作为 PID 1、无法按默认信号动作终止时会兜底退出 2；该现象不能直接当作应用 panic。已在一个机构平台定向验证：保留同一镜像与挂载，启动后健康，停止约 0.33 秒、退出 143，无 OOM。此项只验证启动健康与停止信号，真实 SSO 使用前次整站恢复证据，不重复计为本次检查。
+
+使用原项目的 `docker compose stop` 保留容器和数据，不用 `down -v`。停止后核对挂载时按目标路径比较全部属性，Docker inspect 的列表顺序可能变化。已有初始化容器退出 0 时不重复执行初始化。共享 CI 主机在暂停 Runner 前确认没有活动任务，试验全部停止后才能恢复 Runner；再次启动平台需重新安排资源窗口。
+
+固定候选的一个机构平台已补验整站恢复：21 个常驻服务按依赖顺序启动，原账号真实 SSO、机构和三项读取权限保留，三个读取 API 返回 200，页面无脚本或 HTTP 错误。该站应用 init 后再次停止，Registry／四链码均退出 143，无强杀或 OOM；全部原镜像与挂载保留，结束后恢复原 Runner／DinD。整站检查时 Casdoor 的退出 2 已由上述定向接续修复。原 Runner 反复重启的日志为向 Forgejo Declare 请求返回 HTTP 524；两处网络访问均超时，外部连接原因仍待定位，未改注册凭据或用容器恢复代替新 CI 作业验收。这些结果不覆盖在途业务、备份恢复或联合链交易。
+
+后续用户已明确停用原 Runner／DinD，两者现保持停止，容器、配置、数据和原 `unless-stopped` 策略保留，外部 Forgejo 诊断不再推进。停用期间的试验不得沿用历史收尾步骤自动恢复它们。
 
 ## 离线机构管理操作
 

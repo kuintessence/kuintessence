@@ -46,6 +46,7 @@ services:
       timeout: 3s
       retries: 6
   fabric-evidence-chaincode:
+    init: true
     restart: unless-stopped
     read_only: true
     cap_drop:
@@ -108,6 +109,7 @@ services:
       timeout: 3s
       retries: 6
   fabric-commercial-chaincode:
+    init: true
     restart: unless-stopped
     read_only: true
     cap_drop:
@@ -170,6 +172,7 @@ services:
       timeout: 3s
       retries: 6
   fabric-market-chaincode:
+    init: true
     restart: unless-stopped
     read_only: true
     cap_drop:
@@ -232,6 +235,7 @@ services:
       timeout: 3s
       retries: 6
   fabric-case-chaincode:
+    init: true
     restart: unless-stopped
     read_only: true
     cap_drop:

@@ -1047,6 +1047,9 @@ class ConfigurationTests(unittest.TestCase):
             manifest = {"revision": REVISION, "images": [{"name": name} for name in names]}
             args = argparse.Namespace(env_file=env_file, project="kq-fed-test-a", mode="direct", role="institution", scheduler="slurm")
             config = offline.render_config(ROOT, manifest, args)
+            self.assertTrue(config["services"]["registry"]["init"])
+            self.assertTrue(config["services"]["casdoor"]["init"])
+            self.assertEqual(config["services"]["server"]["environment"]["AUTHZ_OUTBOX_INTERVAL_SEC"], "1")
             self.assertFalse(any(name.startswith("fabric-") for name in config["services"]))
             server_env = config["services"]["server"]["environment"]
             self.assertEqual(server_env["DATA_MARKET_COMMITTER_ACCESS_KEY"], server_env["NETDRIVE_ACCESS_KEY"])

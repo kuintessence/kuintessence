@@ -132,6 +132,7 @@ services:
 
   registry:
     image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-registry:${KQ_IMAGE_TAG:-main}
+    init: true
     pull_policy: always
     restart: unless-stopped
     environment:
