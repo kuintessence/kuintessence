@@ -117,8 +117,9 @@ describe("auth route authz seed projection", () => {
     expect(transactionalTables).toContain(userOrgMemberships);
     expect(transactionalTables).toContain(authzOutbox);
 
-    const outboxCapture = captures.find((capture) => capture.table === authzOutbox);
-    const outboxRows = outboxCapture?.value as Array<Record<string, unknown>>;
+    const outboxRows = captures
+      .filter((capture) => capture.table === authzOutbox)
+      .flatMap((capture) => capture.value as Array<Record<string, unknown>>);
     expect(outboxRows).toHaveLength(12);
     expect(outboxRows).toContainEqual({
       operation: "create",
@@ -191,8 +192,9 @@ describe("auth route authz seed projection", () => {
     });
 
     expect(res.status).toBe(200);
-    const outboxCapture = captures.find((capture) => capture.table === authzOutbox);
-    const outboxRows = outboxCapture?.value as Array<Record<string, unknown>>;
+    const outboxRows = captures
+      .filter((capture) => capture.table === authzOutbox)
+      .flatMap((capture) => capture.value as Array<Record<string, unknown>>);
     expect(outboxRows).toContainEqual({
       operation: "create",
       resourceType: "platform",
@@ -242,8 +244,9 @@ describe("auth route authz seed projection", () => {
     });
 
     expect(res.status).toBe(200);
-    const outboxCapture = captures.find((capture) => capture.table === authzOutbox);
-    const outboxRows = outboxCapture?.value as Array<Record<string, unknown>>;
+    const outboxRows = captures
+      .filter((capture) => capture.table === authzOutbox)
+      .flatMap((capture) => capture.value as Array<Record<string, unknown>>);
     expect(outboxRows).toHaveLength(12);
     expect(outboxRows).toContainEqual({
       operation: "create",

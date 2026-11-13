@@ -50,7 +50,7 @@ test("federation parameter slots validate bindings, descriptors and relation tar
   const slot = { descriptor: "value", type: "Text", from: { param: "value" } };
   for (const invalid of [
     { ...slot, descriptor: "__proto__" },
-    { ...slot, type: "File" },
+    { ...slot, type: "Dataset" },
     { ...slot, from: undefined },
     { ...slot, contents: [id] },
   ])
