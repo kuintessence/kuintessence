@@ -86,7 +86,7 @@ export function testDelegation(terms: FederationAgreement): FederationDelegation
 }
 
 /** Capacity tests replace only physical telemetry; transactions and admission services remain real. */
-export function testCompletionStorage() {
+export function testCompletionStorage(reserveBytes = "10000") {
   const reserveId = crypto.randomUUID();
   let healthy = true;
   const guard: Pick<
@@ -105,12 +105,12 @@ export function testCompletionStorage() {
           modes: ["bilateral_direct", "bilateral_attested", "ledger_coordinated"],
           state: healthy ? "healthy" : "pressure",
           observedAt: new Date().toISOString(),
-          totalBytes: "100000",
+          totalBytes: (BigInt(reserveBytes) + 100000n).toString(),
           availableBytes: "50000",
           availableInodes: "1000",
           requiredBytes: "100",
           minAvailableInodes: "1",
-          completionReserve: { reserveId, state: "armed", allocatedBytes: "10000" },
+          completionReserve: { reserveId, state: "armed", allocatedBytes: reserveBytes },
         },
       ];
     },

@@ -135,7 +135,7 @@ test("NetDrive refreshes expired URLs without changing saved intent and keeps ru
   expect(prepared.message.payload.value.inputStaging[0]).toMatchObject({
     sourceUrl: "https://objects.test/original-input?ticket=1",
     expectedSha256: "a".repeat(64),
-    expectedSizeBytes: 4n,
+    totalBytes: 4n,
   });
   const [saved] = await db
     .select()
@@ -225,7 +225,7 @@ test.each([
       netdriveInput: false,
       deliveryLeaseId: "",
       expectedSha256: "",
-      expectedSizeBytes: 0n,
+      totalBytes: 0n,
     });
   if (change === "path") input.stagePath = "other.txt";
   if (change === "missing") changed.payload.value.inputStaging = [];

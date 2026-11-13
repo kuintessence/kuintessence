@@ -2752,7 +2752,7 @@ test("result import HTTP API persists intent, enforces operation scope, and requ
   expect(pages.data.hasMore).toBe(true);
   expect(pages.data.data).toHaveLength(1);
   const secondPage = importList.parse(await (await app.request(`${base}?limit=1&offset=1`)).json());
-  expect(secondPage.data.data[0]?.id).toBe(fresh);
+  expect([pages.data.data[0]?.id, secondPage.data.data[0]?.id]).toEqual([importId, fresh].sort());
   const attempts = await db
     .select()
     .from(federationResultAttempts)
@@ -8327,7 +8327,8 @@ test("completion pool bootstraps existing source work and deduplicates workflow 
   const { federationCompletionClaims: claims, federationCompletionPools: pools } = await import(
     "@kuintessence/db"
   );
-  const storage = testCompletionStorage(),
+  // Bootstrap includes all earlier accepted requests in this file.
+  const storage = testCompletionStorage("1000000"),
     f = await workflowDelegationFixture();
   const original = await fixture();
   await original.service().enqueue(actor, original.request);
@@ -8335,7 +8336,7 @@ test("completion pool bootstraps existing source work and deduplicates workflow 
     capacity = new FederationCompletionCapacity(db, siteId, storage.guard);
   const config = {
     reserveId: storage.reserveId,
-    capacityBytes: "10000",
+    capacityBytes: "1000000",
     taskBytes: "60",
     marketBytes: "20",
   };
@@ -8393,7 +8394,7 @@ test("completion pool observation cannot extend source authorization and a faile
   const { federationCompletionClaims: claims, federationCompletionPools: pools } = await import(
     "@kuintessence/db"
   );
-  const storage = testCompletionStorage(),
+  const storage = testCompletionStorage("1000000"),
     f = await fixture();
   let expire = false;
   const guard = {
@@ -8408,7 +8409,12 @@ test("completion pool observation cannot extend source authorization and a faile
     capacity = new FederationCompletionCapacity(db, siteId, guard);
   try {
     await capacity.configure(
-      { reserveId: storage.reserveId, capacityBytes: "10000", taskBytes: "60", marketBytes: "20" },
+      {
+        reserveId: storage.reserveId,
+        capacityBytes: "1000000",
+        taskBytes: "60",
+        marketBytes: "20",
+      },
       actor.userId,
     );
     const before = await capacity.inspect();
@@ -8436,13 +8442,13 @@ test("completion renewal gates a fresh result import but preserves original impo
     "@kuintessence/db"
   );
   const f = await resultImportFixture(),
-    storage = testCompletionStorage();
+    storage = testCompletionStorage("1000000");
   await f.imports.cancel(actor, f.imported.id);
   const siteId = a.signing.siteId,
     cap = new FederationCompletionCapacity(db, siteId, storage.guard);
   const policy = {
     reserveId: storage.reserveId,
-    capacityBytes: "10000",
+    capacityBytes: "1000000",
     taskBytes: "60",
     marketBytes: "20",
   };
@@ -8499,14 +8505,19 @@ test("completion renewal preserves an accepted intent cancellation under physica
     "@kuintessence/db"
   );
   const f = await fixture(),
-    storage = testCompletionStorage(),
+    storage = testCompletionStorage("1000000"),
     siteId = a.signing.siteId;
   const service = f.service(undefined, storage.guard);
   await service.enqueue(actor, f.request);
   const cap = new FederationCompletionCapacity(db, siteId, storage.guard);
   try {
     await cap.configure(
-      { reserveId: storage.reserveId, capacityBytes: "10000", taskBytes: "60", marketBytes: "20" },
+      {
+        reserveId: storage.reserveId,
+        capacityBytes: "1000000",
+        taskBytes: "60",
+        marketBytes: "20",
+      },
       actor.userId,
     );
     const initial = await cap.inspect();

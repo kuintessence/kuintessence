@@ -671,7 +671,7 @@ test.each([
       Object.assign(message.payload.value.inputStaging[0], {
         netdriveInput: true,
         expectedSha256: file.sha256,
-        expectedSizeBytes: 4n,
+        totalBytes: 4n,
         deliveryLeaseId: randomUUID(),
         deliveryLeaseExpiresAtUnixMs: 1n,
       });

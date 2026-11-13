@@ -146,7 +146,7 @@ test.each([
 });
 
 test("completion accounting rejects another job, malformed quantities and unknown fields", async () => {
-  const db = drizzle(new Database(":memory:"));
+  const db: SqliteDb = drizzle(new Database(":memory:"));
   runSqliteMigrations(db.$client);
   const store = new ActiveRemoteJobs(db);
   try {
