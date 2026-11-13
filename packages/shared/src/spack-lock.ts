@@ -1,4 +1,4 @@
-import compatibility from "./spack-compatibility.json";
+import compatibility from "./spack-compatibility.json" with { type: "json" };
 
 export const SPACK_COMPATIBILITY = compatibility;
 
