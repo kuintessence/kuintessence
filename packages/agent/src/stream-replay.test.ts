@@ -83,7 +83,15 @@ test.each([
   }
 });
 
-test("a resumed queued job durably reports its scheduler ID and acknowledges original epoch receipts", async () => {
+test.each([
+  { dispatchEpoch: undefined, epochs: [1], expectedPending: [] },
+  { dispatchEpoch: 1, epochs: [1, 2], expectedPending: [2] },
+  { dispatchEpoch: undefined, epochs: [1, 2], expectedPending: [1, 2] },
+])("a resumed PBS job durably reports completion and acknowledges only its epoch: %j", async ({
+  dispatchEpoch,
+  epochs,
+  expectedPending,
+}) => {
   const db = createSqliteDb(":memory:");
   const records = new ActiveRemoteJobs(db);
   const inbound = new InboundAcks(db);
@@ -99,23 +107,35 @@ test("a resumed queued job durably reports its scheduler ID and acknowledges ori
     workingDir: "/shared/fixture",
     envVars: {},
   };
-  await records.recordSubmitted({ spec, schedulerJobId: "123", expectedOutputs: [] });
-  for (const epoch of [1, 2])
+  await records.recordSubmitted({
+    spec,
+    schedulerJobId: "123",
+    expectedOutputs: [],
+    dispatchId: dispatchEpoch === undefined ? undefined : `${spec.jobId}:${dispatchEpoch}`,
+  });
+  for (const epoch of epochs)
     await inbound.persistInbound({
       dispatchId: `${spec.jobId}:${epoch}`,
       jobId: spec.jobId,
       payload: {},
     });
   let polls = 0;
+  const accounting = {
+    version: 1 as const,
+    source: "pbs-qstat" as const,
+    schedulerJobId: "123",
+    observedAt: "2026-11-13T00:00:00.000Z",
+    cpuTimeMilliseconds: "1000",
+  };
   const adapter: SchedulerAdapter = {
-    type: "slurm",
+    type: "pbs-pro",
     version: "fixture",
     submit: async () => {
       throw new Error("must not resubmit");
     },
     cancel: async () => {},
     status: async () =>
-      ++polls === 1 ? { status: "queued" } : { status: "completed", exitCode: 0 },
+      ++polls === 1 ? { status: "queued" } : { status: "completed", exitCode: 0, accounting },
   };
   const stream = new AgentStream({
     client: {} as AgentStreamDeps["client"],
@@ -141,8 +161,11 @@ test("a resumed queued job durably reports its scheduler ID and acknowledges ori
     );
     expect(reports.map((report) => report.status)).toEqual(["queued", "completed"]);
     expect(reports[0]?.schedulerJobId).toBe("123");
+    expect(reports.at(-1)?.accounting).toEqual(accounting);
     expect(reports.every((report) => report.workingDir === spec.workingDir)).toBe(true);
-    expect(await inbound.pendingInbound()).toEqual([]);
+    expect((await inbound.pendingInbound()).map((receipt) => receipt.dispatchId)).toEqual(
+      expectedPending.map((epoch) => `${spec.jobId}:${epoch}`),
+    );
     expect(await records.listActive()).toEqual([]);
   } finally {
     await stream.stop();

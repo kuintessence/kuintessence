@@ -26,6 +26,7 @@ try {
     hostPidNamespace: await readlink("/proc/self/ns/pid"),
   }), { mode: 0o400 });
   await copyFile("packages/agent/src/spack/worker/source_audit.py", join(input, "boundary.py"));
+  await copyFile("packages/shared/src/spack-compatibility.json", join(input, "spack-compatibility.json"));
   await copyFile("deploy/pr-test/spack-managed/probe.py", join(input, "source_audit.py"));
   const result = await runSpackSupervisedProcess(
     buildSpackAuditCommand(runtime, input, `sha256:${"0".repeat(64)}`),

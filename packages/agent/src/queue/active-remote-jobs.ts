@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { activeRemoteJobs, type SqliteDb } from "@kuintessence/db";
-import { QueueTargetModeSchema, QueueValidationModeSchema } from "@kuintessence/shared";
+import {
+  QueueTargetModeSchema,
+  QueueValidationModeSchema,
+  SchedulerAccountingSchema,
+} from "@kuintessence/shared";
 import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -343,10 +347,19 @@ export function validateCompletionSnapshot(
       (key) => fields[key] !== undefined && typeof fields[key] !== "string",
     ) ||
     Object.keys(fields).some(
-      (key) => !["status", "exitCode", "message", "node", "reason", "startedAt"].includes(key),
+      (key) =>
+        !["status", "exitCode", "message", "node", "reason", "startedAt", "accounting"].includes(
+          key,
+        ),
     )
   )
     throw new Error("Invalid completed job result");
+  const accounting =
+    fields.accounting === undefined
+      ? undefined
+      : SchedulerAccountingSchema.parse(fields.accounting);
+  if (accounting && accounting.schedulerJobId !== schedulerJobId)
+    throw new Error("Completed job accounting binding mismatch");
   return {
     format: 1,
     schedulerJobId,
@@ -358,6 +371,7 @@ export function validateCompletionSnapshot(
       node: fields.node as string | undefined,
       reason: fields.reason as string | undefined,
       startedAt: fields.startedAt as string | undefined,
+      accounting,
     },
   };
 }
