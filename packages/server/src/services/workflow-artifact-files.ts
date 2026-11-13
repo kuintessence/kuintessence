@@ -58,6 +58,26 @@ export class WorkflowArtifactFiles implements ArtifactPersister {
     // Separate upload targets cannot overwrite a file already referenced by a concurrent reader.
     const base = `workflow-runs/${artifact.workflowRunId}/artifacts/${artifact.id}`;
     if (artifact.ioType !== "FileBatch") {
+      // A delayed resolver may still hold the snapshot from before another publication finished.
+      const [existing] = await this.db
+        .select({ file: netdriveFiles })
+        .from(workflowArtifacts)
+        .innerJoin(netdriveFiles, eq(netdriveFiles.id, workflowArtifacts.netdriveFileId))
+        .where(
+          and(
+            eq(workflowArtifacts.id, artifact.id),
+            eq(netdriveFiles.ownerId, ownerId),
+            isNull(netdriveFiles.deletedAt),
+          ),
+        );
+      if (existing) {
+        if (
+          existing.file.sha256 !== artifact.contentHash ||
+          existing.file.size !== artifact.sizeBytes
+        )
+          throw new Error("Published artifact failed size/hash verification");
+        return { netdriveFileId: existing.file.id, storageRef: existing.file.path };
+      }
       return this.publishFile({
         artifact,
         ownerId,

@@ -86,7 +86,7 @@ async function fixture(batch: boolean) {
     storageRef: "/isolated/result",
     fileMembers,
   };
-  const { artifact } = await store.registerLocal(registration);
+  const { artifact, replica } = await store.registerLocal(registration);
   const attempts: string[] = [];
   let failure = "";
   const publish: ConstructorParameters<typeof WorkflowArtifactFiles>[1] = async (input) => {
@@ -119,6 +119,7 @@ async function fixture(batch: boolean) {
     workflowRunId,
     producer,
     artifact,
+    replica,
     registration,
     make,
     attempts,
@@ -148,6 +149,25 @@ test("single-file bridge shares concurrent publication, keeps references stable,
   await db.update(jobs).set({ restrictedNoEgress: true }).where(eq(jobs.id, f.producer.id));
   await expect(first.resolve(f.ref)).rejects.toThrow("does not permit file export");
   expect(f.attempts).toHaveLength(1);
+});
+
+test("a delayed publisher reuses the live file despite its stale snapshot and replaces a deleted file", async () => {
+  const f = await fixture(false);
+  const first = f.make();
+  const original = await first.resolve(f.ref);
+  expect(f.artifact.netdriveFileId).toBeNull();
+  await first.service.persist({ artifact: f.artifact, replica: f.replica }, ownerId);
+  expect(f.attempts).toEqual(["/isolated/result"]);
+  expect(await first.resolve(f.ref)).toEqual(original);
+  const [current] = await db
+    .select()
+    .from(workflowArtifacts)
+    .where(eq(workflowArtifacts.id, f.artifact.id));
+  if (!current?.netdriveFileId) throw new Error("Missing live file");
+  await db.delete(netdriveFiles).where(eq(netdriveFiles.id, current.netdriveFileId));
+  await first.service.persist({ artifact: f.artifact, replica: f.replica }, ownerId);
+  expect(f.attempts).toEqual(["/isolated/result", "/isolated/result"]);
+  expect(await first.resolve(f.ref)).not.toEqual(original);
 });
 
 test("FileBatch resumes from immutable member mappings and feeds a software node with nested file paths", async () => {

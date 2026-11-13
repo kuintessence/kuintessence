@@ -64,4 +64,6 @@ transfer UUID，重试复用同一行与 uploadId；成功回执需保存后才�
 
 普通 Workflow 的逐文件传输由[输出发布 outbox](workflow-output-recovery.md)持久关联；后台恢复已入库的 publication，不要求用户另起手动传输。文件提交与计算完成分别观察，文件恢复不会续跑已失败的 DAG。
 
+工作流单文件发布在上传前重新读取已完成的持久映射，校验所有者、未删除状态、大小与摘要后复用，避免延迟请求携带旧快照重复上传。文件已删除时允许重新发布；已有有效引用保持稳定。
+
 同一 transfer 重试时，Server 会清理上一轮超时计时器，并按当前 entry 身份过滤已经排队的旧 timeout；旧轮次的异步 complete/abort 收尾也不能清除新轮次的 active/pending 映射或回报旧终态。该进程内保护与持久 uploadId/completion 绑定共同使用，不以重新提交计算规避传输失败。
