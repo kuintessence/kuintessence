@@ -429,7 +429,7 @@ Scheduler 支持 `slurm/pbs-pro/torque/kubernetes`，CLI 识别本地 adapter �
 
 输出包括 `certs/client.key`、`client.crt`、`ca.crt` 和 `agent.env`。
 目录权限设为 `0700`，新私钥和 env 为 `0600`；证书轮换后也应检查既有文件权限。
-`agent.env` 写 Server URL、Agent ID/site、mTLS、证书和 DB 路径，不写 scheduler 类型；部署须保持运行时配置一致。
+`agent.env` 写 Server URL、Agent ID/site、mTLS、证书和 DB 路径，并保存登记时的 `AGENT_SCHEDULER_TYPE`、`AGENT_SCHEDULER_VERSION`。Agent 与独立联邦看守启动沿用这个调度器，不因同机安装其他调度器客户端而改选；未设置类型的旧配置仍自动探测。已有节点可在原配置中补充类型，无需重新登记或更换证书。升级调度器后同步更新版本字段；强制注册但未探测实际版本时保留原适配器的 `0.0.0`，不能当作实际版本。
 Server 还会检查 Agent 是否已登记；即使 mTLS 验证通过，缺少 Server Agent row 的连接仍会被拒绝。
 
 ### 证书 API 与审计

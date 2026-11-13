@@ -13,6 +13,16 @@ import {
   DataScanFileSchema,
   DataScanResultSchema,
   type DispatchJob,
+  FederationAccountingResponseSchema,
+  type FederationExecutionRequest,
+  type FederationInputCopyReport,
+  type FederationInputGrantRequest,
+  type FederationMediaExportLeaseRequest,
+  type FederationMediaExportReport,
+  type FederationMediaImportKeyRequest,
+  type FederationMediaImportReport,
+  type FederationResultCopyReport,
+  type FederationResultGrantRequest,
   FileTransferProgressSchema,
   GpuMetricSchema,
   HeartbeatSchema,
@@ -37,11 +47,14 @@ import {
   SandboxRuntimeCacheEntrySchema,
   SandboxRuntimeKind,
   SandboxSelfAccountSchema,
+  SchedulerAccountingSchema,
   SchedulerQueueFactSchema,
   SchedulerType,
   type ServerMessage,
+  ServerMessageSchema,
   ShellExecResponseSchema,
   SoftwareOperationAction,
+  type SoftwareOperationRequest,
   SoftwareOperationResultSchema,
   SoftwareOperationStatus,
   SoftwarePolicyAckSchema,
@@ -59,10 +72,12 @@ import {
   type SiteOperations,
   SiteOperationsSchema,
 } from "@kuintessence/shared";
+import { FederationAccountingRequestSchema } from "@kuintessence/shared/federation";
 import type { Logger } from "pino";
 import {
   COMPUTE_HEALTH_REASONS,
   type ComputeHealthObservation,
+  cancelAndConfirmStopped,
   JobLogUnavailableError,
   type JobSpec,
   type KuintessenceJobLookup,
@@ -79,8 +94,26 @@ import type {
   CpLocalDataScanRequest,
   CpLocalDataScanResult,
 } from "./data-market/data-scan";
+import { netdriveDeliveries } from "./data-market/netdrive-inputs";
 import { ExecutorPool } from "./embedded/executor-pool";
 import type { JobStatusReport } from "./embedded/job-executor";
+import { ExecutionAuthorization, ExecutionAuthorizationExpired } from "./execution-authorization";
+import { collectFederationAccounting } from "./federation/accounting";
+import { FederationInputClient, type FederationInputClientConfig } from "./federation/input-client";
+import {
+  FederationMediaExportClient,
+  type FederationMediaExportConfig,
+} from "./federation/media-export-client";
+import {
+  FederationMediaImportClient,
+  type FederationMediaImportConfig,
+} from "./federation/media-import-client";
+import { FederationMediaUploadClient } from "./federation/media-upload-client";
+import {
+  FederationResultClient,
+  type FederationResultClientConfig,
+} from "./federation/result-client";
+import { FederationTransferSlot } from "./federation/transfer-session";
 import {
   buildCloudToClusterArgv,
   buildHostCloudToClusterArgv,
@@ -96,8 +129,23 @@ import { readGpuMetrics as defaultReadGpuMetrics, type GpuMetric } from "./monit
 import { readMetrics } from "./monitor/metrics";
 import { createCachedSchedulerQueueDepthReader } from "./monitor/queue-depth";
 import type { ExpectedOutput } from "./output-collector";
-import { type ActiveRemoteJobs, PENDING_SCHEDULER_SUBMISSION } from "./queue/active-remote-jobs";
-import type { InboundAcks } from "./queue/inbound-acks";
+import {
+  type ActiveRemoteJobs,
+  jsonToPreparedRemoteJob,
+  PENDING_SCHEDULER_SUBMISSION,
+} from "./queue/active-remote-jobs";
+import {
+  FederationDispatchReceiptSchema,
+  federationDispatchReceipt,
+  federationSchedulerName,
+  matchesFederationReceipt,
+} from "./queue/federation-dispatch";
+import { FederationExecutionClient } from "./queue/federation-execution";
+import type {
+  FederationRuntimeReceipt,
+  InboundAcks,
+  PendingInboundRow,
+} from "./queue/inbound-acks";
 import type {
   JobCleanupIntent,
   JobCleanupIntents,
@@ -108,6 +156,7 @@ import type {
   OutboundQueue,
   OutboundItem as PersistedOutboundItem,
 } from "./queue/outbound-queue";
+import { SoftwareOperationIntentConflict } from "./queue/software-operations";
 import type { AgentSandboxCapability } from "./sandbox/capability";
 import type { SandboxDispatchProcessor } from "./sandbox/dispatch-processor";
 import {
@@ -124,12 +173,14 @@ import type {
 import {
   type ExecutionIdentity,
   RECOVERY_REQUIRED,
+  SpackInstallationPending,
   softwareExecution,
 } from "./spack/execution-identity";
 import {
   activateWorkflowSpack,
   SPACK_ACTIVATION_FAILURE,
   SPACK_ACTIVATION_TIMEOUT,
+  workflowSpackIntent,
 } from "./spack/workflow-activation";
 import type { SshHandler, SshOutgoingMessage } from "./ssh";
 import { downloadToFile } from "./staging/download-to-file";
@@ -222,6 +273,16 @@ type OutboundItem =
       correlationId: string;
       uploadId: string;
     }
+  | { kind: "federationMediaExportLeaseRequest"; request: FederationMediaExportLeaseRequest }
+  | { kind: "federationMediaImportKeyRequest"; request: FederationMediaImportKeyRequest }
+  | { kind: "federationMediaExportReport"; report: FederationMediaExportReport }
+  | { kind: "federationMediaImportReport"; report: FederationMediaImportReport }
+  | { kind: "federationAccountingResponse"; responseJson: string }
+  | { kind: "federationInputGrantRequest"; request: FederationInputGrantRequest }
+  | { kind: "federationInputCopyReport"; report: FederationInputCopyReport }
+  | { kind: "federationResultGrantRequest"; request: FederationResultGrantRequest }
+  | { kind: "federationResultCopyReport"; report: FederationResultCopyReport }
+  | { kind: "federationExecutionRequest"; request: FederationExecutionRequest }
   | {
       kind: "sandboxArtifactReleaseAck";
       requestId: string;
@@ -243,6 +304,7 @@ type OutboundItem =
       kind: "cancelJobAck";
       jobId: string;
       revokedEpoch: number;
+      installationsStopped?: boolean;
     }
   | {
       kind: "jobWorkRootReleaseAck";
@@ -363,6 +425,14 @@ const MAX_JOB_LOG_BYTES = 1024 * 1024;
 const DEFAULT_DATA_SCAN_TIMEOUT_MS = 300_000;
 const MAX_COMPLETED_DATA_SCANS = 512;
 
+function epochFromDispatchId(jobId: string, dispatchId?: string): number | undefined {
+  if (!dispatchId?.startsWith(`${jobId}:`)) return undefined;
+  const value = dispatchId.slice(jobId.length + 1);
+  if (!/^\d+$/.test(value)) return undefined;
+  const epoch = Number(value);
+  return Number.isSafeInteger(epoch) ? epoch : undefined;
+}
+
 function schedulerSubmissionTag(jobId: string): string {
   return `kq-${jobId.replaceAll("-", "").slice(0, 11)}`;
 }
@@ -371,7 +441,11 @@ function schedulerLookupForSpec(spec: JobSpec): KuintessenceJobLookup & { schedu
   const identity = spec.sandbox?.identity;
   return {
     jobId: spec.jobId,
+    federationDispatchEpoch: spec.federationDispatchEpoch,
     schedulerName: spec.schedulerName ?? schedulerSubmissionTag(spec.jobId),
+    ...(identity?.backend === "Unix"
+      ? { executionUser: { uid: identity.uid, username: identity.username } }
+      : {}),
     ...(identity?.backend === "Unix" && identity.schedulerAccount
       ? { schedulerAccount: identity.schedulerAccount }
       : {}),
@@ -486,6 +560,16 @@ export function jobStatusReportToProto(report: JobStatusReport, eventId = ""): A
         collected: report.collected ?? {},
         eventId,
         workingDir: report.workingDir ?? "",
+        accounting: report.accounting
+          ? create(SchedulerAccountingSchema, {
+              source: report.accounting.source,
+              schedulerJobId: report.accounting.schedulerJobId,
+              observedAt: report.accounting.observedAt,
+              elapsedMilliseconds: report.accounting.elapsedMilliseconds,
+              cpuTimeMilliseconds: report.accounting.cpuTimeMilliseconds,
+              allocatedCpus: report.accounting.allocatedCpus,
+            })
+          : undefined,
       }),
     },
   });
@@ -496,6 +580,11 @@ export function jobStatusReportToProto(report: JobStatusReport, eventId = ""): A
 // ---------------------------------------------------------------------------
 
 export interface AgentStreamDeps {
+  federationResultCopy?: FederationResultClientConfig;
+  federationInputCopy?: FederationInputClientConfig;
+  federationMediaExport?: FederationMediaExportConfig;
+  federationMediaImport?: FederationMediaImportConfig;
+  assertFederationRuntimeWatchdog?: () => Promise<void>;
   readSiteOperations?: () => Promise<SiteOperations>;
   client: ServerClient;
   /**
@@ -629,7 +718,7 @@ export interface AgentStreamDeps {
   fileTransferConnectTo?: string;
   fileTransferStateDir?: string;
   containerFileTransferConnectTo?: string;
-  sandboxProcessor?: Pick<SandboxDispatchProcessor, "prepare">;
+  sandboxProcessor?: Pick<SandboxDispatchProcessor, "prepare" | "cleanup">;
   assertSandboxRuntimeAttestation?: (
     sandbox: SandboxJobSpec,
     runtimeDigest: string,
@@ -692,6 +781,65 @@ export class AgentStream {
   private readonly maintenanceTasks = new Set<Promise<unknown>>();
   private running = true;
   private connected = false;
+  private federationMediaExportSupported = false;
+  private federationMediaObjectExportSupported = false;
+  private federationMediaImportSupported = false;
+  private federationMediaUploadSupported = false;
+  private federationMediaUpload?: FederationMediaUploadClient;
+  private federationMediaExport?: FederationMediaExportClient;
+  private federationMediaImport?: FederationMediaImportClient;
+  private federationInputCopySupported = false;
+  private federationInputVerifySupported = false;
+  private federationInputCopy?: FederationInputClient;
+  private federationResultCopySupported = false;
+  private federationResultVerifySupported = false;
+  private federationResultCopy?: FederationResultClient;
+  private federationExecutionSupported = false;
+  private federationInstallationSupported = false;
+  private readonly recoveringFederationDispatches = new Map<
+    string,
+    { controller: AbortController; epoch: number }
+  >();
+  private readonly federationDispatches = new Map<
+    string,
+    { dispatch: DispatchJob; controller: AbortController }
+  >();
+  private readonly federationSpecs = new WeakSet<JobSpec>();
+  private readonly federationRuntimes = new Map<
+    string,
+    {
+      dispatchId: string;
+      epoch: number;
+      receipt: FederationRuntimeReceipt;
+      authorization?: ExecutionAuthorization;
+      retry?: ReturnType<typeof setTimeout>;
+      superseded?: boolean;
+    }
+  >();
+  private schedulerRecovery: Promise<void> | undefined;
+  private readonly jobCancellationSettlements = new Map<string, Promise<void>>();
+  private readonly jobPreparations = new Map<string, Promise<void>>();
+  private readonly federationInstallations = new Map<
+    string,
+    {
+      request: SoftwareOperationRequest;
+      controller: AbortController;
+      started: boolean;
+      settled: Promise<void>;
+    }
+  >();
+  private readonly federationExecution = new FederationExecutionClient((request) => {
+    if (
+      !this.connected ||
+      !(request.operationId
+        ? this.federationInstallationSupported
+        : this.federationExecutionSupported)
+    )
+      return false;
+    this.outboundQueue.push({ kind: "federationExecutionRequest", request });
+    this.signalOutbound();
+    return true;
+  });
   private outboundQueue: OutboundItem[] = [];
   private readonly outboundResolvers = new Set<() => void>();
   private readonly pendingPartUrlRequests = new Map<
@@ -794,6 +942,140 @@ export class AgentStream {
   private heartbeatFollowUpRequested = false;
 
   constructor(private deps: AgentStreamDeps) {
+    const transferSlot = new FederationTransferSlot();
+    if (deps.federationMediaExport)
+      this.federationMediaExport = new FederationMediaExportClient(
+        deps.federationMediaExport,
+        (request) => {
+          if (!this.connected || !this.federationMediaExportSupported) return false;
+          this.outboundQueue.push({ kind: "federationMediaExportLeaseRequest", request });
+          this.signalOutbound();
+          return true;
+        },
+        (report) => {
+          if (!this.connected || !this.federationMediaExportSupported) return;
+          this.outboundQueue.push({ kind: "federationMediaExportReport", report });
+          this.signalOutbound();
+        },
+        transferSlot,
+      );
+    if (deps.federationMediaImport)
+      this.federationMediaImport = new FederationMediaImportClient(
+        deps.federationMediaImport,
+        (request) => {
+          if (!this.connected || !this.federationMediaImportSupported) return false;
+          this.outboundQueue.push({ kind: "federationMediaImportKeyRequest", request });
+          this.signalOutbound();
+          return true;
+        },
+        (report) => {
+          if (!this.connected || !this.federationMediaImportSupported) return;
+          this.outboundQueue.push({ kind: "federationMediaImportReport", report });
+          this.signalOutbound();
+        },
+        transferSlot,
+      );
+    if (deps.federationResultCopy)
+      this.federationResultCopy = new FederationResultClient(
+        deps.federationResultCopy,
+        (request) => {
+          if (!this.connected || !this.federationResultVerifySupported) return false;
+          this.outboundQueue.push({ kind: "federationResultGrantRequest", request });
+          this.signalOutbound();
+          return true;
+        },
+        (report) => {
+          if (!this.connected || !this.federationResultVerifySupported) return;
+          this.outboundQueue.push({ kind: "federationResultCopyReport", report });
+          this.signalOutbound();
+        },
+        undefined,
+        undefined,
+        transferSlot,
+      );
+    if (deps.federationInputCopy)
+      this.federationInputCopy = new FederationInputClient(
+        deps.federationInputCopy,
+        (request) => {
+          if (!this.connected || !this.federationInputVerifySupported) return false;
+          this.outboundQueue.push({ kind: "federationInputGrantRequest", request });
+          this.signalOutbound();
+          return true;
+        },
+        (report) => {
+          if (!this.connected || !this.federationInputVerifySupported) return;
+          this.outboundQueue.push({ kind: "federationInputCopyReport", report });
+          this.signalOutbound();
+        },
+        undefined,
+        undefined,
+        transferSlot,
+      );
+    if (deps.federationMediaImport && (deps.federationInputCopy || deps.federationResultCopy))
+      this.federationMediaUpload = new FederationMediaUploadClient(
+        {
+          agentId: deps.federationMediaImport.agentId,
+          roots: deps.federationMediaImport.roots,
+          inputOrigins: deps.federationInputCopy?.allowedDestinationOrigins,
+          resultOrigins: deps.federationResultCopy?.allowedDestinationOrigins,
+        },
+        {
+          media: (request) => {
+            if (
+              !this.connected ||
+              !this.federationMediaUploadSupported ||
+              !this.federationMediaImportSupported
+            )
+              return false;
+            this.outboundQueue.push({ kind: "federationMediaImportKeyRequest", request });
+            this.signalOutbound();
+            return true;
+          },
+          input: (request) => {
+            if (
+              !this.connected ||
+              !this.federationMediaUploadSupported ||
+              !this.federationInputVerifySupported
+            )
+              return false;
+            this.outboundQueue.push({ kind: "federationInputGrantRequest", request });
+            this.signalOutbound();
+            return true;
+          },
+          result: (request) => {
+            if (
+              !this.connected ||
+              !this.federationMediaUploadSupported ||
+              !this.federationResultVerifySupported
+            )
+              return false;
+            this.outboundQueue.push({ kind: "federationResultGrantRequest", request });
+            this.signalOutbound();
+            return true;
+          },
+          inputReport: (report) => {
+            if (
+              !this.connected ||
+              !this.federationMediaUploadSupported ||
+              !this.federationInputVerifySupported
+            )
+              return;
+            this.outboundQueue.push({ kind: "federationInputCopyReport", report });
+            this.signalOutbound();
+          },
+          resultReport: (report) => {
+            if (
+              !this.connected ||
+              !this.federationMediaUploadSupported ||
+              !this.federationResultVerifySupported
+            )
+              return;
+            this.outboundQueue.push({ kind: "federationResultCopyReport", report });
+            this.signalOutbound();
+          },
+        },
+        transferSlot,
+      );
     this.logger = deps.logger ?? createLogger("agent-stream");
     this.sleep = deps.sleep ?? ((ms) => Bun.sleep(ms));
     this.reconnectBackoffMs = deps.reconnectBackoffMs ?? 5_000;
@@ -865,23 +1147,89 @@ export class AgentStream {
           await this.assertDispatchEpochAllowed(spec.jobId, spackEpoch);
           this.lifecycleController.signal.throwIfAborted();
         }
-        if (deps.adapter.type === "slurm" && !spec.sandbox)
+        if (this.federationSpecs.has(spec)) {
+          const pending = this.federationDispatches.get(spec.jobId);
+          if (!pending) throw new Error("Federation dispatch authority is missing");
+          await this.assertFederationRuntimeWatchdog();
+          const grant = await this.renewFederationExecution(pending.dispatch);
+          const dispatchId = this.dispatchIdsByJob.get(spec.jobId);
+          if (!dispatchId || !this.inboundAcks)
+            throw new Error("Federation dispatch receipt is missing");
+          if (!grant || grant.expiresAt <= Date.now())
+            throw new Error("Federation execution grant expired before submission");
+          const runtime: FederationRuntimeReceipt = {
+            owner: crypto.randomUUID(),
+            expiresAt: grant.expiresAt,
+            state: "active",
+          };
+          await this.inboundAcks.markSubmissionStarted(
+            dispatchId,
+            { spec, expectedOutputs },
+            runtime,
+          );
+          this.startFederationRuntime(
+            spec.jobId,
+            dispatchId,
+            Number(pending.dispatch.dispatchEpoch),
+            runtime,
+          );
+          const authorization = this.federationRuntimes.get(spec.jobId)?.authorization;
+          if (!authorization) throw new Error("Federation runtime authority is unavailable");
+          authorization.assertValid();
+          pending.controller.signal.throwIfAborted();
+          this.lifecycleController.signal.throwIfAborted();
+        }
+        if (deps.adapter.type === "slurm" && !spec.sandbox && !this.federationSpecs.has(spec))
           await this.activeRemoteJobs?.recordSubmissionIntent(spec, expectedOutputs);
+      },
+      onSubmissionUncertain: async (spec, err) => {
+        if (!this.federationSpecs.has(spec) && !this.unreconciledSubmittedJobs.has(spec.jobId)) {
+          return (
+            (await this.activeRemoteJobs?.get(spec.jobId))?.schedulerJobId ===
+            PENDING_SCHEDULER_SUBMISSION
+          );
+        }
+        this.federationDispatches.get(spec.jobId)?.controller.abort();
+        this.federationDispatches.delete(spec.jobId);
+        this.logger.warn(
+          { err, jobId: spec.jobId },
+          "Retaining uncertain federation submission for reconciliation",
+        );
+        return true;
       },
       onQueueValidationShadowRejection: (failureCode) =>
         this.enqueueQueueValidationShadowRejection(failureCode),
-      onSchedulerSubmitted: async (spec, schedulerJobId, expectedOutputs) => {
+      onSchedulerSubmitted: async (spec, schedulerJobId, expectedOutputs, schedulerUid) => {
         try {
+          if (
+            spec.federationDispatchEpoch !== undefined &&
+            this.deps.adapter.type === "kubernetes"
+          ) {
+            const dispatchId = this.dispatchIdsByJob.get(spec.jobId);
+            if (!schedulerUid || !dispatchId || !this.inboundAcks)
+              throw new Error("Federation Kubernetes submission requires a durable UID");
+            await this.inboundAcks.bindRuntimeSchedulerIdentity(dispatchId, {
+              schedulerJobId,
+              schedulerUid,
+              namespace: schedulerLookupForSpec(spec).namespace ?? "default",
+            });
+          }
           await this.cleanupIntents?.recordSchedulerSubmitted(spec.jobId, schedulerJobId);
-          await this.activeRemoteJobs?.recordSubmitted({ spec, schedulerJobId, expectedOutputs });
+          await this.activeRemoteJobs?.recordSubmitted({
+            spec,
+            schedulerJobId,
+            schedulerUid,
+            expectedOutputs,
+            dispatchId: this.dispatchIdsByJob.get(spec.jobId),
+          });
         } catch (err) {
+          if (this.federationSpecs.has(spec)) {
+            this.unreconciledSubmittedJobs.set(spec.jobId, schedulerJobId);
+            throw err;
+          }
           const recoveryErrors: unknown[] = [err];
           try {
-            await this.cancelSchedulerJobOrConfirmAbsent(
-              spec.jobId,
-              schedulerJobId,
-              await this.findCleanupIntent(spec.jobId),
-            );
+            await cancelAndConfirmStopped(deps.adapter, schedulerJobId);
           } catch (cancelError) {
             recoveryErrors.push(cancelError);
             try {
@@ -917,6 +1265,7 @@ export class AgentStream {
         }
       },
       onJobFinished: async (jobId) => {
+        if (this.federationRuntimes.get(jobId)?.superseded) return;
         const unreconciledSchedulerJobId = this.unreconciledSubmittedJobs.get(jobId);
         if (unreconciledSchedulerJobId) {
           this.logger.error(
@@ -924,6 +1273,18 @@ export class AgentStream {
             "Retaining cleanup intent because submitted scheduler job could not be reconciled",
           );
           return;
+        }
+        const runtime = this.federationRuntimes.get(jobId);
+        if (runtime?.receipt.state === "stopping") {
+          const active = (await this.activeRemoteJobs?.listActive())?.find(
+            (job) => job.jobId === jobId,
+          );
+          if (active?.dispatchId === runtime.dispatchId)
+            await this.inboundAcks?.recordRuntimeStop(
+              runtime.dispatchId,
+              active.schedulerJobId,
+              active.schedulerUid,
+            );
         }
         const mounts = this.licensedMaterialMounts.get(jobId);
         const [dataCleanup, licensedCleanup, restrictedRootCleanup] = await Promise.allSettled([
@@ -1001,18 +1362,29 @@ export class AgentStream {
    * (the {@link ackedDispatches} Set keeps later transitions cheap), then
    * routes the report onto the outbound queue / persistent spillover.
    */
+  private accountingQueries = new Set<string>();
+
   private async onJobTransition(report: JobStatusReport): Promise<void> {
-    const dispatchId = this.dispatchIdsByJob.get(report.jobId) ?? report.jobId;
+    if (this.federationRuntimes.get(report.jobId)?.superseded) return;
+    if (["completed", "failed", "cancelled"].includes(report.status)) {
+      if (!(await this.finishFederationRuntime(report.jobId))) return;
+      this.federationDispatches.get(report.jobId)?.controller.abort();
+      this.federationDispatches.delete(report.jobId);
+    }
+    const boundDispatchId = this.dispatchIdsByJob.get(report.jobId);
+    const dispatchId = boundDispatchId ?? report.jobId;
     await this.enqueueStatusUpdate(report);
     if (this.inboundAcks && !this.ackedDispatches.has(dispatchId)) {
       try {
-        // After restart the in-memory epoch binding is gone; acknowledge the durable receipts.
-        const pendingIds = (await this.inboundAcks.pendingInbound())
-          .filter((row) => row.jobId === report.jobId)
-          .map((row) => row.dispatchId);
-        for (const pendingId of pendingIds) {
-          await this.inboundAcks.markAcked(pendingId);
-          this.ackedDispatches.add(pendingId);
+        const receipts = (await this.inboundAcks.pendingInbound()).filter(
+          (row) => row.jobId === report.jobId,
+        );
+        if (!boundDispatchId && receipts.length > 1)
+          throw new Error("Cannot acknowledge an ambiguous dispatch epoch");
+        for (const receipt of receipts) {
+          if (boundDispatchId && receipt.dispatchId !== boundDispatchId) continue;
+          await this.inboundAcks.markAcked(receipt.dispatchId);
+          this.ackedDispatches.add(receipt.dispatchId);
         }
         this.ackedDispatches.add(dispatchId);
       } catch (err) {
@@ -1156,6 +1528,7 @@ export class AgentStream {
 
   async start(): Promise<void> {
     await this.recoverSoftwareOperations();
+    await this.reconcileFederationSubmissions();
     await this.recoverOrphanedCleanupIntents();
     this.maintenanceRecoveryReady = true;
     this.startRemoteJobRecoveryTimer();
@@ -1192,8 +1565,14 @@ export class AgentStream {
   stop(): Promise<void> {
     if (this.softwareOperationShutdown) return this.softwareOperationShutdown;
     this.running = false;
+    void this.federationResultCopy?.disconnect();
+    void this.federationInputCopy?.disconnect();
+    void this.federationMediaExport?.disconnect();
+    void this.federationMediaImport?.disconnect();
+    void this.federationMediaUpload?.disconnect();
     if (this.maintenanceGate) this.resumeAfterMaintenance(this.maintenanceGate.lease);
     this.lifecycleController.abort(new Error("agent shutdown"));
+    for (const entry of this.federationRuntimes.values()) clearTimeout(entry.retry);
     this.currentStreamController?.abort(new Error("agent shutdown"));
     this.stopHeartbeatTimer();
     if (this.remoteJobRecoveryTimer !== undefined) clearInterval(this.remoteJobRecoveryTimer);
@@ -1224,9 +1603,16 @@ export class AgentStream {
         pending = this.softwareOperationQueue;
         await Promise.all([
           pending,
+          this.schedulerRecovery,
+          this.federationResultCopy?.disconnect(),
+          this.federationInputCopy?.disconnect(),
+          this.federationMediaExport?.disconnect(),
+          this.federationMediaImport?.disconnect(),
+          this.federationMediaUpload?.disconnect(),
           ...this.pendingSoftwareResultSpills,
           ...this.pendingSpackPreparations,
           ...this.pendingSpackLoadCleanups,
+          ...[...this.federationRuntimes.values()].map((entry) => entry.authorization?.close()),
           ...[...this.pendingJobCancellations.values()].map((entry) =>
             entry.settle.catch((err: unknown) => {
               this.logger.warn(
@@ -1284,6 +1670,170 @@ export class AgentStream {
     });
   }
 
+  private reconcileFederationSubmissions(): Promise<void> {
+    if (this.schedulerRecovery) return this.schedulerRecovery;
+    const recover = async () => {
+      if (!this.activeRemoteJobs || !this.running) return;
+      if (!this.inboundAcks) {
+        await this.recoverActiveRemoteJobs();
+        return;
+      }
+      const pending = await this.inboundAcks.pendingInbound();
+      const active = new Map(
+        (await this.activeRemoteJobs.listActive()).map((job) => [job.jobId, job]),
+      );
+      for (const row of pending) {
+        if (!this.running) return;
+        if (
+          row.payload.federationExecution !== true ||
+          row.payload.federationSubmissionStarted !== true ||
+          this.pool.get(row.jobId) ||
+          this.federationDispatches.has(row.jobId)
+        )
+          continue;
+        try {
+          const receipt = FederationDispatchReceiptSchema.parse(row.payload.federationReceipt);
+          if (row.dispatchId !== `${row.jobId}:${receipt.epoch}`)
+            throw new Error("Federation submission receipt identity is invalid");
+          this.dispatchIdsByJob.set(row.jobId, row.dispatchId);
+          const allowed = await this.isDispatchEpochAllowed(row.jobId, receipt.epoch);
+          const prepared = jsonToPreparedRemoteJob(row.payload.federationSubmission);
+          if (prepared.spec.jobId !== row.jobId)
+            throw new Error("Prepared federation job identity is invalid");
+          const intent = await this.findCleanupIntent(row.jobId);
+          if (!(await this.recoverFederationRuntime(row.jobId, row.dispatchId))) continue;
+          const revoked = !allowed || intent?.revoked === true;
+          if (active.has(row.jobId) && !revoked) continue;
+          const savedIdentity = await this.inboundAcks.runtimeSchedulerIdentity(row.dispatchId);
+          const activeJob = active.get(row.jobId);
+          if (
+            activeJob &&
+            (activeJob.dispatchId !== row.dispatchId ||
+              (savedIdentity &&
+                (savedIdentity.schedulerJobId !== activeJob.schedulerJobId ||
+                  savedIdentity.schedulerUid !== activeJob.schedulerUid)))
+          )
+            throw new Error("Federation durable scheduler identities disagree");
+          let schedulerUid = savedIdentity?.schedulerUid ?? active.get(row.jobId)?.schedulerUid;
+          let schedulerJobId =
+            savedIdentity?.schedulerJobId ??
+            active.get(row.jobId)?.schedulerJobId ??
+            intent?.schedulerJobId ??
+            this.unreconciledSubmittedJobs.get(row.jobId);
+          if (!schedulerJobId || (this.deps.adapter.type === "kubernetes" && !schedulerUid)) {
+            const lookup = await this.deps.adapter.findByKuintessenceJobId?.({
+              ...schedulerLookupForSpec(prepared.spec),
+              submittedAfterUnixMs: row.receivedAt.getTime(),
+            });
+            if (lookup?.status !== "found") continue;
+            if (schedulerJobId && schedulerJobId !== lookup.schedulerJobId)
+              throw new Error("Federation scheduler identity changed");
+            schedulerJobId = lookup.schedulerJobId;
+            schedulerUid = lookup.schedulerUid;
+            if (schedulerUid)
+              await this.inboundAcks.bindRuntimeSchedulerIdentity(row.dispatchId, {
+                schedulerJobId,
+                schedulerUid,
+                namespace: schedulerLookupForSpec(prepared.spec).namespace ?? "default",
+              });
+          }
+          if (this.deps.adapter.type === "kubernetes" && !schedulerUid)
+            throw new Error("Federation Kubernetes recovery requires a durable UID");
+          if (!this.running) return;
+          await this.activeRemoteJobs.recordSubmitted({
+            ...prepared,
+            schedulerJobId,
+            schedulerUid,
+            dispatchId: row.dispatchId,
+          });
+          await this.cleanupIntents?.recordSchedulerSubmitted(row.jobId, schedulerJobId);
+          this.unreconciledSubmittedJobs.delete(row.jobId);
+          if (revoked) {
+            await this.cleanupIntents?.recordRevoked(row.jobId, {
+              reason: "JOB_CANCELLED",
+              destroyRestrictedWorkRoot: false,
+            });
+            await this.deps.adapter.prepareResume?.(prepared.spec, schedulerJobId, schedulerUid);
+            await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, {
+              ...schedulerLookupForSpec(prepared.spec),
+              schedulerUid,
+            });
+            await this.onJobTransition({
+              jobId: row.jobId,
+              status: "cancelled",
+              schedulerJobId,
+              workingDir: prepared.spec.workingDir,
+            });
+            const cleanup = await this.findCleanupIntent(row.jobId);
+            if (cleanup) await this.cleanupCancellationIntent(cleanup);
+            await this.activeRemoteJobs.markFinished(row.jobId);
+            await this.cleanupIntents?.clear(row.jobId);
+          }
+        } catch (err) {
+          this.logger.warn(
+            { err, jobId: row.jobId },
+            "Federation submission reconciliation remains pending",
+          );
+        }
+      }
+      const uncertain = new Set(
+        pending
+          .filter((row) => row.payload.federationSubmissionStarted === true)
+          .map((row) => row.jobId),
+      );
+      for (const intent of (await this.cleanupIntents?.list()) ?? []) {
+        if (!this.running) return;
+        if (uncertain.has(intent.jobId)) continue;
+        try {
+          const epoch = await this.revocationTombstones?.revokedEpoch(intent.jobId);
+          const dispatchEpoch = epochFromDispatchId(
+            intent.jobId,
+            active.get(intent.jobId)?.dispatchId,
+          );
+          const tombstoneApplies =
+            epoch !== undefined && (dispatchEpoch === undefined || epoch >= dispatchEpoch);
+          if (!intent.revoked && !tombstoneApplies) continue;
+          if (intent.revokeReason === "JOB_CANCELLED" || (!intent.revoked && tombstoneApplies)) {
+            if (epoch === undefined)
+              throw new Error("Revoked job has no durable cancellation epoch");
+            await this.requestJobCancellation(intent.jobId, epoch);
+          } else {
+            await this.revokeDataDelivery(
+              intent.jobId,
+              intent.restrictedWorkRoot,
+              intent.revokeReason ?? "DATA_GRANT_REVOKED",
+            );
+          }
+        } catch (err) {
+          this.logger.warn(
+            { err, jobId: intent.jobId },
+            "Revoked job stop or cleanup remains pending",
+          );
+        }
+      }
+      for (const revoked of (await this.persistentQueue?.softwareOperations.revokedJobs()) ?? []) {
+        try {
+          await this.requestJobCancellation(revoked.jobId, revoked.revokedEpoch);
+        } catch (err) {
+          this.logger.warn(
+            { err, jobId: revoked.jobId },
+            "Federation installation stop remains unconfirmed",
+          );
+        }
+      }
+      await this.recoverActiveRemoteJobs();
+    };
+    const pending = recover()
+      .catch((err: unknown) => {
+        this.logger.error({ err }, "Failed to reconcile federation submissions");
+      })
+      .finally(() => {
+        this.schedulerRecovery = undefined;
+      });
+    this.schedulerRecovery = pending;
+    return pending;
+  }
+
   private startRemoteJobRecoveryTimer(): void {
     if (!this.running || this.remoteJobRecoveryTimer !== undefined || !this.activeRemoteJobs)
       return;
@@ -1296,7 +1846,7 @@ export class AgentStream {
     if (!this.running || this.maintenanceGate) return Promise.resolve();
     if (this.remoteJobRecoveryCycle) return this.remoteJobRecoveryCycle;
     this.remoteJobRecoveryCycle = (async () => {
-      await this.recoverActiveRemoteJobs();
+      await this.reconcileFederationSubmissions();
       if (!this.running || !this.revocationTombstones) return;
       const [active, intents] = await Promise.all([
         this.activeRemoteJobs?.listActive() ?? [],
@@ -1325,8 +1875,20 @@ export class AgentStream {
     return this.remoteJobRecoveryCycle;
   }
 
-  private recoverActiveRemoteJobs(): Promise<void> {
+  private async recoverActiveRemoteJobs(): Promise<void> {
     if (this.activeRemoteJobRecovery) return this.activeRemoteJobRecovery;
+    // Restore authority before the recovery barrier: expiry cancels jobs and awaits that barrier.
+    const pending = (await this.inboundAcks?.pendingInbound()) ?? [];
+    for (const job of (await this.activeRemoteJobs?.listActive()) ?? []) {
+      if (!this.running) return;
+      const receipts = pending.filter((row) => row.jobId === job.jobId);
+      const dispatchId =
+        job.dispatchId ?? (receipts.length === 1 ? receipts[0]?.dispatchId : undefined);
+      if (dispatchId) {
+        this.dispatchIdsByJob.set(job.jobId, dispatchId);
+        await this.recoverFederationRuntime(job.jobId, dispatchId);
+      }
+    }
     this.activeRemoteJobRecovery = this.recoverActiveRemoteJobsNow().finally(() => {
       this.activeRemoteJobRecovery = undefined;
     });
@@ -1337,21 +1899,43 @@ export class AgentStream {
     if (!this.activeRemoteJobs) return;
     try {
       const active = await this.activeRemoteJobs.listActive();
+      const pending = (await this.inboundAcks?.pendingInbound()) ?? [];
       const revokedJobIds = new Set(
         ((await this.cleanupIntents?.list()) ?? [])
           .filter((intent) => intent.revoked)
           .map((intent) => intent.jobId),
       );
-      let resumed = 0;
+      let recovered = 0;
       for (const job of active) {
         if (!this.running) return;
         if (this.pool.get(job.jobId)) continue;
+        const receipts = pending.filter((row) => row.jobId === job.jobId);
+        const dispatchId =
+          job.dispatchId ?? (receipts.length === 1 ? receipts[0]?.dispatchId : undefined);
+        if (dispatchId) this.dispatchIdsByJob.set(job.jobId, dispatchId);
         if (
           revokedJobIds.has(job.jobId) ||
-          (await this.revocationTombstones?.revokedEpoch(job.jobId)) !== undefined
+          !(await this.isDispatchEpochAllowed(
+            job.jobId,
+            epochFromDispatchId(job.jobId, dispatchId) ?? 0,
+          ))
         ) {
           this.logger.warn({ jobId: job.jobId }, "Skipping revoked job recovery");
           continue;
+        }
+        if (
+          dispatchId &&
+          job.spec.federationDispatchEpoch !== undefined &&
+          this.deps.adapter.type === "kubernetes"
+        ) {
+          const saved = await this.inboundAcks?.runtimeSchedulerIdentity(dispatchId);
+          if (
+            !saved ||
+            saved.schedulerJobId !== job.schedulerJobId ||
+            saved.schedulerUid !== job.schedulerUid ||
+            saved.namespace !== (schedulerLookupForSpec(job.spec).namespace ?? "default")
+          )
+            throw new Error("Federation Kubernetes recovery identities disagree");
         }
         if (job.schedulerJobId === PENDING_SCHEDULER_SUBMISSION) {
           const lookup = await this.deps.adapter.findByKuintessenceJobId?.({
@@ -1385,23 +1969,31 @@ export class AgentStream {
           })),
         );
         if (!this.running) return;
+        if (this.federationRuntimes.has(job.jobId)) {
+          const runtime = this.federationRuntimes.get(job.jobId);
+          if (runtime?.superseded || runtime?.receipt.state !== "active") continue;
+          runtime.authorization?.assertValid();
+        }
+        if (
+          !(await this.isDispatchEpochAllowed(
+            job.jobId,
+            epochFromDispatchId(job.jobId, dispatchId) ?? 0,
+          ))
+        )
+          continue;
         const retained = await this.activeRemoteJobs.get(job.jobId);
         if (!retained || retained.schedulerJobId !== job.schedulerJobId || this.pool.get(job.jobId))
           continue;
-        if (
-          !this.running ||
-          (await this.revocationTombstones?.revokedEpoch(job.jobId)) !== undefined
-        )
-          continue;
         this.unreconciledSubmittedJobs.delete(job.jobId);
-        await this.pool.resume(retained.spec, retained.schedulerJobId, {
-          expectedOutputs: retained.expectedOutputs,
+        await this.pool.resume(spec, job.schedulerJobId, {
+          expectedOutputs: job.expectedOutputs,
+          schedulerUid: job.schedulerUid,
           completionSnapshot: retained.completionSnapshot,
         });
-        resumed++;
+        recovered++;
       }
-      if (resumed > 0) {
-        this.logger.info({ count: resumed }, "Recovered active remote jobs");
+      if (recovered > 0) {
+        this.logger.info({ count: recovered }, "Recovered active remote jobs");
       }
     } catch (err) {
       this.logger.error({ err }, "Failed to recover active remote jobs");
@@ -1411,33 +2003,44 @@ export class AgentStream {
   private async recoverOrphanedCleanupIntents(): Promise<void> {
     if (!this.cleanupIntents) return;
     try {
-      const [intents, active] = await Promise.all([
+      const [intents, active, pending] = await Promise.all([
         this.cleanupIntents.list(),
         this.activeRemoteJobs?.listActive() ?? Promise.resolve([]),
+        this.inboundAcks?.pendingInbound() ?? Promise.resolve([]),
       ]);
       const activeJobIds = new Set(active.map((job) => job.jobId));
+      const uncertainJobs = new Set(
+        pending
+          .filter((row) => row.payload.federationSubmissionStarted === true)
+          .map((row) => row.jobId),
+      );
       for (const intent of intents) {
+        if (uncertainJobs.has(intent.jobId)) continue;
         if (activeJobIds.has(intent.jobId) && !intent.revoked) continue;
         try {
-          const find = this.deps.adapter.findByKuintessenceJobId;
-          if (!find) {
-            throw new Error("scheduler adapter cannot reconcile Kuintessence UUID metadata");
-          }
-          const lookup = await find.call(this.deps.adapter, {
-            jobId: intent.jobId,
-            schedulerName: intent.schedulerSubmissionTag,
-            schedulerAccount: intent.schedulerAccount,
-            namespace: intent.schedulerNamespace,
-          });
-          if (lookup.status === "indeterminate") {
-            throw new Error(`scheduler UUID lookup is indeterminate: ${lookup.reason}`);
-          }
-          if (lookup.status === "found") {
-            await this.cancelSchedulerJobOrConfirmAbsent(
-              intent.jobId,
-              lookup.schedulerJobId,
-              intent,
-            );
+          const lookup = await this.lookupSchedulerJob(intent.jobId, intent);
+          const activeJob = active.find((job) => job.jobId === intent.jobId);
+          const schedulerJobId =
+            activeJob?.schedulerJobId ??
+            intent.schedulerJobId ??
+            (lookup.status === "found" ? lookup.schedulerJobId : undefined);
+          if (schedulerJobId) {
+            if (activeJob)
+              await this.deps.adapter.prepareResume?.(
+                activeJob.spec,
+                schedulerJobId,
+                activeJob.schedulerUid,
+              );
+            await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, {
+              jobId: intent.jobId,
+              namespace: intent.schedulerNamespace,
+              schedulerUid:
+                activeJob?.schedulerUid ??
+                (lookup.status === "found" ? lookup.schedulerUid : undefined),
+              federationDispatchEpoch: activeJob?.spec.federationDispatchEpoch,
+            });
+          } else if (intent.schedulerSubmissionTag) {
+            throw new Error("Scheduler submission outcome is unknown; retaining cleanup intent");
           }
           const cleanupResults = await Promise.allSettled([
             (async () => {
@@ -1821,7 +2424,42 @@ export class AgentStream {
           computeHealthV1: this.computeHealthV1Capable,
           queueInventoryV1: this.queueInventoryV1Capable,
           spackMaterialDeliveryV1: this.spackManager?.requireServerMaterials === true,
+          spackPinnedExecutionV1: this.spackManager?.pinnedExecutionAvailable === true,
+          softwareOperationReplayV1:
+            this.spackManager?.requireServerMaterials === true &&
+            !!this.persistentQueue?.softwareOperations,
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
+          federationInputCopyV1: this.federationInputCopy?.supportsCopy ?? false,
+          federationMediaExportV1: !!this.federationMediaExport,
+          federationMediaObjectExportV1: this.federationMediaExport?.supportsObjects ?? false,
+          federationMediaImportV1: !!this.federationMediaImport,
+          federationMediaUploadV1: !!this.federationMediaUpload,
+          federationTargetTransferV1: !!(this.federationInputCopy || this.federationResultCopy),
+          federationInputVerifyV1: !!this.federationInputCopy,
+          federationResultCopyV1: this.federationResultCopy?.supportsCopy ?? false,
+          federationResultVerifyV1: !!this.federationResultCopy,
+          federationAccountingV1:
+            !!this.inboundAcks && ["slurm", "pbs-pro"].includes(this.deps.adapter.type),
+          federationExecutionV1: this.federationExecutionCapable(),
+          federationComputeLeaseV1: this.federationExecutionCapable(),
+          federationSandboxSignatureRenewalV1:
+            this.federationExecutionCapable() && !!this.deps.sandboxProcessor,
+          federationSandboxInputLeaseV1:
+            this.federationExecutionCapable() && !!this.deps.sandboxProcessor,
+          federationSandboxLocalInputV1:
+            this.federationExecutionCapable() &&
+            !!this.deps.sandboxProcessor &&
+            (this.deps.managedDatasetRootIds?.length ?? 0) > 0,
+          federationDataPreparationLeaseV1:
+            this.federationExecutionCapable() && !!this.deps.dataDeliveryExecutor,
+          federationNetdriveInputLeaseV1:
+            this.federationExecutionCapable() &&
+            !!this.deps.dataDeliveryExecutor &&
+            !!this.deps.prepareJobWorkRoot &&
+            !!this.deps.removeJobWorkRoot,
+          federationInstallationV1: this.federationInstallationCapable(),
+          federationInstallationLeaseV1: this.federationInstallationCapable(),
+          federationInstallationMaterialLeaseV1: this.federationInstallationCapable(),
         }),
       },
     });
@@ -1844,7 +2482,9 @@ export class AgentStream {
     // reports land in the same connection as any other queued reports.
     // We synthesize one report per pending dispatch:
     //
-    //   - Live dispatch preparations retain their pending receipt until their real first report.
+    //   - Live Spack/federation preparations retain their pending receipt until their first report.
+    //   - Restarted federation preparations fetch the original intent under fresh authorization;
+    //     ambiguous submissions retain their receipt without resubmitting.
     //   - If a runner is still alive locally for that jobId, replay
     //     `running` (the runner will continue emitting real updates,
     //     idempotent on the Server side).
@@ -1865,9 +2505,15 @@ export class AgentStream {
         );
         for (const row of pending) {
           if (signal.aborted) return;
+          if (this.preparingDispatches.has(row.dispatchId)) continue;
+          if (this.federationDispatches.has(row.jobId)) continue;
           if (this.preparingDispatches.has(row.dispatchId) || activeRemoteJobIds.has(row.jobId))
             continue;
           const haveLocalRunner = this.pool.get(row.jobId) !== undefined;
+          if (row.payload.federationExecution === true) {
+            if (!haveLocalRunner) this.recoverFederationDispatch(row);
+            continue;
+          }
           const replayReport: JobStatusReport = haveLocalRunner
             ? { jobId: row.jobId, status: "running" }
             : {
@@ -1990,6 +2636,15 @@ export class AgentStream {
                 }),
               },
             });
+          } else if (item.kind === "federationAccountingResponse") {
+            yield create(AgentMessageSchema, {
+              payload: {
+                case: "federationAccountingResponse",
+                value: create(FederationAccountingResponseSchema, {
+                  responseJson: item.responseJson,
+                }),
+              },
+            });
           } else if (item.kind === "jobLogsResponse") {
             yield create(AgentMessageSchema, {
               payload: {
@@ -2015,6 +2670,56 @@ export class AgentStream {
                 }),
               },
             });
+          } else if (item.kind === "federationMediaExportLeaseRequest") {
+            if (this.federationMediaExport?.hasPending(item.request.requestId))
+              yield create(AgentMessageSchema, {
+                payload: { case: "federationMediaExportLeaseRequest", value: item.request },
+              });
+          } else if (item.kind === "federationMediaExportReport") {
+            yield create(AgentMessageSchema, {
+              payload: { case: "federationMediaExportReport", value: item.report },
+            });
+          } else if (item.kind === "federationMediaImportKeyRequest") {
+            if (
+              this.federationMediaImport?.hasPending(item.request.requestId) ||
+              this.federationMediaUpload?.hasPending("media", item.request.requestId)
+            )
+              yield create(AgentMessageSchema, {
+                payload: { case: "federationMediaImportKeyRequest", value: item.request },
+              });
+          } else if (item.kind === "federationMediaImportReport") {
+            yield create(AgentMessageSchema, {
+              payload: { case: "federationMediaImportReport", value: item.report },
+            });
+          } else if (item.kind === "federationResultGrantRequest") {
+            if (
+              this.federationResultCopy?.hasPending(item.request.requestId) ||
+              this.federationMediaUpload?.hasPending("result", item.request.requestId)
+            )
+              yield create(AgentMessageSchema, {
+                payload: { case: "federationResultGrantRequest", value: item.request },
+              });
+          } else if (item.kind === "federationResultCopyReport") {
+            yield create(AgentMessageSchema, {
+              payload: { case: "federationResultCopyReport", value: item.report },
+            });
+          } else if (item.kind === "federationInputGrantRequest") {
+            if (
+              this.federationInputCopy?.hasPending(item.request.requestId) ||
+              this.federationMediaUpload?.hasPending("input", item.request.requestId)
+            )
+              yield create(AgentMessageSchema, {
+                payload: { case: "federationInputGrantRequest", value: item.request },
+              });
+          } else if (item.kind === "federationInputCopyReport") {
+            yield create(AgentMessageSchema, {
+              payload: { case: "federationInputCopyReport", value: item.report },
+            });
+          } else if (item.kind === "federationExecutionRequest") {
+            if (this.federationExecution.hasPending(item.request.requestId))
+              yield create(AgentMessageSchema, {
+                payload: { case: "federationExecutionRequest", value: item.request },
+              });
           } else if (item.kind === "sandboxArtifactReleaseAck") {
             yield create(AgentMessageSchema, {
               payload: {
@@ -2042,6 +2747,7 @@ export class AgentStream {
                 value: create(CancelJobAckSchema, {
                   jobId: item.jobId,
                   revokedEpoch: BigInt(item.revokedEpoch),
+                  installationsStopped: item.installationsStopped ?? false,
                 }),
               },
             });
@@ -2352,6 +3058,7 @@ export class AgentStream {
           signatureVerified: runtime.signatureVerified,
           runtimeAttestationId: runtime.runtimeAttestationId ?? "",
           attestedNodes: runtime.attestedNodes ?? [],
+          attestedQueue: runtime.attestedQueue ?? "",
           expiresAtUnixMs: BigInt(runtime.expiresAtUnixMs ?? 0),
         }),
       ),
@@ -2485,6 +3192,30 @@ export class AgentStream {
             clearTimeout(registrationTimer);
             if (message.payload.value.accepted) {
               this.connected = true;
+              this.federationMediaObjectExportSupported =
+                message.payload.value.federationMediaObjectExportV1Supported;
+              this.federationMediaExportSupported =
+                message.payload.value.federationMediaExportV1Supported;
+              this.federationMediaImportSupported =
+                message.payload.value.federationMediaImportV1Supported;
+              this.federationMediaUploadSupported =
+                message.payload.value.federationMediaUploadV1Supported;
+              this.federationInputCopySupported =
+                !!this.federationInputCopy?.supportsCopy &&
+                message.payload.value.federationInputCopyV1Supported;
+              this.federationInputVerifySupported =
+                message.payload.value.federationInputVerifyV1Supported ||
+                this.federationInputCopySupported;
+              this.federationResultCopySupported =
+                !!this.federationResultCopy?.supportsCopy &&
+                message.payload.value.federationResultCopyV1Supported;
+              this.federationResultVerifySupported =
+                message.payload.value.federationResultVerifyV1Supported ||
+                this.federationResultCopySupported;
+              this.federationExecutionSupported =
+                message.payload.value.federationExecutionV1Supported;
+              this.federationInstallationSupported =
+                message.payload.value.federationInstallationV1Supported;
               this.heartbeatAckSupported = message.payload.value.heartbeatAckSupported;
               this.jobStatusAckSupported = message.payload.value.jobStatusAckSupported;
               this.queueValidationShadowRejectionAckSupported =
@@ -2530,6 +3261,22 @@ export class AgentStream {
         this.heartbeatPreparationAttempt = undefined;
       }
       this.connected = false;
+      this.federationMediaExportSupported = false;
+      this.federationMediaObjectExportSupported = false;
+      this.federationMediaImportSupported = false;
+      this.federationMediaUploadSupported = false;
+      await this.federationMediaUpload?.disconnect();
+      await this.federationMediaExport?.disconnect();
+      await this.federationMediaImport?.disconnect();
+      this.federationInputCopySupported = false;
+      this.federationInputVerifySupported = false;
+      await this.federationInputCopy?.disconnect();
+      this.federationResultCopySupported = false;
+      this.federationResultVerifySupported = false;
+      await this.federationResultCopy?.disconnect();
+      this.federationExecutionSupported = false;
+      this.federationInstallationSupported = false;
+      this.federationExecution.disconnect();
       this.stopHeartbeatTimer(controller);
       this.heartbeatAckSupported = false;
       this.jobStatusAckSupported = false;
@@ -2667,6 +3414,7 @@ export class AgentStream {
         return;
       }
       this.enqueueHeartbeat();
+      void this.reconcileFederationSubmissions();
     }, this.deps.heartbeatIntervalMs);
     this.heartbeatTimer = { owner, handle };
   }
@@ -2782,7 +3530,10 @@ export class AgentStream {
   // Inbound message handler
   // ---------------------------------------------------------------------------
 
-  private async handleServerMessage(msg: ServerMessage): Promise<void> {
+  private async handleServerMessage(
+    msg: ServerMessage,
+    recoveredDispatchId?: string,
+  ): Promise<void> {
     const gate = this.maintenanceGate;
     if (gate) {
       await gate.decision.promise;
@@ -2790,13 +3541,16 @@ export class AgentStream {
     }
     this.maintenanceIncoming += 1;
     try {
-      await this.handleServerMessageNow(msg);
+      await this.handleServerMessageNow(msg, recoveredDispatchId);
     } finally {
       this.maintenanceIncoming -= 1;
     }
   }
 
-  private async handleServerMessageNow(msg: ServerMessage): Promise<void> {
+  private async handleServerMessageNow(
+    msg: ServerMessage,
+    recoveredDispatchId?: string,
+  ): Promise<void> {
     const { payload } = msg;
     if (!payload || payload.case === undefined) {
       this.logger.warn("Received ServerMessage with no payload");
@@ -2845,8 +3599,77 @@ export class AgentStream {
       return;
     }
 
+    if (payload.case === "federationMediaExport") {
+      if (this.federationMediaExportSupported)
+        this.federationMediaExport?.start(payload.value, this.federationMediaObjectExportSupported);
+      return;
+    }
+    if (payload.case === "federationMediaExportLeaseResponse") {
+      this.federationMediaExport?.receive(payload.value);
+      return;
+    }
+    if (payload.case === "federationMediaUpload") {
+      if (this.federationMediaUploadSupported) this.federationMediaUpload?.start(payload.value);
+      return;
+    }
+    if (payload.case === "federationMediaImport") {
+      if (this.federationMediaImportSupported) this.federationMediaImport?.start(payload.value);
+      return;
+    }
+    if (payload.case === "federationMediaImportGrantResponse") {
+      this.federationMediaImport?.receive(payload.value);
+      if (this.federationMediaUploadSupported)
+        this.federationMediaUpload?.receive("media", payload.value);
+      return;
+    }
+    if (payload.case === "federationResultCopy") {
+      if (this.federationResultCopySupported) this.federationResultCopy?.start(payload.value);
+      return;
+    }
+    if (payload.case === "federationResultVerify") {
+      if (this.federationResultVerifySupported)
+        this.federationResultCopy?.startVerification(payload.value);
+      return;
+    }
+    if (payload.case === "federationResultGrantResponse") {
+      if (this.federationResultVerifySupported) this.federationResultCopy?.receive(payload.value);
+      if (this.federationMediaUploadSupported)
+        this.federationMediaUpload?.receive("result", payload.value);
+      return;
+    }
+    if (payload.case === "federationInputCopy") {
+      if (this.federationInputCopySupported) this.federationInputCopy?.start(payload.value);
+      return;
+    }
+    if (payload.case === "federationInputVerify") {
+      if (this.federationInputVerifySupported)
+        this.federationInputCopy?.startVerification(payload.value);
+      return;
+    }
+    if (payload.case === "federationInputGrantResponse") {
+      if (this.federationInputVerifySupported) this.federationInputCopy?.receive(payload.value);
+      if (this.federationMediaUploadSupported)
+        this.federationMediaUpload?.receive("input", payload.value);
+      return;
+    }
+    if (payload.case === "federationExecutionResponse") {
+      this.federationExecution.receive(payload.value);
+      return;
+    }
+
     if (payload.case === "dispatchJob") {
       const dj = payload.value;
+      if (
+        dj.federationExecution &&
+        (!this.federationExecutionSupported || !this.federationExecutionCapable())
+      ) {
+        await this.onJobTransition({
+          jobId: dj.jobId,
+          status: "failed",
+          message: "Federation execution renewal is unavailable",
+        });
+        return;
+      }
       const queueTargetMode = queueTargetModeFromProto(dj.queueTargetMode);
       const queueValidationMode = queueValidationModeFromProto(dj.queueValidationMode);
       const dispatchEpoch = Number(dj.dispatchEpoch);
@@ -2883,21 +3706,23 @@ export class AgentStream {
       // dispatch_id field, so we use jobId — onConflictDoNothing makes the
       // duplicate-delivery case (Server re-dispatches mid-recovery) safe.
       const dispatchId = `${dj.jobId}:${dispatchEpoch}`;
-      if (this.inboundAcks) {
+      if (this.inboundAcks && recoveredDispatchId !== dispatchId) {
         try {
           const accepted = await this.inboundAcks.persistInbound({
             dispatchId,
             jobId: dj.jobId,
             payload: {
               name: dj.name,
-              schedulerName: schedulerSubmissionTag(dj.jobId),
+              federationDispatchEpoch: dj.federationExecution
+                ? Number(dj.dispatchEpoch)
+                : undefined,
+              schedulerName: dj.federationExecution
+                ? federationSchedulerName(dj.dispatchEpoch)
+                : schedulerSubmissionTag(dj.jobId),
               command: dj.command,
               ...(dj.spackExecution
                 ? {
-                    spackExecution: {
-                      spec: dj.spackExecution.spec,
-                      command: dj.spackExecution.command,
-                    },
+                    spackExecution: workflowSpackIntent(dj.spackExecution),
                   }
                 : {}),
               cpus: dj.cpus,
@@ -2910,6 +3735,10 @@ export class AgentStream {
               queueValidationMode,
               qos: dj.qos,
               stdinText: dj.stdinText,
+              federationExecution: dj.federationExecution,
+              ...(dj.federationExecution
+                ? { federationReceipt: federationDispatchReceipt(dj) }
+                : {}),
             },
           });
           if (!accepted) {
@@ -2931,6 +3760,11 @@ export class AgentStream {
         return;
       }
       this.dispatchIdsByJob.set(dj.jobId, dispatchId);
+      if (dj.federationExecution)
+        this.federationDispatches.set(dj.jobId, {
+          dispatch: dj,
+          controller: new AbortController(),
+        });
 
       if (dj.spackExecution && dj.sandboxExecution) {
         await this.onJobTransition({
@@ -2946,6 +3780,24 @@ export class AgentStream {
         isBatch: o.isBatch,
         pathsOnly: o.pathsOnly,
       }));
+      if (
+        dj.inputStaging.some((input) => input.localDataSource) &&
+        (!dj.federationExecution ||
+          !dj.restrictedNoEgress ||
+          !dj.sandboxExecution ||
+          dj.inputStaging.some(
+            (input) =>
+              input.localDataSource &&
+              (input.sourceUrl || input.netdriveInput || !input.deliveryLeaseId),
+          ))
+      ) {
+        await this.onJobTransition({
+          jobId: dj.jobId,
+          status: "failed",
+          message: "Local inputs require leased restricted Sandbox execution",
+        });
+        return;
+      }
       if (dj.restrictedNoEgress && !this.hasTrustedRestrictedExecutionProfile()) {
         await this.onJobTransition({
           jobId: dj.jobId,
@@ -2997,7 +3849,6 @@ export class AgentStream {
         return;
       }
       if (dj.sandboxExecution) {
-        const sandboxExecution = dj.sandboxExecution;
         if (dj.licensedMaterialMounts.length > 0) {
           await this.onJobTransition({
             jobId: dj.jobId,
@@ -3016,21 +3867,46 @@ export class AgentStream {
           return;
         }
         this.preparingDispatches.add(dispatchId);
-        processor
-          .prepare(
-            dj.jobId,
-            sandboxExecution,
-            dj.inputStaging.map((input) => ({
-              stagePath: input.stagePath,
-              sourceUrl: input.sourceUrl,
-              ...(input.deliveryLeaseId
-                ? {
-                    deliveryLeaseId: input.deliveryLeaseId,
-                    deliveryLeaseExpiresAtUnixMs: input.deliveryLeaseExpiresAtUnixMs,
-                  }
-                : {}),
-            })),
-          )
+        const preparation = this.prepareWithFederationAuthorization(
+          dj,
+          async (current, signal) => {
+            const inputs = () =>
+              current().inputStaging.map((input) => ({
+                stagePath: input.stagePath,
+                sourceUrl: input.sourceUrl,
+                localDataSource: input.localDataSource,
+                ...(input.deliveryLeaseId
+                  ? {
+                      deliveryLeaseId: input.deliveryLeaseId,
+                      deliveryLeaseExpiresAtUnixMs: input.deliveryLeaseExpiresAtUnixMs,
+                    }
+                  : {}),
+              }));
+            return processor.prepare(
+              dj.jobId,
+              current().sandboxExecution,
+              { cpus: dj.cpus, memoryMb: dj.memoryMb },
+              inputs(),
+              {
+                signal,
+                restart: dj.federationExecution,
+                ...(dj.federationExecution
+                  ? {
+                      renewInput: async (source) => {
+                        const latest = inputs().find(
+                          (input) => input.stagePath === source.stagePath,
+                        );
+                        if (!latest)
+                          throw new Error("Sandbox input renewal lost its original binding");
+                        return latest;
+                      },
+                    }
+                  : {}),
+              },
+            );
+          },
+          () => processor.cleanup(dj.jobId),
+        )
           .then(async (prepared) => {
             const profile = this.deps.restrictedExecutionProfile;
             if (
@@ -3059,13 +3935,20 @@ export class AgentStream {
               )(profile);
             }
             const sandboxOutputs: ExpectedOutput[] = prepared.sandbox.mounts
-              .filter((mount) => mount.mode === "WriteOnly")
+              .filter(
+                (mount) =>
+                  mount.mode === "WriteOnly" &&
+                  (mount.ioType === "Text" || mount.ioType === "JSON"),
+              )
               .map((mount) => ({
                 descriptor: mount.descriptor,
-                path: mount.relativePath,
-                isBatch: mount.ioType === "FileBatch",
+                path: mount.hostPath,
+                isBatch: false,
               }));
-            if (dj.restrictedNoEgress && sandboxOutputs.length > 0) {
+            if (
+              dj.restrictedNoEgress &&
+              prepared.sandbox.mounts.some((mount) => mount.mode === "WriteOnly")
+            ) {
               throw new Error("Restricted no-egress Sandbox cannot expose output mounts");
             }
             if (
@@ -3080,7 +3963,12 @@ export class AgentStream {
             const spec: JobSpec = {
               jobId: dj.jobId,
               name: dj.name,
-              schedulerName: schedulerSubmissionTag(dj.jobId),
+              federationDispatchEpoch: dj.federationExecution
+                ? Number(dj.dispatchEpoch)
+                : undefined,
+              schedulerName: dj.federationExecution
+                ? federationSchedulerName(dj.dispatchEpoch)
+                : schedulerSubmissionTag(dj.jobId),
               command: "sandbox-manifest",
               cpus: dj.cpus,
               memoryMb: Number(dj.memoryMb),
@@ -3101,6 +3989,7 @@ export class AgentStream {
             }
             await this.assertDispatchEpochAllowed(dj.jobId, dispatchEpoch);
             this.sandboxRuntimeDigests.set(spec, prepared.runtimeDigest);
+            if (dj.federationExecution) this.federationSpecs.add(spec);
             return this.pool.submit(spec, { expectedOutputs: sandboxOutputs });
           })
           .catch(async (err) => {
@@ -3125,12 +4014,16 @@ export class AgentStream {
           .finally(() => {
             this.preparingDispatches.delete(dispatchId);
           });
+        this.trackJobPreparation(dj.jobId, preparation);
         return;
       }
       const spec: JobSpec = {
         jobId: dj.jobId,
         name: dj.name,
-        schedulerName: schedulerSubmissionTag(dj.jobId),
+        federationDispatchEpoch: dj.federationExecution ? Number(dj.dispatchEpoch) : undefined,
+        schedulerName: dj.federationExecution
+          ? federationSchedulerName(dj.dispatchEpoch)
+          : schedulerSubmissionTag(dj.jobId),
         command: dj.command,
         cpus: dj.cpus,
         memoryMb: Number(dj.memoryMb),
@@ -3169,9 +4062,7 @@ export class AgentStream {
         .finally(() => {
           this.preparingDispatches.delete(dispatchId);
         });
-      const tracked = preparation.catch(() => {
-        this.logger.error({ jobId: dj.jobId }, "Failed to report dispatch preparation failure");
-      });
+      const tracked = this.trackJobPreparation(dj.jobId, preparation);
       if (dj.spackExecution) {
         this.pendingSpackPreparations.add(tracked);
         void tracked.then(() => {
@@ -3237,6 +4128,12 @@ export class AgentStream {
           throw new Error("durable revocation tombstone store is not configured");
         }
         await this.revocationTombstones.record(jobId, revokedEpoch);
+        const currentEpoch = await this.currentDispatchEpoch(jobId);
+        if (currentEpoch !== undefined && currentEpoch > revokedEpoch) {
+          this.outboundQueue.push({ kind: "dataDeliveryRevokeAck", jobId, reasonCode });
+          this.signalOutbound();
+          return;
+        }
         await this.cleanupIntents.recordRevoked(jobId, {
           reason: reasonCode,
           destroyRestrictedWorkRoot,
@@ -3338,9 +4235,25 @@ export class AgentStream {
         { operationId: request.operationId, action: request.action, spec: request.spec },
         "Software operation received",
       );
+      if (
+        request.federationJobId &&
+        (!this.federationInstallationSupported ||
+          !this.federationInstallationCapable() ||
+          !request.durableReplay ||
+          request.action !== SoftwareOperationAction.INSTALL)
+      ) {
+        await this.enqueueSoftwareOperationResult({
+          operationId: request.operationId,
+          action: request.action,
+          spec: request.spec,
+          status: SoftwareOperationStatus.REJECTED,
+          error: "Federation installation renewal is unavailable",
+        });
+        return;
+      }
       const managed = this.spackManager?.requireServerMaterials === true;
       const ledger = managed ? this.persistentQueue?.softwareOperations : undefined;
-      if (managed && !ledger) {
+      if ((managed || request.durableReplay) && !ledger) {
         await this.enqueueSoftwareOperationResult({
           operationId: request.operationId,
           action: request.action,
@@ -3356,8 +4269,19 @@ export class AgentStream {
           operationId: request.operationId,
           action: request.action,
           spec: request.spec,
+          requestedBy: request.requestedBy,
+          manifestDigest: request.spackManifestDigest,
+          durableReplay: request.durableReplay,
+          federationJobId: request.federationJobId,
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof SoftwareOperationIntentConflict) {
+          this.logger.error(
+            { operationId: request.operationId },
+            "Rejected conflicting software operation replay",
+          );
+          return;
+        }
         await this.enqueueSoftwareOperationResult({
           operationId: request.operationId,
           action: request.action,
@@ -3381,32 +4305,93 @@ export class AgentStream {
               identity,
               operationId: request.operationId,
               bindStore: (root: string) => ledger.bindStore(request.operationId, root),
+              bindSupervisor: (ref: { directory: string; unit: string }) =>
+                ledger.bindSupervisor(request.operationId, ref),
             }
           : undefined;
+      const installation = request.federationJobId
+        ? { request, controller: new AbortController(), started: false, settled: Promise.resolve() }
+        : undefined;
+      const operationSignal = installation
+        ? AbortSignal.any([installation.controller.signal, this.lifecycleController.signal])
+        : this.lifecycleController.signal;
       // Include inventory updates in the queue so an older success cannot undo a later withdrawal.
       this.softwareOperationQueue = this.softwareOperationQueue
         .then(async () => {
-          if (this.lifecycleController.signal.aborted) {
+          if (installation) {
+            installation.started = true;
+            if (
+              (await this.revocationTombstones?.revokedEpoch(request.federationJobId)) !== undefined
+            )
+              installation.controller.abort();
+          }
+          if (operationSignal.aborted) {
             await this.enqueueSoftwareOperationResult({
               operationId: request.operationId,
               action: request.action,
               status: SoftwareOperationStatus.FAILED,
               spec: request.spec,
-              error: "Agent stopped before queued software operation could begin",
+              error: this.lifecycleController.signal.aborted
+                ? "Agent stopped before queued software operation could begin"
+                : "Federation installation cancelled before execution",
             });
             return;
           }
+          const authorized = request.federationJobId
+            ? (await this.federationExecution.renewInstallation(request, operationSignal))
+                .installation
+            : request;
           await ledger?.start(request.operationId);
+          const renewInstallation = async (signal: AbortSignal) => {
+            const grant = await this.federationExecution.renewInstallation(
+              request,
+              AbortSignal.any([signal, operationSignal]),
+            );
+            if (grant.expiresAt <= Date.now()) throw new SpackInstallationPending();
+            return grant;
+          };
           const run = () =>
-            this.handleSoftwareOperation(request.operationId, request.action, request.spec, {
-              operationId: request.operationId,
-              ticket: request.spackMaterialTicket,
-              manifestDigest: request.spackManifestDigest,
-            });
+            this.handleSoftwareOperation(
+              request.operationId,
+              request.action,
+              request.spec,
+              {
+                operationId: request.operationId,
+                ticket: authorized.spackMaterialTicket,
+                manifestDigest: authorized.spackManifestDigest,
+                ...(request.federationJobId
+                  ? {
+                      authorizeMaterialTransfer: async (signal: AbortSignal) => {
+                        const grant = await renewInstallation(signal);
+                        return {
+                          ticket: grant.installation.spackMaterialTicket,
+                          expiresAt: grant.expiresAt,
+                        };
+                      },
+                      authorizeInstallation: async (signal: AbortSignal) => {
+                        // Bound online checks while the install-store lock is held.
+                        return (await renewInstallation(signal)).expiresAt;
+                      },
+                    }
+                  : {}),
+              },
+              operationSignal,
+            );
           if (execution) await softwareExecution.run(execution, run);
           else await run();
         })
-        .catch((err) => {
+        .catch(async (err) => {
+          if (
+            err instanceof SpackInstallationPending &&
+            request.federationJobId &&
+            ledger &&
+            identity &&
+            !operationSignal.aborted
+          ) {
+            this.invalidateInstalledSoftware(err.invalidatedHashes);
+            await ledger.deferAuthorization(request.operationId, identity.token);
+            return;
+          }
           this.logger.error(
             { err, operationId: request.operationId, spec: request.spec },
             "Failed to run software operation",
@@ -3418,7 +4403,15 @@ export class AgentStream {
             spec: request.spec,
             error: RECOVERY_REQUIRED,
           });
+        })
+        .finally(() => {
+          if (this.federationInstallations.get(request.operationId) === installation)
+            this.federationInstallations.delete(request.operationId);
         });
+      if (installation) {
+        installation.settled = this.softwareOperationQueue;
+        this.federationInstallations.set(request.operationId, installation);
+      }
       this.trackMaintenanceTask(this.softwareOperationQueue);
       return;
     }
@@ -3485,6 +4478,34 @@ export class AgentStream {
       void this.trackMaintenanceTask(
         this.runShellExec(req.requestId, req.input, req.timeoutSec || 30),
       );
+      return;
+    }
+
+    if (payload.case === "federationAccountingRequest") {
+      if (payload.value.requestJson.length > 16384 || this.accountingQueries.size >= 2) return;
+      let body: unknown;
+      try {
+        body = JSON.parse(payload.value.requestJson);
+      } catch {
+        return;
+      }
+      const parsed = FederationAccountingRequestSchema.safeParse(body);
+      if (!parsed.success || this.accountingQueries.has(parsed.data.requestId)) return;
+      const request = parsed.data;
+      this.accountingQueries.add(request.requestId);
+      void collectFederationAccounting(this.inboundAcks, this.deps.adapter, request)
+        .then((response) => {
+          if (!this.connected) return;
+          this.outboundQueue.push({
+            kind: "federationAccountingResponse",
+            responseJson: JSON.stringify(response),
+          });
+          this.wakeOutbound();
+        })
+        .catch(() =>
+          this.logger.warn({ jobId: request.jobId }, "Accounting query failed; Server will retry"),
+        )
+        .finally(() => this.accountingQueries.delete(request.requestId));
       return;
     }
 
@@ -3607,12 +4628,312 @@ export class AgentStream {
     this.signalOutbound();
   }
 
+  private recoverFederationDispatch(row: PendingInboundRow): void {
+    if (this.recoveringFederationDispatches.has(row.jobId)) return;
+    // Submission reconciliation owns these receipts; preparation replay must never submit them again.
+    if (row.payload.federationSubmissionStarted === true) {
+      this.logger.warn(
+        { jobId: row.jobId },
+        "Federation submission requires scheduler reconciliation; not replaying",
+      );
+      return;
+    }
+    const parsed = FederationDispatchReceiptSchema.safeParse(row.payload.federationReceipt);
+    if (!parsed.success || row.dispatchId !== `${row.jobId}:${parsed.data.epoch}`) {
+      this.logger.error(
+        { jobId: row.jobId },
+        "Federation recovery receipt is missing or invalid; not replaying",
+      );
+      return;
+    }
+    if (!this.federationExecutionSupported || !this.federationExecutionCapable()) return;
+    const receipt = parsed.data;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, this.lifecycleController.signal]);
+    this.recoveringFederationDispatches.set(row.jobId, { controller, epoch: receipt.epoch });
+    const recover = async () => {
+      await this.assertDispatchEpochAllowed(row.jobId, receipt.epoch);
+      if (await this.findCleanupIntent(row.jobId)) {
+        this.logger.warn(
+          { jobId: row.jobId },
+          "Federation preparation awaits durable cleanup; not replaying",
+        );
+        return;
+      }
+      const dispatch = await this.federationExecution.recover(
+        row.jobId,
+        BigInt(receipt.epoch),
+        signal,
+        (renewed) => matchesFederationReceipt(renewed, receipt),
+      );
+      await this.assertDispatchEpochAllowed(row.jobId, receipt.epoch);
+      signal.throwIfAborted();
+      await this.handleServerMessage(
+        create(ServerMessageSchema, { payload: { case: "dispatchJob", value: dispatch } }),
+        row.dispatchId,
+      );
+    };
+    void recover()
+      .catch(async (err: unknown) => {
+        if (signal.aborted) return;
+        this.logger.error({ err, jobId: row.jobId }, "Federation preparation recovery rejected");
+        this.dispatchIdsByJob.set(row.jobId, row.dispatchId);
+        await this.onJobTransition({
+          jobId: row.jobId,
+          status: "failed",
+          message: "Federation preparation recovery rejected",
+        });
+      })
+      .catch((err: unknown) => {
+        this.logger.error(
+          { err, jobId: row.jobId },
+          "Failed to persist federation recovery rejection",
+        );
+      })
+      .finally(() => {
+        this.recoveringFederationDispatches.delete(row.jobId);
+      });
+  }
+
+  private federationInstallationCapable(): boolean {
+    return (
+      this.federationExecutionCapable() &&
+      this.spackManager?.requireServerMaterials === true &&
+      !!this.persistentQueue?.softwareOperations
+    );
+  }
+
+  private federationExecutionCapable(): boolean {
+    return Boolean(
+      this.inboundAcks && this.revocationTombstones && this.cleanupIntents && this.activeRemoteJobs,
+    );
+  }
+
+  private async assertFederationRuntimeWatchdog(): Promise<void> {
+    if (this.deps.assertFederationRuntimeWatchdog)
+      return this.deps.assertFederationRuntimeWatchdog();
+    if (!this.inboundAcks) throw new Error("Federation runtime store is unavailable");
+    await this.inboundAcks.assertWatchdogReady(this.deps.adapter.type);
+  }
+
+  private startFederationRuntime(
+    jobId: string,
+    dispatchId: string,
+    epoch: number,
+    receipt: FederationRuntimeReceipt,
+  ): void {
+    const entry = {
+      dispatchId,
+      epoch,
+      receipt,
+      authorization: undefined as ExecutionAuthorization | undefined,
+    };
+    this.federationRuntimes.set(jobId, entry);
+    if (receipt.state !== "active") return;
+    try {
+      const authorization = new ExecutionAuthorization(
+        receipt.expiresAt,
+        async (signal) => {
+          await this.assertFederationRuntimeWatchdog();
+          return this.federationExecution.renewRuntime(jobId, BigInt(epoch), signal);
+        },
+        this.lifecycleController.signal,
+        async (expiresAt) => {
+          if (!this.inboundAcks) throw new Error("Federation runtime store is unavailable");
+          await this.inboundAcks.renewRuntime(dispatchId, receipt.owner, expiresAt);
+          receipt.expiresAt = expiresAt;
+        },
+      );
+      entry.authorization = authorization;
+      authorization.signal.addEventListener(
+        "abort",
+        () => {
+          if (!this.running || this.lifecycleController.signal.aborted) return;
+          void this.expireFederationRuntime(jobId, entry.receipt.owner).catch((err: unknown) => {
+            this.logger.warn({ err, jobId }, "Federation runtime stop remains pending");
+          });
+        },
+        { once: true },
+      );
+    } catch (err) {
+      receipt.state = "stopping";
+      this.logger.warn({ err, jobId }, "Cannot resume expired federation runtime authority");
+    }
+  }
+
+  private async recoverFederationRuntime(jobId: string, dispatchId: string): Promise<boolean> {
+    if (!this.inboundAcks) return true;
+    if (!this.federationRuntimes.has(jobId)) {
+      const row = await this.inboundAcks.get(dispatchId);
+      if (row?.payload.federationExecution !== true) return true;
+      const fingerprint = FederationDispatchReceiptSchema.parse(row.payload.federationReceipt);
+      if (row.jobId !== jobId || dispatchId !== `${jobId}:${fingerprint.epoch}`)
+        throw new Error("Federation runtime identity is invalid");
+      const receipt = await this.inboundAcks.claimRuntime(dispatchId);
+      if (receipt.state === "finished") return true;
+      this.startFederationRuntime(jobId, dispatchId, fingerprint.epoch, receipt);
+    }
+    const entry = this.federationRuntimes.get(jobId);
+    if (!entry) return true;
+    if (entry.superseded) return false;
+    if (entry.receipt.state === "active") {
+      try {
+        entry.authorization?.assertValid();
+        return true;
+      } catch {
+        // The original deadline also applies while reconnecting or querying the scheduler.
+      }
+    }
+    await this.expireFederationRuntime(jobId, entry.receipt.owner);
+    return false;
+  }
+
+  private async expireFederationRuntime(jobId: string, owner: string): Promise<void> {
+    const entry = this.federationRuntimes.get(jobId);
+    if (!entry || entry.receipt.owner !== owner || !this.inboundAcks) return;
+    try {
+      const owned = await this.inboundAcks.setRuntimeState(
+        entry.dispatchId,
+        entry.receipt.owner,
+        "stopping",
+      );
+      if (!owned) {
+        await this.detachFederationRuntime(jobId);
+        return;
+      }
+      entry.receipt.state = "stopping";
+      await this.requestJobCancellation(jobId, entry.epoch);
+      if (this.federationRuntimes.get(jobId) === entry)
+        await this.onJobTransition({ jobId, status: "cancelled" });
+    } catch (error) {
+      // Stop retries must also run without a connected Server heartbeat.
+      if (this.running && this.federationRuntimes.get(jobId) === entry && !entry.retry) {
+        entry.retry = setTimeout(() => {
+          entry.retry = undefined;
+          void this.expireFederationRuntime(jobId, entry.receipt.owner).catch((err: unknown) => {
+            this.logger.warn({ err, jobId }, "Federation runtime stop remains pending");
+          });
+        }, 1000);
+      }
+      throw error;
+    }
+  }
+
+  private async pauseFederationRuntime(jobId: string): Promise<void> {
+    const entry = this.federationRuntimes.get(jobId);
+    if (!entry) return;
+    if (
+      !(await this.inboundAcks?.setRuntimeState(entry.dispatchId, entry.receipt.owner, "stopping"))
+    ) {
+      await this.detachFederationRuntime(jobId);
+      throw new Error("Federation runtime ownership was replaced");
+    }
+    entry.receipt.state = "stopping";
+    await entry.authorization?.close();
+  }
+
+  private async detachFederationRuntime(jobId: string): Promise<void> {
+    const entry = this.federationRuntimes.get(jobId);
+    if (!entry) return;
+    entry.superseded = true;
+    clearTimeout(entry.retry);
+    this.pool.get(jobId)?.cancel();
+    await entry.authorization?.close();
+  }
+
+  private async finishFederationRuntime(jobId: string): Promise<boolean> {
+    const entry = this.federationRuntimes.get(jobId);
+    if (!entry) return true;
+    if (
+      !(await this.inboundAcks?.setRuntimeState(entry.dispatchId, entry.receipt.owner, "finished"))
+    ) {
+      await this.detachFederationRuntime(jobId);
+      return false;
+    }
+    clearTimeout(entry.retry);
+    await entry.authorization?.close();
+    if (this.federationRuntimes.get(jobId) === entry) this.federationRuntimes.delete(jobId);
+    return true;
+  }
+
+  private async prepareWithFederationAuthorization<T>(
+    dispatch: DispatchJob,
+    prepare: (current: () => DispatchJob, signal: AbortSignal) => Promise<T>,
+    discardPrepared: () => Promise<void>,
+  ): Promise<T> {
+    const pending = this.federationDispatches.get(dispatch.jobId);
+    const parent = pending
+      ? AbortSignal.any([this.lifecycleController.signal, pending.controller.signal])
+      : this.lifecycleController.signal;
+    for (;;) {
+      parent.throwIfAborted();
+      const grant = await this.renewFederationExecution(dispatch, parent);
+      let authorized = grant?.dispatch ?? dispatch;
+      const authorization = grant
+        ? new ExecutionAuthorization(
+            grant.expiresAt,
+            async (signal) => {
+              const next = await this.renewFederationExecution(dispatch, signal);
+              if (!next) throw new Error("Preparation authority is missing");
+              authorized = next.dispatch;
+              return next.expiresAt;
+            },
+            parent,
+          )
+        : undefined;
+      let prepared = false;
+      try {
+        const result = await prepare(() => {
+          authorization?.assertValid();
+          return authorized;
+        }, authorization?.signal ?? parent);
+        prepared = true;
+        parent.throwIfAborted();
+        authorization?.assertValid();
+        return result;
+      } catch (error) {
+        // The preparer rolls back failures; also discard a result that lost authority on return.
+        if (prepared) await discardPrepared();
+        parent.throwIfAborted();
+        const reason: unknown = authorization?.signal.reason;
+        if (!reason || (error !== reason && !(error instanceof Error && error.cause === reason)))
+          throw error;
+        if (!(reason instanceof ExecutionAuthorizationExpired)) throw reason;
+        this.logger.info({ jobId: dispatch.jobId }, "Job preparation awaits fresh authorization");
+      } finally {
+        await authorization?.close();
+      }
+    }
+  }
+
+  private async renewFederationExecution(dispatch: DispatchJob, renewalSignal?: AbortSignal) {
+    if (!dispatch.federationExecution) return undefined;
+    const pending = this.federationDispatches.get(dispatch.jobId);
+    if (!pending) throw new Error("Federation dispatch authority is missing");
+    const signal = AbortSignal.any([
+      this.lifecycleController.signal,
+      pending.controller.signal,
+      ...(renewalSignal ? [renewalSignal] : []),
+    ]);
+    signal.throwIfAborted();
+    await this.assertDispatchEpochAllowed(dispatch.jobId, Number(dispatch.dispatchEpoch));
+    for (;;) {
+      const grant = await this.federationExecution.renew(pending.dispatch, signal);
+      await this.assertDispatchEpochAllowed(dispatch.jobId, Number(dispatch.dispatchEpoch));
+      signal.throwIfAborted();
+      if (grant.expiresAt <= Date.now()) continue;
+      pending.dispatch = grant.dispatch;
+      return grant;
+    }
+  }
+
   private async submitWithLicensedMaterials(
     dispatch: DispatchJob,
     spec: JobSpec,
     expectedOutputs: ExpectedOutput[],
     dispatchEpoch: number,
   ): Promise<void> {
+    dispatch = (await this.renewFederationExecution(dispatch))?.dispatch ?? dispatch;
     if (dispatch.spackExecution) {
       await this.assertDispatchEpochAllowed(spec.jobId, dispatchEpoch);
       this.lifecycleController.signal.throwIfAborted();
@@ -3620,10 +4941,7 @@ export class AgentStream {
       this.spackActivations.set(spec.jobId, { epoch: dispatchEpoch, controller });
       try {
         const command = await activateWorkflowSpack({
-          execution: {
-            spec: dispatch.spackExecution.spec,
-            command: dispatch.spackExecution.command,
-          },
+          execution: workflowSpackIntent(dispatch.spackExecution),
           command: dispatch.command,
           manager: this.spackManager,
           signal: AbortSignal.any([this.lifecycleController.signal, controller.signal]),
@@ -3651,10 +4969,21 @@ export class AgentStream {
         this.spackActivations.delete(spec.jobId);
       }
     }
+    const federatedNetdrive =
+      dispatch.federationExecution &&
+      !dispatch.sandboxExecution &&
+      dispatch.inputStaging.length > 0;
+    const deliveries = (current: DispatchJob) =>
+      federatedNetdrive ? netdriveDeliveries(current.inputStaging) : current.dataDeliveries;
+    if (
+      federatedNetdrive &&
+      (dispatch.dataDeliveries.length || dispatch.licensedMaterialMounts.length)
+    )
+      throw new Error("NetDrive inputs cannot mix with other managed material deliveries");
     const hasSpecializedManagedRoot =
       dispatch.dataDeliveries.length > 0 || dispatch.licensedMaterialMounts.length > 0;
     const requiresImplicitFileWorkRoot =
-      !spec.workingDir &&
+      (federatedNetdrive || !spec.workingDir) &&
       !hasSpecializedManagedRoot &&
       (dispatch.inputStaging.length > 0 ||
         dispatch.fileOutputDescriptors.length > 0 ||
@@ -3672,21 +5001,41 @@ export class AgentStream {
       this.managedWorkRootsAwaitingServerRelease.add(spec.jobId);
     }
     const deliveryExecutor = this.deps.dataDeliveryExecutor;
-    if (dispatch.dataDeliveries.length > 0 && !deliveryExecutor) {
+    if ((federatedNetdrive || dispatch.dataDeliveries.length > 0) && !deliveryExecutor) {
       throw new Error("Data Market delivery is unavailable on this Agent");
     }
     try {
-      const delivered = deliveryExecutor
-        ? await deliveryExecutor.prepare(managedSpec.jobId, dispatch.dataDeliveries, {
-            beforeSideEffect: async (delivery) => {
-              await this.cleanupIntents?.recordDataDelivery(managedSpec.jobId, {
-                bindingId: delivery.bindingId,
-                targetPath: delivery.targetPath,
-                method: delivery.method,
-              });
-            },
-          })
-        : [];
+      const delivered =
+        deliveryExecutor && (federatedNetdrive || dispatch.dataDeliveries.length > 0)
+          ? await this.prepareWithFederationAuthorization(
+              dispatch,
+              async (current, signal) =>
+                deliveryExecutor.prepare(managedSpec.jobId, deliveries(current()), {
+                  signal,
+                  ...(dispatch.federationExecution
+                    ? {
+                        renew: async (binding) => {
+                          const latest = deliveries(current()).find(
+                            (item) => item.bindingId === binding.bindingId,
+                          );
+                          if (!latest)
+                            throw new Error("Federation data renewal is missing its binding");
+                          return latest;
+                        },
+                      }
+                    : {}),
+                  beforeSideEffect: async (delivery) => {
+                    await this.assertDispatchEpochAllowed(managedSpec.jobId, dispatchEpoch);
+                    await this.cleanupIntents?.recordDataDelivery(managedSpec.jobId, {
+                      bindingId: delivery.bindingId,
+                      targetPath: delivery.targetPath,
+                      method: delivery.method,
+                    });
+                  },
+                }),
+              () => deliveryExecutor.release(managedSpec.jobId),
+            )
+          : [];
       const dataDeliveryCleanup = delivered.map(({ bindingId, targetPath, method }) => ({
         bindingId,
         targetPath,
@@ -3696,7 +5045,7 @@ export class AgentStream {
         ...managedSpec,
         ...(dataDeliveryCleanup.length > 0 ? { dataDeliveryCleanup } : {}),
       };
-      if (requiresImplicitFileWorkRoot) {
+      if (requiresImplicitFileWorkRoot && !federatedNetdrive) {
         await this.stageDispatchInputs(dispatch, deliveredSpec);
       }
       const mounts = dispatch.licensedMaterialMounts;
@@ -3740,6 +5089,7 @@ export class AgentStream {
       if (dispatch.spackExecution) {
         this.spackDispatchEpochs.set(protectedSpec, dispatchEpoch);
       }
+      if (dispatch.federationExecution) this.federationSpecs.add(protectedSpec);
       await this.pool.submit(protectedSpec, { expectedOutputs: protectedExpectedOutputs });
     } catch (error) {
       const cleanupErrors: unknown[] = [];
@@ -3824,10 +5174,49 @@ export class AgentStream {
     await remove(jobId);
   }
 
+  private trackJobPreparation(jobId: string, preparation: Promise<unknown>): Promise<void> {
+    const tracked = preparation.then(
+      () => {},
+      (err: unknown) => {
+        this.logger.error({ err, jobId }, "Failed to settle job preparation");
+      },
+    );
+    this.jobPreparations.set(jobId, tracked);
+    void tracked.then(() => {
+      if (this.jobPreparations.get(jobId) === tracked) this.jobPreparations.delete(jobId);
+    });
+    return tracked;
+  }
+
+  private async currentDispatchEpoch(jobId: string): Promise<number | undefined> {
+    const live = this.federationDispatches.get(jobId)?.dispatch.dispatchEpoch;
+    if (live !== undefined) return Number(live);
+    const preparing =
+      this.recoveringFederationDispatches.get(jobId)?.epoch ??
+      this.spackActivations.get(jobId)?.epoch;
+    if (preparing !== undefined) return preparing;
+    const local = epochFromDispatchId(jobId, this.dispatchIdsByJob.get(jobId));
+    if (local !== undefined) return local;
+    const active = (await this.activeRemoteJobs?.listActive())?.find((job) => job.jobId === jobId);
+    return epochFromDispatchId(jobId, active?.dispatchId);
+  }
+
   private async requestJobCancellation(jobId: string, revokedEpoch: number): Promise<void> {
     const tombstones = this.revocationTombstones;
     if (!tombstones) throw new Error("durable revocation tombstone store is not configured");
     await tombstones.record(jobId, revokedEpoch);
+    const currentEpoch = await this.currentDispatchEpoch(jobId);
+    if (currentEpoch !== undefined && currentEpoch > revokedEpoch) {
+      this.outboundQueue.push({ kind: "cancelJobAck", jobId, revokedEpoch });
+      this.signalOutbound();
+      return;
+    }
+    await this.pauseFederationRuntime(jobId);
+    const recovering = this.recoveringFederationDispatches.get(jobId);
+    if (recovering && recovering.epoch <= revokedEpoch) recovering.controller.abort();
+    const federation = this.federationDispatches.get(jobId);
+    if (federation && federation.dispatch.dispatchEpoch <= BigInt(revokedEpoch))
+      federation.controller.abort();
     const activation = this.spackActivations.get(jobId);
     if (activation && activation.epoch <= revokedEpoch) {
       activation.controller.abort();
@@ -3857,6 +5246,7 @@ export class AgentStream {
         kind: "cancelJobAck",
         jobId,
         revokedEpoch: entry.revokedEpoch,
+        ...(this.persistentQueue ? { installationsStopped: true } : {}),
       });
       this.signalOutbound();
     });
@@ -3869,47 +5259,155 @@ export class AgentStream {
     await entry.settle;
   }
 
-  private async settleJobCancellation(jobId: string): Promise<void> {
-    // Revocation is persisted before waiting, so recovery cannot reattach this job.
+  private settleJobCancellation(jobId: string): Promise<void> {
+    const pending = this.jobCancellationSettlements.get(jobId);
+    if (pending) return pending;
+    const settle = this.performJobCancellation(jobId).finally(() => {
+      this.jobCancellationSettlements.delete(jobId);
+    });
+    this.jobCancellationSettlements.set(jobId, settle);
+    return settle;
+  }
+
+  private async performJobCancellation(jobId: string): Promise<void> {
+    const installations = [...this.federationInstallations.values()].filter(
+      (entry) => entry.request.federationJobId === jobId,
+    );
+    for (const entry of installations) entry.controller.abort();
+    await Promise.all(
+      installations.map(async (entry) => {
+        if (entry.started) return entry.settled;
+        // A queued operation has no worker; its aborted signal also fences the eventual queue head.
+        await this.enqueueSoftwareOperationResult({
+          operationId: entry.request.operationId,
+          action: entry.request.action,
+          spec: entry.request.spec,
+          status: SoftwareOperationStatus.FAILED,
+          error: "Federation installation cancelled before execution",
+        });
+      }),
+    );
+    for (const result of (await this.persistentQueue?.softwareOperations.cancelAuthorizationWaits(
+      jobId,
+    )) ?? [])
+      await this.enqueueSoftwareOperationResult(result, true);
+    await this.persistentQueue?.softwareOperations.assertJobStopped(jobId);
+    await this.jobPreparations.get(jobId);
     await this.activeRemoteJobRecovery;
     const hadActiveRunner = this.pool.get(jobId) !== undefined;
-    if (hadActiveRunner) {
-      await this.pool.cancel(jobId);
-      await this.pool.await(jobId);
-    }
+    const runnerCancelled = hadActiveRunner ? await this.pool.cancel(jobId) : false;
+    if (hadActiveRunner) await this.pool.await(jobId);
 
     const [active, intent] = await Promise.all([
       this.activeRemoteJobs?.listActive() ?? Promise.resolve([]),
       this.findCleanupIntent(jobId),
     ]);
     const activeJob = active.find((job) => job.jobId === jobId);
+    const pendingReceipt = await this.inboundAcks?.latestForJob(jobId);
+    const prepared =
+      pendingReceipt?.payload.federationSubmissionStarted === true
+        ? jsonToPreparedRemoteJob(pendingReceipt.payload.federationSubmission)
+        : undefined;
+    const savedIdentity = pendingReceipt
+      ? await this.inboundAcks?.runtimeSchedulerIdentity(pendingReceipt.dispatchId)
+      : undefined;
+    if (
+      activeJob &&
+      savedIdentity &&
+      (activeJob.schedulerJobId !== savedIdentity.schedulerJobId ||
+        activeJob.schedulerUid !== savedIdentity.schedulerUid)
+    )
+      throw new Error("Federation durable scheduler identities disagree");
+    const schedulerUid = savedIdentity?.schedulerUid ?? activeJob?.schedulerUid;
+    const cancelLookup = {
+      jobId,
+      ...(prepared
+        ? schedulerLookupForSpec(prepared.spec)
+        : activeJob
+          ? schedulerLookupForSpec(activeJob.spec)
+          : {}),
+      namespace:
+        savedIdentity?.namespace ??
+        intent?.schedulerNamespace ??
+        (prepared
+          ? schedulerLookupForSpec(prepared.spec).namespace
+          : activeJob
+            ? schedulerLookupForSpec(activeJob.spec).namespace
+            : undefined),
+      schedulerUid,
+    };
+    const stopProof = pendingReceipt?.payload.federationRuntimeStop;
+    const stoppedSchedulerJobId =
+      stopProof &&
+      typeof stopProof === "object" &&
+      "schedulerJobId" in stopProof &&
+      typeof stopProof.schedulerJobId === "string"
+        ? stopProof.schedulerJobId
+        : undefined;
     const unreconciledSchedulerJobId = this.unreconciledSubmittedJobs.get(jobId);
     const schedulerJobId =
-      activeJob?.schedulerJobId ?? intent?.schedulerJobId ?? unreconciledSchedulerJobId;
+      savedIdentity?.schedulerJobId ??
+      activeJob?.schedulerJobId ??
+      intent?.schedulerJobId ??
+      unreconciledSchedulerJobId ??
+      stoppedSchedulerJobId;
 
-    if (!activeJob && !intent && !schedulerJobId && !hadActiveRunner) {
+    if (!activeJob && !intent && !schedulerJobId && !hadActiveRunner && !prepared) {
       this.logger.info({ jobId }, "Cancellation converged for unknown job");
       return;
     }
 
+    const runtimeDispatchId = activeJob?.dispatchId ?? pendingReceipt?.dispatchId;
+    const watchdogStopped =
+      !hadActiveRunner &&
+      runtimeDispatchId &&
+      schedulerJobId &&
+      (await this.inboundAcks?.hasConfirmedRuntimeStop(
+        runtimeDispatchId,
+        schedulerJobId,
+        schedulerUid,
+      ));
+    if (
+      watchdogStopped &&
+      runtimeDispatchId &&
+      this.inboundAcks &&
+      !this.federationRuntimes.has(jobId)
+    ) {
+      const epoch = epochFromDispatchId(jobId, runtimeDispatchId);
+      if (epoch === undefined)
+        throw new Error("Federation watchdog stop receipt has no dispatch epoch");
+      const receipt = await this.inboundAcks.claimRuntime(runtimeDispatchId);
+      this.startFederationRuntime(jobId, runtimeDispatchId, epoch, receipt);
+    }
     if (activeJob?.schedulerJobId === PENDING_SCHEDULER_SUBMISSION) {
       const lookup = await this.deps.adapter.findByKuintessenceJobId?.({
         ...schedulerLookupForSpec(activeJob.spec),
         includeCompleted: true,
         submittedAfter: activeJob.submittedAfter,
       });
-      if (lookup?.status !== "found") {
+      if (lookup?.status !== "found")
         throw new Error(
           "Submission outcome unknown; cancellation requires scheduler reconciliation",
         );
-      }
       await this.cancelSchedulerJobOrConfirmAbsent(jobId, lookup.schedulerJobId, intent);
-    } else if (schedulerJobId) {
-      await this.cancelSchedulerJobOrConfirmAbsent(jobId, schedulerJobId, intent);
-    } else {
-      const lookup = await this.lookupSchedulerJob(jobId, intent);
-      if (lookup.status === "found") {
-        await this.deps.adapter.cancel(lookup.schedulerJobId);
+    } else if (!runnerCancelled && !watchdogStopped) {
+      if (
+        schedulerJobId &&
+        !(this.deps.adapter.type === "kubernetes" && prepared && !schedulerUid)
+      ) {
+        if (activeJob)
+          await this.deps.adapter.prepareResume?.(activeJob.spec, schedulerJobId, schedulerUid);
+        await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, cancelLookup);
+      } else {
+        const lookup = await this.lookupSchedulerJob(jobId, intent);
+        if (lookup.status === "found") {
+          await cancelAndConfirmStopped(this.deps.adapter, lookup.schedulerJobId, {
+            ...cancelLookup,
+            schedulerUid: lookup.schedulerUid,
+          });
+        } else if (intent?.schedulerSubmissionTag || prepared) {
+          throw new Error("Scheduler submission outcome is unknown; retaining job inputs");
+        }
       }
     }
 
@@ -3920,6 +5418,11 @@ export class AgentStream {
     if (intent) await this.cleanupIntents?.clear(jobId);
     this.unreconciledSubmittedJobs.delete(jobId);
     await this.releaseImplicitJobWorkRoot(jobId);
+    if (schedulerJobId) await this.deps.adapter.releaseJob?.(schedulerJobId);
+    const runtime = this.federationRuntimes.get(jobId);
+    if (runtime?.receipt.state === "stopping") {
+      await this.onJobTransition({ jobId, status: "cancelled", schedulerJobId });
+    }
   }
 
   private async cancelSchedulerJobOrConfirmAbsent(
@@ -3927,35 +5430,20 @@ export class AgentStream {
     schedulerJobId: string,
     intent: JobCleanupIntent | undefined,
   ): Promise<void> {
-    let cancelError: unknown;
-    try {
-      await this.deps.adapter.cancel(schedulerJobId);
-    } catch (error) {
-      cancelError = error;
-    }
-    if (this.deps.adapter.confirmStopped) {
-      if (await this.deps.adapter.confirmStopped(schedulerJobId)) return;
-      throw new Error(
-        "Scheduler cancellation is not yet confirmed; retaining job and cleanup records",
-        { cause: cancelError },
-      );
-    }
-    if (cancelError !== undefined) {
-      let lookup: Awaited<ReturnType<NonNullable<SchedulerAdapter["findByKuintessenceJobId"]>>>;
-      try {
-        lookup = await this.lookupSchedulerJob(jobId, intent);
-      } catch (lookupError) {
-        throw new AggregateError(
-          [cancelError, lookupError],
-          "Scheduler cancellation failed and its final state could not be reconciled",
-        );
-      }
-      if (lookup.status === "not_found") return;
-      throw new AggregateError(
-        [cancelError],
-        "Scheduler cancellation failed while the job remains present",
-      );
-    }
+    const active = await this.activeRemoteJobs?.get(jobId);
+    if (active)
+      await this.deps.adapter.prepareResume?.(active.spec, schedulerJobId, active.schedulerUid);
+    await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, {
+      ...(active
+        ? schedulerLookupForSpec(active.spec)
+        : {
+            jobId,
+            schedulerName: intent?.schedulerSubmissionTag,
+            schedulerAccount: intent?.schedulerAccount,
+            namespace: intent?.schedulerNamespace,
+          }),
+      schedulerUid: active?.schedulerUid,
+    });
   }
 
   private async lookupSchedulerJob(
@@ -3966,14 +5454,42 @@ export class AgentStream {
     if (!find) {
       throw new Error("scheduler adapter cannot reconcile Kuintessence UUID metadata");
     }
+    const row = await this.inboundAcks?.latestForJob(jobId);
+    const prepared =
+      row?.payload.federationSubmissionStarted === true
+        ? jsonToPreparedRemoteJob(row.payload.federationSubmission)
+        : undefined;
+    if (row && prepared) {
+      const saved = await this.inboundAcks?.runtimeSchedulerIdentity(row.dispatchId);
+      if (saved)
+        return {
+          status: "found",
+          schedulerJobId: saved.schedulerJobId,
+          schedulerUid: saved.schedulerUid,
+        };
+      if (
+        this.deps.adapter.type === "kubernetes" &&
+        prepared.spec.federationDispatchEpoch === undefined
+      )
+        throw new Error("Federation Kubernetes lookup requires a dispatch epoch");
+    }
     const lookup = await find.call(this.deps.adapter, {
       jobId,
       schedulerName: intent?.schedulerSubmissionTag ?? schedulerSubmissionTag(jobId),
       schedulerAccount: intent?.schedulerAccount,
       namespace: intent?.schedulerNamespace,
+      ...(prepared ? schedulerLookupForSpec(prepared.spec) : {}),
     });
     if (lookup.status === "indeterminate") {
       throw new Error(`scheduler UUID lookup is indeterminate: ${lookup.reason}`);
+    }
+    if (row && prepared && this.deps.adapter.type === "kubernetes" && lookup.status === "found") {
+      if (!lookup.schedulerUid) throw new Error("Federation Kubernetes lookup requires a UID");
+      await this.inboundAcks?.bindRuntimeSchedulerIdentity(row.dispatchId, {
+        schedulerJobId: lookup.schedulerJobId,
+        schedulerUid: lookup.schedulerUid,
+        namespace: schedulerLookupForSpec(prepared.spec).namespace ?? "default",
+      });
     }
     return lookup;
   }
@@ -4051,37 +5567,20 @@ export class AgentStream {
     destroyRestrictedWorkRoot: boolean,
     reasonCode: string,
   ): Promise<void> {
-    const schedulerCancellation = this.pool.get(jobId)
-      ? this.pool.cancel(jobId)
-      : Promise.resolve();
-    const mounts = this.licensedMaterialMounts.get(jobId);
-    const cleanup = await Promise.allSettled([
-      schedulerCancellation,
-      this.deps.dataDeliveryExecutor?.release(jobId) ?? Promise.resolve(),
-      mounts && this.deps.licensedMaterialResolver
-        ? this.deps.licensedMaterialResolver.release(mounts)
-        : Promise.resolve(),
-      destroyRestrictedWorkRoot ? this.removeRestrictedWorkRoot(jobId) : Promise.resolve(),
-    ]);
-    const failures = cleanup.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : [],
-    );
-    if (failures.length > 0) {
-      this.logger.error(
-        { err: new AggregateError(failures), jobId },
-        "Data delivery revocation cleanup failed; durable intent retained",
-      );
-      return;
-    }
-    this.licensedMaterialMounts.delete(jobId);
-    if (destroyRestrictedWorkRoot) this.restrictedWorkRoots.delete(jobId);
+    await this.pauseFederationRuntime(jobId);
+    this.recoveringFederationDispatches.get(jobId)?.controller.abort();
+    this.federationDispatches.get(jobId)?.controller.abort();
+    this.spackActivations.get(jobId)?.controller.abort();
+    if (destroyRestrictedWorkRoot) this.restrictedWorkRoots.add(jobId);
     try {
-      await this.activeRemoteJobs?.markFinished(jobId);
-      await this.cleanupIntents?.clear(jobId);
+      await this.settleJobCancellation(jobId);
       this.outboundQueue.push({ kind: "dataDeliveryRevokeAck", jobId, reasonCode });
       this.signalOutbound();
     } catch (error) {
-      this.logger.error({ err: error, jobId }, "Data delivery cleanup state could not be cleared");
+      this.logger.error(
+        { err: error, jobId },
+        "Data delivery stop or cleanup is unconfirmed; retaining durable intent",
+      );
     }
   }
 
@@ -4804,6 +6303,7 @@ export class AgentStream {
     protoAction: SoftwareOperationAction,
     spec: string,
     materials?: SpackMaterialContext,
+    signal: AbortSignal = this.lifecycleController.signal,
   ): Promise<void> {
     const normalizedSpec = spec.trim();
     const action = softwareOperationActionToAgent(protoAction);
@@ -4860,9 +6360,10 @@ export class AgentStream {
         action,
         normalizedSpec,
         action === "install" ? materials : undefined,
-        this.lifecycleController.signal,
+        signal,
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof SpackInstallationPending) throw error;
       await this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,
@@ -4870,7 +6371,9 @@ export class AgentStream {
         spec: normalizedSpec,
         error: this.lifecycleController.signal.aborted
           ? "Software operation cancelled during Agent shutdown"
-          : "SPACK_OPERATION_FAILED: managed software operation failed",
+          : signal.aborted
+            ? "Federation installation cancelled"
+            : "SPACK_OPERATION_FAILED: managed software operation failed",
       });
       return;
     }

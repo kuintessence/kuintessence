@@ -435,6 +435,7 @@ export function createAuthRoutes(jwtSecret: string, db: PgDb, options: AuthRoute
       {
         email,
         role,
+        seedDevelopmentOrganization: true,
       },
       Boolean(options.authz),
     );
@@ -599,6 +600,7 @@ export function createAuthRoutes(jwtSecret: string, db: PgDb, options: AuthRoute
         externalId,
         legacyExternalId: result.sub,
         displayName: result.displayName,
+        seedDevelopmentOrganization: false,
       },
       Boolean(options.authz),
     );
@@ -758,6 +760,7 @@ async function upsertUserAndSeedAuthz(
     externalId?: string;
     legacyExternalId?: string;
     displayName?: string | null;
+    seedDevelopmentOrganization: boolean;
   },
   authzEnabled: boolean,
 ): Promise<string> {
@@ -827,10 +830,11 @@ async function upsertUserAndSeedAuthz(
     if (!upserted?.id) {
       throw new AppError(ErrorCode.INTERNAL_ERROR, "User upsert returned no row", 500);
     }
-    await ensureDefaultAuthzSeed(tx, {
+    await ensureLoginAuthzSeed(tx, {
       userId: upserted.id,
       role: input.role,
       authzEnabled,
+      seedDevelopmentOrganization: input.seedDevelopmentOrganization,
     });
     return upserted.id;
   });
@@ -840,28 +844,41 @@ type AuthzSeedInput = {
   userId: string;
   role: RoleName;
   authzEnabled: boolean;
+  seedDevelopmentOrganization: boolean;
 };
 
-async function ensureDefaultAuthzSeed(db: AuthSeedDb, input: AuthzSeedInput): Promise<void> {
+async function ensureLoginAuthzSeed(db: AuthSeedDb, input: AuthzSeedInput): Promise<void> {
   const { userId, role, authzEnabled } = input;
-  const orgName = "Development Compute Provider";
-  const [existingOrg] = await db.select().from(orgs).where(eq(orgs.name, orgName)).limit(1);
-  const org =
-    existingOrg ?? (await db.insert(orgs).values({ name: orgName }).returning({ id: orgs.id }))[0];
-  if (!org) return;
-  const membershipRole = resolveMembershipRole(role);
-  await db
-    .insert(userOrgMemberships)
-    .values({ userId, orgId: org.id, role: membershipRole })
-    .onConflictDoUpdate({
-      target: [userOrgMemberships.userId, userOrgMemberships.orgId],
-      set: { role: membershipRole, updatedAt: new Date() },
-    });
+  if (input.seedDevelopmentOrganization) {
+    const orgName = "Development Compute Provider";
+    const [existingOrg] = await db.select().from(orgs).where(eq(orgs.name, orgName)).limit(1);
+    const org =
+      existingOrg ??
+      (await db.insert(orgs).values({ name: orgName }).returning({ id: orgs.id }))[0];
+    if (!org)
+      throw new AppError(
+        ErrorCode.INTERNAL_ERROR,
+        "Development organization insert returned no row",
+        500,
+      );
+    const membershipRole = resolveMembershipRole(role);
+    await db
+      .insert(userOrgMemberships)
+      .values({ userId, orgId: org.id, role: membershipRole })
+      .onConflictDoUpdate({
+        target: [userOrgMemberships.userId, userOrgMemberships.orgId],
+        set: { role: membershipRole, updatedAt: new Date() },
+      });
+    if (authzEnabled) {
+      await insertAuthzOutboxRows(db, [
+        ...organizationBaselineTuples(org.id),
+        ...organizationMembershipReplacementTuples({ userId, orgId: org.id, role: membershipRole }),
+      ]);
+    }
+  }
   if (!authzEnabled) return;
 
   await insertAuthzOutboxRows(db, [
-    ...organizationBaselineTuples(org.id),
-    ...organizationMembershipReplacementTuples({ userId, orgId: org.id, role: membershipRole }),
     platformMemberTuple(userId),
     ...authzRoleProjectionTuples(userId, role),
   ]);

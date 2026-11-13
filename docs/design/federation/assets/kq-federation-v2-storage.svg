@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2800" height="2450" viewBox="0 0 2800 2450"><defs>
+<marker id="blue" viewBox="0 0 12 12" markerWidth="7" markerHeight="7" refX="11" refY="6" orient="auto-start-reverse"><path d="M1,1 L11,6 L1,11" fill="none" stroke="#2864ba" stroke-width="1.8"/></marker>
+<marker id="purple" viewBox="0 0 12 12" markerWidth="7" markerHeight="7" refX="11" refY="6" orient="auto-start-reverse"><path d="M1,1 L11,6 L1,11" fill="none" stroke="#7650a8" stroke-width="1.8"/></marker>
+<marker id="green" viewBox="0 0 12 12" markerWidth="7" markerHeight="7" refX="11" refY="6" orient="auto-start-reverse"><path d="M1,1 L11,6 L1,11" fill="none" stroke="#17816b" stroke-width="1.8"/></marker>
+<marker id="gray" viewBox="0 0 12 12" markerWidth="7" markerHeight="7" refX="11" refY="6" orient="auto-start-reverse"><path d="M1,1 L11,6 L1,11" fill="none" stroke="#7b8ba1" stroke-width="1.8"/></marker>
+</defs><rect width="100%" height="100%" fill="#f5f7fb"/><g font-family="Noto Sans CJK SC, sans-serif">
+<text x="90" y="96" font-size="52" fill="#192e46" font-weight="700" text-anchor="start">长期运行 · 账本增长、历史归档与 Peer 替换</text>
+<text x="92" y="151" font-size="27" fill="#60748c" font-weight="400" text-anchor="start">2026-11-06  /  运行节点容量与历史保留分别管理；历史总量仍需要实际存储预算</text>
+<rect x="90" y="190" width="2620" height="110" rx="18" fill="#eaf1fc" stroke="#b8cee9" stroke-width="2"/>
+<text x="125" y="233" font-size="32" fill="#24558f" font-weight="700" text-anchor="start">先减少无价值写入，再规划清理、扩容和运行节点替换</text>
+<text x="125" y="275" font-size="26" fill="#4f6c90" font-weight="400" text-anchor="start">大文件留在链下；异步证据批量提交；未完成任务、活跃额度和未存证回执不能当作缓存删除。</text>
+<rect x="90" y="350" width="840" height="280" rx="18" fill="#edf8f4" stroke="#bdded3" stroke-width="2"/>
+<text x="125" y="407" font-size="32" fill="#146d59" font-weight="700" text-anchor="start">链下数据与原始证据</text>
+<text x="125" y="466" font-size="27" fill="#146d59" font-weight="400" text-anchor="start">输入 / 结果 / 日志 / 合同附件</text>
+<text x="125" y="513" font-size="27" fill="#146d59" font-weight="400" text-anchor="start">机构对象存储、计量库与签名证据库</text>
+<text x="125" y="560" font-size="27" fill="#146d59" font-weight="400" text-anchor="start">版本、配额、保留期与授权删除</text>
+<rect x="980" y="350" width="840" height="280" rx="18" fill="#edf3fd" stroke="#b8cee9" stroke-width="2"/>
+<text x="1015" y="407" font-size="32" fill="#24558f" font-weight="700" text-anchor="start">当前业务状态</text>
+<text x="1015" y="466" font-size="27" fill="#24558f" font-weight="400" text-anchor="start">有效协议 / 余额 / 冻结额 / 私有许可</text>
+<text x="1015" y="513" font-size="27" fill="#24558f" font-weight="400" text-anchor="start">运行 Peer 与本地数据库保持可读</text>
+<text x="1015" y="560" font-size="27" fill="#24558f" font-weight="400" text-anchor="start">未结业务不得因自动过期而消失</text>
+<rect x="1870" y="350" width="840" height="280" rx="18" fill="#f2edfa" stroke="#d2c0e9" stroke-width="2"/>
+<text x="1905" y="407" font-size="32" fill="#5e3b8b" font-weight="700" text-anchor="start">公共历史与索引</text>
+<text x="1905" y="466" font-size="27" fill="#5e3b8b" font-weight="400" text-anchor="start">交易区块 / 哈希 / 交易 ID / 索引</text>
+<text x="1905" y="513" font-size="27" fill="#5e3b8b" font-weight="400" text-anchor="start">持续增长，配置归档与容量预算</text>
+<text x="1905" y="560" font-size="27" fill="#5e3b8b" font-weight="400" text-anchor="start">PDC purge 不会删除公共历史区块</text>
+<rect x="90" y="690" width="1260" height="300" rx="18" fill="#ffffff" stroke="#dce3ee" stroke-width="2"/>
+<text x="130" y="745" font-size="34" fill="#24558f" font-weight="700" text-anchor="start">运行 Peer：处理当前业务</text>
+<text x="130" y="804" font-size="28" fill="#38516d" font-weight="400" text-anchor="start">当前状态、必要私有数据与加入后的区块。</text>
+<text x="130" y="848" font-size="28" fill="#38516d" font-weight="400" text-anchor="start">新 Peer 可从可信快照加入，避免重新保存全部旧块。</text>
+<text x="130" y="892" font-size="28" fill="#38516d" font-weight="400" text-anchor="start">私有数据补齐、背书及查询正常后才能接流量。</text>
+<text x="130" y="936" font-size="28" fill="#38516d" font-weight="400" text-anchor="start">快照包含交易 ID 等信息，本身也会继续增长。</text>
+<rect x="1450" y="690" width="1260" height="300" rx="18" fill="#ffffff" stroke="#dce3ee" stroke-width="2"/>
+<text x="1490" y="745" font-size="34" fill="#5e3b8b" font-weight="700" text-anchor="start">历史归档：明确谁保存、谁可查询</text>
+<text x="1490" y="804" font-size="28" fill="#38516d" font-weight="400" text-anchor="start">联盟安排至少两个独立故障域的公共历史保存。</text>
+<text x="1490" y="848" font-size="28" fill="#38516d" font-weight="400" text-anchor="start">历史查询访问持有相关区块的 Peer / 归档服务。</text>
+<text x="1490" y="892" font-size="28" fill="#38516d" font-weight="400" text-anchor="start">私有历史与证据继续按原机构范围加密保留。</text>
+<text x="1490" y="936" font-size="28" fill="#38516d" font-weight="400" text-anchor="start">归档副本必须验证恢复，不能只保留一个对象地址。</text>
+<text x="95" y="1070" font-size="36" fill="#192e46" font-weight="700" text-anchor="start">运行 Peer 的受控替换流程</text>
+<rect x="90" y="1120" width="500" height="210" rx="18" fill="#edf3fd" stroke="#b8cee9" stroke-width="2"/>
+<text x="340" y="1176" font-size="30" fill="#24558f" font-weight="600" text-anchor="middle">保留可用旧节点</text>
+<text x="340" y="1234" font-size="25" fill="#4f6c90" font-weight="400" text-anchor="middle">保持背书与私有数据来源</text>
+<text x="340" y="1277" font-size="25" fill="#4f6c90" font-weight="400" text-anchor="middle">不同时替换必需节点</text>
+<path d="M590,1225 L620,1225" fill="none" stroke="#2864ba" stroke-width="3" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="620" y="1120" width="500" height="210" rx="18" fill="#edf3fd" stroke="#b8cee9" stroke-width="2"/>
+<text x="870" y="1176" font-size="30" fill="#24558f" font-weight="600" text-anchor="middle">共同核对快照</text>
+<text x="870" y="1234" font-size="25" fill="#4f6c90" font-weight="400" text-anchor="middle">相同高度，多机构核对</text>
+<text x="870" y="1277" font-size="25" fill="#4f6c90" font-weight="400" text-anchor="middle">包含摘要和元数据批准</text>
+<path d="M1120,1225 L1150,1225" fill="none" stroke="#2864ba" stroke-width="3" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="1150" y="1120" width="500" height="210" rx="18" fill="#edf3fd" stroke="#b8cee9" stroke-width="2"/>
+<text x="1400" y="1176" font-size="30" fill="#24558f" font-weight="600" text-anchor="middle">新 Peer 加入</text>
+<text x="1400" y="1234" font-size="25" fill="#4f6c90" font-weight="400" text-anchor="middle">独立卷 / 节点启动</text>
+<text x="1400" y="1277" font-size="25" fill="#4f6c90" font-weight="400" text-anchor="middle">从快照追赶后续区块</text>
+<path d="M1650,1225 L1680,1225" fill="none" stroke="#2864ba" stroke-width="3" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="1680" y="1120" width="500" height="210" rx="18" fill="#edf3fd" stroke="#b8cee9" stroke-width="2"/>
+<text x="1930" y="1176" font-size="30" fill="#24558f" font-weight="600" text-anchor="middle">补齐与验证</text>
+<text x="1930" y="1234" font-size="25" fill="#4f6c90" font-weight="400" text-anchor="middle">恢复授权私有数据</text>
+<text x="1930" y="1277" font-size="25" fill="#4f6c90" font-weight="400" text-anchor="middle">验证业务和历史查询</text>
+<path d="M2180,1225 L2210,1225" fill="none" stroke="#2864ba" stroke-width="3" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="2210" y="1120" width="500" height="210" rx="18" fill="#edf3fd" stroke="#b8cee9" stroke-width="2"/>
+<text x="2460" y="1176" font-size="30" fill="#24558f" font-weight="600" text-anchor="middle">切换与退役</text>
+<text x="2460" y="1234" font-size="25" fill="#4f6c90" font-weight="400" text-anchor="middle">逐个切换服务</text>
+<text x="2460" y="1277" font-size="25" fill="#4f6c90" font-weight="400" text-anchor="middle">责任满足后释放旧卷</text>
+<rect x="90" y="1390" width="2620" height="355" rx="18" fill="#fff7e9" stroke="#ead3a9" stroke-width="2"/>
+<text x="130" y="1447" font-size="35" fill="#805923" font-weight="700" text-anchor="start">快照不是自动瘦身，也不是完整备份</text>
+<text x="130" y="1507" font-size="29" fill="#805923" font-weight="400" text-anchor="start">生成快照不会裁剪已有 Peer；不要手工删除运行中的 blockfile。</text>
+<text x="130" y="1552" font-size="29" fill="#805923" font-weight="400" text-anchor="start">快照不含私有数据明文和完整密钥配置；丢失私有源，不能凭哈希重建数据。</text>
+<text x="130" y="1597" font-size="29" fill="#805923" font-weight="400" text-anchor="start">新 Peer 无法查询快照前的完整区块 / 键历史，需要独立历史查询路径。</text>
+<text x="130" y="1642" font-size="29" fill="#805923" font-weight="400" text-anchor="start">Orderer 的区块存储独立扩容和备份，Peer 快照不会替它释放空间。</text>
+<text x="130" y="1687" font-size="29" fill="#805923" font-weight="400" text-anchor="start">生成快照会暂缓该 Peer 对相应通道的新块提交，应保持其他服务节点可用。</text>
+<rect x="90" y="1810" width="1260" height="355" rx="18" fill="#ffffff" stroke="#dce3ee" stroke-width="2"/>
+<text x="130" y="1868" font-size="33" fill="#192e46" font-weight="700" text-anchor="start">容量保护与存证背压</text>
+<text x="130" y="1926" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">监控占用、增长速度、预计写满时间和绝对余量。</text>
+<text x="130" y="1969" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">清理缓存 / 到期日志，按规则清理私有数据。</text>
+<text x="130" y="2012" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">预留快照、导入、任务结束和恢复所需空间。</text>
+<text x="130" y="2055" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">不因一次链超时阻塞；达到既定风险边界才限流。</text>
+<text x="130" y="2098" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">严禁丢弃未存证证据、活跃余额或唯一备份。</text>
+<rect x="1450" y="1810" width="1260" height="355" rx="18" fill="#ffffff" stroke="#dce3ee" stroke-width="2"/>
+<text x="1490" y="1868" font-size="33" fill="#192e46" font-weight="700" text-anchor="start">达到长期预算极限时</text>
+<text x="1490" y="1926" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">可经联盟批准建立新通道代际，不自动按年换链。</text>
+<text x="1490" y="1969" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">旧在途任务、余额、争议与存证义务明确结转。</text>
+<text x="1490" y="2012" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">旧额度停止花费后，新额度 epoch 才能启用。</text>
+<text x="1490" y="2055" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">跨通道无天然原子性，切换必须可核对与恢复。</text>
+<text x="1490" y="2098" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">历史依然按约定保存，不能承诺无限固定容量。</text>
+<text x="95" y="2245" font-size="25" fill="#60748c" font-weight="400" text-anchor="start">官方依据：Fabric ledger snapshots / Private Data Architecture。快照加入不能替代完整灾备和私有数据恢复。</text>
+<text x="95" y="2295" font-size="25" fill="#60748c" font-weight="400" text-anchor="start">完整方案：docs/design/federation/blueprint.md  ·  本轮没有执行清理、快照生成或节点迁移。</text>
+</g></svg>

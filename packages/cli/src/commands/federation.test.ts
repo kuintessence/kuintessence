@@ -1,0 +1,1636 @@
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  CommercialAdjustmentSchema,
+  CommercialAgreementApprovalSchema,
+  CommercialBillSchema,
+  CommercialPaymentSchema,
+  CommercialRefundSchema,
+  CommercialSettlementSchema,
+} from "@kuintessence/shared/federation/commercial";
+import { Command } from "commander";
+import { registerFederationCommand } from "./federation";
+
+const source = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  target = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const orgId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  userId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+  revisionId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const billId = "11111111-1111-4111-8111-111111111111",
+  reportId = "22222222-2222-4222-8222-222222222222";
+const digest = `sha256:${"a".repeat(64)}`;
+const approval = CommercialAgreementApprovalSchema.parse({
+  localSiteId: target,
+  localOrgId: orgId,
+  revisionId,
+  digest,
+  approvalJws: "local.signature",
+  counterpartyJws: "peer.signature",
+  approvedBy: userId,
+  createdAt: "2026-01-01T00:00:00Z",
+  terms: {
+    protocolVersion: 1,
+    kind: "commercial-agreement",
+    domainId: userId,
+    salt: "b".repeat(64),
+    createdAt: "2026-01-01T00:00:00Z",
+    consideration: "paid",
+    priceVersionId: userId,
+    termsText: "Agreed rates",
+    prices: [
+      {
+        metric: "job.elapsed",
+        quantityUnit: "job-millisecond",
+        perQuantity: "1000",
+        amount: "9007199254740993",
+      },
+    ],
+    agreement: {
+      protocolVersion: 1,
+      kind: "agreement",
+      agreementRevisionId: revisionId,
+      sourceSiteId: source,
+      targetSiteId: target,
+      mode: "bilateral_attested",
+      budgetDomainId: orgId,
+      epoch: userId,
+      unit: "credit.micro",
+      budgetLimit: "99999999999999999999999999999999999999",
+      maxTaskAmount: "9007199254740993",
+      maxReservations: 10,
+      validFrom: "2026-01-01T00:00:00Z",
+      validUntil: "2099-01-01T00:00:00Z",
+      templates: [{ originSiteId: source, kind: "script", id: userId, revision: "1", digest }],
+      resourceLimit: { cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 30 },
+      termsDigest: digest,
+    },
+  },
+});
+const bill = CommercialBillSchema.parse({
+  protocolVersion: 1,
+  kind: "commercial-bill",
+  billId,
+  domainId: userId,
+  agreementDigest: digest,
+  priceVersionId: userId,
+  reportId,
+  reportDigest: digest,
+  reservationId: null,
+  discount: null,
+  salt: "c".repeat(64),
+  issuedAt: "2026-01-02T01:00:00Z",
+  request: {
+    protocolVersion: 1,
+    kind: "delegation",
+    operationId: userId,
+    senderSiteId: source,
+    recipientSiteId: target,
+    agreementRevisionId: revisionId,
+    mode: "bilateral_attested",
+    budgetDomainId: orgId,
+    epoch: userId,
+    taskId: userId,
+    attempt: 1,
+    issuedAt: "2026-01-02T00:00:00Z",
+    expiresAt: "2026-01-02T00:30:00Z",
+    template: approval.terms.agreement.templates[0],
+    inputManifestDigest: digest,
+    environmentLockDigest: digest,
+    resources: approval.terms.agreement.resourceLimit,
+    maxAmount: "9007199254740993",
+    unit: "credit.micro",
+  },
+  calculation: {
+    rounding: "ceil-per-line",
+    lines: [
+      {
+        metric: "job.elapsed",
+        quantityUnit: "job-millisecond",
+        quantity: "1000",
+        perQuantity: "1000",
+        rateAmount: "9007199254740993",
+        amount: "9007199254740993",
+      },
+    ],
+    grossAmount: "9007199254740993",
+    capReduction: "0",
+    discountAmount: "0",
+    dueAmount: "9007199254740993",
+  },
+});
+const saved = {
+  localSiteId: target,
+  localOrgId: orgId,
+  agreementRevisionId: revisionId,
+  billId,
+  payload: bill,
+  digest,
+  approvalJws: "bill.local.signature",
+  counterpartyJws: null,
+  approvedBy: userId,
+  createdAt: bill.issuedAt,
+};
+const settlementId = "33333333-3333-4333-8333-333333333333";
+const settlement = CommercialSettlementSchema.parse({
+  protocolVersion: 1,
+  kind: "commercial-settlement",
+  settlementId,
+  domainId: userId,
+  agreementRevisionId: revisionId,
+  billId,
+  billDigest: digest,
+  sourceSiteId: source,
+  targetSiteId: target,
+  reservationId: null,
+  terminal: null,
+  unit: "credit.micro",
+  reservedAmount: "9007199254740999",
+  chargedAmount: "9007199254740993",
+  releasedAmount: "6",
+  issuedAt: bill.issuedAt,
+  salt: "d".repeat(64),
+});
+const savedSettlement = {
+  ...saved,
+  settlementId,
+  payload: settlement,
+  appliedAt: null,
+};
+const adjustmentId = "44444444-4444-4444-8444-444444444444";
+const adjustment = CommercialAdjustmentSchema.parse({
+  protocolVersion: 1,
+  kind: "commercial-adjustment",
+  adjustmentId,
+  domainId: userId,
+  agreementRevisionId: revisionId,
+  billId,
+  billDigest: digest,
+  settlementId,
+  settlementDigest: digest,
+  sourceSiteId: source,
+  targetSiteId: target,
+  unit: "credit.micro",
+  previous: null,
+  previousChargedAmount: "9007199254740993",
+  chargedAmount: "9007199254740992",
+  reason: "Agreed correction",
+  supportingEvidenceDigest: null,
+  issuedAt: bill.issuedAt,
+  salt: "e".repeat(64),
+});
+const savedAdjustment = {
+  localSiteId: target,
+  localOrgId: orgId,
+  agreementRevisionId: revisionId,
+  adjustmentId,
+  settlementId,
+  number: 1,
+  payload: adjustment,
+  digest,
+  approvalJws: "adjustment.local.signature",
+  counterpartyJws: null,
+  heldAmount: "0",
+  approvedBy: userId,
+  appliedAt: null,
+  createdAt: bill.issuedAt,
+};
+const base = `/api/federation/commercial-agreements/${revisionId}`;
+const policyInput = {
+  kind: "bill",
+  outcomes: ["completed"],
+  maxAmount: "9007199254740993",
+  maxTotalAmount: "9007199254740999",
+  maxRecords: 3,
+  validUntil: "2099-01-01T00:00:00Z",
+};
+const policy = {
+  ...policyInput,
+  id: billId,
+  localOrgId: orgId,
+  localSiteId: target,
+  agreementRevisionId: revisionId,
+  agreementDigest: approval.digest,
+  approvedAmount: "0",
+  approvedRecords: 0,
+  validFrom: "2026-01-01T00:00:00Z",
+  grantedBy: userId,
+  revokedAt: null,
+  revokedBy: null,
+};
+let server: ReturnType<typeof Bun.serve>, directory: string;
+let requests: {
+  path: string;
+  method: string;
+  org: string | null;
+  authorization: string | null;
+  body: unknown;
+}[];
+let respond: (request: Request, body: unknown) => Response | Promise<Response>;
+let output: ReturnType<typeof spyOn<typeof console, "log">>;
+beforeEach(async () => {
+  directory = await mkdtemp(join(tmpdir(), "kq-federation-cli-"));
+  requests = [];
+  output = spyOn(console, "log").mockImplementation(() => {});
+  respond = (request) => {
+    const url = new URL(request.url);
+    if (url.pathname === base) return Response.json({ data: approval });
+    if (url.pathname.endsWith("/bills"))
+      return Response.json({ data: { data: [{ bill: saved, ledger: null }], hasMore: false } });
+    if (url.pathname.endsWith("/bills/draft")) return Response.json({ data: bill });
+    if (url.pathname.endsWith("/bills/approve")) return Response.json({ data: saved });
+    if (url.pathname.endsWith("/closing-policies"))
+      return Response.json({ data: request.method === "POST" ? policy : [policy] });
+    return Response.json({ error: { code: "UNEXPECTED_REQUEST" } }, { status: 404 });
+  };
+  server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const body = request.method === "GET" ? undefined : await request.json();
+      requests.push({
+        path: new URL(request.url).pathname + new URL(request.url).search,
+        method: request.method,
+        org: request.headers.get("X-KQ-Active-Organization"),
+        authorization: request.headers.get("Authorization"),
+        body,
+      });
+      return respond(request, body);
+    },
+  });
+});
+afterEach(async () => {
+  server.stop(true);
+  output.mockRestore();
+  await rm(directory, { recursive: true, force: true });
+});
+async function run(args: string[], org = orgId, lang = "en") {
+  const p = new Command().exitOverride().configureOutput({ writeErr: () => {} });
+  registerFederationCommand(p, () => ({
+    serverUrl: `http://127.0.0.1:${server.port}`,
+    token: "isolated-cli-token",
+  }));
+  await p.parseAsync([
+    "node",
+    "kq",
+    "federation",
+    ...(org ? ["--org", org] : []),
+    "--lang",
+    lang,
+    ...args,
+  ]);
+  return output.mock.calls.map((c) => c.join(" ")).join("\n");
+}
+async function inputFile(value: unknown = policyInput) {
+  const path = join(directory, "input.json");
+  await writeFile(path, JSON.stringify(value), { mode: 0o600 });
+  return path;
+}
+
+test("CLI financial reads pin organization and retain exact values and independent status labels", async () => {
+  const text = await run(["bills", "list", revisionId, "--record", billId]);
+  expect(text).toContain("9007199254740993");
+  expect(text).toContain("Signatures: Locally approved");
+  expect(text).toContain("Local evidence:");
+  expect(
+    requests.every((r) => r.org === orgId && r.authorization === "Bearer isolated-cli-token"),
+  ).toBe(true);
+  expect(requests[1]?.path).toBe(`${base}/bills?limit=20&offset=0&recordId=${billId}`);
+  expect(requests.every((r) => r.method === "GET")).toBe(true);
+});
+
+test("CLI grants the reviewed authority once and preserves exact amounts and finite scope", async () => {
+  const text = await run(["closing", "policies", "grant", revisionId, await inputFile()]);
+  expect(text).toContain("Institution authority granted");
+  expect(requests.filter((r) => r.method === "POST")).toEqual([
+    {
+      path: `${base}/closing-policies`,
+      method: "POST",
+      org: orgId,
+      authorization: "Bearer isolated-cli-token",
+      body: policyInput,
+    },
+  ]);
+});
+
+test("CLI rejects malformed JSON without echoing private contents and does not grant outside contract", async () => {
+  const file = join(directory, "broken.json");
+  await writeFile(file, '{"secret":"private-probe" broken}');
+  await expect(run(["closing", "policies", "grant", revisionId, file])).rejects.toThrow(
+    "Invalid federation",
+  );
+  await expect(
+    run([
+      "closing",
+      "policies",
+      "grant",
+      revisionId,
+      await inputFile({ ...policyInput, maxAmount: "9007199254740994" }),
+    ]),
+  ).rejects.toThrow("Invalid federation");
+  expect(requests.some((r) => r.method === "POST")).toBe(false);
+  expect(output.mock.calls).toHaveLength(0);
+});
+
+test("CLI unknown grant response is not retried and original authority can be queried", async () => {
+  const original = respond;
+  respond = (request, body) =>
+    request.method === "POST" ? new Response('{"data":', { status: 200 }) : original(request, body);
+  await expect(
+    run(["closing", "policies", "grant", revisionId, await inputFile()]),
+  ).rejects.toThrow("Write outcome unconfirmed");
+  const text = await run(["closing", "policies", "list", revisionId]);
+  expect(text).toContain(policy.id);
+  expect(requests.filter((r) => r.method === "POST")).toHaveLength(1);
+});
+
+test("CLI refuses redirects on reads and writes without calling the destination", async () => {
+  respond = () => Response.redirect(`http://127.0.0.1:${server.port}/unintended`, 307);
+  await expect(run(["contracts", "show", revisionId])).rejects.toThrow();
+  expect(requests).toHaveLength(1);
+  respond = (request) =>
+    new URL(request.url).pathname === base
+      ? Response.json({ data: approval })
+      : Response.redirect(`http://127.0.0.1:${server.port}/unintended`, 307);
+  await expect(
+    run(["closing", "policies", "grant", revisionId, await inputFile()]),
+  ).rejects.toThrow("Write outcome unconfirmed");
+  expect(requests.some((r) => r.path === "/unintended")).toBe(false);
+});
+
+test("CLI rejects foreign contract or returned policy before printing private records", async () => {
+  respond = () => Response.json({ data: { ...approval, localOrgId: source } });
+  await expect(run(["contracts", "show", revisionId, "--json"])).rejects.toThrow(
+    "organization or contract",
+  );
+  expect(output.mock.calls).toHaveLength(0);
+  respond = (request) =>
+    Response.json({
+      data: new URL(request.url).pathname === base ? approval : [{ ...policy, localOrgId: source }],
+    });
+  await expect(run(["closing", "policies", "list", revisionId, "--json"])).rejects.toThrow(
+    "scope mismatch",
+  );
+  expect(output.mock.calls).toHaveLength(0);
+});
+
+test("CLI preserves server independent authority failures without treating them as success", async () => {
+  respond = (request) =>
+    new URL(request.url).pathname === base
+      ? Response.json({ data: approval })
+      : Response.json({ error: { code: "POLICY_DENIED" } }, { status: 403 });
+  await expect(
+    run(["closing", "policies", "grant", revisionId, await inputFile()]),
+  ).rejects.toThrow("HTTP 403 POLICY_DENIED");
+  expect(output.mock.calls).toHaveLength(0);
+});
+
+test("CLI draft only exports to a new owner-only file and approval sends the unchanged original", async () => {
+  const file = join(directory, "bill.json");
+  await run(["bills", "draft", revisionId, reportId, file, "--id", billId]);
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual(bill);
+  expect((await stat(file)).mode & 0o777).toBe(0o600);
+  expect(requests.filter((r) => r.path.endsWith("/approve"))).toHaveLength(0);
+  await expect(run(["contracts", "export", revisionId, file])).rejects.toThrow("EEXIST");
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual(bill);
+  await run(["bills", "approve", revisionId, file]);
+  expect(requests.find((r) => r.path.endsWith("/bills/approve"))?.body).toEqual(bill);
+});
+
+test("CLI requires an explicit pinned organization and rejects path injection", async () => {
+  await expect(run(["bills", "list", revisionId], "")).rejects.toThrow("--org");
+  await expect(run(["contracts", "show", "../../admin"])).rejects.toThrow("Invalid federation");
+  expect(requests).toHaveLength(0);
+});
+
+test("CLI organization selection is an explicit authenticated PUT, not a mutation header", async () => {
+  respond = (_request, body) =>
+    Response.json({ activeOrganizationId: (body as { organizationId: string }).organizationId });
+  await run(["use", target], "");
+  expect(requests[0]).toMatchObject({
+    path: "/api/me/active-organization",
+    method: "PUT",
+    org: null,
+    body: { organizationId: target },
+  });
+});
+
+test("CLI Chinese output and JSON retain real policy state without treating zero amount as exhausted", async () => {
+  respond = (request) =>
+    Response.json({
+      data:
+        new URL(request.url).pathname === base
+          ? approval
+          : [{ ...policy, maxAmount: "0", maxTotalAmount: "0" }],
+    });
+  const text = await run(["closing", "policies", "list", revisionId], orgId, "zh");
+  expect(text).toContain("有效");
+  output.mockClear();
+  const json = await run(["closing", "policies", "list", revisionId, "--json"]);
+  expect(JSON.parse(json)[0].maxTotalAmount).toBe("0");
+});
+
+test("CLI does not transmit an oversized authority input", async () => {
+  const file = join(directory, "large.json");
+  await writeFile(file, " ".repeat(600001));
+  await expect(run(["closing", "policies", "grant", revisionId, file])).rejects.toThrow(
+    "exceeds 600000",
+  );
+  expect(requests).toHaveLength(0);
+});
+
+for (const mode of ["bilateral_direct", "bilateral_attested", "ledger_coordinated"] as const) {
+  test(`CLI ${mode} settlement distinguishes signatures, accounting and evidence`, async () => {
+    respond = (request) =>
+      Response.json({
+        data:
+          new URL(request.url).pathname === base
+            ? {
+                ...approval,
+                terms: { ...approval.terms, agreement: { ...approval.terms.agreement, mode } },
+              }
+            : {
+                data: [
+                  {
+                    settlement: {
+                      ...savedSettlement,
+                      counterpartyJws: "peer.signature",
+                      appliedAt: mode === "ledger_coordinated" ? null : bill.issuedAt,
+                    },
+                    ledger:
+                      mode === "bilateral_direct"
+                        ? null
+                        : { id: settlementId, state: "pending", lastError: null },
+                  },
+                ],
+                hasMore: false,
+              },
+      });
+    const text = await run(["settlements", "list", revisionId, "--record", settlementId]);
+    expect(text).toContain("Reserved: 9007199254740999");
+    expect(text).toContain("Charged: 9007199254740993");
+    expect(text).toContain("Returned: 6");
+    expect(text).toContain("Signatures: Both signed");
+    expect(text).toContain(
+      `Local accounting: ${mode === "ledger_coordinated" ? "Not applied" : "Applied"}`,
+    );
+    expect(text).toContain(
+      `Local evidence: ${mode === "bilateral_direct" ? "Not required" : "Pending"}`,
+    );
+  });
+}
+
+test("CLI revokes original authority and validates retry acknowledgments without replay", async () => {
+  const original = respond;
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/revoke")
+      ? Response.json({ data: { ...policy, revokedAt: bill.issuedAt, revokedBy: userId } })
+      : new URL(request.url).pathname.endsWith("/retry")
+        ? Response.json({ success: true })
+        : original(request, body);
+  expect(await run(["closing", "policies", "revoke", revisionId, policy.id])).toContain(
+    "Institution authority revoked",
+  );
+  expect(await run(["closing", "tasks", "retry", revisionId, "bill", reportId])).toContain(
+    "Original processing requested",
+  );
+  const valid = respond;
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/retry")
+      ? Response.json({ success: false })
+      : valid(request, body);
+  output.mockClear();
+  await expect(
+    run(["closing", "tasks", "retry", revisionId, "settlement", billId]),
+  ).rejects.toThrow("Write outcome unconfirmed");
+  expect(output.mock.calls).toHaveLength(0);
+  expect(requests.filter((r) => r.path.endsWith(`/settlement/${billId}/retry`))).toHaveLength(1);
+});
+
+test("CLI settlement draft and approval preserve the original and reject a changed response identity", async () => {
+  const original = respond;
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/settlements/draft")
+      ? Response.json({ data: settlement })
+      : new URL(request.url).pathname.endsWith("/settlements/approve")
+        ? Response.json({ data: savedSettlement })
+        : original(request, body);
+  const file = join(directory, "settlement.json");
+  await run(["settlements", "draft", revisionId, billId, file, "--id", settlementId]);
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual(settlement);
+  await run(["settlements", "approve", revisionId, file]);
+  expect(requests.find((r) => r.path.endsWith("/settlements/approve"))?.body).toEqual(settlement);
+  const valid = respond;
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/settlements/approve")
+      ? Response.json({ data: { ...savedSettlement, settlementId: reportId } })
+      : valid(request, body);
+  output.mockClear();
+  await expect(run(["settlements", "approve", revisionId, file])).rejects.toThrow(
+    "Write outcome unconfirmed",
+  );
+  expect(output.mock.calls).toHaveLength(0);
+});
+
+test("CLI attaches only the original counterpart signature and rejects mismatched row identity", async () => {
+  const file = join(directory, "approval.jws");
+  await writeFile(file, "counterpart.original.signature\n", { mode: 0o600 });
+  for (const [kind, id, row] of [
+    ["bills", billId, saved],
+    ["settlements", settlementId, savedSettlement],
+    ["adjustments", adjustmentId, savedAdjustment],
+  ] as const) {
+    respond = (request) =>
+      Response.json({
+        data:
+          new URL(request.url).pathname === base
+            ? approval
+            : { ...row, counterpartyJws: "counterpart.original.signature" },
+      });
+    await run([kind, "attach", revisionId, id, file]);
+    expect(requests.at(-1)).toMatchObject({
+      path: `${base}/${kind}/${id}/counterparty`,
+      body: { approvalJws: "counterpart.original.signature" },
+    });
+    respond = (request) =>
+      Response.json({
+        data:
+          new URL(request.url).pathname === base
+            ? approval
+            : {
+                ...row,
+                ...(kind === "adjustments" ? { adjustmentId: reportId } : { billId: reportId }),
+                counterpartyJws: "counterpart.original.signature",
+              },
+      });
+    output.mockClear();
+    await expect(run([kind, "attach", revisionId, id, file])).rejects.toThrow(
+      "Write outcome unconfirmed",
+    );
+    expect(output.mock.calls).toHaveLength(0);
+  }
+});
+
+test("CLI policy pagination exposes single-record limits and permitted outcomes", async () => {
+  const text = await run([
+    "closing",
+    "policies",
+    "list",
+    revisionId,
+    "--limit",
+    "1",
+    "--offset",
+    "2",
+  ]);
+  expect(requests.at(-1)?.path).toBe(`${base}/closing-policies?limit=1&offset=2`);
+  expect(text).toContain("Per-record limit: 9007199254740993");
+  expect(text).toContain("Allowed outcomes: completed");
+});
+
+test("CLI adjustment draft preserves reviewed amount and reason, and approves the exact original", async () => {
+  const original = respond;
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/adjustments/draft")
+      ? Response.json({ data: adjustment })
+      : new URL(request.url).pathname.endsWith("/adjustments/approve")
+        ? Response.json({ data: savedAdjustment })
+        : original(request, body);
+  const file = join(directory, "adjustment.json");
+  const args = [
+    "adjustments",
+    "draft",
+    revisionId,
+    settlementId,
+    file,
+    "--id",
+    adjustmentId,
+    "--amount",
+    adjustment.chargedAmount,
+    "--reason",
+    adjustment.reason,
+  ];
+  await run(args);
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual(adjustment);
+  expect((await stat(file)).mode & 0o777).toBe(0o600);
+  expect(requests.at(-1)?.body).toEqual({
+    settlementId,
+    adjustmentId,
+    chargedAmount: adjustment.chargedAmount,
+    reason: adjustment.reason,
+    supportingEvidenceDigest: null,
+  });
+  await run(["adjustments", "approve", revisionId, file]);
+  expect(requests.at(-1)?.body).toEqual(adjustment);
+  const valid = respond;
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/adjustments/approve")
+      ? Response.json({ data: { ...savedAdjustment, settlementId: billId } })
+      : valid(request, body);
+  await expect(run(["adjustments", "approve", revisionId, file])).rejects.toThrow(
+    "Write outcome unconfirmed",
+  );
+});
+
+for (const field of ["chargedAmount", "reason", "supportingEvidenceDigest"] as const) {
+  test(`CLI adjustment draft rejects changed ${field} before exporting`, async () => {
+    const original = respond;
+    respond = (request, body) =>
+      new URL(request.url).pathname.endsWith("/adjustments/draft")
+        ? Response.json({
+            data: {
+              ...adjustment,
+              [field]:
+                field === "chargedAmount" ? "1" : field === "reason" ? "Changed reason" : digest,
+            },
+          })
+        : original(request, body);
+    const file = join(directory, "rejected.json");
+    await expect(
+      run([
+        "adjustments",
+        "draft",
+        revisionId,
+        settlementId,
+        file,
+        "--id",
+        adjustmentId,
+        "--amount",
+        adjustment.chargedAmount,
+        "--reason",
+        adjustment.reason,
+      ]),
+    ).rejects.toThrow("Response does not match");
+    expect(await Bun.file(file).exists()).toBe(false);
+    expect(requests.filter((r) => r.path.endsWith("/approve"))).toHaveLength(0);
+  });
+}
+
+for (const mode of ["bilateral_direct", "bilateral_attested", "ledger_coordinated"] as const) {
+  test(`CLI adjustment ${mode} keeps exact charge, approval hold and accounting separate`, async () => {
+    respond = (request) =>
+      Response.json({
+        data:
+          new URL(request.url).pathname === base
+            ? {
+                ...approval,
+                terms: { ...approval.terms, agreement: { ...approval.terms.agreement, mode } },
+              }
+            : {
+                data: [
+                  {
+                    adjustment: {
+                      ...savedAdjustment,
+                      counterpartyJws: "peer.signature",
+                      heldAmount: "1",
+                      appliedAt: mode === "ledger_coordinated" ? null : bill.issuedAt,
+                    },
+                    ledger:
+                      mode === "bilateral_direct"
+                        ? null
+                        : { id: adjustmentId, state: "pending", lastError: null },
+                  },
+                ],
+                hasMore: false,
+              },
+      });
+    const text = await run(["adjustments", "list", revisionId, "--record", adjustmentId]);
+    expect(requests.at(-1)?.path).toBe(
+      `${base}/adjustments?limit=20&offset=0&recordId=${adjustmentId}`,
+    );
+    expect(text).toContain("Previous net charge: 9007199254740993");
+    expect(text).toContain("New net charge: 9007199254740992");
+    expect(text).toContain("Hold at approval: 1");
+    expect(text).toContain(
+      `Local accounting: ${mode === "ledger_coordinated" ? "Not applied" : "Applied"}`,
+    );
+    expect(text).toContain(
+      `Local evidence: ${mode === "bilateral_direct" ? "Not required" : "Pending"}`,
+    );
+  });
+}
+
+test("CLI adjustment validates amounts and contract scope before requesting approval", async () => {
+  const file = await inputFile({ ...adjustment, sourceSiteId: userId });
+  await expect(run(["adjustments", "approve", revisionId, file])).rejects.toThrow(
+    "original does not match contract",
+  );
+  await writeFile(file, JSON.stringify({ ...adjustment, chargedAmount: "1.5" }));
+  await expect(run(["adjustments", "approve", revisionId, file])).rejects.toThrow(
+    "Invalid federation",
+  );
+  expect(requests.every((r) => r.method === "GET")).toBe(true);
+});
+
+const refund = CommercialRefundSchema.parse({
+  protocolVersion: 1,
+  kind: "commercial-refund",
+  refundId: reportId,
+  domainId: bill.domainId,
+  agreementDigest: approval.digest,
+  request: bill.request,
+  requestDigest: digest,
+  cancellationReceiptJws: "provider.cancellation.signature",
+  releasedAmount: bill.request.maxAmount,
+  issuedAt: bill.issuedAt,
+  salt: "f".repeat(64),
+  reason: "Cancelled before execution",
+});
+const savedRefund = {
+  ...saved,
+  authorizationPolicyId: null,
+  operationId: refund.request.operationId,
+  refundId: refund.refundId,
+  payload: refund,
+  appliedAt: null,
+};
+test("CLI refund draft keeps fixed identity and reason and saves a private file without approving", async () => {
+  respond = (request) =>
+    Response.json({ data: new URL(request.url).pathname === base ? approval : refund });
+  const file = join(directory, "refund.json");
+  await run([
+    "refunds",
+    "draft",
+    revisionId,
+    refund.request.operationId,
+    file,
+    "--id",
+    refund.refundId,
+    "--reason",
+    refund.reason,
+  ]);
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual(refund);
+  expect((await stat(file)).mode & 0o777).toBe(0o600);
+  expect(requests.filter((r) => r.method === "POST").map((r) => r.body)).toEqual([
+    { operationId: refund.request.operationId, refundId: refund.refundId, reason: refund.reason },
+  ]);
+});
+test("CLI refund list preserves integer precision, selection and independent evidence", async () => {
+  respond = (request) =>
+    Response.json({
+      data:
+        new URL(request.url).pathname === base
+          ? approval
+          : {
+              data: [
+                {
+                  ...savedRefund,
+                  counterpartyJws: "peer.signature",
+                  appliedAt: refund.issuedAt,
+                  ledger: { id: reportId, state: "pending", lastError: null },
+                },
+              ],
+              hasMore: false,
+            },
+    });
+  const text = await run(["refunds", "list", revisionId, "--record", refund.refundId]);
+  expect(text).toContain("9007199254740993");
+  expect(text).toContain("Local accounting: Applied");
+  expect(text).toContain("Local evidence: Pending");
+  expect(requests[1]?.path).toBe(`${base}/refunds?limit=20&offset=0&recordId=${refund.refundId}`);
+});
+test("CLI refund approval and attachment preserve the exact original and counterpart signature", async () => {
+  respond = (request, body) =>
+    Response.json({
+      data:
+        new URL(request.url).pathname === base
+          ? approval
+          : request.url.endsWith("/counterparty")
+            ? { ...savedRefund, counterpartyJws: (body as { approvalJws: string }).approvalJws }
+            : savedRefund,
+    });
+  await run(["refunds", "approve", revisionId, await inputFile(refund)]);
+  const file = join(directory, "peer.jws");
+  await writeFile(file, "peer.original.signature", { mode: 0o600 });
+  await run(["refunds", "attach", revisionId, refund.refundId, file]);
+  expect(requests.filter((r) => r.method === "POST").map((r) => r.body)).toEqual([
+    refund,
+    { approvalJws: "peer.original.signature" },
+  ]);
+});
+test("CLI rejects a refund from another contract before any write", async () => {
+  await expect(
+    run([
+      "refunds",
+      "approve",
+      revisionId,
+      await inputFile({ ...refund, agreementDigest: `sha256:${"0".repeat(64)}` }),
+    ]),
+  ).rejects.toThrow("does not match contract");
+  expect(requests.filter((r) => r.method === "POST")).toHaveLength(0);
+});
+test("CLI refund treats changed response identity as unconfirmed", async () => {
+  respond = (request) =>
+    Response.json({
+      data:
+        new URL(request.url).pathname === base ? approval : { ...savedRefund, operationId: source },
+    });
+  await expect(run(["refunds", "approve", revisionId, await inputFile(refund)])).rejects.toThrow(
+    "Write outcome unconfirmed",
+  );
+});
+
+test("CLI refund authority and retry preserve exact scope and delegation identity", async () => {
+  const input = { ...policyInput, kind: "refund", outcomes: ["cancelled"] };
+  respond = (request) =>
+    Response.json({
+      data: new URL(request.url).pathname === base ? approval : { ...policy, ...input },
+    });
+  await run(["closing", "policies", "grant", revisionId, await inputFile(input)]);
+  expect(requests.at(-1)?.body).toEqual(input);
+  respond = (request) =>
+    Response.json(new URL(request.url).pathname === base ? { data: approval } : { success: true });
+  await run(["closing", "tasks", "retry", revisionId, "refund", refund.request.operationId]);
+  expect(requests.at(-1)?.path).toBe(
+    `${base}/closing-tasks/refund/${refund.request.operationId}/retry`,
+  );
+});
+
+test("CLI rejects refund authority for executed outcomes before sending a grant", async () => {
+  await expect(
+    run([
+      "closing",
+      "policies",
+      "grant",
+      revisionId,
+      await inputFile({ ...policyInput, kind: "refund" }),
+    ]),
+  ).rejects.toThrow();
+  expect(requests.some((request) => request.method === "POST")).toBe(false);
+});
+
+test.each(["en", "zh"])("CLI refund policy and task lists name the kind in %s", async (lang) => {
+  respond = (request) => {
+    const path = new URL(request.url).pathname;
+    return Response.json({
+      data:
+        path === base
+          ? approval
+          : path.endsWith("/closing-policies")
+            ? [{ ...policy, kind: "refund", outcomes: ["cancelled"] }]
+            : {
+                enabled: true,
+                records: [
+                  {
+                    localSiteId: target,
+                    localOrgId: orgId,
+                    agreementRevisionId: revisionId,
+                    kind: "refund",
+                    referenceId: refund.request.operationId,
+                    policyId: policy.id,
+                    recordId: refund.refundId,
+                    state: "complete",
+                    nextAttemptAt: refund.issuedAt,
+                    completedAt: refund.issuedAt,
+                    lastError: null,
+                  },
+                ],
+              },
+    });
+  };
+  const label = lang === "zh" ? "退款" : "Refund";
+  expect(await run(["closing", "policies", "list", revisionId], orgId, lang)).toContain(label);
+  output.mockClear();
+  const text = await run(["closing", "tasks", "list", revisionId], orgId, lang);
+  expect(text).toContain(label);
+  expect(text).toContain(refund.refundId);
+});
+
+const mediaDevice = {
+  localSiteId: target,
+  localOrgId: orgId,
+  deviceId: billId,
+  name: "Research drive",
+  assetTag: "D-1",
+  capacityBytes: 1073741824,
+  state: "active",
+  version: 1,
+  registrationDigest: digest,
+  createdBy: userId,
+  createdAt: bill.issuedAt,
+  updatedAt: bill.issuedAt,
+};
+function mediaRespond(handler: typeof respond) {
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/logistics-context")
+      ? Response.json({ data: { localSiteId: target, localOrgId: orgId } })
+      : handler(request, body);
+}
+test("CLI media lists preserve pagination and pin every request to the organization", async () => {
+  mediaRespond(() =>
+    Response.json({ data: [{ device: mediaDevice, activeShipmentId: null }], hasMore: true }),
+  );
+  const value = JSON.parse(
+    await run(["--json", "media", "devices", "list", "--limit", "1", "--offset", "2"]),
+  );
+  expect(value.hasMore).toBe(true);
+  expect(requests.at(-1)?.path).toBe("/api/federation/media/devices?limit=1&offset=2");
+  expect(requests.every((request) => request.org === orgId)).toBe(true);
+});
+test("CLI media rejects foreign records and invalid input without writing", async () => {
+  mediaRespond(() =>
+    Response.json({
+      data: [{ device: { ...mediaDevice, localOrgId: source }, activeShipmentId: null }],
+      hasMore: false,
+    }),
+  );
+  await expect(run(["media", "devices", "list"])).rejects.toThrow("scope mismatch");
+  requests = [];
+  await expect(
+    run(["media", "devices", "register", await inputFile({ name: "No ID" })]),
+  ).rejects.toThrow("Invalid federation");
+  expect(requests).toHaveLength(0);
+});
+test("CLI media PATCH checks version and scope and warns about unconfirmed results", async () => {
+  const input = {
+    expectedVersion: 1,
+    name: "Retired drive",
+    state: "retired",
+    reason: "Service life reached",
+  };
+  const file = await inputFile(input);
+  mediaRespond(() =>
+    Response.json({ data: { ...mediaDevice, name: input.name, state: input.state, version: 2 } }),
+  );
+  await run(["media", "devices", "update", billId, file]);
+  expect(requests.at(-1)).toMatchObject({ method: "PATCH", org: orgId, body: input });
+  mediaRespond(() =>
+    Response.json({ data: { ...mediaDevice, name: input.name, state: input.state, version: 3 } }),
+  );
+  await expect(run(["media", "devices", "update", billId, file])).rejects.toThrow(
+    "Write outcome unconfirmed",
+  );
+});
+test("CLI media handoff sends the original event on retry and rejects altered confirmations", async () => {
+  const input = {
+    eventId: reportId,
+    expectedVersion: 1,
+    state: "received",
+    occurredAt: bill.issuedAt,
+    note: "Seal checked",
+    evidenceDigest: null,
+  };
+  const file = await inputFile(input);
+  const record = {
+    localSiteId: target,
+    shipmentId: billId,
+    eventId: reportId,
+    payload: input,
+    version: 2,
+    recordedBy: userId,
+    recordedAt: bill.issuedAt,
+  };
+  mediaRespond(() => Response.json({ data: record }));
+  await run(["media", "shipments", "handoff", billId, file]);
+  await run(["media", "shipments", "handoff", billId, file]);
+  const writes = requests.filter((row) => row.method === "POST");
+  expect(writes).toHaveLength(2);
+  expect(writes[0]?.body).toEqual(writes[1]?.body);
+  mediaRespond(() => Response.json({ data: { ...record, shipmentId: reportId } }));
+  await expect(run(["media", "shipments", "handoff", billId, file])).rejects.toThrow(
+    "Write outcome unconfirmed",
+  );
+});
+
+const mediaPackageId = "99999999-9999-4999-8999-999999999999";
+const mediaManifest = {
+  protocolVersion: 1,
+  kind: "media-manifest",
+  packageId: mediaPackageId,
+  senderSiteId: source,
+  recipientSiteId: target,
+  agreementRevisionId: revisionId,
+  createdAt: "2026-01-01T00:00:00Z",
+  subject: {
+    kind: "task-input",
+    operationId: userId,
+    taskId: reportId,
+    attempt: 1,
+    requestDigest: digest,
+    contentDigest: digest,
+  },
+  files: [
+    {
+      path: "objects/000000",
+      sizeBytes: 2,
+      sha256: "a".repeat(64),
+      license: null,
+      provenance: null,
+    },
+  ],
+};
+const mediaExport = {
+  packageId: mediaPackageId,
+  recipientSiteId: target,
+  agreementRevisionId: revisionId,
+  versionId: null,
+  locationId: null,
+  taskSelection: { kind: "task-input", operationId: userId, agentId: "storage-agent" },
+  manifest: mediaManifest,
+  manifestDigest: digest,
+  signedManifest: "signed.media.manifest",
+  approvedAt: "2026-01-01T00:00:00.000Z",
+  approvedBy: userId,
+  expiresAt: "2099-01-01T00:00:00.000Z",
+  revokedAt: null,
+  revocationReason: null,
+};
+const mediaImport = {
+  packageId: mediaPackageId,
+  senderSiteId: source,
+  recipientSiteId: target,
+  agreementRevisionId: revisionId,
+  manifestDigest: digest,
+  subject: mediaManifest.subject,
+  fileCount: 1,
+  sizeBytes: 2,
+  registeredAt: "2026-01-01T00:00:00.000Z",
+  registeredBy: userId,
+  revokedAt: null,
+  revocationReason: null,
+};
+const mediaAuthorization = {
+  authorizationId: billId,
+  localSiteId: target,
+  packageId: mediaPackageId,
+  agentId: "storage-agent",
+  managedRootId: reportId,
+  maxBytes: 2,
+  approvedBy: userId,
+  approvedAt: "2026-01-01T00:00:00.000Z",
+  expiresAt: "2099-01-01T00:00:00.000Z",
+  revokedAt: null,
+  revocationReason: null,
+};
+
+test.each([
+  "task-input",
+  "task-result",
+])("media CLI approves original %s selector without starting export or printing private fields", async (kind) => {
+  const input = {
+    packageId: mediaPackageId,
+    recipientSiteId: target,
+    agreementRevisionId: revisionId,
+    kind,
+    operationId: userId,
+    agentId: "storage-agent",
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  const file = join(directory, "approve.json");
+  await writeFile(file, JSON.stringify(input));
+  respond = () =>
+    Response.json({
+      data: {
+        ...mediaExport,
+        taskSelection: { ...mediaExport.taskSelection, kind },
+        manifest: { ...mediaManifest, subject: { ...mediaManifest.subject, kind } },
+        identityEncrypted: "private-sentinel",
+        source: { storageKey: "private-sentinel" },
+      },
+    });
+  await run(["--json", "media", "exports", "approve", file]);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    path: "/api/federation/media/exports",
+    method: "POST",
+    org: orgId,
+    body: input,
+  });
+  expect(JSON.stringify(output.mock.calls)).not.toContain("private-sentinel");
+  expect(JSON.parse(output.mock.calls[0]?.[0] ?? "{}").taskSelection.kind).toBe(kind);
+});
+
+test("media manifest export preserves registration signature in a new private file and refuses overwrite", async () => {
+  respond = () => Response.json({ data: mediaExport });
+  const file = join(directory, "registration.json");
+  await run(["media", "exports", "manifest", mediaPackageId, file]);
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
+    senderSiteId: source,
+    signedManifest: mediaExport.signedManifest,
+  });
+  expect((await stat(file)).mode & 0o777).toBe(0o600);
+  await expect(run(["media", "exports", "manifest", mediaPackageId, file])).rejects.toThrow();
+  expect(requests.every((r) => r.method === "GET")).toBe(true);
+});
+
+test("media CLI registers, approves and queues the same import separately with fixed organization", async () => {
+  const registration = join(directory, "register.json"),
+    approvalFile = join(directory, "authorize.json");
+  const input = {
+    authorizationId: billId,
+    agentId: "storage-agent",
+    managedRootId: reportId,
+    maxBytes: 2,
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  await writeFile(
+    registration,
+    JSON.stringify({ senderSiteId: source, signedManifest: mediaExport.signedManifest }),
+  );
+  await writeFile(approvalFile, JSON.stringify(input));
+  respond = (req) =>
+    Response.json({
+      data: req.url.endsWith("/packages")
+        ? mediaImport
+        : req.url.endsWith("/run")
+          ? {
+              authorizationId: billId,
+              generation: reportId,
+              requestedBy: userId,
+              state: "queued",
+              verifiedBytes: null,
+              verifiedAt: null,
+              updatedAt: "2026-01-01T00:00:00Z",
+              latestGrant: "private-sentinel",
+            }
+          : mediaAuthorization,
+    });
+  await run(["media", "imports", "register", registration]);
+  expect(requests).toHaveLength(1);
+  await run(["media", "imports", "approve", mediaPackageId, approvalFile]);
+  expect(requests).toHaveLength(2);
+  expect(requests[1]?.body).toEqual(input);
+  await run(["--json", "media", "imports", "run", mediaPackageId, billId]);
+  expect(requests[2]?.path).toBe(
+    `/api/federation/media/packages/${mediaPackageId}/import-authorizations/${billId}/run`,
+  );
+  expect(requests.every((r) => r.org === orgId)).toBe(true);
+  expect(JSON.stringify(output.mock.calls)).not.toContain("private-sentinel");
+});
+
+test("media CLI distinguishes private verification from task completion and supports an unstarted operation", async () => {
+  respond = () =>
+    Response.json({
+      data: {
+        authorizationId: billId,
+        generation: reportId,
+        requestedBy: userId,
+        state: "verified",
+        verifiedBytes: 2,
+        verifiedAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    });
+  await run(["media", "imports", "status", mediaPackageId, billId]);
+  expect(output.mock.calls[0]?.[0]).toContain("verified-private");
+  respond = () => Response.json({ data: null });
+  await run(["--json", "media", "exports", "status", mediaPackageId]);
+  expect(output.mock.calls.at(-1)?.[0]).toBe("null");
+});
+
+test("media CLI rejects wrong package, task and authorization response identities", async () => {
+  respond = () => Response.json({ data: { ...mediaExport, packageId: reportId } });
+  await expect(run(["media", "exports", "show", mediaPackageId])).rejects.toThrow();
+  respond = () =>
+    Response.json({
+      data: {
+        ...mediaExport,
+        taskSelection: { ...mediaExport.taskSelection, operationId: reportId },
+      },
+    });
+  await expect(run(["media", "exports", "show", mediaPackageId])).rejects.toThrow();
+  respond = () =>
+    Response.json({
+      data: {
+        authorizationId: reportId,
+        generation: reportId,
+        requestedBy: userId,
+        state: "queued",
+        verifiedBytes: null,
+        verifiedAt: null,
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    });
+  await expect(run(["media", "imports", "status", mediaPackageId, billId])).rejects.toThrow();
+  respond = () =>
+    Response.json({
+      data: {
+        localSiteId: source,
+        packageId: mediaPackageId,
+        generation: reportId,
+        requestedBy: userId,
+        state: "exported",
+        sha256: null,
+        sizeBytes: null,
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    });
+  await expect(run(["media", "exports", "status", mediaPackageId])).rejects.toThrow();
+  respond = () =>
+    Response.json({
+      data: {
+        authorizationId: billId,
+        generation: reportId,
+        requestedBy: userId,
+        state: "verified",
+        verifiedBytes: null,
+        verifiedAt: null,
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    });
+  await expect(run(["media", "imports", "status", mediaPackageId, billId])).rejects.toThrow();
+  expect(output).not.toHaveBeenCalled();
+});
+
+test("media CLI preserves pagination, rejects mismatched authorization details and invalid input before requests", async () => {
+  respond = () => Response.json({ data: [mediaExport] });
+  await run(["media", "exports", "list", "--offset", "20", "--limit", "10"]);
+  expect(requests[0]?.path).toBe("/api/federation/media/exports?limit=10&offset=20");
+  respond = () =>
+    Response.json({
+      data: {
+        ...mediaImport,
+        manifest: mediaManifest,
+        signedManifest: mediaExport.signedManifest,
+        authorizations: [{ ...mediaAuthorization, packageId: reportId }],
+        hasMoreAuthorizations: true,
+      },
+    });
+  await expect(
+    run(["media", "imports", "show", mediaPackageId, "--authorization-offset", "100"]),
+  ).rejects.toThrow();
+  expect(requests[1]?.path).toContain("authorizationOffset=100");
+  const invalid = join(directory, "invalid.json");
+  await writeFile(
+    invalid,
+    JSON.stringify({ packageId: mediaPackageId, sourcePath: "/private/file" }),
+  );
+  await expect(run(["media", "exports", "approve", invalid])).rejects.toThrow();
+  await expect(run(["media", "imports", "list"], "")).rejects.toThrow();
+  expect(requests).toHaveLength(2);
+});
+
+test("media CLI reports unconfirmed write responses without retrying or leaking server fields", async () => {
+  respond = () => Response.json({ data: { secret: "private-sentinel" } });
+  await expect(run(["media", "exports", "run", mediaPackageId])).rejects.toThrow(
+    "Write outcome unconfirmed",
+  );
+  expect(requests).toHaveLength(1);
+  expect(output).not.toHaveBeenCalled();
+});
+
+test("media CLI keeps dataset selectors and import authorization revocation explicit", async () => {
+  const file = join(directory, "dataset.json"),
+    reason = join(directory, "reason.json");
+  const input = {
+    packageId: mediaPackageId,
+    agreementRevisionId: revisionId,
+    recipientSiteId: target,
+    versionId: billId,
+    locationId: reportId,
+    expiresAt: mediaExport.expiresAt,
+  };
+  await writeFile(file, JSON.stringify(input));
+  await writeFile(reason, JSON.stringify({ reason: "Withdraw this import approval" }));
+  respond = (request) =>
+    request.url.endsWith("/revoke")
+      ? Response.json({ success: true })
+      : Response.json({
+          data: {
+            ...mediaExport,
+            versionId: billId,
+            locationId: reportId,
+            taskSelection: null,
+            manifest: {
+              ...mediaManifest,
+              subject: {
+                kind: "dataset",
+                asset: { originSiteId: source, kind: "dataset", id: userId, revision: "1", digest },
+              },
+            },
+          },
+        });
+  await run(["media", "exports", "approve", file]);
+  expect(requests[0]?.body).toEqual(input);
+  await run(["media", "imports", "revoke-authorization", mediaPackageId, billId, reason]);
+  expect(requests[1]?.path).toBe(
+    `/api/federation/media/packages/${mediaPackageId}/import-authorizations/${billId}/revoke`,
+  );
+  expect(requests[1]?.body).toEqual({ reason: "Withdraw this import approval" });
+  expect(requests).toHaveLength(2);
+});
+
+test("media CLI reads original signed receipt and retries delivery without granting data use", async () => {
+  const receipt = {
+    protocolVersion: 1,
+    kind: "media-import-receipt",
+    receiptId: reportId,
+    generation: revisionId,
+    senderSiteId: target,
+    recipientSiteId: source,
+    packageId: mediaPackageId,
+    agreementRevisionId: revisionId,
+    manifestDigest: digest,
+    keyQueryId: userId,
+    keyQueryDigest: digest,
+    state: "verified-private",
+    fileCount: 1,
+    sizeBytes: 2,
+    receivedAt: "2026-01-01T00:00:00Z",
+  };
+  const acknowledgement = {
+    protocolVersion: 1,
+    kind: "media-import-receipt-ack",
+    receiptId: reportId,
+    packageId: mediaPackageId,
+    senderSiteId: source,
+    recipientSiteId: target,
+    receiptDigest: digest,
+    recordedAt: "2026-01-01T00:00:01Z",
+  };
+  respond = (request) =>
+    request.method === "POST"
+      ? Response.json({ success: true })
+      : Response.json({
+          data: {
+            state: "recorded",
+            receipt,
+            acknowledgement,
+            signedReceipt: "original.receipt",
+            signedAcknowledgement: "original.ack",
+            lastError: null,
+            nextAttemptAt: "2026-01-01T00:00:02Z",
+            latestGrant: "private-sentinel",
+          },
+        });
+  await run(["--json", "media", "imports", "receipt", mediaPackageId, billId]);
+  const value = JSON.parse(output.mock.calls[0]?.[0] ?? "{}");
+  expect(value.receipt).toEqual(receipt);
+  expect(value.signedAcknowledgement).toBe("original.ack");
+  expect(value.latestGrant).toBeUndefined();
+  await run(["media", "imports", "retry-receipt", mediaPackageId, billId]);
+  expect(requests[1]?.path).toEndWith(`/import-authorizations/${billId}/receipt/retry`);
+  expect(requests[1]?.body).toEqual({});
+  expect(requests).toHaveLength(2);
+  respond = () =>
+    Response.json({
+      data: [
+        {
+          receipt,
+          acknowledgement,
+          signedReceipt: "original.receipt",
+          signedAcknowledgement: "original.ack",
+        },
+      ],
+    });
+  await run(["--json", "media", "exports", "receipts", mediaPackageId, "--offset", "20"]);
+  expect(requests.at(-1)?.path).toBe(
+    `/api/federation/media/exports/${mediaPackageId}/receipts?limit=20&offset=20`,
+  );
+  expect(JSON.parse(output.mock.calls.at(-1)?.[0] ?? "[]")[0].receipt).toEqual(receipt);
+  respond = () =>
+    Response.json({
+      data: { ...value, acknowledgement: { ...acknowledgement, receiptId: userId } },
+    });
+  await expect(run(["media", "imports", "receipt", mediaPackageId, billId])).rejects.toThrow();
+  respond = () =>
+    Response.json({
+      data: {
+        ...value,
+        receipt: null,
+        acknowledgement: null,
+        signedReceipt: null,
+        signedAcknowledgement: null,
+      },
+    });
+  await expect(run(["media", "imports", "receipt", mediaPackageId, billId])).rejects.toThrow();
+});
+
+test("media revocation and receipt retry keep ambiguous writes visible and never replay", async () => {
+  const file = join(directory, "revoke.json");
+  await writeFile(file, JSON.stringify({ reason: "Operator withdrawal" }));
+  respond = () => Response.json({ unexpected: "private-sentinel" });
+  const commands = [
+    ["exports", "revoke", mediaPackageId, file],
+    ["imports", "revoke", mediaPackageId, file],
+    ["imports", "revoke-authorization", mediaPackageId, billId, file],
+    ["imports", "retry-receipt", mediaPackageId, billId],
+  ];
+  for (const args of commands)
+    await expect(run(["media", ...args])).rejects.toThrow("Write outcome unconfirmed");
+  expect(requests).toHaveLength(commands.length);
+  expect(output).not.toHaveBeenCalled();
+});
+
+test("media lists distinguish expired exports from registered packages", async () => {
+  respond = (req) =>
+    Response.json({
+      data: req.url.includes("/exports")
+        ? [{ ...mediaExport, expiresAt: "2000-01-01T00:00:00Z" }]
+        : [mediaImport],
+    });
+  await run(["media", "exports", "list"]);
+  expect(output.mock.calls[0]?.[0]).toContain("Expired");
+  await run(["media", "imports", "list"]);
+  expect(output.mock.calls[1]?.[0]).toContain("Saved");
+  expect(output.mock.calls[1]?.[0]).not.toContain("Active");
+});
+
+const receiptId = "77777777-7777-4777-8777-777777777777";
+const payment = CommercialPaymentSchema.parse({
+  protocolVersion: 1,
+  kind: "commercial-payment",
+  receiptId,
+  paymentId: userId,
+  domainId: approval.terms.domainId,
+  agreementRevisionId: revisionId,
+  agreementDigest: digest,
+  billId,
+  billDigest: digest,
+  sourceSiteId: source,
+  targetSiteId: target,
+  amount: "9007199254740993",
+  unit: bill.request.unit,
+  occurredAt: bill.issuedAt,
+  issuedAt: bill.issuedAt,
+  evidenceDigest: digest,
+  previous: null,
+  reason: "External receipt",
+  salt: "d".repeat(64),
+});
+const savedPayment = {
+  ...saved,
+  receiptId,
+  paymentId: payment.paymentId,
+  payload: payment,
+  current: false,
+  confirmedAt: null,
+};
+function paymentReplies(
+  transform: (
+    row: Omit<typeof savedPayment, "counterpartyJws" | "confirmedAt"> & {
+      counterpartyJws: string | null;
+      confirmedAt: string | null;
+    },
+  ) => unknown = (row) => row,
+) {
+  respond = (request, body) => {
+    const path = new URL(request.url).pathname;
+    if (path === base) return Response.json({ data: approval });
+    if (path.endsWith("/draft")) return Response.json({ data: payment });
+    if (path.endsWith("/payments"))
+      return Response.json({
+        data: { data: [{ payment: transform(savedPayment), ledger: null }], hasMore: false },
+      });
+    return Response.json({
+      data: transform(
+        path.endsWith("/counterparty")
+          ? {
+              ...savedPayment,
+              counterpartyJws: (body as { approvalJws: string }).approvalJws,
+              current: true,
+              confirmedAt: payment.issuedAt,
+            }
+          : savedPayment,
+      ),
+    });
+  };
+}
+const paymentDraftArgs = (file: string) => [
+  "payments",
+  "draft",
+  revisionId,
+  billId,
+  file,
+  "--id",
+  receiptId,
+  "--payment",
+  payment.paymentId,
+  "--amount",
+  payment.amount,
+  "--occurred-at",
+  payment.occurredAt,
+  "--evidence",
+  payment.evidenceDigest,
+  "--reason",
+  payment.reason,
+];
+
+test("CLI payment draft preserves explicit payment identity, precise amount and private file without approving", async () => {
+  paymentReplies();
+  const file = join(directory, "receipt.json");
+  await run(paymentDraftArgs(file));
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual(payment);
+  expect((await stat(file)).mode & 0o777).toBe(0o600);
+  expect(requests.filter((r) => r.method === "POST").map((r) => r.path)).toEqual([
+    `${base}/payments/draft`,
+  ]);
+  expect(requests[1]?.body).toEqual({
+    receiptId,
+    paymentId: payment.paymentId,
+    billId,
+    amount: payment.amount,
+    occurredAt: payment.occurredAt,
+    evidenceDigest: payment.evidenceDigest,
+    reason: payment.reason,
+  });
+  await expect(run(paymentDraftArgs(file))).rejects.toThrow();
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual(payment);
+});
+
+test("CLI payment approval and attachment preserve the same statement and original peer signature", async () => {
+  paymentReplies();
+  const file = await inputFile(payment);
+  await run(["payments", "approve", revisionId, file]);
+  expect(requests[1]?.body).toEqual(payment);
+  const signature = join(directory, "peer.jws");
+  await writeFile(signature, "peer.original.signature");
+  await run(["payments", "attach", revisionId, receiptId, signature]);
+  expect(requests.at(-1)?.body).toEqual({ approvalJws: "peer.original.signature" });
+});
+
+for (const mode of ["bilateral_direct", "bilateral_attested", "ledger_coordinated"] as const)
+  test(`CLI payment ${mode} separates confirmed current statements from ledger outcomes`, async () => {
+    respond = (request) =>
+      Response.json({
+        data:
+          new URL(request.url).pathname === base
+            ? {
+                ...approval,
+                terms: { ...approval.terms, agreement: { ...approval.terms.agreement, mode } },
+              }
+            : {
+                data: [
+                  {
+                    payment: {
+                      ...savedPayment,
+                      current: true,
+                      counterpartyJws: "peer.signature",
+                      confirmedAt: payment.issuedAt,
+                    },
+                    ledger:
+                      mode === "bilateral_direct"
+                        ? null
+                        : { id: userId, state: "pending", lastError: null },
+                  },
+                ],
+                hasMore: false,
+              },
+      });
+    const text = await run([
+      "payments",
+      "list",
+      revisionId,
+      "--record",
+      receiptId,
+      "--bill",
+      billId,
+      "--payment",
+      payment.paymentId,
+    ]);
+    expect(text).toContain(payment.amount);
+    expect(text).toContain("Payment statement: Current confirmation");
+    expect(text).toContain(
+      `Local evidence: ${mode === "bilateral_direct" ? "Not required" : "Pending"}`,
+    );
+    expect(text).not.toContain("Local accounting");
+    expect(requests[1]?.path).toBe(
+      `${base}/payments?limit=20&offset=0&recordId=${receiptId}&billId=${billId}&paymentId=${payment.paymentId}`,
+    );
+  });
+
+test("CLI payment validates scope and original digest before writing and rejects impossible confirmed responses", async () => {
+  paymentReplies();
+  await expect(
+    run([
+      "payments",
+      "approve",
+      revisionId,
+      await inputFile({ ...payment, agreementDigest: `sha256:${"0".repeat(64)}` }),
+    ]),
+  ).rejects.toThrow();
+  expect(requests.every((r) => r.method === "GET")).toBe(true);
+  paymentReplies((row) => ({ ...row, current: true }));
+  await expect(run(["payments", "list", revisionId])).rejects.toThrow();
+  paymentReplies((row) => ({ ...row, paymentId: billId }));
+  await expect(run(["payments", "list", revisionId])).rejects.toThrow();
+});
+
+test("CLI payment rejects changed draft facts and preserves unknown write outcomes", async () => {
+  paymentReplies();
+  const original = respond;
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/draft")
+      ? Response.json({ data: { ...payment, amount: "1" } })
+      : original(request, body);
+  await expect(run(paymentDraftArgs(join(directory, "wrong.json")))).rejects.toThrow();
+  expect(await Bun.file(join(directory, "wrong.json")).exists()).toBe(false);
+  paymentReplies((row) => ({ ...row, receiptId: billId }));
+  await expect(run(["payments", "approve", revisionId, await inputFile(payment)])).rejects.toThrow(
+    "Write outcome unconfirmed",
+  );
+  expect(requests.filter((r) => r.path.endsWith("/approve"))).toHaveLength(1);
+});
+
+test("CLI payment history never adds an old statement to the current amount", async () => {
+  paymentReplies((row) => ({
+    ...row,
+    current: false,
+    counterpartyJws: "peer.signature",
+    confirmedAt: payment.issuedAt,
+  }));
+  const text = await run(["payments", "list", revisionId]);
+  expect(text).toContain("Payment statement: Superseded");
+  paymentReplies();
+  expect(await run(["payments", "list", revisionId], orgId, "zh")).toContain("待双方确认");
+});

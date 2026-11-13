@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { create } from "@bufbuild/protobuf";
+import { setTimeout as delay } from "node:timers/promises";
+import { clone, create } from "@bufbuild/protobuf";
 import * as schema from "@kuintessence/db";
 import { createSqliteDb, runSqliteMigrations } from "@kuintessence/db";
 import {
@@ -12,9 +13,13 @@ import {
   CancelJobSchema,
   ComputeHealthState,
   DataDeliveryBindingSchema,
+  DataDeliveryMethod,
   DataScanRequestSchema,
   type DispatchJob,
   DispatchJobSchema,
+  FederationExecutionDecision,
+  FederationExecutionResponseSchema,
+  FederationMediaUploadSchema,
   FileTransferCancelSchema,
   HeartbeatAckSchema,
   JobLogsRequestSchema,
@@ -44,7 +49,11 @@ import {
   SshOpenSchema,
   SshResizeSchema,
 } from "@kuintessence/proto";
-import { type InstalledSpec, SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
+import {
+  type InstalledSpec,
+  SPACK_EXECUTION_PLACEHOLDER,
+  SPACK_PINNED_EXECUTION_PLACEHOLDER,
+} from "@kuintessence/shared";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import pino from "pino";
 import {
@@ -54,38 +63,39 @@ import {
   type KuintessenceJobLookup,
   type KuintessenceJobLookupResult,
   type SchedulerAdapter,
+  SchedulerSubmissionError,
   SchedulerSubmissionUnknownError,
   type Spawner,
 } from "./adapters/base";
+import { AgentDataRoots } from "./data-market/local-data-security";
 import type { JobStatusReport } from "./embedded/job-executor";
+import { mediaUploadClientTask } from "./federation/media-upload-client-test-fixture";
 import { ActiveRemoteJobs } from "./queue/active-remote-jobs";
+import { federationDispatchReceipt } from "./queue/federation-dispatch";
 import { InboundAcks, type PersistInboundInput } from "./queue/inbound-acks";
 import { JobCleanupIntents, JobRevocationTombstones } from "./queue/job-cleanup-intents";
 import { type OutboundItem, OutboundQueue } from "./queue/outbound-queue";
 import type { AgentSandboxCapability } from "./sandbox/capability";
 import { type PreparedSpackMaterials, SpackManager, type SpackMaterialPrepareInput } from "./spack";
+import { installWorkerExecution, SpackInstallationPending } from "./spack/execution-identity";
 import { SpackInstallStore } from "./spack/install-store";
 import type { SoftwareOperationOutcome } from "./spack/installer";
 import { SPACK_ACTIVATION_FAILURE, SPACK_ACTIVATION_TIMEOUT } from "./spack/workflow-activation";
-import type { Ssh2ClientLike, Ssh2Factory } from "./ssh";
-import { SshHandler } from "./ssh";
+import { type Ssh2ClientLike, type Ssh2Factory, SshHandler } from "./ssh";
 import { AgentStream, type AgentStreamDeps, jobStatusReportToProto } from "./stream";
 
-// Suppress log noise in tests
 const silent = pino({ level: "silent" });
+
 const FIND_JSON = readFileSync(
   join(import.meta.dir, "spack", "__fixtures__", "spack-find.json"),
   "utf-8",
 );
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function makeAdapter(
   opts: {
     submit?: (spec: JobSpec) => Promise<{ schedulerJobId: string }>;
     cancel?: (schedulerJobId: string) => Promise<void>;
+    confirmStopped?: SchedulerAdapter["confirmStopped"];
     findByKuintessenceJobId?: (
       lookup: KuintessenceJobLookup,
     ) => Promise<KuintessenceJobLookupResult>;
@@ -107,6 +117,7 @@ function makeAdapter(
     version: "23.02.7",
     submit: opts.submit ?? (async () => ({ schedulerJobId: "sched-1" })),
     cancel: opts.cancel ?? (async () => {}),
+    confirmStopped: opts.confirmStopped ?? (async () => true),
     status: async () => opts.statusSeq?.[i++] ?? { status: "completed", exitCode: 0 },
     findByKuintessenceJobId:
       opts.findByKuintessenceJobId ?? (async () => ({ status: "not_found" })),
@@ -250,16 +261,6 @@ class DelayedReplayOutboundQueue extends OutboundQueue {
   }
 }
 
-/**
- * Build a mock ServerClient from a finite list of ServerMessages.
- * Collects all outbound AgentMessages into `sent`.
- * The outbound generator is drained in the background; the response stream
- * yields the provided server messages and then ends.
- *
- * `holdOpenMs` lets a test keep the response stream alive after yielding
- * the canned messages so the heartbeat timer (or other timer-driven outbound
- * traffic) actually has a window to fire.
- */
 function makeMockClient(serverMessages: unknown[], holdOpenMs = 0) {
   const sent: unknown[] = [];
   let drainDone = false;
@@ -348,7 +349,15 @@ function makeReplayReconnectClient(
   };
 }
 
-function makePendingRegisteredClient(heartbeatAckSupported = false, jobStatusAckSupported = false) {
+function makePendingRegisteredClient(
+  heartbeatAckSupported = false,
+  jobStatusAckSupported = false,
+  federation?: {
+    supported: boolean;
+    installationSupported?: boolean;
+    onMessage: (message: AgentMessage) => Promise<void>;
+  },
+) {
   const accepted = create(ServerMessageSchema, {
     payload: {
       case: "registerResponse",
@@ -357,14 +366,16 @@ function makePendingRegisteredClient(heartbeatAckSupported = false, jobStatusAck
         message: "ok",
         heartbeatAckSupported,
         jobStatusAckSupported,
+        federationExecutionV1Supported: federation?.supported ?? false,
+        federationInstallationV1Supported: federation?.installationSupported ?? false,
       }),
     },
   });
   return {
-    connect(request: AsyncIterable<unknown>, options?: { signal?: AbortSignal }) {
+    connect(request: AsyncIterable<AgentMessage>, options?: { signal?: AbortSignal }) {
       void (async () => {
-        for await (const _message of request) {
-          // Keep the request generator flowing until this attempt is aborted.
+        for await (const message of request) {
+          await federation?.onMessage(message);
         }
       })().catch(() => {});
       let first = true;
@@ -391,10 +402,6 @@ function makePendingRegisteredClient(heartbeatAckSupported = false, jobStatusAck
   } as never;
 }
 
-/**
- * Yield to the event loop multiple times.
- * Used to allow background async work (job runners, generator drains) to settle.
- */
 async function settle(ticks = 10): Promise<void> {
   for (let i = 0; i < ticks; i++) {
     await new Promise<void>((r) => setImmediate(r));
@@ -464,11 +471,6 @@ function cancelJobMessage(jobId: string, revokedEpoch: number) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-// Track streams created in tests so we can stop them in afterEach
 const activeStreams: AgentStream[] = [];
 
 afterEach(() => {
@@ -477,6 +479,7 @@ afterEach(() => {
 });
 
 const softwareDatabases: Array<{ sqlite: Database; stream: AgentStream }> = [];
+
 function softwareStream(deps: AgentStreamDeps): AgentStream {
   if (!deps.spackManager?.requireServerMaterials || deps.outboundQueue)
     return new AgentStream(deps);
@@ -489,6 +492,7 @@ function softwareStream(deps: AgentStreamDeps): AgentStream {
   softwareDatabases.push({ sqlite, stream });
   return stream;
 }
+
 afterEach(async () => {
   for (const { sqlite, stream } of softwareDatabases.splice(0)) {
     await stream.stop();
@@ -537,7 +541,6 @@ describe("AgentStream", () => {
       payload: { value: { managedDatasetRootIds: ["00000000-0000-4000-8000-000000000001"] } },
     });
   });
-
   test("reports only unexpired runtime attestations without rejecting a fresh replacement", async () => {
     const now = Date.now();
     const capability: AgentSandboxCapability = {
@@ -559,6 +562,7 @@ describe("AgentStream", () => {
           signatureVerified: true,
           runtimeAttestationId: "b".repeat(64),
           attestedNodes: ["slurm-2"],
+          attestedQueue: "compute",
           expiresAtUnixMs: now + 60_000,
         },
         {
@@ -628,11 +632,11 @@ describe("AgentStream", () => {
       digest: `sha256:${"a".repeat(64)}`,
       runtimeAttestationId: "b".repeat(64),
       attestedNodes: ["slurm-2"],
+      attestedQueue: "compute",
     });
     expect(reported?.readiness).toBe("ready");
     expect(reported?.missingRequirements).not.toContain("runtime-attestation-expired");
   });
-
   test("rebuilds the Server client for every reconnect attempt", async () => {
     const { client } = makeMockClient([]);
     let factoryCalls = 0;
@@ -659,7 +663,6 @@ describe("AgentStream", () => {
 
     expect(factoryCalls).toBeGreaterThan(1);
   });
-
   test("stop interrupts a pending reconnect backoff", async () => {
     const { client } = makeMockClient([]);
     let beginSleep: (() => void) | undefined;
@@ -697,7 +700,6 @@ describe("AgentStream", () => {
 
     expect(stoppedPromptly).toBe(true);
   });
-
   test("aborts a pending registration stream and retries with a fresh client", async () => {
     let factoryCalls = 0;
     let observedSignal: AbortSignal | undefined;
@@ -773,7 +775,6 @@ describe("AgentStream", () => {
     expect(pendingBeforeStop).toBe(1);
     sqlite.close();
   });
-
   test("retries when response next and return both ignore the registration abort", async () => {
     let factoryCalls = 0;
     const client = {
@@ -811,7 +812,6 @@ describe("AgentStream", () => {
 
     expect(factoryCalls).toBeGreaterThanOrEqual(2);
   });
-
   test("persists status updates while registration is still pending", async () => {
     const sqlite = new Database(":memory:");
     runSqliteMigrations(sqlite);
@@ -901,7 +901,6 @@ describe("AgentStream", () => {
     await runPromise;
     sqlite.close();
   });
-
   test("clears the registration deadline after the Server accepts the stream", async () => {
     let factoryCalls = 0;
     const accepted = create(ServerMessageSchema, {
@@ -964,7 +963,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("uses strictly increasing heartbeat sequences and stays connected while ACKs arrive", async () => {
     let factoryCalls = 0;
     const sequences: bigint[] = [];
@@ -1056,7 +1054,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("rebuilds a permanently pending stream when negotiated HeartbeatAck is missing", async () => {
     let factoryCalls = 0;
     const client = makePendingRegisteredClient(true);
@@ -1083,7 +1080,6 @@ describe("AgentStream", () => {
 
     expect(factoryCalls).toBeGreaterThanOrEqual(2);
   });
-
   test("reconnects when the transport stops consuming outbound heartbeats", async () => {
     let factoryCalls = 0;
     const accepted = create(ServerMessageSchema, {
@@ -1143,7 +1139,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps the watchdog disabled for an older Server without heartbeat ACK support", async () => {
     let factoryCalls = 0;
     const client = makePendingRegisteredClient(false);
@@ -1169,7 +1164,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("reconnects when a negotiated durable job status acknowledgement is missing", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db, { createEventId: () => "event-timeout" });
@@ -1201,7 +1195,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("deletes a durable status after transport delivery when the Server lacks ACK support", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db, { createEventId: () => "event-legacy" });
@@ -1225,7 +1218,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("does not reconnect after one failed probe followed by healthy 404 windows", async () => {
     let factoryCalls = 0;
     let probes = 0;
@@ -1256,7 +1248,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("aborts a permanently pending response after two failed probes and rebuilds the client", async () => {
     let factoryCalls = 0;
     let probes = 0;
@@ -1288,7 +1279,6 @@ describe("AgentStream", () => {
 
     expect(factoryCalls).toBeGreaterThanOrEqual(2);
   });
-
   test("does not start reachability probes before registration is accepted", async () => {
     let probes = 0;
     const client = {
@@ -1332,7 +1322,6 @@ describe("AgentStream", () => {
 
     expect(probes).toBe(0);
   });
-
   test("stop aborts an in-flight reachability probe", async () => {
     let probeStarted = false;
     let probeAborted = false;
@@ -1367,7 +1356,6 @@ describe("AgentStream", () => {
 
     expect(probeAborted).toBe(true);
   });
-
   test("stop is bounded when the registered response iterator ignores abort and return", async () => {
     const accepted = create(ServerMessageSchema, {
       payload: {
@@ -1418,7 +1406,6 @@ describe("AgentStream", () => {
 
     expect(stopped).toBe(true);
   });
-
   test("retries immediately when the Server rejects registration", async () => {
     let factoryCalls = 0;
     const sqlite = new Database(":memory:");
@@ -1480,7 +1467,6 @@ describe("AgentStream", () => {
     expect(await outboundQueue.pendingCount()).toBe(1);
     sqlite.close();
   });
-
   test("dispatches a job and emits jobStatus outbound messages", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -1556,7 +1542,6 @@ describe("AgentStream", () => {
     expect(submittedSpecs[0]?.qos).toBe("normal");
     expect(submittedSpecs[0]?.stdinText).toBe("1\n2\n");
   });
-
   test("reports a shadow queue rejection with only its canonical failure code", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -1635,7 +1620,6 @@ describe("AgentStream", () => {
     expect(message?.payload.value).not.toHaveProperty("jobId");
     expect(message?.payload.value).not.toHaveProperty("queueName");
   });
-
   test("replays one durable shadow rejection until the Server acknowledges its event id", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db, {
@@ -1741,7 +1725,6 @@ describe("AgentStream", () => {
     secondStream.stop();
     await secondRun;
   });
-
   test("stages Workflow inputs into an Agent-managed working directory before submit", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -1824,7 +1807,6 @@ describe("AgentStream", () => {
     ).releaseImplicitJobWorkRoot("job-with-input");
     expect(steps.at(-1)).toBe("release-root");
   });
-
   test("assigns an Agent-managed working directory to output-only Workflow jobs", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -1889,7 +1871,6 @@ describe("AgentStream", () => {
     ).releaseImplicitJobWorkRoot("job-with-output");
     expect(released).toBe(true);
   });
-
   test("shutdown during pre-run preparation keeps the durable dispatch pending", async () => {
     const db = createSqliteDb(":memory:");
     const inboundAcks = new InboundAcks(db);
@@ -1972,8 +1953,10 @@ describe("AgentStream", () => {
       }),
     ]);
   });
-
-  test("durable cancellation during pre-run preparation emits cancelled after cleanup", async () => {
+  test.each([
+    "job",
+    "data",
+  ] as const)("durable %s cancellation during pre-run preparation waits for cleanup", async (kind) => {
     const db = createSqliteDb(":memory:");
     const inboundAcks = new InboundAcks(db);
     const outboundQueue = new OutboundQueue(db);
@@ -2008,6 +1991,7 @@ describe("AgentStream", () => {
       inboundAcks,
       outboundQueue,
       revocationTombstones,
+      cleanupIntents: new JobCleanupIntents(db),
       prepareJobWorkRoot: async () => {
         markPreparationStarted?.();
         await preparation;
@@ -2042,8 +2026,30 @@ describe("AgentStream", () => {
     );
     await preparationStarted;
 
-    await harness.handleServerMessage(cancelJobMessage("cancel-preparation", 1));
+    let cancellationComplete = false;
+    const cancelling = harness
+      .handleServerMessage(
+        kind === "job"
+          ? cancelJobMessage("cancel-preparation", 1)
+          : create(ServerMessageSchema, {
+              payload: {
+                case: "dataDeliveryRevoke",
+                value: {
+                  jobId: "cancel-preparation",
+                  revokedEpoch: 1n,
+                  reasonCode: "DATA_GRANT_REVOKED",
+                  destroyRestrictedWorkRoot: false,
+                },
+              },
+            }),
+      )
+      .then(() => {
+        cancellationComplete = true;
+      });
+    await settle();
+    expect(cancellationComplete).toBe(false);
     releasePreparation?.();
+    await cancelling;
     await waitForCondition(async () => (await outboundQueue.pendingCount()) === 1);
 
     const replay = (await outboundQueue.loadForReplay()).map((entry) => entry.item);
@@ -2059,7 +2065,6 @@ describe("AgentStream", () => {
     expect(await inboundAcks.pendingInbound()).toEqual([]);
     stream.stop();
   });
-
   test("assigns a managed working directory to value-output Workflow jobs", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -2121,7 +2126,6 @@ describe("AgentStream", () => {
     expect(submitted[0]?.workingDir).toBe("/managed/jobs/job-with-value");
     expect(collectedFrom).toContain("/managed/jobs/job-with-value");
   });
-
   test("keeps Data Market work-root cleanup in the delivery lifecycle", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -2184,7 +2188,6 @@ describe("AgentStream", () => {
     expect(deliveryReleased).toBe(true);
     expect(removed).toBe(false);
   });
-
   test("releases a managed working directory after an Agent restart", async () => {
     const { client } = makeMockClient([]);
     const released: string[] = [];
@@ -2220,7 +2223,6 @@ describe("AgentStream", () => {
       jobId: "job-published",
     });
   });
-
   test("does not acknowledge a managed working directory that could not be removed", async () => {
     const { client } = makeMockClient([]);
     const stream = new AgentStream({
@@ -2251,7 +2253,6 @@ describe("AgentStream", () => {
 
     expect(harness.outboundQueue.some((item) => item.kind === "jobWorkRootReleaseAck")).toBe(false);
   });
-
   test("marks inbound dispatch acked only after terminal status persistence completes", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db);
@@ -2307,6 +2308,38 @@ describe("AgentStream", () => {
     expect(await inboundAcks.pendingInbound()).toHaveLength(0);
     stream.stop();
   });
+  test.each([
+    true,
+    false,
+  ])("status cannot acknowledge another dispatch epoch (bound=%s)", async (bound) => {
+    const inboundAcks = new InboundAcks(createSqliteDb(":memory:"));
+    for (const epoch of [1, 2])
+      await inboundAcks.persistInbound({
+        jobId: "epoch-bound",
+        dispatchId: `epoch-bound:${epoch}`,
+        payload: {},
+      });
+    const { client } = makeMockClient([]);
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter(),
+      agentId: "agent-epoch-bound",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      inboundAcks,
+    });
+    activeStreams.push(stream);
+    const harness = stream as unknown as {
+      dispatchIdsByJob: Map<string, string>;
+      onJobTransition(report: JobStatusReport): Promise<void>;
+    };
+    if (bound) harness.dispatchIdsByJob.set("epoch-bound", "epoch-bound:1");
+    await harness.onJobTransition({ jobId: "epoch-bound", status: "running" });
+    expect((await inboundAcks.pendingInbound()).map((row) => row.dispatchId)).toEqual(
+      bound ? ["epoch-bound:2"] : ["epoch-bound:1", "epoch-bound:2"],
+    );
+  });
 
   test("releases an implicit work root when cancellation short-circuits submission", async () => {
     const released: string[] = [];
@@ -2339,7 +2372,6 @@ describe("AgentStream", () => {
       false,
     );
   });
-
   test("retains active job evidence when terminal outbox insertion fails", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db);
@@ -2388,7 +2420,6 @@ describe("AgentStream", () => {
     ]);
     stream.stop();
   });
-
   test("keeps a half-open terminal durable through replay until matching Server ACK", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new OutboundQueue(db, { createEventId: () => "event-half-open" });
@@ -2472,7 +2503,6 @@ describe("AgentStream", () => {
     );
     expect(await outboundQueue.pendingCount()).toBe(0);
   });
-
   test("awaits durable inbound dispatch persistence before scheduler submission", async () => {
     let releasePersist: (() => void) | undefined;
     const persisted = new Promise<void>((resolve) => {
@@ -2525,7 +2555,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps shadow submission compatible while a failed first enqueue gates queue readiness", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new FailOnceShadowEnqueueOutboundQueue(db);
@@ -2696,7 +2725,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps outbox read failures unavailable until Server acknowledgement then reports ready", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new FailOncePendingCountOutboundQueue(db);
@@ -2831,7 +2859,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps a permanent shadow enqueue failure unavailable until the same event is persisted", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new ControllableShadowOutboundQueue(db);
@@ -2951,7 +2978,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("retries loadForReplay and replays the durable shadow event before recovering", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new ControllableShadowOutboundQueue(db);
@@ -3082,7 +3108,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps ACK deletion failures unavailable until the same event deletion succeeds", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new ControllableShadowOutboundQueue(db);
@@ -3192,7 +3217,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("replays the unavailable latch immediately after reconnect without waiting for the timer", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new ControllableShadowOutboundQueue(db);
@@ -3305,7 +3329,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("ignores a delayed heartbeat preparation from the old connection during recovery", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new FailOnceShadowEnqueueOutboundQueue(db);
@@ -3430,7 +3453,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("keeps the new connection heartbeat timer after the old replay generator exits", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new DelayedReplayOutboundQueue(db, false);
@@ -3501,7 +3523,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("does not let an old replay read clear the current connection recovery obligation", async () => {
     const db = createSqliteDb(":memory:");
     const outboundQueue = new DelayedReplayOutboundQueue(db, true);
@@ -3578,7 +3599,6 @@ describe("AgentStream", () => {
     stream.stop();
     await runPromise;
   });
-
   test("rejects a delayed dispatch after its revocation tombstone survives a restart", async () => {
     const db = createSqliteDb(":memory:");
     const tombstones = new JobRevocationTombstones(db);
@@ -3645,7 +3665,6 @@ describe("AgentStream", () => {
 
     expect(submitted).toBe(false);
   });
-
   test("reconciles an active runner before acknowledging cancellation", async () => {
     const db = createSqliteDb(":memory:");
     let markSchedulerCancelStarted: (() => void) | undefined;
@@ -3704,7 +3723,6 @@ describe("AgentStream", () => {
     ]);
     stream.stop();
   });
-
   test("does not acknowledge when an active runner cannot be reconciled", async () => {
     const db = createSqliteDb(":memory:");
     const { client } = makeMockClient([]);
@@ -3744,7 +3762,6 @@ describe("AgentStream", () => {
     expect(harness.outboundQueue).toEqual([]);
     stream.stop();
   });
-
   test("submits a repeated dispatch epoch only once", async () => {
     const db = createSqliteDb(":memory:");
     let submitted = 0;
@@ -3788,7 +3805,6 @@ describe("AgentStream", () => {
     expect(submitted).toBe(1);
     stream.stop();
   });
-
   test("recovers orphaned cleanup intents before job resumption and deletes only successful work", async () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
@@ -3810,6 +3826,7 @@ describe("AgentStream", () => {
       siteName: "test-site",
       heartbeatIntervalMs: 60_000,
       logger: silent,
+      assertFederationRuntimeWatchdog: async () => {},
       activeRemoteJobs: new ActiveRemoteJobs(db),
       cleanupIntents: intents,
       dataDeliveryExecutor: {
@@ -3839,7 +3856,6 @@ describe("AgentStream", () => {
     expect(events).toContain("release-license:/agent/jobs/orphan-1/POTCAR");
     expect(await intents.list()).toEqual([]);
   });
-
   test("retains an orphaned cleanup intent when recovery cleanup fails", async () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
@@ -3861,6 +3877,7 @@ describe("AgentStream", () => {
       siteName: "test-site",
       heartbeatIntervalMs: 60_000,
       logger: silent,
+      assertFederationRuntimeWatchdog: async () => {},
       activeRemoteJobs: new ActiveRemoteJobs(db),
       cleanupIntents: intents,
       dataDeliveryExecutor: {
@@ -3886,7 +3903,6 @@ describe("AgentStream", () => {
     expect(await intents.list()).toHaveLength(1);
     expect(licensedCleanupAttempted).toBe(true);
   });
-
   test("retains an orphaned cleanup intent when scheduler UUID lookup is indeterminate", async () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
@@ -3909,6 +3925,7 @@ describe("AgentStream", () => {
       siteName: "test-site",
       heartbeatIntervalMs: 60_000,
       logger: silent,
+      assertFederationRuntimeWatchdog: async () => {},
       activeRemoteJobs: new ActiveRemoteJobs(db),
       cleanupIntents: intents,
       dataDeliveryExecutor: {
@@ -3930,7 +3947,6 @@ describe("AgentStream", () => {
     expect(cleanupAttempted).toBe(false);
     expect(await intents.list()).toHaveLength(1);
   });
-
   test("only clears an orphaned intent after a found scheduler job is cancelled", async () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
@@ -3951,11 +3967,13 @@ describe("AgentStream", () => {
         cancel: async () => {
           throw new Error("scheduler rejected cancellation");
         },
+        confirmStopped: async () => false,
       }),
       agentId: "agent-001",
       siteName: "test-site",
       heartbeatIntervalMs: 60_000,
       logger: silent,
+      assertFederationRuntimeWatchdog: async () => {},
       activeRemoteJobs: new ActiveRemoteJobs(db),
       cleanupIntents: intents,
       dataDeliveryExecutor: {
@@ -3977,7 +3995,6 @@ describe("AgentStream", () => {
     expect(cleanupAttempted).toBe(false);
     expect(await intents.list()).toHaveLength(1);
   });
-
   test("resumes active jobs when no revocation tombstone exists", async () => {
     const db = createSqliteDb(":memory:");
     const activeRemoteJobs = new ActiveRemoteJobs(db);
@@ -4026,7 +4043,6 @@ describe("AgentStream", () => {
     expect(preparedReplacementRoot).toBe(false);
     stream.stop();
   });
-
   test("cancels a submitted scheduler job when active-job persistence fails", async () => {
     const db = createSqliteDb(":memory:");
     const cancelled: string[] = [];
@@ -4057,6 +4073,7 @@ describe("AgentStream", () => {
       siteName: "test-site",
       heartbeatIntervalMs: 60_000,
       logger: silent,
+      assertFederationRuntimeWatchdog: async () => {},
       activeRemoteJobs: new FailingActiveRemoteJobs(db),
       cleanupIntents: new JobCleanupIntents(db),
       reconnectBackoffMs: 1,
@@ -4074,7 +4091,6 @@ describe("AgentStream", () => {
       cancelled.every((schedulerJobId) => schedulerJobId === "scheduler-persist-failure"),
     ).toBe(true);
   });
-
   test("clears a cleanup intent after normal preparation failure cleanup", async () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
@@ -4137,7 +4153,6 @@ describe("AgentStream", () => {
     expect(released).toBe(true);
     expect(await intents.list()).toEqual([]);
   });
-
   test("fails closed when restricted isolation is not advertised", async () => {
     let submitted = false;
     const serverMsgs = [
@@ -4195,7 +4210,6 @@ describe("AgentStream", () => {
     ) as { payload: { value: { message: string } } } | undefined;
     expect(failed?.payload.value.message).toContain("trusted execution profile");
   });
-
   test("rejects a raw scheduler command even when a trusted profile is advertised", async () => {
     let submitted = false;
     const { client, sent } = makeMockClient(
@@ -4269,7 +4283,6 @@ describe("AgentStream", () => {
     ) as { payload: { value: { message: string } } } | undefined;
     expect(failed?.payload.value.message).toContain("rejects raw scheduler commands");
   });
-
   test("uses the verified Sandbox processor result instead of DispatchJob.command", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -4297,10 +4310,13 @@ describe("AgentStream", () => {
     ];
     const { client } = makeMockClient(serverMsgs);
     const submitted: JobSpec[] = [];
+    const db = createSqliteDb(":memory:");
+    const activeRemoteJobs = new ActiveRemoteJobs(db);
     const schedulerSubmissionSteps: string[] = [];
     const sandboxInputSources: unknown[] = [];
     const stream = new AgentStream({
       client,
+      activeRemoteJobs,
       adapter: makeAdapter({
         submit: async (spec) => {
           schedulerSubmissionSteps.push("submit");
@@ -4315,7 +4331,9 @@ describe("AgentStream", () => {
       sleep: async () => {},
       logger: silent,
       sandboxProcessor: {
-        prepare: async (_jobId, _execution, inputSources) => {
+        cleanup: async () => {},
+        prepare: async (_jobId, _execution, resources, inputSources) => {
+          expect(resources).toEqual({ cpus: 1, memoryMb: 512n });
           sandboxInputSources.push(inputSources);
           return {
             workingDir: "/managed/sandbox/job",
@@ -4338,7 +4356,17 @@ describe("AgentStream", () => {
                 gid: 1001,
                 allowedQueues: [],
               },
-              mounts: [],
+              mounts: ["Text", "File"].map((ioType) => ({
+                descriptor: ioType.toLowerCase(),
+                ioType: ioType as "Text" | "File",
+                mode: "WriteOnly",
+                hostPath: `/managed/sandbox/job/outputs/${ioType.toLowerCase()}`,
+                relativePath: `jobs/pvc-scope/outputs/${ioType.toLowerCase()}`,
+                containerPath: `/kq/outputs/${ioType.toLowerCase()}`,
+                required: true,
+                sizeLimitBytes: 1000,
+              })),
+              resources: { cpus: 1, memoryMb: 512 },
               limits: { pids: 32, outputBytes: 1_000, logBytes: 1_000 },
             },
           };
@@ -4356,6 +4384,10 @@ describe("AgentStream", () => {
     stream.stop();
     await running;
     expect(submitted.length).toBeGreaterThan(0);
+    expect((await activeRemoteJobs.listActive())[0]?.expectedOutputs).toMatchObject([
+      { descriptor: "text", path: "/managed/sandbox/job/outputs/text", isBatch: false },
+    ]);
+    db.$client.close();
     expect(submitted[0]?.command).toBe("sandbox-manifest");
     expect(submitted[0]?.schedulerName).toBe("kq-00000000000");
     expect(submitted[0]?.workingDir).toBe("/managed/sandbox/job");
@@ -4371,7 +4403,6 @@ describe("AgentStream", () => {
       },
     ]);
   });
-
   test("fails closed when the Sandbox attestation verifier is unavailable", async () => {
     let submitted = false;
     const { client, sent } = makeMockClient(
@@ -4413,6 +4444,7 @@ describe("AgentStream", () => {
       sleep: async () => {},
       logger: silent,
       sandboxProcessor: {
+        cleanup: async () => {},
         prepare: async () => ({
           workingDir: "/managed/sandbox/job",
           runtimeDigest: `sha256:${"1".repeat(64)}`,
@@ -4435,6 +4467,7 @@ describe("AgentStream", () => {
               allowedQueues: [],
             },
             mounts: [],
+            resources: { cpus: 1, memoryMb: 512 },
             limits: { pids: 32, outputBytes: 1_000, logBytes: 1_000 },
           },
         }),
@@ -4457,7 +4490,6 @@ describe("AgentStream", () => {
     ) as { payload: { value: { message: string } } } | undefined;
     expect(failed?.payload.value.message).toContain("attestation verifier is unavailable");
   });
-
   test("acknowledges Sandbox artifact release results", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -4514,7 +4546,6 @@ describe("AgentStream", () => {
     expect(ack?.payload.value.requestId).toBe("release-1");
     expect(ack?.payload.value.releasedReplicaIds).toEqual(["replica-1"]);
   });
-
   test("host-side multipart upload applies the configured connectTo rewrite", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kq-stream-multipart-"));
     const filePath = join(dir, "out.txt");
@@ -4578,7 +4609,6 @@ describe("AgentStream", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
-
   test("aborts an active file transfer when the Server sends FileTransferCancel", async () => {
     const { client } = makeMockClient([]);
     const stream = new AgentStream({
@@ -4608,7 +4638,6 @@ describe("AgentStream", () => {
     expect(controller.signal.aborted).toBe(true);
     stream.stop();
   });
-
   test("returns a bounded typed job-log response through the Agent stream", async () => {
     const calls: unknown[] = [];
     const serverMsgs = [
@@ -4676,7 +4705,6 @@ describe("AgentStream", () => {
     expect(response?.payload.value.error).toBe("");
     expect(response?.payload.value.unavailable).toBe(false);
   });
-
   test("reports a known missing job log without an adapter error", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -4728,7 +4756,6 @@ describe("AgentStream", () => {
     ) as { payload: { value: { text: string; error: string; unavailable: boolean } } } | undefined;
     expect(response?.payload.value).toMatchObject({ text: "", error: "", unavailable: true });
   });
-
   test("refuses restricted no-egress log requests without reading the adapter", async () => {
     let called = false;
     const serverMsgs = [
@@ -4785,7 +4812,6 @@ describe("AgentStream", () => {
     expect(response?.payload.value.error.toLowerCase()).toContain("restricted");
     expect(response?.payload.value.unavailable).toBe(false);
   });
-
   test("heartbeat carries gpu / disk / scheduler-queue / installed-software fields", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -4851,7 +4877,6 @@ describe("AgentStream", () => {
     expect(hb?.payload.value.schedulerQueuedJobs).toBe(7);
     expect(hb?.payload.value.installedSoftware[0]?.name).toBe("gromacs");
   });
-
   test.each([
     { name: "known empty inventory emits periodic empty reports", known: true },
     {
@@ -4911,7 +4936,6 @@ describe("AgentStream", () => {
       await running;
     }
   });
-
   test("retries known empty inventory on successive live heartbeats after reconnect", async () => {
     const closeFirst = Promise.withResolvers<void>();
     const reconnect = makeReplayReconnectClient(
@@ -4969,7 +4993,6 @@ describe("AgentStream", () => {
       await running;
     }
   });
-
   test("negotiates compute health and preserves the adapter observation timestamp on live heartbeats", async () => {
     const observedAtUnixMs = 1_725_000_000_123;
     let observations = 0;
@@ -5052,7 +5075,6 @@ describe("AgentStream", () => {
       reason: "",
     });
   });
-
   test("does not inspect or attach compute health until the Server negotiates it", async () => {
     let observations = 0;
     const { client, sent } = makeMockClient(
@@ -5106,7 +5128,6 @@ describe("AgentStream", () => {
     expect(observations).toBe(0);
     expect(heartbeat?.payload.value.computeHealth).toBeUndefined();
   });
-
   test("negotiates queue inventory and preserves scheduler facts on live heartbeats", async () => {
     const observedAt = new Date("2026-08-19T04:00:00.000Z");
     let inspections = 0;
@@ -5208,7 +5229,6 @@ describe("AgentStream", () => {
       ],
     });
   });
-
   test("does not inspect queue inventory until the Server negotiates it", async () => {
     let inspections = 0;
     const { client, sent } = makeMockClient(
@@ -5261,7 +5281,6 @@ describe("AgentStream", () => {
     expect(inspections).toBe(0);
     expect(heartbeat?.payload.value.queueInventory).toBeUndefined();
   });
-
   test("never adds compute health to persisted heartbeat replay", async () => {
     const sqlite = new Database(":memory:");
     runSqliteMigrations(sqlite);
@@ -5328,7 +5347,6 @@ describe("AgentStream", () => {
     expect(replay?.payload.value.computeHealth).toBeUndefined();
     sqlite.close();
   });
-
   test("inbound SoftwarePolicyUpdate triggers SpackManager.applyPolicy and emits ack", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -5398,12 +5416,12 @@ describe("AgentStream", () => {
     // The SpackManager should have stored the policy
     expect(spackManager.currentPolicyVersion()).toBe("v42");
   });
-
   test.each([
     "absent",
     "standalone",
     "managed",
     "managed-disabled",
+    "managed-without-ledger",
   ] as const)("advertises Spack material delivery only for a managed manager: %s", async (mode) => {
     const { client, sent } = makeMockClient([
       create(ServerMessageSchema, {
@@ -5425,7 +5443,11 @@ describe("AgentStream", () => {
               },
             },
           });
-    const stream = softwareStream({
+    const streamFactory =
+      mode === "managed-without-ledger"
+        ? (deps: AgentStreamDeps) => new AgentStream(deps)
+        : softwareStream;
+    const stream = streamFactory({
       client,
       adapter: makeAdapter(),
       agentId: "agent-001",
@@ -5445,9 +5467,11 @@ describe("AgentStream", () => {
     expect(register?.payload.case).toBe("register");
     if (register?.payload.case === "register") {
       expect(register.payload.value.spackMaterialDeliveryV1).toBe(mode.startsWith("managed"));
+      expect(register.payload.value.softwareOperationReplayV1).toBe(
+        mode.startsWith("managed") && mode !== "managed-without-ledger",
+      );
     }
   });
-
   test.each([
     "missing",
     "expired",
@@ -5576,7 +5600,6 @@ describe("AgentStream", () => {
     if (mode !== "missing") expect(requests[0]?.signal?.aborted).toBe(true);
     expect(calls).toEqual([["spack", "--version"]]);
   });
-
   test("inbound SoftwareOperationRequest runs Spack operation and emits result", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -5651,7 +5674,6 @@ describe("AgentStream", () => {
       }
     }
   });
-
   test("source audit stdout is retained on rejected installation without success or inventory", async () => {
     const report = JSON.stringify({ validation: "isolated-source-audit", passed: true });
     const closeConnection = Promise.withResolvers<void>();
@@ -5728,7 +5750,6 @@ describe("AgentStream", () => {
     expect(results[1]?.stdout).toBe(report);
     expect(results[1]?.installed).toEqual([]);
   });
-
   test.each([
     { name: "does not turn unknown inventory into known empty", known: false, keepOther: false },
     {
@@ -5853,7 +5874,6 @@ describe("AgentStream", () => {
       await running;
     }
   });
-
   test("serializes software execution through inventory publication before later invalidation", async () => {
     const { client } = makeMockClient(
       [
@@ -5944,7 +5964,6 @@ describe("AgentStream", () => {
       await running;
     }
   });
-
   describe("software operation lifecycle cancellation", () => {
     async function lifecycleFixture(
       options: {
@@ -6026,7 +6045,6 @@ describe("AgentStream", () => {
         waitForRegistration,
       };
     }
-
     async function pendingSpillFixture(timeoutMs?: number) {
       const sqlite = new Database(":memory:");
       runSqliteMigrations(sqlite);
@@ -6110,7 +6128,6 @@ describe("AgentStream", () => {
         },
       };
     }
-
     test("shutdown waits for the final disconnect and delayed spill of a completed software result", async () => {
       const f = await pendingSpillFixture();
       let startFinished = false;
@@ -6149,7 +6166,6 @@ describe("AgentStream", () => {
         await f.dispose();
       }
     });
-
     test.each([
       "disconnect",
       "spill",
@@ -6180,7 +6196,6 @@ describe("AgentStream", () => {
         await f.dispose();
       }
     });
-
     test("stop and start wait for cleanup, withdrawal and persistence; queued work never starts", async () => {
       const sqlite = new Database(":memory:");
       runSqliteMigrations(sqlite);
@@ -6272,7 +6287,6 @@ describe("AgentStream", () => {
         sqlite.close();
       }
     });
-
     test("connection loss does not abort software and the new connection reports its result", async () => {
       const f = await lifecycleFixture();
       const entered = Promise.withResolvers<void>();
@@ -6309,7 +6323,6 @@ describe("AgentStream", () => {
       }
       expect(signals[0]?.aborted).toBe(true);
     });
-
     test("shutdown wait is bounded without cancelling later cleanup or result persistence", async () => {
       const sqlite = new Database(":memory:");
       runSqliteMigrations(sqlite);
@@ -6361,7 +6374,6 @@ describe("AgentStream", () => {
       }
     });
   });
-
   test("inbound SoftwareOperationRequest emits failed result when execution throws", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -6431,7 +6443,6 @@ describe("AgentStream", () => {
     );
     expect(failed?.payload.value.exitCode).toBe(0);
   });
-
   test("inbound load SoftwareOperationRequest is rejected by cached Spack policy", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -6513,7 +6524,6 @@ describe("AgentStream", () => {
     expect(rejected?.payload.value.error).toMatch(/denyList/);
     expect(calls).toEqual([["spack", "--version"]]);
   });
-
   test("inbound uninstall SoftwareOperationRequest is rejected by cached Spack policy", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -6595,7 +6605,6 @@ describe("AgentStream", () => {
     expect(rejected?.payload.value.error).toMatch(/lock enabled|allowList/);
     expect(calls).toEqual([["spack", "--version"]]);
   });
-
   test("inbound SoftwareOperationRequest rejects blank specs before invoking Spack", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -6667,7 +6676,6 @@ describe("AgentStream", () => {
     expect(rejected?.payload.value.error).toBe("spec is empty");
     expect(calls).toEqual([["spack", "--version"]]);
   });
-
   test("inbound SoftwareOperationRequest fails without running when Spack is unavailable", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -6731,6 +6739,333 @@ describe("AgentStream", () => {
     );
     const failed = results.find((r) => r.payload.value.status === SoftwareOperationStatus.FAILED);
     expect(failed?.payload.value.error).toBe("spack is unavailable on this Agent");
+  });
+  test.each([
+    false,
+    true,
+  ])("managed receipt survives queue loss and replays without rerunning execution (durable=%s)", async (durableReplay) => {
+    const sqlite = new Database(":memory:");
+    runSqliteMigrations(sqlite);
+    const db = drizzle(sqlite, { schema });
+    const outboundQueue = new OutboundQueue(db);
+    const operationId = "bbe907be-8f2d-40c6-984d-3156d83668ed";
+    const spackManager = await SpackManager.bootstrap({
+      requireServerMaterials: true,
+      spawner: { run: async () => ({ exitCode: 0, stdout: "1.0.0", stderr: "" }) },
+    });
+    let runs = 0;
+    spackManager.runSoftwareOperation = async () => {
+      const [receipt] = await db.select().from(schema.softwareExecutions);
+      expect(receipt?.operationId).toBe(operationId);
+      expect(receipt?.started).toBe(true);
+      runs++;
+      return { outcome: "succeeded", stdout: "verified", installed: [] };
+    };
+    const request = create(ServerMessageSchema, {
+      payload: {
+        case: "softwareOperationRequest",
+        value: create(SoftwareOperationRequestSchema, {
+          operationId,
+          action: SoftwareOperationAction.LOAD,
+          spec: "fixture@1",
+          durableReplay,
+          requestedBy: "requester",
+          spackManifestDigest: `sha256:${"a".repeat(64)}`,
+          spackMaterialTicket: "first-ticket",
+        }),
+      },
+    });
+    const closeConnection = Promise.withResolvers<void>();
+    const connection = makeReplayReconnectClient(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "registerResponse",
+          value: create(RegisterResponseSchema, { accepted: true }),
+        },
+      }),
+      closeConnection.promise,
+    );
+    const sent = connection.sentByConnection[0] ?? [];
+    const deps = {
+      client: connection.clientFactory(),
+      adapter: makeAdapter(),
+      agentId: "fixture-agent",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60000,
+      logger: silent,
+      outboundQueue,
+      spackManager,
+      reconnectBackoffMs: 1,
+      sleep: async () => {},
+    };
+    const before = new AgentStream(deps);
+    const state = before as unknown as {
+      connected: boolean;
+      softwareOperationQueue: Promise<void>;
+      outboundQueue: OutboundItem[];
+    };
+    state.connected = true;
+    await deliverServerMessage(before, request);
+    await state.softwareOperationQueue;
+    expect(
+      state.outboundQueue.some(
+        (item) =>
+          item.kind === "softwareOperationResult" &&
+          item.status === SoftwareOperationStatus.SUCCEEDED,
+      ),
+    ).toBe(true);
+    const resultCount = state.outboundQueue.length;
+    if (request.payload.case !== "softwareOperationRequest") throw new Error("Missing request");
+    await deliverServerMessage(
+      before,
+      create(ServerMessageSchema, {
+        payload: {
+          case: "softwareOperationRequest",
+          value: { ...request.payload.value, requestedBy: "changed-requester" },
+        },
+      }),
+    );
+    await state.softwareOperationQueue;
+    expect(state.outboundQueue).toHaveLength(resultCount);
+    request.payload.value.spackMaterialTicket = "renewed-ticket";
+    state.outboundQueue.length = 0;
+    await before.stop();
+    const restarted = new AgentStream(deps);
+    const running = restarted.start();
+    try {
+      await waitForCondition(() =>
+        (sent as AgentMessage[]).some(
+          (message) =>
+            message.payload.case === "softwareOperationResult" &&
+            message.payload.value.status === SoftwareOperationStatus.SUCCEEDED,
+        ),
+      );
+      await deliverServerMessage(restarted, request);
+      const results = () =>
+        (sent as AgentMessage[]).flatMap((message) =>
+          message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
+        );
+      await waitForCondition(() => results().length >= 2);
+      expect(results().map((result) => result.replayed)).toEqual([true, true]);
+      expect(runs).toBe(1);
+      const saved = [];
+      for await (const result of outboundQueue.softwareOperations.results()) saved.push(result);
+      expect(saved).toMatchObject([{ operationId, status: SoftwareOperationStatus.SUCCEEDED }]);
+    } finally {
+      closeConnection.resolve();
+      await restarted.stop();
+      await running;
+      sqlite.close();
+    }
+  });
+  for (const source of ["journal", "outbox"] as const) {
+    for (const inventory of ["unknown", "empty", "populated"] as const) {
+      test(`historical ${source} replay preserves ${inventory} current inventory`, async () => {
+        const sqlite = new Database(":memory:");
+        runSqliteMigrations(sqlite);
+        const outboundQueue = new OutboundQueue(drizzle(sqlite, { schema }));
+        const result = {
+          operationId: "00000000-0000-4000-8000-000000000099",
+          action: SoftwareOperationAction.INSTALL,
+          status: SoftwareOperationStatus.SUCCEEDED,
+          spec: "old@1",
+          installed: [{ name: "old", version: "1", hash: "old", spec: "old@1" }],
+        };
+        if (source === "journal") await outboundQueue.softwareOperations.finish(result);
+        else await outboundQueue.enqueueSoftwareOperationResult(result);
+        const current = [{ name: "current", version: "2", hash: "current", spec: "current@2" }];
+        const closeConnection = Promise.withResolvers<void>();
+        const connection = makeReplayReconnectClient(
+          create(ServerMessageSchema, {
+            payload: {
+              case: "registerResponse",
+              value: create(RegisterResponseSchema, { accepted: true }),
+            },
+          }),
+          closeConnection.promise,
+        );
+        const sent = connection.sentByConnection[0] ?? [];
+        const stream = new AgentStream({
+          client: connection.clientFactory(),
+          adapter: makeAdapter(),
+          agentId: "fixture-agent",
+          siteName: "test-site",
+          heartbeatIntervalMs: 5,
+          logger: silent,
+          outboundQueue,
+          installedSoftware:
+            inventory === "unknown" ? undefined : inventory === "empty" ? [] : current,
+          readGpuMetrics: async () => [],
+          readDiskUsedPercent: async () => 0,
+          readSchedulerQueueDepth: async () => 0,
+        });
+        const running = stream.start();
+        try {
+          await waitForCondition(() => queueInventoryHeartbeats(sent).length >= 3);
+          const results = (sent as AgentMessage[]).flatMap((message) =>
+            message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
+          );
+          expect(results).toHaveLength(1);
+          expect(results[0]).toMatchObject({
+            operationId: result.operationId,
+            status: SoftwareOperationStatus.SUCCEEDED,
+            replayed: true,
+            installed: [{ name: "old" }],
+          });
+          if (inventory === "empty") {
+            expect(installedSoftwareReports(sent).length).toBeGreaterThan(0);
+            for (const report of installedSoftwareReports(sent))
+              expect(report.installed).toEqual([]);
+          } else {
+            expect(installedSoftwareReports(sent)).toEqual([]);
+          }
+          for (const message of sent as AgentMessage[]) {
+            if (message.payload.case === "heartbeat") {
+              expect(message.payload.value.installedSoftware.map((item) => item.name)).toEqual(
+                inventory === "populated" ? ["current"] : [],
+              );
+            }
+          }
+        } finally {
+          closeConnection.resolve();
+          await stream.stop();
+          await running;
+          sqlite.close();
+        }
+      });
+    }
+  }
+  test("persists software operation results while the stream is offline", async () => {
+    const sqlite = new Database(":memory:");
+    runSqliteMigrations(sqlite);
+    const outboundQueue = new OutboundQueue(drizzle(sqlite, { schema }));
+    const { client } = makeMockClient([]);
+    const stream = softwareStream({
+      fileTransferMaxRetries: 3,
+      fileTransferRetryBackoffSec: 0,
+      client,
+      adapter: makeAdapter(),
+      agentId: "agent-001",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      outboundQueue,
+      reconnectBackoffMs: 1,
+      sleep: async () => {},
+    });
+    const offlineStream = stream as unknown as {
+      enqueueSoftwareOperationResult(
+        item: Omit<Extract<OutboundItem, { kind: "softwareOperationResult" }>, "kind">,
+      ): Promise<void>;
+    };
+
+    await offlineStream.enqueueSoftwareOperationResult({
+      operationId: "00000000-0000-0000-0000-000000000099",
+      action: SoftwareOperationAction.INSTALL,
+      status: SoftwareOperationStatus.SUCCEEDED,
+      spec: "zlib@1.3",
+      exitCode: 0,
+      installed: [{ name: "zlib", version: "1.3", hash: "abc", spec: "zlib@1.3" }],
+    });
+    const replayed = (await outboundQueue.loadForReplay())[0]?.item;
+    if (!replayed || replayed.kind !== "softwareOperationResult") {
+      throw new Error("expected softwareOperationResult item");
+    }
+    expect(replayed.operationId).toBe("00000000-0000-0000-0000-000000000099");
+    expect(replayed.status).toBe(SoftwareOperationStatus.SUCCEEDED);
+    expect(replayed.installed?.[0]?.name).toBe("zlib");
+    sqlite.close();
+  });
+
+  test("durable cancellation during pre-run preparation emits cancelled after cleanup", async () => {
+    const db = createSqliteDb(":memory:");
+    const inboundAcks = new InboundAcks(db);
+    const outboundQueue = new OutboundQueue(db);
+    const revocationTombstones = new JobRevocationTombstones(db);
+    let submitCalls = 0;
+    let cancelCalls = 0;
+    let releaseCalls = 0;
+    let markPreparationStarted: (() => void) | undefined;
+    const preparationStarted = new Promise<void>((resolve) => {
+      markPreparationStarted = resolve;
+    });
+    let releasePreparation: (() => void) | undefined;
+    const preparation = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    const { client } = makeMockClient([]);
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter({
+        submit: async () => {
+          submitCalls += 1;
+          return { schedulerJobId: "must-not-submit" };
+        },
+        cancel: async () => {
+          cancelCalls += 1;
+        },
+      }),
+      agentId: "agent-cancel-preparation",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      inboundAcks,
+      outboundQueue,
+      revocationTombstones,
+      prepareJobWorkRoot: async () => {
+        markPreparationStarted?.();
+        await preparation;
+        return "/managed/jobs/cancel-preparation";
+      },
+      removeJobWorkRoot: async () => {
+        releaseCalls += 1;
+      },
+    });
+    const harness = stream as unknown as {
+      handleServerMessage: (message: ServerMessage) => Promise<void>;
+    };
+
+    await harness.handleServerMessage(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "dispatchJob",
+          value: create(DispatchJobSchema, {
+            jobId: "cancel-preparation",
+            name: "cancel preparation",
+            command: "true",
+            cpus: 1,
+            memoryMb: 64n,
+            wallTimeSec: 60n,
+            dispatchEpoch: 1n,
+            expectedOutputs: [
+              { descriptor: "result", path: "result.txt", isBatch: false, pathsOnly: true },
+            ],
+          }),
+        },
+      }),
+    );
+    await preparationStarted;
+
+    const cancellation = harness.handleServerMessage(cancelJobMessage("cancel-preparation", 1));
+    await waitForCondition(
+      async () => (await revocationTombstones.revokedEpoch("cancel-preparation")) === 1,
+    );
+    releasePreparation?.();
+    await cancellation;
+    await waitForCondition(async () => (await outboundQueue.pendingCount()) === 1);
+
+    const replay = (await outboundQueue.loadForReplay()).map((entry) => entry.item);
+    expect(submitCalls).toBe(0);
+    expect(cancelCalls).toBe(0);
+    expect(releaseCalls).toBe(1);
+    expect(replay).toEqual([
+      expect.objectContaining({
+        kind: "jobStatus",
+        report: expect.objectContaining({ jobId: "cancel-preparation", status: "cancelled" }),
+      }),
+    ]);
+    expect(await inboundAcks.pendingInbound()).toEqual([]);
+    stream.stop();
   });
 
   test("managed receipt survives online queue loss and replays without rerunning execution", async () => {
@@ -6830,131 +7165,8 @@ describe("AgentStream", () => {
       sqlite.close();
     }
   });
-
-  for (const source of ["journal", "outbox"] as const) {
-    for (const inventory of ["unknown", "empty", "populated"] as const) {
-      test(`historical ${source} replay preserves ${inventory} current inventory`, async () => {
-        const sqlite = new Database(":memory:");
-        runSqliteMigrations(sqlite);
-        const outboundQueue = new OutboundQueue(drizzle(sqlite, { schema }));
-        const result = {
-          operationId: "00000000-0000-4000-8000-000000000099",
-          action: SoftwareOperationAction.INSTALL,
-          status: SoftwareOperationStatus.SUCCEEDED,
-          spec: "old@1",
-          installed: [{ name: "old", version: "1", hash: "old", spec: "old@1" }],
-        };
-        if (source === "journal") await outboundQueue.softwareOperations.finish(result);
-        else await outboundQueue.enqueueSoftwareOperationResult(result);
-        const current = [{ name: "current", version: "2", hash: "current", spec: "current@2" }];
-        const closeConnection = Promise.withResolvers<void>();
-        const connection = makeReplayReconnectClient(
-          create(ServerMessageSchema, {
-            payload: {
-              case: "registerResponse",
-              value: create(RegisterResponseSchema, { accepted: true }),
-            },
-          }),
-          closeConnection.promise,
-        );
-        const sent = connection.sentByConnection[0] ?? [];
-        const stream = new AgentStream({
-          client: connection.clientFactory(),
-          adapter: makeAdapter(),
-          agentId: "fixture-agent",
-          siteName: "test-site",
-          heartbeatIntervalMs: 5,
-          logger: silent,
-          outboundQueue,
-          installedSoftware:
-            inventory === "unknown" ? undefined : inventory === "empty" ? [] : current,
-          readGpuMetrics: async () => [],
-          readDiskUsedPercent: async () => 0,
-          readSchedulerQueueDepth: async () => 0,
-        });
-        const running = stream.start();
-        try {
-          await waitForCondition(() => queueInventoryHeartbeats(sent).length >= 3);
-          const results = (sent as AgentMessage[]).flatMap((message) =>
-            message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
-          );
-          expect(results).toHaveLength(1);
-          expect(results[0]).toMatchObject({
-            operationId: result.operationId,
-            status: SoftwareOperationStatus.SUCCEEDED,
-            replayed: true,
-            installed: [{ name: "old" }],
-          });
-          if (inventory === "empty") {
-            expect(installedSoftwareReports(sent).length).toBeGreaterThan(0);
-            for (const report of installedSoftwareReports(sent))
-              expect(report.installed).toEqual([]);
-          } else {
-            expect(installedSoftwareReports(sent)).toEqual([]);
-          }
-          for (const message of sent as AgentMessage[]) {
-            if (message.payload.case === "heartbeat") {
-              expect(message.payload.value.installedSoftware.map((item) => item.name)).toEqual(
-                inventory === "populated" ? ["current"] : [],
-              );
-            }
-          }
-        } finally {
-          closeConnection.resolve();
-          await stream.stop();
-          await running;
-          sqlite.close();
-        }
-      });
-    }
-  }
-
-  test("persists software operation results while the stream is offline", async () => {
-    const sqlite = new Database(":memory:");
-    runSqliteMigrations(sqlite);
-    const outboundQueue = new OutboundQueue(drizzle(sqlite, { schema }));
-    const { client } = makeMockClient([]);
-    const stream = softwareStream({
-      fileTransferMaxRetries: 3,
-      fileTransferRetryBackoffSec: 0,
-      client,
-      adapter: makeAdapter(),
-      agentId: "agent-001",
-      siteName: "test-site",
-      heartbeatIntervalMs: 60_000,
-      logger: silent,
-      outboundQueue,
-      reconnectBackoffMs: 1,
-      sleep: async () => {},
-    });
-    const offlineStream = stream as unknown as {
-      enqueueSoftwareOperationResult(
-        item: Omit<Extract<OutboundItem, { kind: "softwareOperationResult" }>, "kind">,
-      ): Promise<void>;
-    };
-
-    await offlineStream.enqueueSoftwareOperationResult({
-      operationId: "00000000-0000-0000-0000-000000000099",
-      action: SoftwareOperationAction.INSTALL,
-      status: SoftwareOperationStatus.SUCCEEDED,
-      spec: "zlib@1.3",
-      exitCode: 0,
-      installed: [{ name: "zlib", version: "1.3", hash: "abc", spec: "zlib@1.3" }],
-    });
-    const replayed = (await outboundQueue.loadForReplay())[0]?.item;
-    if (!replayed || replayed.kind !== "softwareOperationResult") {
-      throw new Error("expected softwareOperationResult item");
-    }
-    expect(replayed.operationId).toBe("00000000-0000-0000-0000-000000000099");
-    expect(replayed.status).toBe(SoftwareOperationStatus.SUCCEEDED);
-    expect(replayed.installed?.[0]?.name).toBe("zlib");
-    sqlite.close();
-  });
 });
 
-// Minimal fake ssh2 client — same shape as ssh/handler.test.ts, trimmed to the
-// bits the stream-level wiring test needs: a `ready` event that opens a shell
-// channel so the session counts as active.
 function fakeSsh2Factory(): {
   factory: Ssh2Factory;
   fireReady: () => void;
@@ -7066,7 +7278,6 @@ describe("AgentStream SSH relay", () => {
     await settle(5);
     expect(handler?.activeCount()).toBe(0);
   });
-
   test("tears down ssh2 sessions when the Server stream drops, before reconnecting", async () => {
     const shutdownReasons: string[] = [];
     const spyHandler = {
@@ -7120,7 +7331,6 @@ describe("AgentStream SSH relay", () => {
     // leak on the login node after a Server↔Agent partition.
     expect(shutdownReasons).toContain("server stream lost");
   });
-
   test("routes a Server SshResize through to the ssh2 channel's setWindow", async () => {
     const { factory, fireReady, setWindowCalls } = fakeSsh2Factory();
 
@@ -7180,7 +7390,6 @@ describe("AgentStream SSH relay", () => {
 
     stream.stop();
   });
-
   test("routes Server SshData through to the ssh2 channel as stdin", async () => {
     const { factory, fireReady, writes } = fakeSsh2Factory();
 
@@ -7238,7 +7447,6 @@ describe("AgentStream SSH relay", () => {
 
     stream.stop();
   });
-
   test("routes a Server SshClose through to tear the session down", async () => {
     const { factory } = fakeSsh2Factory();
     let handler: SshHandler | undefined;
@@ -7297,7 +7505,6 @@ describe("AgentStream SSH relay", () => {
 
     stream.stop();
   });
-
   test("scans a CP-local dataset once and replays the metadata-only result for duplicate requests", async () => {
     const request = create(ServerMessageSchema, {
       payload: {
@@ -7385,7 +7592,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     installed: [installed],
   };
   const intent = { spec: "hello@1.0", command: "hello 'two words'" };
-
   function dispatch(overrides: Parameters<typeof create<typeof DispatchJobSchema>>[1] = {}) {
     return create(ServerMessageSchema, {
       payload: {
@@ -7403,7 +7609,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       },
     });
   }
-
   async function fixture(
     load: SpackManager["runSoftwareOperation"] = async () => loadSuccess,
     overrides: Partial<AgentStreamDeps> = {},
@@ -7455,6 +7660,7 @@ describe("AgentStream workflow Spack dispatch", () => {
     };
     return {
       stream,
+      spackManager,
       inboundAcks,
       tombstones,
       submitted,
@@ -7463,7 +7669,42 @@ describe("AgentStream workflow Spack dispatch", () => {
       drain: () => Promise.all([...harness.pendingSpackPreparations]),
     };
   }
-
+  test("persists pinned execution and rejects a mismatched environment before scheduler submission", async () => {
+    let legacy = 0;
+    const f = await fixture(async () => {
+      legacy++;
+      return loadSuccess;
+    });
+    const pin = {
+      dagHash: "a".repeat(32),
+      manifestDigest: `sha256:${"b".repeat(64)}`,
+      lockfileDigest: `sha256:${"c".repeat(64)}`,
+      spackVersion: "1.0.0" as const,
+      target: "linux-ubuntu24.04-x86_64",
+    };
+    const release = Promise.withResolvers<SoftwareOperationOutcome>();
+    f.spackManager.loadPinnedWorkflow = async (_spec, actual) => {
+      expect(actual).toEqual(pin);
+      return release.promise;
+    };
+    await deliverServerMessage(
+      f.stream,
+      dispatch({ command: SPACK_PINNED_EXECUTION_PLACEHOLDER, spackExecution: { ...intent, pin } }),
+    );
+    expect((await f.inboundAcks.pendingInbound())[0]?.payload.spackExecution).toEqual({
+      ...intent,
+      pin,
+    });
+    release.resolve({ outcome: "rejected", reason: "wrong material release" });
+    await f.drain();
+    expect(legacy).toBe(0);
+    expect(f.submitted).toHaveLength(0);
+    expect(
+      f.reports.some(
+        (report) => report.status === "failed" && report.message === SPACK_ACTIVATION_FAILURE,
+      ),
+    ).toBe(true);
+  });
   test("pending load survives reconnect without false failure or duplicate submit", async () => {
     const closeFirst = Promise.withResolvers<void>();
     const finishLoad = Promise.withResolvers<SoftwareOperationOutcome>();
@@ -7537,7 +7778,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       await Promise.all(reconnect.requestDoneByConnection);
     }
   });
-
   test.each(["mock", "store"] as const)("serializes %s preparation", async (mode) => {
     const releaseFirstLoad = Promise.withResolvers<void>();
     const releaseFirstSyntax = Promise.withResolvers<void>();
@@ -7613,7 +7853,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       if (root) await rm(root, { recursive: true, force: true });
     }
   });
-
   test.each(["software-first", "workflow-first"] as const)("%s queue", async (order) => {
     const releaseFirst = Promise.withResolvers<void>();
     const releaseSyntax = Promise.withResolvers<void>();
@@ -7686,7 +7925,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       await f.stream.stop();
     }
   });
-
   test("cancelled load holds the queue until cleanup finishes before the next load", async () => {
     const releaseCleanup = Promise.withResolvers<void>();
     const calls: string[] = [];
@@ -7756,7 +7994,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       await f.stream.stop();
     }
   });
-
   test("durably records intent before loading and submits the managed environment command", async () => {
     let sawPending = false;
     const f = await fixture(async (action, spec, materials, signal) => {
@@ -7781,7 +8018,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     await waitForCondition(() => f.reports.some((report) => report.status === "completed"));
     expect(await f.inboundAcks.pendingInbound()).toEqual([]);
   });
-
   test.each([
     "failed",
     "rejected",
@@ -7825,7 +8061,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     ]);
     expect(await f.inboundAcks.pendingInbound()).toEqual([]);
   });
-
   test.each(["placeholder", "shape", "sandbox"] as const)("rejects %s", async (mode) => {
     let loads = 0;
     const f = await fixture(async () => {
@@ -7847,7 +8082,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     expect(f.submitted).toEqual([]);
     expect(f.reports[0]?.message).toBe(SPACK_ACTIVATION_FAILURE);
   });
-
   test("withdraws invalidated managed inventory even though the job fails", async () => {
     const f = await fixture(async () => ({
       outcome: "failed",
@@ -7861,7 +8095,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     expect(f.submitted).toEqual([]);
     expect(f.reports[0]?.message).toBe(SPACK_ACTIVATION_FAILURE);
   });
-
   test("a revoked dispatch never starts loading", async () => {
     let loads = 0;
     const f = await fixture(async () => {
@@ -7874,7 +8107,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     expect(loads).toBe(0);
     expect(f.submitted).toEqual([]);
   });
-
   test("rechecks revocation after load before submitting to the pool", async () => {
     const f = await fixture(async () => {
       await f.tombstones.record("workflow-spack", 1);
@@ -7885,7 +8117,6 @@ describe("AgentStream workflow Spack dispatch", () => {
     expect(f.submitted).toEqual([]);
     expect(f.reports).toEqual([{ jobId: "workflow-spack", status: "cancelled" }]);
   });
-
   test.each(["cancel", "shutdown", "timeout"] as const)("%s blocks late submit", async (mode) => {
     let started: () => void = () => {};
     const loading = new Promise<void>((resolve) => {
@@ -7940,7 +8171,6 @@ describe("AgentStream workflow Spack dispatch", () => {
       if (mode === "timeout") expect(f.reports[0]?.message).toBe(SPACK_ACTIVATION_TIMEOUT);
     }
   });
-
   test("checks the epoch again after asynchronous work-root preparation", async () => {
     const f = await fixture(undefined, {
       prepareJobWorkRoot: async () => {
@@ -7982,20 +8212,2009 @@ describe("jobStatusReportToProto", () => {
     expect(value.failureCode).toBe("QUEUE_NOT_ACCEPTING");
     expect(value.workingDir).toBe("/managed/jobs/j-1");
   });
-
   test("defaults node/reason to empty strings when the report omits them", () => {
     const msg = jobStatusReportToProto({ jobId: "j-2", status: "queued" });
     const value = (msg.payload as { value: { node: string; reason: string } }).value;
     expect(value.node).toBe("");
     expect(value.reason).toBe("");
   });
-
   test("maps cancellation to the terminal proto status", () => {
     const msg = jobStatusReportToProto({ jobId: "j-cancelled", status: "cancelled" });
     const value = (msg.payload as { value: { status: ProtoJobStatus } }).value;
     expect(value.status).toBe(ProtoJobStatus.CANCELLED);
   });
 });
+
+describe("federation execution boundaries", () => {
+  test.each([
+    "grant",
+    "deny",
+    "cancel",
+    "unsupported",
+    "watchdog-missing",
+  ] as const)("%s at the final submission boundary", async (outcome) => {
+    const db = createSqliteDb(":memory:");
+    const validated = Promise.withResolvers<void>();
+    const releaseValidation = Promise.withResolvers<void>();
+    const grants: string[] = [];
+    const submitted: JobSpec[] = [];
+    const reports: JobStatusReport[] = [];
+    const dispatch = create(DispatchJobSchema, {
+      jobId: crypto.randomUUID(),
+      command: "echo immutable",
+      cpus: 1,
+      memoryMb: 128n,
+      dispatchEpoch: 1n,
+      federationExecution: true,
+      queueTargetMode: QueueTargetMode.NAMED,
+      queueName: "approved",
+      queueValidationMode: QueueValidationMode.ENFORCE,
+    });
+    const stream = new AgentStream({
+      client: makePendingRegisteredClient(false, false, {
+        supported: outcome !== "unsupported",
+        onMessage: async (message) => {
+          if (message.payload.case !== "federationExecutionRequest") return;
+          const request = message.payload.value;
+          grants.push(request.requestId);
+          if (grants.length === 2 && outcome === "cancel") return;
+          await deliverServerMessage(
+            stream,
+            create(ServerMessageSchema, {
+              payload: {
+                case: "federationExecutionResponse",
+                value: create(FederationExecutionResponseSchema, {
+                  requestId: request.requestId,
+                  jobId: request.jobId,
+                  dispatchEpoch: request.dispatchEpoch,
+                  decision:
+                    grants.length === 2 && outcome === "deny"
+                      ? FederationExecutionDecision.DENIED
+                      : FederationExecutionDecision.GRANTED,
+                  dispatch,
+                  expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                }),
+              },
+            }),
+          );
+        },
+      }),
+      adapter: makeAdapter({
+        validateQueueTarget: async () => {
+          validated.resolve();
+          await releaseValidation.promise;
+          return { accepted: true, resolvedQueueName: "approved" };
+        },
+        submit: async (spec) => {
+          submitted.push(spec);
+          return { schedulerJobId: "federated-scheduler-job" };
+        },
+      }),
+      agentId: "federation-agent",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      jobSleep: async () => {},
+      logger: silent,
+      inboundAcks: new InboundAcks(db),
+      ...(outcome === "watchdog-missing"
+        ? {}
+        : { assertFederationRuntimeWatchdog: async () => {} }),
+      activeRemoteJobs: new ActiveRemoteJobs(db),
+      revocationTombstones: new JobRevocationTombstones(db),
+      cleanupIntents: new JobCleanupIntents(db),
+    });
+    stream.enqueueStatusUpdate = async (report) => {
+      reports.push(report);
+    };
+    activeStreams.push(stream);
+    const running = stream.start();
+    try {
+      await settle(20);
+      await deliverServerMessage(
+        stream,
+        create(ServerMessageSchema, { payload: { case: "dispatchJob", value: dispatch } }),
+      );
+      if (outcome === "unsupported") {
+        await waitForCondition(() => reports.some((report) => report.status === "failed"));
+        expect(grants).toHaveLength(0);
+      } else {
+        await validated.promise;
+        expect(grants).toHaveLength(1);
+        expect(submitted).toHaveLength(0);
+        releaseValidation.resolve();
+        await waitForCondition(() => grants.length === (outcome === "watchdog-missing" ? 1 : 2));
+        if (outcome === "cancel") {
+          expect(submitted).toHaveLength(0);
+          await deliverServerMessage(stream, cancelJobMessage(dispatch.jobId, 1));
+        }
+        await waitForCondition(() =>
+          reports.some((report) => ["completed", "failed", "cancelled"].includes(report.status)),
+        );
+        expect(new Set(grants).size).toBe(outcome === "watchdog-missing" ? 1 : 2);
+      }
+      expect(submitted).toHaveLength(outcome === "grant" ? 1 : 0);
+      if (outcome === "grant") expect(submitted[0]?.command).toBe("echo immutable");
+    } finally {
+      releaseValidation.resolve();
+      stream.stop();
+      await running;
+    }
+  });
+});
+
+test.each([
+  "grant",
+  "deny",
+  "unsupported",
+] as const)("federation installation receives fresh authority at both boundaries: %s", async (outcome) => {
+  const db = createSqliteDb(":memory:");
+  const spackManager = await SpackManager.bootstrap({
+    requireServerMaterials: true,
+    spawner: { run: async () => ({ exitCode: 0, stdout: "1.0.0", stderr: "" }) },
+  });
+  const request = create(SoftwareOperationRequestSchema, {
+    operationId: crypto.randomUUID(),
+    federationJobId: crypto.randomUUID(),
+    action: SoftwareOperationAction.INSTALL,
+    spec: "hello@1",
+    requestedBy: "owner",
+    spackMaterialTicket: "expired",
+    spackManifestDigest: `sha256:${"a".repeat(64)}`,
+    durableReplay: true,
+  });
+  let grants = 0;
+  let leasesSupported = false;
+  let prepared = false;
+  let started = false;
+  spackManager.runSoftwareOperation = async (_action, _spec, materials, signal) => {
+    prepared = true;
+    expect(materials?.ticket).toBe("renewed");
+    if (!materials?.authorizeInstallation || !signal)
+      throw new Error("Missing installation authority");
+    await materials.authorizeInstallation(signal);
+    started = true;
+    return { outcome: "succeeded", stdout: "", installed: [] };
+  };
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      installationSupported: outcome !== "unsupported",
+      onMessage: async (message) => {
+        if (message.payload.case === "register")
+          leasesSupported = message.payload.value.federationInstallationLeaseV1;
+        if (message.payload.case !== "federationExecutionRequest") return;
+        grants++;
+        const renewal = message.payload.value;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: create(FederationExecutionResponseSchema, {
+                requestId: renewal.requestId,
+                jobId: renewal.jobId,
+                operationId: renewal.operationId,
+                decision:
+                  grants === 2 && outcome === "deny"
+                    ? FederationExecutionDecision.DENIED
+                    : FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                installation: { ...request, spackMaterialTicket: "renewed" },
+              }),
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter(),
+    agentId: "install-agent",
+    siteName: "test",
+    logger: silent,
+    heartbeatIntervalMs: 60_000,
+    spackManager,
+    inboundAcks: new InboundAcks(db),
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+    outboundQueue: new OutboundQueue(db),
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await settle(20);
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, {
+        payload: { case: "softwareOperationRequest", value: request },
+      }),
+    );
+    await waitForCondition(async () => {
+      for await (const result of new OutboundQueue(db).softwareOperations.results())
+        if (result.operationId === request.operationId) return true;
+      return false;
+    });
+    expect(leasesSupported).toBe(true);
+    expect(grants).toBe(outcome === "unsupported" ? 0 : 2);
+    expect(prepared).toBe(outcome !== "unsupported");
+    expect(started).toBe(outcome === "grant");
+  } finally {
+    stream.stop();
+    await running;
+  }
+});
+
+test.each([
+  "grant",
+  "deny",
+  "rewrite",
+  "revoked",
+  "submitting",
+  "cleanup-uncertain",
+  "legacy",
+] as const)("federation preparation survives reopening its SQLite receipt: %s", async (outcome) => {
+  const root = await mkdtemp(join(tmpdir(), "kq-fed-restart-"));
+  const path = join(root, "agent.sqlite");
+  const firstSqlite = new Database(path);
+  runSqliteMigrations(firstSqlite);
+  const db = drizzle(firstSqlite, { schema });
+  const inbox = new InboundAcks(db);
+  const dispatch = create(DispatchJobSchema, {
+    jobId: crypto.randomUUID(),
+    dispatchEpoch: 1n,
+    federationExecution: true,
+    command: "echo original",
+    cpus: 1,
+    memoryMb: 128n,
+  });
+  let initialRequests = 0;
+  const first = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case === "federationExecutionRequest") initialRequests++;
+      },
+    }),
+    adapter: makeAdapter({
+      submit: async () => {
+        throw new Error("must wait for authority");
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 60_000,
+    inboundAcks: inbox,
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+  });
+  activeStreams.push(first);
+  const firstRunning = first.start();
+  try {
+    await settle(20);
+    await deliverServerMessage(
+      first,
+      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: dispatch } }),
+    );
+    await waitForCondition(() => initialRequests === 1);
+    expect(await inbox.pendingInbound()).toHaveLength(1);
+  } finally {
+    await first.stop();
+    await firstRunning;
+    await settle();
+  }
+  const dispatchId = `${dispatch.jobId}:1`;
+  if (outcome === "submitting") await inbox.markSubmissionStarted(dispatchId);
+  if (outcome === "revoked") await new JobRevocationTombstones(db).record(dispatch.jobId, 1);
+  if (outcome === "cleanup-uncertain") {
+    await new JobCleanupIntents(db).recordDataDelivery(dispatch.jobId, {
+      bindingId: "binding",
+      targetPath: "/managed/input",
+      method: "object-download",
+    });
+  }
+  if (outcome === "legacy") {
+    firstSqlite.run("UPDATE inbound_dispatch_pending SET payload = ? WHERE dispatch_id = ?", [
+      JSON.stringify({ federationExecution: true }),
+      dispatchId,
+    ]);
+  }
+  firstSqlite.close();
+  const reopenedSqlite = new Database(path);
+  const reopenedDb = drizzle(reopenedSqlite, { schema });
+  const reopenedInbox = new InboundAcks(reopenedDb);
+  const reports: JobStatusReport[] = [];
+  let grants = 0;
+  let submitted = 0;
+  const renewed = create(DispatchJobSchema, {
+    ...dispatch,
+    command: outcome === "rewrite" ? "replacement" : dispatch.command,
+  });
+  const second = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case !== "federationExecutionRequest") return;
+        grants++;
+        const request = message.payload.value;
+        await deliverServerMessage(
+          second,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: create(FederationExecutionResponseSchema, {
+                requestId: request.requestId,
+                jobId: request.jobId,
+                dispatchEpoch: request.dispatchEpoch,
+                decision:
+                  outcome === "deny"
+                    ? FederationExecutionDecision.DENIED
+                    : FederationExecutionDecision.GRANTED,
+                dispatch: renewed,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+              }),
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter({
+      findByKuintessenceJobId: async () => ({
+        status: "indeterminate",
+        reason: "scheduler unavailable",
+      }),
+      submit: async (spec) => {
+        expect(spec.command).toBe(dispatch.command);
+        expect((await reopenedInbox.pendingInbound())[0]?.payload.federationSubmissionStarted).toBe(
+          true,
+        );
+        submitted++;
+        return { schedulerJobId: "scheduler-recovered" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 60_000,
+    jobSleep: async () => {},
+    inboundAcks: reopenedInbox,
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: new ActiveRemoteJobs(reopenedDb),
+    cleanupIntents: new JobCleanupIntents(reopenedDb),
+    revocationTombstones: new JobRevocationTombstones(reopenedDb),
+  });
+  second.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(second);
+  const secondRunning = second.start();
+  try {
+    if (["submitting", "cleanup-uncertain", "legacy"].includes(outcome)) {
+      await settle(30);
+      expect(grants).toBe(0);
+      expect(reports).toEqual([]);
+      expect(await reopenedInbox.pendingInbound()).toHaveLength(1);
+    } else {
+      await waitForCondition(() =>
+        reports.some((report) => ["completed", "failed"].includes(report.status)),
+      );
+      expect(await reopenedInbox.pendingInbound()).toHaveLength(0);
+      expect(reports.some((report) => report.status === "failed")).toBe(outcome !== "grant");
+      expect(grants).toBe(outcome === "grant" ? 3 : outcome === "revoked" ? 0 : 1);
+    }
+    await deliverServerMessage(
+      second,
+      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: dispatch } }),
+    );
+    await settle();
+    expect(submitted).toBe(outcome === "grant" ? 1 : 0);
+  } finally {
+    await second.stop();
+    await secondRunning;
+    await settle();
+    reopenedSqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  "found",
+  "retry",
+  "revoked",
+  "revoked-pending",
+] as const)("reconciles a submission after abrupt Agent process exit: %s", async (outcome) => {
+  const root = await mkdtemp(join(tmpdir(), "kq-fed-crash-"));
+  const databasePath = join(root, "agent.sqlite");
+  const schedulerPath = join(root, "scheduler.json");
+  const jobId = crypto.randomUUID();
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      new URL("../test/fixtures/federation-submission-crash.ts", import.meta.url).pathname,
+      databasePath,
+      jobId,
+      schedulerPath,
+    ],
+    { stdout: "pipe", stderr: "pipe", timeout: 10_000 },
+  );
+  const childError = new Response(child.stderr).text();
+  expect(await child.exited, await childError).toBe(73);
+  expect(JSON.parse(readFileSync(schedulerPath, "utf8"))).toEqual({
+    jobId,
+    schedulerJobId: "accepted-before-crash",
+  });
+  const sqlite = new Database(databasePath);
+  const db = drizzle(sqlite, { schema });
+  const inbox = new InboundAcks(db);
+  const active = new ActiveRemoteJobs(db);
+  const cleanup = new JobCleanupIntents(db);
+  const tombstones = new JobRevocationTombstones(db);
+  expect((await inbox.pendingInbound())[0]?.payload.federationSubmissionStarted).toBe(true);
+  expect(await active.listActive()).toHaveLength(0);
+  const revoked = outcome.startsWith("revoked");
+  if (revoked) await tombstones.record(jobId, 1);
+  let lookups = 0;
+  let available = outcome !== "retry";
+  let stopped = outcome !== "revoked-pending";
+  let submits = 0;
+  let cancels = 0;
+  let polls = 0;
+  const reports: JobStatusReport[] = [];
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async () => {},
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 20,
+    logger: silent,
+    inboundAcks: inbox,
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: active,
+    cleanupIntents: cleanup,
+    revocationTombstones: tombstones,
+    jobSleep: async () => {},
+    adapter: {
+      type: "test",
+      version: "1",
+      findByKuintessenceJobId: async (lookup) => {
+        expect(lookup.jobId).toBe(jobId);
+        expect(lookup.submittedAfterUnixMs).toBeGreaterThan(0);
+        lookups++;
+        return available
+          ? { status: "found", schedulerJobId: "accepted-before-crash" }
+          : { status: "indeterminate", reason: "scheduler unavailable" };
+      },
+      submit: async () => {
+        submits++;
+        return { schedulerJobId: "duplicate" };
+      },
+      cancel: async () => {
+        cancels++;
+      },
+      confirmStopped: async () => stopped,
+      status: async (id) => {
+        expect(id).toBe("accepted-before-crash");
+        polls++;
+        if (polls === 1) throw new Error("temporary status outage");
+        return { status: "completed", exitCode: 0 };
+      },
+    },
+  });
+  stream.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    if (revoked) {
+      if (!stopped) {
+        await waitForCondition(() => cancels > 0);
+        expect(reports).toEqual([]);
+        expect(await cleanup.list()).toHaveLength(1);
+        expect(await inbox.pendingInbound()).toHaveLength(1);
+        stopped = true;
+      }
+      await waitForCondition(() => reports.some((report) => report.status === "cancelled"));
+      await waitForCondition(async () => (await cleanup.list()).length === 0);
+      expect(polls).toBe(0);
+      expect(await inbox.pendingInbound()).toHaveLength(0);
+    } else {
+      if (outcome === "retry") {
+        await waitForCondition(() => lookups > 0);
+        expect(reports).toEqual([]);
+        expect(await cleanup.list()).toHaveLength(1);
+        available = true;
+      }
+      await waitForCondition(() => reports.some((report) => report.status === "completed"));
+      await waitForCondition(async () => (await cleanup.list()).length === 0);
+      expect(await inbox.pendingInbound()).toHaveLength(0);
+      expect(reports.some((report) => report.status === "failed")).toBe(false);
+      expect(polls).toBe(2);
+      expect(await active.listActive()).toHaveLength(0);
+    }
+    expect(submits).toBe(0);
+    expect(cancels > 0).toBe(revoked);
+  } finally {
+    await stream.stop();
+    await running;
+    await settle();
+    sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.each([
+  "job",
+  "data",
+  "tombstone-only",
+] as const)("retries %s revocation until stop and cleanup are confirmed", async (kind) => {
+  const db = createSqliteDb(":memory:");
+  const active = new ActiveRemoteJobs(db);
+  const intents = new JobCleanupIntents(db);
+  const tombstones = new JobRevocationTombstones(db);
+  const jobId = crypto.randomUUID();
+  await active.recordSubmitted({
+    schedulerJobId: "original-id",
+    dispatchId: `${jobId}:3`,
+    expectedOutputs: [],
+    spec: {
+      jobId,
+      name: "original",
+      command: "true",
+      cpus: 1,
+      memoryMb: 128,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/managed/original",
+      envVars: {},
+    },
+  });
+  await intents.recordSchedulerSubmitting(jobId, {
+    schedulerName: "original",
+    schedulerNamespace: "original-ns",
+  });
+  await intents.recordSchedulerSubmitted(jobId, "original-id");
+  await intents.recordDataDelivery(jobId, {
+    bindingId: "input",
+    targetPath: "/managed/original/input",
+    method: "stage-copy",
+  });
+  let stopped = false;
+  let failCleanup = true;
+  let cancelled = 0;
+  let cleanupCalls = 0;
+  const acknowledgements: string[] = [];
+  const adapter = makeAdapter({
+    cancel: async (id) => {
+      expect(id).toBe("original-id");
+      cancelled++;
+    },
+    confirmStopped: async () => stopped,
+    submit: async () => {
+      throw new Error("revocation must not submit");
+    },
+  });
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: false,
+      onMessage: async (message) => {
+        if (
+          message.payload.case === "cancelJobAck" ||
+          message.payload.case === "dataDeliveryRevokeAck"
+        )
+          acknowledgements.push(message.payload.case);
+      },
+    }),
+    adapter,
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 20,
+    inboundAcks: new InboundAcks(db),
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: active,
+    cleanupIntents: intents,
+    revocationTombstones: tombstones,
+    dataDeliveryExecutor: {
+      prepare: async () => [],
+      recover: async () => {},
+      release: async () => {
+        cleanupCalls++;
+        if (failCleanup) throw new Error("temporary cleanup failure");
+      },
+    },
+  });
+  activeStreams.push(stream);
+  if (kind === "tombstone-only") {
+    await tombstones.record(jobId, 3);
+  } else {
+    await deliverServerMessage(
+      stream,
+      kind === "job"
+        ? cancelJobMessage(jobId, 3)
+        : create(ServerMessageSchema, {
+            payload: {
+              case: "dataDeliveryRevoke",
+              value: {
+                jobId,
+                reasonCode: "DATA_GRANT_REVOKED",
+                revokedEpoch: 3n,
+                destroyRestrictedWorkRoot: false,
+              },
+            },
+          }),
+    );
+    expect(cancelled).toBe(1);
+    expect(cleanupCalls).toBe(0);
+  }
+  const running = stream.start();
+  try {
+    await waitForCondition(() => cancelled >= 2);
+    expect(cleanupCalls).toBe(0);
+    expect(acknowledgements).toEqual([]);
+    expect(await active.listActive()).toHaveLength(1);
+    stopped = true;
+    await waitForCondition(() => cleanupCalls > 0);
+    expect(acknowledgements).toEqual([]);
+    expect(await intents.list()).toHaveLength(1);
+    failCleanup = false;
+    await waitForCondition(() => acknowledgements.length > 0);
+    expect(new Set(acknowledgements)).toEqual(
+      new Set([kind === "data" ? "dataDeliveryRevokeAck" : "cancelJobAck"]),
+    );
+    expect(await active.listActive()).toHaveLength(0);
+    expect(await intents.list()).toHaveLength(0);
+  } finally {
+    await stream.stop();
+    await running;
+  }
+});
+
+test.each([
+  "job",
+  "data",
+] as const)("a delayed %s revocation cannot cancel a newer dispatch epoch", async (kind) => {
+  const db = createSqliteDb(":memory:");
+  const active = new ActiveRemoteJobs(db);
+  const intents = new JobCleanupIntents(db);
+  const jobId = crypto.randomUUID();
+  await active.recordSubmitted({
+    schedulerJobId: "new-id",
+    dispatchId: `${jobId}:3`,
+    expectedOutputs: [],
+    spec: {
+      jobId,
+      name: "new",
+      command: "true",
+      cpus: 1,
+      memoryMb: 128,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "",
+      envVars: {},
+    },
+  });
+  await intents.recordSchedulerSubmitted(jobId, "new-id");
+  let cancelled = 0;
+  const stream = new AgentStream({
+    client: makeMockClient([]).client,
+    adapter: makeAdapter({
+      cancel: async () => {
+        cancelled++;
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: active,
+    cleanupIntents: intents,
+    revocationTombstones: new JobRevocationTombstones(db),
+  });
+  activeStreams.push(stream);
+  await deliverServerMessage(
+    stream,
+    kind === "job"
+      ? cancelJobMessage(jobId, 2)
+      : create(ServerMessageSchema, {
+          payload: {
+            case: "dataDeliveryRevoke",
+            value: {
+              jobId,
+              reasonCode: "DATA_GRANT_REVOKED",
+              revokedEpoch: 2n,
+              destroyRestrictedWorkRoot: false,
+            },
+          },
+        }),
+  );
+  expect(cancelled).toBe(0);
+  expect((await intents.list())[0]?.revoked).toBe(false);
+  expect(await active.listActive()).toHaveLength(1);
+  await stream.stop();
+});
+
+test.each([
+  "before-receive",
+  "queued",
+  "renewal",
+  "running",
+  "uncertain",
+  "data",
+] as const)("federation installation cancellation waits for its own stopped worker: %s", async (kind) => {
+  const db = createSqliteDb(":memory:");
+  const directory = await mkdtemp(join(tmpdir(), "kq-install-cancel-"));
+  const store = new SpackInstallStore(join(directory, "store"));
+  await store.initialize();
+  const tombstones = new JobRevocationTombstones(db);
+  const outbound = new OutboundQueue(db);
+  const spackManager = await SpackManager.bootstrap({
+    requireServerMaterials: true,
+    spawner: { run: async () => ({ exitCode: 0, stdout: "1.0.0", stderr: "" }) },
+  });
+  const request = create(SoftwareOperationRequestSchema, {
+    operationId: crypto.randomUUID(),
+    federationJobId: crypto.randomUUID(),
+    action: SoftwareOperationAction.INSTALL,
+    spec: "hello@1",
+    requestedBy: "owner",
+    spackMaterialTicket: "initial",
+    spackManifestDigest: `sha256:${"a".repeat(64)}`,
+    durableReplay: true,
+  });
+  const begun = Promise.withResolvers<void>();
+  const aborted = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let installs = 0;
+  spackManager.runSoftwareOperation = async (_action, spec, _materials, signal) => {
+    if (spec === "blocker") {
+      begun.resolve();
+      await release.promise;
+      return { outcome: "succeeded", stdout: "", installed: [] };
+    }
+    installs++;
+    if (!signal) throw new Error("Missing cancellation signal");
+    return store.withLock(async () => {
+      const worker = installWorkerExecution.getStore();
+      if (!worker) throw new Error("Missing worker binding");
+      await worker.start(crypto.randomUUID());
+      begun.resolve();
+      signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+      if (signal.aborted) aborted.resolve();
+      await aborted.promise;
+      await release.promise;
+      if (kind !== "uncertain") await worker.finish();
+      return { outcome: "failed", exitCode: 1, stderr: "cancelled" };
+    });
+  };
+  let grants = 0;
+  const acknowledgements: string[] = [];
+  const installationStopProofs: boolean[] = [];
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      installationSupported: true,
+      onMessage: async (message) => {
+        if (
+          message.payload.case === "cancelJobAck" ||
+          message.payload.case === "dataDeliveryRevokeAck"
+        )
+          acknowledgements.push(message.payload.case);
+        if (message.payload.case === "cancelJobAck")
+          installationStopProofs.push(message.payload.value.installationsStopped);
+        if (message.payload.case !== "federationExecutionRequest") return;
+        grants++;
+        if (kind === "renewal") return;
+        const renewal = message.payload.value;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: {
+                requestId: renewal.requestId,
+                jobId: renewal.jobId,
+                operationId: renewal.operationId,
+                decision: FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                installation: { ...request, spackMaterialTicket: "renewed" },
+              },
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter(),
+    agentId: "install-agent",
+    siteName: "test",
+    logger: silent,
+    heartbeatIntervalMs: 20,
+    spackManager,
+    inboundAcks: new InboundAcks(db),
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: tombstones,
+    outboundQueue: outbound,
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await settle(20);
+    if (kind === "before-receive") {
+      await deliverServerMessage(stream, cancelJobMessage(request.federationJobId, 1));
+    }
+    if (kind === "queued") {
+      await deliverServerMessage(
+        stream,
+        create(ServerMessageSchema, {
+          payload: {
+            case: "softwareOperationRequest",
+            value: {
+              ...request,
+              operationId: crypto.randomUUID(),
+              federationJobId: "",
+              spec: "blocker",
+            },
+          },
+        }),
+      );
+      await begun.promise;
+    }
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, {
+        payload: { case: "softwareOperationRequest", value: request },
+      }),
+    );
+    if (kind === "renewal") await waitForCondition(() => grants === 1);
+    if (["running", "uncertain", "data"].includes(kind)) await begun.promise;
+    const cancellation = deliverServerMessage(
+      stream,
+      kind === "data"
+        ? create(ServerMessageSchema, {
+            payload: {
+              case: "dataDeliveryRevoke",
+              value: {
+                jobId: request.federationJobId,
+                reasonCode: "DATA_GRANT_REVOKED",
+                revokedEpoch: 1n,
+              },
+            },
+          })
+        : cancelJobMessage(request.federationJobId, 1),
+    );
+    if (["running", "uncertain", "data"].includes(kind)) {
+      await aborted.promise;
+      await settle(20);
+      expect(acknowledgements).toEqual([]);
+      release.resolve();
+    }
+    await cancellation;
+    if (kind === "uncertain") {
+      await settle(60);
+      expect(acknowledgements).toEqual([]);
+      expect(await outbound.softwareOperations.revokedJobs()).toHaveLength(1);
+    } else {
+      await waitForCondition(() => acknowledgements.length > 0);
+      expect(acknowledgements).toContain(
+        kind === "data" ? "dataDeliveryRevokeAck" : "cancelJobAck",
+      );
+      await outbound.softwareOperations.assertJobStopped(request.federationJobId);
+      if (kind !== "data") expect(installationStopProofs).toContain(true);
+    }
+    expect(installs).toBe(["running", "uncertain", "data"].includes(kind) ? 1 : 0);
+    if (kind === "queued" || kind === "before-receive") expect(grants).toBe(0);
+  } finally {
+    release.resolve();
+    aborted.resolve();
+    await stream.stop();
+    await running;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  "resume",
+  "cancel",
+  "deny",
+] as const)("federation installation authorization wait through AgentStream: %s", async (kind) => {
+  const db = createSqliteDb(":memory:");
+  const outbound = new OutboundQueue(db);
+  const spackManager = await SpackManager.bootstrap({
+    requireServerMaterials: true,
+    spawner: { run: async () => ({ exitCode: 0, stdout: "1.0.0", stderr: "" }) },
+  });
+  const request = create(SoftwareOperationRequestSchema, {
+    operationId: crypto.randomUUID(),
+    federationJobId: crypto.randomUUID(),
+    action: SoftwareOperationAction.INSTALL,
+    spec: "hello@1",
+    requestedBy: "owner",
+    spackMaterialTicket: "initial",
+    spackManifestDigest: `sha256:${"a".repeat(64)}`,
+    durableReplay: true,
+  });
+  let installs = 0;
+  let unrelated = 0;
+  let deny = false;
+  let cancelAck = false;
+  let terminalDelivered = false;
+  const release = Promise.withResolvers<void>();
+  spackManager.runSoftwareOperation = async (_action, spec, context) => {
+    if (spec === "unrelated") {
+      unrelated++;
+      return { outcome: "succeeded", stdout: "", installed: [] };
+    }
+    installs++;
+    const grant = await context?.authorizeMaterialTransfer?.(new AbortController().signal);
+    expect(grant?.ticket).toBe("fresh");
+    expect(grant?.expiresAt).toBeGreaterThan(Date.now());
+    if (installs === 1) throw new SpackInstallationPending();
+    await release.promise;
+    return { outcome: "succeeded", stdout: "", installed: [] };
+  };
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      installationSupported: true,
+      onMessage: async (message) => {
+        if (
+          message.payload.case === "softwareOperationResult" &&
+          message.payload.value.operationId === request.operationId &&
+          message.payload.value.status !== SoftwareOperationStatus.RUNNING
+        )
+          terminalDelivered = true;
+        if (message.payload.case === "cancelJobAck")
+          cancelAck = message.payload.value.installationsStopped;
+        if (message.payload.case !== "federationExecutionRequest") return;
+        const renewal = message.payload.value;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: {
+                requestId: renewal.requestId,
+                jobId: renewal.jobId,
+                operationId: renewal.operationId,
+                decision: deny
+                  ? FederationExecutionDecision.DENIED
+                  : FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                installation: { ...request, spackMaterialTicket: "fresh" },
+              },
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter(),
+    agentId: "install-agent",
+    siteName: "test",
+    logger: silent,
+    heartbeatIntervalMs: 20,
+    spackManager,
+    inboundAcks: new InboundAcks(db),
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+    outboundQueue: outbound,
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  const deliver = (value = request) =>
+    deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, { payload: { case: "softwareOperationRequest", value } }),
+    );
+  try {
+    await settle(20);
+    await deliver();
+    await waitForCondition(
+      async () =>
+        (await db.select().from(schema.softwareExecutions))[0]?.authorizationWaiting === true,
+    );
+    expect((await db.select().from(schema.softwareExecutions))[0]?.result).toBeNull();
+    await deliver({
+      ...request,
+      operationId: crypto.randomUUID(),
+      federationJobId: "",
+      spec: "unrelated",
+    });
+    await waitForCondition(() => unrelated === 1);
+    if (kind === "cancel") {
+      await deliverServerMessage(stream, cancelJobMessage(request.federationJobId, 1));
+      await waitForCondition(() => cancelAck);
+      await deliver();
+    } else {
+      deny = kind === "deny";
+      await deliver();
+      if (!deny) {
+        await waitForCondition(() => installs === 2);
+        await deliver(); // An active replay must not create another worker.
+        release.resolve();
+      }
+    }
+    await waitForCondition(async () =>
+      (await db.select().from(schema.softwareExecutions)).some(
+        (r) => r.operationId === request.operationId && r.result !== null,
+      ),
+    );
+    const saved = (await db.select().from(schema.softwareExecutions)).find(
+      (r) => r.operationId === request.operationId,
+    );
+    expect(saved?.result).toMatchObject({
+      status:
+        kind === "resume" ? SoftwareOperationStatus.SUCCEEDED : SoftwareOperationStatus.FAILED,
+    });
+    expect(saved?.authorizationWaiting).toBe(false);
+    expect(installs).toBe(kind === "resume" ? 2 : 1);
+    await waitForCondition(() => terminalDelivered);
+    if (kind === "deny") {
+      await deliverServerMessage(stream, cancelJobMessage(request.federationJobId, 1));
+      await waitForCondition(() => cancelAck);
+    }
+  } finally {
+    release.resolve();
+    await stream.stop();
+    await running;
+  }
+});
+
+test.each([
+  "denied",
+  "timeout",
+  "stop-retry",
+  "takeover",
+] as const)("running federation job renews without redispatch and stops on %s", async (outcome) => {
+  const db = createSqliteDb(":memory:");
+  const inbox = new InboundAcks(db);
+  const active = new ActiveRemoteJobs(db);
+  const cleanup = new JobCleanupIntents(db);
+  const reports: JobStatusReport[] = [];
+  let runtimeRequests = 0;
+  let submissions = 0;
+  let cancels = 0;
+  let stopped = outcome !== "stop-retry";
+  const dispatch = create(DispatchJobSchema, {
+    jobId: crypto.randomUUID(),
+    dispatchEpoch: 7n,
+    federationExecution: true,
+    command: "sleep 1",
+    cpus: 1,
+    memoryMb: 128n,
+  });
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case !== "federationExecutionRequest") return;
+        const request = message.payload.value;
+        if (request.runtimeRenewal) runtimeRequests++;
+        if (runtimeRequests >= 3 && outcome === "timeout") return;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: create(FederationExecutionResponseSchema, {
+                requestId: request.requestId,
+                jobId: request.jobId,
+                dispatchEpoch: request.dispatchEpoch,
+                operationId: request.operationId,
+                runtimeRenewal: request.runtimeRenewal,
+                decision:
+                  runtimeRequests >= 3 && outcome !== "takeover"
+                    ? FederationExecutionDecision.DENIED
+                    : FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 250),
+                ...(request.runtimeRenewal ? {} : { dispatch }),
+              }),
+            },
+          }),
+        );
+      },
+    }),
+    adapter: {
+      ...makeAdapter({
+        submit: async () => {
+          submissions++;
+          return { schedulerJobId: "runtime-job" };
+        },
+        cancel: async () => {
+          cancels++;
+        },
+        confirmStopped: async () => stopped,
+      }),
+      status: async () => ({ status: "running" }),
+    },
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: outcome === "stop-retry" ? 60_000 : 20,
+    jobPollIntervalMs: 10,
+    inboundAcks: inbox,
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: active,
+    cleanupIntents: cleanup,
+    revocationTombstones: new JobRevocationTombstones(db),
+  });
+  stream.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await settle(20);
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: dispatch } }),
+    );
+    await waitForCondition(() => runtimeRequests >= 2);
+    expect(cancels).toBe(0);
+    expect((await inbox.get(`${dispatch.jobId}:7`))?.payload.federationRuntime).toMatchObject({
+      state: "active",
+    });
+    if (outcome === "takeover") {
+      const next = await inbox.claimRuntime(`${dispatch.jobId}:7`);
+      await waitForCondition(() => runtimeRequests === 3);
+      await Bun.sleep(150);
+      expect(cancels).toBe(0);
+      expect(submissions).toBe(1);
+      expect(await active.listActive()).toHaveLength(1);
+      expect(
+        reports.some((report) => ["cancelled", "failed", "completed"].includes(report.status)),
+      ).toBe(false);
+      expect((await inbox.get(`${dispatch.jobId}:7`))?.payload.federationRuntime).toMatchObject({
+        owner: next.owner,
+        state: "active",
+      });
+      return;
+    }
+    await waitForCondition(() => cancels > 0);
+    if (!stopped) {
+      expect((await inbox.get(`${dispatch.jobId}:7`))?.payload.federationRuntime).toMatchObject({
+        state: "stopping",
+      });
+      expect(await active.listActive()).toHaveLength(1);
+      expect(await cleanup.list()).toHaveLength(1);
+      expect(reports.some((report) => report.status === "cancelled")).toBe(false);
+      stopped = true;
+    }
+    await waitForCondition(() => reports.some((report) => report.status === "cancelled"), 2500);
+    expect(submissions).toBe(1);
+    expect(runtimeRequests).toBe(3);
+    expect(await active.listActive()).toHaveLength(0);
+    expect((await inbox.get(`${dispatch.jobId}:7`))?.payload.federationRuntime).toMatchObject({
+      state: "finished",
+    });
+  } finally {
+    await stream.stop();
+    await running;
+  }
+});
+
+test.each([
+  "active",
+  "expired",
+  "stopping",
+  "legacy",
+  "watchdog-stopped",
+] as const)("acknowledged federation runtime survives SQLite reopen: %s", async (outcome) => {
+  const root = await mkdtemp(join(tmpdir(), "kq-runtime-restart-"));
+  const path = join(root, "agent.sqlite");
+  const sqlite = new Database(path);
+  runSqliteMigrations(sqlite);
+  const firstDb = drizzle(sqlite, { schema });
+  const inbox = new InboundAcks(firstDb);
+  const jobId = crypto.randomUUID();
+  const dispatchId = `${jobId}:9`;
+  const dispatch = create(DispatchJobSchema, {
+    jobId,
+    dispatchEpoch: 9n,
+    federationExecution: true,
+  });
+  const spec: JobSpec = {
+    jobId,
+    name: "original",
+    command: "sleep 1",
+    cpus: 1,
+    memoryMb: 128,
+    gpus: 0,
+    wallTimeSec: 60,
+    envVars: {},
+    workingDir: "/tmp",
+  };
+  await inbox.persistInbound({
+    dispatchId,
+    jobId,
+    payload: {
+      federationExecution: true,
+      federationReceipt: federationDispatchReceipt(dispatch),
+    },
+  });
+  await inbox.markSubmissionStarted(
+    dispatchId,
+    { spec, expectedOutputs: [] },
+    outcome === "legacy"
+      ? undefined
+      : { owner: "previous-process", expiresAt: Date.now() + 400, state: "active" },
+  );
+  if (outcome === "stopping")
+    await inbox.setRuntimeState(dispatchId, "previous-process", "stopping");
+  if (outcome === "watchdog-stopped") {
+    await inbox.setRuntimeState(dispatchId, "previous-process", "stopping");
+    await inbox.recordRuntimeStop(dispatchId, "original-scheduler-job");
+    await new JobRevocationTombstones(firstDb).record(jobId, 9);
+  }
+  await inbox.markAcked(dispatchId);
+  await new ActiveRemoteJobs(firstDb).recordSubmitted({
+    spec,
+    schedulerJobId: "original-scheduler-job",
+    expectedOutputs: [],
+    dispatchId,
+  });
+  await new JobCleanupIntents(firstDb).recordSchedulerSubmitted(jobId, "original-scheduler-job");
+  sqlite.close();
+  if (outcome === "expired") await Bun.sleep(450);
+  const reopened = new Database(path);
+  const db = drizzle(reopened, { schema });
+  const restoredInbox = new InboundAcks(db);
+  const reports: JobStatusReport[] = [];
+  let renewals = 0;
+  let cancels = 0;
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case !== "federationExecutionRequest") return;
+        const request = message.payload.value;
+        expect(request.runtimeRenewal).toBe(true);
+        expect(request.jobId).toBe(jobId);
+        expect(request.dispatchEpoch).toBe(9n);
+        renewals++;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: create(FederationExecutionResponseSchema, {
+                requestId: request.requestId,
+                jobId: request.jobId,
+                dispatchEpoch: request.dispatchEpoch,
+                operationId: request.operationId,
+                runtimeRenewal: request.runtimeRenewal,
+                decision:
+                  renewals === 1
+                    ? FederationExecutionDecision.GRANTED
+                    : FederationExecutionDecision.DENIED,
+                expiresAtUnixMs: BigInt(Date.now() + 300),
+              }),
+            },
+          }),
+        );
+      },
+    }),
+    adapter: {
+      ...makeAdapter({
+        submit: async () => {
+          throw new Error("Recovered runtime must not resubmit");
+        },
+        cancel: async (id) => {
+          expect(id).toBe("original-scheduler-job");
+          cancels++;
+        },
+      }),
+      status: async () => ({ status: "running" }),
+    },
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 20,
+    jobPollIntervalMs: 10,
+    inboundAcks: restoredInbox,
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+  });
+  stream.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await waitForCondition(() => reports.some((report) => report.status === "cancelled"));
+    if (outcome === "watchdog-stopped") expect(cancels).toBe(0);
+    else expect(cancels).toBeGreaterThan(0);
+    expect(renewals).toBe(outcome === "active" ? 2 : 0);
+    expect((await restoredInbox.get(dispatchId))?.payload.federationRuntime).toMatchObject({
+      state: "finished",
+    });
+  } finally {
+    await stream.stop();
+    await running;
+    await settle();
+    reopened.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  false,
+  true,
+])("Kubernetes cancellation preserves receipt-only UID after active-row loss (conflict=%s)", async (conflict) => {
+  const db = createSqliteDb(":memory:");
+  const inbox = new InboundAcks(db);
+  const active = new ActiveRemoteJobs(db);
+  const jobId = crypto.randomUUID();
+  const dispatchId = `${jobId}:5`;
+  const schedulerUid = crypto.randomUUID();
+  const spec = {
+    jobId,
+    name: "test",
+    command: "sleep 60",
+    cpus: 1,
+    memoryMb: 32,
+    gpus: 0,
+    wallTimeSec: 60,
+    workingDir: "/tmp",
+    envVars: {},
+    queueName: "original-ns",
+    schedulerName: "kf5",
+    federationDispatchEpoch: 5,
+  };
+  await inbox.persistInbound({ dispatchId, jobId, payload: { federationExecution: true } });
+  await inbox.markSubmissionStarted(
+    dispatchId,
+    { spec, expectedOutputs: [] },
+    { owner: "old", expiresAt: Date.now() + 1000, state: "stopping" },
+  );
+  await inbox.bindRuntimeSchedulerIdentity(dispatchId, {
+    schedulerUid,
+    schedulerJobId: "original",
+    namespace: "original-ns",
+  });
+  if (conflict)
+    await active.recordSubmitted({
+      dispatchId,
+      spec,
+      schedulerJobId: "original",
+      schedulerUid: crypto.randomUUID(),
+      expectedOutputs: [],
+    });
+  let cancelled = false;
+  const stream = new AgentStream({
+    client: makeMockClient([]).client,
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    inboundAcks: inbox,
+    activeRemoteJobs: active,
+    adapter: {
+      type: "kubernetes",
+      version: "test",
+      submit: async () => {
+        throw new Error("No resubmission");
+      },
+      status: async () => ({ status: "running" }),
+      confirmStopped: async () => true,
+      cancel: async (id, lookup) => {
+        expect(id).toBe("original");
+        expect(lookup).toMatchObject({
+          schedulerUid,
+          namespace: "original-ns",
+          federationDispatchEpoch: 5,
+        });
+        cancelled = true;
+      },
+    },
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as { performJobCancellation: (id: string) => Promise<void> };
+  if (conflict)
+    await expect(harness.performJobCancellation(jobId)).rejects.toThrow("identities disagree");
+  else await harness.performJobCancellation(jobId);
+  expect(cancelled).toBe(!conflict);
+});
+
+test.each([
+  false,
+  true,
+])("federated Sandbox preparation uses a renewed envelope and rejects changed content (%s)", async (changed) => {
+  const db = createSqliteDb(":memory:");
+  const original = create(DispatchJobSchema, {
+    jobId: crypto.randomUUID(),
+    dispatchEpoch: 1n,
+    federationExecution: true,
+    cpus: 1,
+    memoryMb: 128n,
+    sandboxExecution: {
+      networkDisabled: true,
+      envelope: { nonce: "original", manifestSha256: "fixed", expiresAtUnixMs: 1n },
+    },
+  });
+  const renewed = clone(DispatchJobSchema, original);
+  if (!renewed.sandboxExecution?.envelope) throw new Error("Missing fixture");
+  renewed.sandboxExecution.networkDisabled = !changed;
+  renewed.sandboxExecution.envelope.nonce = "renewed";
+  renewed.sandboxExecution.envelope.expiresAtUnixMs = BigInt(Date.now() + 60_000);
+  let advertised = false;
+  let preparedNonce: string | undefined;
+  const reports: JobStatusReport[] = [];
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case === "register")
+          advertised = message.payload.value.federationSandboxSignatureRenewalV1;
+        if (message.payload.case !== "federationExecutionRequest") return;
+        const request = message.payload.value;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: {
+                requestId: request.requestId,
+                jobId: request.jobId,
+                dispatchEpoch: request.dispatchEpoch,
+                decision: FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                dispatch: renewed,
+              },
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter({
+      submit: async () => {
+        throw new Error("This test stops after preparation");
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 60_000,
+    inboundAcks: new InboundAcks(db),
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+    assertFederationRuntimeWatchdog: async () => {},
+    sandboxProcessor: {
+      cleanup: async () => {},
+      prepare: async (_jobId, execution) => {
+        preparedNonce = execution?.envelope?.nonce;
+        throw new Error("Verified routing; stop before staging");
+      },
+    },
+  });
+  stream.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await settle(20);
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: original } }),
+    );
+    await waitForCondition(() => reports.some((report) => report.status === "failed"));
+    expect(advertised).toBe(true);
+    expect(reports.find((report) => report.status === "failed")?.message).toContain(
+      changed ? "grant is invalid" : "stop before staging",
+    );
+    expect(preparedNonce).toBe(changed ? undefined : "renewed");
+    expect(original.sandboxExecution?.envelope?.nonce).toBe("original");
+  } finally {
+    await stream.stop();
+    await running;
+  }
+});
+
+for (const kind of ["Sandbox", "Data Market", "NetDrive"] as const)
+  test.each(
+    kind === "Sandbox"
+      ? (["long", "offline", "denied"] as const)
+      : kind === "NetDrive"
+        ? (["long", "offline", "denied", "late", "completed"] as const)
+        : (["long", "offline", "denied", "late"] as const),
+  )(`${kind} preparation maintains authority and handles %s renewal`, async (mode) => {
+    const db = createSqliteDb(":memory:");
+    const original = create(DispatchJobSchema, {
+      jobId: crypto.randomUUID(),
+      dispatchEpoch: 1n,
+      federationExecution: true,
+      cpus: 1,
+      memoryMb: 128n,
+      inputStaging: [
+        {
+          stagePath: "inputs/data",
+          sourceUrl: "https://objects.test/original",
+          deliveryLeaseId: crypto.randomUUID(),
+          deliveryLeaseExpiresAtUnixMs: 1n,
+        },
+      ],
+      sandboxExecution: {
+        networkDisabled: true,
+        envelope: { nonce: "original", manifestSha256: "fixed", expiresAtUnixMs: 1n },
+      },
+    });
+    if (kind === "Data Market") {
+      original.sandboxExecution = undefined;
+      original.inputStaging = [];
+      original.dataDeliveries = [
+        create(DataDeliveryBindingSchema, {
+          bindingId: "input",
+          versionId: "version",
+          manifestDigest: "fixed",
+          stagePath: "inputs/data",
+          method: DataDeliveryMethod.OBJECT_DOWNLOAD,
+          leaseId: crypto.randomUUID(),
+          leaseExpiresAtUnixMs: 1n,
+          selectedEntries: [
+            {
+              path: "input",
+              sha256: "a".repeat(64),
+              sizeBytes: 1n,
+              objectDownloadUrl: "https://objects.test/original",
+            },
+          ],
+        }),
+      ];
+    }
+    if (kind === "NetDrive") {
+      original.sandboxExecution = undefined;
+      original.workingDir = "/unmanaged/original";
+      original.command = "cat inputs/data";
+      const input = original.inputStaging[0];
+      if (!input) throw new Error("Missing input");
+      input.fileMetadataId = crypto.randomUUID();
+      input.netdriveInput = true;
+      input.expectedSha256 = "a".repeat(64);
+      input.totalBytes = 1n;
+    }
+    let released = 0;
+    let requests = 0,
+      attempts = 0,
+      advertised = false;
+    const reports: JobStatusReport[] = [];
+    const submitted: JobSpec[] = [];
+    const stream = new AgentStream({
+      client: makePendingRegisteredClient(false, false, {
+        supported: true,
+        onMessage: async (message) => {
+          if (message.payload.case === "register")
+            advertised =
+              kind === "Sandbox"
+                ? message.payload.value.federationSandboxInputLeaseV1
+                : kind === "NetDrive"
+                  ? message.payload.value.federationNetdriveInputLeaseV1
+                  : message.payload.value.federationDataPreparationLeaseV1;
+          if (message.payload.case !== "federationExecutionRequest") return;
+          requests++;
+          if ((mode === "offline" || mode === "late") && requests === (kind === "Sandbox" ? 2 : 3))
+            return;
+          if (mode === "late" && requests === 4) expect(released).toBe(1);
+          const request = message.payload.value;
+          await deliverServerMessage(
+            stream,
+            create(ServerMessageSchema, {
+              payload: {
+                case: "federationExecutionResponse",
+                value: {
+                  requestId: request.requestId,
+                  jobId: request.jobId,
+                  dispatchEpoch: request.dispatchEpoch,
+                  decision:
+                    mode === "denied" && attempts > 0
+                      ? FederationExecutionDecision.DENIED
+                      : FederationExecutionDecision.GRANTED,
+                  dispatch: create(DispatchJobSchema, {
+                    ...original,
+                    dataDeliveries: original.dataDeliveries.map((binding) => ({
+                      ...binding,
+                      leaseId: crypto.randomUUID(),
+                      leaseExpiresAtUnixMs: BigInt(Date.now() + 400),
+                      selectedEntries: binding.selectedEntries.map((entry) => ({
+                        ...entry,
+                        objectDownloadUrl: `https://objects.test/renewed-${requests}`,
+                      })),
+                    })),
+                    inputStaging: original.inputStaging.map((input) => ({
+                      ...input,
+                      sourceUrl: `https://objects.test/renewed-${requests}`,
+                      deliveryLeaseId: crypto.randomUUID(),
+                      deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 400),
+                    })),
+                  }),
+                  expiresAtUnixMs: BigInt(Date.now() + 400),
+                },
+              },
+            }),
+          );
+        },
+      }),
+      adapter: makeAdapter({
+        submit: async (spec) => {
+          if (mode !== "completed") throw new Error("Must not submit during download test");
+          submitted.push(spec);
+          return { schedulerJobId: "netdrive-scheduler-job" };
+        },
+      }),
+      agentId: "agent",
+      siteName: "site",
+      logger: silent,
+      heartbeatIntervalMs: 60_000,
+      jobSleep: async () => {},
+      stageInputFile: async () => {
+        throw new Error("Federated NetDrive must use verified delivery");
+      },
+      inboundAcks: new InboundAcks(db),
+      activeRemoteJobs: new ActiveRemoteJobs(db),
+      cleanupIntents: new JobCleanupIntents(db),
+      revocationTombstones: new JobRevocationTombstones(db),
+      assertFederationRuntimeWatchdog: async () => {},
+      prepareJobWorkRoot: async (jobId) => `/managed/${jobId}`,
+      removeJobWorkRoot: async () => {},
+      dataDeliveryExecutor: {
+        release: async () => {
+          released++;
+        },
+        recover: async () => {},
+        prepare: async (_jobId, bindings, preparation) => {
+          attempts++;
+          const binding = bindings[0];
+          if (!binding || !preparation?.renew) throw new Error("Missing renewable data binding");
+          expect(binding.selectedEntries[0]?.objectDownloadUrl).toBe(
+            `https://objects.test/renewed-${requests}`,
+          );
+          if (mode === "completed")
+            return [
+              {
+                bindingId: binding.bindingId,
+                targetPath: `/managed/${original.jobId}/inputs/data`,
+                method: "object-download",
+                protectedPath: false,
+              },
+            ];
+          if (mode === "late" && attempts === 1) {
+            await delay(900);
+            return [];
+          }
+          if (attempts === 1) await delay(900, undefined, { signal: preparation.signal });
+          const current = await preparation.renew(binding);
+          expect(current.selectedEntries[0]?.objectDownloadUrl).toBe(
+            `https://objects.test/renewed-${requests}`,
+          );
+          expect(current.leaseExpiresAtUnixMs).toBeGreaterThan(BigInt(Date.now()));
+          if (mode === "long") expect(current.leaseId).not.toBe(binding.leaseId);
+          throw new Error("Download test completed without scheduler submission");
+        },
+      },
+      sandboxProcessor: {
+        cleanup: async () => {},
+        prepare: async (_jobId, _execution, _resources, inputs, preparation) => {
+          attempts++;
+          expect(preparation?.restart).toBe(true);
+          const input = inputs?.[0];
+          if (!input || !preparation?.renewInput) throw new Error("Missing renewable input");
+          expect(input.sourceUrl).toBe(`https://objects.test/renewed-${requests}`);
+          if (attempts === 1) await delay(900, undefined, { signal: preparation.signal });
+          const current = await preparation.renewInput(input);
+          expect(current.sourceUrl).toBe(`https://objects.test/renewed-${requests}`);
+          expect(current.deliveryLeaseExpiresAtUnixMs).toBeGreaterThan(BigInt(Date.now()));
+          if (mode === "long") expect(current.deliveryLeaseId).not.toBe(input.deliveryLeaseId);
+          throw new Error("Download test completed without scheduler submission");
+        },
+      },
+    });
+    stream.enqueueStatusUpdate = async (report) => {
+      reports.push(report);
+    };
+    activeStreams.push(stream);
+    const running = stream.start();
+    try {
+      await settle(20);
+      await deliverServerMessage(
+        stream,
+        create(ServerMessageSchema, { payload: { case: "dispatchJob", value: original } }),
+      );
+      await waitForCondition(() =>
+        reports.some((report) => report.status === (mode === "completed" ? "completed" : "failed")),
+      );
+      expect(advertised).toBe(true);
+      expect(attempts).toBe(mode === "offline" || mode === "late" ? 2 : 1);
+      expect(requests).toBeGreaterThan(1);
+      if (mode === "completed") {
+        expect(submitted).toHaveLength(1);
+        expect(submitted[0]).toMatchObject({
+          workingDir: `/managed/${original.jobId}`,
+          command: "cat inputs/data",
+          dataDeliveryCleanup: [
+            expect.objectContaining({ targetPath: `/managed/${original.jobId}/inputs/data` }),
+          ],
+        });
+      } else {
+        expect(submitted).toHaveLength(0);
+        expect(reports.find((report) => report.status === "failed")?.message).toContain(
+          mode === "denied" ? "renewal failed" : "test completed",
+        );
+      }
+    } finally {
+      await stream.stop();
+      await running;
+    }
+  });
+
+test("jobStatusReportToProto preserves partial accounting and large integer strings", () => {
+  const msg = jobStatusReportToProto(
+    {
+      jobId: "accounted",
+      status: "completed",
+      schedulerJobId: "42",
+      accounting: {
+        version: 1,
+        source: "slurm-sacct",
+        schedulerJobId: "42",
+        observedAt: "2026-11-07T00:00:00.000Z",
+        cpuTimeMilliseconds: "9007199254740993",
+      },
+    },
+    "original-event",
+  );
+  if (msg.payload.case !== "jobStatus") throw new Error("Expected status");
+  expect(msg.payload.value.accounting?.cpuTimeMilliseconds).toBe("9007199254740993");
+  expect(msg.payload.value.accounting?.elapsedMilliseconds).toBeUndefined();
+  expect(msg.payload.value.eventId).toBe("original-event");
+});
+
+test.each([
+  "forward",
+  "non-federated",
+  "mixed-source",
+] as const)("Sandbox local input wire routing: %s", async (mode) => {
+  const db = createSqliteDb(":memory:");
+  const original = create(DispatchJobSchema, {
+    jobId: crypto.randomUUID(),
+    dispatchEpoch: 1n,
+    federationExecution: mode !== "non-federated",
+    restrictedNoEgress: true,
+    cpus: 1,
+    memoryMb: 128n,
+    sandboxExecution: {
+      networkDisabled: true,
+      envelope: { nonce: "original", manifestSha256: "fixed", expiresAtUnixMs: 1n },
+    },
+    inputStaging: [
+      {
+        stagePath: "inputs/data/input.dat",
+        sourceUrl: mode === "mixed-source" ? "https://unexpected.test/data" : "",
+        deliveryLeaseId: crypto.randomUUID(),
+        deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 10_000),
+        localDataSource: {
+          locationId: "location",
+          managedRootId: "root",
+          relativePath: ".federation-media/package/files/input.dat",
+        },
+      },
+    ],
+  });
+  const renewed = clone(DispatchJobSchema, original);
+  if (!renewed.sandboxExecution?.envelope) throw new Error("Missing envelope");
+  renewed.sandboxExecution.envelope.nonce = "renewed";
+  renewed.sandboxExecution.envelope.expiresAtUnixMs = BigInt(Date.now() + 30_000);
+  let advertised = false,
+    prepared = false;
+  const reports: JobStatusReport[] = [];
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case === "register")
+          advertised = message.payload.value.federationSandboxLocalInputV1;
+        if (message.payload.case !== "federationExecutionRequest") return;
+        const request = message.payload.value;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: {
+                requestId: request.requestId,
+                jobId: request.jobId,
+                dispatchEpoch: request.dispatchEpoch,
+                decision: FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                dispatch: renewed,
+              },
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter({
+      submit: async () => {
+        throw new Error("No submission in routing test");
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 60_000,
+    inboundAcks: new InboundAcks(db),
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+    assertFederationRuntimeWatchdog: async () => {},
+    managedDatasetRootIds: ["root"],
+    restrictedExecutionProfile: {
+      enabled: true,
+      ready: true,
+      runtimeDigest: `sha256:${"1".repeat(64)}`,
+      runtimePath: "/trusted/runtime.sif",
+      apptainerPath: "apptainer",
+      trustedWrapperPath: "/trusted/wrapper",
+      missingRequirements: [],
+    },
+    sandboxProcessor: {
+      cleanup: async () => {},
+      prepare: async (_jobId, _execution, _resources, sources, options) => {
+        prepared = true;
+        expect(sources?.[0]?.localDataSource).toMatchObject({
+          locationId: "location",
+          managedRootId: "root",
+          relativePath: ".federation-media/package/files/input.dat",
+        });
+        const input = sources?.[0];
+        if (!input) throw new Error("Missing input");
+        expect((await options?.renewInput?.(input))?.localDataSource).toEqual(
+          input.localDataSource,
+        );
+        throw new Error("Verified local routing; stop before staging");
+      },
+    },
+  });
+  stream.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await settle(20);
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: original } }),
+    );
+    await waitForCondition(() => reports.some((report) => report.status === "failed"));
+    expect(advertised).toBe(true);
+    expect(prepared).toBe(mode === "forward");
+    expect(reports.find((report) => report.status === "failed")?.message).toContain(
+      mode === "forward" ? "Verified local routing" : "Local inputs require",
+    );
+  } finally {
+    await stream.stop();
+    await running;
+  }
+});
+
+for (const kind of ["task-input", "task-result"] as const) {
+  test.each([
+    { supported: false, targetOnly: false },
+    { supported: true, targetOnly: false },
+    { supported: false, targetOnly: true },
+    { supported: true, targetOnly: true },
+  ])(`media upload stream ${kind} negotiates source and target separately %j`, async ({
+    supported,
+    targetOnly,
+  }) => {
+    const task = mediaUploadClientTask(kind);
+    const command = create(ServerMessageSchema, {
+      payload: {
+        case: "federationMediaUpload",
+        value: create(FederationMediaUploadSchema, {
+          taskJson: JSON.stringify(task),
+          leaseExpiresAtUnixMs: BigInt(Date.now() + 30_000),
+        }),
+      },
+    });
+    const accepted = create(ServerMessageSchema, {
+      payload: {
+        case: "registerResponse",
+        value: create(RegisterResponseSchema, {
+          accepted: true,
+          federationMediaImportV1Supported: true,
+          federationMediaUploadV1Supported: supported,
+          federationInputCopyV1Supported: kind === "task-input" && !targetOnly,
+          federationInputVerifyV1Supported: kind === "task-input" && targetOnly && supported,
+          federationResultCopyV1Supported: kind === "task-result" && !targetOnly,
+          federationResultVerifyV1Supported: kind === "task-result" && targetOnly && supported,
+        }),
+      },
+    });
+    const { client, sent } = makeMockClient([accepted, command], 1000);
+    const transfer = {
+      stagingRoot: "/unused/transfer",
+      maxStagingBytes: 1024,
+      allowedSourceOrigins: targetOnly ? [] : ["https://source.test.invalid"],
+      allowedDestinationOrigins: ["https://target.test.invalid"],
+    };
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter(),
+      agentId: task.media.agentId,
+      siteName: "test",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      reconnectBackoffMs: 1000,
+      fileTransferMaxRetries: 3,
+      fileTransferRetryBackoffSec: 0,
+      federationMediaImport: {
+        agentId: task.media.agentId,
+        mediaDirectory: "/unused/media",
+        ageDirectory: "/unused/age",
+        roots: new AgentDataRoots({
+          datasetRoot: "/unused/data",
+          jobWorkRoot: "/unused/jobs",
+          managedRoots: {},
+        }),
+      },
+      ...(kind === "task-input"
+        ? { federationInputCopy: transfer }
+        : { federationResultCopy: transfer }),
+    });
+    activeStreams.push(stream);
+    const running = stream.start();
+    const reports = () =>
+      (sent as AgentMessage[]).filter(
+        (message) =>
+          message.payload.case === "federationInputCopyReport" ||
+          message.payload.case === "federationResultCopyReport",
+      );
+    try {
+      await waitForCondition(() => sent.length > 0);
+      await settle(20);
+      expect(sent[0]).toMatchObject({
+        payload: {
+          case: "register",
+          value: {
+            federationMediaUploadV1: true,
+            federationTargetTransferV1: true,
+            federationInputCopyV1: kind === "task-input" && !targetOnly,
+            federationInputVerifyV1: kind === "task-input",
+            federationResultCopyV1: kind === "task-result" && !targetOnly,
+            federationResultVerifyV1: kind === "task-result",
+          },
+        },
+      });
+      if (supported) {
+        await waitForCondition(() => reports().length > 0, 2000);
+        expect(reports()).toMatchObject([
+          {
+            payload: {
+              case:
+                kind === "task-input" ? "federationInputCopyReport" : "federationResultCopyReport",
+              value: { generation: task.target.binding.generation, failed: true },
+            },
+          },
+        ]);
+      } else expect(reports()).toEqual([]);
+    } finally {
+      await stream.stop();
+      await running;
+    }
+  });
+}
 
 test("restart between sbatch and result persistence recovers the same scheduler job without submitting again", async () => {
   const db = createSqliteDb(":memory:");
@@ -8352,6 +10571,64 @@ test("durable unresolved submission fences a dispatch with a new delivery epoch"
   await settle();
   expect(submissions).toBe(0);
   expect(await records.listActive()).toHaveLength(1);
+});
+
+test("confirmed sbatch rejection clears the pending intent and persists failure without resubmission", async () => {
+  const db = createSqliteDb(":memory:");
+  const records = new ActiveRemoteJobs(db);
+  const outbound = new OutboundQueue(db);
+  let submissions = 0;
+  const { client } = makeMockClient([]);
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter({
+      submit: async () => {
+        submissions++;
+        expect((await records.listActive())[0]?.schedulerJobId).toBe("__kq_submission_pending__");
+        throw new SchedulerSubmissionError("Invalid partition name specified");
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    activeRemoteJobs: records,
+    outboundQueue: outbound,
+    inboundAcks: new InboundAcks(db),
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as {
+    recoverActiveRemoteJobs(): Promise<void>;
+    pool: { await(jobId: string): Promise<void> };
+  };
+  await deliverServerMessage(
+    stream,
+    create(ServerMessageSchema, {
+      payload: {
+        case: "dispatchJob",
+        value: create(DispatchJobSchema, {
+          jobId: "rejected-partition",
+          dispatchEpoch: 1n,
+          command: "true",
+          cpus: 1,
+          memoryMb: 64n,
+          wallTimeSec: 60n,
+          workingDir: "/shared/rejected",
+        }),
+      },
+    }),
+  );
+  await waitForCondition(() => submissions === 1);
+  await harness.pool.await("rejected-partition");
+  expect(await records.listActive()).toEqual([]);
+  const reports = (await outbound.loadForReplay()).flatMap(({ item }) =>
+    item.kind === "jobStatus" ? [item.report] : [],
+  );
+  expect(reports).toMatchObject([
+    { jobId: "rejected-partition", status: "failed", failureCode: "SCHEDULER_SUBMIT_FAILED" },
+  ]);
+  await harness.recoverActiveRemoteJobs();
+  expect(submissions).toBe(1);
 });
 
 test("lost sbatch response retains the actual dispatch until accounting can recover it", async () => {

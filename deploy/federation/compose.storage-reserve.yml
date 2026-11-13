@@ -1,0 +1,25 @@
+# Opt-in overlay on compose.storage.yml. Provision the reserve directory first.
+# The control directory must be backed by a DIFFERENT filesystem from PostgreSQL.
+services:
+  federation-storage-observer:
+    volumes:
+      - ${FEDERATION_COMPLETION_RESERVE_DIRECTORY:?set private directory on PostgreSQL filesystem}:/observed/reserve:ro
+      - ${FEDERATION_COMPLETION_RESERVE_CONFIG:?set observer-owned mode-0600 reserve config}:/run/kq-storage/reserve.json:ro
+      - ${FEDERATION_COMPLETION_CONTROL_DIRECTORY:?set private independent control directory}:/run/kq-storage-control:ro
+  federation-storage-reserve:
+    build:
+      context: .
+      dockerfile: deploy/federation/storage-observer.Dockerfile
+    user: ${FEDERATION_STORAGE_OBSERVER_UID:?set PostgreSQL storage UID}:${FEDERATION_STORAGE_REPORT_GID:?set shared report group}
+    entrypoint: ["bun", "/app/reserve.js", "/run/kq-storage/reserve.json"]
+    command: ["watch"]
+    volumes:
+      - pg-data:/observed/postgres:ro
+      # Only this dedicated reserve directory is writable, never PostgreSQL data files.
+      - ${FEDERATION_COMPLETION_RESERVE_DIRECTORY:?set private directory on PostgreSQL filesystem}:/observed/reserve
+      - ${FEDERATION_COMPLETION_RESERVE_CONFIG:?set observer-owned mode-0600 reserve config}:/run/kq-storage/reserve.json:ro
+      - ${FEDERATION_COMPLETION_CONTROL_DIRECTORY:?set private independent control directory}:/run/kq-storage-control
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped

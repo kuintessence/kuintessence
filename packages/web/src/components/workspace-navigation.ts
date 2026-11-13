@@ -42,6 +42,7 @@ export type WorkspaceRoute =
   | "/terminal"
   | "/files"
   | "/data-market"
+  | "/federation"
   | "/agents"
   | "/software"
   | "/cp"
@@ -156,6 +157,12 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
         items: [
           { to: "/files", labelKey: "nav.files", icon: FolderTree, serverOnly: true },
           { to: "/data-market", labelKey: "nav.dataMarket", icon: Database, serverOnly: true },
+          {
+            to: "/federation",
+            labelKey: "federation.agreements.title",
+            icon: Network,
+            serverOnly: true,
+          },
           { to: "/agents", labelKey: "nav.agents", icon: Server, localCapability: "agents" },
         ],
       },

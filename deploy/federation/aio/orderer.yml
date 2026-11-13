@@ -1,0 +1,29 @@
+# This project adds only an Orderer; it never imports the existing platform stack.
+services:
+  fabric-orderer:
+    image: hyperledger/fabric-orderer:3.1.5
+    pull_policy: never
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 384m
+    cpus: 0.5
+    environment:
+      FABRIC_CFG_PATH: /run/kq-orderer
+      ORDERER_FILELEDGER_LOCATION: /var/hyperledger/production/orderer
+      # Fabric 3.1.5 BFT sync omits the mTLS cert hash; simple still verifies BFT block signatures.
+      ORDERER_GENERAL_CLUSTER_REPLICATIONPOLICY: simple
+    volumes:
+      - type: bind
+        source: ${KQ_FABRIC_DIRECTORY:?set private Fabric directory}/orderer
+        target: /run/kq-orderer
+        read_only: true
+        bind: {create_host_path: false}
+      - orderer-data:/var/hyperledger/production
+    ports:
+      - "${KQ_FABRIC_BIND:-127.0.0.1}:${KQ_FABRIC_ORDERER_PORT:-7050}:7050"
+    tmpfs: [/tmp]
+    command: [orderer]
+volumes:
+  orderer-data:

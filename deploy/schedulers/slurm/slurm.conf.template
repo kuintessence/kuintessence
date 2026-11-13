@@ -20,6 +20,8 @@ SchedulerType=sched/backfill
 SelectType=select/cons_tres
 SelectTypeParameters=CR_Core
 AccountingStorageType=accounting_storage/none
+# Retain UUID lookup after squeue drops completed jobs; this is not an accounting archive.
+MinJobAge=86400
 JobAcctGatherType=jobacct_gather/none
 NodeName=__HOSTNAME__ CPUs=__CPUS__ Sockets=1 CoresPerSocket=__CPUS__ ThreadsPerCore=1 RealMemory=__REAL_MEMORY__ State=UNKNOWN
 PartitionName=debug Nodes=__HOSTNAME__ Default=YES MaxTime=INFINITE State=UP

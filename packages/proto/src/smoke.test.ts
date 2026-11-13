@@ -158,3 +158,57 @@ describe("queue protocol compatibility", () => {
     ).toBe("shadow-event-1");
   });
 });
+
+test("late accounting requests, replies and capability survive the stream wire format", () => {
+  const legacy = fromBinary(proto.RegisterRequestSchema, new Uint8Array());
+  expect(legacy.federationAccountingV1).toBe(false);
+  const registration = create(proto.RegisterRequestSchema, { federationAccountingV1: true });
+  expect(
+    fromBinary(proto.RegisterRequestSchema, toBinary(proto.RegisterRequestSchema, registration))
+      .federationAccountingV1,
+  ).toBe(true);
+  const requestJson = JSON.stringify({ requestId: "query-1", dispatchEpoch: 2 });
+  const request = create(proto.ServerMessageSchema, {
+    payload: { case: "federationAccountingRequest", value: { requestJson } },
+  });
+  expect(
+    fromBinary(proto.ServerMessageSchema, toBinary(proto.ServerMessageSchema, request)).payload,
+  ).toMatchObject({ case: "federationAccountingRequest", value: { requestJson } });
+  const responseJson = JSON.stringify({
+    state: "observed",
+    cpuTimeMilliseconds: "9007199254740993",
+  });
+  const response = create(proto.AgentMessageSchema, {
+    payload: { case: "federationAccountingResponse", value: { responseJson } },
+  });
+  expect(
+    fromBinary(proto.AgentMessageSchema, toBinary(proto.AgentMessageSchema, response)).payload,
+  ).toMatchObject({ case: "federationAccountingResponse", value: { responseJson } });
+});
+
+test("accounting wire format preserves exact quantities and absence for legacy statuses", () => {
+  const legacy = fromBinary(
+    proto.JobStatusUpdateSchema,
+    Uint8Array.from([0x0a, 6, ...new TextEncoder().encode("legacy")]),
+  );
+  expect(legacy.accounting).toBeUndefined();
+  const message = create(proto.JobStatusUpdateSchema, {
+    jobId: "accounted",
+    eventId: "same-event",
+    accounting: {
+      source: "slurm-sacct",
+      schedulerJobId: "42",
+      observedAt: "2026-11-07T00:00:00.000Z",
+      cpuTimeMilliseconds: "9007199254740993",
+      allocatedCpus: "0",
+    },
+  });
+  const decoded = fromBinary(
+    proto.JobStatusUpdateSchema,
+    toBinary(proto.JobStatusUpdateSchema, message),
+  );
+  expect(decoded.accounting?.cpuTimeMilliseconds).toBe("9007199254740993");
+  expect(decoded.accounting?.allocatedCpus).toBe("0");
+  expect(decoded.accounting?.elapsedMilliseconds).toBeUndefined();
+  expect(decoded.eventId).toBe("same-event");
+});

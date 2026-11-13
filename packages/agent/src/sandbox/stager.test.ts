@@ -15,6 +15,11 @@ import {
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import type { SandboxSignedManifest, SandboxUnsignedManifest } from "@kuintessence/shared";
+import { buildApptainerSandboxArgv } from "../adapters/base";
+import { importFederationMedia } from "../data-market/media-import";
+import { mediaImportFixture } from "../data-market/media-import-test-fixture";
+import { SandboxJobSpecSchema } from "../queue/sandbox-job-spec";
+import { downloadSandboxInput } from "./input-downloader";
 import type { VerifiedSandboxManifest } from "./manifest-verifier";
 import { removeSandboxRun, SandboxStager, validateSandboxOutputs } from "./stager";
 
@@ -56,6 +61,7 @@ function verified(inputHash: string, jobId: string): VerifiedSandboxManifest {
       digest: `sha256:${"2".repeat(64)}`,
     },
     executionMode: "RootImpersonation",
+    runtimeAttestationId: "a".repeat(64),
     identity: {
       mode: "MappedAccount",
       accountId: "00000000-0000-0000-0000-000000000333",
@@ -90,6 +96,7 @@ function verified(inputHash: string, jobId: string): VerifiedSandboxManifest {
         required: true,
       },
     ],
+    resources: { cpus: 1, memoryMb: 128 },
     limits: { pids: 16, outputBytes: 2_000, logBytes: 1_000 },
     networkDisabled: true,
   };
@@ -109,10 +116,97 @@ function verified(inputHash: string, jobId: string): VerifiedSandboxManifest {
     unsigned,
     scriptContent: Buffer.from("print('ok')\n"),
     runtimePath: "/managed/python.sif",
+    runtimeAttestationId: "a".repeat(64),
+    apptainerPath: "/usr/bin/apptainer",
+    seccompProfilePath: "/etc/kuintessence/seccomp.json",
+    cgroupCheck: {
+      path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+      sha256: "c".repeat(64),
+    },
+    attestedQueue: "compute",
+    attestedNodes: ["node-1"],
   };
 }
 
 describe("SandboxStager", () => {
+  test.skipIf(process.getuid?.() !== 0)(
+    "mapped account reads nested inputs and writes only its logs and outputs",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "kq-sandbox-permissions-"));
+      roots.push(root);
+      const fixture = verified(hash("source"), crypto.randomUUID());
+      const input = fixture.unsigned.mounts[0];
+      if (!input) throw new Error("Missing input fixture");
+      input.relativePath = "inputs/nested/data.txt";
+      const staged = await new SandboxStager({
+        root,
+        downloadInput: async ({ targetPath }) => {
+          await writeFile(targetPath, "source");
+        },
+      }).prepare(fixture, [
+        { stagePath: input.relativePath, sourceUrl: "https://storage.example/input" },
+      ]);
+      const probe = Bun.spawn(
+        [
+          "setpriv",
+          "--reuid=1",
+          "--regid=1",
+          "--clear-groups",
+          "bash",
+          "-c",
+          `
+      set -eu
+      test "$(cat "$2/inputs/nested/data.txt")" = source
+      test -r "$2"
+      test -r "$2/context.json"
+      test ! -w "$2/script/main.py"
+      test ! -w "$2/inputs/nested/data.txt"
+      test ! -w "$2/inputs/nested"
+      test ! -w "$2"
+      test ! -r "$1"
+      printf log > "$2/.scheduler-logs/check.out"
+      printf '{"ok":true}' > "$2/outputs/result"
+    `,
+          "probe",
+          root,
+          staged.workingDir,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const stderr = await new Response(probe.stderr).text();
+      expect({ exitCode: await probe.exited, stderr }).toEqual({ exitCode: 0, stderr: "" });
+      const other = Bun.spawn([
+        "setpriv",
+        "--reuid=65534",
+        "--regid=65534",
+        "--clear-groups",
+        "test",
+        "-r",
+        join(staged.workingDir, "inputs/nested/data.txt"),
+      ]);
+      expect(await other.exited).toBe(1);
+      expect(await readFile(join(staged.workingDir, ".scheduler-logs/check.out"), "utf8")).toBe(
+        "log",
+      );
+    },
+  );
+
+  test.each([
+    ".scheduler-logs/input",
+    "script/main.py",
+    "inputs/../context.json",
+  ])("rejects input mount outside its dedicated directory: %s", async (path) => {
+    const root = await mkdtemp(join(tmpdir(), "kq-sandbox-reserved-"));
+    roots.push(root);
+    const fixture = verified(hash("source"), crypto.randomUUID());
+    const input = fixture.unsigned.mounts[0];
+    if (!input) throw new Error("Missing input fixture");
+    input.relativePath = path;
+    await expect(
+      new SandboxStager({ root, ownerUid: process.getuid?.() ?? 0 }).prepare(fixture),
+    ).rejects.toThrow("dedicated input or output");
+  });
+
   test("removes the complete private work root after restricted execution", async () => {
     const root = await mkdtemp(join(tmpdir(), "kq-sandbox-cleanup-"));
     roots.push(root);
@@ -188,6 +282,7 @@ describe("SandboxStager", () => {
     const jobId = "00000000-0000-0000-0000-000000000119";
     const stager = new SandboxStager({
       root,
+      ownerUid: process.getuid?.() ?? 0,
       downloadInput: async () => {
         throw new Error("download must not begin");
       },
@@ -239,49 +334,69 @@ describe("SandboxStager", () => {
     await expect(lstat(root)).rejects.toThrow();
   });
 
-  test("SelfAccount preserves the Agent account and ignores a root staging owner override", async () => {
-    const uid = process.getuid?.();
-    const gid = process.getgid?.();
-    if (uid === undefined || gid === undefined || uid === 0 || gid === 0) return;
-    const account = userInfo();
-    if (account.uid !== uid || account.gid !== gid) throw new Error("unexpected process account");
-    const processIdentity = { username: account.username, uid, gid };
-    const root = await mkdtemp(join(tmpdir(), "kq-sandbox-self-account-"));
-    roots.push(root);
-    await chown(root, uid, gid);
-    const jobId = "00000000-0000-0000-0000-000000000114";
-    const input = "self-account-input\n";
-    await mkdir(join(root, jobId, "inputs"), { recursive: true });
-    await writeFile(join(root, jobId, "inputs/data.txt"), input);
-    const fixture = verified(hash(input), jobId);
-    fixture.unsigned.executionMode = "SelfAccount";
-    fixture.unsigned.runtimeAttestationId = "a".repeat(64);
-    if (fixture.unsigned.identity.backend !== "Unix") throw new Error("expected Unix fixture");
-    fixture.unsigned.identity = {
-      ...fixture.unsigned.identity,
-      username: processIdentity.username,
-      uid: processIdentity.uid,
-      gid: processIdentity.gid,
-    };
-    fixture.runtimeAttestationId = fixture.unsigned.runtimeAttestationId;
-    fixture.apptainerPath = "/usr/bin/apptainer";
-    fixture.seccompProfilePath = "/etc/kuintessence/seccomp.json";
-    fixture.attestedNodes = ["slurm-2"];
+  test.skipIf(process.getuid?.() === 0 || process.getgid?.() === 0)(
+    "SelfAccount preserves the Agent account and ignores a root staging owner override",
+    async () => {
+      const uid = process.getuid?.();
+      const gid = process.getgid?.();
+      if (uid === undefined || gid === undefined) throw new Error("Unix identity is unavailable");
+      const account = userInfo();
+      if (account.uid !== uid || account.gid !== gid) throw new Error("unexpected process account");
+      const processIdentity = { username: account.username, uid, gid };
+      const root = await mkdtemp(join(tmpdir(), "kq-sandbox-self-account-"));
+      roots.push(root);
+      await chown(root, uid, gid);
+      const jobId = "00000000-0000-0000-0000-000000000114";
+      const input = "self-account-input\n";
+      await mkdir(join(root, jobId, "inputs"), { recursive: true });
+      await writeFile(join(root, jobId, "inputs/data.txt"), input);
+      const fixture = verified(hash(input), jobId);
+      fixture.unsigned.executionMode = "SelfAccount";
+      fixture.unsigned.runtimeAttestationId = "a".repeat(64);
+      if (fixture.unsigned.identity.backend !== "Unix") throw new Error("expected Unix fixture");
+      fixture.unsigned.identity = {
+        ...fixture.unsigned.identity,
+        username: processIdentity.username,
+        uid: processIdentity.uid,
+        gid: processIdentity.gid,
+      };
+      fixture.runtimeAttestationId = fixture.unsigned.runtimeAttestationId;
+      fixture.apptainerPath = "/usr/bin/apptainer";
+      fixture.seccompProfilePath = "/etc/kuintessence/seccomp.json";
+      fixture.cgroupCheck = {
+        path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+        sha256: "c".repeat(64),
+      };
+      fixture.attestedQueue = "compute";
+      fixture.attestedNodes = ["slurm-2"];
 
-    const prepared = await new SandboxStager({
-      root,
-      ownerUid: 0,
-      processIdentity,
-    }).prepare(fixture);
+      const prepared = await new SandboxStager({
+        root,
+        ownerUid: 0,
+        processIdentity,
+      }).prepare(fixture);
 
-    const scriptFacts = await lstat(prepared.sandbox.scriptHostPath);
-    const output = prepared.sandbox.mounts.find((mount) => mount.descriptor === "result");
-    if (!output) throw new Error("expected output mount");
-    const outputFacts = await lstat(output.hostPath);
-    expect({ uid: scriptFacts.uid, gid: scriptFacts.gid }).toEqual({ uid, gid });
-    expect({ uid: outputFacts.uid, gid: outputFacts.gid }).toEqual({ uid, gid });
-    expect(prepared.sandbox.selfAccount).toEqual(processIdentity);
-  });
+      const scriptFacts = await lstat(prepared.sandbox.scriptHostPath);
+      const output = prepared.sandbox.mounts.find((mount) => mount.descriptor === "result");
+      if (!output) throw new Error("expected output mount");
+      const outputFacts = await lstat(output.hostPath);
+      expect({ uid: scriptFacts.uid, gid: scriptFacts.gid }).toEqual({ uid, gid });
+      expect({ uid: outputFacts.uid, gid: outputFacts.gid }).toEqual({ uid, gid });
+      expect(prepared.sandbox.selfAccount).toEqual(processIdentity);
+      expect(prepared.sandbox.cgroupCheck).toEqual(fixture.cgroupCheck);
+      expect(prepared.sandbox.attestedQueue).toBe("compute");
+      const recovered = SandboxJobSpecSchema.parse(JSON.parse(JSON.stringify(prepared.sandbox)));
+      expect(recovered.cgroupCheck).toEqual(fixture.cgroupCheck);
+      expect(recovered.attestedQueue).toBe("compute");
+      expect(
+        SandboxJobSpecSchema.parse({
+          ...prepared.sandbox,
+          cgroupCheck: undefined,
+          attestedQueue: undefined,
+        }).cgroupCheck,
+      ).toBeUndefined();
+    },
+  );
 
   test("verifies prefetched Kubernetes File inputs before PVC staging", async () => {
     const root = await mkdtemp(join(tmpdir(), "kq-sandbox-k8s-stage-"));
@@ -304,11 +419,28 @@ describe("SandboxStager", () => {
       root,
       kubernetesArtifactPvc: "artifacts",
     }).prepare(fixture);
-    expect(prepared.workingDir).toBe("/kq");
+    expect(prepared.workingDir).toBe(join(await realpath(root), jobId));
     expect(prepared.sandbox.mounts[0]?.hostPath).toBe(
       join(await realpath(root), jobId, "inputs/data.txt"),
     );
     expect(prepared.sandbox.kubernetesArtifactPvc).toBe("artifacts");
+    const next = await new SandboxStager({ root, kubernetesArtifactPvc: "artifacts" }).prepare(
+      fixture,
+    );
+    const paths = prepared.sandbox.mounts.map((mount) => mount.relativePath);
+    expect(paths.every((path) => path.startsWith(`jobs/${jobId}/`))).toBe(true);
+    expect(paths[1]).toEndWith("/outputs/result");
+    expect(next.sandbox.mounts.every((mount) => !paths.includes(mount.relativePath))).toBe(true);
+    expect(prepared.sandbox.mounts[1]?.hostPath).toBe(next.sandbox.mounts[1]?.hostPath);
+    for (const descriptor of [".", ".."]) {
+      const invalid = structuredClone(fixture);
+      invalid.unsigned.mounts = invalid.unsigned.mounts.map((mount) =>
+        mount.mode === "WriteOnly" ? { ...mount, descriptor } : mount,
+      );
+      await expect(new SandboxStager({ root }).prepare(invalid)).rejects.toThrow(
+        "descriptor must name a file",
+      );
+    }
   });
 
   test("rejects a symlinked input even when its target hash matches", async () => {
@@ -361,7 +493,27 @@ describe("SandboxStager", () => {
     );
     const config = prepared.sandbox.mounts.find((mount) => mount.descriptor === "config");
     expect(config && (await readFile(config.hostPath, "utf8"))).toBe('{"sample":3}');
+    const optional = prepared.sandbox.mounts.find((mount) => mount.descriptor === "optional");
+    if (!optional || !config) throw new Error("Missing mount fixture");
+    expect(optional.hostPath).toBe(join(prepared.workingDir, "outputs/optional"));
+    expect(optional.relativePath).toBe("outputs/optional");
+    await expect(lstat(optional.hostPath)).rejects.toMatchObject({ code: "ENOENT" });
+    const argv = buildApptainerSandboxArgv(prepared.sandbox);
+    expect(argv).toContain(`${prepared.workingDir}/outputs:/kq/outputs:rw`);
+    expect(argv).toContain(`${config.hostPath}:/kq/inputs/config:ro`);
+    expect(argv).not.toContain(`${optional.hostPath}:/kq/outputs/optional:rw`);
     expect(await validateSandboxOutputs(prepared.sandbox)).toEqual([]);
+    await writeFile(optional.hostPath, "");
+    expect(await validateSandboxOutputs(prepared.sandbox)).toEqual([
+      expect.objectContaining({ descriptor: "optional", sizeBytes: 0, sha256: hash("") }),
+    ]);
+    await writeFile(optional.hostPath, "created by script");
+    expect(await validateSandboxOutputs(prepared.sandbox)).toEqual([
+      expect.objectContaining({ descriptor: "optional", sha256: hash("created by script") }),
+    ]);
+    await rm(optional.hostPath);
+    await symlink(config.hostPath, optional.hostPath);
+    await expect(validateSandboxOutputs(prepared.sandbox)).rejects.toThrow("symbolic link");
   });
 
   test("validates every signed FileBatch entry and its aggregate hash", async () => {
@@ -447,3 +599,126 @@ describe("SandboxStager", () => {
     );
   });
 });
+
+test.each([
+  "renewed",
+  "path",
+  "drop-lease",
+  "denied-after-download",
+] as const)("Sandbox input refresh retains the signed binding: %s", async (mode) => {
+  const root = await mkdtemp(join(tmpdir(), "kq-sandbox-renewed-"));
+  roots.push(root);
+  const jobId = crypto.randomUUID();
+  const content = "authorized input";
+  let downloads = 0,
+    refreshes = 0;
+  const stager = new SandboxStager({
+    root,
+    ownerUid: process.getuid?.() ?? 0,
+    downloadInput: async (input) => {
+      expect(input.sourceUrl).toBe("https://storage.example/current");
+      downloads++;
+      await writeFile(input.targetPath, content);
+    },
+  });
+  const input = {
+    stagePath: "inputs/data.txt",
+    sourceUrl: "https://storage.example/expired",
+    deliveryLeaseId: crypto.randomUUID(),
+    deliveryLeaseExpiresAtUnixMs: 1n,
+  };
+  const result = stager.prepare(verified(hash(content), jobId), [input], {
+    renewInput: async (source) => {
+      refreshes++;
+      if (mode === "denied-after-download" && refreshes > 1)
+        throw new Error("permission withdrawn");
+      if (mode === "drop-lease")
+        return { stagePath: source.stagePath, sourceUrl: "https://storage.example/current" };
+      return {
+        ...source,
+        stagePath: mode === "path" ? "inputs/replaced" : source.stagePath,
+        sourceUrl: "https://storage.example/current",
+        deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 10_000),
+      };
+    },
+  });
+  if (mode === "renewed") {
+    await result;
+    expect(downloads).toBe(1);
+    expect(refreshes).toBe(2);
+  } else {
+    await expect(result).rejects.toThrow(
+      mode === "denied-after-download" ? "permission withdrawn" : "original binding",
+    );
+    expect(downloads).toBe(mode === "denied-after-download" ? 1 : 0);
+    await expect(readFile(join(root, jobId, "inputs/data.txt"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  }
+});
+
+const liveMedia = process.env.KQ_MEDIA_AGE_TEST_BIN ? test : test.skip;
+liveMedia(
+  "verified media import becomes readonly Sandbox input with digest and renewal checks",
+  async () => {
+    const media = await mediaImportFixture();
+    const root = await mkdtemp(join(tmpdir(), "kq-sandbox-media-"));
+    roots.push(root);
+    try {
+      await importFederationMedia(media.options);
+      const jobId = crypto.randomUUID();
+      const fixture = verified(hash(media.bytes), jobId);
+      fixture.unsigned.mounts = fixture.unsigned.mounts.filter(
+        (mount) => mount.mode === "ReadOnly",
+      );
+      const mount = fixture.unsigned.mounts[0];
+      if (!mount) throw new Error("Missing mount");
+      mount.sizeLimitBytes = media.bytes.length;
+      const stager = new SandboxStager({
+        root,
+        ownerUid: process.getuid?.() ?? 0,
+        downloadInput: (input) => downloadSandboxInput({ ...input, roots: media.options.roots }),
+      });
+      const source = {
+        stagePath: "inputs/data.txt",
+        sourceUrl: "",
+        deliveryLeaseId: crypto.randomUUID(),
+        deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 20_000),
+        localDataSource: {
+          locationId: crypto.randomUUID(),
+          managedRootId: media.options.task.managedRootId,
+          relativePath: `.federation-media/${media.manifest.packageId}/files/input.dat`,
+        },
+      };
+      const prepared = await stager.prepare(fixture, [source]);
+      expect(prepared.sandbox.mounts[0]?.mode).toBe("ReadOnly");
+      expect(await readFile(join(root, jobId, "inputs", "data.txt"))).toEqual(media.bytes);
+      await stager.cleanup(jobId);
+      await expect(
+        stager.prepare(fixture, [source], {
+          renewInput: async (original) => ({
+            ...original,
+            localDataSource: { ...source.localDataSource, locationId: crypto.randomUUID() },
+          }),
+        }),
+      ).rejects.toThrow("binding");
+      await stager.cleanup(jobId);
+      let permits = 0;
+      await expect(
+        stager.prepare(fixture, [source], {
+          renewInput: async (original) => {
+            if (++permits === 2) throw new Error("source revoked");
+            return original;
+          },
+        }),
+      ).rejects.toThrow("source revoked");
+      expect(await Bun.file(join(root, jobId, "inputs", "data.txt")).exists()).toBe(false);
+      await stager.cleanup(jobId);
+      await writeFile(join(media.target, "files", "input.dat"), Buffer.alloc(media.bytes.length));
+      await expect(stager.prepare(fixture, [source])).rejects.toThrow();
+    } finally {
+      await media.cleanup();
+    }
+  },
+  30_000,
+);

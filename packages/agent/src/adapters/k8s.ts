@@ -2,7 +2,10 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createLogger } from "@kuintessence/shared";
+import { z } from "zod";
+import { schedulerAccounting } from "./accounting";
 import {
+  assertSandboxComputeResources,
   COMPUTE_HEALTH_CLI_TIMEOUT_MS,
   type ComputeHealthObservation,
   commandWithOptionalStdin,
@@ -22,6 +25,17 @@ import {
 } from "./base";
 
 const logger = createLogger("k8s-adapter");
+
+function kubernetesJobName(spec: JobSpec): string {
+  const name = `kq-${spec.jobId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  const epoch = spec.federationDispatchEpoch;
+  if (epoch === undefined) return name;
+  if (!Number.isSafeInteger(epoch) || epoch < 0)
+    throw new Error("Invalid federation dispatch epoch");
+  const scoped = `${name}-${epoch.toString(36)}`;
+  if (scoped.length > 63) throw new Error("Federation Kubernetes job name is too long");
+  return scoped;
+}
 
 interface K8sJobStatus {
   active?: number;
@@ -114,6 +128,7 @@ export class K8sAdapter implements SchedulerAdapter {
   private tmpDir: string;
   private sandboxSeccompProfile?: K8sAdapterDeps["sandboxSeccompProfile"];
   private jobNamespaces = new Map<string, string>();
+  private jobUids = new Map<string, string>();
 
   constructor(
     readonly version: string,
@@ -144,7 +159,7 @@ export class K8sAdapter implements SchedulerAdapter {
     }
 
     // Sanitise name: k8s labels must be DNS-safe lowercase
-    const jobName = `kq-${spec.jobId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    const jobName = kubernetesJobName(spec);
 
     const manifest: Record<string, unknown> = {
       apiVersion: "batch/v1",
@@ -154,6 +169,9 @@ export class K8sAdapter implements SchedulerAdapter {
         namespace,
         labels: {
           "kuintessence.io/job-id": spec.jobId,
+          ...(spec.federationDispatchEpoch !== undefined
+            ? { "kuintessence.io/dispatch-epoch": String(spec.federationDispatchEpoch) }
+            : {}),
           "kuintessence.io/job-name": spec.schedulerName ?? spec.name,
           ...(spec.qos ? { "kuintessence.io/qos": spec.qos } : {}),
         },
@@ -185,6 +203,7 @@ export class K8sAdapter implements SchedulerAdapter {
   private buildSandboxResources(spec: JobSpec): Record<string, unknown> {
     const sandbox = spec.sandbox;
     if (!sandbox) throw new Error("Sandbox specification is required");
+    assertSandboxComputeResources(spec);
     if (sandbox.runtimeKind !== "OCI" || !sandbox.runtimePath.includes("@sha256:")) {
       throw new Error("Kubernetes Sandbox requires a digest-pinned OCI image");
     }
@@ -201,26 +220,52 @@ export class K8sAdapter implements SchedulerAdapter {
     if (pvcMounts.length > 0 && !sandbox.kubernetesArtifactPvc) {
       throw new Error("Kubernetes Sandbox artifact mounts require a managed PVC");
     }
-    const jobName = `kq-${spec.jobId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    const jobName = kubernetesJobName(spec);
     const scriptConfigName = `${jobName}-script`;
     const labels = {
       "kuintessence.io/job-id": spec.jobId,
       "kuintessence.io/sandbox": "true",
+      "kuintessence.io/job-name": spec.schedulerName ?? spec.name,
+      ...(spec.federationDispatchEpoch !== undefined
+        ? { "kuintessence.io/dispatch-epoch": String(spec.federationDispatchEpoch) }
+        : {}),
     };
     const limits: Record<string, string> = {
       cpu: String(spec.cpus),
       memory: `${spec.memoryMb}Mi`,
     };
     if (spec.gpus > 0) limits["nvidia.com/gpu"] = String(spec.gpus);
-    const artifactMounts = sandbox.mounts.map((mount) => ({
-      name: mount.mode === "ReadOnly" && mount.inlineContentBase64 ? "script" : "artifacts",
-      mountPath: mount.containerPath,
-      subPath:
-        mount.mode === "ReadOnly" && mount.inlineContentBase64
-          ? `input-${mount.descriptor}`
-          : mount.relativePath,
-      readOnly: mount.mode === "ReadOnly",
-    }));
+    const artifactMounts = sandbox.mounts
+      .filter((mount) => mount.mode === "ReadOnly")
+      .map((mount) => ({
+        name: mount.mode === "ReadOnly" && mount.inlineContentBase64 ? "script" : "artifacts",
+        mountPath: mount.containerPath,
+        subPath:
+          mount.mode === "ReadOnly" && mount.inlineContentBase64
+            ? `input-${mount.descriptor}`
+            : mount.relativePath,
+        readOnly: mount.mode === "ReadOnly",
+      }));
+    const outputs = sandbox.mounts.filter((mount) => mount.mode === "WriteOnly");
+    const firstOutput = outputs[0];
+    if (firstOutput) {
+      const outputDirectory = dirname(firstOutput.relativePath);
+      if (
+        outputs.some(
+          (mount) =>
+            dirname(mount.relativePath) !== outputDirectory ||
+            mount.relativePath !== `${outputDirectory}/${mount.descriptor}` ||
+            mount.containerPath !== `/kq/outputs/${mount.descriptor}`,
+        )
+      )
+        throw new Error("Kubernetes Sandbox outputs require a prepared job output directory");
+      artifactMounts.push({
+        name: "artifacts",
+        mountPath: "/kq/outputs",
+        subPath: outputDirectory,
+        readOnly: false,
+      });
+    }
     const volumes: Record<string, unknown>[] = [
       { name: "script", configMap: { name: scriptConfigName, defaultMode: 0o444 } },
       { name: "tmp", emptyDir: { sizeLimit: "64Mi" } },
@@ -344,18 +389,24 @@ export class K8sAdapter implements SchedulerAdapter {
     const manifestPath = join(this.tmpDir, `kq-k8s-${spec.jobId}.json`);
     await writeFile(manifestPath, manifestJson);
 
-    const { exitCode, stderr } = await this.spawner.run([
+    const { exitCode, stdout, stderr } = await this.spawner.run([
       "kubectl",
-      "apply",
+      spec.federationDispatchEpoch === undefined ? "apply" : "create",
       "-f",
       manifestPath,
+      ...(spec.federationDispatchEpoch !== undefined
+        ? [
+            "-o",
+            'jsonpath={.kind}{"\\t"}{.metadata.name}{"\\t"}{.metadata.namespace}{"\\t"}{.metadata.uid}{"\\n"}',
+          ]
+        : []),
       "-n",
       spec.sandbox?.identity.backend === "Kubernetes"
         ? spec.sandbox.identity.namespace
         : (spec.queueName ?? this.namespace),
     ]);
     if (exitCode !== 0) {
-      throw new Error(`kubectl apply failed (exit ${exitCode}): ${stderr.trim()}`);
+      throw new Error(`kubectl submission failed (exit ${exitCode}): ${stderr.trim()}`);
     }
 
     const jobResource =
@@ -368,6 +419,26 @@ export class K8sAdapter implements SchedulerAdapter {
       spec.sandbox?.identity.backend === "Kubernetes"
         ? spec.sandbox.identity.namespace
         : (spec.queueName ?? this.namespace);
+    let schedulerUid: string | undefined;
+    if (spec.federationDispatchEpoch !== undefined) {
+      // kubectl prints each List member separately; request identity fields only.
+      const jobs = stdout
+        .trim()
+        .split("\n")
+        .map((line) => line.split("\t"))
+        .filter((fields) => fields[0] === "Job");
+      const job = jobs[0];
+      if (
+        jobs.length !== 1 ||
+        !job ||
+        job.length !== 4 ||
+        job[1] !== jobName ||
+        job[2] !== namespace
+      )
+        throw new Error("Kubernetes submission returned an unexpected identity");
+      schedulerUid = z.string().uuid().parse(job[3]);
+      this.jobUids.set(jobName, schedulerUid);
+    }
     this.jobNamespaces.set(jobName, namespace);
     logger.info(
       {
@@ -377,24 +448,150 @@ export class K8sAdapter implements SchedulerAdapter {
       },
       "Job submitted to Kubernetes",
     );
-    return { schedulerJobId: jobName };
+    return { schedulerJobId: jobName, ...(schedulerUid ? { schedulerUid } : {}) };
   }
 
-  async cancel(schedulerJobId: string): Promise<void> {
-    const namespace = this.namespaceFor(schedulerJobId);
-    const { exitCode, stderr } = await this.spawner.run([
-      "kubectl",
-      "delete",
-      "job",
-      schedulerJobId,
-      "-n",
-      namespace,
-      "--ignore-not-found",
-    ]);
+  async cancel(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<void> {
+    const namespace = lookup?.namespace ?? this.namespaceFor(schedulerJobId);
+    const uid = lookup?.schedulerUid ?? this.jobUids.get(schedulerJobId);
+    if (lookup?.federationDispatchEpoch !== undefined && !uid)
+      throw new Error("Federation Kubernetes cancellation requires a UID");
+    if (uid) {
+      z.string().uuid().parse(uid);
+      const result = await this.spawner.run(
+        [
+          "kubectl",
+          "delete",
+          "--raw",
+          `/apis/batch/v1/namespaces/${encodeURIComponent(namespace)}/jobs/${encodeURIComponent(schedulerJobId)}`,
+          "-f",
+          "-",
+        ],
+        {
+          timeoutMs: 5000,
+          stdin: JSON.stringify({
+            apiVersion: "v1",
+            kind: "DeleteOptions",
+            propagationPolicy: "Foreground",
+            preconditions: { uid },
+          }),
+        },
+      );
+      if (result.exitCode !== 0)
+        throw new Error("Kubernetes UID-conditional delete was not accepted");
+      return;
+    }
+    const { exitCode, stderr } = await this.spawner.run(
+      [
+        "kubectl",
+        "delete",
+        "job",
+        schedulerJobId,
+        "-n",
+        namespace,
+        "--ignore-not-found",
+        "--cascade=foreground",
+        "--wait=false",
+      ],
+      { timeoutMs: 5_000 },
+    );
     if (exitCode !== 0) {
       throw new Error(`kubectl delete failed (exit ${exitCode}): ${stderr.trim()}`);
     }
-    this.jobNamespaces.delete(schedulerJobId);
+  }
+
+  async confirmStopped(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<boolean> {
+    const namespace = lookup?.namespace ?? this.namespaceFor(schedulerJobId);
+    const uid = lookup?.schedulerUid ?? this.jobUids.get(schedulerJobId);
+    if (lookup?.federationDispatchEpoch !== undefined && !uid)
+      throw new Error("Federation Kubernetes stop confirmation requires a UID");
+    if (uid) z.string().uuid().parse(uid);
+    const job = await this.spawner.run(
+      [
+        "kubectl",
+        "get",
+        "job",
+        schedulerJobId,
+        "-n",
+        namespace,
+        "--ignore-not-found",
+        "-o",
+        "json",
+      ],
+      { timeoutMs: 5_000 },
+    );
+    if (job.exitCode !== 0) throw new Error("Kubernetes job stop query failed");
+    if (job.stdout.trim()) {
+      const value: unknown = JSON.parse(job.stdout);
+      if (!isRecord(value) || !isRecord(value.metadata) || value.metadata.name !== schedulerJobId)
+        throw new Error("Kubernetes job stop query returned an invalid identity");
+      if (uid) z.string().uuid().parse(value.metadata.uid);
+      if (!uid || value.metadata.uid === uid) {
+        if (!isRecord(value.status)) throw new Error("Kubernetes job stop status is invalid");
+        const conditions = value.status.conditions;
+        if (
+          !Array.isArray(conditions) ||
+          !conditions.some(
+            (condition: unknown) =>
+              isRecord(condition) &&
+              (condition.type === "Complete" || condition.type === "Failed") &&
+              condition.status === "True",
+          )
+        )
+          return false;
+        if (value.status.active !== undefined && value.status.active !== 0) return false;
+      }
+    }
+    // Pods can outlive deletion of their Job. Owner references also cover pods whose labels changed.
+    const pods = await this.spawner.run(["kubectl", "get", "pods", "-n", namespace, "-o", "json"], {
+      timeoutMs: 5_000,
+    });
+    if (pods.exitCode !== 0) throw new Error("Kubernetes pod stop query failed");
+    const value: unknown = JSON.parse(pods.stdout);
+    if (!isRecord(value) || !Array.isArray(value.items))
+      throw new Error("Kubernetes pod stop query returned invalid data");
+    for (const pod of value.items) {
+      if (!isRecord(pod) || !isRecord(pod.metadata))
+        throw new Error("Kubernetes pod metadata is invalid");
+      const owners = pod.metadata.ownerReferences ?? [];
+      if (
+        !Array.isArray(owners) ||
+        owners.some(
+          (owner: unknown) =>
+            !isRecord(owner) || typeof owner.kind !== "string" || typeof owner.name !== "string",
+        )
+      )
+        throw new Error("Kubernetes pod owner references are invalid");
+      const labels = pod.metadata.labels;
+      const labeled =
+        isRecord(labels) &&
+        (labels["job-name"] === schedulerJobId ||
+          labels["batch.kubernetes.io/job-name"] === schedulerJobId);
+      const owned = owners.some(
+        (owner: unknown) =>
+          isRecord(owner) && owner.kind === "Job" && owner.name === schedulerJobId,
+      );
+      if (uid) {
+        const matchingUid =
+          owners.some(
+            (owner: unknown) => isRecord(owner) && owner.kind === "Job" && owner.uid === uid,
+          ) ||
+          (isRecord(labels) &&
+            (labels["controller-uid"] === uid ||
+              labels["batch.kubernetes.io/controller-uid"] === uid));
+        const knownOtherUid = owners.some(
+          (owner: unknown) =>
+            isRecord(owner) &&
+            owner.kind === "Job" &&
+            typeof owner.uid === "string" &&
+            owner.uid !== uid,
+        );
+        if (!matchingUid && ((!labeled && !owned) || knownOtherUid)) continue;
+      } else if (!labeled && !owned) continue;
+      if (!isRecord(pod.status) || !["Succeeded", "Failed"].includes(String(pod.status.phase)))
+        return false;
+    }
+    return true;
   }
 
   async inspectComputeHealth(): Promise<ComputeHealthObservation> {
@@ -437,26 +634,53 @@ export class K8sAdapter implements SchedulerAdapter {
       } catch {
         return { status: "indeterminate", reason: "kubectl returned non-JSON output" };
       }
-      const data = parsed as { items?: Array<{ metadata?: { name?: string } }> };
-      const names = (data.items ?? [])
-        .map((item) => item.metadata?.name)
-        .filter((name): name is string => !!name);
-      if (names.length === 0) return { status: "not_found" };
-      if (names.length !== 1) {
+      if (!isRecord(parsed) || !Array.isArray(parsed.items))
+        return { status: "indeterminate", reason: "Kubernetes lookup returned an invalid list" };
+      const matches = parsed.items.filter((item: unknown) => {
+        if (!isRecord(item) || !isRecord(item.metadata)) return false;
+        const labels = item.metadata.labels;
+        if (lookup.federationDispatchEpoch !== undefined) {
+          return (
+            isRecord(labels) &&
+            labels["kuintessence.io/job-id"] === lookup.jobId &&
+            labels["kuintessence.io/dispatch-epoch"] === String(lookup.federationDispatchEpoch) &&
+            labels["kuintessence.io/job-name"] === lookup.schedulerName
+          );
+        }
+        return (
+          !lookup.schedulerName ||
+          !isRecord(labels) ||
+          labels["kuintessence.io/job-name"] === undefined ||
+          labels["kuintessence.io/job-name"] === lookup.schedulerName
+        );
+      });
+      if (matches.length === 0) return { status: "not_found" };
+      if (matches.length !== 1)
         return {
           status: "indeterminate",
           reason: "multiple Kubernetes jobs share Kuintessence UUID",
         };
-      }
-      const schedulerJobId = names[0];
-      if (!schedulerJobId) {
+      const item = matches[0];
+      if (
+        !isRecord(item) ||
+        !isRecord(item.metadata) ||
+        typeof item.metadata.name !== "string" ||
+        !item.metadata.name
+      )
         return {
           status: "indeterminate",
           reason: "Kubernetes lookup returned an invalid job name",
         };
-      }
+      const schedulerJobId = item.metadata.name;
+      const schedulerUid =
+        item.metadata.uid === undefined && lookup.federationDispatchEpoch === undefined
+          ? undefined
+          : z.string().uuid().parse(item.metadata.uid);
+      if (lookup.schedulerUid && lookup.schedulerUid !== schedulerUid)
+        return { status: "indeterminate", reason: "Kubernetes job UID was replaced" };
+      if (schedulerUid) this.jobUids.set(schedulerJobId, schedulerUid);
       this.jobNamespaces.set(schedulerJobId, namespace);
-      return { status: "found", schedulerJobId };
+      return { status: "found", schedulerJobId, ...(schedulerUid ? { schedulerUid } : {}) };
     } catch (error) {
       return {
         status: "indeterminate",
@@ -504,7 +728,9 @@ export class K8sAdapter implements SchedulerAdapter {
     const { exitCode, stdout, stderr } = await this.spawner.run([
       "kubectl",
       "logs",
-      `job/${schedulerJobId}`,
+      ...(this.jobUids.has(schedulerJobId)
+        ? ["-l", this.podSelector(schedulerJobId)]
+        : [`job/${schedulerJobId}`]),
       "-n",
       namespace,
       `--tail=${lines}`,
@@ -519,7 +745,8 @@ export class K8sAdapter implements SchedulerAdapter {
     const inputs = sandbox.mounts.filter(
       (mount) => mount.mode === "ReadOnly" && !mount.inlineContentBase64,
     );
-    if (inputs.length === 0) return;
+    const outputs = sandbox.mounts.filter((mount) => mount.mode === "WriteOnly");
+    if (inputs.length === 0 && outputs.length === 0) return;
     if (
       sandbox.runtimeKind !== "OCI" ||
       sandbox.identity.backend !== "Kubernetes" ||
@@ -557,6 +784,7 @@ export class K8sAdapter implements SchedulerAdapter {
           metadata: { name: stagerName, namespace, labels },
           spec: {
             restartPolicy: "Never",
+            terminationGracePeriodSeconds: 5,
             serviceAccountName: sandbox.identity.serviceAccount,
             automountServiceAccountToken: false,
             nodeName: sandboxSeccompProfile.nodeName,
@@ -623,6 +851,30 @@ export class K8sAdapter implements SchedulerAdapter {
       ]);
       if (ready.exitCode !== 0) {
         throw new Error(`Kubernetes Sandbox input stager was not ready: ${ready.stderr.trim()}`);
+      }
+      for (const directory of new Set(
+        outputs.map(
+          (mount) =>
+            `/artifacts/${mount.ioType === "FileBatch" ? mount.relativePath : dirname(mount.relativePath)}`,
+        ),
+      )) {
+        const prepared = await this.spawner.run([
+          "kubectl",
+          "exec",
+          stagerName,
+          "-n",
+          namespace,
+          "-c",
+          "stager",
+          "--",
+          "mkdir",
+          "-p",
+          directory,
+        ]);
+        if (prepared.exitCode !== 0)
+          throw new Error(
+            `Kubernetes Sandbox output directory create failed: ${prepared.stderr.trim()}`,
+          );
       }
       for (const mount of inputs) {
         const targetPath = `/artifacts/${mount.relativePath}`;
@@ -700,6 +952,7 @@ export class K8sAdapter implements SchedulerAdapter {
       metadata: { name: collectorName, namespace, labels },
       spec: {
         restartPolicy: "Never",
+        terminationGracePeriodSeconds: 5,
         serviceAccountName: sandbox.identity.serviceAccount,
         automountServiceAccountToken: false,
         nodeName: sandboxSeccompProfile.nodeName,
@@ -768,6 +1021,28 @@ export class K8sAdapter implements SchedulerAdapter {
         );
       }
       for (const mount of sandbox.mounts.filter((item) => item.mode === "WriteOnly")) {
+        if (!mount.required) {
+          const exists = await this.spawner.run([
+            "kubectl",
+            "exec",
+            collectorName,
+            "-n",
+            namespace,
+            "-c",
+            "collector",
+            "--",
+            "/bin/sh",
+            "-c",
+            'if [ -e "$1" ]; then printf present; else printf absent; fi',
+            "sh",
+            `/artifacts/${mount.relativePath}`,
+          ]);
+          if (exists.exitCode === 0 && exists.stdout === "absent") continue;
+          if (exists.exitCode !== 0 || exists.stdout !== "present")
+            throw new Error(
+              `Kubernetes Sandbox optional output check failed: ${exists.stderr.trim()}`,
+            );
+        }
         await mkdir(dirname(mount.hostPath), { recursive: true });
         const copied = await this.spawner.run([
           "kubectl",
@@ -810,16 +1085,19 @@ export class K8sAdapter implements SchedulerAdapter {
       "json",
     ]);
     if (exitCode !== 0 || !stdout.trim()) {
-      return { status: "failed", message: "kubectl get returned no data" };
+      throw new Error("kubectl get returned no data");
     }
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(stdout);
     } catch {
-      return { status: "failed", message: "kubectl returned non-JSON" };
+      throw new Error("kubectl returned non-JSON");
     }
 
+    const uid = this.jobUids.get(schedulerJobId);
+    if (uid && (!isRecord(parsed) || !isRecord(parsed.metadata) || parsed.metadata.uid !== uid))
+      throw new Error("Kubernetes job UID was replaced");
     const data = parsed as {
       status?: {
         active?: number;
@@ -835,6 +1113,7 @@ export class K8sAdapter implements SchedulerAdapter {
         status: "completed",
         exitCode: 0,
         ...(await this.podInfo(schedulerJobId, namespace)),
+        ...(await this.podAccounting(schedulerJobId, namespace, parsed)),
       };
     }
     if ((jobStatus.failed ?? 0) > 0) {
@@ -844,6 +1123,7 @@ export class K8sAdapter implements SchedulerAdapter {
         status: "failed",
         message,
         ...(failure.exitCode !== undefined ? { exitCode: failure.exitCode } : {}),
+        ...(await this.podAccounting(schedulerJobId, namespace, parsed)),
       };
     }
     if ((jobStatus.active ?? 0) > 0) {
@@ -858,7 +1138,100 @@ export class K8sAdapter implements SchedulerAdapter {
     return { status: "queued", ...(await this.podReason(schedulerJobId, namespace)) };
   }
 
-  prepareResume(spec: JobSpec, schedulerJobId: string): void {
+  private async podAccounting(
+    schedulerJobId: string,
+    namespace: string,
+    job: unknown,
+  ): Promise<Pick<JobStatusResult, "accounting">> {
+    if (!isRecord(job) || !isRecord(job.metadata) || !isRecord(job.spec) || !isRecord(job.status))
+      return {};
+    const uid = job.metadata.uid;
+    if (
+      typeof uid !== "string" ||
+      job.metadata.name !== schedulerJobId ||
+      job.metadata.namespace !== namespace ||
+      job.spec.backoffLimit !== 0 ||
+      (job.spec.completions ?? 1) !== 1 ||
+      (job.spec.parallelism ?? 1) !== 1 ||
+      (job.status.active ?? 0) !== 0 ||
+      Number(job.status.succeeded ?? 0) + Number(job.status.failed ?? 0) !== 1
+    )
+      return {};
+    try {
+      const result = await this.spawner.run(
+        [
+          "kubectl",
+          "get",
+          "pods",
+          "-n",
+          namespace,
+          "--selector",
+          `controller-uid=${uid}`,
+          "-o",
+          "json",
+        ],
+        { timeoutMs: 5_000 },
+      );
+      if (result.exitCode !== 0) return {};
+      const data: unknown = JSON.parse(result.stdout);
+      if (!isRecord(data) || !Array.isArray(data.items) || data.items.length !== 1) return {};
+      const pod: unknown = data.items[0];
+      if (!isRecord(pod) || !isRecord(pod.metadata) || !isRecord(pod.spec) || !isRecord(pod.status))
+        return {};
+      const owners = pod.metadata.ownerReferences;
+      const containers = pod.spec.containers;
+      const statuses = pod.status.containerStatuses;
+      if (
+        pod.metadata.namespace !== namespace ||
+        !Array.isArray(owners) ||
+        !owners.some(
+          (owner: unknown) =>
+            isRecord(owner) &&
+            owner.controller === true &&
+            owner.kind === "Job" &&
+            owner.name === schedulerJobId &&
+            owner.uid === uid,
+        ) ||
+        pod.spec.restartPolicy !== "Never" ||
+        !["Succeeded", "Failed"].includes(String(pod.status.phase)) ||
+        !Array.isArray(containers) ||
+        containers.length !== 1 ||
+        !isRecord(containers[0]) ||
+        !["kq-worker", "kq-sandbox"].includes(String(containers[0].name)) ||
+        !Array.isArray(statuses) ||
+        statuses.length !== 1 ||
+        !isRecord(statuses[0]) ||
+        statuses[0].name !== containers[0].name ||
+        statuses[0].restartCount !== 0 ||
+        !isRecord(statuses[0].state) ||
+        !isRecord(statuses[0].state.terminated)
+      )
+        return {};
+      const terminated = statuses[0].state.terminated;
+      const timestamps = z
+        .object({
+          startedAt: z.iso.datetime({ offset: true }),
+          finishedAt: z.iso.datetime({ offset: true }),
+        })
+        .safeParse(terminated);
+      if (!timestamps.success) return {};
+      const start = Date.parse(timestamps.data.startedAt),
+        end = Date.parse(timestamps.data.finishedAt);
+      if (end < start || end > Date.now()) return {};
+      const accounting = schedulerAccounting("kubernetes-pod", schedulerJobId, {
+        elapsedMilliseconds: String(end - start),
+      });
+      return accounting ? { accounting } : {};
+    } catch {
+      logger.debug("Kubernetes terminal accounting unavailable");
+      return {};
+    }
+  }
+
+  prepareResume(spec: JobSpec, schedulerJobId: string, schedulerUid?: string): void {
+    if (spec.federationDispatchEpoch !== undefined && !schedulerUid)
+      throw new Error("Federation Kubernetes recovery requires its durable UID");
+    if (schedulerUid) this.jobUids.set(schedulerJobId, z.string().uuid().parse(schedulerUid));
     const namespace =
       spec.sandbox?.identity.backend === "Kubernetes"
         ? spec.sandbox.identity.namespace
@@ -868,6 +1241,12 @@ export class K8sAdapter implements SchedulerAdapter {
 
   releaseJob(schedulerJobId: string): void {
     this.jobNamespaces.delete(schedulerJobId);
+    this.jobUids.delete(schedulerJobId);
+  }
+
+  private podSelector(schedulerJobId: string): string {
+    const uid = this.jobUids.get(schedulerJobId);
+    return uid ? `controller-uid=${uid}` : `job-name=${schedulerJobId}`;
   }
 
   private namespaceFor(schedulerJobId: string): string {
@@ -888,7 +1267,7 @@ export class K8sAdapter implements SchedulerAdapter {
         "-n",
         namespace,
         "--selector",
-        `job-name=${schedulerJobId}`,
+        this.podSelector(schedulerJobId),
         "-o",
         "json",
       ]);
@@ -927,7 +1306,7 @@ export class K8sAdapter implements SchedulerAdapter {
         "-n",
         namespace,
         "--selector",
-        `job-name=${schedulerJobId}`,
+        this.podSelector(schedulerJobId),
         "-o",
         "json",
       ]);
@@ -993,7 +1372,7 @@ export class K8sAdapter implements SchedulerAdapter {
         "-n",
         namespace,
         "--selector",
-        `job-name=${schedulerJobId}`,
+        this.podSelector(schedulerJobId),
         "-o",
         "json",
       ]);
@@ -1037,7 +1416,7 @@ export class K8sAdapter implements SchedulerAdapter {
         "-n",
         namespace,
         "--selector",
-        `job-name=${schedulerJobId}`,
+        this.podSelector(schedulerJobId),
         "-o",
         'jsonpath={.items[0].spec.nodeName}{"\\t"}{.items[0].status.startTime}',
       ]);

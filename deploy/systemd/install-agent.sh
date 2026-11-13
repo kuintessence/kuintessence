@@ -28,7 +28,7 @@ if [[ ! -f "${BINARY_SRC}" || ! -x "${BINARY_SRC}" ]]; then
   echo "       hint: see deploy/systemd/README.md for Linux binary builds" >&2
   exit 1
 fi
-if [[ ! -f "${UNIT_SRC}" || ! -f "${ENV_SRC}" ]]; then
+if [[ ! -f "${UNIT_SRC}" || ! -f "${ENV_SRC}" || ! -f "${SCRIPT_DIR}/kq-federation-watchdog.service" ]]; then
   echo "ERROR: keep install-agent.sh with its service and env templates" >&2
   exit 1
 fi
@@ -57,6 +57,7 @@ mv -f -- "${BINARY_TMP}" "${BINARY_DST}"
 
 log "installing systemd unit"
 install -o root -g root -m 0644 "${UNIT_SRC}" "${UNIT_DST}"
+install -o root -g root -m 0644 "${SCRIPT_DIR}/kq-federation-watchdog.service" "/etc/systemd/system/kq-federation-watchdog.service"
 
 # Preserve site configuration across upgrades.
 if [[ ! -f "${ENV_DST}" ]]; then

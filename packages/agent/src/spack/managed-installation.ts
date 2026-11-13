@@ -2,12 +2,19 @@ import { lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type InstalledSpec,
+  type SpackExecutionPin,
+  SpackExecutionPinSchema,
   SpackMaterialManifestSchema,
   type SpackPolicy,
   spackMaterialBlobs,
 } from "@kuintessence/shared";
 import { SPACK_WORKER_FAILURE_MESSAGES } from "./audit-process";
-import { INTERRUPTED, LOCK_HELD, RECOVERY_REQUIRED } from "./execution-identity";
+import {
+  INTERRUPTED,
+  LOCK_HELD,
+  RECOVERY_REQUIRED,
+  SpackInstallationPending,
+} from "./execution-identity";
 import {
   type SpackInstallRecord,
   SpackInstallReportSchema,
@@ -187,12 +194,49 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
       return await store.withLock(async () => {
         input.signal?.throwIfAborted();
         const records = await store.list();
+        const waiting = records.filter(
+          (record) =>
+            record.operationId === input.operationId &&
+            (record.state === "waiting_install" || record.state === "waiting_verify"),
+        );
+        if (waiting.length > 1) return failure(new Error(RECOVERY_REQUIRED));
+        const pending = waiting[0];
+        if (pending && !input.authorizeInstallation)
+          return {
+            outcome: "rejected",
+            reason: "Pending installation requires fresh authorization",
+          };
+        if (
+          pending &&
+          (pending.manifestDigest !== input.manifestDigest ||
+            pending.siteProfileDigest !== site.digest ||
+            pending.rootHash !== rootHash ||
+            pending.spec !== input.spec)
+        )
+          return {
+            outcome: "rejected",
+            reason: "Pending installation cannot change its material or target binding",
+          };
+        if (
+          !pending &&
+          records.some(
+            (record) =>
+              (record.state === "waiting_install" || record.state === "waiting_verify") &&
+              (record.spec === input.spec || record.rootHash === rootHash),
+          )
+        ) {
+          if (input.authorizeInstallation) throw new SpackInstallationPending();
+          return {
+            outcome: "rejected",
+            reason: "Managed release is awaiting authorization for another installation",
+          };
+        }
         const existing = records.find(
           (record) =>
             (record.state === "ready" || record.state === "unavailable") &&
             (record.spec === input.spec || record.rootHash === rootHash),
         );
-        if (existing) {
+        if (existing && !pending) {
           if (
             existing.manifestDigest !== input.manifestDigest ||
             existing.siteProfileDigest !== site.digest
@@ -231,11 +275,21 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
             record.siteProfileDigest === site.digest,
         );
         if (interrupted.length > 1) throw new Error("Ambiguous interrupted Spack installation");
-        let record = interrupted[0]
-          ? await store.resumeFailed(interrupted[0].id, binding)
-          : await store.create(binding);
+        let record =
+          pending ??
+          (interrupted[0]
+            ? await store.resumeFailed(interrupted[0].id, binding)
+            : await store.create(binding));
         try {
           input.signal?.throwIfAborted();
+          if (record.state === "waiting_install" || record.state === "waiting_verify") {
+            record = {
+              ...record,
+              state: record.state === "waiting_install" ? "building" : "verifying",
+              updatedAt: new Date().toISOString(),
+            };
+            await store.save(record);
+          }
           let recovery: { verifiedDependencyHashes: string[] } | undefined;
           if (record.resumedFrom) {
             const partial = await this.options.runner.run(
@@ -262,30 +316,40 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
             };
             await store.save(record);
           }
-          const build = await this.options.runner.run(
-            "install",
-            prepared,
-            input,
-            site,
-            store.path(record.id),
-            recovery,
-          );
-          this.assertReport(record, build, store, "install");
-          if (
-            recovery?.verifiedDependencyHashes.some((hash) => !build.installedHashes.includes(hash))
-          ) {
-            throw new Error("Recovered Spack dependencies missing after installation");
+          let build = record.buildReport;
+          if (!build) {
+            build = await this.options.runner.run(
+              "install",
+              prepared,
+              input,
+              site,
+              store.path(record.id),
+              recovery,
+            );
+            this.assertReport(record, build, store, "install");
+            if (
+              recovery?.verifiedDependencyHashes.some(
+                (hash) => !build?.installedHashes.includes(hash),
+              )
+            ) {
+              throw new Error("Recovered Spack dependencies missing after installation");
+            }
+            if (
+              record.resumedFrom?.dependencyEvidence &&
+              JSON.stringify(record.resumedFrom.dependencyEvidence) !==
+                JSON.stringify(build.dependencyEvidence)
+            ) {
+              throw new Error("Recovered Spack dependency artifacts changed during installation");
+            }
+            input.signal?.throwIfAborted();
+            record = {
+              ...record,
+              state: "verifying",
+              buildReport: build,
+              updatedAt: new Date().toISOString(),
+            };
+            await store.save(record);
           }
-          if (
-            record.resumedFrom?.dependencyEvidence &&
-            JSON.stringify(record.resumedFrom.dependencyEvidence) !==
-              JSON.stringify(build.dependencyEvidence)
-          ) {
-            throw new Error("Recovered Spack dependency artifacts changed during installation");
-          }
-          input.signal?.throwIfAborted();
-          record = { ...record, state: "verifying", updatedAt: new Date().toISOString() };
-          await store.save(record);
           input.signal?.throwIfAborted();
           const report = await this.options.runner.run(
             "verify",
@@ -324,6 +388,18 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           };
         } catch (error) {
           if (store.workerUncertain()) return failure(new Error(RECOVERY_REQUIRED));
+          if (
+            error instanceof SpackInstallationPending &&
+            input.authorizeInstallation &&
+            !input.signal?.aborted
+          ) {
+            await store.save({
+              ...record,
+              state: record.buildReport ? "waiting_verify" : "waiting_install",
+              updatedAt: new Date().toISOString(),
+            });
+            throw error;
+          }
           // Publication can have succeeded before a later inventory error. Never delete a ready store here.
           const current = (await store.list()).find((entry) => entry.id === record.id);
           if (current && (current.state === "building" || current.state === "verifying")) {
@@ -347,6 +423,7 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
         }
       }, input.operationId);
     } catch (error) {
+      if (error instanceof SpackInstallationPending) throw error;
       return { ...failure(error), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
     }
   }
@@ -381,11 +458,23 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
     input?: SpackMaterialPrepareInput,
     materials?: PreparedSpackMaterials,
     signal?: AbortSignal,
+    pin?: SpackExecutionPin,
   ): Promise<SoftwareOperationOutcome> {
     try {
       const abortSignal = input?.signal ?? signal;
       abortSignal?.throwIfAborted();
       const prepared = materials ?? (await this.materials(record, abortSignal));
+      if (
+        pin &&
+        (prepared.manifest.version !== 2 ||
+          prepared.manifest.lockfile.digest !== pin.lockfileDigest ||
+          prepared.manifest.spackVersion !== pin.spackVersion ||
+          prepared.manifest.target !== pin.target)
+      )
+        return {
+          outcome: "rejected",
+          reason: "Managed Spack material differs from the execution pin",
+        };
       const request = input ?? {
         operationId: record.id,
         ticket: "",
@@ -422,7 +511,13 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
         stdout: action === "load" ? (report.loadShell ?? "") : JSON.stringify(report),
         installed,
       };
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof SpackInstallationPending &&
+        input?.authorizeInstallation &&
+        !input.signal?.aborted
+      )
+        throw new SpackInstallationPending([record.rootHash]);
       // Even transient verification errors withdraw readiness; recovery requires an explicit verify.
       try {
         await store.save({ ...record, state: "unavailable", updatedAt: new Date().toISOString() });
@@ -473,11 +568,28 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
     };
   }
 
+  async loadPinned(
+    spec: string,
+    rawPin: SpackExecutionPin,
+    policy: SpackPolicy,
+    signal?: AbortSignal,
+  ): Promise<SoftwareOperationOutcome> {
+    const pin = SpackExecutionPinSchema.safeParse(rawPin);
+    if (!pin.success) return { outcome: "rejected", reason: "Invalid Spack execution pin" };
+    return (
+      (await this.operation("load", spec, policy, signal, pin.data)) ?? {
+        outcome: "rejected",
+        reason: "Pinned managed Spack installation is unavailable",
+      }
+    );
+  }
+
   async operation(
     action: "load" | "uninstall" | "import_preinstalled",
     spec: string,
     policy: SpackPolicy = { lockEnabled: false },
     signal?: AbortSignal,
+    pin?: SpackExecutionPin,
   ): Promise<SoftwareOperationOutcome | null> {
     let invalidatedHashes: string[] | undefined;
     try {
@@ -490,10 +602,22 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
         return this.withdrawAfterSiteFailure(spec, action, policy);
       }
       const store = await this.store(site);
+      if (pin && (action !== "load" || site.profile.target !== pin.target))
+        return {
+          outcome: "rejected",
+          reason: "Spack execution pin does not match the verified site",
+        };
       return await store.withLock(async () => {
         signal?.throwIfAborted();
         const records = (await store.list()).filter((record) => record.state !== "removed");
-        const matches = matchRecords(records, spec);
+        const matches = pin
+          ? records.filter(
+              (record) =>
+                record.spec === spec &&
+                record.rootHash === pin.dagHash &&
+                record.manifestDigest === pin.manifestDigest,
+            )
+          : matchRecords(records, spec);
         if (matches.length === 0) {
           const name = spec
             .trim()
@@ -564,6 +688,7 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           undefined,
           undefined,
           signal,
+          pin,
         );
         if ("invalidatedHashes" in result) invalidatedHashes = result.invalidatedHashes;
         return result;

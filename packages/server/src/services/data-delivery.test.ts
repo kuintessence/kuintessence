@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { PgDb } from "@kuintessence/db";
+import { federationDatasetAssets, type PgDb } from "@kuintessence/db";
 import type { SandboxSignedManifest } from "@kuintessence/shared";
 import type { ResolvedDataDelivery } from "./data-delivery";
 import {
@@ -125,6 +125,7 @@ describe("Data Market delivery integrity", () => {
       containerPath: "/kq/inputs/potcar",
       batchEntries: [{ relativePath: "POTCAR", sha256: "a".repeat(64), sizeBytes: 8 }],
     });
+    expect(bound.manifest.resources).toEqual(base.resources);
     expect(bound.manifest.executionMode).toBe("RootImpersonation");
     expect(bound.manifest.executionProfile).toEqual(executionProfile);
     expect(bound.inputStaging).toEqual([
@@ -184,6 +185,7 @@ describe("Data Market delivery integrity", () => {
       },
     ]);
 
+    expect(bound.manifest.resources).toEqual(base.resources);
     expect(bound.manifest.executionMode).toBe("SelfAccount");
     expect(bound.manifest.runtimeAttestationId).toBe(runtimeAttestationId);
   });
@@ -310,18 +312,23 @@ describe("Data Market delivery integrity", () => {
 function fakeResolverDb(results: readonly unknown[][]): PgDb {
   const pending = [...results];
   const query = () => {
+    let foreign = false;
     const chain = {
-      from: () => chain,
+      from: (table: unknown) => {
+        foreign = table === federationDatasetAssets;
+        return chain;
+      },
       innerJoin: () => chain,
       leftJoin: () => chain,
       where: () => {
-        const result = Promise.resolve(pending.shift() ?? []);
-        return Object.assign(result, { limit: () => result });
+        const result = Promise.resolve(foreign ? [] : (pending.shift() ?? []));
+        return Object.assign(result, { limit: () => result, for: () => result });
       },
     };
     return chain;
   };
-  return { select: () => query() } as unknown as PgDb;
+  const db = { select: () => query(), rollback: () => {} } as unknown as PgDb;
+  return db;
 }
 
 function bindingRows(
@@ -425,6 +432,7 @@ function sandboxManifest(): SandboxSignedManifest {
       allowedQueues: [],
     },
     mounts: [],
+    resources: { cpus: 1, memoryMb: 128 },
     limits: { pids: 1, outputBytes: 1, logBytes: 1 },
     networkDisabled: true,
     envelope: {
@@ -437,3 +445,65 @@ function sandboxManifest(): SandboxSignedManifest {
     },
   };
 }
+
+test("binds managed local input into the signed Sandbox manifest without a download URL", () => {
+  const binder = new RestrictedSandboxDeliveryBinder({
+    sign: (unsigned) => ({ ...unsigned, envelope: sandboxManifest().envelope }),
+  });
+  const local: ResolvedDataDelivery = {
+    ...delivery("binding", "inputs/potcar", ["input.dat"]),
+    method: "readonly-mount",
+    restricted: true,
+    managedRootId: "root",
+    relativePath: ".federation-media/package/files",
+  };
+  const bound = binder.bind(sandboxManifest(), [local]);
+  expect(bound.inputStaging[0]).toMatchObject({
+    sourceUrl: "",
+    localDataSource: {
+      locationId: "location",
+      managedRootId: "root",
+      relativePath: ".federation-media/package/files/input.dat",
+    },
+  });
+  expect(bound.manifest.mounts.at(-1)).toMatchObject({ mode: "ReadOnly", ioType: "FileBatch" });
+  expect(() => binder.bind(sandboxManifest(), [{ ...local, relativePath: "../escape" }])).toThrow();
+  expect(() => binder.bind(sandboxManifest(), [{ ...local, managedRootId: undefined }])).toThrow();
+  expect(() => binder.bind(sandboxManifest(), [{ ...local, restricted: false }])).toThrow();
+});
+
+test("managed local delivery works without object storage while object inputs fail closed", async () => {
+  const resolver = new DataDeliveryResolver(
+    fakeResolverDb([
+      bindingRows({ sensitivity: "restricted", egressPolicy: "deny" }),
+      [
+        {
+          id: "location-1",
+          versionId: "version-1",
+          kind: "cp-local",
+          status: "available",
+          agentId: "agent-1",
+          managedRootId: "root",
+          relativePath: "dataset",
+          uri: null,
+          versionManifestDigest: "a".repeat(64),
+          replicaStatus: null,
+        },
+      ],
+      [{ restrictedDataIsolation: true }],
+      entryRows(),
+    ]),
+    undefined,
+    { verifyAccess: async () => true },
+  );
+  const request = { jobId: "job", actorUserId: "user", orgId: "org", agentId: "agent-1" };
+  expect((await resolver.resolveForDispatch(request))[0]?.method).toBe("readonly-mount");
+  const objects = new DataDeliveryResolver(
+    fakeResolverDb([bindingRows(), locationRows(), entryRows()]),
+    undefined,
+    { verifyAccess: async () => true },
+  );
+  await expect(objects.resolveForDispatch(request)).rejects.toThrow(
+    "DATA_OBJECT_STORAGE_UNAVAILABLE",
+  );
+});

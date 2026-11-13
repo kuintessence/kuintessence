@@ -14,6 +14,16 @@ import { CpDataPage } from "./CpDataPage";
 const activeOrganization = vi.hoisted(() => ({ current: "org-a" as string | null }));
 const notifications = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 
+vi.mock("./DataDisclosurePolicyPanel", () => ({
+  DataDisclosurePolicyPanel: ({
+    organizationId,
+    versionId,
+  }: {
+    organizationId: string;
+    versionId: string;
+  }) => <output data-testid="disclosure-policy-scope">{`${organizationId}:${versionId}`}</output>,
+}));
+
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));

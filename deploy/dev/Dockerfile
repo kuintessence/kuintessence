@@ -1,6 +1,6 @@
 FROM oven/bun:1.4.2-alpine
 
-RUN apk add --no-cache git curl ca-certificates
+RUN apk add --no-cache git curl ca-certificates util-linux
 ENV GIT_CONFIG_GLOBAL=/dev/null \
     GIT_CONFIG_NOSYSTEM=1
 
@@ -16,5 +16,9 @@ COPY packages/agent/package.json ./packages/agent/
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/web/package.json ./packages/web/
 COPY packages/docs-site/package.json ./packages/docs-site/
+COPY packages/fabric-adapter/package.json ./packages/fabric-adapter/
+COPY contracts/fabric/evidence/package.json ./contracts/fabric/evidence/
+COPY contracts/fabric/commercial/package.json ./contracts/fabric/commercial/
+COPY contracts/fabric/market/package.json ./contracts/fabric/market/
 
 RUN bun install --frozen-lockfile --ignore-scripts

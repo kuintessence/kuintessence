@@ -19,7 +19,10 @@ describe("buildSandboxCapability", () => {
     expect(capability.missingRequirements).toContain("sandbox-disabled");
   });
 
-  test("reports ready only with the complete scheduler-specific security posture", () => {
+  test.each([
+    "slurm",
+    "pbs-pro",
+  ])("%s reports ready only with native security evidence", (scheduler) => {
     const digest = `sha256:${"1".repeat(64)}`;
     const config = loadAgentConfig({
       ...BASE,
@@ -37,7 +40,7 @@ describe("buildSandboxCapability", () => {
     });
     const capability = buildSandboxCapability(
       config,
-      "slurm",
+      scheduler,
       { username: "kqagent", uid: 2001, gid: 2001 },
       {
         runtimeCache: {
@@ -48,9 +51,14 @@ describe("buildSandboxCapability", () => {
             runtimeAttestationId: "a".repeat(64),
             apptainerPath: "/usr/bin/apptainer",
             seccompProfilePath: "/etc/kuintessence/seccomp.json",
+            cgroupCheck: {
+              path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+              sha256: "c".repeat(64),
+            },
+            attestedQueue: "compute",
             attestedNodes: ["slurm-2"],
             verifiedAtUnixMs: 1,
-            expiresAtUnixMs: 2,
+            expiresAtUnixMs: Date.now() + 60_000,
           },
         },
         networkIsolation: true,
@@ -68,7 +76,7 @@ describe("buildSandboxCapability", () => {
     expect(capability.runtimeCache[0]?.digest).toBe(digest);
   });
 
-  test("keeps the root impersonation capability on PBS Pro independent of SelfAccount attestation", () => {
+  test("refuses configured root flags without native runtime evidence on PBS Pro", () => {
     const digest = `sha256:${"2".repeat(64)}`;
     const capability = buildSandboxCapability(
       loadAgentConfig({
@@ -91,8 +99,9 @@ describe("buildSandboxCapability", () => {
     );
 
     expect(capability.executionMode).toBe("RootImpersonation");
-    expect(capability.readiness).toBe("ready");
-    expect(capability.runtimeCache).toEqual([{ digest, kind: "SIF", signatureVerified: true }]);
+    expect(capability.readiness).toBe("critical");
+    expect(capability.runtimeCache).toEqual([]);
+    expect(capability.missingRequirements).toContain("runtime-attestation");
   });
 
   test("requires a locally attested Kubernetes seccomp profile without a root process", () => {
@@ -203,7 +212,7 @@ describe("buildSandboxCapability", () => {
     expect(capability.missingRequirements).toContain("kubernetes-seccomp-sha256-mismatch");
   });
 
-  test("does not advertise SelfAccount on an adapter without Slurm attestation and node pinning", () => {
+  test("does not advertise SelfAccount on an unsupported adapter", () => {
     const capability = buildSandboxCapability(
       loadAgentConfig({
         ...BASE,

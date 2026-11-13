@@ -1,0 +1,32 @@
+# Public CA bundle only. Never mount the edge TLS directory containing private keys.
+services:
+  server:
+    environment:
+      NODE_EXTRA_CA_CERTS: /run/kq-public-trust/ca.pem
+      CURL_CA_BUNDLE: /run/kq-public-trust/ca.pem
+    volumes:
+      - type: bind
+        source: ${KQ_AIO_PUBLIC_CA_FILE:?set public CA bundle}
+        target: /run/kq-public-trust/ca.pem
+        read_only: true
+        bind: {create_host_path: false}
+  registry:
+    environment:
+      NODE_EXTRA_CA_CERTS: /run/kq-public-trust/ca.pem
+      CURL_CA_BUNDLE: /run/kq-public-trust/ca.pem
+    volumes:
+      - type: bind
+        source: ${KQ_AIO_PUBLIC_CA_FILE:?set public CA bundle}
+        target: /run/kq-public-trust/ca.pem
+        read_only: true
+        bind: {create_host_path: false}
+  scheduler:
+    environment:
+      NODE_EXTRA_CA_CERTS: /run/kq-public-trust/ca.pem
+      CURL_CA_BUNDLE: /run/kq-public-trust/ca.pem
+    volumes:
+      - type: bind
+        source: ${KQ_AIO_PUBLIC_CA_FILE:?set public CA bundle}
+        target: /run/kq-public-trust/ca.pem
+        read_only: true
+        bind: {create_host_path: false}

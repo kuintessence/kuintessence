@@ -1,5 +1,6 @@
 import { ApiError } from "@kuintessence/shared/browser";
 import { useSyncExternalStore } from "react";
+import { getAuthState } from "./auth";
 import { authenticatedHeaders, fetchAuthed } from "./authenticated-fetch";
 
 export const ACTIVE_ORGANIZATION_STORAGE_KEY = "kq_active_organization_id";
@@ -65,23 +66,43 @@ export function useActiveOrganizationId(enabled = true): string | null {
   );
 }
 
+function captureContextGuard(): () => void {
+  const revision = getAuthState().revision;
+  const organizationId = getStoredActiveOrganizationId();
+  return () => {
+    if (getAuthState().revision !== revision || getStoredActiveOrganizationId() !== organizationId)
+      throw new ApiError(
+        409,
+        "ORGANIZATION_CONTEXT_CHANGED",
+        "The organization or login session changed",
+      );
+  };
+}
+
 export async function getActiveOrganizationContext(): Promise<ActiveOrganizationContext> {
-  const context = await fetchAuthed("/me/active-organization", () => ({
-    credentials: "same-origin",
-    headers: authenticatedHeaders(),
-  })).then((response) => parse<ActiveOrganizationContext>(response, "无法加载当前组织"));
+  const assertCurrent = captureContextGuard();
+  const context = await fetchAuthed("/me/active-organization", () => {
+    assertCurrent();
+    return { credentials: "same-origin", headers: authenticatedHeaders() };
+  }).then((response) => parse<ActiveOrganizationContext>(response, "无法加载当前组织"));
+  assertCurrent();
   storeActiveOrganizationId(context.activeOrganizationId);
   return context;
 }
 
 export async function setActiveOrganization(organizationId: string | null): Promise<void> {
-  await fetchAuthed("/me/active-organization", () => ({
-    credentials: "same-origin",
-    method: "PUT",
-    headers: authenticatedHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ organizationId }),
-  })).then((response) =>
+  const assertCurrent = captureContextGuard();
+  await fetchAuthed("/me/active-organization", () => {
+    assertCurrent();
+    return {
+      credentials: "same-origin",
+      method: "PUT",
+      headers: authenticatedHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ organizationId }),
+    };
+  }).then((response) =>
     parse<{ activeOrganizationId: string | null }>(response, "无法更新当前组织"),
   );
+  assertCurrent();
   storeActiveOrganizationId(organizationId);
 }

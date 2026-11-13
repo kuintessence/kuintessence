@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
+import {
+  SPACK_EXECUTION_PLACEHOLDER,
+  SPACK_PINNED_EXECUTION_PLACEHOLDER,
+} from "@kuintessence/shared";
 import type { SoftwareOperationOutcome } from "./installer";
 import {
   activateWorkflowSpack,
@@ -285,4 +288,95 @@ describe("workflow Spack activation", () => {
     ).rejects.toThrow(SPACK_ACTIVATION_FAILURE);
     expect(checked).toBe(false);
   });
+});
+
+test("pinned activation cannot fall back to ordinary spec loading", async () => {
+  const pin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: `sha256:${"b".repeat(64)}`,
+    lockfileDigest: `sha256:${"c".repeat(64)}`,
+    spackVersion: "1.0.0" as const,
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  let ordinary = 0,
+    pinned = 0;
+  const manager = {
+    available: true,
+    runSoftwareOperation: async () => {
+      ordinary++;
+      return success;
+    },
+  };
+  await expect(
+    activateWorkflowSpack(
+      input({
+        execution: { ...execution, pin },
+        command: SPACK_PINNED_EXECUTION_PLACEHOLDER,
+        manager,
+      }),
+    ),
+  ).rejects.toThrow(SPACK_ACTIVATION_FAILURE);
+  const command = await activateWorkflowSpack(
+    input({
+      execution: { ...execution, pin },
+      command: SPACK_PINNED_EXECUTION_PLACEHOLDER,
+      manager: {
+        ...manager,
+        loadPinnedWorkflow: async (spec, selected, signal) => {
+          pinned++;
+          expect(spec).toBe(execution.spec);
+          expect(selected).toEqual(pin);
+          expect(signal.aborted).toBe(false);
+          return success;
+        },
+      },
+    }),
+  );
+  expect(command.endsWith(execution.command)).toBe(true);
+  expect([ordinary, pinned]).toEqual([0, 1]);
+  await expect(
+    activateWorkflowSpack(
+      input({
+        execution: { ...execution, pin },
+        command: SPACK_PINNED_EXECUTION_PLACEHOLDER,
+        manager: {
+          ...manager,
+          loadPinnedWorkflow: async () => ({
+            outcome: "rejected",
+            reason: "wrong locked environment",
+          }),
+        },
+      }),
+    ),
+  ).rejects.toThrow(SPACK_ACTIVATION_FAILURE);
+  expect(ordinary).toBe(0);
+});
+
+test("dropping the pin or using the legacy placeholder cannot execute a pinned command", async () => {
+  let calls = 0;
+  const manager = {
+    available: true,
+    runSoftwareOperation: async () => {
+      calls++;
+      return success;
+    },
+    loadPinnedWorkflow: async () => {
+      calls++;
+      return success;
+    },
+  };
+  await expect(
+    activateWorkflowSpack(input({ manager, command: SPACK_PINNED_EXECUTION_PLACEHOLDER })),
+  ).rejects.toThrow(SPACK_ACTIVATION_FAILURE);
+  const pin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: `sha256:${"b".repeat(64)}`,
+    lockfileDigest: `sha256:${"c".repeat(64)}`,
+    spackVersion: "1.0.0" as const,
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  await expect(
+    activateWorkflowSpack(input({ manager, execution: { ...execution, pin } })),
+  ).rejects.toThrow(SPACK_ACTIVATION_FAILURE);
+  expect(calls).toBe(0);
 });

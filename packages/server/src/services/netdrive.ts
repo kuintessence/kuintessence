@@ -24,6 +24,7 @@ import { and, asc, desc, eq, inArray, isNull, like, sql } from "drizzle-orm";
 import * as jose from "jose";
 import type { Logger } from "pino";
 import type { MinioBackend } from "../storage/minio-client";
+import { lockCloudWrites, StorageQuotaService } from "./storage-quota";
 
 /**
  * NetDrive metadata service.
@@ -174,10 +175,8 @@ export class NetDriveService {
     expiresAt: string;
   }> {
     await this.quotaGuard?.(ownerId, req.path, req.size);
-    // Synthetic key keeps user paths decoupled from the object store
-    // layout; renames don't cause MinIO churn and a future cross-site
-    // replicator can shard purely on storageKey.
-    const storageKey = `${STORAGE_PREFIX}/${ownerId}/${crypto.randomUUID()}`;
+    // Presigned URLs can cross institutions; object keys must not contain the owner identity.
+    const storageKey = `${STORAGE_PREFIX}/objects/${crypto.randomUUID()}`;
     const contentType = req.contentType ?? "application/octet-stream";
     const uploadUrl = await this.minio.presignUpload(storageKey, this.uploadTtlSec, contentType);
     const expiresAt = new Date(this.now() + this.uploadTtlSec * 1000).toISOString();
@@ -211,7 +210,7 @@ export class NetDriveService {
     if (req.size > 0) {
       await this.quotaGuard?.(ownerId, req.path, req.size);
     }
-    const storageKey = `${STORAGE_PREFIX}/${ownerId}/${crypto.randomUUID()}`;
+    const storageKey = `${STORAGE_PREFIX}/objects/${crypto.randomUUID()}`;
     const contentType = req.contentType ?? "application/octet-stream";
     const { uploadId } = await this.minio.createMultipartUpload(storageKey, contentType);
     const expiresAt = new Date(this.now() + this.multipartTtlSec * 1000).toISOString();
@@ -337,6 +336,7 @@ export class NetDriveService {
         contentType,
         etag: req.etag ?? stat.etag,
         storageKey: req.storageKey,
+        storageVersionId: stat.versionId === "null" ? null : (stat.versionId ?? null),
       },
       context,
     );
@@ -356,52 +356,66 @@ export class NetDriveService {
       contentType: string;
       etag: string | null;
       storageKey: string;
+      storageVersionId?: string | null;
     },
     context?: NetDriveTransferContext,
     db: NetDriveCommitDb = this.db,
     recordUpload = true,
   ): Promise<NetDriveCommitResult> {
-    // Soft-delete-aware uniqueness: we allow the same `(owner_id, path)`
-    // to be re-uploaded as long as the prior row is tombstoned. To keep
-    // active uniqueness we tombstone any existing live row first.
-    const replacedRows = await db
-      .select()
-      .from(netdriveFiles)
-      .where(
-        and(
-          eq(netdriveFiles.ownerId, ownerId),
-          eq(netdriveFiles.path, args.path),
-          isNull(netdriveFiles.deletedAt),
-        ),
-      );
-    await db
-      .update(netdriveFiles)
-      .set({ deletedAt: new Date(this.now()) })
-      .where(
-        and(
-          eq(netdriveFiles.ownerId, ownerId),
-          eq(netdriveFiles.path, args.path),
-          isNull(netdriveFiles.deletedAt),
-        ),
-      );
-
-    const [row] = await db
-      .insert(netdriveFiles)
-      .values({
+    const persist = async (tx: NetDriveCommitDb) => {
+      await lockCloudWrites(tx, ownerId);
+      await new StorageQuotaService(tx, () => new Date(this.now())).assertCloudWriteAllowed(
         ownerId,
-        path: args.path,
-        size: args.size,
-        sha256: args.sha256.toLowerCase(),
-        contentType: args.contentType,
-        etag: args.etag,
-        storageKey: args.storageKey,
-        mtime: new Date(this.now()),
-      })
-      .returning();
+        args.path,
+        args.size,
+      );
+      // Soft-delete-aware uniqueness: we allow the same `(owner_id, path)`
+      // to be re-uploaded as long as the prior row is tombstoned. To keep
+      // active uniqueness we tombstone any existing live row first.
+      const replacedRows = await tx
+        .select()
+        .from(netdriveFiles)
+        .where(
+          and(
+            eq(netdriveFiles.ownerId, ownerId),
+            eq(netdriveFiles.path, args.path),
+            isNull(netdriveFiles.deletedAt),
+          ),
+        );
+      await tx
+        .update(netdriveFiles)
+        .set({ deletedAt: new Date(this.now()) })
+        .where(
+          and(
+            eq(netdriveFiles.ownerId, ownerId),
+            eq(netdriveFiles.path, args.path),
+            isNull(netdriveFiles.deletedAt),
+          ),
+        );
 
-    if (!row) {
-      throw new AppError(ErrorCode.INTERNAL_ERROR, "Failed to insert netdrive_files row", 500);
-    }
+      const [row] = await tx
+        .insert(netdriveFiles)
+        .values({
+          ownerId,
+          path: args.path,
+          size: args.size,
+          sha256: args.sha256.toLowerCase(),
+          contentType: args.contentType,
+          etag: args.etag,
+          storageKey: args.storageKey,
+          storageVersionId: args.storageVersionId,
+          mtime: new Date(this.now()),
+        })
+        .returning();
+
+      if (!row) {
+        throw new AppError(ErrorCode.INTERNAL_ERROR, "Failed to insert netdrive_files row", 500);
+      }
+
+      return { row, replacedRows };
+    };
+    const { row, replacedRows } =
+      db === this.db ? await this.db.transaction(persist) : await persist(db);
 
     // record real upload bytes against the transfer log so the
     // CP Console reads from a per-event ledger rather than approximating
@@ -540,6 +554,7 @@ export class NetDriveService {
       file.storageKey,
       this.downloadTtlSec,
       filenameFromPath(file.path),
+      file.storageVersionId ?? undefined,
     );
     const expiresAt = new Date(this.now() + this.downloadTtlSec * 1000).toISOString();
 
@@ -778,6 +793,7 @@ export class NetDriveService {
           contentType,
           etag: stat.etag,
           storageKey: req.storageKey,
+          storageVersionId: stat.versionId === "null" ? null : (stat.versionId ?? null),
         },
         context,
         tx,
@@ -878,6 +894,7 @@ interface NetDriveFileRow {
   contentType: string;
   etag: string | null;
   storageKey: string;
+  storageVersionId?: string | null;
   mtime: Date;
   createdAt: Date;
 }
@@ -892,6 +909,7 @@ function rowToFile(r: NetDriveFileRow): NetDriveFile {
     contentType: r.contentType,
     etag: r.etag,
     storageKey: r.storageKey,
+    storageVersionId: r.storageVersionId ?? null,
     mtime: r.mtime.toISOString(),
     createdAt: r.createdAt.toISOString(),
   };

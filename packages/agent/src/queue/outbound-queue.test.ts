@@ -235,10 +235,17 @@ describe("OutboundQueue", () => {
       node: "node[001-004]",
       reason: "OutOfMemory",
       collected: { result: "energy=-42.1", stdout: "done\n" },
+      accounting: {
+        version: 1,
+        source: "slurm-sacct",
+        schedulerJobId: "slurm-99",
+        observedAt: "2026-11-07T00:00:00.000Z",
+        cpuTimeMilliseconds: "9007199254740993",
+      },
     };
     await q.enqueueJobStatus(report);
 
-    const replay = await q.loadForReplay();
+    const replay = await new OutboundQueue(db).loadForReplay();
     expect(replay).toHaveLength(1);
     const item = replay[0]?.item;
     if (!item || item.kind !== "jobStatus") throw new Error("expected jobStatus item");

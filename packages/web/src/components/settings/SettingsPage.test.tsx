@@ -20,6 +20,15 @@ vi.mock("../../lib/auth", () => ({
 }));
 vi.mock("../ThemeProvider", () => ({ useTheme: () => ({ theme: "system", setTheme: vi.fn() }) }));
 
+vi.mock("./FederationPermissionsPanel", () => ({
+  FederationPermissionsPanel: () => <div data-testid="FederationPermissionsPanel" />,
+}));
+vi.mock("./FederationStoragePanel", () => ({
+  FederationStoragePanel: () => <div data-testid="FederationStoragePanel" />,
+}));
+vi.mock("./FederationTrustPanel", () => ({
+  FederationTrustPanel: () => <div data-testid="FederationTrustPanel" />,
+}));
 vi.mock("./AgentCertsPanel", () => ({
   AgentCertsPanel: () => <div data-testid="AgentCertsPanel" />,
 }));
@@ -71,6 +80,9 @@ describe("SettingsPage deep links", () => {
   test.each([
     ["#infrastructure/cluster-file-roots", "cluster-file-roots", "ClusterFileRootsPanel"],
     ["#security/sandbox-security", "sandbox-security", "SandboxSecurityPanel"],
+    ["#security/federation-permissions", "federation-permissions", "FederationPermissionsPanel"],
+    ["#security/federation-storage", "federation-storage", "FederationStoragePanel"],
+    ["#security/federation-trust", "federation-trust", "FederationTrustPanel"],
   ])("opens and scrolls to the requested section after a refresh: %s", async (hash, sectionId, panel) => {
     router.hash = hash;
     render(<SettingsPage />);
@@ -79,7 +91,7 @@ describe("SettingsPage deep links", () => {
     expect(section.closest("section")?.id).toBe(sectionId);
     expect(section.closest("section")?.hidden).toBe(false);
     const other = document.getElementById(
-      sectionId === "sandbox-security" ? "branding" : "cost-rates",
+      sectionId === "cluster-file-roots" ? "cost-rates" : "branding",
     );
     expect(other?.hidden).toBe(true);
     await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
@@ -93,6 +105,9 @@ describe("SettingsPage deep links", () => {
   test.each([
     "#infrastructure/cluster-file-roots",
     "#security/sandbox-security",
+    "#security/federation-trust",
+    "#security/federation-storage",
+    "#security/federation-permissions",
   ])("keeps a restricted platform hash explicit instead of falling back to personal settings: %s", (hash) => {
     router.hash = hash;
     router.role = "org_admin";

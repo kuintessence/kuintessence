@@ -17,6 +17,7 @@ import {
   WorkflowPlacementConfigSchema,
 } from "@kuintessence/shared";
 import { eq, inArray } from "drizzle-orm";
+import { loadFederationWorkflowBinding } from "../federation/execution-binding";
 import type { SandboxPlannerCandidate, SandboxPlannerNode } from "../scheduler/sandbox-planner";
 import { parseWorkflowYaml } from "../workflow/parser";
 import { sandboxRuntimeContractKey } from "./license-runtime-governance";
@@ -179,8 +180,22 @@ export function createWorkflowPlacementBuilder(db: PgDb): PlacementPlanBuilder {
   const executionStats = new SandboxExecutionStatsService(db);
   return async (workflowRunId, _trigger, suppliedContext): Promise<PlacementPlanBuildInput> => {
     const { workflow, config } = await loadContext(db, workflowRunId, suppliedContext);
-    const agentRows = await db.select().from(agents);
-    const scriptNodes = workflow.spec.nodeDrafts.filter(isResolvedScriptNode);
+    const federation = await loadFederationWorkflowBinding(db, workflowRunId);
+    const agentRows = (await db.select().from(agents)).filter(
+      (agent) =>
+        !federation ||
+        federation.snapshot.executionTargets?.some(
+          (target) =>
+            target.agentId === agent.agentId &&
+            target.clusterId === agent.clusterId &&
+            target.providerOrgId === agent.providerOrgId,
+        ),
+    );
+    // Server control flow and remote federation calls do not consume local scheduler slots.
+    const localNodes = workflow.spec.nodeDrafts.filter(
+      (node) => node.type === "Script" || node.type === "SoftwareUsecaseComputing",
+    );
+    const scriptNodes = localNodes.filter(isResolvedScriptNode);
     const profileIds = [
       ...new Set(
         scriptNodes.flatMap((node) => (node.runtimeProfileId ? [node.runtimeProfileId] : [])),
@@ -250,7 +265,7 @@ export function createWorkflowPlacementBuilder(db: PgDb): PlacementPlanBuilder {
     }
     const identities: Record<string, ExecutionIdentity> = {};
     const nodes: SandboxPlannerNode[] = await Promise.all(
-      workflow.spec.nodeDrafts.map(async (node) => {
+      localNodes.map(async (node) => {
         const identity = executionIdentity(node, config);
         assertInlineIdentity(node, identity);
         identities[node.id] = identity;
@@ -292,6 +307,14 @@ export function createWorkflowPlacementBuilder(db: PgDb): PlacementPlanBuilder {
           }
           const digest =
             adapter === "kubernetes" ? candidateProfile.ociDigest : candidateProfile.sifDigest;
+          const lockedRuntime = federation?.snapshot.environment.sandboxRuntime;
+          if (
+            federation &&
+            (!lockedRuntime ||
+              lockedRuntime.kind !== (adapter === "kubernetes" ? "OCI" : "SIF") ||
+              lockedRuntime.digest !== digest)
+          )
+            return [];
           if (bound && digest !== bound.binding.runtimeDigest) return [];
           if (!digest || !cachedDigest(agent.sandboxRuntimeCache, digest)) return [];
           return [{ ...candidate, runtimeCached: true }];
@@ -347,11 +370,16 @@ export function createWorkflowPlacementBuilder(db: PgDb): PlacementPlanBuilder {
       config,
       request: {
         nodes,
-        edges: workflow.spec.nodeRelations.map((relation) => ({
-          from: relation.fromId,
-          to: relation.toId,
-          bytes: estimatedByNode.get(relation.fromId) ?? 0,
-        })),
+        edges: workflow.spec.nodeRelations
+          .filter(
+            (relation) =>
+              estimatedByNode.has(relation.fromId) && estimatedByNode.has(relation.toId),
+          )
+          .map((relation) => ({
+            from: relation.fromId,
+            to: relation.toId,
+            bytes: estimatedByNode.get(relation.fromId) ?? 0,
+          })),
         beamWidth: 64,
         defaultNetworkCostPerByte: 1e-9,
       },

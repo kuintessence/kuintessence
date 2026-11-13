@@ -1,0 +1,15 @@
+# Privilege is confined to the disposable PBS scheduler container.
+services:
+  scheduler:
+    privileged: true
+    volumes: !override
+      - scheduler-state:/var/lib/kuintessence
+      - scheduler-scratch:/scratch
+      - pbs-state:/var/spool/pbs
+      - type: bind
+        source: ${KQ_AIO_PRIVATE_DIRECTORY:?}/agent-enrollment
+        target: /run/kq-agent-enrollment
+        read_only: true
+        bind: {create_host_path: false}
+volumes:
+  pbs-state:

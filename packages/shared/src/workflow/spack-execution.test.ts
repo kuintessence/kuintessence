@@ -28,3 +28,30 @@ describe("internal Spack execution contract", () => {
     expect(SpackExecutionSchema.safeParse(value).success).toBe(false);
   });
 });
+
+test("pins full DAG, material, lock and target instead of accepting an abbreviated hash", () => {
+  const pin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: `sha256:${"b".repeat(64)}`,
+    lockfileDigest: `sha256:${"c".repeat(64)}`,
+    spackVersion: "1.0.0" as const,
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  expect(
+    SpackExecutionSchema.parse({ spec: "gzip@1.13", command: "gzip --version", pin }).pin,
+  ).toEqual(pin);
+  for (const changed of [
+    { dagHash: "abcdefg" },
+    { dagHash: "0".repeat(32) },
+    { lockfileDigest: "" },
+    { spackVersion: "latest" },
+    { target: "x86_64" },
+  ])
+    expect(
+      SpackExecutionSchema.safeParse({
+        spec: "gzip@1.13",
+        command: "gzip",
+        pin: { ...pin, ...changed },
+      }).success,
+    ).toBe(false);
+});

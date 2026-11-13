@@ -29,6 +29,7 @@
       "resizePalette": "调整节点面板宽度",
       "resizeProperties": "调整节点属性宽度",
       "nodeTypes": {
+        "Federation": "联邦任务",
         "SoftwareUsecaseComputing": "用例计算",
         "Script": "数据转换脚本",
         "NoAction": "空节点",
@@ -101,7 +102,9 @@
         "milestoneHint": "通知 / 检查点节点",
         "subWorkflow": "子工作流",
         "subWorkflowHint": "内联或引用的子工作流",
-        "releaseToAdd": "松开以添加“{{name}}”节点"
+        "releaseToAdd": "松开以添加“{{name}}”节点",
+        "federation": "联邦委派",
+        "federationHint": "选择合同、材料与市场授权"
       },
       "properties": {
         "title": "节点属性",
@@ -167,6 +170,42 @@
         "empty": "空白图：从左侧拖入节点开始编辑。",
         "syncOk": "已与 YAML 同步",
         "syncError": "YAML 解析错误：暂停同步"
+      },
+      "federation": {
+        "agreementRevisionId": "合同版本 ID",
+        "template": "执行模板",
+        "templateKind": "模板类型",
+        "workflow": "工作流",
+        "script": "脚本",
+        "templateSiteId": "模板来源机构 ID",
+        "templateId": "模板 ID",
+        "templateRevision": "模板版本",
+        "templateDigest": "模板摘要",
+        "inputManifestDigest": "输入快照摘要",
+        "environmentLockDigest": "环境锁摘要",
+        "resources": "资源上限",
+        "cpus": "CPU 核数",
+        "memoryMb": "内存 MiB",
+        "gpus": "GPU 数",
+        "wallTimeSec": "时限（秒）",
+        "maxAmount": "费用上限（合同最小单位）",
+        "admissionWindowSec": "接单窗口（秒）",
+        "executionExpiresAt": "执行截止",
+        "inputDelivery": "输入交付",
+        "resultDelivery": "结果交付",
+        "defaultDelivery": "平台默认",
+        "network": "网络",
+        "physical_media": "物理介质",
+        "market": "通过任务市场委派",
+        "publicWarning": "标题与说明公开展示，请勿填写价格、合同、材料或个人信息。",
+        "policyId": "市场发布授权 ID",
+        "title": "公开标题",
+        "description": "公开说明",
+        "arbitration": "绑定仲裁政策",
+        "arbitrationPolicyId": "仲裁政策 ID",
+        "arbitrationPolicyDigest": "仲裁政策摘要",
+        "invalid": "请核对编号、摘要、金额、资源和截止时间。",
+        "apply": "应用配置"
       }
     }
   }

@@ -1,7 +1,14 @@
-import { authzOutbox, dataAccessPolicies, dataGrants, type PgDb } from "@kuintessence/db";
+import {
+  authzOutbox,
+  dataAccessPolicies,
+  dataGrants,
+  type PgDb,
+  type PgTransaction,
+} from "@kuintessence/db";
 import { and, eq, isNull, or } from "drizzle-orm";
 import { dataAssetGrantTuples } from "../authz/projection";
 import type { AuthzTuple } from "../authz/service";
+import { datasetSourceAuthority } from "../federation/dataset-authority";
 
 export interface ActiveDataAccessInput {
   assetId: string;
@@ -13,11 +20,25 @@ export interface ActiveDataAccessInput {
 }
 
 export async function hasActiveDataAccess(
-  db: PgDb,
+  db: PgDb | PgTransaction,
   input: ActiveDataAccessInput,
 ): Promise<boolean> {
-  const now = input.now ?? new Date();
-  return db.transaction(async (tx) => {
+  return (await evaluateActiveDataAccess(db, input)).allowed;
+}
+
+export interface DataAccessAuthorization {
+  allowed: boolean;
+  expiresAtUnixMs: number;
+}
+
+export async function evaluateActiveDataAccess(
+  db: PgDb | PgTransaction,
+  input: ActiveDataAccessInput,
+): Promise<DataAccessAuthorization> {
+  const now = input.now ?? new Date(Date.now());
+  const check = async (tx: PgTransaction) => {
+    const source = input.capability === "use" ? await datasetSourceAuthority(tx, input, now) : null;
+    if (source && !source.allowed) return { allowed: false, expiresAtUnixMs: 0 };
     const subject = or(
       and(eq(dataGrants.subjectKind, "user"), eq(dataGrants.subjectId, input.actorUserId)),
       ...input.orgIds.map((orgId) =>
@@ -108,20 +129,31 @@ export async function hasActiveDataAccess(
         (policy) => policy.effect === "deny" && allows(policy.capabilities, input.capability),
       )
     ) {
-      return false;
+      return { allowed: false, expiresAtUnixMs: 0 };
     }
-    return (
-      grants.some(
+    const alternatives = [
+      ...grants.filter(
         (grant) =>
           grant.startsAt <= now &&
           (grant.expiresAt === null || grant.expiresAt > now) &&
           allows(grant.capabilities, input.capability),
-      ) ||
-      activePolicies.some(
+      ),
+      ...activePolicies.filter(
         (policy) => policy.effect === "allow" && allows(policy.capabilities, input.capability),
-      )
-    );
-  });
+      ),
+    ];
+    return {
+      allowed: alternatives.length > 0,
+      expiresAtUnixMs: Math.min(
+        source?.expiresAtUnixMs ?? Number.POSITIVE_INFINITY,
+        Math.max(
+          0,
+          ...alternatives.map((row) => row.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY),
+        ),
+      ),
+    };
+  };
+  return "rollback" in db ? check(db) : db.transaction(check);
 }
 
 function allows(capabilities: string[], requested: "view" | "use"): boolean {

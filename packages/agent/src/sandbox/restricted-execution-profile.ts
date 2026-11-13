@@ -159,6 +159,12 @@ export async function validateRestrictedExecutionProfile(
       });
       if (result.exitCode !== 0) missingRequirements.push("apptainer-sif-signature-verification");
     }
+    if (missingRequirements.length === 0) {
+      const result = await spawner.run([wrapper.canonicalPath, "--check-profile"], {
+        timeoutMs: 15_000,
+      });
+      if (result.exitCode !== 0) missingRequirements.push("trusted-wrapper-local-policy");
+    }
     return {
       ...profile,
       apptainerPath: executable.canonicalPath,

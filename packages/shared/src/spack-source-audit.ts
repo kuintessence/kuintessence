@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { spackCompatibility } from "./spack-lock";
 import { SpackMaterialDigestSchema } from "./spack-materials";
 
 export const SpackSourceAuditReportSchema = z
@@ -6,7 +7,7 @@ export const SpackSourceAuditReportSchema = z
     version: z.literal(1),
     validation: z.literal("isolated-source-audit"),
     manifestDigest: SpackMaterialDigestSchema,
-    spackVersion: z.literal("1.0.0"),
+    spackVersion: z.string().refine((value) => spackCompatibility(value) !== undefined),
     rootHash: z.string().regex(/^[a-z2-7]{32}$/),
     nodeCount: z.number().int().min(1).max(10_000),
     externalCount: z.number().int().min(0).max(10_000),

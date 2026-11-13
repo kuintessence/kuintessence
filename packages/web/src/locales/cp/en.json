@@ -817,7 +817,35 @@
       "importUnavailable": "The import backend is currently unavailable; persistent upload or import status is retained for inspection.",
       "failed": "Data management action failed",
       "selectAssetForVersions": "Select a data asset to view versions and replicas.",
-      "selectVersionForReplicas": "Select a version to view replicas."
+      "selectVersionForReplicas": "Select a version to view replicas.",
+      "disclosure": {
+        "title": "Cross-institution data consent",
+        "scope": "Scope",
+        "scopeValue": "Current organization · Selected version",
+        "status": "This policy",
+        "allowed": "Allowed",
+        "notAllowed": "Not authorized or expired",
+        "expiry": "Expires at",
+        "reason": "Reason for approval or revocation",
+        "permission": "Permit this organization to copy this version to another institution. Each export still requires approval; recipient import and use permissions are granted separately.",
+        "allow": "Allow cross-institution copying",
+        "renew": "Update expiry",
+        "revoke": "Revoke consent",
+        "loadFailed": "Unable to read policy. Check asset management access, then refresh.",
+        "saveFailed": "Check the submission result. Refresh the policy before making another change.",
+        "scopeConflict": "The existing policy includes other permissions. Ask its manager to resolve it; this form cannot overwrite it.",
+        "desktopOnly": "Use a desktop to change consent.",
+        "otherRules": "Other applicable policies ({{count}})",
+        "restricted": "Copying restricted",
+        "moreRules": "Only the first 100 policies are shown. Authorization checks every applicable policy.",
+        "subject": {
+          "user": "Current user",
+          "org": "Current organization",
+          "provider-org": "Provider organization",
+          "platform": "Platform policy"
+        },
+        "versionUnavailable": "This version is unpublished or withdrawn. New approvals and renewals are unavailable."
+      }
     },
     "metering": {
       "title": "Usage metering",

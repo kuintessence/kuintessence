@@ -162,16 +162,35 @@ export const ArtifactReplicaStatusSchema = z.enum([
 ]);
 export type ArtifactReplicaStatus = z.infer<typeof ArtifactReplicaStatusSchema>;
 
+export const SandboxArtifactMemberSchema = z.strictObject({
+  relativePath: z
+    .string()
+    .min(1)
+    .max(255)
+    .refine(
+      (value) =>
+        !value.includes("\\") &&
+        !value.includes("\0") &&
+        value.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
+      { message: "artifact member must be a normalized relative path" },
+    ),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  sizeBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+});
+export type SandboxArtifactMember = z.infer<typeof SandboxArtifactMemberSchema>;
+
 export const WorkflowArtifactSchema = z.strictObject({
   id: UuidSchema,
   workflowRunId: UuidSchema,
   producerNodeId: z.string().min(1),
+  producerJobId: UuidSchema.nullish(),
   descriptor: z.string().min(1),
   ioType: ScriptIoTypeSchema,
   contentHash: z.string().regex(/^[0-9a-f]{64}$/),
   sizeBytes: z.number().int().nonnegative(),
   durability: ArtifactDurabilitySchema,
   netdriveFileId: UuidSchema.nullish(),
+  fileMembers: z.array(SandboxArtifactMemberSchema).max(256).nullish(),
   createdAt: z.coerce.date(),
   persistentAt: z.coerce.date().nullish(),
 });
@@ -459,6 +478,16 @@ export const SandboxDispatchMountSchema = z.strictObject({
 });
 export type SandboxDispatchMount = z.infer<typeof SandboxDispatchMountSchema>;
 
+export const SandboxComputeResourcesSchema = z.strictObject({
+  cpus: z.number().int().positive().max(2_147_483_647),
+  memoryMb: z
+    .number()
+    .int()
+    .positive()
+    .max(Math.floor(Number.MAX_SAFE_INTEGER / 1_048_576)),
+});
+export type SandboxComputeResources = z.infer<typeof SandboxComputeResourcesSchema>;
+
 export const SandboxUnsignedManifestSchema = z
   .strictObject({
     jobId: UuidSchema,
@@ -480,6 +509,7 @@ export const SandboxUnsignedManifestSchema = z
     executionProfile: SandboxTrustedExecutionProfileSchema.optional(),
     identity: SandboxDispatchIdentitySchema,
     mounts: z.array(SandboxDispatchMountSchema).max(256),
+    resources: SandboxComputeResourcesSchema,
     limits: z.strictObject({
       pids: z.number().int().positive(),
       outputBytes: z.number().int().positive(),

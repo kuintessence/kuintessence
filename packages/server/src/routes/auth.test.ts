@@ -3,6 +3,7 @@ import {
   authSessions,
   authzOutbox,
   createPgDb,
+  orgs,
   type PgDb,
   userOrgMemberships,
   users,
@@ -112,6 +113,12 @@ describe("POST /auth/login", () => {
       .from(userOrgMemberships)
       .where(eq(userOrgMemberships.userId, u.id));
     expect(decoded.orgIds).toEqual(memberships.map(({ orgId }) => orgId));
+    const [developmentOrg] = await testDb
+      .select()
+      .from(orgs)
+      .where(eq(orgs.name, "Development Compute Provider"));
+    expect(developmentOrg).toBeDefined();
+    expect(memberships.some(({ orgId }) => orgId === developmentOrg?.id)).toBe(true);
   });
 
   test("rejects invalid email", async () => {

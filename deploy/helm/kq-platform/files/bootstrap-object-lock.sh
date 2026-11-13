@@ -73,6 +73,8 @@ while :; do
 done
 
 rc mb --ignore-existing "local/${netdrive_bucket}" >/dev/null
+# Cloud records pin verified versions; later writes must not replace their bytes.
+rc version enable "local/${netdrive_bucket}" >/dev/null
 rc mb --ignore-existing "local/${staging_bucket}" >/dev/null
 rc mb --ignore-existing --with-lock "local/${immutable_bucket}" >/dev/null
 rc version enable "local/${immutable_bucket}" >/dev/null
@@ -150,6 +152,38 @@ cat >"${work_dir}/policy.json" <<EOF
         "arn:aws:s3:::${staging_bucket}",
         "arn:aws:s3:::${staging_bucket}/*"
       ]
+    },
+    {
+      "Sid": "ReadNetDriveObjectVersions",
+      "Effect": "Allow",
+      "Action": "s3:GetObjectVersion",
+      "Resource": ["arn:aws:s3:::${netdrive_bucket}/netdrive/*", "arn:aws:s3:::${netdrive_bucket}/federation-results/*", "arn:aws:s3:::${netdrive_bucket}/federation-inputs/*"]
+    },
+    {
+      "Sid": "ListFederationResultResidue",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucketMultipartUploads", "s3:ListBucketVersions"],
+      "Resource": "arn:aws:s3:::${netdrive_bucket}",
+      "Condition": {"StringLike": {"s3:prefix": "federation-results/*"}}
+    },
+    {
+      "Sid": "DeleteFederationResultVersions",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObjectVersion",
+      "Resource": "arn:aws:s3:::${netdrive_bucket}/federation-results/*"
+    },
+    {
+      "Sid": "ListFederationInputResidue",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucketMultipartUploads", "s3:ListBucketVersions"],
+      "Resource": "arn:aws:s3:::${netdrive_bucket}",
+      "Condition": {"StringLike": {"s3:prefix": "federation-inputs/*"}}
+    },
+    {
+      "Sid": "DeleteFederationInputVersions",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObjectVersion",
+      "Resource": "arn:aws:s3:::${netdrive_bucket}/federation-inputs/*"
     },
     {
       "Sid": "ReadImmutableBucketControls",

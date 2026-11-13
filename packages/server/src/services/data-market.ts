@@ -226,6 +226,7 @@ export interface CpDataImportInput {
 }
 
 export interface DataMarketRepository {
+  isFederationDataset(assetId: string): Promise<boolean>;
   listCatalogCandidates(query: Pick<DataAssetListQuery, "query" | "tag">): Promise<DataAsset[]>;
   listProviderAssets(
     providerOrgIds: string[],
@@ -379,6 +380,10 @@ export interface DataMarketServiceDeps {
 export class DataMarketService {
   constructor(private readonly deps: DataMarketServiceDeps) {}
 
+  async requireManage(actor: DataMarketActor, assetId: string): Promise<void> {
+    await this.assertAuthorized(actor, await this.requireAsset(assetId), "manage");
+  }
+
   async listCatalog(actor: DataMarketActor, query: DataAssetListQuery) {
     const candidates = await this.deps.repository.listCatalogCandidates(query);
     const visible = await filterAsync(candidates, async (asset) =>
@@ -451,6 +456,13 @@ export class DataMarketService {
       );
     }
     const asset = await this.requireProviderManagedAsset(actor, input.assetId);
+    await this.assertLocalContent(asset.id);
+    if (source.relativePath.split(/[\\/]/).includes(".federation-media"))
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        "Federation media requires source-authorized publication",
+        403,
+      );
     const coordinator = this.deps.dataScanCoordinator;
     if (!coordinator) {
       throw new AppError(
@@ -756,6 +768,7 @@ export class DataMarketService {
 
   async reviewPublicAsset(actor: DataMarketActor, assetId: string, review: PublicAssetReviewInput) {
     assertPlatformAdmin(actor);
+    await this.assertLocalContent(assetId);
     const result = await this.deps.repository.reviewPublicAsset({
       assetId,
       reviewedBy: actor.userId,
@@ -796,6 +809,7 @@ export class DataMarketService {
     },
     idempotencyKey: string,
   ) {
+    await this.assertLocalContent(input.assetId);
     assertDataAssetEntryPath(input.path);
     const asset = await this.requireAsset(input.assetId);
     await this.assertAuthorized(actor, asset, "manage");
@@ -818,6 +832,7 @@ export class DataMarketService {
       ownerUserId: actor.userId,
     });
     await this.assertAuthorized(actor, await this.requireAsset(assetId), "manage");
+    await this.assertLocalContent(assetId);
     return this.deps.uploadPort.commitUploadSession({
       sessionId,
       ownerUserId: actor.userId,
@@ -826,6 +841,7 @@ export class DataMarketService {
   }
 
   async importVersion(actor: DataMarketActor, input: DataVersionInput, idempotencyKey: string) {
+    await this.assertLocalContent(input.assetId);
     for (const file of input.files) assertDataAssetEntryPath(file.path);
     const asset = await this.requireAsset(input.assetId);
     await this.assertAuthorized(actor, asset, "manage");
@@ -871,6 +887,18 @@ export class DataMarketService {
         403,
       );
     }
+    if (await this.deps.repository.isFederationDataset(asset.id)) {
+      if (
+        !asset.providerOrgId ||
+        actor.orgId !== asset.providerOrgId ||
+        !actor.orgIds.includes(asset.providerOrgId)
+      )
+        throw new AppError(
+          ErrorCode.FORBIDDEN,
+          "Federated data use requests require the receiving organization",
+          403,
+        );
+    }
     if (await this.authorize(actor, asset, "use")) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Data access is already granted", 400);
     }
@@ -884,6 +912,14 @@ export class DataMarketService {
     );
   }
 
+  private async assertLocalContent(assetId: string) {
+    if (await this.deps.repository.isFederationDataset(assetId))
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        "Federated dataset contents require source-authorized publication",
+        403,
+      );
+  }
   private async requireAsset(assetId: string): Promise<DataAsset> {
     const asset = await this.deps.repository.getAsset(assetId);
     if (!asset) throw new AppError(ErrorCode.NOT_FOUND, "Data asset not found", 404);
@@ -1043,13 +1079,16 @@ function assertDataAssetEntryPath(path: string): void {
   }
 }
 
-export function localPermission(
+export async function localPermission(
   actor: DataMarketActor,
   asset: DataAsset,
   permission: "view" | "use" | "manage",
   repository: DataMarketRepository,
-): Promise<boolean> | boolean {
-  if (permission === "use" && requiresActiveEntitlementUse(asset)) {
+): Promise<boolean> {
+  if (
+    permission === "use" &&
+    (requiresActiveEntitlementUse(asset) || (await repository.isFederationDataset(asset.id)))
+  ) {
     return repository.hasActiveAccess({
       assetId: asset.id,
       actorUserId: actor.userId,

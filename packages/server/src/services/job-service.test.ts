@@ -2,9 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import {
   agents,
+  authzOutbox,
   createPgDb,
   dataAssets,
   dataAssetVersions,
+  dataGrants,
   dataLocations,
   ecosystemReleaseAssets,
   ecosystemReleases,
@@ -24,6 +26,7 @@ import {
 } from "@kuintessence/db";
 import { ErrorCode, JobStatus } from "@kuintessence/shared";
 import { eq, like } from "drizzle-orm";
+import { hasActiveDataAccess } from "./data-access-decision";
 import { type JobMeteringRecorder, JobService } from "./job-service";
 import type { JobUsageRecord } from "./metering";
 import { createMeteringBundle } from "./metering-binding";
@@ -282,6 +285,56 @@ describe("JobService", () => {
     expect(persistedRun?.stepJobs).toEqual({ solve: job.id });
   });
 
+  test("outer transaction rollback removes the job, data bindings and workflow mapping together", async () => {
+    const [run] = await db
+      .insert(workflowRuns)
+      .values({
+        name: "test-job-svc-outer-transaction",
+        submittedBy: testUserId,
+        status: "running",
+        stepJobs: {},
+      })
+      .returning();
+    if (!run) throw new Error("failed to create workflow run");
+    workflowRunIds.push(run.id);
+    let attemptedId = "";
+    await expect(
+      db.transaction(async (tx) => {
+        const job = await service.submitInTransaction(
+          tx,
+          {
+            name: "test-job-svc-rollback",
+            command: "echo rollback",
+            resources: { cpus: 1, memoryMb: 512 },
+            dataInputs: {
+              reference: {
+                source: "data-market",
+                assetId: dataAssetId,
+                versionId: dataVersionId,
+                manifestDigest: "sha256:binding-immutable",
+                selectedEntries: [],
+              },
+            },
+          },
+          testUserId,
+          { workflow: { runId: run.id, nodeId: "attempt" } },
+        );
+        attemptedId = job.id;
+        expect(
+          await tx.select().from(jobDataBindings).where(eq(jobDataBindings.jobId, job.id)),
+        ).toHaveLength(1);
+        throw new Error("external invocation binding failed");
+      }),
+    ).rejects.toThrow("external invocation binding failed");
+    expect(attemptedId).not.toBe("");
+    expect(await service.getById(attemptedId)).toBeNull();
+    expect(
+      await db.select().from(jobDataBindings).where(eq(jobDataBindings.jobId, attemptedId)),
+    ).toHaveLength(0);
+    const [rolledBackRun] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id));
+    expect(rolledBackRun?.stepJobs).toEqual({});
+  });
+
   test("persists immutable Data Market bindings for placement retries", async () => {
     const job = await service.submit(
       {
@@ -318,6 +371,60 @@ describe("JobService", () => {
       .where(eq(jobDataBindings.jobId, job.id));
     expect(binding?.deliveryPolicy.download).toBe("deny");
     expect(binding?.allowedLocationIds).toEqual([dataLocationId]);
+  });
+
+  test("data authorization expiry and its projection share the caller transaction", async () => {
+    const [grant] = await db
+      .insert(dataGrants)
+      .values({
+        dataAssetId: inaccessibleDataAssetId,
+        subjectKind: "user",
+        subjectId: testUserId,
+        capabilities: ["use"],
+        status: "active",
+        startsAt: new Date(Date.now() - 120000),
+        expiresAt: new Date(Date.now() - 60000),
+      })
+      .returning();
+    if (!grant) throw new Error("missing grant");
+    const input = {
+      assetId: inaccessibleDataAssetId,
+      actorUserId: testUserId,
+      orgIds: [testOrgId],
+      capability: "use" as const,
+    };
+    try {
+      await expect(
+        db.transaction(async (tx) => {
+          expect(await hasActiveDataAccess(tx, input)).toBe(false);
+          const [expired] = await tx.select().from(dataGrants).where(eq(dataGrants.id, grant.id));
+          expect(expired?.status).toBe("expired");
+          expect(
+            (
+              await tx
+                .select()
+                .from(authzOutbox)
+                .where(eq(authzOutbox.resourceId, inaccessibleDataAssetId))
+            ).length,
+          ).toBeGreaterThan(0);
+          throw new Error("rollback authorization update");
+        }),
+      ).rejects.toThrow("rollback authorization update");
+      const [rolledBack] = await db.select().from(dataGrants).where(eq(dataGrants.id, grant.id));
+      expect(rolledBack?.status).toBe("active");
+      expect(
+        await db
+          .select()
+          .from(authzOutbox)
+          .where(eq(authzOutbox.resourceId, inaccessibleDataAssetId)),
+      ).toHaveLength(0);
+      expect(await hasActiveDataAccess(db, input)).toBe(false);
+      const [committed] = await db.select().from(dataGrants).where(eq(dataGrants.id, grant.id));
+      expect(committed?.status).toBe("expired");
+    } finally {
+      await db.delete(authzOutbox).where(eq(authzOutbox.resourceId, inaccessibleDataAssetId));
+      await db.delete(dataGrants).where(eq(dataGrants.id, grant.id));
+    }
   });
 
   test("rejects an unauthorized Data Market binding before creating a job", async () => {

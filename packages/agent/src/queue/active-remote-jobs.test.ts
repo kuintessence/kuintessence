@@ -64,6 +64,74 @@ describe("ActiveRemoteJobs", () => {
   });
 });
 
+test.each([
+  false,
+  true,
+])("recovers Sandbox metadata without inventing signed resources (legacy=%s)", async (legacy) => {
+  const db = createSqliteDb(":memory:");
+  const store = new ActiveRemoteJobs(db);
+  const spec = {
+    jobId: "job",
+    name: "sandbox",
+    command: "",
+    cpus: 1,
+    memoryMb: 128,
+    gpus: 0,
+    wallTimeSec: 60,
+    workingDir: "/managed/job",
+    envVars: {},
+    schedulerName: "kq-job",
+    queueTargetMode: "named" as const,
+    queueValidationMode: "enforce" as const,
+    sandbox: {
+      language: "python" as const,
+      entrypoint: "main.py",
+      scriptContent: "print('ok')",
+      scriptHostPath: "/managed/job/main.py",
+      contextHostPath: "/managed/job/context.json",
+      runtimeKind: "OCI" as const,
+      runtimePath: `registry.test/runtime@sha256:${"a".repeat(64)}`,
+      executionMode: "RootImpersonation" as const,
+      identity: {
+        backend: "Kubernetes" as const,
+        mode: "MappedAccount" as const,
+        accountId: "00000000-0000-0000-0000-000000000001",
+        namespace: "original-ns",
+        serviceAccount: "original-account",
+      },
+      mounts: [
+        {
+          descriptor: "output",
+          ioType: "File" as const,
+          mode: "WriteOnly" as const,
+          relativePath: "output",
+          containerPath: "/kq/outputs/output",
+          hostPath: "/managed/job/output",
+          sizeLimitBytes: 100,
+          required: true,
+          batchEntries: [],
+        },
+      ],
+      ...(legacy ? {} : { resources: { cpus: 1, memoryMb: 128 } }),
+      limits: { pids: 8, outputBytes: 100, logBytes: 100 },
+      kubernetesArtifactPvc: "original-pvc",
+    },
+  };
+  await store.recordSubmitted({
+    spec,
+    schedulerJobId: "scheduler",
+    dispatchId: "job:7",
+    expectedOutputs: [],
+  });
+  const [restored] = await new ActiveRemoteJobs(db).listActive();
+  expect(restored?.dispatchId).toBe("job:7");
+  expect(restored?.spec).toMatchObject(spec);
+  expect(restored?.spec.sandbox?.mounts).toHaveLength(1);
+  expect(restored?.spec.sandbox?.resources).toEqual(
+    legacy ? undefined : { cpus: 1, memoryMb: 128 },
+  );
+});
+
 test("submission identity and inputs remain immutable across retries and concurrent confirmations", async () => {
   const store = new ActiveRemoteJobs(createSqliteDb(":memory:"));
   const spec = {
@@ -106,6 +174,29 @@ test("submission identity and inputs remain immutable across retries and concurr
     expectedOutputs: outputs,
     schedulerJobId: confirmed?.schedulerJobId ?? "",
   });
+  const schedulerUid = crypto.randomUUID();
+  await store.recordSubmitted({
+    spec,
+    expectedOutputs: outputs,
+    schedulerJobId: confirmed?.schedulerJobId ?? "",
+    dispatchId: "immutable:1",
+    schedulerUid,
+  });
+  expect((await store.get(spec.jobId))?.schedulerUid).toBe(schedulerUid);
+  for (const changed of [
+    { dispatchId: "immutable:2", schedulerUid },
+    { dispatchId: "immutable:1", schedulerUid: crypto.randomUUID() },
+  ]) {
+    await expect(
+      store.recordSubmitted({
+        spec,
+        expectedOutputs: outputs,
+        schedulerJobId: confirmed?.schedulerJobId ?? "",
+        ...changed,
+      }),
+    ).rejects.toThrow("identity");
+  }
+  expect((await store.get(spec.jobId))?.schedulerUid).toBe(schedulerUid);
   await expect(store.recordSubmissionIntent(spec, outputs)).rejects.toThrow("already exists");
   expect((await store.get(spec.jobId))?.schedulerJobId).toBe(confirmed?.schedulerJobId);
   expect((await store.get(spec.jobId))?.submittedAfter).toBe(original?.submittedAfter);
@@ -157,6 +248,7 @@ test("an accepted submission with a lost CLI reply is recovered from disk and ac
     const adapter = new SlurmAdapter("23", {
       spawner: {
         run: async (argv) => {
+          if (argv[0] === "id") return { exitCode: 0, stdout: "1000\n", stderr: "" };
           if (argv[0] === "sbatch") {
             submissions++;
             return {

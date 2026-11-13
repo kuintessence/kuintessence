@@ -4,6 +4,7 @@ import {
   licensedMaterialMappings,
   licenseEntitlementClaims,
   type PgDb,
+  type PgTransaction,
   sandboxRuntimeContractBindings,
   softwareAssetRevisions,
   softwareAssets,
@@ -62,6 +63,7 @@ export interface SandboxRuntimeBindingSnapshot {
 
 export interface LicensedMaterialSnapshot {
   id: string;
+  mappingId: string;
   providerOrgId: string;
   agentId: string;
   assetId: string;
@@ -154,27 +156,42 @@ export class LicenseRuntimeGovernanceService {
   }
 
   async evaluateLicense(input: LicenseGateInput): Promise<GovernanceBlock[]> {
+    return (await this.evaluateLicenseAuthorization(input)).blocks;
+  }
+
+  async evaluateLicenseAuthorization(input: LicenseGateInput): Promise<{
+    blocks: GovernanceBlock[];
+    expiresAtUnixMs: number;
+  }> {
     const policy = input.policy;
-    if (!isValidLicensePolicy(policy)) return [licensePolicyRequired()];
+    if (!isValidLicensePolicy(policy))
+      return { blocks: [licensePolicyRequired()], expiresAtUnixMs: 0 };
     const blocks: GovernanceBlock[] = [];
+    let expiresAtUnixMs = Number.POSITIVE_INFINITY;
+    const entitlements = new Map<LicenseEntitlementScope, Promise<number | undefined>>();
+    const approved = async (scope: LicenseEntitlementScope, subjectIds: string[]) => {
+      let pending = entitlements.get(scope);
+      if (!pending) {
+        pending = this.approvedEntitlementDeadline({
+          assetKey: input.assetKey,
+          assetId: input.assetId,
+          subjectIds,
+          scope,
+          now: input.now,
+        });
+        entitlements.set(scope, pending);
+      }
+      const deadline = await pending;
+      if (deadline === undefined) return false;
+      expiresAtUnixMs = Math.min(expiresAtUnixMs, deadline);
+      return true;
+    };
     const reviewedInstall =
       input.installRequested &&
       policy.autoInstallReviewRequired === true &&
       Boolean(input.assetId) &&
-      (await this.hasApprovedEntitlement({
-        assetKey: input.assetKey,
-        assetId: input.assetId,
-        subjectIds: input.providerEntitlementSubjectIds,
-        scope: "provider-source-install",
-        now: input.now,
-      })) &&
-      (await this.hasApprovedEntitlement({
-        assetKey: input.assetKey,
-        assetId: input.assetId,
-        subjectIds: input.consumerEntitlementSubjectIds,
-        scope: "consumer-use",
-        now: input.now,
-      }));
+      (await approved("provider-source-install", input.providerEntitlementSubjectIds)) &&
+      (await approved("consumer-use", input.consumerEntitlementSubjectIds));
     if (
       input.installRequested &&
       !reviewedInstall &&
@@ -188,14 +205,9 @@ export class LicenseRuntimeGovernanceService {
       });
     }
     const consumerEntitled =
-      policy.acceptanceRequired || policy.consumerUseEntitlementRequired
-        ? await this.hasApprovedEntitlement({
-            assetKey: input.assetKey,
-            assetId: input.assetId,
-            subjectIds: input.consumerEntitlementSubjectIds,
-            scope: "consumer-use",
-            now: input.now,
-          })
+      (policy.acceptanceRequired && !input.acceptedByConsumer) ||
+      policy.consumerUseEntitlementRequired
+        ? await approved("consumer-use", input.consumerEntitlementSubjectIds)
         : false;
     if (policy.acceptanceRequired && !input.acceptedByConsumer && !consumerEntitled) {
       blocks.push({
@@ -204,14 +216,14 @@ export class LicenseRuntimeGovernanceService {
         remediation: "Submit and obtain approval for a consumer use entitlement.",
       });
     }
-    if (policy.providerSourceInstallEntitlementRequired) {
-      const allowed = await this.hasApprovedEntitlement({
-        assetKey: input.assetKey,
-        assetId: input.assetId,
-        subjectIds: input.providerEntitlementSubjectIds,
-        scope: "provider-source-install",
-        now: input.now,
-      });
+    if (
+      policy.providerSourceInstallEntitlementRequired ||
+      (!input.installRequested && policy.providerEntitlementRequiredForUse)
+    ) {
+      const allowed = await approved(
+        "provider-source-install",
+        input.providerEntitlementSubjectIds,
+      );
       if (!allowed) {
         blocks.push({
           code: "LICENSE_PROVIDER_ENTITLEMENT_REQUIRED",
@@ -231,7 +243,7 @@ export class LicenseRuntimeGovernanceService {
         });
       }
     }
-    return blocks;
+    return { blocks, expiresAtUnixMs: blocks.length ? 0 : expiresAtUnixMs };
   }
 
   async evaluateRuntime(input: RuntimeGateInput): Promise<GovernanceBlock[]> {
@@ -338,6 +350,8 @@ export class LicenseRuntimeGovernanceService {
     Array<{
       selector: string;
       licenseSubject: string;
+      mappingId: string;
+      assetId: string;
       targetPath: string;
       requiredElements: string[];
       expectedFingerprint: string;
@@ -373,6 +387,8 @@ export class LicenseRuntimeGovernanceService {
         return {
           selector: request.selector,
           licenseSubject: material.licenseSubject,
+          mappingId: material.mappingId,
+          assetId: material.assetId,
           targetPath: request.targetPath,
           requiredElements: request.requiredElements,
           expectedFingerprint: material.fingerprint,
@@ -381,20 +397,26 @@ export class LicenseRuntimeGovernanceService {
     );
   }
 
-  private async hasApprovedEntitlement(input: {
+  private async approvedEntitlementDeadline(input: {
     assetKey: string;
     assetId?: string;
     subjectIds: string[];
     scope: LicenseEntitlementScope;
     now?: Date;
-  }): Promise<boolean> {
-    if (input.subjectIds.length === 0) return false;
+  }): Promise<number | undefined> {
+    if (input.subjectIds.length === 0) return undefined;
     const now = input.now ?? new Date();
     const records = await this.repository.listEntitlements(input);
-    return records.some(
-      (record) =>
-        record.status === "approved" && (record.expiresAt == null || record.expiresAt > now),
-    );
+    const deadlines = records
+      .filter(
+        (record) =>
+          input.subjectIds.includes(record.subjectId) &&
+          record.scope === input.scope &&
+          record.status === "approved" &&
+          (record.expiresAt == null || record.expiresAt > now),
+      )
+      .map((record) => record.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY);
+    return deadlines.length ? Math.max(...deadlines) : undefined;
   }
 }
 
@@ -432,10 +454,13 @@ function licensePolicyRequired(): GovernanceBlock {
 /** PostgreSQL adapter. It intentionally returns metadata only: no evidence or
  * licensed bytes are selected from the database. */
 export class PgGovernanceRepository implements GovernanceRepository {
-  constructor(private readonly db: PgDb) {}
+  constructor(
+    private readonly db: PgDb | PgTransaction,
+    private readonly lockReads = false,
+  ) {}
 
   async getCanonicalLicensePolicy(assetId: string): Promise<LicensePolicySnapshot | null> {
-    const rows = await this.db
+    const rowsQuery = this.db
       .select({ licensePolicy: ecosystemReleaseAssets.licensePolicy })
       .from(ecosystemReleaseAssets)
       .innerJoin(
@@ -447,6 +472,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       )
       .where(eq(ecosystemReleaseAssets.assetId, assetId))
       .limit(2);
+    const rows = await (this.lockReads ? rowsQuery.for("share") : rowsQuery);
     if (rows.length === 1 && rows[0]) return licensePolicySnapshot(rows[0].licensePolicy);
     if (rows.length > 0) return null;
     return (
@@ -458,7 +484,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
   private async getSnapshotUpstreamLicensePolicy(
     assetId: string,
   ): Promise<LicensePolicySnapshot | null> {
-    const [snapshot] = await this.db
+    const snapshotQuery = this.db
       .select({
         id: softwareAssets.id,
         kind: softwareAssets.kind,
@@ -474,6 +500,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       .from(softwareAssets)
       .where(eq(softwareAssets.id, assetId))
       .limit(1);
+    const [snapshot] = await (this.lockReads ? snapshotQuery.for("share") : snapshotQuery);
     const provenance = UpstreamVersionSnapshotProvenanceSchema.safeParse(snapshot?.provenance);
     const payload = SoftwareAssetPayloadSchema.safeParse(snapshot?.payload);
     if (
@@ -494,7 +521,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       return null;
     }
 
-    const revisions = await this.db
+    const revisionsQuery = this.db
       .select({
         payload: softwareAssetRevisions.payload,
         provenance: softwareAssetRevisions.provenance,
@@ -502,6 +529,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       .from(softwareAssetRevisions)
       .where(eq(softwareAssetRevisions.assetId, snapshot.id))
       .limit(2);
+    const revisions = await (this.lockReads ? revisionsQuery.for("share") : revisionsQuery);
     const revision = revisions[0];
     if (
       revisions.length !== 1 ||
@@ -513,7 +541,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
     }
 
     const source = provenance.data.licensePolicySource;
-    const rows = await this.db
+    const rowsQuery = this.db
       .select({
         kind: ecosystemReleaseAssets.kind,
         licensePolicy: ecosystemReleaseAssets.licensePolicy,
@@ -535,6 +563,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
         ),
       )
       .limit(2);
+    const rows = await (this.lockReads ? rowsQuery.for("share") : rowsQuery);
     const policySource = rows[0];
     const sourcePayload = SoftwareAssetPayloadSchema.safeParse(policySource?.payload);
     if (
@@ -555,7 +584,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
   private async getSupersededUpstreamLicensePolicy(
     assetId: string,
   ): Promise<LicensePolicySnapshot | null> {
-    const [replacement] = await this.db
+    const replacementQuery = this.db
       .select({
         id: softwareAssets.id,
         kind: softwareAssets.kind,
@@ -569,6 +598,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       .from(softwareAssets)
       .where(eq(softwareAssets.id, assetId))
       .limit(1);
+    const [replacement] = await (this.lockReads ? replacementQuery.for("share") : replacementQuery);
     if (
       !replacement ||
       replacement.kind !== "spack-package" ||
@@ -580,7 +610,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       return null;
     }
 
-    const candidates = await this.db
+    const candidatesQuery = this.db
       .select({
         assetRevisionId: ecosystemReleaseAssets.assetRevisionId,
         kind: softwareAssets.kind,
@@ -607,6 +637,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
         ),
       )
       .limit(2);
+    const candidates = await (this.lockReads ? candidatesQuery.for("share") : candidatesQuery);
     const candidate = candidates[0];
     if (
       candidates.length !== 1 ||
@@ -629,7 +660,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
     ) {
       return null;
     }
-    const [replacementRevision] = await this.db
+    const replacementRevisionQuery = this.db
       .select({ id: softwareAssetRevisions.id })
       .from(softwareAssetRevisions)
       .where(
@@ -639,6 +670,9 @@ export class PgGovernanceRepository implements GovernanceRepository {
         ),
       )
       .limit(1);
+    const [replacementRevision] = await (this.lockReads
+      ? replacementRevisionQuery.for("share")
+      : replacementRevisionQuery);
     if (!replacementRevision) return null;
     return licensePolicySnapshot(candidate.licensePolicy);
   }
@@ -650,7 +684,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
     scope: LicenseEntitlementScope;
   }): Promise<LicenseEntitlementSnapshot[]> {
     if (input.subjectIds.length === 0) return [];
-    const rows = await this.db
+    const rowsQuery = this.db
       .select({
         claimantId: licenseEntitlementClaims.claimantId,
         entitlement: licenseEntitlementClaims.entitlement,
@@ -666,6 +700,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
           inArray(licenseEntitlementClaims.claimantId, input.subjectIds),
         ),
       );
+    const rows = await (this.lockReads ? rowsQuery.for("share") : rowsQuery);
     return rows.map((row) => ({
       subjectId: row.claimantId,
       scope: row.entitlement as LicenseEntitlementScope,
@@ -741,9 +776,10 @@ export class PgGovernanceRepository implements GovernanceRepository {
     if (input.agentId) {
       conditions.push(eq(licensedMaterialMappings.agentId, input.agentId));
     }
-    const [row] = await this.db
+    const query = this.db
       .select({
         id: licensedMaterialMappings.selector,
+        mappingId: licensedMaterialMappings.id,
         providerOrgId: licensedMaterialMappings.providerOrgId,
         agentId: licensedMaterialMappings.agentId,
         assetId: licensedMaterialMappings.assetId,
@@ -752,18 +788,25 @@ export class PgGovernanceRepository implements GovernanceRepository {
         elementSet: licensedMaterialMappings.elementSet,
         fingerprint: licensedMaterialMappings.fingerprint,
         status: licensedMaterialMappings.status,
+        revokedAt: licensedMaterialMappings.revokedAt,
+        assetLifecycle: softwareAssets.lifecycle,
       })
       .from(licensedMaterialMappings)
+      .innerJoin(softwareAssets, eq(softwareAssets.id, licensedMaterialMappings.assetId))
       .where(and(...conditions))
       .limit(1);
+    const [row] = await (this.lockReads ? query.for("share", { noWait: true }) : query);
     if (!row) return null;
-    const { assetId, licenseSubject, ...material } = row;
+    const { assetId, licenseSubject, revokedAt, assetLifecycle, ...material } = row;
     if (!assetId || !licenseSubject) return null;
     return {
       ...material,
       assetId,
       licenseSubject,
-      status: material.status as LicensedMaterialSnapshot["status"],
+      status:
+        revokedAt || ["revoked", "archived"].includes(assetLifecycle)
+          ? "revoked"
+          : (material.status as LicensedMaterialSnapshot["status"]),
     };
   }
 }

@@ -7,11 +7,12 @@
   },
   "packageManager": "bun@1.4.2",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "contracts/fabric/*"
   ],
   "scripts": {
     "dev": "bun run --filter '*' dev",
-    "test": "bun test packages/{shared,proto,db,server,agent,registry,cli}",
+    "test": "bun test packages/{shared,proto,db,server,agent,registry,cli,fabric-adapter} contracts/fabric scripts/fabric-case-check.test.ts scripts/fabric-evidence-diagnostics.test.ts",
     "test:unit": "bun scripts/test-unit.ts",
     "test:helm": "bun test scripts/helm-*.test.ts",
     "test:integration": "bun test packages/agent/test",
@@ -28,7 +29,7 @@
     "check:workflow-uses": "bun run scripts/check-workflow-uses.ts",
     "gui:bundle": "bun run --filter @kuintessence/cli build && bun run scripts/gui-prepare-sidecar.ts && bun run --filter @kuintessence/web build && cd gui && bun install && bun run tauri build",
     "gui:single-binary": "bun run scripts/gui-single-binary.ts",
-    "typecheck": "bun run --filter @kuintessence/proto generate && bun run --filter '*' typecheck && bun run typecheck:site-release",
+    "typecheck": "bun run --filter @kuintessence/proto generate && bun run --filter '*' typecheck && bun run typecheck:fabric-tests && bun run typecheck:site-release",
     "typecheck:site-release": "tsc --noEmit -p deploy/site-release/tsconfig.json",
     "build": "bun run --filter '*' build",
     "compose": "bun run scripts/compose.ts",
@@ -43,7 +44,21 @@
     "infra:reset-data": "docker compose --project-directory . -f deploy/compose/docker-compose.dev.yml down -v && docker compose --project-directory . -f deploy/compose/docker-compose.dev.yml up -d",
     "db:generate": "cd packages/db && DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bunx drizzle-kit generate",
     "db:migrate": "DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bun run packages/db/src/pg/migrate.ts",
-    "db:studio": "cd packages/db && DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bunx drizzle-kit studio"
+    "db:studio": "cd packages/db && DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bunx drizzle-kit studio",
+    "test:fabric": "bun test contracts/fabric packages/fabric-adapter scripts/fabric-case-check.test.ts scripts/fabric-evidence-diagnostics.test.ts",
+    "test:fabric:network": "bun scripts/fabric-evidence-network.ts",
+    "test:fabric:integration": "bun scripts/fabric-evidence-network.ts --database",
+    "typecheck:fabric-tests": "tsc --noEmit -p scripts/tsconfig.fabric.json",
+    "test:fabric:commercial": "bun scripts/fabric-evidence-network.ts --commercial",
+    "test:fabric:cases": "bun scripts/fabric-evidence-network.ts --cases",
+    "test:fabric:commercial:integration": "bun scripts/fabric-evidence-network.ts --commercial --database",
+    "test:fabric:market": "bun scripts/fabric-evidence-network.ts --market",
+    "test:fabric:gate": "bun scripts/fabric-evidence-network.ts --gate",
+    "test:fabric:execution": "bun scripts/fabric-evidence-network.ts --execution",
+    "test:federation:storage:recovery": "bun scripts/federation-storage-recovery.ts",
+    "test:federation:storage": "bun scripts/federation-storage-pressure.ts",
+    "test:federation:direct": "bun scripts/federation-live/direct.ts",
+    "test:fabric:gate:integration": "bun scripts/fabric-evidence-network.ts --gate --database"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",

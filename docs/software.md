@@ -284,11 +284,92 @@ published revision 仅在 source hash、runtime digest、扫描和有效 platfor
 attestation 都匹配时可用 SharedService；attestation 不跨 revision 或 CP 继承。
 原始 command 与 terminal 只用映射账号，执行前核对 username/uid/gid，拒绝 root 身份。
 
-SelfAccount 默认关闭，只适用于 Slurm 且映射 Unix 身份等于 Agent 自身非 root 身份。
+SelfAccount 默认关闭，支持 Slurm 和 PBS Pro；映射的 Unix 用户名、UID、GID 必须精确匹配 Agent 自身非 root 身份。
 须有匹配 runtime、签名、compute node、有效 evidence ID/有效期的 attestation；
-PBS/Torque 不可用，restrictedNoEgress 也不可用。
+Torque 与 restrictedNoEgress 不支持 SelfAccount；该模式不授予 root impersonation 权限。
+另须配置 `AGENT_SANDBOX_CGROUP_CHECK_PATH`、`AGENT_SANDBOX_CGROUP_CHECK_SHA256` 和
+`AGENT_SANDBOX_ATTESTATION_QUEUE`。检查器须为 root 管理的规范绝对路径，完整父目录链
+不可被组或其他用户写入；节点提供 Python 3.8+。启动探测在该明确队列申请 1 CPU/128 MiB，
+实际核对本作业内核 CPU、内存及 swap 上限，再检查运行时隔离，不接受仅匹配 cgroup 路径。
+证明 ID 绑定检查器路径/摘要及队列。队列随运行时能力上报，Server 签发前核对实际选中队列；
+联邦续租还核对原 Job 与原 outbox 的队列。SelfAccount 需显式选择已探测队列，不能依赖
+可能变化的调度器默认队列；Agent 也会在提交前核对。
+
+运行时镜像须提供 `/bin/bash`、`/bin/true`、`/bin/uname`、`/usr/bin/timeout`。
+启动探测先在相同隔离参数、未加载待测 seccomp 文件的条件下执行固定对照命令：
+`uname` 成功，回环 TCP 连接因无监听或无路由返回明确错误。加载正式策略后，socket
+必须返回 EPERM；专用 probe 策略须令 `uname` 返回 EPERM。正式策略无需禁止 `uname`。
+两类错误检查均固定 C locale 并核对退出码，命令缺失、超时或容器启动失败不能当成通过。
+同时检查容器 `/proc/net/dev` 只能包含回环接口；探测不访问公网。
+证明 ID 也绑定 probe 策略摘要。切换策略或升级探测实现后须重新获取证明。
+
+SIF 签名验证支持两种互斥的信任配置：PEM 使用现有
+`AGENT_SANDBOX_SIF_PUBLIC_KEY_PATH`/`AGENT_SANDBOX_SIF_PUBLIC_KEY_SHA256`；
+OpenPGP 使用 `AGENT_SANDBOX_SIF_PGP_FINGERPRINT`（40 位指纹，大小写归一化）。
+OpenPGP 通过 `apptainer verify --all --local --json` 离线验证全部对象，要求文件系统对象
+及所有验证记录均匹配固定指纹，签名和数据校验全部成功。全局受信 keyring 中的密钥
+可能报告 `KeyLocal=false`，该字段不代表验证失败；禁止依赖在线 keyserver 临时获取信任。
+
+root 原生探测接口已支持 `AGENT_SANDBOX_ATTESTATION_ACCOUNT`：明确指定已存在的非 root
+Unix 账户，getent 返回的用户名、UID、GID 和 home 须合法。调度 CLI 通过 setpriv 和最小环境
+以该身份执行，脚本再核对实际 UID/GID。root 探测要求 OpenPGP 指纹及固定 ECL 文件摘要、
+结构合法的未签名反例 SIF。计算节点核对 Apptainer buildcfg 的实际配置目录、ECL 文件和
+反例 SIF 摘要；只有明确的 ECL 签名拒绝及预期退出码才通过，普通启动失败不能替代。
+证明 ID 绑定探测账户、PGP 指纹、ECL 和反例摘要。
+首次探测会创建受保护的沙箱目录，再核对规范路径、所有权及权限。
+Agent 的 HPC root 启动、周期刷新和能力发布现统一使用实际运行证明，不再以布尔开关或
+手填 `signatureVerified` 作为就绪依据。首次探测失败仍保留派发处理器，后续证明通过后可恢复；
+每次验签和提交仍独立检查有效性。受限执行 profile 随证明重新验证并同步更新。
+Server 首次签发、Agent 验签/提交及联邦续租均绑定相同证明；续租同时核对原 Job 与原派发消息
+中的队列，并把租约期限限制在证明到期前。已有旧作业可继续监控和停止，缺证明的新提交会拒绝。
+
+所有 HPC 作业均固定已验证 Apptainer、seccomp 与 cgroup 检查器；普通 root 作业直接加载策略，
+受限 profile 继续由可信 wrapper 加载本地固定策略。提交 CLI 清除继承环境，作业不传入用户环境变量。
+Slurm 使用 nodelist，PBS Pro 使用 host 资源，Torque 使用 nodes，选择证明中的首个节点；
+执行前再次核对 hostname。当前证明来自单节点探测，尚不表示整个队列或其他节点通过验证。
+PBS host/Torque 节点名须与实际 hostname 一致；别名不一致会拒绝执行，不能去掉节点约束绕过。
+PBS Pro 的 SelfAccount 同样要求已证明的队列／节点、逐作业 cgroup 检查、签名派发和联邦续租约束；不扩大 Torque 或 root 权限。Kubernetes 保持其独立的 OCI/节点策略验证路径。
+
+真实 Slurm 已通过 root 普通账户签名任务执行及输入/输出校验；PBS 双平台链路已通过真实
+启动证明、加密介质交付、DATA_WAITING 自动恢复、受限作业读取数据及来源撤权后确认停机。
+Torque 原生运行、跨节点及掉电恢复仍待验收。
+
+原生探测通过实际调度器适配器提交 1 CPU/128 MiB、最长运行 120 秒的作业，
+逐次 CLI 调用最多 10 秒，完成观察窗口为 150 秒。只有原作业成功终止且输出合法节点标记，
+才生成证明。等待超时或状态查询异常时取消原 Job，并要求正向停止确认后才删除文件；
+取消请求成功本身不作为停止证明。
+未取得提交结果、无法确认停止或 Agent 中断时，保留 `AGENT_SANDBOX_ROOT/.attest-active/`
+内的脚本及版本化 `job.json` 收据（原 KQ UUID、调度器、队列、执行账号、提交时间、阶段和已知 scheduler ID）。
+Linux Agent 需要 util-linux `flock`；同一 root 的 `.attestation.lock` 持久文件串行化恢复、提交和清理，
+进程退出释放内核锁。不得删除或替换锁文件；存储必须支持可靠的文件锁、原子 rename 和文件/目录 fsync。
+收据先同步到磁盘，再提交原生作业；未提交的准备目录和已确认停止的清理目录可继续回收。
+
+重启或周期刷新会按原 UUID、名称、提交时间与执行身份查询原任务；队列、账号和调度器必须保持一致。
+只有唯一匹配原作业且正向确认停止，才能清理并重新运行探测；旧输出不会成为新证明。
+提交响应丢失时也使用原 UUID 查找，查无结果、查询不确定、原生编号不匹配、停止未确认或收据损坏均保留现场，
+不会因等待时间较长而重复提交。旧版无版本收据及其他遗留 `.attest-*` 仍需管理员核对原任务，不能直接删除后重投。
+普通任务仍使用既有持久 inbox。本机制不构成跨主机锁、共享存储故障或实际掉电验收。
+
+每次 SelfAccount 作业执行均通过系统 Python 的 `-I` 模式读取 root 管理的检查器，
+核对权限与摘要后执行同一份已核验字节，使用已签名 CPU/内存和原生 Slurm Job ID。
+失败则在用户脚本启动前退出 126。新字段只在本地保存运行时事实，不改变 Sandbox manifest
+结构；运行时证明 ID 会变化，protobuf 能力新增 `attested_queue`。升级先排空/取消旧任务，
+再同步 Server/Agent 并重新探测；不以空队列兼容旧证明。旧 Agent 持久记录仍可恢复轮询/停止，
+但缺少检查器/队列证明时不可重新提交。
 `executionMode` 属于签名协议，升级需先 drain/暂停 Sandbox，再协调 Server/Agent 升级；
 混用版本会拒绝任务。
+
+Sandbox 清单必须包含签名 `resources: { cpus, memoryMb }`，内存单位为 MiB。
+Server 取实际持久化 Job 的资源值；追加只读数据挂载及续签保留这些值。
+Agent 在消费 nonce、下载输入及清理重试目录前核对派发值，在 Slurm/PBS/Torque/Kubernetes
+提交入口再次核对实际调度参数。联邦续期还要求持久化 Job、原始 outbox 与签名资源一致，
+即使改动后仍低于政策上限也不接受。CPU 必须为正 int32，内存必须为正整数且换算字节不丢精度。
+
+升级须先停止新 Sandbox 提交，并排空或取消旧的待派发/运行任务，再同步 Server 与 Agent；
+旧清单不补默认资源，也不自动重新签名。Agent 仍可恢复旧运行记录以轮询、收尾或取消，
+但不能据此重新提交；联邦旧清单不能续期，仍按原租约到期停止。
+此约束证明资源需求没有被替换，尚不证明 HPC 节点的逐作业 CPU/内存 cgroup 已强制生效。
+需另行验收实际内核限额，不能使用 Agent 配置开关、cgroup 路径或整个 Pod 的限额代替。
 
 受限 HPC 任务使用 signed `executionProfile` 固定 Apptainer、SIF 和 trusted wrapper 的
 canonical path/SHA-256。compute node 的 root-owned
@@ -299,6 +380,30 @@ compute node 仍须独立校验。
 每台承接受限任务的节点均须部署
 [`kq-sandbox-wrapper`](../packages/agent/scripts/kq-sandbox-wrapper)：
 wrapper 为 `root:root/0755`，profile 不得被非特权用户写入。
+
+节点 profile 另须配置 `KQ_SECCOMP_PATH` 和 `KQ_SECCOMP_SHA256`，固定本地 seccomp
+JSON 的规范绝对路径和摘要。策略文件及其全部父目录必须由 root 所有且不可被组或其他用户
+写入；SIF 必须只读。可采用仓库的
+[`seccomp-kubernetes-no-network.json`](../deploy/schedulers/k3s/seccomp-kubernetes-no-network.json)
+作为 amd64 Apptainer 策略，禁止非 Unix socket、io_uring 和列出的特权系统调用；
+其他架构需提供对应策略并实际验证。wrapper 在执行前强制传入
+`--security no-new-privs,seccomp:<本地策略>`，拒绝重复安全参数、可写挂载和附加命令。
+Agent 启动时调用 wrapper 的 `--check-profile`，本地检查失败则不发布可用的受限执行 profile。
+该检查验证文件配置，不替代每台计算节点上的真实调度执行、安全策略或 cgroup 验收。
+
+同一 profile 还须设置 `KQ_CGROUP_CHECK_PATH`、`KQ_CGROUP_CHECK_SHA256` 和
+`KQ_SCHEDULER`（`slurm`、`pbs-pro` 或 `torque`）。检查器及其父目录须由 root 管理；
+wrapper 在执行前使用 `/usr/bin/python3 -I` 调用固定摘要的检查器，将 Agent 从签名清单
+传入的 CPU/内存值与本作业内核限额核对。原生 `SLURM_JOB_ID` 或 `PBS_JOBID` 必须
+匹配当前进程的 cgroup；父容器限额或伪造环境编号均不足以通过。检查失败退出 126，
+用户脚本不会启动；`--check-profile` 不运行这项逐作业核验。详见
+[节点资源检查](../deploy/federation/sandbox-cgroup-lab.md)。
+
+升级须暂停受限派发，在 Agent 和计算节点部署新 wrapper/策略/检查器、配置原生逐作业 cgroup、更新配置中的 wrapper
+摘要及 `AGENT_RESTRICTED_EXECUTION_WRAPPER_SHA256`，再重启 Agent；不得省略策略恢复执行。
+本约束适用于 signed `executionProfile` 的受限 HPC 任务；普通非受限 root 代运行路径
+尚未强制加载这份本地 seccomp 策略，整套运行时证明仍需补齐，
+不能只凭 `AGENT_SANDBOX_SECCOMP=true` 宣称已验收。
 
 相关 Agent 配置为 `AGENT_RESTRICTED_EXECUTION_PROFILE_ID`、
 `AGENT_RESTRICTED_EXECUTION_APPTAINER_PATH`、`AGENT_RESTRICTED_EXECUTION_SIF_DIGEST`、
@@ -338,7 +443,11 @@ Agent 使用 `AGENT_SANDBOX_ENABLED`、专用绝对 `AGENT_SANDBOX_ROOT`、
 以及 `AGENT_SANDBOX_ROOT_IMPERSONATION`、`AGENT_SANDBOX_SHARED_SERVICE_ALLOWED`、
 `AGENT_SANDBOX_NETWORK_ISOLATION`、`AGENT_SANDBOX_CGROUPS`、`AGENT_SANDBOX_SECCOMP`、
 `AGENT_SANDBOX_SIF_SIGNATURE_VERIFICATION`、`AGENT_SANDBOX_ECL`。
-Kubernetes 另配 `AGENT_SANDBOX_K8S_ARTIFACT_PVC`。
+Kubernetes 文件输入或输出另配 `AGENT_SANDBOX_K8S_ARTIFACT_PVC`。PVC 位于执行账号的 namespace，须预先绑定到已证明 seccomp 的执行节点，并允许受信任镜像的非 root UID 写入。使用 `WaitForFirstConsumer` 的存储类时，应由部署配置完成节点选定与卷绑定；Sandbox 固定 nodeName，不会触发默认调度器替它选卷。
+
+每次准备在 PVC 中分配 `jobs/<jobId>/<随机准备ID>/`，该路径随原作业快照保存；业务 Pod 只挂载自己的输入和输出目录。输入经原摘要校验后复制，输出准备器只创建目录，不制造空的可选文件。产物收集到 Agent 本地后按原大小、摘要及类型规则检查，Text/JSON 从本地受管目录读取，File/FileBatch 通过产物服务发布，不读入普通日志。未生成的可选输出跳过；收集命令失败仍报错。准备器和收集器沿用禁网、非 root、只读根目录和固定节点要求，辅助 Pod 退出宽限为 5 秒。
+
+PVC 内的运行目录尚未接入自动回收，不能将 Agent 本地副本释放当作 PVC 字节已经删除。生产配置应为此卷设置容量与保留管理，清理前确认对应作业已终止且所需产物已发布。
 任何 capability、签名、账号、隔离或 policy 不满足时拒绝，不降级普通 command。
 Git 固化导入与隐式 usecase pre/main/post 编排尚未完成，生产 GA 验收也未完成。
 

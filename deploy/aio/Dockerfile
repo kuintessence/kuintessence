@@ -12,6 +12,10 @@ COPY packages/web/package.json packages/web/tsconfig.json ./packages/web/
 COPY packages/agent/package.json packages/agent/tsconfig.json ./packages/agent/
 COPY packages/cli/package.json packages/cli/tsconfig.json ./packages/cli/
 COPY packages/docs-site/package.json ./packages/docs-site/
+COPY packages/fabric-adapter/package.json ./packages/fabric-adapter/
+COPY contracts/fabric/evidence/package.json ./contracts/fabric/evidence/
+COPY contracts/fabric/commercial/package.json ./contracts/fabric/commercial/
+COPY contracts/fabric/market/package.json ./contracts/fabric/market/
 
 RUN bun install --frozen-lockfile --ignore-scripts
 
@@ -53,6 +57,7 @@ RUN apk add --no-cache \
     su-exec \
     tini \
     tzdata \
+    util-linux \
     wget
 
 # Bun runtime (statically built, lift binary out of the official image)

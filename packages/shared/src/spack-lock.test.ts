@@ -169,6 +169,23 @@ describe("inspectSpackLock format and binding", () => {
     expectError(inspect(lock(undefined, { _meta })), "unsupported-format");
   });
 
+  test.each(["1.0.0", "1.0.3"])("accepts listed exact version %s", (version) => {
+    expect(
+      inspect(lock(undefined, { spack: { version } }), {
+        ...binding,
+        spackVersion: version,
+      }).valid,
+    ).toBe(true);
+  });
+
+  test("rejects mixing two supported versions", () => {
+    expectError(inspect(lock(), { ...binding, spackVersion: "1.0.3" }), "spack-version-mismatch");
+    expectError(
+      inspect(lock(undefined, { spack: { version: "1.0.3" } })),
+      "spack-version-mismatch",
+    );
+  });
+
   test.each([
     "0.23.1",
     "1.0",

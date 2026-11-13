@@ -18,6 +18,10 @@ import { DataMarketService, localPermission } from "./data-market";
 const now = new Date("2026-07-24T00:00:00.000Z");
 
 class MemoryRepository implements DataMarketRepository {
+  foreignAssets = new Set<string>();
+  async isFederationDataset(assetId: string) {
+    return this.foreignAssets.has(assetId);
+  }
   assets: DataAsset[] = [
     {
       id: "public-asset",
@@ -482,6 +486,70 @@ function actor(
 }
 
 describe("DataMarketService", () => {
+  test("foreign provenance prevents implicit owner, organization and administrator use", async () => {
+    const repository = new MemoryRepository();
+    const asset = repository.assets[0];
+    if (!asset) throw new Error("Missing asset");
+    repository.foreignAssets.add(asset.id);
+    for (const subject of [
+      actor({ userId: "owner" }),
+      actor({ orgIds: ["provider-org"] }),
+      actor({ role: "platform_admin" }),
+    ]) {
+      expect(await localPermission(subject, asset, "use", repository)).toBe(false);
+    }
+    const service = new DataMarketService({ repository, uploadPort });
+    await expect(
+      service.createUploadSession(
+        actor({ role: "platform_admin" }),
+        {
+          assetId: asset.id,
+          version: "v2",
+          path: "input.dat",
+          sizeBytes: 4,
+          mediaType: "text/plain",
+        },
+        "foreign-upload",
+      ),
+    ).rejects.toThrow("source-authorized publication");
+    await expect(
+      service.importVersion(
+        actor({ role: "platform_admin" }),
+        {
+          assetId: asset.id,
+          version: "v2",
+          manifest: {
+            checksum: "a".repeat(64),
+            sizeBytes: 0,
+            mediaType: "text/plain",
+            source: "platform-object",
+          },
+          files: [],
+        },
+        "foreign-import",
+      ),
+    ).rejects.toThrow("source-authorized publication");
+  });
+  test("ordinary imports cannot relabel federation media as a new locally owned dataset", async () => {
+    const service = new DataMarketService({ repository: new MemoryRepository(), uploadPort });
+    await expect(
+      service.startProviderImport(
+        actor({ role: "platform_admin", orgId: "provider-org", orgIds: ["provider-org"] }),
+        {
+          assetId: "public-asset",
+          version: "v2",
+          source: {
+            kind: "cp-local",
+            agentId: "agent",
+            managedRootId: "root",
+            relativePath: ".federation-media/package/files",
+          },
+        },
+        "alias-import",
+      ),
+    ).rejects.toThrow("source-authorized publication");
+  });
+
   test("catalog filters private assets through local visibility", async () => {
     const service = new DataMarketService({ repository: new MemoryRepository(), uploadPort });
     const result = await service.listCatalog(actor(), { limit: 25, offset: 0 });

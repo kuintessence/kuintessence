@@ -1,0 +1,199 @@
+#!/usr/bin/python3
+"""Read kernel-owned per-job CPU/memory bounds; never create or change cgroups."""
+import argparse
+import json
+from pathlib import Path, PurePosixPath
+import re
+import stat
+import sys
+
+MIB = 1024 ** 2
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def absolute(value):
+    require(value == '/' or (value.startswith('/') and
+            all(p not in ('', '.', '..') for p in value[1:].split('/'))), 'invalid cgroup path')
+    return PurePosixPath(value)
+
+
+def decode_mount(value):
+    return re.sub(r'\\(040|011|012|134)', lambda match: chr(int(match[1], 8)), value)
+
+
+def secure(path, directory=False):
+    fact = path.lstat()
+    require((stat.S_ISDIR(fact.st_mode) if directory else stat.S_ISREG(fact.st_mode))
+            and fact.st_uid == 0 and fact.st_mode & 0o022 == 0,
+            'cgroup controls are not root-owned and protected')
+
+
+def protected_read(path):
+    secure(path)
+    return path.read_text().strip()
+
+
+def positive(text):
+    require(re.fullmatch(r'[0-9]+', text) is not None and int(text) > 0,
+            'invalid positive resource bound')
+    return int(text)
+
+
+def locate(membership, mountinfo):
+    groups = {}
+    for line in membership.splitlines():
+        hierarchy, controllers, path = line.split(':', 2)
+        require(hierarchy.isdecimal(), 'invalid cgroup membership')
+        for controller in controllers.split(','):
+            require(controller not in groups, 'duplicate cgroup membership')
+            groups[controller] = absolute(path)
+    found = {}
+    for line in mountinfo.splitlines():
+        before, separator, after = line.partition(' - ')
+        fields, filesystem = before.split(), after.split()
+        require(separator and len(fields) >= 6 and len(filesystem) >= 3, 'invalid mountinfo')
+        if filesystem[0] not in ('cgroup', 'cgroup2'):
+            continue
+        root, mount = absolute(decode_mount(fields[3])), Path(str(absolute(decode_mount(fields[4]))))
+        controllers = [''] if filesystem[0] == 'cgroup2' else filesystem[2].split(',')
+        for controller in controllers:
+            if controller not in groups:
+                continue
+            try:
+                relative = groups[controller].relative_to(root)
+            except ValueError:
+                continue
+            require(controller not in found, 'ambiguous cgroup mounts')
+            found[controller] = (groups[controller], root, mount / relative, mount)
+    return found
+
+
+def within(path, root):
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def job_scope(location, scheduler, job_id):
+    group, root, current, mount = location
+    parts = group.parts
+    matches = []
+    for index, name in enumerate(parts):
+        if scheduler == 'slurm':
+            match = name == 'job_' + job_id
+        else:
+            match = name == job_id and index > 0 and parts[index - 1] == (
+                'torque' if scheduler == 'torque' else 'jobid')
+        if match:
+            matches.append(PurePosixPath(*parts[:index + 1]))
+    require(len(matches) == 1, 'current process is not in the requested scheduler job cgroup')
+    require(within(matches[0], root), 'job cgroup is hidden by the mount root')
+    job = mount / matches[0].relative_to(root)
+    # Protect the complete path, not just the limit file; an account must not move
+    # processes outside its job or replace the controls via a writable ancestor.
+    path = current
+    while True:
+        secure(path, directory=True)
+        if within(path, mount):
+            secure(path / 'cgroup.procs')
+            for name in ('cgroup.threads', 'cgroup.subtree_control', 'tasks'):
+                if (path / name).exists():
+                    secure(path / name)
+        if path == Path('/'):
+            break
+        path = path.parent
+    return job
+
+
+def cpuset_count(text):
+    require(bool(text), 'empty job cpuset')
+    intervals = []
+    for entry in text.split(','):
+        require(re.fullmatch(r'[0-9]+(?:-[0-9]+)?', entry) is not None, 'invalid cpuset')
+        values = entry.split('-')
+        start, end = int(values[0]), int(values[-1])
+        require(start <= end and end <= 2_147_483_647, 'invalid cpuset range')
+        intervals.append((start, end))
+    intervals.sort()
+    require(all(intervals[i][0] > intervals[i - 1][1] for i in range(1, len(intervals))),
+            'overlapping cpuset ranges')
+    return sum(end - start + 1 for start, end in intervals)
+
+
+def quota_bound(job, v2):
+    if v2:
+        value = protected_read(job / 'cpu.max').split()
+        require(len(value) == 2, 'invalid cpu.max')
+        quota, period = value
+        period = positive(period)
+        return None if quota == 'max' else (positive(quota), period)
+    quota = protected_read(job / 'cpu.cfs_quota_us')
+    period = positive(protected_read(job / 'cpu.cfs_period_us'))
+    return None if quota == '-1' else (positive(quota), period)
+
+
+def check(scheduler, job_id, cpus, memory_mb):
+    require(scheduler in ('slurm', 'pbs-pro', 'torque'), 'unsupported scheduler')
+    require(re.fullmatch(r'[0-9]+', job_id) if scheduler == 'slurm' else
+            re.fullmatch(r'[0-9]+(?:\[[0-9]+\])?\.[A-Za-z0-9._-]+', job_id), 'invalid scheduler job id')
+    require(type(cpus) is int and 0 < cpus <= 2_147_483_647, 'invalid requested CPU count')
+    require(type(memory_mb) is int and 0 < memory_mb <= 8_589_934_591, 'invalid requested memory')
+    locations = locate(Path('/proc/self/cgroup').read_text(), Path('/proc/self/mountinfo').read_text())
+    v2 = 'memory' not in locations and '' in locations
+    memory_location = locations.get('' if v2 else 'memory')
+    require(memory_location is not None, 'memory controller unavailable')
+    memory_job = job_scope(memory_location, scheduler, job_id)
+    memory = positive(protected_read(memory_job / ('memory.max' if v2 else 'memory.limit_in_bytes')))
+    require(memory <= memory_mb * MIB, 'job memory limit exceeds signed request')
+    if v2:
+        require(protected_read(memory_job / 'memory.swap.max') == '0', 'job swap must be disabled')
+    else:
+        require(protected_read(memory_job / 'memory.use_hierarchy') == '1', 'memory hierarchy disabled')
+        swaps = Path('/proc/swaps').read_text().splitlines()
+        require(bool(swaps) and bool(swaps[0].split()) and swaps[0].split()[0] == 'Filename',
+                'swap state unavailable')
+        if len(swaps) > 1:
+            combined = positive(protected_read(memory_job / 'memory.memsw.limit_in_bytes'))
+            require(combined <= memory_mb * MIB, 'job memory and swap limit exceeds signed request')
+    cpu_location = locations.get('' if v2 else 'cpu')
+    quota = None
+    if cpu_location is not None:
+        cpu_job = job_scope(cpu_location, scheduler, job_id)
+        if not v2 or (cpu_job / 'cpu.max').exists():
+            quota = quota_bound(cpu_job, v2)
+    cpu_ok = quota is not None and quota[0] <= cpus * quota[1]
+    cpuset = None
+    if not cpu_ok:
+        cpuset_location = locations.get('' if v2 else 'cpuset')
+        require(cpuset_location is not None, 'CPU quota or job cpuset required')
+        cpuset_job = job_scope(cpuset_location, scheduler, job_id)
+        # Effective affinity inherited from a Pod is not a per-job allocation.
+        cpuset = cpuset_count(protected_read(cpuset_job / 'cpuset.cpus'))
+        require(cpuset <= cpus, 'job CPU limit exceeds signed request')
+    return {'scheduler': scheduler, 'jobId': job_id, 'cgroupVersion': 2 if v2 else 1,
+            'memoryBytes': memory, 'cpuQuota': list(quota) if quota else None, 'cpusetCpus': cpuset}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--scheduler', required=True, choices=['slurm', 'pbs-pro', 'torque'])
+    parser.add_argument('--job-id', required=True)
+    parser.add_argument('--cpus', required=True, type=int)
+    parser.add_argument('--memory-mb', required=True, type=int)
+    args = parser.parse_args()
+    try:
+        print(json.dumps(check(args.scheduler, args.job_id, args.cpus, args.memory_mb), sort_keys=True))
+    except (ValueError, OSError) as error:
+        print('kq-sandbox-cgroup-check: ' + str(error), file=sys.stderr)
+        return 126
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

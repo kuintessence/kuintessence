@@ -17,6 +17,10 @@ import {
   isLegacyCpGovernanceWrite,
   rejectLegacyCpGovernanceWrite,
 } from "../services/cp-governance-write-gate";
+import {
+  DataDisclosurePolicyInputSchema,
+  type DataDisclosurePolicyService,
+} from "../services/data-disclosure-policies";
 import type {
   CpDataImportInput,
   DataAccessReviewInput,
@@ -42,6 +46,7 @@ export interface CpRoutesDeps {
   agentCerts?: Pick<CertIssuanceService, "listCerts" | "revokeCert">;
   authz?: AuthzService;
   dataMarket?: DataMarketService;
+  dataPolicies?: DataDisclosurePolicyService;
 }
 
 const SoftwarePolicyEditSchema = z.object({
@@ -317,6 +322,26 @@ export function buildCpRouter(deps: CpRoutesDeps) {
       c.req.param("versionId"),
       parseCpDataPageQuery(c),
     );
+    return c.json({ success: true, data });
+  });
+
+  r.on(["GET", "POST"], "/data/versions/:versionId/disclosure-policy", async (c) => {
+    if (!deps.dataPolicies)
+      throw new AppError(ErrorCode.INTERNAL_ERROR, "DATA_POLICY_UNAVAILABLE", 503);
+    if (c.get("automation" as never))
+      throw new AppError(ErrorCode.FORBIDDEN, "A human session is required", 403);
+    const scope = c.get("cpScope") as CpScope;
+    const actor = cpDataActor(c, scope);
+    const versionId = z.uuid().parse(c.req.param("versionId"));
+    c.header("cache-control", "no-store");
+    const data =
+      c.req.method === "GET"
+        ? await deps.dataPolicies.read(actor, versionId)
+        : await deps.dataPolicies.write(
+            actor,
+            versionId,
+            DataDisclosurePolicyInputSchema.parse(await c.req.json()),
+          );
     return c.json({ success: true, data });
   });
 

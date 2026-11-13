@@ -7,6 +7,8 @@ import {
   spackMaterialBlobs,
 } from "@kuintessence/shared";
 import { siteFetch } from "@kuintessence/shared/site-transport";
+import { ExecutionAuthorization, ExecutionAuthorizationExpired } from "../execution-authorization";
+import { SpackInstallationPending } from "./execution-identity";
 import { SpackMaterialCache, type SpackMaterialCacheRef } from "./material-cache";
 
 const MAX_MANIFEST_BYTES = 2 * 1024 ** 2;
@@ -17,10 +19,16 @@ const PREPARE_TIMEOUT_MS = 24 * 60 * 60_000;
 
 export type SpackMaterialFetch = (url: string, init: RequestInit) => Promise<Response>;
 
+type AuthorizeMaterialTransfer = (
+  signal: AbortSignal,
+) => Promise<{ ticket: string; expiresAt: number }>;
+
 export interface SpackMaterialContext {
   operationId: string;
   ticket?: string;
   manifestDigest?: string;
+  authorizeInstallation?: (signal: AbortSignal) => Promise<number>;
+  authorizeMaterialTransfer?: AuthorizeMaterialTransfer;
 }
 
 export interface SpackMaterialPrepareInput {
@@ -30,6 +38,8 @@ export interface SpackMaterialPrepareInput {
   spec: string;
   spackVersion: string;
   signal?: AbortSignal;
+  authorizeInstallation?: (signal: AbortSignal) => Promise<number>;
+  authorizeMaterialTransfer?: AuthorizeMaterialTransfer;
 }
 
 export interface PreparedSpackMaterials {
@@ -103,7 +113,8 @@ async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T
   signal.throwIfAborted();
   let abort = () => {};
   const interrupted = new Promise<never>((_resolve, reject) => {
-    abort = () => reject(new Error("Spack material transfer canceled or timed out"));
+    abort = () =>
+      reject(new Error("Spack material transfer canceled or timed out", { cause: signal.reason }));
     signal.addEventListener("abort", abort, { once: true });
   });
   try {
@@ -111,6 +122,11 @@ async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T
   } finally {
     signal.removeEventListener("abort", abort);
   }
+}
+
+function assertMaterialTicket(ticket: string): void {
+  if (!ticket || ticket.length > 16_384 || !/^[A-Za-z0-9._~+/-]+=*$/.test(ticket))
+    throw new Error("Spack material ticket is missing or invalid");
 }
 
 export class SpackMaterialClient implements SpackMaterialProvider {
@@ -133,7 +149,7 @@ export class SpackMaterialClient implements SpackMaterialProvider {
     cacheDir: string;
     identity?: { certPem: string; keyPem: string };
     fetch?: SpackMaterialFetch;
-    /** May shorten, but not extend, the per-request deadline. */
+    /** May shorten, but not extend, the fetch/body idle deadline. */
     requestTimeoutMs?: number;
   }) {
     this.identity = options.identity;
@@ -154,13 +170,9 @@ export class SpackMaterialClient implements SpackMaterialProvider {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(input.operationId)) {
       throw new Error("Invalid Spack material operation ID");
     }
-    if (
-      !input.ticket ||
-      input.ticket.length > 16_384 ||
-      !/^[A-Za-z0-9._~+/-]+=*$/.test(input.ticket)
-    ) {
-      throw new Error("Spack material ticket is missing or invalid");
-    }
+    assertMaterialTicket(input.ticket);
+    if (input.authorizeInstallation && !input.authorizeMaterialTransfer)
+      throw new Error("Federation material transfer authorization is unavailable");
     SpackMaterialDigestSchema.parse(input.manifestDigest);
     if (this.activePrepares >= MAX_CONCURRENT_PREPARES) {
       throw new Error("Spack material preparation concurrency limit reached");
@@ -168,14 +180,35 @@ export class SpackMaterialClient implements SpackMaterialProvider {
     this.activePrepares++;
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(), PREPARE_TIMEOUT_MS);
-    const signal = input.signal
+    const parent = input.signal
       ? AbortSignal.any([input.signal, deadline.signal])
       : deadline.signal;
+    let authorization: ExecutionAuthorization | undefined;
     try {
+      parent.throwIfAborted();
+      let ticket = input.ticket;
+      const renew = input.authorizeMaterialTransfer;
+      if (renew) {
+        const grant = await renew(parent);
+        parent.throwIfAborted();
+        assertMaterialTicket(grant.ticket);
+        ticket = grant.ticket;
+        authorization = new ExecutionAuthorization(
+          grant.expiresAt,
+          async (signal) => {
+            const next = await renew(signal);
+            assertMaterialTicket(next.ticket);
+            ticket = next.ticket;
+            return next.expiresAt;
+          },
+          parent,
+        );
+      }
+      const signal = authorization?.signal ?? parent;
       signal.throwIfAborted();
       await this.cache.initialize();
       const base = `${this.origin}/api/agent/spack/operations/${input.operationId}`;
-      let ticket = input.ticket;
+
       const refresh = this.identity
         ? async () => {
             const identity = this.identity;
@@ -317,6 +350,7 @@ export class SpackMaterialClient implements SpackMaterialProvider {
         }
       }
       signal.throwIfAborted();
+      authorization?.assertValid();
       // This verifies bytes and bindings only, not lockfile semantics or concretization.
       this.lastState = "ready";
       return {
@@ -328,9 +362,16 @@ export class SpackMaterialClient implements SpackMaterialProvider {
         blobs,
       };
     } catch (error) {
+      parent.throwIfAborted();
+      const reason: unknown = authorization?.signal.reason;
+      if (reason && (error === reason || (error instanceof Error && error.cause === reason))) {
+        if (reason instanceof ExecutionAuthorizationExpired) throw new SpackInstallationPending();
+        throw reason;
+      }
       this.lastState = "failed";
       throw error;
     } finally {
+      await authorization?.close();
       clearTimeout(timer);
       deadline.abort();
       this.activePrepares--;
@@ -368,6 +409,7 @@ export class SpackMaterialClient implements SpackMaterialProvider {
         }),
         signal,
       );
+      timer.refresh();
       if (response.redirected || (response.status >= 300 && response.status < 400)) {
         throw new Error("Spack material redirect rejected");
       }
@@ -412,6 +454,7 @@ export class SpackMaterialClient implements SpackMaterialProvider {
       while (true) {
         const chunk = await abortable(reader.read(), signal);
         if (chunk.done) break;
+        if (chunk.value.byteLength > 0) timer.refresh();
         received += chunk.value.byteLength;
         if (received > maximum) throw new Error("Spack material response size exceeds limit");
         await write(chunk.value);

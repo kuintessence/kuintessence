@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   bindingRequiresRestrictedNoEgress,
+  DataAccessCapabilitySchema,
+  DataAccessPolicySchema,
   DataAssetKindSchema,
   DataAssetLifecycleSchema,
   DataAssetVersionStatusSchema,
@@ -11,6 +13,10 @@ import {
 } from "./data-assets";
 
 describe("data-market input references", () => {
+  test("export consent is a policy capability, not an ordinary local data grant", () => {
+    expect(DataAccessPolicySchema.shape.capabilities.parse(["export"])).toEqual(["export"]);
+    expect(DataAccessCapabilitySchema.safeParse("export").success).toBe(false);
+  });
   test("accepts an explicit data-market reference", () => {
     const input = DataInputRefSchema.parse({
       source: "data-market",

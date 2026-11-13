@@ -4,6 +4,8 @@ Agent 在执行 `sbatch` 前保存稳定 job UUID、scheduler name、命令、�
 
 `sbatch` 最长等待 30 秒，控制查询、取消及日志读取最长等待 10 秒。超时只表示本地没有得到确定响应，不能证明 controller 没有接受作业。`sbatch` 自身 exit 1 也可能是响应通信失败；只有空 stdout 加整行匹配的已知 controller 拒绝会直接判定提交失败，其余非零结果保持未知。
 
+已确认拒绝且尚未获得 scheduler ID 时，Runner 持久上报 `SCHEDULER_SUBMIT_FAILED` 并清理原 pending intent，工作流可进入失败终态。已获得 scheduler ID 后的回执写入失败仍保留原执行等待对账；不能仅凭错误类别把已接收的作业清理或重新提交。
+
 对账使用完整 `KQ_JOB_ID=UUID` comment 和稳定 scheduler name，而非短名称单独匹配。默认恢复请求会查询当前用户/指定 account 的 `squeue` 与提交日期范围内的 `sacct`。已配置 `scontrol` 终态后端的站点，改为合并 `squeue` 与 controller 保留的作业记录；严格验证完整 comment、稳定名称、account（未指定 account 时验证当前 UID）和唯一 ID，歧义仍拒绝确认：
 
 - 同一个 allocation ID 同时出现于队列和记账，只确认一次。
@@ -36,6 +38,8 @@ Agent 按原轮询间隔重新采集；退出或重启后仍接管原 scheduler 
 配置持久 ActiveRemoteJobs 账本的 Agent 对普通非 Sandbox 作业收到调度器真实 `completed` 后，先在已有 SQLite `active_remote_jobs.spec` JSON 中保存 `completionSnapshot`，再读取输出。快照格式 `format: 1` 包含原 scheduler ID、真实结果（exitCode、node 等）与原 spec/expectedOutputs 的 SHA-256 执行绑定；工作目录、受限输出策略、保护路径及清理绑定都参与校验。写入使用原 scheduler ID 与原 spec 的比较更新，记录缺失、变化、写失败或结果冲突时不采集、不上报完成、不释放现场。
 
 重启后，恢复链重新验证原账本身份、快照版本及执行绑定，直接使用真实完成快照采集输出，不再依赖 `sacct` 历史仍存在，也不调用提交或依赖调度器元数据的 prepareResume。输出暂态读取失败继续重试同一完成执行。快照不包含已采集文件正文；必须保留原输出工作目录。缺少快照的旧记录仍按原调度器查询路径恢复，不能从 stdout、缺失历史或任意用户声明合成 completed。
+
+完成快照同时保存可获取的调度器用量，按共享 schema 校验并绑定原 scheduler ID；重启后沿用原观测时间与用量，不重新查询或生成数值。此路径也覆盖 PBS 返回用量的完成结果；缺少用量的历史快照仍可恢复。
 
 Sandbox 不写入或使用此普通作业快照；restrictedNoEgress 的快照保留原策略并继续禁止输出和日志采集。恢复前仍检查撤销墓碑及 cleanup intent，用户取消不会被快照覆盖。尚未收到真实完成结果或完成快照未写入成功的崩溃窗口，仍需要调度器记账证明。
 

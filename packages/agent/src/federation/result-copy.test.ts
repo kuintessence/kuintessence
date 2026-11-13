@@ -1,0 +1,1205 @@
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { create } from "@bufbuild/protobuf";
+import {
+  AgentMessageSchema,
+  type FederationInputCopyReport,
+  FederationInputCopySchema,
+  type FederationInputGrantRequest,
+  FederationInputGrantResponseSchema,
+  FederationInputVerifySchema,
+  type FederationResultCopyReport,
+  FederationResultCopySchema,
+  type FederationResultGrantRequest,
+  FederationResultGrantResponseSchema,
+  FederationResultVerifySchema,
+  RegisterResponseSchema,
+  type ServerMessage,
+  ServerMessageSchema,
+} from "@kuintessence/proto";
+import {
+  FederationInputCopiedSchema,
+  FederationInputVerifiedSchema,
+  FederationResultReportSchema,
+  federationCanonicalJson,
+} from "@kuintessence/shared/federation";
+import pino from "pino";
+import { AgentStream, type AgentStreamDeps } from "../stream";
+import { FederationFileTransferError } from "./file-copy";
+import { FederationInputClient } from "./input-client";
+import { copyFederationInputFile, type FederationInputCopyOptions } from "./input-copy";
+import { verifyFederationInputFile } from "./input-verify";
+import { FederationResultClient } from "./result-client";
+import {
+  copyFederationResultFile,
+  FederationResultCopyError,
+  type FederationResultCopyOptions,
+} from "./result-copy";
+import { verifyFederationResultFile } from "./result-verify";
+import { FederationTransferSlot } from "./transfer-session";
+
+let root: string, ca: string;
+let source: ReturnType<typeof Bun.serve>, target: ReturnType<typeof Bun.serve>;
+let content: Buffer = Buffer.from("result");
+let mode = "normal",
+  sourceRequests = 0,
+  targetRequests = 0;
+const received = new Map<number, Buffer>();
+const hash = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+beforeAll(async () => {
+  root = await mkdtemp(join(tmpdir(), "kq-result-copy-"));
+  const key = join(root, "tls.key"),
+    cert = join(root, "tls.pem");
+  const generated = Bun.spawnSync(
+    [
+      "openssl",
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      key,
+      "-out",
+      cert,
+      "-days",
+      "1",
+      "-subj",
+      "/CN=localhost",
+      "-addext",
+      "subjectAltName=DNS:localhost",
+    ],
+    { stdout: "ignore", stderr: "pipe" },
+  );
+  if (generated.exitCode !== 0) throw new Error("Test TLS certificate generation failed");
+  ca = await readFile(cert, "utf8");
+  const tls = { key: Bun.file(key), cert: Bun.file(cert) };
+  source = Bun.serve({
+    hostname: "localhost",
+    port: 0,
+    tls,
+    fetch: (req) => {
+      sourceRequests++;
+      if (mode === "redirect") return Response.redirect(`${target.url}unexpected`);
+      const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.get("range") ?? "");
+      if (!range) return new Response(null, { status: 416 });
+      const start = Number(range[1]),
+        end = Number(range[2]);
+      if (mode === "stall")
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(content.subarray(start, start + 1));
+            },
+          }),
+          { status: 206, headers: { "content-range": `bytes ${start}-${end}/${content.length}` } },
+        );
+      return new Response(content.subarray(start, end + 1), {
+        status: 206,
+        headers: { "content-range": `bytes ${start}-${end}/${content.length}` },
+      });
+    },
+  });
+  target = Bun.serve({
+    hostname: "localhost",
+    port: 0,
+    tls,
+    fetch: async (req) => {
+      targetRequests++;
+      if (req.method === "GET") {
+        const bytes = Buffer.concat(
+          [...received.entries()].sort(([a], [b]) => a - b).map(([, value]) => value),
+        );
+        if (req.headers.get("if-match") !== '"completed-object"')
+          return new Response(null, { status: 412 });
+        const headers: Record<string, string> = { etag: '"completed-object"' };
+        if (mode !== "unversioned")
+          headers["x-amz-version-id"] = mode === "version-changed" ? "v2" : "v1";
+        if (!bytes.length || mode === "ignore-range") return new Response(bytes, { headers });
+        const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.get("range") ?? "");
+        if (!range) return new Response(null, { status: 416 });
+        const start = Number(range[1]),
+          end = Number(range[2]);
+        headers["content-range"] = `bytes ${start}-${end}/${bytes.length}`;
+        if (mode === "stall-verification")
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(bytes.subarray(start, start + 1));
+              },
+            }),
+            { status: 206, headers },
+          );
+        return new Response(bytes.subarray(start, end + 1), { status: 206, headers });
+      }
+      const partNumber = Number(new URL(req.url).searchParams.get("part"));
+      if (req.method !== "PUT" || !partNumber) return new Response(null, { status: 400 });
+      received.set(partNumber, Buffer.from(await req.arrayBuffer()));
+      return new Response(null, { headers: { etag: `"part-${partNumber}"` } });
+    },
+  });
+});
+afterAll(async () => {
+  source?.stop(true);
+  target?.stop(true);
+  if (root) await rm(root, { recursive: true, force: true });
+});
+
+function storageFixture(bytes: Buffer) {
+  content = bytes;
+  mode = "normal";
+  sourceRequests = 0;
+  targetRequests = 0;
+  received.clear();
+  return {
+    stagingRoot: join(root, "staging"),
+    maxStagingBytes: 8 * 1024 * 1024,
+    allowedSourceOrigins: [source.url.origin],
+    allowedDestinationOrigins: [target.url.origin],
+    fetcher: (url: string, init: RequestInit) => fetch(url, { ...init, tls: { ca } }),
+  };
+}
+
+function fixture(bytes = Buffer.from("result")) {
+  const storage = storageFixture(bytes);
+  const digest = `sha256:${"a".repeat(64)}`;
+  const now = new Date().toISOString(),
+    until = new Date(Date.now() + 120_000).toISOString();
+  const manifest = {
+    template: {
+      originSiteId: crypto.randomUUID(),
+      kind: "workflow",
+      id: crypto.randomUUID(),
+      revision: "1",
+      digest,
+    },
+    inputManifestDigest: digest,
+    environmentLockDigest: digest,
+    completedAt: now,
+    availableUntil: until,
+    outputs: [
+      {
+        outputId: digest,
+        nodeId: "calculate",
+        descriptor: "result",
+        type: "File",
+        contentDigest: `sha256:${hash(bytes)}`,
+        sizeBytes: bytes.length,
+        files: [{ path: "result", sizeBytes: bytes.length, sha256: hash(bytes) }],
+      },
+    ],
+  };
+  const report = FederationResultReportSchema.parse({
+    protocolVersion: 1,
+    kind: "result-report",
+    queryId: crypto.randomUUID(),
+    senderSiteId: crypto.randomUUID(),
+    recipientSiteId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    agreementRevisionId: crypto.randomUUID(),
+    taskId: crypto.randomUUID(),
+    attempt: 1,
+    reservationId: crypto.randomUUID(),
+    requestDigest: digest,
+    queryDigest: digest,
+    observedAt: now,
+    manifestDigest: `sha256:${hash(federationCanonicalJson(manifest))}`,
+    manifest,
+  });
+  const calls: string[] = [];
+  const options: FederationResultCopyOptions = {
+    task: {
+      transferId: crypto.randomUUID(),
+      generation: crypto.randomUUID(),
+      report,
+      outputId: digest,
+      path: "result",
+      partSize: 5 * 1024 * 1024,
+    },
+    ...storage,
+    authorize: async (binding, direction, partNumber) => {
+      calls.push(direction + (partNumber ?? ""));
+      return {
+        binding,
+        direction,
+        ...(partNumber === undefined ? {} : { partNumber }),
+        url:
+          direction === "download"
+            ? `${source.url}object?secret=download-ticket`
+            : `${target.url}upload?part=${partNumber}&secret=upload-ticket`,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      };
+    },
+  };
+  return { options, calls };
+}
+
+test("Agent copies real HTTPS ranges into real multipart PUTs with bounded grants and no published replica", async () => {
+  const bytes = Buffer.alloc(5 * 1024 * 1024 + 123, 42);
+  const f = fixture(bytes);
+  const result = await copyFederationResultFile(f.options);
+  expect(
+    Buffer.concat([...received.entries()].sort(([a], [b]) => a - b).map(([, body]) => body)),
+  ).toEqual(bytes);
+  expect(result.sha256).toBe(hash(bytes));
+  expect(result.sizeBytes).toBe(bytes.length);
+  expect(result.parts).toEqual([
+    { partNumber: 1, etag: "part-1" },
+    { partNumber: 2, etag: "part-2" },
+  ]);
+  expect(f.calls.filter((call) => call === "download")).toHaveLength(6);
+  expect(f.calls.slice(-2)).toEqual(["upload1", "upload2"]);
+  expect(await readdir(f.options.stagingRoot)).toEqual([]);
+  expect(JSON.stringify(result)).not.toContain("secret=");
+});
+
+test("copy refuses wrong attempt, wrong origins and redirects before producing an upload", async () => {
+  for (const change of ["generation", "origin", "expired", "redirect"] as const) {
+    const f = fixture();
+    const authorize = f.options.authorize;
+    f.options.authorize = async (...args) => {
+      const grant = await authorize(...args);
+      if (change === "generation") grant.binding.generation = crypto.randomUUID();
+      if (change === "origin") grant.url = `${target.url}forbidden?secret=untrusted`;
+      if (change === "expired") grant.expiresAt = new Date(Date.now() - 1).toISOString();
+      return grant;
+    };
+    if (change === "redirect") mode = "redirect";
+    let error: unknown;
+    try {
+      await copyFederationResultFile(f.options);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(FederationResultCopyError);
+    expect(String(error)).not.toContain("secret=");
+    expect(targetRequests).toBe(0);
+    if (change !== "redirect") expect(sourceRequests).toBe(0);
+    expect(await readdir(f.options.stagingRoot)).toEqual([]);
+  }
+});
+
+test("copy rejects corrupt bytes, revoked upload authority and insufficient staging before publication", async () => {
+  let f = fixture();
+  content = Buffer.from("broken");
+  await expect(copyFederationResultFile(f.options)).rejects.toThrow("TRANSFER_IO_FAILED");
+  expect(targetRequests).toBe(0);
+  f = fixture();
+  const authorize = f.options.authorize;
+  f.options.authorize = async (...args) => {
+    if (args[1] === "upload") throw new FederationResultCopyError("POLICY_DENIED");
+    return authorize(...args);
+  };
+  await expect(copyFederationResultFile(f.options)).rejects.toThrow("POLICY_DENIED");
+  expect(targetRequests).toBe(0);
+  expect(await readdir(f.options.stagingRoot)).toEqual([]);
+  f = fixture();
+  f.options.maxStagingBytes = 1;
+  await expect(copyFederationResultFile(f.options)).rejects.toThrow("STAGING_UNAVAILABLE");
+  expect(sourceRequests).toBe(0);
+});
+
+test("grant expiry and caller cancellation interrupt a stalled real download and remove staging", async () => {
+  for (const cancel of [false, true]) {
+    const f = fixture();
+    mode = "stall";
+    const stop = new AbortController();
+    f.options.signal = stop.signal;
+    const authorize = f.options.authorize;
+    f.options.authorize = async (...args) => ({
+      ...(await authorize(...args)),
+      expiresAt: new Date(Date.now() + 100).toISOString(),
+    });
+    const timer = cancel ? setTimeout(() => stop.abort(), 30) : undefined;
+    try {
+      await expect(copyFederationResultFile(f.options)).rejects.toThrow(
+        cancel ? "TRANSFER_CANCELLED" : "TRANSFER_IO_FAILED",
+      );
+      expect(targetRequests).toBe(0);
+      expect(await readdir(f.options.stagingRoot)).toEqual([]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+});
+
+test("empty outputs still require a source grant; cancellation also bounds a stalled authorization call", async () => {
+  const f = fixture(Buffer.alloc(0));
+  const result = await copyFederationResultFile(f.options);
+  expect(result.sizeBytes).toBe(0);
+  expect(result.parts).toHaveLength(1);
+  expect(f.calls).toEqual(["download", "upload1"]);
+  const waiting = fixture();
+  const stop = new AbortController();
+  waiting.options.signal = stop.signal;
+  waiting.options.authorize = async () => {
+    stop.abort();
+    return new Promise(() => {});
+  };
+  await expect(copyFederationResultFile(waiting.options)).rejects.toThrow("TRANSFER_CANCELLED");
+  expect(sourceRequests).toBe(0);
+  expect(targetRequests).toBe(0);
+  expect(await readdir(waiting.options.stagingRoot)).toEqual([]);
+});
+
+test("result transport client copies real HTTPS bytes, ignores duplicate dispatch and rejects a concurrent generation", async () => {
+  const f = fixture(Buffer.alloc(1024 + 3, 7));
+  const complete = Promise.withResolvers<FederationResultCopyReport>();
+  const failures: string[] = [];
+  const client = new FederationResultClient(
+    f.options,
+    (request) => {
+      void f.options
+        .authorize(
+          JSON.parse(request.bindingJson),
+          request.upload ? "upload" : "download",
+          request.partNumber,
+          new AbortController().signal,
+        )
+        .then((grant) =>
+          client.receive(
+            create(FederationResultGrantResponseSchema, {
+              requestId: request.requestId,
+              grantJson: JSON.stringify(grant),
+              leaseExpiresAtUnixMs: BigInt(
+                Date.parse(f.options.task.report.manifest.availableUntil),
+              ),
+            }),
+          ),
+        );
+      return true;
+    },
+    (report) => {
+      if (report.failed) failures.push(report.generation);
+      else complete.resolve(report);
+    },
+    (options) => copyFederationResultFile({ ...options, fetcher: f.options.fetcher }),
+  );
+  const command = create(FederationResultCopySchema, {
+    taskJson: JSON.stringify(f.options.task),
+    leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+  });
+  try {
+    client.start(command);
+    client.start(command);
+    const competing = crypto.randomUUID();
+    client.start(
+      create(FederationResultCopySchema, {
+        ...command,
+        taskJson: JSON.stringify({ ...f.options.task, generation: competing }),
+      }),
+    );
+    const report = await complete.promise;
+    const receipt = JSON.parse(report.copiedJson);
+    expect(failures).toEqual([competing]);
+    expect(receipt.sizeBytes).toBe(content.length);
+    expect(received.get(1)).toEqual(content);
+    expect(receipt.sha256).toBe(hash(content));
+    expect(report.copiedJson).not.toContain("secret=");
+    expect(await readdir(f.options.stagingRoot)).toEqual([]);
+  } finally {
+    await client.disconnect();
+  }
+});
+
+test("result transport client stops on disconnect or lease expiry and discards late grants", async () => {
+  for (const cause of ["disconnect", "expiry", "wrong-binding"] as const) {
+    const f = fixture();
+    const requested = Promise.withResolvers<FederationResultGrantRequest>();
+    const finished = Promise.withResolvers<FederationResultCopyReport>();
+    const client = new FederationResultClient(
+      f.options,
+      (request) => {
+        requested.resolve(request);
+        return true;
+      },
+      (report) => finished.resolve(report),
+      (options) => copyFederationResultFile({ ...options, fetcher: f.options.fetcher }),
+    );
+    client.start(
+      create(FederationResultCopySchema, {
+        taskJson: JSON.stringify(f.options.task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + (cause === "expiry" ? 200 : 60_000)),
+      }),
+    );
+    const request = await requested.promise;
+    const grant = await f.options.authorize(
+      JSON.parse(request.bindingJson),
+      "download",
+      undefined,
+      new AbortController().signal,
+    );
+    const response = create(FederationResultGrantResponseSchema, {
+      requestId: request.requestId,
+      grantJson: JSON.stringify(grant),
+      leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+    });
+    try {
+      if (cause === "disconnect") await client.disconnect();
+      if (cause === "wrong-binding") {
+        grant.binding.generation = crypto.randomUUID();
+        response.grantJson = JSON.stringify(grant);
+        client.receive(response);
+      }
+      expect((await finished.promise).failed).toBe(true);
+      expect(client.hasPending(request.requestId)).toBe(false);
+      client.receive(response);
+      expect(sourceRequests).toBe(0);
+      expect(targetRequests).toBe(0);
+      expect(await readdir(f.options.stagingRoot)).toEqual([]);
+    } finally {
+      await client.disconnect();
+    }
+  }
+});
+
+test("AgentStream negotiates result copy and carries grants and failure reports without exposing tickets", async () => {
+  const f = fixture();
+  const requested = Promise.withResolvers<FederationResultGrantRequest>();
+  const completed = Promise.withResolvers<FederationResultCopyReport>();
+  const registered = Promise.withResolvers<boolean>();
+  const disconnected = Promise.withResolvers<void>();
+  const client: AgentStreamDeps["client"] = {
+    connect(requests, options) {
+      options?.signal?.addEventListener("abort", () => disconnected.resolve(), { once: true });
+      void (async () => {
+        for await (const raw of requests) {
+          const message = create(AgentMessageSchema, raw);
+          if (message.payload.case === "register")
+            registered.resolve(message.payload.value.federationResultCopyV1);
+          if (message.payload.case === "federationResultGrantRequest")
+            requested.resolve(message.payload.value);
+          if (message.payload.case === "federationResultCopyReport")
+            completed.resolve(message.payload.value);
+        }
+      })().catch((error) => completed.reject(error));
+      return (async function* (): AsyncGenerator<ServerMessage> {
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "registerResponse",
+            value: create(RegisterResponseSchema, {
+              accepted: true,
+              federationResultCopyV1Supported: true,
+            }),
+          },
+        });
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "federationResultCopy",
+            value: create(FederationResultCopySchema, {
+              taskJson: JSON.stringify(f.options.task),
+              leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+            }),
+          },
+        });
+        const request = await requested.promise;
+        // A denied grant exercises both stream directions without trusting the test TLS server globally.
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "federationResultGrantResponse",
+            value: create(FederationResultGrantResponseSchema, { requestId: request.requestId }),
+          },
+        });
+        await disconnected.promise;
+      })();
+    },
+  };
+  const stream = new AgentStream({
+    client,
+    federationResultCopy: f.options,
+    agentId: "result-stream-test",
+    siteName: "test",
+    heartbeatIntervalMs: 60_000,
+    logger: pino({ level: "silent" }),
+    adapter: {
+      type: "slurm",
+      version: "test",
+      submit: async () => {
+        throw new Error("No compute expected");
+      },
+      cancel: async () => {},
+      status: async () => ({ status: "completed" }),
+    },
+  });
+  const running = stream.start();
+  try {
+    expect(await registered.promise).toBe(true);
+    expect((await completed.promise).failed).toBe(true);
+    expect((await requested.promise).bindingJson).toContain(f.options.task.generation);
+    expect(sourceRequests).toBe(0);
+    expect(targetRequests).toBe(0);
+  } finally {
+    await stream.stop();
+    await running;
+  }
+});
+
+async function verificationFixture(
+  bytes = Buffer.from("destination"),
+  versionId: string | null = "v1",
+) {
+  const f = fixture(bytes);
+  const copied = await copyFederationResultFile(f.options);
+  const task = {
+    binding: copied.binding,
+    object: { etag: "completed-object", versionId },
+    availableUntil: f.options.task.report.manifest.availableUntil,
+  };
+  if (versionId === null) mode = "unversioned";
+  const options: Parameters<typeof verifyFederationResultFile>[0] = {
+    task,
+    signal: new AbortController().signal,
+    allowedDestinationOrigins: f.options.allowedDestinationOrigins,
+    fetcher: f.options.fetcher,
+    authorize: async (input) => ({
+      ...input,
+      direction: "verify",
+      url: `${target.url}completed${versionId ? `?versionId=${versionId}` : ""}`,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+    }),
+  };
+  return { f, task, options };
+}
+
+test("destination verification reads completed HTTPS bytes with a pinned object and supports empty and unversioned stores", async () => {
+  for (const [bytes, version] of [
+    [Buffer.alloc(1024 * 1024 + 3, 17), "v1"],
+    [Buffer.alloc(0), "v1"],
+    [Buffer.from("unversioned"), null],
+  ] as const) {
+    const { options, task } = await verificationFixture(bytes, version);
+    const verified = await verifyFederationResultFile(options);
+    expect(verified).toEqual({ ...task, sizeBytes: bytes.length, sha256: hash(bytes) });
+  }
+});
+
+test("destination verification rejects same-size corruption, wrong versions, full responses and expired in-flight reads", async () => {
+  for (const failure of [
+    "corrupt",
+    "version-changed",
+    "unexpected-version",
+    "ignore-range",
+    "stall-verification",
+  ] as const) {
+    const { options } = await verificationFixture(
+      Buffer.from("destination"),
+      failure === "unexpected-version" ? null : "v1",
+    );
+    if (failure === "corrupt") received.set(1, Buffer.alloc(content.length, 0));
+    else mode = failure === "unexpected-version" ? "version-changed" : failure;
+    if (failure === "stall-verification") {
+      const authorize = options.authorize;
+      options.authorize = async (...args) => ({
+        ...(await authorize(...args)),
+        expiresAt: new Date(Date.now() + 50).toISOString(),
+      });
+    }
+    await expect(verifyFederationResultFile(options)).rejects.toBeInstanceOf(
+      FederationResultCopyError,
+    );
+  }
+});
+
+test.each([
+  false,
+  true,
+])("result client verifies destination with target-only configuration: %s", async (targetOnly) => {
+  const { f, task, options } = await verificationFixture();
+  const completed = Promise.withResolvers<FederationResultCopyReport>();
+  const client = new FederationResultClient(
+    { ...f.options, allowedSourceOrigins: targetOnly ? [] : f.options.allowedSourceOrigins },
+    (request) => {
+      expect(request.bindingJson).toBe("");
+      void options
+        .authorize(JSON.parse(request.verificationJson), new AbortController().signal)
+        .then((grant) =>
+          client.receive(
+            create(FederationResultGrantResponseSchema, {
+              requestId: request.requestId,
+              grantJson: JSON.stringify(grant),
+              leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+            }),
+          ),
+        );
+      return true;
+    },
+    (report) => completed.resolve(report),
+    copyFederationResultFile,
+    (opts) => verifyFederationResultFile({ ...opts, fetcher: options.fetcher }),
+  );
+  try {
+    expect(client.supportsCopy).toBe(!targetOnly);
+    const sourceBefore = sourceRequests;
+    if (targetOnly)
+      client.start(
+        create(FederationResultCopySchema, {
+          taskJson: JSON.stringify(f.options.task),
+          leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+        }),
+      );
+    client.startVerification(
+      create(FederationResultVerifySchema, {
+        taskJson: JSON.stringify(task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+      }),
+    );
+    const result = await completed.promise;
+    expect(result.failed).toBe(false);
+    expect(sourceRequests).toBe(sourceBefore);
+    expect(result.copiedJson).toBe("");
+    expect(JSON.parse(result.verifiedJson).sha256).toBe(hash(content));
+  } finally {
+    await client.disconnect();
+  }
+});
+
+function inputFixture(bytes = Buffer.from("input")) {
+  const calls: string[] = [];
+  const options: FederationInputCopyOptions = {
+    ...storageFixture(bytes),
+    task: {
+      binding: {
+        transferId: crypto.randomUUID(),
+        generation: crypto.randomUUID(),
+        operationId: crypto.randomUUID(),
+        manifestDigest: `sha256:${"a".repeat(64)}`,
+        descriptor: "measurements",
+        path: "samples/data.bin",
+        sizeBytes: bytes.length,
+        sha256: hash(bytes),
+      },
+      partSize: 5 * 1024 * 1024,
+      availableUntil: new Date(Date.now() + 120_000).toISOString(),
+    },
+    authorize: async (binding, direction, partNumber) => {
+      calls.push(direction + (partNumber ?? ""));
+      return {
+        binding,
+        direction,
+        ...(partNumber === undefined ? {} : { partNumber }),
+        url:
+          direction === "download"
+            ? `${source.url}opaque?versionId=source-v1&secret=input-ticket`
+            : `${target.url}upload?part=${partNumber}&secret=input-upload`,
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      };
+    },
+  };
+  return { options, calls };
+}
+
+function inputVerificationOptions(f: ReturnType<typeof inputFixture>) {
+  const options: Parameters<typeof verifyFederationInputFile>[0] = {
+    task: {
+      binding: f.options.task.binding,
+      object: { etag: "completed-object", versionId: "v1" },
+      availableUntil: f.options.task.availableUntil,
+    },
+    signal: new AbortController().signal,
+    allowedDestinationOrigins: f.options.allowedDestinationOrigins,
+    fetcher: f.options.fetcher,
+    authorize: async (task) => ({
+      ...task,
+      direction: "verify",
+      url: `${target.url}completed?versionId=v1&secret=verification`,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    }),
+  };
+  return options;
+}
+
+test("input files copy real HTTPS bytes and separately verify a pinned destination without result identities", async () => {
+  for (const bytes of [Buffer.alloc(5 * 1024 * 1024 + 123, 37), Buffer.alloc(0)]) {
+    const f = inputFixture(bytes);
+    const copied = FederationInputCopiedSchema.parse(await copyFederationInputFile(f.options));
+    expect(copied.binding).toEqual(f.options.task.binding);
+    expect(copied.parts).toHaveLength(bytes.length ? 2 : 1);
+    expect(copied.sizeBytes).toBe(bytes.length);
+    expect(copied.sha256).toBe(hash(bytes));
+    expect(Buffer.concat([...received.values()])).toEqual(bytes);
+    expect(f.calls.filter((call) => call === "download")).toHaveLength(bytes.length ? 6 : 1);
+    expect(await readdir(f.options.stagingRoot)).toEqual([]);
+    const checks = inputVerificationOptions(f);
+    const before = targetRequests;
+    const verified = FederationInputVerifiedSchema.parse(await verifyFederationInputFile(checks));
+    expect(verified).toEqual({ ...checks.task, sizeBytes: bytes.length, sha256: hash(bytes) });
+    expect(targetRequests - before).toBe(bytes.length ? 6 : 1);
+    expect(JSON.stringify({ copied, verified })).not.toMatch(/secret=|result-report|outputId/);
+  }
+});
+
+test("input grants fence every task and member identity before any bytes move", async () => {
+  const changes = {
+    transferId: crypto.randomUUID(),
+    generation: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    manifestDigest: `sha256:${"b".repeat(64)}`,
+    descriptor: "other",
+    path: "other.bin",
+    sizeBytes: 6,
+    sha256: "b".repeat(64),
+  };
+  for (const [field, value] of Object.entries(changes)) {
+    const f = inputFixture();
+    const original = structuredClone(f.options.task);
+    const authorize = f.options.authorize;
+    f.options.authorize = async (...args) => {
+      const grant = await authorize(...args);
+      Object.assign(grant.binding, { [field]: value });
+      return grant;
+    };
+    await expect(copyFederationInputFile(f.options)).rejects.toThrow("INVALID_GRANT");
+    expect(f.options.task).toEqual(original);
+    expect(sourceRequests).toBe(0);
+    expect(targetRequests).toBe(0);
+    expect(await readdir(f.options.stagingRoot)).toEqual([]);
+  }
+});
+
+test("input copy refuses invalid tasks, result bindings, expired grants and mismatched upload parts", async () => {
+  for (const failure of [
+    "path",
+    "deadline",
+    "size",
+    "parts",
+    "result",
+    "grant-expiry",
+    "task-expiry",
+    "upload-part",
+  ] as const) {
+    const f = inputFixture();
+    if (failure === "path") f.options.task.binding.path = "../escape";
+    if (failure === "deadline")
+      f.options.task.availableUntil = new Date(Date.now() - 1).toISOString();
+    if (failure === "size") f.options.task.binding.sizeBytes = 5 * 1024 ** 4 + 1;
+    if (failure === "parts") f.options.task.binding.sizeBytes = 10_001 * f.options.task.partSize;
+    if (failure === "task-expiry")
+      f.options.task.availableUntil = new Date(Date.now() + 10_000).toISOString();
+    const authorize = f.options.authorize;
+    f.options.authorize = async (...args) => {
+      const grant = await authorize(...args);
+      if (failure === "result")
+        Object.assign(grant.binding, { outputId: `sha256:${"a".repeat(64)}` });
+      if (failure === "grant-expiry") grant.expiresAt = new Date(Date.now() - 1).toISOString();
+      if (failure === "upload-part" && args[1] === "upload") grant.partNumber = 2;
+      return grant;
+    };
+    const expected = {
+      path: "INVALID_TASK",
+      deadline: "INVALID_TASK",
+      size: "INVALID_TASK",
+      parts: "INVALID_TASK",
+      result: "INVALID_GRANT",
+      "grant-expiry": "GRANT_EXPIRED",
+      "task-expiry": "GRANT_EXPIRED",
+      "upload-part": "INVALID_GRANT",
+    }[failure];
+    await expect(copyFederationInputFile(f.options)).rejects.toThrow(expected);
+    expect(targetRequests).toBe(0);
+    if (failure !== "upload-part") expect(sourceRequests).toBe(0);
+  }
+});
+
+test("input copy cleans staging after bad bytes, revoked authority, cancellation and expired streams", async () => {
+  for (const failure of [
+    "hash",
+    "truncated",
+    "revoked",
+    "cancel",
+    "expiry",
+    "redirect",
+    "origin",
+    "staging",
+  ] as const) {
+    const f = inputFixture();
+    const stop = new AbortController();
+    f.options.signal = stop.signal;
+    if (failure === "hash") content = Buffer.from("wrong");
+    if (failure === "truncated") content = Buffer.from("x");
+    if (failure === "cancel" || failure === "expiry") mode = "stall";
+    if (failure === "redirect") mode = "redirect";
+    if (failure === "staging") f.options.maxStagingBytes = 1;
+    const authorize = f.options.authorize;
+    f.options.authorize = async (...args) => {
+      if (failure === "revoked" && args[1] === "upload")
+        throw new FederationFileTransferError("POLICY_DENIED");
+      const grant = await authorize(...args);
+      if (failure === "expiry") grant.expiresAt = new Date(Date.now() + 100).toISOString();
+      if (failure === "origin") grant.url = `${target.url}not-source?secret=private`;
+      return grant;
+    };
+    const timer = failure === "cancel" ? setTimeout(() => stop.abort(), 30) : undefined;
+    try {
+      const expected = {
+        hash: "TRANSFER_IO_FAILED",
+        truncated: "TRANSFER_IO_FAILED",
+        revoked: "POLICY_DENIED",
+        cancel: "TRANSFER_CANCELLED",
+        expiry: "TRANSFER_IO_FAILED",
+        redirect: "TRANSFER_IO_FAILED",
+        origin: "UNTRUSTED_ORIGIN",
+        staging: "STAGING_UNAVAILABLE",
+      }[failure];
+      await expect(copyFederationInputFile(f.options)).rejects.toThrow(expected);
+      expect(targetRequests).toBe(0);
+      expect(await readdir(f.options.stagingRoot)).toEqual([]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+});
+
+test("input verification rejects unversioned tasks and cross-task or altered object grants before GET", async () => {
+  for (const failure of [
+    "unversioned",
+    "null-version",
+    "generation",
+    "descriptor",
+    "manifest",
+    "object",
+    "query-version",
+    "duplicate-version",
+    "origin",
+    "expiry",
+    "deadline",
+  ] as const) {
+    const f = inputFixture();
+    const options = inputVerificationOptions(f);
+    if (failure === "unversioned") Object.assign(options.task.object, { versionId: null });
+    if (failure === "null-version") options.task.object.versionId = "null";
+    const authorize = options.authorize;
+    options.authorize = async (...args) => {
+      const grant = await authorize(...args);
+      if (failure === "generation") grant.binding.generation = crypto.randomUUID();
+      if (failure === "descriptor") grant.binding.descriptor = "other";
+      if (failure === "manifest") grant.binding.manifestDigest = `sha256:${"b".repeat(64)}`;
+      if (failure === "object") grant.object.etag = "other-object";
+      if (failure === "query-version") grant.url = `${target.url}completed?versionId=v2`;
+      if (failure === "duplicate-version") grant.url += "&versionId=v1";
+      if (failure === "origin") grant.url = `${source.url}completed?versionId=v1`;
+      if (failure === "expiry") grant.expiresAt = new Date(Date.now() - 1).toISOString();
+      if (failure === "deadline")
+        grant.availableUntil = new Date(Date.now() + 60_000).toISOString();
+      return grant;
+    };
+    const expected =
+      failure === "unversioned" || failure === "null-version"
+        ? "INVALID_TASK"
+        : failure === "origin"
+          ? "UNTRUSTED_ORIGIN"
+          : failure === "expiry"
+            ? "GRANT_EXPIRED"
+            : "INVALID_GRANT";
+    await expect(verifyFederationInputFile(options)).rejects.toThrow(expected);
+    expect(targetRequests).toBe(0);
+    expect(sourceRequests).toBe(0);
+  }
+});
+
+test("input destination verification requires real content, version and bounded reads", async () => {
+  for (const failure of [
+    "hash",
+    "version-changed",
+    "ignore-range",
+    "unversioned",
+    "stall-verification",
+  ] as const) {
+    const f = inputFixture();
+    // Seed destination bytes directly so this test exercises only the independent reread.
+    received.set(1, failure === "hash" ? Buffer.from("wrong") : content);
+    const options = inputVerificationOptions(f);
+    mode = failure;
+    const stop = new AbortController();
+    options.signal = stop.signal;
+    const timer = failure === "stall-verification" ? setTimeout(() => stop.abort(), 30) : undefined;
+    try {
+      const expected = {
+        hash: "TRANSFER_IO_FAILED",
+        "version-changed": "INVALID_GRANT",
+        "ignore-range": "TRANSFER_IO_FAILED",
+        unversioned: "INVALID_GRANT",
+        "stall-verification": "TRANSFER_CANCELLED",
+      }[failure];
+      await expect(verifyFederationInputFile(options)).rejects.toThrow(expected);
+      expect(targetRequests).toBe(1);
+      expect(sourceRequests).toBe(0);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+});
+
+test("AgentStream negotiates input copy and carries grants and failure reports without exposing tickets", async () => {
+  const f = inputFixture();
+  const requested = Promise.withResolvers<FederationInputGrantRequest>();
+  const completed = Promise.withResolvers<FederationInputCopyReport>();
+  const registered = Promise.withResolvers<boolean>();
+  const disconnected = Promise.withResolvers<void>();
+  const client: AgentStreamDeps["client"] = {
+    connect(requests, options) {
+      options?.signal?.addEventListener("abort", () => disconnected.resolve(), { once: true });
+      void (async () => {
+        for await (const raw of requests) {
+          const message = create(AgentMessageSchema, raw);
+          if (message.payload.case === "register")
+            registered.resolve(message.payload.value.federationInputCopyV1);
+          if (message.payload.case === "federationInputGrantRequest")
+            requested.resolve(message.payload.value);
+          if (message.payload.case === "federationInputCopyReport")
+            completed.resolve(message.payload.value);
+        }
+      })().catch((error) => completed.reject(error));
+      return (async function* (): AsyncGenerator<ServerMessage> {
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "registerResponse",
+            value: create(RegisterResponseSchema, {
+              accepted: true,
+              federationInputCopyV1Supported: true,
+            }),
+          },
+        });
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "federationInputCopy",
+            value: create(FederationInputCopySchema, {
+              taskJson: JSON.stringify(f.options.task),
+              leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+            }),
+          },
+        });
+        const request = await requested.promise;
+        // A denied grant exercises both stream directions without trusting the test TLS server globally.
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "federationInputGrantResponse",
+            value: create(FederationInputGrantResponseSchema, { requestId: request.requestId }),
+          },
+        });
+        await disconnected.promise;
+      })();
+    },
+  };
+  const stream = new AgentStream({
+    client,
+    federationInputCopy: f.options,
+    agentId: "input-stream-test",
+    siteName: "test",
+    heartbeatIntervalMs: 60_000,
+    logger: pino({ level: "silent" }),
+    adapter: {
+      type: "slurm",
+      version: "test",
+      submit: async () => {
+        throw new Error("No compute expected");
+      },
+      cancel: async () => {},
+      status: async () => ({ status: "completed" }),
+    },
+  });
+  const running = stream.start();
+  try {
+    expect(await registered.promise).toBe(true);
+    expect((await completed.promise).failed).toBe(true);
+    expect((await requested.promise).bindingJson).toContain(f.options.task.binding.generation);
+    expect(sourceRequests).toBe(0);
+    expect(targetRequests).toBe(0);
+  } finally {
+    await stream.stop();
+    await running;
+  }
+});
+
+test("input transport client stops on disconnect or lease expiry and discards late grants", async () => {
+  for (const cause of ["disconnect", "expiry", "wrong-binding"] as const) {
+    const f = inputFixture();
+    const requested = Promise.withResolvers<FederationInputGrantRequest>();
+    const finished = Promise.withResolvers<FederationInputCopyReport>();
+    const client = new FederationInputClient(
+      f.options,
+      (request) => {
+        requested.resolve(request);
+        return true;
+      },
+      (report) => finished.resolve(report),
+      (options) => copyFederationInputFile({ ...options, fetcher: f.options.fetcher }),
+    );
+    client.start(
+      create(FederationInputCopySchema, {
+        taskJson: JSON.stringify(f.options.task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + (cause === "expiry" ? 200 : 60_000)),
+      }),
+    );
+    const request = await requested.promise;
+    const grant = await f.options.authorize(
+      JSON.parse(request.bindingJson),
+      "download",
+      undefined,
+      new AbortController().signal,
+    );
+    const response = create(FederationInputGrantResponseSchema, {
+      requestId: request.requestId,
+      grantJson: JSON.stringify(grant),
+      leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+    });
+    try {
+      if (cause === "disconnect") await client.disconnect();
+      if (cause === "wrong-binding") {
+        grant.binding.generation = crypto.randomUUID();
+        response.grantJson = JSON.stringify(grant);
+        client.receive(response);
+      }
+      expect((await finished.promise).failed).toBe(true);
+      expect(client.hasPending(request.requestId)).toBe(false);
+      client.receive(response);
+      expect(sourceRequests).toBe(0);
+      expect(targetRequests).toBe(0);
+      expect(await readdir(f.options.stagingRoot)).toEqual([]);
+    } finally {
+      await client.disconnect();
+    }
+  }
+});
+
+test("input client copies and independently verifies HTTPS bytes while sharing a slot with results", async () => {
+  const r = fixture(Buffer.from("input"));
+  const f = inputFixture();
+  const verification = inputVerificationOptions(f);
+  const copied = Promise.withResolvers<FederationInputCopyReport>();
+  const verified = Promise.withResolvers<FederationInputCopyReport>();
+  const slot = new FederationTransferSlot();
+  const resultReports: FederationResultCopyReport[] = [];
+  const result = new FederationResultClient(
+    r.options,
+    () => false,
+    (report) => resultReports.push(report),
+    undefined,
+    undefined,
+    slot,
+  );
+  const input = new FederationInputClient(
+    f.options,
+    (request) => {
+      void (async () => {
+        const grant = request.verificationJson
+          ? await verification.authorize(
+              JSON.parse(request.verificationJson),
+              new AbortController().signal,
+            )
+          : await f.options.authorize(
+              JSON.parse(request.bindingJson),
+              request.upload ? "upload" : "download",
+              request.partNumber,
+              new AbortController().signal,
+            );
+        input.receive(
+          create(FederationInputGrantResponseSchema, {
+            requestId: request.requestId,
+            grantJson: JSON.stringify(grant),
+            leaseExpiresAtUnixMs: BigInt(Date.now() + 60_000),
+          }),
+        );
+      })().catch(copied.reject);
+      return true;
+    },
+    (report) => (report.verifiedJson ? verified : copied).resolve(report),
+    (options) => copyFederationInputFile({ ...options, fetcher: f.options.fetcher }),
+    (options) => verifyFederationInputFile({ ...options, fetcher: f.options.fetcher }),
+    slot,
+  );
+  try {
+    const command = create(FederationInputCopySchema, {
+      taskJson: JSON.stringify(f.options.task),
+      leaseExpiresAtUnixMs: BigInt(Date.now() + 60_000),
+    });
+    input.start(command);
+    input.start(command);
+    result.start(
+      create(FederationResultCopySchema, {
+        taskJson: JSON.stringify(r.options.task),
+        leaseExpiresAtUnixMs: command.leaseExpiresAtUnixMs,
+      }),
+    );
+    expect(resultReports).toHaveLength(1);
+    expect(resultReports[0]?.failed).toBe(true);
+    const copyReport = await copied.promise;
+    expect(copyReport.failed).toBe(false);
+    expect(JSON.parse(copyReport.copiedJson).sha256).toBe(hash(content));
+    expect(Buffer.compare(Buffer.concat([...received.values()]), content)).toBe(0);
+    const before = targetRequests;
+    input.startVerification(
+      create(FederationInputVerifySchema, {
+        taskJson: JSON.stringify(verification.task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + 60_000),
+      }),
+    );
+    const report = await verified.promise;
+    expect(report.failed).toBe(false);
+    expect(JSON.parse(report.verifiedJson).sha256).toBe(hash(content));
+    expect(targetRequests).toBeGreaterThan(before);
+    expect(JSON.stringify([copyReport, report])).not.toContain("secret=");
+    expect(await readdir(f.options.stagingRoot)).toEqual([]);
+    const release = slot.acquire();
+    expect(release).toBeDefined();
+    release?.();
+  } finally {
+    await Promise.all([input.disconnect(), result.disconnect()]);
+  }
+});
+
+test("target-only input client refuses network copying and verifies actual destination bytes", async () => {
+  const f = inputFixture(Buffer.from("target-only-input"));
+  received.set(1, Buffer.from(content));
+  const options = inputVerificationOptions(f);
+  const completed = Promise.withResolvers<FederationInputCopyReport>();
+  let grants = 0;
+  const client = new FederationInputClient(
+    { ...f.options, allowedSourceOrigins: [] },
+    (request) => {
+      grants++;
+      expect(request.bindingJson).toBe("");
+      void options
+        .authorize(JSON.parse(request.verificationJson), new AbortController().signal)
+        .then((grant) =>
+          client.receive(
+            create(FederationInputGrantResponseSchema, {
+              requestId: request.requestId,
+              grantJson: JSON.stringify(grant),
+              leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+            }),
+          ),
+        )
+        .catch(completed.reject);
+      return true;
+    },
+    (report) => completed.resolve(report),
+    copyFederationInputFile,
+    (opts) => verifyFederationInputFile({ ...opts, fetcher: options.fetcher }),
+  );
+  try {
+    expect(client.supportsCopy).toBe(false);
+    client.start(
+      create(FederationInputCopySchema, {
+        taskJson: JSON.stringify(f.options.task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+      }),
+    );
+    expect(grants).toBe(0);
+    client.startVerification(
+      create(FederationInputVerifySchema, {
+        taskJson: JSON.stringify(options.task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+      }),
+    );
+    const report = await completed.promise;
+    expect(report.failed).toBe(false);
+    expect(JSON.parse(report.verifiedJson).sha256).toBe(hash(content));
+    expect(sourceRequests).toBe(0);
+    expect(targetRequests).toBeGreaterThan(0);
+  } finally {
+    await client.disconnect();
+  }
+});

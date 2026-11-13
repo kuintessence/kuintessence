@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { detectScheduler } from "./adapters/detect";
 import { loadAgentConfig } from "./config";
 
 describe("loadAgentConfig", () => {
@@ -7,7 +8,23 @@ describe("loadAgentConfig", () => {
     AGENT_ID: "agent-test",
     AGENT_SITE_NAME: "test-site",
   };
-
+  test("media object export defaults closed and requires locally configured HTTPS origins", () => {
+    const config = { mediaDirectory: "/var/lib/kq/media", ageDirectory: "/opt/age" };
+    const load = (value: unknown) =>
+      loadAgentConfig({ ...baseEnv, AGENT_FEDERATION_MEDIA_EXPORT: JSON.stringify(value) })
+        .AGENT_FEDERATION_MEDIA_EXPORT;
+    expect(load(config)?.allowedSourceOrigins).toEqual([]);
+    expect(
+      load({ ...config, allowedSourceOrigins: ["https://local.invalid"] })?.allowedSourceOrigins,
+    ).toEqual(["https://local.invalid"]);
+    for (const origin of [
+      "http://local.invalid",
+      "https://user:password@local.invalid",
+      "https://local.invalid/path",
+      "https://local.invalid?secret=x",
+    ])
+      expect(() => load({ ...config, allowedSourceOrigins: [origin] })).toThrow();
+  });
   test("loads valid config with defaults", () => {
     const cfg = loadAgentConfig(baseEnv);
     expect(cfg.AGENT_ID).toBe("agent-test");
@@ -15,6 +32,7 @@ describe("loadAgentConfig", () => {
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(30);
     expect(cfg.AGENT_QUEUE_INVENTORY_INTERVAL_SEC).toBe(30);
     expect(cfg.AGENT_SCHEDULER_METRICS_INTERVAL_SEC).toBe(120);
+    expect(cfg.AGENT_SLURM_TERMINAL_STATUS_BACKEND).toBe("sacct");
     expect(cfg.AGENT_GRPC_PING_INTERVAL_SEC).toBe(30);
     expect(cfg.AGENT_GRPC_PING_TIMEOUT_SEC).toBe(10);
     expect(cfg.AGENT_REGISTRATION_TIMEOUT_SEC).toBe(30);
@@ -25,13 +43,86 @@ describe("loadAgentConfig", () => {
     expect(cfg.AGENT_CONTAINER_FILE_TRANSFER_CONNECT_TO).toBeUndefined();
     expect(cfg.AGENT_K8S_DEFAULT_IMAGE).toBe("busybox:latest");
   });
-
+  test("allows explicit retained Slurm status without pretending accounting exists", () => {
+    expect(
+      loadAgentConfig({ ...baseEnv, AGENT_SLURM_TERMINAL_STATUS_BACKEND: "scontrol" })
+        .AGENT_SLURM_TERMINAL_STATUS_BACKEND,
+    ).toBe("scontrol");
+    expect(() =>
+      loadAgentConfig({ ...baseEnv, AGENT_SLURM_TERMINAL_STATUS_BACKEND: "auto" }),
+    ).toThrow();
+  });
+  test("result copy defaults off and requires private staging capacity and explicit HTTPS origins", () => {
+    expect(loadAgentConfig(baseEnv).AGENT_FEDERATION_RESULT_COPY).toBeNull();
+    const settings = {
+      stagingRoot: "/var/lib/kq/result-staging",
+      maxStagingBytes: 1024,
+      allowedSourceOrigins: ["https://source.invalid"],
+      allowedDestinationOrigins: ["https://target.invalid"],
+    };
+    const load = (value: unknown) =>
+      loadAgentConfig({ ...baseEnv, AGENT_FEDERATION_RESULT_COPY: JSON.stringify(value) });
+    expect(load(settings).AGENT_FEDERATION_RESULT_COPY).toEqual(settings);
+    expect(
+      load({ ...settings, allowedSourceOrigins: [] }).AGENT_FEDERATION_RESULT_COPY
+        ?.allowedSourceOrigins,
+    ).toEqual([]);
+    for (const invalid of [
+      { ...settings, stagingRoot: "/" },
+      { ...settings, maxStagingBytes: 0 },
+      { ...settings, allowedSourceOrigins: ["http://source.invalid"] },
+      { ...settings, allowedDestinationOrigins: ["http://target.invalid"] },
+    ])
+      expect(() => load(invalid)).toThrow();
+  });
+  test("input copy defaults off and requires private staging capacity and explicit HTTPS origins", () => {
+    expect(loadAgentConfig(baseEnv).AGENT_FEDERATION_INPUT_COPY).toBeNull();
+    const settings = {
+      stagingRoot: "/var/lib/kq/input-staging",
+      maxStagingBytes: 1024,
+      allowedSourceOrigins: ["https://source.invalid"],
+      allowedDestinationOrigins: ["https://target.invalid"],
+    };
+    const load = (value: unknown) =>
+      loadAgentConfig({ ...baseEnv, AGENT_FEDERATION_INPUT_COPY: JSON.stringify(value) });
+    expect(load(settings).AGENT_FEDERATION_INPUT_COPY).toEqual(settings);
+    expect(
+      load({ ...settings, allowedSourceOrigins: [] }).AGENT_FEDERATION_INPUT_COPY
+        ?.allowedSourceOrigins,
+    ).toEqual([]);
+    for (const invalid of [
+      { ...settings, stagingRoot: "/" },
+      { ...settings, maxStagingBytes: 0 },
+      { ...settings, allowedSourceOrigins: ["http://source.invalid"] },
+      { ...settings, allowedDestinationOrigins: ["http://target.invalid"] },
+    ])
+      expect(() => load(invalid)).toThrow();
+  });
   test("coerces HEARTBEAT_INTERVAL_SEC from string", () => {
     const cfg = loadAgentConfig({ ...baseEnv, HEARTBEAT_INTERVAL_SEC: "60" });
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(60);
   });
-
-  test("managed memory defaults to 4096 MiB and accepts integer budgets from 1024 MiB to 1 TiB", () => {
+  test("preserves the registered scheduler on a host with multiple scheduler clients", async () => {
+    expect(loadAgentConfig(baseEnv).AGENT_SCHEDULER_TYPE).toBeUndefined();
+    const config = loadAgentConfig({
+      ...baseEnv,
+      AGENT_SCHEDULER_TYPE: "kubernetes",
+      AGENT_SCHEDULER_VERSION: "1.36",
+    });
+    const adapter = await detectScheduler({
+      forceType: config.AGENT_SCHEDULER_TYPE,
+      forceVersion: config.AGENT_SCHEDULER_VERSION,
+      spawner: {
+        async run() {
+          throw new Error("A registered scheduler must not be replaced by auto-detection");
+        },
+      },
+    });
+    expect(adapter.type).toBe("kubernetes");
+    expect(adapter.version).toBe("1.36");
+    expect(() => loadAgentConfig({ ...baseEnv, AGENT_SCHEDULER_TYPE: "unknown" })).toThrow();
+  });
+  test("managed memory defaults to 4096 MiB and accepts integer budgets from 1024 to 4096", () => {
     expect(loadAgentConfig(baseEnv).AGENT_SPACK_MANAGED_MEMORY_MIB).toBe(4096);
     for (const memory of ["1024", "1537", "4096", "32768", "1048576"]) {
       expect(
@@ -45,7 +136,6 @@ describe("loadAgentConfig", () => {
       ).toThrow();
     }
   });
-
   test("managed install defaults to six hours and accepts at most 24 hours", () => {
     expect(loadAgentConfig(baseEnv).AGENT_SPACK_INSTALL_TIMEOUT_MS).toBe(21_600_000);
     for (const timeout of ["1", "86400000"]) {
@@ -69,7 +159,6 @@ describe("loadAgentConfig", () => {
       ).toThrow();
     }
   });
-
   test("configures queue freshness independently of scheduler metrics", () => {
     const metricsOnly = loadAgentConfig({
       ...baseEnv,
@@ -83,13 +172,11 @@ describe("loadAgentConfig", () => {
     expect(queueOnly.AGENT_QUEUE_INVENTORY_INTERVAL_SEC).toBe(15);
     expect(queueOnly.AGENT_SCHEDULER_METRICS_INTERVAL_SEC).toBe(120);
   });
-
   test.each(["0", "-1", "1.5", "invalid"])("rejects invalid queue interval %s", (interval) => {
     expect(() =>
       loadAgentConfig({ ...baseEnv, AGENT_QUEUE_INVENTORY_INTERVAL_SEC: interval }),
     ).toThrow();
   });
-
   test("loads custom reconnect liveness settings", () => {
     const cfg = loadAgentConfig({
       ...baseEnv,
@@ -104,7 +191,6 @@ describe("loadAgentConfig", () => {
     expect(cfg.AGENT_REGISTRATION_TIMEOUT_SEC).toBe(20);
     expect(cfg.AGENT_HEARTBEAT_ACK_TIMEOUT_SEC).toBe(40);
   });
-
   test("bounds reconnect liveness settings to safe operational ranges", () => {
     expect(
       loadAgentConfig({
@@ -125,7 +211,6 @@ describe("loadAgentConfig", () => {
     expect(() => loadAgentConfig({ ...baseEnv, AGENT_REGISTRATION_TIMEOUT_SEC: "601" })).toThrow();
     expect(() => loadAgentConfig({ ...baseEnv, AGENT_HEARTBEAT_ACK_TIMEOUT_SEC: "301" })).toThrow();
   });
-
   test("allows the reachability probe only for explicit HTTPS mTLS deployments", () => {
     expect(() => loadAgentConfig({ ...baseEnv, AGENT_REACHABILITY_PROBE_ENABLED: "true" })).toThrow(
       "requires HTTPS and Agent mTLS",
@@ -139,7 +224,6 @@ describe("loadAgentConfig", () => {
       }).AGENT_REACHABILITY_PROBE_ENABLED,
     ).toBe(true);
   });
-
   test("respects custom file-transfer connect-to mapping", () => {
     const cfg = loadAgentConfig({
       ...baseEnv,
@@ -147,7 +231,6 @@ describe("loadAgentConfig", () => {
     });
     expect(cfg.AGENT_FILE_TRANSFER_CONNECT_TO).toBe("localhost:19000:host.docker.internal:19000");
   });
-
   test("supports a separate scheduler-container connect-to mapping", () => {
     const cfg = loadAgentConfig({
       ...baseEnv,
@@ -159,7 +242,6 @@ describe("loadAgentConfig", () => {
       "localhost:19000:host.docker.internal:19000",
     );
   });
-
   test("requires Sandbox managed root to be a dedicated absolute path", () => {
     expect(() => loadAgentConfig({ ...baseEnv, AGENT_SANDBOX_ROOT: "/" })).toThrow(
       "dedicated absolute path",
@@ -171,7 +253,6 @@ describe("loadAgentConfig", () => {
       AGENT_SANDBOX_ROOT: "/srv/kq/sandbox",
     });
   });
-
   test("configures dedicated Data Market dataset and job roots", () => {
     const defaults = loadAgentConfig(baseEnv);
     expect(defaults.AGENT_DATASET_ROOT).toBe("/var/lib/kuintessence/datasets");
@@ -200,7 +281,6 @@ describe("loadAgentConfig", () => {
       }),
     ).toThrow("canonical and relative");
   });
-
   test("output collection failure injection is unset by default and explicit when requested", () => {
     expect(loadAgentConfig(baseEnv).AGENT_TEST_FAIL_OUTPUT_COLLECTION_DESCRIPTOR).toBeUndefined();
     const cfg = loadAgentConfig({
@@ -209,29 +289,24 @@ describe("loadAgentConfig", () => {
     });
     expect(cfg.AGENT_TEST_FAIL_OUTPUT_COLLECTION_DESCRIPTOR).toBe("chunks");
   });
-
   test("rejects invalid URL", () => {
     expect(() => loadAgentConfig({ ...baseEnv, SERVER_GRPC_URL: "not-a-url" })).toThrow();
   });
-
   test("rejects missing AGENT_ID", () => {
     expect(() =>
       loadAgentConfig({ SERVER_GRPC_URL: "http://server:3001", AGENT_SITE_NAME: "x" }),
     ).toThrow();
   });
-
   test("defaults to host spawner backend with no container id", () => {
     const cfg = loadAgentConfig(baseEnv);
     expect(cfg.AGENT_SPAWNER_BACKEND).toBe("host");
     expect(cfg.AGENT_SLURM_CONTAINER_ID).toBeUndefined();
   });
-
   test("rejects container backend without container id", () => {
     expect(() => loadAgentConfig({ ...baseEnv, AGENT_SPAWNER_BACKEND: "container" })).toThrow(
       "AGENT_SLURM_CONTAINER_ID is required when AGENT_SPAWNER_BACKEND=container",
     );
   });
-
   test("accepts container backend with container id", () => {
     const cfg = loadAgentConfig({
       ...baseEnv,
@@ -241,7 +316,6 @@ describe("loadAgentConfig", () => {
     expect(cfg.AGENT_SPAWNER_BACKEND).toBe("container");
     expect(cfg.AGENT_SLURM_CONTAINER_ID).toBe("slurm-docker-ctr");
   });
-
   test("accepts a controlled Kubernetes worker image", () => {
     expect(
       loadAgentConfig({
@@ -250,49 +324,38 @@ describe("loadAgentConfig", () => {
       }).AGENT_K8S_DEFAULT_IMAGE,
     ).toBe("kq-governed-spack:zlib-1.3.1");
   });
-
-  // mTLS additions
   test("AGENT_MTLS_REQUIRED defaults to false", () => {
     const cfg = loadAgentConfig(baseEnv);
     expect(cfg.AGENT_MTLS_REQUIRED).toBe(false);
   });
-
   test("AGENT_MTLS_REQUIRED parses 'true' to boolean", () => {
     const cfg = loadAgentConfig({ ...baseEnv, AGENT_MTLS_REQUIRED: "true" });
     expect(cfg.AGENT_MTLS_REQUIRED).toBe(true);
   });
-
   test("AGENT_CERT_DIR defaults to ./agent-certs", () => {
     const cfg = loadAgentConfig(baseEnv);
     expect(cfg.AGENT_CERT_DIR).toBe("./agent-certs");
   });
-
   test("AGENT_ENROLL_TOKEN is optional and undefined by default", () => {
     const cfg = loadAgentConfig(baseEnv);
     expect(cfg.AGENT_ENROLL_TOKEN).toBeUndefined();
   });
-
-  // Spack additions
   test("AGENT_SPACK_ENABLED defaults to false", () => {
     const cfg = loadAgentConfig(baseEnv);
     expect(cfg.AGENT_SPACK_ENABLED).toBe(false);
   });
-
   test("AGENT_SPACK_ENABLED parses 'true' to boolean", () => {
     const cfg = loadAgentConfig({ ...baseEnv, AGENT_SPACK_ENABLED: "true" });
     expect(cfg.AGENT_SPACK_ENABLED).toBe(true);
   });
-
   test("AGENT_SPACK_PATH defaults to 'spack' (PATH lookup)", () => {
     const cfg = loadAgentConfig(baseEnv);
     expect(cfg.AGENT_SPACK_PATH).toBe("spack");
   });
-
   test("AGENT_SPACK_PATH respects custom binary path", () => {
     const cfg = loadAgentConfig({ ...baseEnv, AGENT_SPACK_PATH: "/opt/spack/bin/spack" });
     expect(cfg.AGENT_SPACK_PATH).toBe("/opt/spack/bin/spack");
   });
-
   test("requires a dedicated canonical Spack cache directory and defaults safely while disabled", () => {
     expect(loadAgentConfig(baseEnv).AGENT_SPACK_CACHE_DIR).toBe(
       "/var/lib/kuintessence/spack-materials",
@@ -307,7 +370,6 @@ describe("loadAgentConfig", () => {
       );
     }
   });
-
   test("source auditing is disabled by default and requires a complete pinned profile", () => {
     expect(loadAgentConfig(baseEnv).AGENT_SPACK_AUDIT_ENABLED).toBe(false);
     const enabled = {
@@ -337,7 +399,6 @@ describe("loadAgentConfig", () => {
       loadAgentConfig({ ...enabled, AGENT_SPACK_AUDIT_SIF_SHA256: "invalid" }),
     ).toThrow();
   });
-
   test("persistent Spack installation requires source auditing, host execution and a pinned site profile", () => {
     expect(loadAgentConfig(baseEnv).AGENT_SPACK_INSTALL_ENABLED).toBe(false);
     const enabled = {
@@ -377,18 +438,14 @@ describe("loadAgentConfig", () => {
       loadAgentConfig({ ...enabled, AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256: "invalid" }),
     ).toThrow();
   });
-
-  // SSH relay master switch
   test("AGENT_SSH_ENABLED defaults to true (relay needs no agent-side setup; Server RBAC-gates)", () => {
     const cfg = loadAgentConfig(baseEnv);
     expect(cfg.AGENT_SSH_ENABLED).toBe(true);
   });
-
   test("AGENT_SSH_ENABLED parses 'false' to disable the relay on locked-down nodes", () => {
     const cfg = loadAgentConfig({ ...baseEnv, AGENT_SSH_ENABLED: "false" });
     expect(cfg.AGENT_SSH_ENABLED).toBe(false);
   });
-
   test("AGENT_SSH_STRICT_ALGORITHMS defaults to false (compat) and parses 'true'", () => {
     expect(loadAgentConfig(baseEnv).AGENT_SSH_STRICT_ALGORITHMS).toBe(false);
     expect(
@@ -396,7 +453,6 @@ describe("loadAgentConfig", () => {
         .AGENT_SSH_STRICT_ALGORITHMS,
     ).toBe(true);
   });
-
   test("Sandbox is fail-closed by default and parses pinned runtime/key catalogs", () => {
     const defaults = loadAgentConfig(baseEnv);
     expect(defaults.AGENT_SANDBOX_ENABLED).toBe(false);
@@ -415,7 +471,6 @@ describe("loadAgentConfig", () => {
     expect(config.AGENT_SANDBOX_ENABLED).toBe(true);
     expect(config.AGENT_SANDBOX_RUNTIME_CACHE_JSON[digest]?.localPath).toBe("/runtime/python.sif");
   });
-
   test("accepts only digest-pinned OCI runtime refs matching the cache key", () => {
     const digest = `sha256:${"1".repeat(64)}`;
     const runtimeRef = `registry.example/kq/python@${digest}`;
@@ -457,7 +512,6 @@ describe("loadAgentConfig", () => {
       }),
     ).toThrow("OCI runtime digest must match its runtime cache key");
   });
-
   test("accepts supported OCI registry, tag, IPv6, and repository forms", () => {
     const digest = `sha256:${"a".repeat(64)}`;
     const refs = [
@@ -486,7 +540,6 @@ describe("loadAgentConfig", () => {
       expect(config.AGENT_SANDBOX_RUNTIME_CACHE_JSON[digest]?.localPath).toBe(localPath);
     }
   });
-
   test("rejects invalid OCI ports, repository separators, and path forms", () => {
     const digest = `sha256:${"b".repeat(64)}`;
     const invalidRefs = [
@@ -518,7 +571,6 @@ describe("loadAgentConfig", () => {
       ).toThrow();
     }
   });
-
   test("rejects long malformed OCI refs without regex backtracking", () => {
     const digest = `sha256:${"c".repeat(64)}`;
     const env = {
@@ -535,7 +587,6 @@ describe("loadAgentConfig", () => {
       expect(() => loadAgentConfig(env)).toThrow();
     }
   });
-
   test("keeps SIF runtime paths absolute and traversal-free", () => {
     const digest = `sha256:${"d".repeat(64)}`;
     for (const localPath of ["runtime/python.sif", "/", "/runtime/../python.sif"]) {
@@ -549,14 +600,18 @@ describe("loadAgentConfig", () => {
       ).toThrow();
     }
   });
-
   test("rejects malformed Sandbox JSON configuration", () => {
     expect(() =>
       loadAgentConfig({ ...baseEnv, AGENT_SANDBOX_RUNTIME_CACHE_JSON: "not-json" }),
     ).toThrow();
   });
-
   test("rejects an ambiguous self-account or incomplete seccomp configuration", () => {
+    expect(() =>
+      loadAgentConfig({
+        ...baseEnv,
+        AGENT_SANDBOX_CGROUP_CHECK_PATH: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+      }),
+    ).toThrow("configured together");
     expect(() =>
       loadAgentConfig({
         ...baseEnv,
@@ -585,7 +640,6 @@ describe("loadAgentConfig", () => {
       }),
     ).toThrow("canonical relative path");
   });
-
   test("restricted data isolation requires a pinned trusted execution SIF, not a mount driver", () => {
     expect(loadAgentConfig(baseEnv).AGENT_DATA_READONLY_MOUNT_DRIVER).toBe("disabled");
     expect(() => loadAgentConfig({ ...baseEnv, AGENT_RESTRICTED_DATA_ISOLATION: "true" })).toThrow(
@@ -604,5 +658,20 @@ describe("loadAgentConfig", () => {
     expect(config.AGENT_RESTRICTED_EXECUTION_SIF_DIGEST).toBe(digest);
     expect(config.AGENT_RESTRICTED_EXECUTION_PROFILE_ID).toBe(profileId);
     expect(config.AGENT_RESTRICTED_EXECUTION_WRAPPER_SHA256).toBe(wrapperSha256);
+  });
+
+  test("managed memory defaults to 4096 MiB and accepts integer budgets from 1024 MiB to 1 TiB", () => {
+    expect(loadAgentConfig(baseEnv).AGENT_SPACK_MANAGED_MEMORY_MIB).toBe(4096);
+    for (const memory of ["1024", "1537", "4096", "32768", "1048576"]) {
+      expect(
+        loadAgentConfig({ ...baseEnv, AGENT_SPACK_MANAGED_MEMORY_MIB: memory })
+          .AGENT_SPACK_MANAGED_MEMORY_MIB,
+      ).toBe(Number(memory));
+    }
+    for (const memory of ["", "bad", "0", "-1", "1023", "1048577", "1024.5", "NaN", "Infinity"]) {
+      expect(() =>
+        loadAgentConfig({ ...baseEnv, AGENT_SPACK_MANAGED_MEMORY_MIB: memory }),
+      ).toThrow();
+    }
   });
 });

@@ -1724,6 +1724,18 @@
         "placement": {
           "title": "Scheduler explanations",
           "description": "Inspect placement reasoning for permission, software, metering, load, and cost filters."
+        },
+        "federationPermissions": {
+          "title": "Federation permissions",
+          "description": "Grant federation business permissions to organization members"
+        },
+        "federationStorage": {
+          "title": "Input storage reconciliation",
+          "description": "Reconcile unknown requests and storage cleanup"
+        },
+        "federationTrust": {
+          "title": "Federation trust",
+          "description": "Institutions, signing keys, and client certificates"
         }
       },
       "auditSettings": "Audit settings",
@@ -1936,7 +1948,10 @@
       "ssh-sessions": "SSH sessions",
       "ssh-recordings": "SSH recordings",
       "cluster-file-roots": "Cluster file roots",
-      "cost-rates": "Cost rates"
+      "cost-rates": "Cost rates",
+      "federation-permissions": "Federation permissions",
+      "federation-storage": "Input storage reconciliation",
+      "federation-trust": "Federation trust"
     }
   },
   "terminal": {
@@ -2554,7 +2569,7 @@
     "save": "Save",
     "removeTitle": "Remove organization member",
     "desktopRemove": "Use a desktop to remove organization members.",
-    "removeEffect": "This removes membership only. The user account and independent permissions are retained.",
+    "removeEffect": "Removes membership and federation grants in this organization. The account and other independent permissions are retained; rejoining requires new federation grants.",
     "removeFailed": "Could not remove the member. Try again.",
     "removing": "Removing…",
     "confirmRemove": "Confirm removal",

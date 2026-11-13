@@ -4,6 +4,8 @@ import type {
   LinkMetadata,
   MapView,
   ProviderProfile,
+  SandboxArtifactMember,
+  WorkflowWaitingInvocation,
 } from "@kuintessence/shared";
 import { sql } from "drizzle-orm";
 import {
@@ -243,6 +245,7 @@ export const jobCancellations = pgTable(
       .notNull(),
     revokedEpoch: integer("revoked_epoch").notNull().default(0),
     acknowledgedAt: timestamp("acknowledged_at"),
+    requiresInstallationStop: boolean("requires_installation_stop").notNull().default(false),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => ({
@@ -251,7 +254,7 @@ export const jobCancellations = pgTable(
       t.acknowledgedAt,
       t.createdAt,
     ),
-    jobUnique: uniqueIndex("job_cancellations_job_idx").on(t.jobId),
+    jobAgentUnique: uniqueIndex("job_cancellations_job_agent_idx").on(t.jobId, t.agentId),
     revokedEpochCheck: check("job_cancellations_revoked_epoch_check", sql`${t.revokedEpoch} >= 0`),
   }),
 );
@@ -574,6 +577,7 @@ export const jobs = pgTable(
     submittedAt: timestamp("submitted_at").defaultNow().notNull(),
     startedAt: timestamp("started_at"),
     completedAt: timestamp("completed_at"),
+    sandboxStatsRecordedAt: timestamp("sandbox_stats_recorded_at"),
     /**
      * Workflow-runtime-populated app template key. Mirrors
      * `metering_usage_raw.app_template_key` so CP-Console "top apps" can
@@ -1390,6 +1394,8 @@ export const workflowRuns = pgTable(
     status: varchar("status", { length: 20 }).notNull().default("submitted"),
     stepJobs: jsonb("step_jobs").$type<Record<string, string>>().notNull().default({}),
     input: jsonb("input").$type<{
+      executionModel?: "durable-v2";
+      federationReservationId?: string;
       yaml: string;
       role: string;
       orgId?: string | null;
@@ -1412,6 +1418,10 @@ export const workflowRuns = pgTable(
       nodes: Array<{ id: string; name: string; kind: string }>;
       edges: Array<{ source: string; target: string; when?: string }>;
     }>(),
+    waitingInvocations: jsonb("waiting_invocations")
+      .$type<WorkflowWaitingInvocation[]>()
+      .notNull()
+      .default([]),
     errorCode: varchar("error_code", { length: 80 }),
     errorMessage: text("error_message"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -1769,6 +1779,11 @@ export const softwareOperations = pgTable(
     idempotencyItemCount: integer("idempotency_item_count"),
     action: varchar("action", { length: 32 }).notNull(),
     spec: varchar("spec", { length: 500 }).notNull(),
+    replayEnabled: boolean("replay_enabled").notNull().default(false),
+    // Retain the authority identity even after Job cleanup; missing Jobs cannot renew it.
+    federationJobId: uuid("federation_job_id"),
+    nextDispatchAt: timestamp("next_dispatch_at"),
+    manifestDigest: varchar("manifest_digest", { length: 71 }),
     status: varchar("status", { length: 32 }).notNull().default("queued"),
     stdout: text("stdout"),
     stderr: text("stderr"),
@@ -1786,6 +1801,10 @@ export const softwareOperations = pgTable(
       t.requestedBy,
       t.idempotencyKey,
       t.idempotencyItemIndex,
+    ),
+    federationAuthorityCheck: check(
+      "software_operations_federation_authority_check",
+      sql`${t.federationJobId} IS NULL OR (${t.action} = 'install' AND ${t.replayEnabled} AND ${t.requestedBy} IS NOT NULL AND ${t.manifestDigest} IS NOT NULL)`,
     ),
     actionCheck: check(
       "software_operations_action_check",
@@ -1886,6 +1905,7 @@ export const netdriveFiles = pgTable(
     etag: varchar("etag", { length: 255 }),
     /** Synthetic MinIO/S3 object key under the bucket. */
     storageKey: varchar("storage_key", { length: 512 }).notNull(),
+    storageVersionId: varchar("storage_version_id", { length: 2048 }),
     mtime: timestamp("mtime").defaultNow().notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     /** Soft-delete tombstone. NULL for live rows. */
@@ -3039,6 +3059,8 @@ export const workflowArtifacts = pgTable(
     workflowRunId: uuid("workflow_run_id")
       .references(() => workflowRuns.id, { onDelete: "cascade" })
       .notNull(),
+    producerJobId: uuid("producer_job_id").references(() => jobs.id),
+    fileMembers: jsonb("file_members").$type<SandboxArtifactMember[]>(),
     producerNodeId: varchar("producer_node_id", { length: 255 }).notNull(),
     descriptor: varchar("descriptor", { length: 255 }).notNull(),
     ioType: varchar("io_type", { length: 20 }).notNull(),
@@ -3052,11 +3074,12 @@ export const workflowArtifacts = pgTable(
     persistentAt: timestamp("persistent_at"),
   },
   (t) => ({
-    runNodeDescriptorIdx: uniqueIndex("workflow_artifacts_run_node_descriptor_idx").on(
-      t.workflowRunId,
-      t.producerNodeId,
-      t.descriptor,
-    ),
+    runNodeDescriptorIdx: uniqueIndex("workflow_artifacts_run_node_descriptor_idx")
+      .on(t.workflowRunId, t.producerNodeId, t.descriptor)
+      .where(sql`${t.producerJobId} IS NULL`),
+    jobDescriptorIdx: uniqueIndex("workflow_artifacts_job_descriptor_idx")
+      .on(t.producerJobId, t.descriptor)
+      .where(sql`${t.producerJobId} IS NOT NULL`),
     hashIdx: index("workflow_artifacts_hash_idx").on(t.contentHash),
     durabilityIdx: index("workflow_artifacts_durability_idx").on(t.durability, t.createdAt),
     ioTypeCheck: check(
@@ -3068,6 +3091,20 @@ export const workflowArtifacts = pgTable(
       sql`${t.durability} IN ('Ephemeral', 'Checkpoint', 'Persistent')`,
     ),
   }),
+);
+
+export const workflowArtifactFiles = pgTable(
+  "workflow_artifact_files",
+  {
+    artifactId: uuid("artifact_id")
+      .references(() => workflowArtifacts.id, { onDelete: "cascade" })
+      .notNull(),
+    relativePath: varchar("relative_path", { length: 255 }).notNull(),
+    netdriveFileId: uuid("netdrive_file_id").references(() => netdriveFiles.id, {
+      onDelete: "set null",
+    }),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.artifactId, t.relativePath] }) }),
 );
 
 export const artifactReplicas = pgTable(

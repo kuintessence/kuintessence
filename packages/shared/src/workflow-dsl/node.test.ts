@@ -63,22 +63,32 @@ describe("WorkflowNodeSchema — node variants", () => {
     const inputSlots = [{ type: "Dataset", descriptor: "trainingData" }];
     expect(() =>
       WorkflowNodeSchema.parse({ type: "NoAction", id: "noop", name: "noop", inputSlots }),
-    ).toThrow("Dataset input slots are only supported on SoftwareUsecaseComputing nodes");
-    expect(() =>
-      WorkflowNodeSchema.parse({
-        type: "Script",
-        id: "script",
-        name: "script",
-        source: {
-          type: "AssetRevision",
-          assetId: UUID,
-          revision: 1,
-          sha256: "a".repeat(64),
-        },
-        runtimeProfileId: UUID,
-        inputSlots,
-      }),
-    ).toThrow("Dataset input slots are only supported on SoftwareUsecaseComputing nodes");
+    ).toThrow("Dataset input slots are only supported on SoftwareUsecaseComputing or Script nodes");
+    const script = {
+      type: "Script",
+      id: "script",
+      name: "script",
+      source: {
+        type: "AssetRevision",
+        assetId: UUID,
+        revision: 1,
+        sha256: "a".repeat(64),
+      },
+      runtimeProfileId: UUID,
+      inputSlots,
+    };
+    expect(
+      WorkflowNodeSchema.parse({ ...script, inputs: { trainingData: { type: "FileBatch" } } }).type,
+    ).toBe("Script");
+    for (const inputs of [
+      {},
+      { trainingData: { type: "Text" } },
+      { trainingData: { type: "File" } },
+    ]) {
+      expect(() => WorkflowNodeSchema.parse({ ...script, inputs })).toThrow(
+        "Script Dataset inputs require a declared FileBatch input",
+      );
+    }
   });
 });
 
@@ -171,4 +181,59 @@ describe("WorkflowSpecSchema", () => {
     const r = WorkflowSpecSchema.parse({ nodeDrafts: [suc("only")] });
     expect(r.nodeRelations).toEqual([]);
   });
+});
+
+test("Federation market selection is optional and only allows explicit public copy and original policy", () => {
+  const id = crypto.randomUUID();
+  const node = {
+    type: "Federation",
+    id: "remote",
+    name: "Remote",
+    agreementRevisionId: id,
+    template: {
+      originSiteId: id,
+      kind: "workflow",
+      id,
+      revision: "1",
+      digest: `sha256:${"a".repeat(64)}`,
+    },
+    inputManifestDigest: `sha256:${"b".repeat(64)}`,
+    environmentLockDigest: `sha256:${"c".repeat(64)}`,
+    resources: { cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 60 },
+    maxAmount: "0",
+    inputSlots: [],
+    outputs: [],
+  };
+  expect(WorkflowNodeSchema.safeParse(node).success).toBe(true);
+  expect(
+    WorkflowNodeSchema.parse({ ...node, inputDelivery: "media", resultDelivery: "network" }),
+  ).toMatchObject({ inputDelivery: "media", resultDelivery: "network" });
+  expect(WorkflowNodeSchema.safeParse({ ...node, resultDelivery: "automatic" }).success).toBe(
+    false,
+  );
+  const market = { policyId: id, title: "Shared task", description: "" };
+  const arbitration = { policyId: id, policyDigest: `sha256:${"d".repeat(64)}` };
+  expect(WorkflowNodeSchema.parse({ ...node, arbitration })).toMatchObject({ arbitration });
+  for (const patch of [
+    { policyId: "unknown" },
+    { policyDigest: "unknown" },
+    { sourceJws: "private" },
+    { targetJws: "private" },
+  ])
+    expect(
+      WorkflowNodeSchema.safeParse({ ...node, arbitration: { ...arbitration, ...patch } }).success,
+    ).toBe(false);
+  expect(WorkflowNodeSchema.safeParse({ ...node, market }).success).toBe(true);
+  for (const patch of [
+    { policyId: "unknown" },
+    { title: "" },
+    { title: "x".repeat(161) },
+    { contract: "private terms" },
+    { price: "10" },
+    { platform: "override-lock" },
+    { autoApprove: true },
+  ])
+    expect(WorkflowNodeSchema.safeParse({ ...node, market: { ...market, ...patch } }).success).toBe(
+      false,
+    );
 });

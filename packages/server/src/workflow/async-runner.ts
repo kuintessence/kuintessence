@@ -5,23 +5,29 @@ import {
   type RoleName,
   type RunResult,
   type Workflow,
+  WorkflowExecutionInterrupted,
   type WorkflowPlacementConfig,
   WorkflowPlacementConfigSchema,
 } from "@kuintessence/shared";
 import { stringify } from "yaml";
 import type { BoundPrincipal } from "../middleware/principal-binder";
+import type { LeasedWorkflowJournal, WorkflowExecutionJournalStore } from "./execution-journal";
+import { requiresDurableWorkflow } from "./execution-model";
 import { parseWorkflowYaml } from "./parser";
 import type { WorkflowRunRegistry, WorkflowRunStatus } from "./run-registry";
 
 export interface WorkflowAsyncRunnerDeps {
   registry: WorkflowRunRegistry;
+  journal?: WorkflowExecutionJournalStore;
   makeRunner: (
     submittedBy: string,
     role: RoleName,
     runId?: string,
     placementConfig?: WorkflowPlacementConfig,
     orgId?: string | null,
+    executionLease?: LeasedWorkflowJournal,
   ) => (yaml: string) => Promise<RunResult>;
+  authorizeFederationExecution?: (runId: string, lease: LeasedWorkflowJournal) => Promise<void>;
   cancelSubmittedJobs?: (runId: string) => Promise<void>;
   preparePlacement?: (
     runId: string,
@@ -32,14 +38,17 @@ export interface WorkflowAsyncRunnerDeps {
   markArtifactsTerminal?: (runId: string) => Promise<void>;
   schedule?: (task: () => Promise<void>) => void;
   resolveNamedReferences?: (workflow: Workflow, principal?: BoundPrincipal) => Promise<Workflow>;
+  resolveWorkflowVersion?: (id: string) => Promise<Workflow | null>;
   validateWorkflow?: (
     workflow: Workflow,
     principal?: { userId: string | null; orgId: string | null; sub?: string },
+    runId?: string,
   ) => Promise<void>;
   assertExecutionPrincipal?: (input: { userId: string; orgId: string | null }) => Promise<void>;
 }
 
 export interface WorkflowAsyncSubmit {
+  executionModel?: "durable-v2";
   yaml: string;
   submittedBy: string;
   role: RoleName;
@@ -65,6 +74,13 @@ export interface WorkflowRecoveryReport {
 
 export class WorkflowAsyncRunner {
   private readonly logger = createLogger("workflow-async-runner");
+  private recoveryTimer?: ReturnType<typeof setInterval>;
+  private recovering?: Promise<WorkflowRecoveryReport>;
+  private stopping = false;
+  private readonly activeLeases = new Set<{
+    lease: LeasedWorkflowJournal;
+    stopHeartbeat: () => Promise<void>;
+  }>();
 
   private readonly schedule: (task: () => Promise<void>) => void;
 
@@ -79,6 +95,8 @@ export class WorkflowAsyncRunner {
   }
 
   async submit(input: WorkflowAsyncSubmit): Promise<WorkflowAsyncSubmitResult> {
+    if (input.executionModel && (input.executionModel !== "durable-v2" || !this.deps.journal))
+      throw new Error("Requested durable workflow execution is unavailable");
     const parsedWorkflow = parseWorkflowYaml(input.yaml);
     await this.deps.assertExecutionPrincipal?.({
       userId: input.submittedBy,
@@ -87,6 +105,13 @@ export class WorkflowAsyncRunner {
     const wf = this.deps.resolveNamedReferences
       ? await this.deps.resolveNamedReferences(parsedWorkflow, input.principal)
       : parsedWorkflow;
+    if (await requiresDurableWorkflow(wf, this.deps.resolveWorkflowVersion)) {
+      if (!input.principal?.orgId || input.principal.userId !== input.submittedBy)
+        throw new Error("Federation nodes require a canonical principal and active organization");
+      if (!this.deps.journal)
+        throw new Error("Federation nodes require durable workflow execution");
+      input = { ...input, executionModel: "durable-v2" };
+    }
     await this.deps.validateWorkflow?.(wf, input.principal);
     const resolvedYaml = this.deps.resolveNamedReferences ? stringify(wf) : input.yaml;
     const placementConfig = WorkflowPlacementConfigSchema.parse(input.placementConfig ?? {});
@@ -95,10 +120,13 @@ export class WorkflowAsyncRunner {
       input.submittedBy,
       extractRunGraph(wf),
       {
+        ...(input.executionModel ? { executionModel: input.executionModel } : {}),
         yaml: resolvedYaml,
         role: input.role,
         placementConfig,
-        ...(input.principal ? { orgId: input.principal.orgId } : {}),
+        ...(input.principal || input.executionModel
+          ? { orgId: input.principal?.orgId ?? null }
+          : {}),
       },
     );
 
@@ -129,7 +157,9 @@ export class WorkflowAsyncRunner {
         ...executionInput,
         yaml: resolvedYaml,
         placementConfig,
-        ...(input.principal ? { orgId: input.principal.orgId } : {}),
+        ...(input.principal || input.executionModel
+          ? { orgId: input.principal?.orgId ?? null }
+          : {}),
       }),
     );
     return { runId, name: wf.name, status: "submitted" };
@@ -148,6 +178,7 @@ export class WorkflowAsyncRunner {
     }
     this.schedule(() =>
       this.execute(runId, {
+        ...(input.executionModel ? { executionModel: input.executionModel } : {}),
         yaml: input.yaml,
         submittedBy: run.submittedBy ?? "",
         role: parseStoredRole(input.role),
@@ -158,14 +189,19 @@ export class WorkflowAsyncRunner {
     return "queued";
   }
 
-  async cancel(runId: string): Promise<WorkflowRunStatus | null> {
-    const status = await this.deps.registry.requestCancel(runId);
+  async cancel(
+    runId: string,
+    reason?: { code: string; message: string },
+  ): Promise<WorkflowRunStatus | null> {
+    const status = await this.deps.registry.requestCancel(runId, reason);
     if (status !== "cancelling") return status;
     const run = await this.deps.registry.getById(runId);
     if (
       run?.status === "cancelling" &&
       run.startedAt == null &&
-      Object.keys(run.stepJobs ?? {}).length === 0
+      Object.keys(run.stepJobs ?? {}).length === 0 &&
+      (run.input?.executionModel !== "durable-v2" ||
+        (await this.deps.registry.listJobIds(runId)).length === 0)
     ) {
       if (await this.deps.registry.cancelRun(runId)) {
         await this.markArtifactsTerminal(runId);
@@ -178,17 +214,30 @@ export class WorkflowAsyncRunner {
     return status;
   }
 
-  async recoverInterruptedRuns(): Promise<WorkflowRecoveryReport> {
-    const runs = await this.deps.registry.listRecoverableRuns();
+  async recoverInterruptedRuns(durableOnly = false): Promise<WorkflowRecoveryReport> {
+    const runs = durableOnly
+      ? await this.deps.registry.listRunnableDurableRuns()
+      : await this.deps.registry.listRecoverableRuns();
     let resumed = 0;
     let failedInterrupted = 0;
     for (const run of runs) {
-      if (run.status === "queued") {
+      if (this.stopping) break;
+      const durable = run.input?.executionModel === "durable-v2";
+      if (
+        durable &&
+        run.status !== "cancelling" &&
+        (run.errorCode === "WORKFLOW_RECONCILING" ||
+          run.status === "submitted" ||
+          run.status === "awaiting_approval")
+      )
+        continue;
+      if (run.status === "queued" || (durable && run.status === "running")) {
         const input = run.input;
         if (run.submittedBy && input?.yaml && input.role) {
           resumed += 1;
           this.schedule(() =>
             this.execute(run.id, {
+              ...(input.executionModel ? { executionModel: input.executionModel } : {}),
               yaml: input.yaml,
               submittedBy: run.submittedBy ?? "",
               role: parseStoredRole(input.role),
@@ -228,19 +277,77 @@ export class WorkflowAsyncRunner {
     return { resumed, failedInterrupted };
   }
 
+  startRecovery(): void {
+    if (this.recoveryTimer || this.stopping) return;
+    this.recoveryTimer = setInterval(() => {
+      if (this.recovering) return;
+      this.recovering = this.recoverInterruptedRuns(true)
+        .catch((err) => {
+          this.logger.error({ err }, "Durable workflow recovery will retry");
+          return { resumed: 0, failedInterrupted: 0 };
+        })
+        .finally(() => {
+          this.recovering = undefined;
+        });
+    }, 5000);
+    this.recoveryTimer.unref();
+  }
+
+  async stop(): Promise<void> {
+    this.stopping = true;
+    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
+    await this.recovering;
+    await Promise.all(
+      [...this.activeLeases].map(async ({ lease, stopHeartbeat }) => {
+        await stopHeartbeat();
+        await lease.release();
+      }),
+    );
+  }
+
   private async execute(runId: string, input: WorkflowExecutionInput): Promise<void> {
+    if (this.stopping) return;
+    let active: { lease: LeasedWorkflowJournal; stopHeartbeat: () => Promise<void> } | undefined;
+    const durable = input.executionModel === "durable-v2";
     try {
-      if (!(await this.deps.registry.claimForExecution(runId))) return;
+      if (input.executionModel !== undefined && !durable)
+        throw new Error("Unsupported workflow execution model");
+      if (!(await this.deps.registry.claimForExecution(runId)) && !durable) return;
+      if (durable) {
+        if (!this.deps.journal)
+          throw new WorkflowExecutionInterrupted("Durable workflow journal is unavailable");
+        const lease = await this.deps.journal.acquire(runId);
+        if (!lease) return;
+        active = { lease, stopHeartbeat: lease.startHeartbeat() };
+        this.activeLeases.add(active);
+        if (input.orgId === undefined)
+          throw new WorkflowExecutionInterrupted("Durable workflow lacks its organization scope", {
+            retryable: false,
+          });
+      }
+      const savedRun = await this.deps.registry.getById(runId);
+      if (savedRun?.input?.federationReservationId) {
+        if (!active || !this.deps.authorizeFederationExecution)
+          throw new WorkflowExecutionInterrupted(
+            "Federation execution requires its local dispatch authorization",
+            { retryable: false },
+          );
+        await this.deps.authorizeFederationExecution(runId, active.lease);
+      }
       await this.deps.assertExecutionPrincipal?.({
         userId: input.submittedBy,
         orgId: input.orgId ?? null,
       });
       const workflow = parseWorkflowYaml(input.yaml);
-      await this.deps.validateWorkflow?.(workflow, {
-        userId: input.submittedBy,
-        orgId: input.orgId ?? null,
-        ...(input.principal?.sub ? { sub: input.principal.sub } : {}),
-      });
+      await this.deps.validateWorkflow?.(
+        workflow,
+        {
+          userId: input.submittedBy,
+          orgId: input.orgId ?? null,
+          ...(input.principal?.sub ? { sub: input.principal.sub } : {}),
+        },
+        runId,
+      );
       await this.deps.assertExecutionPrincipal?.({
         userId: input.submittedBy,
         orgId: input.orgId ?? null,
@@ -251,23 +358,63 @@ export class WorkflowAsyncRunner {
         runId,
         input.placementConfig,
         input.orgId,
+        active?.lease,
       )(input.yaml);
-      await this.deps.awaitCheckpointPersistence?.(runId);
+      try {
+        await this.deps.awaitCheckpointPersistence?.(runId);
+      } catch (cause) {
+        if (durable && !(cause instanceof WorkflowExecutionInterrupted))
+          throw new WorkflowExecutionInterrupted("Workflow checkpoint publication is pending", {
+            cause,
+          });
+        throw cause;
+      }
       const afterRun = await this.deps.registry.getById(runId);
       if (afterRun?.status === "cancelling" || afterRun?.status === "cancelled") {
         await this.finishCancellation(runId);
         return;
       }
-      if (await this.deps.registry.completeRun(runId, result)) {
+      if (await this.deps.registry.completeRun(runId, result, active?.lease)) {
         await this.markArtifactsTerminal(runId);
+      } else {
+        await this.finishCancellation(runId);
       }
     } catch (err) {
-      if (await this.deps.registry.failRun(runId, err)) {
+      if (durable) {
+        if (active) {
+          try {
+            if (err instanceof WorkflowExecutionInterrupted)
+              await this.deps.registry.recordInterruption(runId, err, active.lease);
+            else
+              await this.deps.registry.requestInterrupt(
+                runId,
+                err instanceof Error ? err.message : String(err),
+                active.lease,
+              );
+          } catch (fenceError) {
+            this.logger.warn(
+              { runId, err: fenceError },
+              "Durable run left for its current or next lease owner",
+            );
+          }
+        } else {
+          this.logger.error(
+            { runId, err },
+            "Durable workflow could not acquire an execution lease",
+          );
+        }
+      } else if (await this.deps.registry.failRun(runId, err)) {
         await this.markArtifactsTerminal(runId);
         return;
       }
       const run = await this.deps.registry.getById(runId);
       if (run?.status === "cancelling") await this.finishCancellation(runId);
+    } finally {
+      if (active) {
+        await active.stopHeartbeat();
+        this.activeLeases.delete(active);
+        await active.lease.release();
+      }
     }
   }
 
@@ -275,7 +422,10 @@ export class WorkflowAsyncRunner {
     try {
       const run = await this.deps.registry.getById(runId);
       if (run?.status !== "cancelling") return;
-      const stepJobCount = Object.keys(run.stepJobs ?? {}).length;
+      const stepJobCount =
+        run.input?.executionModel === "durable-v2"
+          ? (await this.deps.registry.listJobIds(runId)).length
+          : Object.keys(run.stepJobs ?? {}).length;
       if (stepJobCount > 0 && !this.deps.cancelSubmittedJobs) {
         throw new Error("workflow job cancellation is not configured");
       }

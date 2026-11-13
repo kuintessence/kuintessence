@@ -13,6 +13,7 @@ const profile: SpackAuditRuntimeProfile = {
   sifPath: "/srv/kq/runtime.sif",
   sifSha256: "b".repeat(64),
 };
+
 const identity = (path: string): SpackAuditFileIdentity => ({
   canonicalPath: path,
   uid: 0,
@@ -22,6 +23,7 @@ const identity = (path: string): SpackAuditFileIdentity => ({
   protectedParents: true,
   sha256: path === profile.apptainerPath ? profile.apptainerSha256 : profile.sifSha256,
 });
+
 const deps = { platform: "linux", uid: 1000, inspect: async (path: string) => identity(path) };
 
 describe("Spack audit runtime identity and argv", () => {
@@ -41,11 +43,9 @@ describe("Spack audit runtime identity and argv", () => {
       expect(inspected).toBe(false);
     }
   });
-
   test("accepts exact protected runtime identities without executing a probe", async () => {
     await verifySpackAuditRuntime(profile, AbortSignal.timeout(1000), deps);
   });
-
   test.each([
     { uid: 1000 },
     { mode: 0o100777 },
@@ -64,7 +64,6 @@ describe("Spack audit runtime identity and argv", () => {
       ).rejects.toThrow("identity");
     }
   });
-
   test("requires executable Apptainer and completely read-only SIF", async () => {
     for (const [target, mode] of [
       [profile.apptainerPath, 0o100644],
@@ -78,7 +77,6 @@ describe("Spack audit runtime identity and argv", () => {
       ).rejects.toThrow("identity");
     }
   });
-
   test.each([
     "relative",
     "/",
@@ -93,7 +91,6 @@ describe("Spack audit runtime identity and argv", () => {
     expect(isSpackAuditPath(path)).toBe(false);
     expect(() => buildSpackAuditCommand(profile, path, `sha256:${"d".repeat(64)}`)).toThrow();
   });
-
   test("builds only network-none, contained, bounded execution with one read-only input bind", () => {
     const command = buildSpackAuditCommand(profile, "/srv/kq/input", `sha256:${"d".repeat(64)}`);
     for (const flag of [
@@ -112,10 +109,8 @@ describe("Spack audit runtime identity and argv", () => {
     expect(value("--network")).toBe("none");
     expect(value("--security")).toBe("no-new-privs");
     expect(value("--drop-caps")).toBe("all");
-    expect(value("--memory")).toBe("2147483648");
-    expect(value("--memory-swap")).toBe("2147483648");
-    expect(value("--pids-limit")).toBe("128");
-    expect(value("--cpus")).toBe("2");
+    for (const flag of ["--memory", "--memory-swap", "--pids-limit", "--cpus"])
+      expect(command).not.toContain(flag);
     expect(value("--no-mount")).toBe("bind-paths,hostfs,cwd,home,sys");
     expect(command.filter((arg) => arg === "--bind")).toHaveLength(2);
     expect(value("--bind")).toBe("/srv/kq/input:/kq/input:ro");
@@ -130,7 +125,6 @@ describe("Spack audit runtime identity and argv", () => {
     expect(command).not.toContain("install");
     expect(command.some((arg) => arg.includes(":rw"))).toBe(false);
   });
-
   test("adds only a separate writable work bind when requested", () => {
     const digest = `sha256:${"d".repeat(64)}`;
     const baseline = buildSpackAuditCommand(profile, "/srv/kq/input", digest);
@@ -151,7 +145,6 @@ describe("Spack audit runtime identity and argv", () => {
       ).toThrow("work binding");
     }
   });
-
   test.each([
     1024, 1537, 4096, 32768, 1048576,
   ])("allows a bounded integer MiB budget %i without changing other isolation arguments", (memoryMib) => {

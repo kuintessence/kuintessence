@@ -4,7 +4,9 @@ import {
   logLevelSchema,
   nonNegativeInt,
   positiveInt,
+  SchedulerTypeEnum,
 } from "@kuintessence/shared";
+import { FederationDataOriginSchema } from "@kuintessence/shared/federation";
 import { z } from "zod";
 import { SandboxRuntimeCacheConfigSchema } from "./sandbox/runtime-reference";
 import { isSpackAuditPath } from "./spack/audit-runtime";
@@ -81,10 +83,54 @@ function jsonConfig<T extends z.ZodType>(schema: T, fallback: string) {
 
 const AgentConfigSchema = z
   .object({
+    AGENT_FEDERATION_MEDIA_EXPORT: jsonConfig(
+      z
+        .strictObject({
+          mediaDirectory: dedicatedAbsolutePath("media directory"),
+          ageDirectory: dedicatedAbsolutePath("age tools directory"),
+          allowedSourceOrigins: z.array(FederationDataOriginSchema).max(16).default([]),
+        })
+        .nullable(),
+      "null",
+    ),
+    AGENT_FEDERATION_MEDIA_IMPORT: jsonConfig(
+      z
+        .strictObject({
+          mediaDirectory: dedicatedAbsolutePath("media directory"),
+          ageDirectory: dedicatedAbsolutePath("age tools directory"),
+        })
+        .nullable(),
+      "null",
+    ),
+    AGENT_FEDERATION_RESULT_COPY: jsonConfig(
+      z
+        .strictObject({
+          stagingRoot: dedicatedAbsolutePath("result staging root"),
+          maxStagingBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+          allowedSourceOrigins: z.array(FederationDataOriginSchema).max(16).default([]),
+          allowedDestinationOrigins: z.array(FederationDataOriginSchema).min(1).max(16),
+        })
+        .nullable(),
+      "null",
+    ),
+    AGENT_FEDERATION_INPUT_COPY: jsonConfig(
+      z
+        .strictObject({
+          stagingRoot: dedicatedAbsolutePath("input staging root"),
+          maxStagingBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+          allowedSourceOrigins: z.array(FederationDataOriginSchema).max(16).default([]),
+          allowedDestinationOrigins: z.array(FederationDataOriginSchema).min(1).max(16),
+        })
+        .nullable(),
+      "null",
+    ),
     ...StorageCapacityConfigSchema.shape,
     SERVER_GRPC_URL: z.string().url(),
     AGENT_ID: z.string().min(1),
     AGENT_SITE_NAME: z.string().min(1),
+    AGENT_SCHEDULER_TYPE: SchedulerTypeEnum.optional(),
+    AGENT_SCHEDULER_VERSION: z.string().min(1).optional(),
+    AGENT_SLURM_TERMINAL_STATUS_BACKEND: z.enum(["sacct", "scontrol"]).default("sacct"),
     AGENT_DB_PATH: z.string().default("./agent.db"),
     HEARTBEAT_INTERVAL_SEC: positiveInt(30),
     AGENT_GRPC_PING_INTERVAL_SEC: boundedPositiveInt(30, 7_200),
@@ -249,12 +295,24 @@ const AgentConfigSchema = z
     AGENT_SANDBOX_APPTAINER_PATH: dedicatedAbsolutePath("AGENT_SANDBOX_APPTAINER_PATH").default(
       "/usr/bin/apptainer",
     ),
+    AGENT_SANDBOX_CGROUP_CHECK_PATH: dedicatedAbsolutePath(
+      "AGENT_SANDBOX_CGROUP_CHECK_PATH",
+    ).optional(),
+    AGENT_SANDBOX_CGROUP_CHECK_SHA256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
     AGENT_SANDBOX_SIF_PUBLIC_KEY_PATH: dedicatedAbsolutePath(
       "AGENT_SANDBOX_SIF_PUBLIC_KEY_PATH",
     ).optional(),
     AGENT_SANDBOX_SIF_PUBLIC_KEY_SHA256: z
       .string()
       .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+    AGENT_SANDBOX_SIF_PGP_FINGERPRINT: z
+      .string()
+      .regex(/^[A-Fa-f0-9]{40}$/)
+      .transform((value) => value.toLowerCase())
       .optional(),
     AGENT_SANDBOX_SECCOMP_PROFILE_PATH: dedicatedAbsolutePath(
       "AGENT_SANDBOX_SECCOMP_PROFILE_PATH",
@@ -282,7 +340,11 @@ const AgentConfigSchema = z
     AGENT_SANDBOX_ATTESTATION_TTL_SEC: boundedPositiveInt(3_600, 86_400),
     AGENT_SANDBOX_ATTESTATION_QUEUE: z
       .string()
-      .regex(/^[A-Za-z0-9._-]{1,128}$/)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/)
+      .optional(),
+    AGENT_SANDBOX_ATTESTATION_ACCOUNT: z
+      .string()
+      .regex(/^[A-Za-z_][A-Za-z0-9_-]{0,31}$/)
       .optional(),
     AGENT_LICENSED_MATERIAL_ROOT: dedicatedAbsolutePath("AGENT_LICENSED_MATERIAL_ROOT").default(
       "/var/lib/kuintessence/licensed-materials",
@@ -404,6 +466,15 @@ const AgentConfigSchema = z
       message:
         "Kubernetes Sandbox seccomp profile, SHA-256, and node name must be configured together",
       path: ["AGENT_SANDBOX_K8S_SECCOMP_PROFILE_SHA256"],
+    },
+  )
+  .refine(
+    (v) =>
+      (v.AGENT_SANDBOX_CGROUP_CHECK_PATH === undefined) ===
+      (v.AGENT_SANDBOX_CGROUP_CHECK_SHA256 === undefined),
+    {
+      message: "Sandbox cgroup checker path and SHA-256 must be configured together",
+      path: ["AGENT_SANDBOX_CGROUP_CHECK_SHA256"],
     },
   )
   .refine(

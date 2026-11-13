@@ -36,7 +36,7 @@ test("recovery CLI helper reconciles only the original stopped worker and leaves
           rootHash: "a".repeat(32),
         });
         recordId = record.id;
-        await installWorkerExecution.getStore()?.start(record.id, staging);
+        await installWorkerExecution.getStore()?.start(record.id, undefined, staging);
       }),
     );
     await writeFile(

@@ -387,6 +387,8 @@ function validateSlotRelations(
 }
 
 function declaredInputDescriptors(node: WorkflowNode): Set<string> | undefined {
+  if (node.type === "Federation")
+    return new Set((node.inputSlots ?? []).map((slot) => slot.descriptor));
   if (
     node.type === "SoftwareUsecaseComputing" ||
     node.type === "NoAction" ||
@@ -411,6 +413,7 @@ function declaredOutputDescriptors(node: WorkflowNode): Set<string> | undefined 
 }
 
 function outputDescriptorItems(node: WorkflowNode): string[] | undefined {
+  if (node.type === "Federation") return node.outputs.map((output) => output.descriptor);
   if (node.type === "Generate") {
     return [node.output.descriptor];
   }

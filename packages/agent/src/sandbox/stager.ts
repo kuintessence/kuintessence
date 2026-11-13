@@ -16,6 +16,7 @@ import {
 import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import type { SandboxDispatchIdentity, SandboxUnsignedManifest } from "@kuintessence/shared";
 import type { SandboxJobIdentity, SandboxJobMount, SandboxJobSpec } from "../adapters/base";
+import { type SandboxCgroupCheck, SandboxCgroupCheckSchema } from "./cgroup-command";
 import type { SandboxInputDownload } from "./input-downloader";
 import { assertSelfAccountIdentity, type VerifiedSandboxManifest } from "./manifest-verifier";
 import type { SandboxProcessIdentity } from "./runtime-attestation";
@@ -25,6 +26,13 @@ export interface SandboxInputSource {
   sourceUrl: string;
   deliveryLeaseId?: string;
   deliveryLeaseExpiresAtUnixMs?: bigint;
+  localDataSource?: SandboxInputDownload["localDataSource"];
+}
+
+export interface SandboxPreparationOptions {
+  restart?: boolean;
+  signal?: AbortSignal;
+  renewInput?: (source: SandboxInputSource) => Promise<SandboxInputSource>;
 }
 
 export interface SandboxStagerOptions {
@@ -40,6 +48,7 @@ export interface SandboxOutputFact {
   sha256: string;
   sizeBytes: number;
   storageRef: string;
+  facts?: Array<{ relativePath: string; sha256: string; sizeBytes: number }>;
 }
 
 function pathInside(root: string, candidate: string): boolean {
@@ -188,6 +197,15 @@ async function protectReadOnlyPath(path: string, owner: SandboxFileOwner): Promi
   for (const entry of entries) await protectReadOnlyPath(join(path, entry), owner);
 }
 
+async function prepareMountParents(root: string, path: string, owner: SandboxFileOwner) {
+  const parent = dirname(path);
+  if (parent === root) return;
+  await prepareMountParents(root, parent, owner);
+  await mkdir(parent, { recursive: true, mode: 0o710 });
+  await assignSandboxOwner(parent, owner);
+  await chmod(parent, 0o710);
+}
+
 function createContext(manifest: SandboxUnsignedManifest): string {
   return JSON.stringify(
     {
@@ -230,10 +248,12 @@ function jobMount(
   };
 }
 
-function selfAccountRuntimeFacts(verified: VerifiedSandboxManifest): {
+function hpcRuntimeFacts(verified: VerifiedSandboxManifest): {
   runtimeAttestationId: string;
   apptainerPath: string;
   seccompProfilePath: string;
+  cgroupCheck: SandboxCgroupCheck;
+  attestedQueue: string;
   attestedNodes: string[];
 } {
   if (
@@ -241,15 +261,20 @@ function selfAccountRuntimeFacts(verified: VerifiedSandboxManifest): {
     verified.unsigned.runtimeAttestationId !== verified.runtimeAttestationId ||
     !isCanonicalAbsolutePath(verified.apptainerPath) ||
     !isCanonicalAbsolutePath(verified.seccompProfilePath) ||
+    !SandboxCgroupCheckSchema.safeParse(verified.cgroupCheck).success ||
+    !verified.attestedQueue ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(verified.attestedQueue) ||
     !verified.attestedNodes?.length ||
     verified.attestedNodes.some((node) => !/^[A-Za-z0-9._-]{1,255}$/.test(node))
   ) {
-    throw new Error("SelfAccount Sandbox is missing locally attested runtime facts");
+    throw new Error("HPC Sandbox is missing locally attested runtime facts");
   }
   return {
     runtimeAttestationId: verified.runtimeAttestationId,
     apptainerPath: verified.apptainerPath,
     seccompProfilePath: verified.seccompProfilePath,
+    cgroupCheck: SandboxCgroupCheckSchema.parse(verified.cgroupCheck),
+    attestedQueue: verified.attestedQueue,
     attestedNodes: [...verified.attestedNodes],
   };
 }
@@ -279,6 +304,7 @@ async function materializeExternalInputs(
   collectionDir: string,
   sources: SandboxInputSource[],
   downloadInput: SandboxStagerOptions["downloadInput"],
+  preparation: SandboxPreparationOptions,
 ): Promise<void> {
   const expected = expectedExternalInputs(verified.unsigned);
   if (downloadInput) {
@@ -289,35 +315,48 @@ async function materializeExternalInputs(
         posix.isAbsolute(source.stagePath) ||
         posix.normalize(source.stagePath) !== source.stagePath ||
         source.stagePath.split("/").includes("..") ||
-        !source.sourceUrl.trim()
+        (source.localDataSource
+          ? !!source.sourceUrl || !source.deliveryLeaseId
+          : !source.sourceUrl.trim())
       ) {
         throw new Error("Sandbox input source path or URL is invalid");
       }
-      assertDeliveryLease(source);
+      if (!preparation.renewInput) assertDeliveryLease(source);
       if (supplied.has(source.stagePath)) throw new Error("Sandbox input source is duplicated");
       supplied.set(source.stagePath, source);
     }
     if (supplied.size !== expected.size) {
       throw new Error("Sandbox input sources do not match the signed manifest");
     }
-    for (const [stagePath, limits] of expected) {
-      const source = supplied.get(stagePath);
-      if (!source) throw new Error("Sandbox input sources do not match the signed manifest");
-      const targetPath = resolve(collectionDir, stagePath);
-      if (!pathInside(collectionDir, targetPath)) {
-        throw new Error("Sandbox input source escaped the managed run directory");
+    const downloaded: string[] = [];
+    try {
+      for (const [stagePath, limits] of expected) {
+        const source = supplied.get(stagePath);
+        if (!source) throw new Error("Sandbox input sources do not match the signed manifest");
+        const targetPath = resolve(collectionDir, stagePath);
+        if (!pathInside(collectionDir, targetPath)) {
+          throw new Error("Sandbox input source escaped the managed run directory");
+        }
+        const parent = dirname(targetPath);
+        await assertNoSymlink(collectionDir, parent);
+        await mkdir(parent, { recursive: true, mode: 0o700 });
+        await assertNoSymlink(collectionDir, parent);
+        await assertNoSymlink(collectionDir, targetPath);
+        const current = await currentInput(source, preparation);
+        downloaded.push(targetPath);
+        await downloadInput({
+          sourceUrl: current.sourceUrl,
+          targetPath,
+          maxBytes: limits.maxBytes,
+          ...(current.localDataSource ? { localDataSource: current.localDataSource } : {}),
+          ...(preparation.signal ? { signal: preparation.signal } : {}),
+        });
+        await currentInput(source, preparation);
+        await assertNoSymlink(collectionDir, targetPath);
       }
-      const parent = dirname(targetPath);
-      await assertNoSymlink(collectionDir, parent);
-      await mkdir(parent, { recursive: true, mode: 0o700 });
-      await assertNoSymlink(collectionDir, parent);
-      await assertNoSymlink(collectionDir, targetPath);
-      await downloadInput({
-        sourceUrl: source.sourceUrl,
-        targetPath,
-        maxBytes: limits.maxBytes,
-      });
-      await assertNoSymlink(collectionDir, targetPath);
+    } catch (error) {
+      for (const path of downloaded) await rm(path, { force: true });
+      throw error;
     }
   } else if (sources.length > 0) {
     throw new Error("Sandbox input downloader is unavailable");
@@ -341,6 +380,30 @@ async function materializeExternalInputs(
   }
 }
 
+async function currentInput(
+  source: SandboxInputSource,
+  preparation: SandboxPreparationOptions,
+): Promise<SandboxInputSource> {
+  preparation.signal?.throwIfAborted();
+  const current = preparation.renewInput ? await preparation.renewInput(source) : source;
+  preparation.signal?.throwIfAborted();
+  if (
+    current.stagePath !== source.stagePath ||
+    current.localDataSource?.locationId !== source.localDataSource?.locationId ||
+    current.localDataSource?.managedRootId !== source.localDataSource?.managedRootId ||
+    current.localDataSource?.relativePath !== source.localDataSource?.relativePath ||
+    (!!current.localDataSource && !!current.sourceUrl) ||
+    Boolean(current.deliveryLeaseId) !== Boolean(source.deliveryLeaseId) ||
+    (!source.deliveryLeaseId &&
+      (current.sourceUrl !== source.sourceUrl ||
+        current.deliveryLeaseId ||
+        current.deliveryLeaseExpiresAtUnixMs !== undefined))
+  )
+    throw new Error("Sandbox input renewal changed its original binding");
+  assertDeliveryLease(current);
+  return current;
+}
+
 function assertDeliveryLease(source: SandboxInputSource): void {
   const hasLease =
     source.deliveryLeaseId !== undefined || source.deliveryLeaseExpiresAtUnixMs !== undefined;
@@ -358,18 +421,44 @@ function assertDeliveryLease(source: SandboxInputSource): void {
 export class SandboxStager {
   constructor(private readonly options: SandboxStagerOptions) {}
 
+  async cleanup(jobId: string): Promise<void> {
+    await removeSandboxRun(this.options.root, jobId);
+  }
+
   async prepare(
     verified: VerifiedSandboxManifest,
     inputSources: SandboxInputSource[] = [],
+    preparation: SandboxPreparationOptions = {},
   ): Promise<{ workingDir: string; sandbox: SandboxJobSpec }> {
+    preparation.signal?.throwIfAborted();
     const identity = verified.unsigned.identity;
     const selfAccount =
       verified.unsigned.executionMode === "SelfAccount"
         ? assertSelfAccountIdentity(identity, this.options.processIdentity)
         : undefined;
-    const selfAccountRuntime = selfAccount ? selfAccountRuntimeFacts(verified) : undefined;
+    const runtimeFacts = identity.backend === "Unix" ? hpcRuntimeFacts(verified) : undefined;
     await mkdir(this.options.root, { recursive: true, mode: 0o700 });
     const root = await realpath(this.options.root);
+    if (identity.backend === "Unix" && !selfAccount) {
+      const facts = await lstat(root);
+      if (facts.uid !== (this.options.ownerUid ?? 0) || (facts.mode & 0o022) !== 0) {
+        throw new Error(
+          "Sandbox root must be owned by the Agent and not writable by other accounts",
+        );
+      }
+      // Accounts may traverse to their own job, but cannot list or change the shared root.
+      await chmod(root, 0o711);
+    }
+    for (const mount of verified.unsigned.mounts) {
+      const prefix = mount.mode === "ReadOnly" ? "inputs/" : "outputs/";
+      if (
+        !mount.relativePath.startsWith(prefix) ||
+        posix.normalize(mount.relativePath) !== mount.relativePath ||
+        mount.relativePath.split("/").includes("..")
+      ) {
+        throw new Error("Sandbox mount must stay in its dedicated input or output directory");
+      }
+    }
     const collectionDir = resolve(root, verified.unsigned.jobId);
     if (!pathInside(root, collectionDir)) {
       throw new Error("Sandbox collection directory escaped the managed root");
@@ -389,11 +478,22 @@ export class SandboxStager {
       collectionDir,
       inputSources,
       this.options.downloadInput,
+      preparation,
     );
+    preparation.signal?.throwIfAborted();
     if (identity.backend === "Kubernetes") {
-      const mounts = verified.unsigned.mounts.map((mount) =>
-        jobMount(mount, resolve(collectionDir, mount.relativePath)),
-      );
+      // Persist this preparation's PVC paths with the job; retries never reuse another run's bytes.
+      const pvcRoot = `jobs/${verified.unsigned.jobId}/${randomUUID()}`;
+      const mounts = verified.unsigned.mounts.map((mount) => {
+        if (mount.descriptor === "." || mount.descriptor === "..")
+          throw new Error(
+            "Sandbox artifact descriptor must name a file within its output directory",
+          );
+        return {
+          ...jobMount(mount, resolve(collectionDir, mount.relativePath)),
+          relativePath: `${pvcRoot}/${mount.mode === "WriteOnly" ? `outputs/${mount.descriptor}` : mount.relativePath}`,
+        };
+      });
       for (const mount of mounts.filter(
         (item) => item.mode === "ReadOnly" && !item.inlineContentBase64,
       )) {
@@ -401,7 +501,7 @@ export class SandboxStager {
         await verifyReadOnlyMount(mount, mount.hostPath);
       }
       return {
-        workingDir: "/kq",
+        workingDir: collectionDir,
         sandbox: {
           language: verified.unsigned.script.language,
           entrypoint: verified.unsigned.script.entrypoint,
@@ -417,6 +517,7 @@ export class SandboxStager {
           executionProfile: verified.unsigned.executionProfile,
           identity: jobIdentity(identity),
           mounts,
+          resources: verified.unsigned.resources,
           limits: verified.unsigned.limits,
           kubernetesArtifactPvc: this.options.kubernetesArtifactPvc,
         },
@@ -427,7 +528,7 @@ export class SandboxStager {
       ? { uid: selfAccount.uid, gid: selfAccount.gid, mayChown: false }
       : { uid: this.options.ownerUid ?? 0, gid: identity.gid, mayChown: true };
     const runDir = collectionDir;
-    await chmod(runDir, 0o710);
+    await chmod(runDir, 0o750);
     await assignSandboxOwner(runDir, owner);
     const scriptDir = join(runDir, "script");
     await mkdir(scriptDir, { mode: 0o710 });
@@ -437,11 +538,32 @@ export class SandboxStager {
     await writeManagedFile(scriptHostPath, verified.scriptContent, owner);
     await writeManagedFile(contextHostPath, createContext(verified.unsigned), owner);
 
+    const logDir = join(runDir, ".scheduler-logs");
+    await assertNoSymlink(runDir, logDir);
+    await mkdir(logDir, { mode: 0o700 });
+    await assignSandboxOwner(
+      logDir,
+      selfAccount ? owner : { uid: identity.uid, gid: identity.gid, mayChown: true },
+    );
+
     const mounts: SandboxJobMount[] = [];
     for (const mount of verified.unsigned.mounts) {
-      const hostPath = resolve(runDir, mount.relativePath);
+      const outputName = posix.basename(mount.containerPath);
+      if (
+        mount.mode === "WriteOnly" &&
+        (!/^\/kq\/outputs\/[A-Za-z0-9._-]{1,128}$/.test(mount.containerPath) ||
+          outputName === "." ||
+          outputName === "..")
+      ) {
+        throw new Error("Sandbox output must name a file within its output directory");
+      }
+      // A directory bind lets scripts create optional files without fabricating empty outputs.
+      const relativePath =
+        mount.mode === "WriteOnly" ? `outputs/${outputName}` : mount.relativePath;
+      const hostPath = resolve(runDir, relativePath);
       if (!pathInside(runDir, hostPath)) throw new Error("Sandbox artifact path escaped run root");
       await assertNoSymlink(runDir, hostPath);
+      await prepareMountParents(runDir, hostPath, owner);
       if (mount.mode === "ReadOnly") {
         if (mount.inlineContentBase64) {
           await mkdir(dirname(hostPath), { recursive: true, mode: 0o710 });
@@ -468,7 +590,7 @@ export class SandboxStager {
           );
         }
       }
-      mounts.push(jobMount(mount, hostPath));
+      mounts.push({ ...jobMount(mount, hostPath), relativePath });
     }
     return {
       workingDir: runDir,
@@ -484,12 +606,8 @@ export class SandboxStager {
         ...(verified.unsigned.runtimeAttestationId
           ? { runtimeAttestationId: verified.unsigned.runtimeAttestationId }
           : {}),
-        ...(selfAccount && selfAccountRuntime
-          ? {
-              selfAccount,
-              ...selfAccountRuntime,
-            }
-          : {}),
+        ...(selfAccount ? { selfAccount } : {}),
+        ...runtimeFacts,
         ...(verified.unsigned.executionProfile
           ? {
               apptainerPath: verified.unsigned.executionProfile.apptainerCanonicalPath,
@@ -498,6 +616,7 @@ export class SandboxStager {
           : {}),
         identity: jobIdentity(identity),
         mounts,
+        resources: verified.unsigned.resources,
         limits: verified.unsigned.limits,
       },
     };
@@ -508,7 +627,11 @@ export async function removeSandboxRun(rootPath: string, jobId: string): Promise
   if (!jobId || posix.basename(jobId) !== jobId || jobId === "." || jobId === "..") {
     throw new Error("Sandbox job id is invalid for managed work-root cleanup");
   }
-  const root = await realpath(rootPath);
+  const root = await realpath(rootPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!root) return;
   const target = resolve(root, jobId);
   if (!pathInside(root, target) || target === root) {
     throw new Error("Sandbox work-root cleanup escapes the managed root");

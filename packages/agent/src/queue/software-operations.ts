@@ -1,7 +1,8 @@
-import { type SqliteDb, softwareExecutions } from "@kuintessence/db";
+import { createHash } from "node:crypto";
+import { jobRevocationTombstones, type SqliteDb, softwareExecutions } from "@kuintessence/db";
 import { SoftwareOperationAction, SoftwareOperationStatus } from "@kuintessence/proto";
 import { InstalledSpecSchema, type SiteChannel } from "@kuintessence/shared";
-import { and, asc, count, eq, gt, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, count, eq, gt, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   type ExecutionIdentity,
@@ -12,6 +13,11 @@ import {
   RECOVERY_REQUIRED,
 } from "../spack/execution-identity";
 import { SpackInstallStore } from "../spack/install-store";
+import {
+  removeSpackSupervisedInputs,
+  type SpackProcessSupervision,
+  SpackProcessSupervisionSchema,
+} from "../spack/supervised-process";
 import type { OutboundItem } from "./outbound-queue";
 
 export type SoftwareResult = Omit<
@@ -30,6 +36,8 @@ const ResultSchema = z.object({
   installed: z.array(InstalledSpecSchema).optional(),
 });
 
+export class SoftwareOperationIntentConflict extends Error {}
+
 export class SoftwareOperations {
   constructor(private readonly db: SqliteDb) {}
 
@@ -47,15 +55,211 @@ export class SoftwareOperations {
   }
 
   async receive(
-    input: Pick<SoftwareResult, "operationId" | "action" | "spec">,
+    input: Pick<SoftwareResult, "operationId" | "action" | "spec"> & {
+      requestedBy?: string;
+      manifestDigest?: string;
+      durableReplay?: boolean;
+      federationJobId?: string;
+    },
   ): Promise<ExecutionIdentity | undefined> {
+    if (
+      input.federationJobId &&
+      (!input.durableReplay ||
+        input.action !== SoftwareOperationAction.INSTALL ||
+        !z.uuid().safeParse(input.federationJobId).success)
+    )
+      throw new SoftwareOperationIntentConflict("Invalid federation installation owner");
+    if (
+      input.durableReplay &&
+      (!input.requestedBy || !/^sha256:[0-9a-f]{64}$/.test(input.manifestDigest ?? ""))
+    )
+      throw new SoftwareOperationIntentConflict(
+        "Durable software request lacks its immutable material identity",
+      );
+    const requestDigest = createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.action,
+          input.spec,
+          input.requestedBy ?? "",
+          input.manifestDigest ?? "",
+          ...(input.federationJobId ? [input.federationJobId] : []),
+        ]),
+      )
+      .digest("hex");
     const identity = await executionIdentity();
     const inserted = await this.db
       .insert(softwareExecutions)
-      .values({ ...input, identity })
+      .values({
+        jobScope: input.federationJobId || "local",
+        operationId: input.operationId,
+        action: input.action,
+        spec: input.spec,
+        identity,
+        requestDigest,
+      })
       .onConflictDoNothing()
       .returning({ operationId: softwareExecutions.operationId });
-    return inserted.length ? identity : undefined;
+    if (inserted.length) return identity;
+    const [saved] = await this.db
+      .select()
+      .from(softwareExecutions)
+      .where(eq(softwareExecutions.operationId, input.operationId));
+    if (!saved) throw new Error(RECOVERY_REQUIRED);
+    if (
+      saved.action !== input.action ||
+      saved.spec !== input.spec ||
+      (saved.requestDigest && saved.requestDigest !== requestDigest) ||
+      (saved.jobScope !== null && saved.jobScope !== (input.federationJobId || "local")) ||
+      (input.durableReplay && !saved.requestDigest)
+    )
+      throw new SoftwareOperationIntentConflict(
+        "Software operation ID cannot change its request identity",
+      );
+    // Only the original fingerprint can establish ownership of a historical receipt.
+    if (saved.jobScope === null && saved.requestDigest === requestDigest)
+      await this.db
+        .update(softwareExecutions)
+        .set({ jobScope: input.federationJobId || "local" })
+        .where(
+          and(
+            eq(softwareExecutions.operationId, input.operationId),
+            isNull(softwareExecutions.jobScope),
+          ),
+        );
+    if (
+      saved.authorizationWaiting &&
+      saved.requestDigest === requestDigest &&
+      input.federationJobId
+    ) {
+      const resumed = await this.db
+        .update(softwareExecutions)
+        .set({ identity, authorizationWaiting: false, started: false })
+        .where(
+          and(
+            eq(softwareExecutions.operationId, input.operationId),
+            eq(softwareExecutions.authorizationWaiting, true),
+            isNull(softwareExecutions.result),
+          ),
+        )
+        .returning({ operationId: softwareExecutions.operationId });
+      if (resumed.length) return identity;
+    }
+    return undefined;
+  }
+
+  async deferAuthorization(operationId: string, identityToken: string): Promise<boolean> {
+    const rows = await this.db
+      .update(softwareExecutions)
+      .set({ authorizationWaiting: true })
+      .where(
+        and(
+          eq(softwareExecutions.operationId, operationId),
+          isNull(softwareExecutions.result),
+          sql`json_extract(${softwareExecutions.identity}, '$.token') = ${identityToken}`,
+        ),
+      )
+      .returning({ operationId: softwareExecutions.operationId });
+    return rows.length === 1;
+  }
+
+  async cancelAuthorizationWaits(jobId: string): Promise<SoftwareResult[]> {
+    const rows = await this.db
+      .select()
+      .from(softwareExecutions)
+      .where(
+        and(
+          eq(softwareExecutions.jobScope, jobId),
+          eq(softwareExecutions.authorizationWaiting, true),
+          isNull(softwareExecutions.result),
+        ),
+      );
+    const results: SoftwareResult[] = [];
+    for (const row of rows) {
+      const supervisors = z.array(SpackProcessSupervisionSchema).parse(row.supervisors ?? []);
+      for (const ref of supervisors) await removeSpackSupervisedInputs(ref);
+      if (row.storeRoot)
+        await new SpackInstallStore(row.storeRoot).cancelAuthorizationWait(row.operationId);
+      // A deferred boundary has no worker; preserve that proof with the terminal receipt.
+      const updated = await this.db
+        .update(softwareExecutions)
+        .set({
+          authorizationWaiting: false,
+          stoppedAt: new Date(),
+          result: {
+            operationId: row.operationId,
+            action: ResultSchema.shape.action.parse(row.action),
+            spec: row.spec,
+            status: SoftwareOperationStatus.FAILED,
+            error: "Federation installation cancelled while awaiting authorization",
+          },
+        })
+        .where(
+          and(
+            eq(softwareExecutions.operationId, row.operationId),
+            eq(softwareExecutions.authorizationWaiting, true),
+            isNull(softwareExecutions.result),
+          ),
+        )
+        .returning({ result: softwareExecutions.result });
+      for (const entry of updated) results.push(ResultSchema.parse(entry.result));
+    }
+    return results;
+  }
+
+  async revokedJobs(): Promise<{ jobId: string; revokedEpoch: number }[]> {
+    return this.db
+      .selectDistinct({
+        jobId: jobRevocationTombstones.jobId,
+        revokedEpoch: jobRevocationTombstones.revokedEpoch,
+      })
+      .from(softwareExecutions)
+      .innerJoin(
+        jobRevocationTombstones,
+        eq(softwareExecutions.jobScope, jobRevocationTombstones.jobId),
+      )
+      .where(isNull(softwareExecutions.stoppedAt));
+  }
+
+  /** A terminal operation result can still describe an unconfirmed store writer. */
+  async assertJobStopped(jobId: string): Promise<void> {
+    const rows = await this.db
+      .select()
+      .from(softwareExecutions)
+      .where(
+        and(
+          isNull(softwareExecutions.stoppedAt),
+          or(
+            eq(softwareExecutions.jobScope, jobId),
+            and(isNull(softwareExecutions.jobScope), eq(softwareExecutions.started, true)),
+          ),
+        ),
+      );
+    if (!rows.length) return;
+    const current = await executionIdentity();
+    for (const row of rows) {
+      if (!row.result) throw new Error(RECOVERY_REQUIRED);
+      const supervisors = z.array(SpackProcessSupervisionSchema).parse(row.supervisors ?? []);
+      for (const ref of supervisors) await removeSpackSupervisedInputs(ref);
+      if (row.storeRoot) {
+        // The existing writer fence refuses active/uncertain workers, including after restart.
+        await new SpackInstallStore(row.storeRoot).cancelAuthorizationWait(row.operationId);
+      } else if (row.started) {
+        const result = ResultSchema.parse(row.result);
+        if (
+          result.status !== SoftwareOperationStatus.SUCCEEDED &&
+          result.status !== SoftwareOperationStatus.REJECTED &&
+          supervisors.length === 0 &&
+          (await executionState(ExecutionIdentitySchema.parse(row.identity), current)) !==
+            "rebooted"
+        )
+          throw new Error(RECOVERY_REQUIRED);
+      }
+      await this.db
+        .update(softwareExecutions)
+        .set({ stoppedAt: new Date() })
+        .where(eq(softwareExecutions.operationId, row.operationId));
+    }
   }
 
   async start(operationId: string): Promise<void> {
@@ -80,7 +284,25 @@ export class SoftwareOperations {
       .where(eq(softwareExecutions.operationId, operationId));
   }
 
-  async finish(result: SoftwareResult): Promise<SoftwareResult> {
+  async bindSupervisor(operationId: string, supervisor: SpackProcessSupervision): Promise<void> {
+    const ref = SpackProcessSupervisionSchema.parse(supervisor);
+    const updated = await this.db
+      .update(softwareExecutions)
+      .set({
+        supervisors: sql`json_insert(coalesce(${softwareExecutions.supervisors}, '[]'), '$[#]', json(${JSON.stringify(ref)}))`,
+      })
+      .where(
+        and(
+          eq(softwareExecutions.operationId, operationId),
+          eq(softwareExecutions.started, true),
+          isNull(softwareExecutions.result),
+        ),
+      )
+      .returning({ operationId: softwareExecutions.operationId });
+    if (updated.length !== 1) throw new Error(RECOVERY_REQUIRED);
+  }
+
+  async finish(result: SoftwareResult, identityToken?: string): Promise<SoftwareResult> {
     if (result.status === SoftwareOperationStatus.RUNNING) {
       const [saved] = await this.db
         .select({ result: softwareExecutions.result })
@@ -102,11 +324,14 @@ export class SoftwareOperations {
     // First terminal wins locally too; a late failure must not replace a saved success.
     await this.db
       .update(softwareExecutions)
-      .set({ result: { ...result } })
+      .set({ result: { ...result }, authorizationWaiting: false })
       .where(
         and(
           eq(softwareExecutions.operationId, result.operationId),
           isNull(softwareExecutions.result),
+          identityToken
+            ? sql`json_extract(${softwareExecutions.identity}, '$.token') = ${identityToken}`
+            : undefined,
         ),
       );
     const [row] = await this.db
@@ -146,24 +371,39 @@ export class SoftwareOperations {
       const state = await executionState(owner, current);
       // A reconnect does not end a live execution; remote hosts are never inferred dead.
       if (state === "alive" || state === "unknown") continue;
+      if (row.authorizationWaiting) continue;
+      if (!row.started && row.requestDigest && z.uuid().safeParse(row.jobScope).success) {
+        await this.deferAuthorization(row.operationId, owner.token);
+        continue;
+      }
       let error = INTERRUPTED;
-      if (row.storeRoot) {
-        try {
-          await new SpackInstallStore(row.storeRoot).withLock(async () => {});
-        } catch {
+      try {
+        const supervisors = z.array(SpackProcessSupervisionSchema).parse(row.supervisors ?? []);
+        for (const ref of supervisors) await removeSpackSupervisedInputs(ref);
+        if (row.storeRoot) {
+          const store = new SpackInstallStore(row.storeRoot);
+          await store.withLock(async () => {});
+          if (await store.awaitingAuthorization(row.operationId)) {
+            await this.deferAuthorization(row.operationId, owner.token);
+            continue;
+          }
+        } else if (row.started && state !== "rebooted" && !supervisors.length) {
           error = RECOVERY_REQUIRED;
         }
-      } else if (row.started && state !== "rebooted") {
+      } catch {
         error = RECOVERY_REQUIRED;
       }
-      await this.finish({
-        operationId: row.operationId,
-        action: ResultSchema.shape.action.parse(row.action),
-        spec: row.spec,
-        status: SoftwareOperationStatus.FAILED,
-        exitCode: 1,
-        error,
-      });
+      await this.finish(
+        {
+          operationId: row.operationId,
+          action: ResultSchema.shape.action.parse(row.action),
+          spec: row.spec,
+          status: SoftwareOperationStatus.FAILED,
+          exitCode: 1,
+          error,
+        },
+        owner.token,
+      );
     }
   }
 }

@@ -230,7 +230,10 @@ describe("private licensed-material entitlement", () => {
       }),
     };
     return new PgDataPrerequisiteRepository(db as never, {
-      hasActiveAccess: async () => hasAccess,
+      evaluateAccess: async () => ({
+        allowed: hasAccess,
+        expiresAtUnixMs: hasAccess ? Number.POSITIVE_INFINITY : 0,
+      }),
     });
   }
 

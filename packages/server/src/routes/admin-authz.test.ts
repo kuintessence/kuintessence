@@ -3,6 +3,7 @@ import {
   auditLog,
   authzOutbox,
   authzShadowDiffs,
+  federationCapabilities,
   type PgDb,
   userCapabilities,
   userOrgMemberships,
@@ -150,8 +151,12 @@ function fakeMembershipDb(captures: DbCapture[], membershipExists = false): PgDb
       },
     }),
     delete: (table: unknown) => ({
-      where: async () => {
+      where: () => {
         captures.push({ operation: "delete", table, inTransaction });
+        return {
+          returning: async () =>
+            table === federationCapabilities ? [{ capability: "agreement.approve" }] : [],
+        };
       },
     }),
     select: () => selectRows,
@@ -808,14 +813,21 @@ describe("admin authz routes", () => {
       table: userOrgMemberships,
       inTransaction: true,
     });
+    expect(captures).toContainEqual({
+      operation: "delete",
+      table: federationCapabilities,
+      inTransaction: true,
+    });
     const outbox = captures.find((capture) => capture.table === authzOutbox);
     expect(outbox?.inTransaction).toBe(true);
     expect(outbox?.value).toHaveLength(5);
     const audit = captures.find((capture) => capture.table === auditLog);
-    expect(audit?.inTransaction).toBe(false);
+    expect(audit?.inTransaction).toBe(true);
     expect(audit?.value).toMatchObject({
       actor: actorUserId,
       action: "authz.membership.delete",
+      orgId: "00000000-0000-4000-8000-000000000201",
+      diff: { before: { federationCapabilities: ["agreement.approve"] } },
       target:
         "organization:00000000-0000-4000-8000-000000000201#membership@user:00000000-0000-4000-8000-000000000101",
     });

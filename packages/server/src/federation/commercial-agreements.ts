@@ -1,0 +1,285 @@
+import { randomUUID } from "node:crypto";
+import {
+  federationCommercialAgreements as agreements,
+  auditLog,
+  federationSites,
+  type PgDb,
+  type PgTransaction,
+  federationCommercialSubmissions as submissions,
+} from "@kuintessence/db";
+import { FederationError } from "@kuintessence/shared/federation";
+import {
+  type CommercialAgreement,
+  CommercialAgreementSchema,
+  type CommercialAgreementSummarySchema,
+  CommercialProposalInputSchema,
+} from "@kuintessence/shared/federation/commercial";
+import { and, desc, eq, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+import type { z } from "zod";
+import { type FederationActor, requireFederationCapability } from "./permissions";
+import {
+  type FederationSigningKey,
+  federationMessageKeyId,
+  signFederationMessage,
+  verifyFederationMessage,
+} from "./signatures";
+import { FederationTrustRegistry } from "./trust-registry";
+
+/** Signing commercial terms records business approval; it never grants execution or settles money. */
+export class FederationCommercialAgreementService {
+  private readonly trust: FederationTrustRegistry;
+  constructor(
+    private readonly db: PgDb,
+    private readonly signingKey: FederationSigningKey,
+    private readonly clock: () => Date = () => new Date(),
+  ) {
+    this.trust = new FederationTrustRegistry(db);
+  }
+  async list(actor: FederationActor, limit: number, offset: number) {
+    const source = alias(federationSites, "commercial_source");
+    const target = alias(federationSites, "commercial_target");
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "agreement.read");
+      return tx
+        .select({
+          revisionId: agreements.revisionId,
+          sourceSiteId: sql<string>`${agreements.terms}->'agreement'->>'sourceSiteId'`,
+          targetSiteId: sql<string>`${agreements.terms}->'agreement'->>'targetSiteId'`,
+          sourceName: source.name,
+          targetName: target.name,
+          mode: sql<
+            z.infer<typeof CommercialAgreementSummarySchema>["mode"]
+          >`${agreements.terms}->'agreement'->>'mode'`,
+          consideration: sql<
+            z.infer<typeof CommercialAgreementSummarySchema>["consideration"]
+          >`${agreements.terms}->>'consideration'`,
+          digest: agreements.digest,
+          approvedBy: agreements.approvedBy,
+          createdAt: agreements.createdAt,
+          hasCounterpartyApproval: sql<boolean>`${agreements.counterpartyJws} IS NOT NULL`,
+        })
+        .from(agreements)
+        .leftJoin(
+          source,
+          sql`${source.id} = (${agreements.terms}->'agreement'->>'sourceSiteId')::uuid`,
+        )
+        .leftJoin(
+          target,
+          sql`${target.id} = (${agreements.terms}->'agreement'->>'targetSiteId')::uuid`,
+        )
+        .where(
+          and(
+            eq(agreements.localSiteId, this.signingKey.siteId),
+            eq(agreements.localOrgId, actor.orgId),
+          ),
+        )
+        .orderBy(desc(agreements.createdAt), desc(agreements.revisionId))
+        .limit(limit)
+        .offset(offset);
+    });
+  }
+  async get(actor: FederationActor, revisionId: string) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "agreement.read");
+      return this.local(tx, actor, revisionId);
+    });
+  }
+  async approve(actor: FederationActor, raw: CommercialAgreement) {
+    const terms = CommercialAgreementSchema.parse(raw);
+    const { agreement } = terms;
+    if (![agreement.sourceSiteId, agreement.targetSiteId].includes(this.signingKey.siteId))
+      throw new FederationError("POLICY_DENIED");
+    await this.db.transaction((tx) => requireFederationCapability(tx, actor, "agreement.approve"));
+    this.validTime(terms);
+    const key = await this.trust.resolveKey(
+      this.signingKey.siteId,
+      this.signingKey.keyId,
+      this.clock(),
+    );
+    if (!key.allowedKinds.includes("commercial-agreement"))
+      throw new FederationError("UNTRUSTED_IDENTITY");
+    const approvalJws = await signFederationMessage(
+      CommercialAgreementSchema,
+      terms,
+      this.signingKey,
+    );
+    const { digest } = await verifyFederationMessage(
+      CommercialAgreementSchema,
+      approvalJws,
+      key,
+      this.clock(),
+    );
+    return this.db.transaction(async (tx) => {
+      await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
+      await requireFederationCapability(tx, actor, "agreement.approve");
+      this.validTime(terms);
+      await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
+      const [created] = await tx
+        .insert(agreements)
+        .values({
+          localSiteId: key.siteId,
+          revisionId: agreement.agreementRevisionId,
+          localOrgId: actor.orgId,
+          terms,
+          digest,
+          approvalJws,
+          approvedBy: actor.userId,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (!created) {
+        const existing = await this.local(tx, actor, agreement.agreementRevisionId);
+        if (existing.digest !== digest) throw new FederationError("OPERATION_CONFLICT");
+        return existing;
+      }
+      await this.audit(tx, actor, "approve", created.revisionId, { digest });
+      return created;
+    });
+  }
+  async attachCounterparty(actor: FederationActor, revisionId: string, counterpartyJws: string) {
+    return this.attach(actor, revisionId, counterpartyJws);
+  }
+
+  /** Only the authenticated exchange worker calls this; it cannot create a local business approval. */
+  async attachExchanged(
+    revisionId: string,
+    counterpartyJws: string,
+    authorize: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const [local] = await this.db.select().from(agreements).where(this.key(revisionId));
+    if (!local) throw new FederationError("AGREEMENT_UNAVAILABLE");
+    return this.attach(
+      { orgId: local.localOrgId, userId: local.approvedBy },
+      revisionId,
+      counterpartyJws,
+      local,
+      authorize,
+    );
+  }
+
+  private async attach(
+    actor: FederationActor,
+    revisionId: string,
+    counterpartyJws: string,
+    snapshot?: typeof agreements.$inferSelect,
+    authorize?: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const local = snapshot ?? (await this.get(actor, revisionId));
+    const terms = CommercialAgreementSchema.parse(local.terms);
+    this.validTime(terms);
+    const otherSite =
+      terms.agreement.sourceSiteId === this.signingKey.siteId
+        ? terms.agreement.targetSiteId
+        : terms.agreement.sourceSiteId;
+    const ownKey = await this.trust.resolveKey(
+      this.signingKey.siteId,
+      federationMessageKeyId(local.approvalJws),
+      this.clock(),
+    );
+    const otherKey = await this.trust.resolveKey(
+      otherSite,
+      federationMessageKeyId(counterpartyJws),
+      this.clock(),
+    );
+    for (const [jws, key] of [
+      [local.approvalJws, ownKey],
+      [counterpartyJws, otherKey],
+    ] as const) {
+      const verified = await verifyFederationMessage(
+        CommercialAgreementSchema,
+        jws,
+        key,
+        this.clock(),
+      );
+      if (verified.digest !== local.digest) throw new FederationError("OPERATION_CONFLICT");
+    }
+    return this.db.transaction(async (tx) => {
+      const keys = [ownKey, otherKey].sort((a, b) => a.siteId.localeCompare(b.siteId));
+      for (const key of keys) await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
+      if (authorize) await authorize(tx);
+      else await requireFederationCapability(tx, actor, "agreement.approve");
+      const current = await this.local(tx, actor, revisionId);
+      if (current.digest !== local.digest || current.approvalJws !== local.approvalJws)
+        throw new FederationError("OPERATION_CONFLICT");
+      for (const key of keys) await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
+      this.validTime(terms);
+      if (current.counterpartyJws) {
+        if (current.counterpartyJws !== counterpartyJws)
+          throw new FederationError("OPERATION_CONFLICT");
+        return current;
+      }
+      const [updated] = await tx
+        .update(agreements)
+        .set({ counterpartyJws })
+        .where(this.key(revisionId))
+        .returning();
+      if (!updated) throw new FederationError("OPERATION_CONFLICT");
+      // Direct cooperation has no ledger dependency or ledger work, including commercial approvals.
+      if (terms.agreement.mode !== "bilateral_direct") {
+        const localIsSource = terms.agreement.sourceSiteId === this.signingKey.siteId;
+        await tx.insert(submissions).values({
+          id: randomUUID(),
+          localSiteId: this.signingKey.siteId,
+          agreementRevisionId: revisionId,
+          input: CommercialProposalInputSchema.parse({
+            operation: "register-agreement",
+            domainId: terms.domainId,
+            recordId: revisionId,
+            digest: local.digest,
+            envelope: {
+              sourceSiteId: terms.agreement.sourceSiteId,
+              targetSiteId: terms.agreement.targetSiteId,
+              sourceJws: localIsSource ? local.approvalJws : counterpartyJws,
+              targetJws: localIsSource ? counterpartyJws : local.approvalJws,
+            },
+          }),
+        });
+      }
+      await this.audit(
+        tx,
+        authorize ? { ...actor, userId: `commercial-exchange:${this.signingKey.siteId}` } : actor,
+        "counterparty",
+        revisionId,
+        { digest: local.digest },
+      );
+      return updated;
+    });
+  }
+  private key(revisionId: string) {
+    return and(
+      eq(agreements.localSiteId, this.signingKey.siteId),
+      eq(agreements.revisionId, revisionId),
+    );
+  }
+  private async local(tx: PgTransaction, actor: FederationActor, revisionId: string) {
+    const [row] = await tx
+      .select()
+      .from(agreements)
+      .where(and(this.key(revisionId), eq(agreements.localOrgId, actor.orgId)))
+      .for("update");
+    if (!row) throw new FederationError("AGREEMENT_UNAVAILABLE");
+    return row;
+  }
+  private validTime(terms: CommercialAgreement) {
+    if (Date.parse(terms.agreement.validUntil) <= this.clock().getTime())
+      throw new FederationError("AUTHORIZATION_EXPIRED");
+    if (Date.parse(terms.createdAt) > this.clock().getTime() + 60000)
+      throw new FederationError("INVALID_MESSAGE");
+  }
+  private async audit(
+    tx: PgTransaction,
+    actor: FederationActor,
+    action: string,
+    revisionId: string,
+    after: unknown,
+  ) {
+    await tx.insert(auditLog).values({
+      actor: actor.userId,
+      orgId: actor.orgId,
+      action: `federation.commercial.${action}`,
+      target: revisionId,
+      diff: { after },
+    });
+  }
+}

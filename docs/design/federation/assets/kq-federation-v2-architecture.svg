@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2800" height="2340" viewBox="0 0 2800 2340"><defs>
+<marker id="blue" viewBox="0 0 12 12" markerWidth="7" markerHeight="7" refX="11" refY="6" orient="auto-start-reverse"><path d="M1,1 L11,6 L1,11" fill="none" stroke="#2864ba" stroke-width="1.8"/></marker>
+<marker id="purple" viewBox="0 0 12 12" markerWidth="7" markerHeight="7" refX="11" refY="6" orient="auto-start-reverse"><path d="M1,1 L11,6 L1,11" fill="none" stroke="#7650a8" stroke-width="1.8"/></marker>
+<marker id="green" viewBox="0 0 12 12" markerWidth="7" markerHeight="7" refX="11" refY="6" orient="auto-start-reverse"><path d="M1,1 L11,6 L1,11" fill="none" stroke="#17816b" stroke-width="1.8"/></marker>
+<marker id="gray" viewBox="0 0 12 12" markerWidth="7" markerHeight="7" refX="11" refY="6" orient="auto-start-reverse"><path d="M1,1 L11,6 L1,11" fill="none" stroke="#7b8ba1" stroke-width="1.8"/></marker>
+</defs><rect width="100%" height="100%" fill="#f5f7fb"/><g font-family="Noto Sans CJK SC, sans-serif">
+<text x="90" y="96" font-size="52" fill="#192e46" font-weight="700" text-anchor="start">KQ 算力联邦 V2 · 三种合作模式，一个执行体系</text>
+<text x="92" y="151" font-size="27" fill="#60748c" font-weight="400" text-anchor="start">2026-11-06  /  完整目标方案  /  长期合作支持无人值守；联盟链按协议选用</text>
+<rect x="90" y="190" width="2620" height="110" rx="18" fill="#eaf1fc" stroke="#b8cee9" stroke-width="2"/>
+<text x="125" y="233" font-size="32" fill="#24558f" font-weight="700" text-anchor="start">双方签署协议时选定模式；任务创建后固定协议版本与额度域</text>
+<text x="125" y="275" font-size="26" fill="#4f6c90" font-weight="400" text-anchor="start">直接协作不依赖链；异步存证不等待链；链上协调必须取得认领、锁额与激活的有效提交。</text>
+<rect x="90" y="350" width="840" height="700" rx="18" fill="#ffffff" stroke="#dce3ee" stroke-width="2"/>
+<rect x="115" y="375" width="790" height="125" rx="18" fill="#edf3fd" stroke="#b8cee9" stroke-width="2"/>
+<text x="145" y="427" font-size="35" fill="#2864ba" font-weight="700" text-anchor="start">双边直接协作</text>
+<text x="145" y="471" font-size="26" fill="#2864ba" font-weight="400" text-anchor="start">bilateral_direct</text>
+<text x="130" y="560" font-size="29" fill="#2864ba" font-weight="600" text-anchor="start">接单依据</text>
+<text x="130" y="607" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">长期预授权 + 双方签名</text>
+<text x="130" y="650" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">B 原子预留本地额度并返回接单回执</text>
+<text x="130" y="715" font-size="29" fill="#2864ba" font-weight="600" text-anchor="start">执行与对账</text>
+<text x="130" y="762" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">自动准备数据 / 软件，提交本地调度器</text>
+<text x="130" y="805" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">结果与账单按双方约定接受</text>
+<text x="130" y="870" font-size="29" fill="#2864ba" font-weight="600" text-anchor="start">链与部署</text>
+<text x="130" y="917" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">不调用链，不要求 Peer / orderer</text>
+<text x="130" y="960" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">证据保存在双方受控数据库与存储</text>
+<path d="M510,1050 L510,1110" fill="none" stroke="#2864ba" stroke-width="3" stroke-linejoin="round"/>
+<rect x="980" y="350" width="840" height="700" rx="18" fill="#ffffff" stroke="#dce3ee" stroke-width="2"/>
+<rect x="1005" y="375" width="790" height="125" rx="18" fill="#edf8f4" stroke="#bdded3" stroke-width="2"/>
+<text x="1035" y="427" font-size="35" fill="#17816b" font-weight="700" text-anchor="start">双边协作 + 异步存证</text>
+<text x="1035" y="471" font-size="26" fill="#17816b" font-weight="400" text-anchor="start">bilateral_attested</text>
+<text x="1020" y="560" font-size="29" fill="#17816b" font-weight="600" text-anchor="start">接单依据</text>
+<text x="1020" y="607" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">与直接模式相同</text>
+<text x="1020" y="650" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">双边额度账本是执行与对账权威</text>
+<text x="1020" y="715" font-size="29" fill="#17816b" font-weight="600" text-anchor="start">执行与存证分开</text>
+<text x="1020" y="762" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">可靠保存证据后，执行照常</text>
+<text x="1020" y="805" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">存证 worker 独立批量提交、补交</text>
+<text x="1020" y="870" font-size="29" fill="#17816b" font-weight="600" text-anchor="start">链故障时</text>
+<text x="1020" y="917" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">继续协议范围内的任务与对账</text>
+<text x="1020" y="960" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">保留待存证记录，不伪称已经上链</text>
+<path d="M1400,1050 L1400,1110" fill="none" stroke="#2864ba" stroke-width="3" stroke-linejoin="round"/>
+<rect x="1870" y="350" width="840" height="700" rx="18" fill="#ffffff" stroke="#dce3ee" stroke-width="2"/>
+<rect x="1895" y="375" width="790" height="125" rx="18" fill="#f2edfa" stroke="#d2c0e9" stroke-width="2"/>
+<text x="1925" y="427" font-size="35" fill="#7650a8" font-weight="700" text-anchor="start">链上协调</text>
+<text x="1925" y="471" font-size="26" fill="#7650a8" font-weight="400" text-anchor="start">ledger_coordinated</text>
+<text x="1910" y="560" font-size="29" fill="#7650a8" font-weight="600" text-anchor="start">接单依据</text>
+<text x="1910" y="607" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">共同账本确认唯一认领</text>
+<text x="1910" y="650" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">私有额度 / 许可与公开激活均为 VALID</text>
+<text x="1910" y="715" font-size="29" fill="#7650a8" font-weight="600" text-anchor="start">业务保证</text>
+<text x="1910" y="762" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">适合开放市场和链上额度约束</text>
+<text x="1910" y="805" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">机构背书与业务批准分别验证</text>
+<text x="1910" y="870" font-size="29" fill="#7650a8" font-weight="600" text-anchor="start">链故障时</text>
+<text x="1910" y="917" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">暂停新的链依赖激活 / 结算</text>
+<text x="1910" y="960" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">既有任务按已批准授权处理</text>
+<path d="M2290,1050 L2290,1110" fill="none" stroke="#2864ba" stroke-width="3" stroke-linejoin="round"/>
+<path d="M510,1110 L2290,1110" fill="none" stroke="#2864ba" stroke-width="3" stroke-linejoin="round"/>
+<path d="M1400,1110 L1400,1170" fill="none" stroke="#2864ba" stroke-width="3" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="90" y="1170" width="2620" height="285" rx="18" fill="#ffffff" stroke="#dce3ee" stroke-width="2"/>
+<text x="130" y="1227" font-size="35" fill="#192e46" font-weight="700" text-anchor="start">共用的任务执行通道</text>
+<rect x="140" y="1265" width="740" height="145" rx="14" fill="#edf3fd" stroke="#b8cee9" stroke-width="2"/>
+<text x="510" y="1308" font-size="30" fill="#24558f" font-weight="600" text-anchor="middle">A 的 KQ</text>
+<text x="510" y="1351" font-size="26" fill="#4f6c90" font-weight="400" text-anchor="middle">用户 / Workflow / 预算</text>
+<text x="510" y="1388" font-size="26" fill="#4f6c90" font-weight="400" text-anchor="middle">签名委派与持久化 outbox</text>
+<rect x="1030" y="1265" width="740" height="145" rx="14" fill="#edf3fd" stroke="#b8cee9" stroke-width="2"/>
+<text x="1400" y="1308" font-size="30" fill="#24558f" font-weight="600" text-anchor="middle">B / C 的 KQ</text>
+<text x="1400" y="1351" font-size="26" fill="#4f6c90" font-weight="400" text-anchor="middle">协议 / 授权 / 幂等接单</text>
+<text x="1400" y="1388" font-size="26" fill="#4f6c90" font-weight="400" text-anchor="middle">本地资源配额 / 任务映射</text>
+<rect x="1920" y="1265" width="740" height="145" rx="14" fill="#edf3fd" stroke="#b8cee9" stroke-width="2"/>
+<text x="2290" y="1308" font-size="30" fill="#24558f" font-weight="600" text-anchor="middle">Agent + Slurm / PBS</text>
+<text x="2290" y="1351" font-size="26" fill="#4f6c90" font-weight="400" text-anchor="middle">数据、许可与软件锁校验</text>
+<text x="2290" y="1388" font-size="26" fill="#4f6c90" font-weight="400" text-anchor="middle">实际运行 / 用量 / 结果回传</text>
+<path d="M880,1335 L1030,1335" fill="none" stroke="#2864ba" stroke-width="3" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M1770,1335 L1920,1335" fill="none" stroke="#2864ba" stroke-width="3" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="90" y="1515" width="2620" height="150" rx="18" fill="#edf8f4" stroke="#bdded3" stroke-width="2"/>
+<text x="130" y="1571" font-size="33" fill="#146d59" font-weight="700" text-anchor="start">数据通道独立：源端云盘 / Agent → 网络或加密介质 → 目标端受管副本</text>
+<text x="130" y="1620" font-size="28" fill="#2f7766" font-weight="400" text-anchor="start">三种模式都要求数据使用授权、软件许可与环境满足；DATA_WAITING 不产生计算作业或计算用量。</text>
+<rect x="90" y="1725" width="2620" height="340" rx="18" fill="#f2edfa" stroke="#d2c0e9" stroke-width="2"/>
+<text x="130" y="1780" font-size="35" fill="#5e3b8b" font-weight="700" text-anchor="start">可选 Fabric 能力：指定机构的私有字段与组织级背书</text>
+<rect x="130" y="1820" width="1220" height="195" rx="18" fill="#ffffff" stroke="#d2c0e9" stroke-width="2"/>
+<text x="165" y="1865" font-size="30" fill="#5e3b8b" font-weight="600" text-anchor="start">异步存证：kq-evidence</text>
+<text x="165" y="1910" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">签名证据 → 持久化队列 → 私有批次 → VALID 回执</text>
+<text x="165" y="1956" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">记录已发生的业务，不扣实时链上余额，不阻塞任务。</text>
+<rect x="1450" y="1820" width="1220" height="195" rx="18" fill="#ffffff" stroke="#d2c0e9" stroke-width="2"/>
+<text x="1485" y="1865" font-size="30" fill="#5e3b8b" font-weight="600" text-anchor="start">链上协调：kq-market + kq-commercial</text>
+<text x="1485" y="1910" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">公共认领 + PDC 私有额度 / 许可 → 激活后执行</text>
+<text x="1485" y="1956" font-size="27" fill="#38516d" font-weight="400" text-anchor="start">事前控制，不允许故障时自动切成双边模式。</text>
+<text x="95" y="2140" font-size="27" fill="#526981" font-weight="400" text-anchor="start">隐私：价格、用量、合同与余额只交给指定机构；直接模式不冒充 Fabric 背书，存证不证明科学结果正确。</text>
+<text x="95" y="2188" font-size="27" fill="#526981" font-weight="400" text-anchor="start">边界：模式变更须双方批准且只作用于新任务；旧额度、在途任务与待存证义务继续按原协议收尾。</text>
+<text x="95" y="2236" font-size="27" fill="#526981" font-weight="400" text-anchor="start">本图为设计目标，未部署；完整方案见 docs/design/federation/blueprint.md。</text>
+</g></svg>

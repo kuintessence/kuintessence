@@ -17,6 +17,21 @@ import {
   AgentMessageSchema,
   ComputeHealthSchema,
   ComputeHealthState,
+  FederationExecutionDecision,
+  type FederationExecutionRequest,
+  FederationExecutionRequestSchema,
+  type FederationExecutionResponse,
+  FederationExecutionResponseSchema,
+  FederationInputCopyReportSchema,
+  FederationInputGrantRequestSchema,
+  FederationInputGrantResponseSchema,
+  FederationMediaExportLeaseRequestSchema,
+  FederationMediaExportLeaseResponseSchema,
+  FederationMediaImportGrantResponseSchema,
+  FederationMediaImportKeyRequestSchema,
+  FederationResultCopyReportSchema,
+  FederationResultGrantRequestSchema,
+  FederationResultGrantResponseSchema,
   GpuMetricSchema,
   HeartbeatSchema,
   InstalledSoftwareReportSchema,
@@ -31,13 +46,19 @@ import {
   SandboxRuntimeCacheEntrySchema,
   SandboxRuntimeKind,
   SandboxSelfAccountSchema,
+  SandboxTrustedExecutionProfileSchema,
   SchedulerQueueFactSchema,
   SchedulerQueueState,
   SchedulerQueueType,
   SchedulerType,
+  type ServerMessage,
 } from "@kuintessence/proto";
+import { SandboxTrustedExecutionProfileSchema as TrustedProfileSchema } from "@kuintessence/shared";
+import { FederationError } from "@kuintessence/shared/federation";
 import { eq } from "drizzle-orm";
 import pino from "pino";
+import { runWithMtlsContext } from "../auth/mtls-context";
+import { AuthorizationUnavailableError } from "../authz/service";
 import { AgentManager } from "../services/agent-manager";
 import { JobService } from "../services/job-service";
 import type { QueueInventoryService } from "../services/queue-inventory";
@@ -71,6 +92,33 @@ test("restricted no-egress completion discards a malicious Agent payload", () =>
   expect(collectedForJobCompletion(false, { result: "safe" })).toEqual({ result: "safe" });
 });
 
+test("normalizes protobuf restricted execution profile and rejects incomplete claims", () => {
+  const profile = {
+    profileId: "ca12ed00-4f54-4000-8000-000000000001",
+    apptainerCanonicalPath: "/usr/bin/apptainer",
+    apptainerSha256: "a".repeat(64),
+    sifCanonicalPath: "/opt/kq/bash.sif",
+    sifSha256: "b".repeat(64),
+    trustedWrapperCanonicalPath: "/usr/libexec/kuintessence/kq-sandbox-wrapper",
+    trustedWrapperSha256: "c".repeat(64),
+  };
+  for (const valid of [true, false]) {
+    const message = create(SandboxCapabilitySchema, {
+      restrictedExecutionProfile: create(SandboxTrustedExecutionProfileSchema, {
+        ...profile,
+        trustedWrapperSha256: valid ? profile.trustedWrapperSha256 : "",
+      }),
+    });
+    expect(message.restrictedExecutionProfile?.$typeName).toBeDefined();
+    const facts = sandboxCapabilityFacts(message);
+    const stored = facts.sandboxCapabilities?.restrictedExecutionProfile;
+    if (valid) {
+      expect(stored).toEqual(profile);
+      expect(TrustedProfileSchema.parse(stored)).toEqual(profile);
+    } else expect(stored).toBeUndefined();
+  }
+});
+
 test("normalizes SelfAccount capability and rejects unsafe runtime attestation timestamps", () => {
   const attestationId = "a".repeat(64);
   const facts = sandboxCapabilityFacts(
@@ -90,6 +138,7 @@ test("normalizes SelfAccount capability and rejects unsafe runtime attestation t
           signatureVerified: true,
           runtimeAttestationId: attestationId,
           attestedNodes: ["compute-01", "  "],
+          attestedQueue: "compute",
           expiresAtUnixMs: 1_725_000_000_000n,
         }),
         create(SandboxRuntimeCacheEntrySchema, {
@@ -98,6 +147,7 @@ test("normalizes SelfAccount capability and rejects unsafe runtime attestation t
           signatureVerified: true,
           runtimeAttestationId: attestationId,
           attestedNodes: ["compute-02"],
+          attestedQueue: "../other",
           expiresAtUnixMs: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
         }),
       ],
@@ -127,6 +177,7 @@ test("normalizes SelfAccount capability and rejects unsafe runtime attestation t
         signatureVerified: true,
         runtimeAttestationId: attestationId,
         attestedNodes: ["compute-01"],
+        attestedQueue: "compute",
         expiresAtUnixMs: 1_725_000_000_000,
       },
       {
@@ -249,6 +300,801 @@ describe("agent-handler", () => {
     await db.delete(users).where(eq(users.id, testUserId));
     await db.delete(orgs).where(eq(orgs.id, testOrgId));
   });
+
+  test.each([
+    "granted",
+    "denied",
+    "legacy",
+    "copy-only",
+    "unverified",
+    "replaced",
+  ] as const)("result copy RPC trust and nonblocking delivery: %s", async (mode) => {
+    const { router, handlers } = createMockRouter();
+    const dispatcher = new AgentDispatcher();
+    const heartbeat = Promise.withResolvers<void>();
+    const done = Promise.withResolvers<void>();
+    const calls: string[] = [];
+    registerAgentHandler(router, {
+      agentManager,
+      jobService,
+      logger: testLogger,
+      dispatcher,
+      federationResults: {
+        canCopy: true,
+        grant: async (agentId, request) => {
+          calls.push(agentId);
+          await heartbeat.promise;
+          if (mode === "denied") throw new Error("secret storage credential");
+          return create(FederationResultGrantResponseSchema, {
+            requestId: request.requestId,
+            grantJson: "short-lived-ticket",
+          });
+        },
+        report: async () => {},
+      },
+    });
+    await agentManager.register({
+      agentId: "grpc-test-agent-1",
+      siteName: "test",
+      schedulerType: "slurm",
+      schedulerVersion: "test",
+    });
+    const register = registerFrame();
+    if (register.payload.case !== "register") throw new Error("Missing register");
+    register.payload.value.federationResultCopyV1 = mode !== "legacy";
+    register.payload.value.federationResultVerifyV1 = mode !== "copy-only";
+    async function* messages() {
+      yield register;
+      yield create(AgentMessageSchema, {
+        payload: {
+          case: "federationResultGrantRequest",
+          value: create(FederationResultGrantRequestSchema, {
+            requestId: crypto.randomUUID(),
+            bindingJson: "{}",
+          }),
+        },
+      });
+      yield create(AgentMessageSchema, {
+        payload: {
+          case: "heartbeat",
+          value: create(HeartbeatSchema, { agentId: "grpc-test-agent-1", sequence: 1n }),
+        },
+      });
+      await done.promise;
+    }
+    const connect = handlers.connect;
+    if (!connect) throw new Error("Missing handler");
+    const output = await runWithMtlsContext(
+      {
+        agentId: mode === "unverified" ? null : "grpc-test-agent-1",
+        fingerprintSha256: mode === "unverified" ? null : "verified",
+      },
+      async () => {
+        const responses: ServerMessage[] = [];
+        for await (const raw of connect(messages())) {
+          const message = raw as ServerMessage;
+          responses.push(message);
+          if (message.payload.case === "heartbeatAck") {
+            if (mode === "replaced")
+              dispatcher.register("grpc-test-agent-1", { push: () => {}, close: () => {} });
+            heartbeat.resolve();
+            if (["legacy", "copy-only", "unverified", "replaced"].includes(mode)) done.resolve();
+          }
+          if (message.payload.case === "federationResultGrantResponse") done.resolve();
+        }
+        return responses;
+      },
+    );
+    expect(calls).toEqual(
+      ["legacy", "copy-only", "unverified"].includes(mode) ? [] : ["grpc-test-agent-1"],
+    );
+    const registration = output.find((message) => message.payload.case === "registerResponse");
+    if (registration?.payload.case !== "registerResponse") throw new Error("Missing registration");
+    expect(registration.payload.value.federationResultCopyV1Supported).toBe(
+      !["legacy", "copy-only", "unverified"].includes(mode),
+    );
+    const grants = output.flatMap((message) =>
+      message.payload.case === "federationResultGrantResponse"
+        ? [message.payload.value.grantJson]
+        : [],
+    );
+    expect(grants).toEqual(
+      mode === "granted" ? ["short-lived-ticket"] : mode === "denied" ? [""] : [],
+    );
+  });
+
+  test.each([
+    "granted",
+    "denied",
+    "legacy",
+    "copy-only",
+    "unverified",
+    "replaced",
+  ] as const)("input copy RPC trust and nonblocking delivery: %s", async (mode) => {
+    const { router, handlers } = createMockRouter();
+    const dispatcher = new AgentDispatcher();
+    const heartbeat = Promise.withResolvers<void>();
+    const done = Promise.withResolvers<void>();
+    const calls: string[] = [];
+    registerAgentHandler(router, {
+      agentManager,
+      jobService,
+      logger: testLogger,
+      dispatcher,
+      federationInputs: {
+        canCopy: true,
+        grant: async (agentId, request) => {
+          calls.push(agentId);
+          await heartbeat.promise;
+          if (mode === "denied") throw new Error("secret storage credential");
+          return create(FederationInputGrantResponseSchema, {
+            requestId: request.requestId,
+            grantJson: "short-lived-ticket",
+          });
+        },
+        report: async () => {},
+      },
+    });
+    await agentManager.register({
+      agentId: "grpc-test-agent-1",
+      siteName: "test",
+      schedulerType: "slurm",
+      schedulerVersion: "test",
+    });
+    const register = registerFrame();
+    if (register.payload.case !== "register") throw new Error("Missing register");
+    register.payload.value.federationInputCopyV1 = mode !== "legacy";
+    register.payload.value.federationInputVerifyV1 = mode !== "copy-only";
+    async function* messages() {
+      yield register;
+      yield create(AgentMessageSchema, {
+        payload: {
+          case: "federationInputGrantRequest",
+          value: create(FederationInputGrantRequestSchema, {
+            requestId: crypto.randomUUID(),
+            bindingJson: "{}",
+          }),
+        },
+      });
+      yield create(AgentMessageSchema, {
+        payload: {
+          case: "heartbeat",
+          value: create(HeartbeatSchema, { agentId: "grpc-test-agent-1", sequence: 1n }),
+        },
+      });
+      await done.promise;
+    }
+    const connect = handlers.connect;
+    if (!connect) throw new Error("Missing handler");
+    const output = await runWithMtlsContext(
+      {
+        agentId: mode === "unverified" ? null : "grpc-test-agent-1",
+        fingerprintSha256: mode === "unverified" ? null : "verified",
+      },
+      async () => {
+        const responses: ServerMessage[] = [];
+        for await (const raw of connect(messages())) {
+          const message = raw as ServerMessage;
+          responses.push(message);
+          if (message.payload.case === "heartbeatAck") {
+            if (mode === "replaced")
+              dispatcher.register("grpc-test-agent-1", { push: () => {}, close: () => {} });
+            heartbeat.resolve();
+            if (["legacy", "copy-only", "unverified", "replaced"].includes(mode)) done.resolve();
+          }
+          if (message.payload.case === "federationInputGrantResponse") done.resolve();
+        }
+        return responses;
+      },
+    );
+    expect(calls).toEqual(
+      ["legacy", "copy-only", "unverified"].includes(mode) ? [] : ["grpc-test-agent-1"],
+    );
+    const registration = output.find((message) => message.payload.case === "registerResponse");
+    if (registration?.payload.case !== "registerResponse") throw new Error("Missing registration");
+    expect(registration.payload.value.federationInputCopyV1Supported).toBe(
+      !["legacy", "copy-only", "unverified"].includes(mode),
+    );
+    const grants = output.flatMap((message) =>
+      message.payload.case === "federationInputGrantResponse"
+        ? [message.payload.value.grantJson]
+        : [],
+    );
+    expect(grants).toEqual(
+      mode === "granted" ? ["short-lived-ticket"] : mode === "denied" ? [""] : [],
+    );
+  });
+
+  test.each([
+    "granted",
+    "denied",
+    "legacy",
+    "directory-only",
+    "unverified",
+    "replaced",
+  ] as const)("media export RPC trust and nonblocking delivery: %s", async (mode) => {
+    const { router, handlers } = createMockRouter();
+    const dispatcher = new AgentDispatcher();
+    const heartbeat = Promise.withResolvers<void>();
+    const done = Promise.withResolvers<void>();
+    const calls: string[] = [];
+    registerAgentHandler(router, {
+      agentManager,
+      jobService,
+      logger: testLogger,
+      dispatcher,
+      federationMediaExports: {
+        grant: async (agentId, request) => {
+          calls.push(agentId);
+          await heartbeat.promise;
+          if (mode === "denied") throw new Error("secret storage credential");
+          return create(FederationMediaExportLeaseResponseSchema, {
+            requestId: request.requestId,
+            grantJson: "short-lived-export-lease",
+          });
+        },
+        report: async () => {},
+      },
+    });
+    await agentManager.register({
+      agentId: "grpc-test-agent-1",
+      siteName: "test",
+      schedulerType: "slurm",
+      schedulerVersion: "test",
+    });
+    const register = registerFrame();
+    if (register.payload.case !== "register") throw new Error("Missing register");
+    register.payload.value.federationMediaExportV1 = mode !== "legacy";
+    register.payload.value.federationMediaObjectExportV1 = mode !== "directory-only";
+    async function* messages() {
+      yield register;
+      yield create(AgentMessageSchema, {
+        payload: {
+          case: "federationMediaExportLeaseRequest",
+          value: create(FederationMediaExportLeaseRequestSchema, {
+            requestId: crypto.randomUUID(),
+            bindingJson: "{}",
+          }),
+        },
+      });
+      yield create(AgentMessageSchema, {
+        payload: {
+          case: "heartbeat",
+          value: create(HeartbeatSchema, { agentId: "grpc-test-agent-1", sequence: 1n }),
+        },
+      });
+      await done.promise;
+    }
+    const connect = handlers.connect;
+    if (!connect) throw new Error("Missing handler");
+    const output = await runWithMtlsContext(
+      {
+        agentId: mode === "unverified" ? null : "grpc-test-agent-1",
+        fingerprintSha256: mode === "unverified" ? null : "verified",
+      },
+      async () => {
+        const responses: ServerMessage[] = [];
+        for await (const raw of connect(messages())) {
+          const message = raw as ServerMessage;
+          responses.push(message);
+          if (message.payload.case === "heartbeatAck") {
+            if (mode === "replaced")
+              dispatcher.register("grpc-test-agent-1", { push: () => {}, close: () => {} });
+            heartbeat.resolve();
+            if (["legacy", "unverified", "replaced"].includes(mode)) done.resolve();
+          }
+          if (message.payload.case === "federationMediaExportLeaseResponse") done.resolve();
+        }
+        return responses;
+      },
+    );
+    expect(calls).toEqual(["legacy", "unverified"].includes(mode) ? [] : ["grpc-test-agent-1"]);
+    const registration = output.find((message) => message.payload.case === "registerResponse");
+    if (registration?.payload.case !== "registerResponse") throw new Error("Missing registration");
+    expect(registration.payload.value.federationMediaExportV1Supported).toBe(
+      !["legacy", "unverified"].includes(mode),
+    );
+    expect(registration.payload.value.federationMediaObjectExportV1Supported).toBe(
+      !["legacy", "unverified", "directory-only"].includes(mode),
+    );
+    const grants = output.flatMap((message) =>
+      message.payload.case === "federationMediaExportLeaseResponse"
+        ? [message.payload.value.grantJson]
+        : [],
+    );
+    expect(grants).toEqual(
+      ["granted", "directory-only"].includes(mode)
+        ? ["short-lived-export-lease"]
+        : mode === "denied"
+          ? [""]
+          : [],
+    );
+  });
+  test.each([
+    "granted",
+    "denied",
+    "legacy",
+    "unverified",
+    "replaced",
+  ] as const)("media import RPC trust and nonblocking delivery: %s", async (mode) => {
+    const { router, handlers } = createMockRouter();
+    const dispatcher = new AgentDispatcher();
+    const heartbeat = Promise.withResolvers<void>();
+    const done = Promise.withResolvers<void>();
+    const calls: string[] = [];
+    registerAgentHandler(router, {
+      agentManager,
+      jobService,
+      logger: testLogger,
+      dispatcher,
+      federationMediaImports: {
+        grant: async (agentId, request) => {
+          calls.push(agentId);
+          await heartbeat.promise;
+          if (mode === "denied") throw new Error("secret storage credential");
+          return create(FederationMediaImportGrantResponseSchema, {
+            requestId: request.requestId,
+            grantJson: "short-lived-import-grant",
+          });
+        },
+        report: async () => {},
+      },
+    });
+    await agentManager.register({
+      agentId: "grpc-test-agent-1",
+      siteName: "test",
+      schedulerType: "slurm",
+      schedulerVersion: "test",
+    });
+    const register = registerFrame();
+    if (register.payload.case !== "register") throw new Error("Missing register");
+    register.payload.value.federationMediaImportV1 = mode !== "legacy";
+    async function* messages() {
+      yield register;
+      yield create(AgentMessageSchema, {
+        payload: {
+          case: "federationMediaImportKeyRequest",
+          value: create(FederationMediaImportKeyRequestSchema, {
+            requestId: crypto.randomUUID(),
+            bindingJson: "{}",
+          }),
+        },
+      });
+      yield create(AgentMessageSchema, {
+        payload: {
+          case: "heartbeat",
+          value: create(HeartbeatSchema, { agentId: "grpc-test-agent-1", sequence: 1n }),
+        },
+      });
+      await done.promise;
+    }
+    const connect = handlers.connect;
+    if (!connect) throw new Error("Missing handler");
+    const output = await runWithMtlsContext(
+      {
+        agentId: mode === "unverified" ? null : "grpc-test-agent-1",
+        fingerprintSha256: mode === "unverified" ? null : "verified",
+      },
+      async () => {
+        const responses: ServerMessage[] = [];
+        for await (const raw of connect(messages())) {
+          const message = raw as ServerMessage;
+          responses.push(message);
+          if (message.payload.case === "heartbeatAck") {
+            if (mode === "replaced")
+              dispatcher.register("grpc-test-agent-1", { push: () => {}, close: () => {} });
+            heartbeat.resolve();
+            if (["legacy", "unverified", "replaced"].includes(mode)) done.resolve();
+          }
+          if (message.payload.case === "federationMediaImportGrantResponse") done.resolve();
+        }
+        return responses;
+      },
+    );
+    expect(calls).toEqual(["legacy", "unverified"].includes(mode) ? [] : ["grpc-test-agent-1"]);
+    const registration = output.find((message) => message.payload.case === "registerResponse");
+    if (registration?.payload.case !== "registerResponse") throw new Error("Missing registration");
+    expect(registration.payload.value.federationMediaImportV1Supported).toBe(
+      !["legacy", "unverified"].includes(mode),
+    );
+    const grants = output.flatMap((message) =>
+      message.payload.case === "federationMediaImportGrantResponse"
+        ? [message.payload.value.grantJson]
+        : [],
+    );
+    expect(grants).toEqual(
+      mode === "granted" ? ["short-lived-import-grant"] : mode === "denied" ? [""] : [],
+    );
+  });
+
+  test.each([
+    "input",
+    "result",
+    "target-input",
+    "target-result",
+    "old-target-input",
+    "old-target-result",
+    "legacy",
+    "no-import",
+    "no-source",
+    "no-target",
+    "no-verify",
+    "unverified",
+  ] as const)("media upload RPC negotiates complete capabilities: %s", async (mode) => {
+    const result = mode.endsWith("result");
+    const targetOnly = mode.includes("target-");
+    const independent = mode.startsWith("target-");
+    const { router, handlers } = createMockRouter();
+    const dispatcher = new AgentDispatcher();
+    const done = Promise.withResolvers<void>();
+    registerAgentHandler(router, {
+      agentManager,
+      jobService,
+      logger: testLogger,
+      dispatcher,
+      federationMediaImports:
+        mode === "no-source"
+          ? undefined
+          : {
+              grant: async (_id, request) =>
+                create(FederationMediaImportGrantResponseSchema, { requestId: request.requestId }),
+              report: async () => {},
+            },
+      federationInputs:
+        mode === "no-target" || result
+          ? undefined
+          : {
+              canCopy: !targetOnly,
+              grant: async (_id, request) =>
+                create(FederationInputGrantResponseSchema, { requestId: request.requestId }),
+              report: async () => {},
+            },
+      federationResults: result
+        ? {
+            canCopy: !targetOnly,
+            grant: async (_id, request) =>
+              create(FederationResultGrantResponseSchema, { requestId: request.requestId }),
+            report: async () => {},
+          }
+        : undefined,
+    });
+    await agentManager.register({
+      agentId: "grpc-test-agent-1",
+      siteName: "test",
+      schedulerType: "slurm",
+      schedulerVersion: "test",
+    });
+    const frame = registerFrame();
+    if (frame.payload.case !== "register") throw new Error("Missing registration");
+    Object.assign(frame.payload.value, {
+      federationMediaImportV1: mode !== "no-import",
+      federationMediaUploadV1: mode !== "legacy",
+      federationTargetTransferV1: independent,
+      federationInputCopyV1: !result && !independent,
+      federationInputVerifyV1: !result && mode !== "no-verify",
+      federationResultCopyV1: result && !independent,
+      federationResultVerifyV1: result,
+    });
+    async function* messages() {
+      yield frame;
+      await done.promise;
+    }
+    const connect = handlers.connect;
+    if (!connect) throw new Error("Missing handler");
+    await runWithMtlsContext(
+      {
+        agentId: mode === "unverified" ? null : "grpc-test-agent-1",
+        fingerprintSha256: mode === "unverified" ? null : "verified",
+      },
+      async () => {
+        for await (const raw of connect(messages())) {
+          const message = raw as ServerMessage;
+          if (message.payload.case === "registerResponse") {
+            expect(message.payload.value.federationMediaUploadV1Supported).toBe(
+              mode === "input" || mode === "result" || independent,
+            );
+            if (targetOnly) {
+              expect(message.payload.value.federationInputCopyV1Supported).toBe(false);
+              expect(message.payload.value.federationResultCopyV1Supported).toBe(false);
+              expect(
+                result
+                  ? message.payload.value.federationResultVerifyV1Supported
+                  : message.payload.value.federationInputVerifyV1Supported,
+              ).toBe(true);
+            }
+            done.resolve();
+          }
+        }
+      },
+    );
+  });
+
+  for (const result of [false, true]) {
+    test(`target-only RPC ${result ? "result" : "input"} permits upload and verification but rejects source reads`, async () => {
+      const { router, handlers } = createMockRouter();
+      const replies = [
+        Promise.withResolvers<void>(),
+        Promise.withResolvers<void>(),
+        Promise.withResolvers<void>(),
+      ];
+      const reported = Promise.withResolvers<void>();
+      const grants: string[] = [];
+      const response = (request: { requestId: string; verificationJson: string }) => {
+        const grantJson = request.verificationJson ? "verify" : "upload";
+        grants.push(grantJson);
+        return { requestId: request.requestId, grantJson };
+      };
+      registerAgentHandler(router, {
+        agentManager,
+        jobService,
+        logger: testLogger,
+        dispatcher: new AgentDispatcher(),
+        ...(result
+          ? {
+              federationResults: {
+                canCopy: false,
+                grant: async (_id, request) =>
+                  create(FederationResultGrantResponseSchema, response(request)),
+                report: async () => {
+                  reported.resolve();
+                },
+              },
+            }
+          : {
+              federationInputs: {
+                canCopy: false,
+                grant: async (_id, request) =>
+                  create(FederationInputGrantResponseSchema, response(request)),
+                report: async () => {
+                  reported.resolve();
+                },
+              },
+            }),
+      });
+      await agentManager.register({
+        agentId: "grpc-test-agent-1",
+        siteName: "test",
+        schedulerType: "slurm",
+        schedulerVersion: "test",
+      });
+      const frame = registerFrame();
+      if (frame.payload.case !== "register") throw new Error("Expected registration");
+      Object.assign(frame.payload.value, {
+        federationTargetTransferV1: true,
+        federationInputVerifyV1: !result,
+        federationResultVerifyV1: result,
+        federationInputCopyV1: false,
+        federationResultCopyV1: false,
+      });
+      async function* messages() {
+        yield frame;
+        for (let i = 0; i < 3; i++) {
+          const request = {
+            requestId: crypto.randomUUID(),
+            bindingJson: i === 1 ? "" : "{}",
+            verificationJson: i === 1 ? "{}" : "",
+            upload: i === 0,
+            ...(i === 0 ? { partNumber: 1 } : {}),
+          };
+          yield result
+            ? create(AgentMessageSchema, {
+                payload: {
+                  case: "federationResultGrantRequest",
+                  value: create(FederationResultGrantRequestSchema, request),
+                },
+              })
+            : create(AgentMessageSchema, {
+                payload: {
+                  case: "federationInputGrantRequest",
+                  value: create(FederationInputGrantRequestSchema, request),
+                },
+              });
+          await replies[i]?.promise;
+        }
+        const report = { generation: crypto.randomUUID(), verifiedJson: "{}" };
+        yield result
+          ? create(AgentMessageSchema, {
+              payload: {
+                case: "federationResultCopyReport",
+                value: create(FederationResultCopyReportSchema, report),
+              },
+            })
+          : create(AgentMessageSchema, {
+              payload: {
+                case: "federationInputCopyReport",
+                value: create(FederationInputCopyReportSchema, report),
+              },
+            });
+        await reported.promise;
+      }
+      const connect = handlers.connect;
+      if (!connect) throw new Error("Missing handler");
+      const responses: string[] = [];
+      await runWithMtlsContext(
+        { agentId: "grpc-test-agent-1", fingerprintSha256: "verified" },
+        async () => {
+          for await (const raw of connect(messages())) {
+            const message = raw as ServerMessage;
+            if (message.payload.case === "registerResponse") {
+              expect(message.payload.value.accepted).toBe(true);
+              expect(
+                result
+                  ? message.payload.value.federationResultCopyV1Supported
+                  : message.payload.value.federationInputCopyV1Supported,
+              ).toBe(false);
+              expect(
+                result
+                  ? message.payload.value.federationResultVerifyV1Supported
+                  : message.payload.value.federationInputVerifyV1Supported,
+              ).toBe(true);
+            }
+            if (
+              message.payload.case === "federationResultGrantResponse" ||
+              message.payload.case === "federationInputGrantResponse"
+            ) {
+              responses.push(message.payload.value.grantJson);
+              replies[responses.length - 1]?.resolve();
+            }
+          }
+        },
+      );
+      expect(grants).toEqual(["upload", "verify"]);
+      expect(responses).toEqual(["upload", "verify", ""]);
+    });
+  }
+
+  for (const installation of [false, true]) {
+    test.each([
+      "grant",
+      "denied",
+      "retry",
+      "authz-unavailable",
+      "data-waiting",
+      "asset-unavailable",
+      "legacy",
+      "startup-only",
+      ...(installation
+        ? ["runtime-install" as const, "worker-only" as const]
+        : ["runtime-grant" as const, "runtime-retry" as const]),
+      "unverified",
+    ] as const)(`federation ${installation ? "installation" : "execution"} grant RPC: %s`, async (outcome) => {
+      const { router, handlers } = createMockRouter();
+      const received = Promise.withResolvers<void>();
+      const heartbeatDelivered = Promise.withResolvers<void>();
+      const calledBy: string[] = [];
+      const renew = async (
+        agentId: string,
+        request: FederationExecutionRequest,
+        send: (response: FederationExecutionResponse) => void,
+      ) => {
+        calledBy.push(agentId);
+        if (outcome === "retry" || outcome === "runtime-retry")
+          throw new Error("private infrastructure detail");
+        if (outcome === "authz-unavailable")
+          throw new AuthorizationUnavailableError(
+            "Authorization unavailable: private infrastructure detail",
+          );
+        if (outcome === "data-waiting") throw new FederationError("DATA_WAITING");
+        if (outcome === "asset-unavailable") throw new FederationError("ASSET_UNAVAILABLE");
+        if (outcome === "denied") return false;
+        await heartbeatDelivered.promise;
+        send(
+          create(FederationExecutionResponseSchema, {
+            requestId: request.requestId,
+            jobId: request.jobId,
+            dispatchEpoch: request.dispatchEpoch,
+            operationId: request.operationId,
+            runtimeRenewal: request.runtimeRenewal,
+            decision: FederationExecutionDecision.GRANTED,
+            expiresAtUnixMs: BigInt(Date.now() + 1000),
+          }),
+        );
+        return true;
+      };
+      registerAgentHandler(router, {
+        agentManager,
+        jobService,
+        logger: testLogger,
+        dispatcher: new AgentDispatcher(),
+        softwareOperations: installation
+          ? { applyAgentResult: async () => {}, renewFederationInstallation: renew }
+          : undefined,
+        jobDispatches: {
+          acknowledge: async () => {},
+          redeliver: async () => {},
+          renewExecution: installation ? undefined : renew,
+        },
+      });
+      await agentManager.register({
+        agentId: "grpc-test-agent-1",
+        siteName: "test",
+        schedulerType: "slurm",
+        schedulerVersion: "test",
+      });
+      const register = registerFrame();
+      if (register.payload.case !== "register") throw new Error("Missing register");
+      register.payload.value.federationExecutionV1 = outcome !== "legacy";
+      register.payload.value.federationComputeLeaseV1 =
+        outcome !== "legacy" && outcome !== "startup-only";
+      register.payload.value.federationInstallationV1 = outcome !== "legacy";
+      register.payload.value.federationInstallationLeaseV1 =
+        outcome !== "legacy" && outcome !== "startup-only";
+      register.payload.value.federationInstallationMaterialLeaseV1 = outcome !== "worker-only";
+      const request = create(FederationExecutionRequestSchema, {
+        requestId: crypto.randomUUID(),
+        jobId: testJobId,
+        dispatchEpoch: installation ? 0n : 1n,
+        operationId: installation ? crypto.randomUUID() : "",
+        runtimeRenewal: ["runtime-grant", "runtime-retry", "runtime-install"].includes(outcome),
+      });
+      async function* messages() {
+        yield register;
+        yield create(AgentMessageSchema, {
+          payload: { case: "federationExecutionRequest", value: request },
+        });
+        if (outcome === "grant" || outcome === "runtime-grant")
+          yield create(AgentMessageSchema, {
+            payload: {
+              case: "heartbeat",
+              value: create(HeartbeatSchema, { agentId: "grpc-test-agent-1", sequence: 1n }),
+            },
+          });
+        await received.promise;
+      }
+      const connect = handlers.connect;
+      if (!connect) throw new Error("Missing connect");
+      const responses = await runWithMtlsContext(
+        {
+          agentId: outcome === "unverified" ? null : "grpc-test-agent-1",
+          fingerprintSha256: outcome === "unverified" ? null : "test-verified",
+        },
+        async () => {
+          const output: ServerMessage[] = [];
+          for await (const message of connect(messages())) {
+            const reply = message as ServerMessage;
+            output.push(reply);
+            if (reply.payload.case === "heartbeatAck") heartbeatDelivered.resolve();
+            if (reply.payload.case === "federationExecutionResponse") received.resolve();
+          }
+          return output;
+        },
+      );
+      const reply = responses.find(
+        (message) => message.payload.case === "federationExecutionResponse",
+      );
+      if (reply?.payload.case !== "federationExecutionResponse")
+        throw new Error("Missing grant response");
+      expect(reply.payload.value).toMatchObject({
+        requestId: request.requestId,
+        jobId: testJobId,
+        dispatchEpoch: request.dispatchEpoch,
+        operationId: request.operationId,
+        runtimeRenewal: request.runtimeRenewal,
+        decision:
+          outcome === "grant" || outcome === "runtime-grant"
+            ? FederationExecutionDecision.GRANTED
+            : [
+                  "retry",
+                  "runtime-retry",
+                  "authz-unavailable",
+                  "data-waiting",
+                  "asset-unavailable",
+                ].includes(outcome)
+              ? FederationExecutionDecision.RETRY
+              : FederationExecutionDecision.DENIED,
+      });
+      expect(calledBy).toEqual(
+        ["legacy", "startup-only", "unverified", "runtime-install", "worker-only"].includes(outcome)
+          ? []
+          : ["grpc-test-agent-1"],
+      );
+      expect(
+        JSON.stringify(reply, (_key, value: unknown) =>
+          typeof value === "bigint" ? value.toString() : value,
+        ),
+      ).not.toContain("private infrastructure detail");
+    });
+  }
 
   test("registers an agent and yields acceptance", async () => {
     const { router, handlers } = createMockRouter();

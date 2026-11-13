@@ -1,11 +1,11 @@
-import { type PgDb, sandboxPolicyOverlays } from "@kuintessence/db";
+import { type PgDb, type PgTransaction, sandboxPolicyOverlays } from "@kuintessence/db";
 import {
   type EffectiveSandboxPolicy,
   type SandboxPolicyOverlay,
   SandboxPolicyOverlaySchema,
   tightenSandboxPolicy,
 } from "@kuintessence/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 export interface SandboxPolicyTarget {
   providerOrgId: string | null;
@@ -19,8 +19,15 @@ export class SandboxPolicyService {
     private readonly platformMaximum: EffectiveSandboxPolicy,
   ) {}
 
-  async effectiveFor(target: SandboxPolicyTarget): Promise<EffectiveSandboxPolicy> {
-    const rows = await this.db.select().from(sandboxPolicyOverlays);
+  async effectiveFor(
+    target: SandboxPolicyTarget,
+    transaction?: PgTransaction,
+  ): Promise<EffectiveSandboxPolicy> {
+    const db = transaction ?? this.db;
+    // A restrictive overlay may not exist yet; row locks alone cannot fence its insertion.
+    if (transaction)
+      await transaction.execute(sql`lock table sandbox_policy_overlays in share mode nowait`);
+    const rows = await db.select().from(sandboxPolicyOverlays);
     const overlays: SandboxPolicyOverlay[] = [];
     const platform = rows.find(
       (row) =>

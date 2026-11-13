@@ -2,11 +2,13 @@ import {
   type InstalledSpec,
   type MirrorSpec,
   SPACK_SOURCE_PROOF_PREFIX,
+  type SpackExecutionPin,
   type SpackPolicy,
 } from "@kuintessence/shared";
 import type { Spawner } from "../adapters/base";
 import { Buildcache, type ExportOutcome, type ImportResult } from "./buildcache";
 import { MANAGED_SPACK_EXECUTION_DISABLED, SpackCli } from "./cli";
+import { SpackInstallationPending } from "./execution-identity";
 import type { SpackManagedInstallation } from "./install-contract";
 import { type InstallOutcome, type SoftwareOperationOutcome, SpackInstaller } from "./installer";
 import type {
@@ -241,6 +243,26 @@ export class SpackManager {
     }
   }
 
+  get pinnedExecutionAvailable(): boolean {
+    return this.available && this.managedInstallation?.loadPinned !== undefined;
+  }
+
+  async loadPinnedWorkflow(
+    spec: string,
+    pin: SpackExecutionPin,
+    signal: AbortSignal,
+  ): Promise<SoftwareOperationOutcome> {
+    if (signal.aborted) return cancelledSoftwareOperation();
+    if (!this.available || !this.managedInstallation?.loadPinned)
+      return { outcome: "rejected", reason: "Pinned managed Spack execution is unavailable" };
+    return this.managedInstallation.loadPinned(
+      spec,
+      pin,
+      this.cachedPolicy ?? { lockEnabled: false },
+      signal,
+    );
+  }
+
   private async prepareManagedInstall(
     spec: string,
     context?: SpackMaterialContext,
@@ -263,6 +285,12 @@ export class SpackManager {
       manifestDigest: context.manifestDigest,
       spec,
       spackVersion: this.version,
+      ...(context.authorizeInstallation
+        ? { authorizeInstallation: context.authorizeInstallation }
+        : {}),
+      ...(context.authorizeMaterialTransfer
+        ? { authorizeMaterialTransfer: context.authorizeMaterialTransfer }
+        : {}),
       ...(signal ? { signal } : {}),
     };
     let prepared: PreparedSpackMaterials;
@@ -270,6 +298,7 @@ export class SpackManager {
       prepared = await this.materialClient.prepare(input);
     } catch (error) {
       if (signal?.aborted) return cancelledSoftwareOperation();
+      if (error instanceof SpackInstallationPending) throw error;
       return {
         outcome: "failed",
         exitCode: 1,
@@ -336,7 +365,8 @@ export class SpackManager {
             ? SPACK_SOURCE_PROOF_PREFIX + JSON.stringify(report.proof)
             : JSON.stringify(report),
         };
-      } catch {
+      } catch (error) {
+        if (error instanceof SpackInstallationPending) throw error;
         if (signal?.aborted) return cancelledSoftwareOperation();
         return {
           outcome: "failed",

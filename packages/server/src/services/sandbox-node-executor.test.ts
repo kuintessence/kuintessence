@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import type { PgDb } from "@kuintessence/db";
-import { type RoleName, type SandboxSignedManifest, workflowDsl } from "@kuintessence/shared";
+import {
+  type JobSubmit,
+  type RoleName,
+  type SandboxSignedManifest,
+  workflowDsl,
+} from "@kuintessence/shared";
 import type { JobService } from "./job-service";
 import type { PlacementOrchestrator } from "./placement-orchestrator";
 import type { SandboxExecutionResolver } from "./sandbox-execution-resolver";
@@ -17,13 +22,25 @@ const ACCOUNT_ID = "44444444-4444-4444-8444-444444444444";
 const ASSET_ID = "66666666-6666-4666-8666-666666666666";
 const ASSET_REVISION_ID = "77777777-7777-4777-8777-777777777777";
 
+function runtimeEvidence() {
+  return {
+    kind: "SIF",
+    digest: `sha256:${"a".repeat(64)}`,
+    signatureVerified: true,
+    runtimeAttestationId: "8".repeat(64),
+    attestedNodes: ["node-1"],
+    attestedQueue: "normal",
+    expiresAtUnixMs: Date.now() + 60_000,
+  };
+}
+
 function fakeDb(
   agent: Record<string, unknown> = {
     siteId: "site-a",
     clusterId: "cluster-a",
     rootMode: true,
     sandboxCapabilities: { executionMode: "RootImpersonation" },
-    sandboxRuntimeCache: [],
+    sandboxRuntimeCache: [runtimeEvidence()],
   },
 ): PgDb {
   const chain = {
@@ -35,7 +52,18 @@ function fakeDb(
 }
 
 describe("SandboxNodeExecutor", () => {
-  test("dispatches only a signed manifest and registers verified output facts", async () => {
+  test.each([
+    { pendingDelivery: false, constraint: "none" },
+    { pendingDelivery: true, constraint: "none" },
+    { pendingDelivery: false, constraint: "locked" },
+    { pendingDelivery: false, constraint: "persisted-resources" },
+    { pendingDelivery: false, constraint: "self-account" },
+    { pendingDelivery: false, constraint: "wrong-runtime" },
+    { pendingDelivery: false, constraint: "excess-cpu" },
+  ])("signed manifest delivery: $constraint, pending=$pendingDelivery", async ({
+    pendingDelivery,
+    constraint,
+  }) => {
     const node = workflowDsl.WorkflowNodeSchema.parse({
       type: "Script",
       id: "transform",
@@ -104,6 +132,7 @@ describe("SandboxNodeExecutor", () => {
           build: (selected: {
             agentId: string;
             schedulerType: string;
+            queueName?: string;
             providerOrgId: string | null;
           }) => Promise<{ script: { contentBase64: string } }>;
         };
@@ -113,11 +142,17 @@ describe("SandboxNodeExecutor", () => {
         const manifest = await input.sandboxExecution.build({
           agentId: "agent-a",
           schedulerType: "slurm",
+          queueName: "normal",
           providerOrgId: null,
         });
         signedManifest = manifest as SandboxSignedManifest;
         signedScript = Buffer.from(manifest.script.contentBase64, "base64").toString("utf8");
-        return { dispatched: true, selectedAgentId: "agent-a", rejections: [] };
+        return {
+          dispatched: !pendingDelivery,
+          pendingDelivery,
+          selectedAgentId: "agent-a",
+          rejections: [],
+        };
       },
     } as unknown as PlacementOrchestrator;
     const registered: Array<Record<string, unknown>> = [];
@@ -129,20 +164,25 @@ describe("SandboxNodeExecutor", () => {
     } as unknown as WorkflowArtifactService;
     const jobService = {
       submit: async (
-        input: { command: string },
+        input: {
+          command: string;
+          resources: JobSubmit["resources"];
+        },
         _submittedBy: string,
         options: Parameters<JobService["submit"]>[2],
       ) => {
         lifecycle.push("submit");
+        if (constraint === "locked")
+          expect(input.resources).toEqual({ cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 30 });
         submitOptions = options;
         return {
           id: JOB_ID,
           name: "transform",
           command: input.command,
-          cpus: 1,
-          memoryMb: 1024,
+          cpus: constraint === "persisted-resources" ? 2 : input.resources.cpus,
+          memoryMb: input.resources.memoryMb,
           gpus: 0,
-          wallTimeSec: 60,
+          wallTimeSec: input.resources.wallTimeSec ?? 60,
           workingDir: null,
           queueId: null,
           orgId: null,
@@ -150,8 +190,41 @@ describe("SandboxNodeExecutor", () => {
         };
       },
     } as unknown as JobService;
+    const delegated = constraint !== "none";
+    if (constraint === "excess-cpu") node.requirements = { ...node.requirements, cpuCores: 3 };
     const executor = new SandboxNodeExecutor({
-      db: fakeDb(),
+      db:
+        constraint === "self-account"
+          ? fakeDb({
+              siteId: "site-a",
+              clusterId: "cluster-a",
+              rootMode: false,
+              sandboxCapabilities: {
+                executionMode: "SelfAccount",
+                selfAccount: { username: "scientist", uid: 1001, gid: 1001 },
+              },
+              sandboxRuntimeCache: [
+                {
+                  kind: "SIF",
+                  digest: `sha256:${"a".repeat(64)}`,
+                  signatureVerified: true,
+                  runtimeAttestationId: "8".repeat(64),
+                  attestedNodes: ["slurm-2"],
+                  attestedQueue: "normal",
+                  expiresAtUnixMs: Date.now() + 60_000,
+                },
+              ],
+            })
+          : fakeDb(),
+      ...(delegated
+        ? {
+            resourceLimits: { cpus: 2, memoryMb: 128, gpus: 0, wallTimeSec: 30 },
+            requiredRuntime: {
+              kind: "SIF" as const,
+              digest: `sha256:${(constraint === "wrong-runtime" ? "b" : "a").repeat(64)}`,
+            },
+          }
+        : {}),
       resolver,
       signer,
       jobService,
@@ -180,7 +253,7 @@ describe("SandboxNodeExecutor", () => {
       resolvePolicy: async () => ({
         sandboxEnabled: true,
         impersonationEnabled: true,
-        selfAccountEnabled: false,
+        selfAccountEnabled: constraint === "self-account",
         degradedImpersonationAllowed: false,
         sharedServiceAllowed: false,
         runtimePrecacheRequired: true,
@@ -197,6 +270,14 @@ describe("SandboxNodeExecutor", () => {
       limits: { pids: 64, outputBytes: 1_024, logBytes: 1_024 },
     });
 
+    if (constraint === "wrong-runtime" || constraint === "excess-cpu") {
+      await expect(executor.execute(node, { nodes: {}, params: {} })).rejects.toThrow(
+        constraint === "wrong-runtime" ? "runtime differs" : "authorized limit",
+      );
+      expect(signedManifest).toBeUndefined();
+      if (constraint === "excess-cpu") expect(lifecycle).toEqual([]);
+      return;
+    }
     const result = await executor.execute(node, { nodes: {}, params: {} });
 
     expect(dispatchedCommand).toBe("sandbox-manifest");
@@ -209,7 +290,13 @@ describe("SandboxNodeExecutor", () => {
       },
     });
     expect(signedScript).toBe("print('safe')");
-    expect(signedManifest?.executionMode).toBe("RootImpersonation");
+    expect(signedManifest?.executionMode).toBe(
+      constraint === "self-account" ? "SelfAccount" : "RootImpersonation",
+    );
+    expect(signedManifest?.resources).toEqual({
+      cpus: constraint === "persisted-resources" ? 2 : 1,
+      memoryMb: delegated ? 128 : 1024,
+    });
     expect(result).toEqual({ status: "Succeeded", values: { result: { ok: true } } });
     expect(registered[0]).toMatchObject({
       workflowRunId: RUN_ID,
@@ -417,7 +504,17 @@ describe("SandboxNodeExecutor", () => {
     });
   });
 
-  test("freezes Data Market FileBatch inputs on the Sandbox Job before placement", async () => {
+  test.each([
+    "parameter",
+    "static",
+  ] as const)("freezes %s Data Market FileBatch inputs before placement", async (binding) => {
+    const dataInput = {
+      source: "data-market" as const,
+      assetId: "88888888-8888-4888-8888-888888888888",
+      versionId: "99999999-9999-4999-8999-999999999999",
+      manifestDigest: `sha256:${"b".repeat(64)}`,
+      selectedEntries: ["restricted/input.dat"],
+    };
     const node = workflowDsl.WorkflowNodeSchema.parse({
       type: "Script",
       id: "restricted_transform",
@@ -433,12 +530,9 @@ describe("SandboxNodeExecutor", () => {
       executionIdentity: { type: "MappedAuto" },
       inputs: { dataset: { type: "FileBatch" } },
       inputSlots: [
-        {
-          type: "File",
-          descriptor: "dataset",
-          isBatch: true,
-          from: { param: "dataset" },
-        },
+        binding === "static"
+          ? { type: "Dataset", descriptor: "dataset", contents: dataInput }
+          : { type: "File", descriptor: "dataset", isBatch: true, from: { param: "dataset" } },
       ],
       outputs: {},
     });
@@ -507,16 +601,12 @@ describe("SandboxNodeExecutor", () => {
       },
       limits: { pids: 64, outputBytes: 1_024, logBytes: 1_024 },
     });
-    const dataInput = {
-      source: "data-market" as const,
-      assetId: "88888888-8888-4888-8888-888888888888",
-      versionId: "99999999-9999-4999-8999-999999999999",
-      manifestDigest: `sha256:${"b".repeat(64)}`,
-      selectedEntries: ["restricted/input.dat"],
-    };
 
     await expect(
-      executor.execute(node, { nodes: {}, params: { dataset: dataInput } }),
+      executor.execute(node, {
+        nodes: {},
+        params: binding === "static" ? {} : { dataset: dataInput },
+      }),
     ).resolves.toEqual({
       status: "Failed",
       values: {},
@@ -547,6 +637,7 @@ describe("SandboxNodeExecutor", () => {
             signatureVerified: true,
             runtimeAttestationId: "8".repeat(64),
             attestedNodes: ["slurm-2"],
+            attestedQueue: "normal",
             expiresAtUnixMs: Date.now() + 60_000,
           },
         ],
@@ -556,6 +647,7 @@ describe("SandboxNodeExecutor", () => {
       executionModeForSelectedAgent(input: {
         agentId: string;
         schedulerType: string;
+        queueName?: string;
         identity: {
           mode: "MappedAccount";
           accountId: string;
@@ -590,6 +682,7 @@ describe("SandboxNodeExecutor", () => {
     const input = {
       agentId: "agent-a",
       schedulerType: "slurm",
+      queueName: "normal",
       identity: {
         mode: "MappedAccount" as const,
         accountId: ACCOUNT_ID,
@@ -621,36 +714,54 @@ describe("SandboxNodeExecutor", () => {
       restrictedNoEgress: false,
     };
 
-    await expect(resolveExecutionMode.executionModeForSelectedAgent(input)).resolves.toEqual({
-      executionMode: "SelfAccount",
-      runtimeAttestationId: "8".repeat(64),
-    });
+    for (const schedulerType of ["slurm", "pbs-pro"]) {
+      await expect(
+        resolveExecutionMode.executionModeForSelectedAgent({ ...input, schedulerType }),
+      ).resolves.toEqual({
+        executionMode: "SelfAccount",
+        runtimeAttestationId: "8".repeat(64),
+      });
+      await expect(
+        resolveExecutionMode.executionModeForSelectedAgent({
+          ...input,
+          schedulerType,
+          identity: { ...input.identity, uid: 1002 },
+        }),
+      ).rejects.toThrow("does not exactly match");
+    }
     await expect(
       resolveExecutionMode.executionModeForSelectedAgent({
         ...input,
         identity: { ...input.identity, uid: 1002 },
       }),
     ).rejects.toThrow("does not exactly match");
+    for (const queueName of [undefined, "other"]) {
+      await expect(
+        resolveExecutionMode.executionModeForSelectedAgent({ ...input, queueName }),
+      ).rejects.toThrow("fresh runtime attestation");
+    }
     await expect(
       resolveExecutionMode.executionModeForSelectedAgent({ ...input, restrictedNoEgress: true }),
     ).rejects.toThrow("cannot use SelfAccount");
     await expect(
-      resolveExecutionMode.executionModeForSelectedAgent({ ...input, schedulerType: "pbs-pro" }),
-    ).rejects.toThrow("currently limited to Slurm");
+      resolveExecutionMode.executionModeForSelectedAgent({ ...input, schedulerType: "torque" }),
+    ).rejects.toThrow("limited to Slurm and PBS Pro");
   });
 
-  test("preserves RootImpersonation selection for legacy PBS, Torque, and Kubernetes agents", async () => {
+  test("requires root HPC proof while keeping Kubernetes on its own verification path", async () => {
+    const evidence = runtimeEvidence();
     const rootExecutor = new SandboxNodeExecutor({
       db: fakeDb({
         rootMode: true,
         sandboxCapabilities: { executionMode: "RootImpersonation" },
-        sandboxRuntimeCache: [],
+        sandboxRuntimeCache: [evidence],
       }),
     } as unknown as ConstructorParameters<typeof SandboxNodeExecutor>[0]);
     const resolveRootExecutionMode = rootExecutor as unknown as {
       executionModeForSelectedAgent(input: {
         agentId: string;
         schedulerType: string;
+        queueName?: string;
         identity: {
           mode: "MappedAccount";
           accountId: string;
@@ -685,6 +796,7 @@ describe("SandboxNodeExecutor", () => {
     const input = {
       agentId: "agent-a",
       schedulerType: "pbs-pro",
+      queueName: "normal",
       identity: {
         mode: "MappedAccount" as const,
         accountId: ACCOUNT_ID,
@@ -719,7 +831,26 @@ describe("SandboxNodeExecutor", () => {
     for (const schedulerType of ["pbs-pro", "torque"]) {
       await expect(
         resolveRootExecutionMode.executionModeForSelectedAgent({ ...input, schedulerType }),
-      ).resolves.toEqual({ executionMode: "RootImpersonation" });
+      ).resolves.toEqual({
+        executionMode: "RootImpersonation",
+        runtimeAttestationId: "8".repeat(64),
+      });
+    }
+
+    for (const queueName of [undefined, "other"]) {
+      await expect(
+        resolveRootExecutionMode.executionModeForSelectedAgent({ ...input, queueName }),
+      ).rejects.toThrow("fresh runtime attestation");
+    }
+    for (const change of ["expired", "unsigned", "missing-proof", "missing-nodes"] as const) {
+      Object.assign(evidence, runtimeEvidence());
+      if (change === "expired") evidence.expiresAtUnixMs = Date.now();
+      if (change === "unsigned") evidence.signatureVerified = false;
+      if (change === "missing-proof") evidence.runtimeAttestationId = "";
+      if (change === "missing-nodes") evidence.attestedNodes = [];
+      await expect(resolveRootExecutionMode.executionModeForSelectedAgent(input)).rejects.toThrow(
+        "fresh runtime attestation",
+      );
     }
 
     const kubernetesExecutor = new SandboxNodeExecutor({

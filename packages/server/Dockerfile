@@ -10,6 +10,10 @@ COPY packages/agent/package.json ./packages/agent/
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/web/package.json ./packages/web/
 COPY packages/docs-site/package.json ./packages/docs-site/
+COPY packages/fabric-adapter/package.json ./packages/fabric-adapter/
+COPY contracts/fabric/evidence/package.json ./contracts/fabric/evidence/
+COPY contracts/fabric/commercial/package.json ./contracts/fabric/commercial/
+COPY contracts/fabric/market/package.json ./contracts/fabric/market/
 COPY packages/shared/tsconfig.json ./packages/shared/
 COPY packages/proto/tsconfig.json ./packages/proto/
 COPY packages/db/tsconfig.json ./packages/db/
@@ -33,6 +37,7 @@ ARG KQ_BUILD_REVISION=unknown
 RUN bun scripts/build-agent-bundle.cjs /opt/kuintessence/agent "$KQ_BUILD_REVISION"
 
 FROM oven/bun:1.4.2-alpine
+RUN apk add --no-cache util-linux
 WORKDIR /app
 COPY --from=build /app /app
 COPY --from=agent-binaries /opt/kuintessence/agent /opt/kuintessence/agent

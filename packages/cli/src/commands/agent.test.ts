@@ -1,25 +1,55 @@
 import { describe, expect, it, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import {
   parsePositiveInt,
   parseServePort,
+  readRegistrationToken,
   registerAgentCommand,
   writeAgentRegistrationFiles,
 } from "./agent";
+
+describe("registration token file", () => {
+  it("requires exactly one token source", async () => {
+    await expect(readRegistrationToken({})).rejects.toThrow("exactly one");
+    await expect(readRegistrationToken({ token: "x", tokenFile: "unused" })).rejects.toThrow(
+      "exactly one",
+    );
+    await expect(readRegistrationToken({ token: " " })).rejects.toThrow("empty");
+    expect(await readRegistrationToken({ token: "existing-token" })).toBe("existing-token");
+  });
+
+  it("reads a private file and rejects public, linked, empty or oversized files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kq-enroll-"));
+    const path = join(dir, "token");
+    try {
+      await writeFile(path, "one-time-token\n", { mode: 0o600 });
+      expect(await readRegistrationToken({ tokenFile: path })).toBe("one-time-token");
+      await chmod(path, 0o644);
+      await expect(readRegistrationToken({ tokenFile: path })).rejects.toThrow("private");
+      await chmod(path, 0o600);
+      await symlink(path, join(dir, "link"));
+      await expect(readRegistrationToken({ tokenFile: join(dir, "link") })).rejects.toThrow();
+      await writeFile(path, "");
+      await expect(readRegistrationToken({ tokenFile: path })).rejects.toThrow("empty");
+      await writeFile(path, "x".repeat(16385));
+      await expect(readRegistrationToken({ tokenFile: path })).rejects.toThrow("16 KiB");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("parseServePort", () => {
   it("accepts a valid port", () => {
     expect(parseServePort("8787")).toBe(8787);
   });
-
   it("rejects out-of-range ports", () => {
     expect(() => parseServePort("0")).toThrow();
     expect(() => parseServePort("70000")).toThrow();
   });
-
   it("rejects non-integer values", () => {
     expect(() => parseServePort("abc")).toThrow();
     expect(() => parseServePort("80.5")).toThrow();
@@ -30,7 +60,6 @@ describe("parsePositiveInt", () => {
   it("accepts positive integers", () => {
     expect(parsePositiveInt("60", "--ttl-sec")).toBe(60);
   });
-
   it("rejects non-positive values", () => {
     expect(() => parsePositiveInt("0", "--ttl-sec")).toThrow();
     expect(() => parsePositiveInt("-1", "--ttl-sec")).toThrow();
@@ -47,15 +76,20 @@ describe("writeAgentRegistrationFiles", () => {
         serverGrpcUrl: "https://server.example.com/grpc",
         agentId: "agent-cli-test",
         siteName: "cli-site",
+        schedulerType: "kubernetes",
+        schedulerVersion: "1.36",
         certPem: "cert-pem",
         keyPem: "key-pem",
         caCertPem: "ca-pem",
       });
 
       const env = await readFile(join(dir, "agent.env"), "utf8");
+      expect(env.trim().split("\n")).toHaveLength(9);
       expect(env).toContain('SERVER_GRPC_URL="https://server.example.com/grpc"');
       expect(env).toContain('SERVER_HTTP_URL="https://server.example.com"');
       expect(env).toContain('AGENT_ID="agent-cli-test"');
+      expect(env).toContain('AGENT_SCHEDULER_TYPE="kubernetes"');
+      expect(env).toContain('AGENT_SCHEDULER_VERSION="1.36"');
       expect(env).toContain('AGENT_MTLS_REQUIRED="true"');
       expect(await readFile(join(dir, "certs", "client.crt"), "utf8")).toBe("cert-pem");
       expect(await readFile(join(dir, "certs", "client.key"), "utf8")).toBe("key-pem");
@@ -91,7 +125,7 @@ describe("kq agent serve error routing", () => {
 test("agent register forwards file token to metadata without completing registration", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kq-register-token-"));
   const tokenFile = join(directory, "token");
-  await writeFile(tokenFile, "file-token\n");
+  await writeFile(tokenFile, "file-token\n", { mode: 0o600 });
   const original = globalThis.fetch;
   const mode = process.env.KQ_TRANSPORT_MODE;
   delete process.env.KQ_TRANSPORT_MODE;

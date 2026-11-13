@@ -8,11 +8,37 @@ const root = resolve(__dirname, "..");
 const workflow = parse(readFileSync(resolve(root, ".github/workflows/build-images.yml"), "utf8"));
 const job = workflow.jobs.images;
 const resolver = job.steps.find((step) => step.id === "image");
+const revision = "a".repeat(40);
+
+test("AIO CI builds an opt-in offline artifact without publication or deployment", () => {
+  const delivery = parse(
+    readFileSync(resolve(root, ".github/workflows/federation-compose.yml"), "utf8"),
+  );
+  const bundle = delivery.jobs["offline-bundle"];
+  expect(bundle.if).toBe(
+    "github.event_name == 'workflow_dispatch' && inputs.build_offline_bundle == true",
+  );
+  expect(delivery.on.workflow_dispatch.inputs.build_offline_bundle.default).toBe(false);
+  expect(delivery.permissions).toEqual({ contents: "read" });
+  expect(bundle.needs).toBe("configuration");
+  expect(JSON.stringify(bundle.env)).not.toContain("runner.temp");
+  expect(delivery.jobs.images.if).toBe("inputs.build_offline_bundle != true");
+  const commands = bundle.steps.map((step) => step.run || "").join("\n");
+  for (const action of ["build", "export", "verify"]) {
+    expect(commands).toContain(`python3 deploy/federation/offline.py ${action}`);
+  }
+  expect(commands).not.toMatch(/docker push|remote\.sh|offline\.py (up|admin|load)/);
+  expect(
+    bundle.steps.find((step) => step.uses === "actions/upload-artifact@v4").with[
+      "if-no-files-found"
+    ],
+  ).toBe("error");
+});
 
 async function tags(eventName, ref, payload = {}, component = "server") {
   const outputs = {};
   await runInNewContext(`(async () => { ${resolver.with.script} })()`, {
-    context: { eventName, ref, payload, repo: { owner: "Example" } },
+    context: { eventName, ref, payload, sha: revision, repo: { owner: "Example" } },
     process: { env: { COMPONENT: component } },
     core: {
       setOutput: (name, value) => {
@@ -28,19 +54,40 @@ function release(tag, prerelease = false, draft = false) {
 }
 
 describe("production image publication", () => {
-  test("main publishes only the main tag for each production component", async () => {
+  test("main publishes main and pinned revision tags for each production component", async () => {
     expect(job.strategy.matrix.include.map((entry) => entry.component)).toEqual([
       "server",
       "registry",
       "web",
       "db-migrate",
+      "federation-gateway",
+      "fabric-adapter",
+      "fabric-chaincode",
+      "fabric-tools",
     ]);
     for (const entry of job.strategy.matrix.include) {
       expect(existsSync(resolve(root, entry.dockerfile))).toBe(true);
       expect(await tags("push", "refs/heads/main", {}, entry.component)).toEqual([
         `ghcr.io/example/kuintessence-${entry.component}:main`,
+        `ghcr.io/example/kuintessence-${entry.component}:sha-${revision}`,
       ]);
     }
+  });
+
+  test("shared Fabric Dockerfile selects the correct runtime targets", () => {
+    for (const [component, target] of [
+      ["fabric-adapter", "adapter"],
+      ["fabric-chaincode", "chaincode"],
+    ]) {
+      expect(job.strategy.matrix.include.find((entry) => entry.component === component)).toEqual({
+        component,
+        dockerfile: "deploy/federation/runtime.Dockerfile",
+        target,
+      });
+    }
+    const build = job.steps.find((step) => step.uses === "docker/build-push-action@v6").with;
+    expect(build.target).toBe(`\${{ matrix.target || '' }}`);
+    expect(build.labels).toContain(`org.opencontainers.image.revision=\${{ github.sha }}`);
   });
 
   test.each([

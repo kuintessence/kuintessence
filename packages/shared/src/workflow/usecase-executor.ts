@@ -1,4 +1,9 @@
 import type { JobStatusName } from "../constants/job-status";
+import type { FederationParameterOverrides } from "../federation/assets";
+import {
+  type FederationInputSelection,
+  FederationInputSelectionSchema,
+} from "../federation/input-files";
 import * as usecase from "../usecase";
 import * as workflowDsl from "../workflow-dsl";
 import {
@@ -7,9 +12,12 @@ import {
   type NodeExecutor,
   REQUIRED_COLLECTED_OUTPUTS_KEY,
 } from "./engine";
+import type { NodeInvocation } from "./journal";
 import {
   SPACK_EXECUTION_PLACEHOLDER,
+  SPACK_PINNED_EXECUTION_PLACEHOLDER,
   type SpackExecution,
+  type SpackExecutionPin,
   SpackExecutionSchema,
 } from "./spack-execution";
 
@@ -27,6 +35,7 @@ export interface ResolvedPackage {
   filesomeOutputs: usecase.FilesomeOutputMaterial[];
   valueOutputs: workflowDsl.ValueOutput[];
   resources?: { memoryMiB?: number };
+  spackExecutionPin?: SpackExecutionPin;
   licensedMaterials?: usecase.MaterializedTask["licensedMaterials"];
   softwareRequirements?: Array<{
     assetId?: string;
@@ -39,6 +48,7 @@ export interface ResolvedPackage {
 
 export interface JobSubmission {
   nodeId: string;
+  invocation?: NodeInvocation;
   usecasePackageId?: string;
   usecaseVersionId?: string;
   /** Human-readable job name (the node's name) for the jobs list / audit. */
@@ -73,6 +83,7 @@ export interface JobSubmission {
 export interface UsecaseExecutorDeps {
   /** Production Agents activate Spack through their governed managed installation. */
   deferSpackActivation?: boolean;
+  resolveFileInput?(value: unknown): Promise<unknown>;
   resolvePackage(usecaseVersionId: string, softwareVersionId: string): Promise<ResolvedPackage>;
   submitJob(spec: JobSubmission): Promise<{
     jobId: string;
@@ -86,6 +97,13 @@ export interface UsecaseExecutorDeps {
   executeScript?(
     node: Extract<workflowDsl.WorkflowNode, { type: "Script" }>,
     ctx: Record<string, CelValue>,
+    invocation?: NodeInvocation,
+  ): Promise<NodeExecutionResult>;
+  executeFederation?(
+    node: Extract<workflowDsl.WorkflowNode, { type: "Federation" }>,
+    invocation?: NodeInvocation,
+    parameters?: FederationParameterOverrides,
+    files?: FederationInputSelection,
   ): Promise<NodeExecutionResult>;
 }
 
@@ -95,12 +113,16 @@ export interface UsecaseExecutorDeps {
  * The engine (engine) handles control flow; this is the per-leaf execution.
  */
 export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
-  return async (node, ctx) => {
+  return async (node, ctx, invocation) => {
+    if (node.type === "Federation" && deps.executeFederation) {
+      const inputs = await federationInputs(node, ctx, deps.resolveFileInput);
+      return deps.executeFederation(node, invocation, inputs.parameters, inputs.files);
+    }
     if (node.type === "NoAction") {
       return { status: "Succeeded", values: {} };
     }
     if (node.type === "Script" && deps.executeScript) {
-      const result = await deps.executeScript(node, ctx);
+      const result = await deps.executeScript(node, ctx, invocation);
       return result.status === "Failed" && !result.failure
         ? { ...result, failure: { message: "Script execution failed." } }
         : result;
@@ -118,7 +140,7 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
       );
     }
     const pkg = await deps.resolvePackage(node.usecaseVersionId, node.softwareVersionId);
-    const inputs = resolveNodeInputs(node, ctx);
+    const inputs = await resolveNodeInputs(node, ctx, deps.resolveFileInput);
     const task = usecase.materialize({
       usecase: pkg.usecase,
       software: pkg.software,
@@ -129,14 +151,21 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
       licensedMaterials: pkg.licensedMaterials,
       inputs,
     });
+    if (pkg.spackExecutionPin && (!deps.deferSpackActivation || task.facility.kind !== "Spack"))
+      throw new Error("Pinned Spack execution requires managed Agent activation");
     const spackExecution =
       deps.deferSpackActivation && task.facility.kind === "Spack"
         ? SpackExecutionSchema.parse({
             spec: [task.facility.name, ...task.facility.argumentList].join(" "),
             command: usecase.wrapCommand({ ...task, facility: { kind: "Bare" } }),
+            ...(pkg.spackExecutionPin ? { pin: pkg.spackExecutionPin } : {}),
           })
         : undefined;
-    const command = spackExecution ? SPACK_EXECUTION_PLACEHOLDER : usecase.wrapCommand(task);
+    const command = spackExecution?.pin
+      ? SPACK_PINNED_EXECUTION_PLACEHOLDER
+      : spackExecution
+        ? SPACK_EXECUTION_PLACEHOLDER
+        : usecase.wrapCommand(task);
     const dataInputs = collectDatasetInputs(node);
     const resources = mapResources(node.requirements, pkg.resources?.memoryMiB);
     const schedulingStrategy = mapSchedulingStrategy(node.schedulingStrategy);
@@ -153,6 +182,7 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
     const { status, collected, collectedFiles, errorMessage, reason, exitCode, jobId } =
       await deps.submitJob({
         nodeId: node.id,
+        ...(invocation ? { invocation } : {}),
         ...(pkg.usecaseVersionId ? { usecaseVersionId: pkg.usecaseVersionId } : {}),
         ...(pkg.usecasePackageId ? { usecasePackageId: pkg.usecasePackageId } : {}),
         name: node.name,
@@ -261,10 +291,65 @@ function mapResources(
   return Object.keys(resources).length > 0 ? resources : undefined;
 }
 
-function resolveNodeInputs(
+async function federationInputs(
+  node: Extract<workflowDsl.WorkflowNode, { type: "Federation" }>,
+  ctx: Record<string, CelValue>,
+  resolveFileInput: UsecaseExecutorDeps["resolveFileInput"],
+) {
+  const parameters: FederationParameterOverrides = {};
+  const files: FederationInputSelection = [];
+  for (const slot of node.inputSlots ?? []) {
+    let value: unknown = slot.sources
+      ? resolveSources(slot.sources, slot.select, ctx)
+      : slot.from
+        ? resolveBinding(slot.from, ctx)
+        : slot.type === "File"
+          ? slot.isBatch
+            ? (slot.contents ?? undefined)
+            : slot.contents?.[0]
+          : undefined;
+    if (value === undefined && slot.optional) continue;
+    if (slot.type === "File") {
+      if (resolveFileInput && value !== undefined) value = await resolveFileInput(value);
+      if (slot.isBatch ? !isFileValueArray(value) : !isFileValue(value))
+        throw new Error(
+          `workflow: federation input "${slot.descriptor}" requires ${slot.isBatch ? "a file batch" : "a file"}`,
+        );
+      const members = isFileValueArray(value) ? value : isFileValue(value) ? [value] : [];
+      files.push({
+        descriptor: slot.descriptor,
+        type: slot.isBatch ? "FileBatch" : "File",
+        files: members.map((file) => ({
+          fileId: file.fileMetadataId,
+          path:
+            !slot.isBatch && slot.expectedFileName
+              ? slot.expectedFileName
+              : (file.relativePath ?? file.fileMetadataName),
+        })),
+      });
+      continue;
+    }
+    if (
+      typeof value !== "string" &&
+      typeof value !== "boolean" &&
+      !(typeof value === "number" && Number.isFinite(value))
+    )
+      throw new Error(
+        `workflow: federation parameter "${slot.descriptor}" requires a finite scalar value`,
+      );
+    parameters[slot.descriptor] = value;
+  }
+  return {
+    parameters,
+    files: files.length ? FederationInputSelectionSchema.parse(files) : undefined,
+  };
+}
+
+async function resolveNodeInputs(
   node: Extract<workflowDsl.WorkflowNode, { type: "SoftwareUsecaseComputing" }>,
   ctx: Record<string, CelValue>,
-): Record<string, string | usecase.FileInputValue> {
+  resolveFileInput?: UsecaseExecutorDeps["resolveFileInput"],
+): Promise<Record<string, string | usecase.FileInputValue>> {
   const inputs: Record<string, string | usecase.FileInputValue> = {};
   for (const slot of node.inputSlots ?? []) {
     if (slot.type === "Dataset") {
@@ -273,12 +358,20 @@ function resolveNodeInputs(
     if (slot.sources && slot.sources.length > 0) {
       const v = resolveSources(slot.sources, slot.select, ctx);
       if (v !== undefined) {
-        assignInput(inputs, slot, v);
+        assignInput(
+          inputs,
+          slot,
+          slot.type === "File" && resolveFileInput ? await resolveFileInput(v) : v,
+        );
       }
     } else if (slot.from) {
       const v = resolveBinding(slot.from, ctx);
       if (v !== undefined) {
-        assignInput(inputs, slot, v);
+        assignInput(
+          inputs,
+          slot,
+          slot.type === "File" && resolveFileInput ? await resolveFileInput(v) : v,
+        );
       }
     } else if (slot.type === "File") {
       const contents = slot.contents ?? [];
@@ -286,6 +379,7 @@ function resolveNodeInputs(
         inputs[slot.descriptor] = contents.map((file) => ({
           fileMetadataId: file.fileMetadataId,
           fileMetadataName: file.fileMetadataName,
+          ...(file.relativePath === undefined ? {} : { relativePath: file.relativePath }),
         }));
       } else if (slot.isBatch) {
         inputs[slot.descriptor] = [];
@@ -306,7 +400,7 @@ function resolveNodeInputs(
 function assignInput(
   inputs: Record<string, string | usecase.FileInputValue>,
   slot: workflowDsl.NodeInputSlot,
-  value: CelValue,
+  value: unknown,
 ): void {
   if (slot.type === "Text") {
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {

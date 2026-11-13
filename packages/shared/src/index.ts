@@ -13,6 +13,7 @@ export * from "./interconnect";
 export * from "./netdrive-types";
 export * from "./offline-delivery";
 export * from "./sandbox";
+export * from "./scheduler-accounting";
 // placement-pipeline trace types (preview + post-decision audit).
 export * from "./scheduler-types";
 export * from "./schemas/agent";
@@ -47,6 +48,7 @@ export * from "./spack-upstream";
 export * from "./storage-quota";
 // P4 usecase→command materialization (namespaced).
 export * as usecase from "./usecase";
+export type { FileInputValue, FileValue } from "./usecase/materialize";
 export * from "./utils/api-error";
 export * from "./utils/canonical-json";
 export * from "./utils/config-schemas";
@@ -57,6 +59,7 @@ export * from "./utils/logger";
 // Control-flow engine core — a pure function over an injected NodeExecutor,
 // reused by both the Server and the all-in-one embedded kernel.
 export * from "./workflow/engine";
+export * from "./workflow/journal";
 // Storage-agnostic workflow-run persistence contract (Server PG + local SQLite).
 export * from "./workflow/run-store";
 export * from "./workflow/spack-execution";

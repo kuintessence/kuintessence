@@ -1,4 +1,6 @@
 import {
+  federationInputImports,
+  federationResultImports,
   netdriveFiles,
   netdriveTransferLog,
   type PgDb,
@@ -18,7 +20,7 @@ import {
   type StorageQuotaSummary,
   type StorageScope,
 } from "@kuintessence/shared";
-import { and, desc, eq, getTableColumns, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 
 const DEFAULT_CLOUD_QUOTA_BYTES = 50 * 1024 * 1024 * 1024;
 const METERING_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -30,9 +32,21 @@ interface EffectivePolicy {
   autoApproveLimitBytes: number | null;
 }
 
+export type StorageQuotaTransaction = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
+
+/** Shared by regular cloud commits and federation reservations/publication. */
+export async function lockCloudWrites(
+  tx: Pick<StorageQuotaTransaction, "execute">,
+  userId: string,
+) {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${"cloud-storage:"} || ${userId}, 0))`,
+  );
+}
+
 export class StorageQuotaService {
   constructor(
-    private readonly db: PgDb,
+    private readonly db: Pick<PgDb, "select" | "insert" | "update">,
     private readonly now: () => Date = () => new Date(),
   ) {}
 
@@ -44,6 +58,25 @@ export class StorageQuotaService {
     const policy = await this.getEffectivePolicy(scope, scopeId);
     const activeGrant = await this.getActiveGrant(userId, scope, scopeId);
     const quotaBytes = Math.max(policy.defaultQuotaBytes, activeGrant?.quotaBytes ?? 0);
+    const [reservation] =
+      scope === "cloud"
+        ? await this.db
+            .select({
+              bytes: sql<number>`coalesce(sum(${federationResultImports.reservedBytes}), 0)`,
+            })
+            .from(federationResultImports)
+            .where(eq(federationResultImports.requestedBy, userId))
+        : [];
+    const [inputs] =
+      scope === "cloud"
+        ? await this.db
+            .select({
+              bytes: sql<number>`coalesce(sum(${federationInputImports.reservedBytes}), 0)`,
+            })
+            .from(federationInputImports)
+            .where(eq(federationInputImports.ownerId, userId))
+        : [];
+    const reservedBytes = Number(reservation?.bytes ?? 0) + Number(inputs?.bytes ?? 0);
     const usage =
       scope === "cloud"
         ? await this.getCloudUsage(userId)
@@ -59,7 +92,8 @@ export class StorageQuotaService {
       scopeId,
       ...usage,
       quotaBytes,
-      availableBytes: Math.max(0, quotaBytes - usage.usedBytes),
+      reservedBytes,
+      availableBytes: Math.max(0, quotaBytes - usage.usedBytes - reservedBytes),
       usagePercent:
         quotaBytes === 0 ? (usage.usedBytes > 0 ? 100 : 0) : (usage.usedBytes / quotaBytes) * 100,
       policy,
@@ -74,22 +108,51 @@ export class StorageQuotaService {
   }
 
   async assertCloudWriteAllowed(userId: string, path: string, size: number): Promise<void> {
-    if (size < 0) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, "Storage object size cannot be negative", 400);
-    }
+    await this.assertCloudWritesAllowed(userId, [{ path, size }]);
+  }
+
+  /** Call under lockCloudWrites when committing or reserving capacity. */
+  async assertCloudWritesAllowed(
+    userId: string,
+    writes: ReadonlyArray<{ path: string; size: number }>,
+    additionalReservationBytes = 0,
+  ): Promise<void> {
+    const requestedBytes = writes.reduce(
+      (sum, file) => sum + file.size,
+      additionalReservationBytes,
+    );
+    if (
+      !Number.isSafeInteger(additionalReservationBytes) ||
+      additionalReservationBytes < 0 ||
+      writes.some((file) => !Number.isSafeInteger(file.size) || file.size < 0) ||
+      !Number.isSafeInteger(requestedBytes) ||
+      new Set(writes.map((file) => file.path)).size !== writes.length
+    )
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid cloud write sizes or duplicate paths",
+        400,
+      );
     const summary = await this.getSummary(userId);
-    const [existing] = await this.db
-      .select({ size: netdriveFiles.size })
-      .from(netdriveFiles)
-      .where(
-        and(
-          eq(netdriveFiles.ownerId, userId),
-          eq(netdriveFiles.path, path),
-          isNull(netdriveFiles.deletedAt),
-        ),
-      )
-      .limit(1);
-    const projectedBytes = summary.usedBytes - (existing?.size ?? 0) + size;
+    let replacedBytes = 0;
+    if (writes.length) {
+      const [existing] = await this.db
+        .select({ bytes: sql<number>`coalesce(sum(${netdriveFiles.size}), 0)` })
+        .from(netdriveFiles)
+        .where(
+          and(
+            eq(netdriveFiles.ownerId, userId),
+            inArray(
+              netdriveFiles.path,
+              writes.map((file) => file.path),
+            ),
+            isNull(netdriveFiles.deletedAt),
+          ),
+        );
+      replacedBytes = Number(existing?.bytes ?? 0);
+    }
+    const projectedBytes =
+      summary.usedBytes + (summary.reservedBytes ?? 0) - replacedBytes + requestedBytes;
     if (projectedBytes <= summary.quotaBytes) return;
     throw new AppError(
       ErrorCode.STORAGE_QUOTA_EXCEEDED,
@@ -97,8 +160,9 @@ export class StorageQuotaService {
       413,
       {
         usedBytes: summary.usedBytes,
+        reservedBytes: summary.reservedBytes,
         quotaBytes: summary.quotaBytes,
-        requestedWriteBytes: size,
+        requestedWriteBytes: requestedBytes,
         projectedBytes,
       },
     );

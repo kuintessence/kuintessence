@@ -11,10 +11,175 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./unix-socket": {
+      "bun": "./src/unix-socket.ts",
+      "types": "./src/unix-socket.ts",
+      "default": "./src/unix-socket.ts"
+    },
+    "./federation": {
+      "bun": "./src/federation/index.ts",
+      "types": "./src/federation/index.ts",
+      "default": "./src/federation/index.ts"
+    },
     "./browser": {
       "bun": "./src/browser.ts",
       "types": "./src/browser.ts",
       "default": "./src/browser.ts"
+    },
+    "./federation/signatures": {
+      "bun": "./src/federation/signatures.ts",
+      "types": "./src/federation/signatures.ts",
+      "default": "./src/federation/signatures.ts"
+    },
+    "./federation/media-age": {
+      "bun": "./src/federation/media-age.ts",
+      "types": "./src/federation/media-age.ts",
+      "default": "./src/federation/media-age.ts"
+    },
+    "./federation/ledger": {
+      "bun": "./src/federation/ledger.ts",
+      "types": "./src/federation/ledger.ts",
+      "default": "./src/federation/ledger.ts"
+    },
+    "./federation/billing": {
+      "bun": "./src/federation/billing.ts",
+      "types": "./src/federation/billing.ts",
+      "default": "./src/federation/billing.ts"
+    },
+    "./federation/commercial": {
+      "bun": "./src/federation/commercial.ts",
+      "types": "./src/federation/commercial.ts",
+      "default": "./src/federation/commercial.ts"
+    },
+    "./federation/terminal-proposal": {
+      "bun": "./src/federation/terminal-proposal.ts",
+      "types": "./src/federation/terminal-proposal.ts",
+      "default": "./src/federation/terminal-proposal.ts"
+    },
+    "./federation/usage-exchange": {
+      "bun": "./src/federation/usage-exchange.ts",
+      "types": "./src/federation/usage-exchange.ts",
+      "default": "./src/federation/usage-exchange.ts"
+    },
+    "./federation/market": {
+      "bun": "./src/federation/market.ts",
+      "types": "./src/federation/market.ts",
+      "default": "./src/federation/market.ts"
+    },
+    "./federation/terminal-exchange": {
+      "bun": "./src/federation/terminal-exchange.ts",
+      "types": "./src/federation/terminal-exchange.ts",
+      "default": "./src/federation/terminal-exchange.ts"
+    },
+    "./federation/reservation-proposal": {
+      "bun": "./src/federation/reservation-proposal.ts",
+      "types": "./src/federation/reservation-proposal.ts",
+      "default": "./src/federation/reservation-proposal.ts"
+    },
+    "./federation/commercial-approval-exchange": {
+      "bun": "./src/federation/commercial-approval-exchange.ts",
+      "types": "./src/federation/commercial-approval-exchange.ts",
+      "default": "./src/federation/commercial-approval-exchange.ts"
+    },
+    "./federation/agreement-exchange": {
+      "bun": "./src/federation/agreement-exchange.ts",
+      "types": "./src/federation/agreement-exchange.ts",
+      "default": "./src/federation/agreement-exchange.ts"
+    },
+    "./federation/market-request": {
+      "bun": "./src/federation/market-request.ts",
+      "types": "./src/federation/market-request.ts",
+      "default": "./src/federation/market-request.ts"
+    },
+    "./federation/media-key-crypto": {
+      "bun": "./src/federation/media-key-crypto.ts",
+      "types": "./src/federation/media-key-crypto.ts",
+      "default": "./src/federation/media-key-crypto.ts"
+    },
+    "./federation/history-recovery": {
+      "bun": "./src/federation/history-recovery.ts",
+      "types": "./src/federation/history-recovery.ts",
+      "default": "./src/federation/history-recovery.ts"
+    },
+    "./federation/history-recovery-proof": {
+      "bun": "./src/federation/history-recovery-proof.ts",
+      "types": "./src/federation/history-recovery-proof.ts",
+      "default": "./src/federation/history-recovery-proof.ts"
+    },
+    "./federation/dispute-resolution": {
+      "bun": "./src/federation/dispute-resolution.ts",
+      "types": "./src/federation/dispute-resolution.ts",
+      "default": "./src/federation/dispute-resolution.ts"
+    },
+    "./federation/disputes": {
+      "bun": "./src/federation/disputes.ts",
+      "types": "./src/federation/disputes.ts",
+      "default": "./src/federation/disputes.ts"
+    },
+    "./federation/disclosure": {
+      "bun": "./src/federation/disclosure.ts",
+      "types": "./src/federation/disclosure.ts",
+      "default": "./src/federation/disclosure.ts"
+    },
+    "./federation/disclosure-authorization": {
+      "bun": "./src/federation/disclosure-authorization.ts",
+      "types": "./src/federation/disclosure-authorization.ts",
+      "default": "./src/federation/disclosure-authorization.ts"
+    },
+    "./federation/case-ledger": {
+      "bun": "./src/federation/case-ledger.ts",
+      "types": "./src/federation/case-ledger.ts",
+      "default": "./src/federation/case-ledger.ts"
+    },
+    "./federation/arbitration-revocation-notice": {
+      "bun": "./src/federation/arbitration-revocation-notice.ts",
+      "types": "./src/federation/arbitration-revocation-notice.ts",
+      "default": "./src/federation/arbitration-revocation-notice.ts"
+    },
+    "./federation/arbitration-revocation": {
+      "bun": "./src/federation/arbitration-revocation.ts",
+      "types": "./src/federation/arbitration-revocation.ts",
+      "default": "./src/federation/arbitration-revocation.ts"
+    },
+    "./federation/arbitration-context": {
+      "bun": "./src/federation/arbitration-context.ts",
+      "types": "./src/federation/arbitration-context.ts",
+      "default": "./src/federation/arbitration-context.ts"
+    },
+    "./federation/arbitration-policy": {
+      "bun": "./src/federation/arbitration-policy.ts",
+      "types": "./src/federation/arbitration-policy.ts",
+      "default": "./src/federation/arbitration-policy.ts"
+    },
+    "./federation/case-revocation": {
+      "bun": "./src/federation/case-revocation.ts",
+      "types": "./src/federation/case-revocation.ts",
+      "default": "./src/federation/case-revocation.ts"
+    },
+    "./federation/arbitration-resolution": {
+      "bun": "./src/federation/arbitration-resolution.ts",
+      "types": "./src/federation/arbitration-resolution.ts",
+      "default": "./src/federation/arbitration-resolution.ts"
+    },
+    "./federation/arbitration-decision": {
+      "bun": "./src/federation/arbitration-decision.ts",
+      "types": "./src/federation/arbitration-decision.ts",
+      "default": "./src/federation/arbitration-decision.ts"
+    },
+    "./federation/arbitration-decision-delivery": {
+      "bun": "./src/federation/arbitration-decision-delivery.ts",
+      "types": "./src/federation/arbitration-decision-delivery.ts",
+      "default": "./src/federation/arbitration-decision-delivery.ts"
+    },
+    "./federation/outbound-views": {
+      "bun": "./src/federation/outbound-views.ts",
+      "types": "./src/federation/outbound-views.ts",
+      "default": "./src/federation/outbound-views.ts"
+    },
+    "./federation/arbitration-execution": {
+      "bun": "./src/federation/arbitration-execution.ts",
+      "types": "./src/federation/arbitration-execution.ts",
+      "default": "./src/federation/arbitration-execution.ts"
     },
     "./registry-namespace": {
       "types": "./src/registry-namespace.ts",
@@ -32,7 +197,8 @@
   "dependencies": {
     "pino": "^10.3.1",
     "yaml": "^2.8.3",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "jose": "^6.2.2"
   },
   "devDependencies": {
     "ajv": "^8.20.0"

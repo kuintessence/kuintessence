@@ -2,8 +2,9 @@
 
 import { link, lstat, mkdir, mkdtemp, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { SPACK_COMPATIBILITY } from "@kuintessence/shared";
+import { ExecutionAuthorization } from "../execution-authorization";
 import {
-  realSpackAuditProcess,
   SPACK_WORKER_FAILURE_MESSAGES,
   type SpackAuditProcess,
   SpackProcessNotStartedError,
@@ -11,12 +12,15 @@ import {
 import {
   buildSpackAuditCommand,
   isSpackAuditPath,
-  SPACK_MANAGED_MEMORY_BYTES,
   type SpackAuditRuntimeDeps,
   type SpackAuditRuntimeProfile,
   verifySpackAuditRuntime,
 } from "./audit-runtime";
-import { installWorkerExecution } from "./execution-identity";
+import {
+  installWorkerExecution,
+  SpackInstallationPending,
+  softwareExecution,
+} from "./execution-identity";
 import {
   SPACK_INSTALL_RESULT_PREFIX,
   type SpackInstallReport,
@@ -28,7 +32,14 @@ import { admitSpackManagedMemory } from "./install-memory";
 import { SpackMaterialCache } from "./material-cache";
 import type { PreparedSpackMaterials, SpackMaterialPrepareInput } from "./material-client";
 import { preflightSpackMaterials } from "./material-preflight";
-import { SpackWorkerUncertainError } from "./slurm-process";
+import {
+  prepareSpackProcessSupervision,
+  renewSpackProcessAuthorization,
+  runSpackSupervisedProcess,
+  SpackProcessStoppedError,
+  type SpackProcessSupervision,
+  stopSpackSupervisedProcess,
+} from "./supervised-process";
 import installWorker from "./worker/install_worker.py" with { type: "text" };
 import auditWorker from "./worker/source_audit.py" with { type: "text" };
 
@@ -56,7 +67,7 @@ export function buildSpackInstallCommand(
   site: SpackInstallSiteProfile,
   storePath: string,
   action: SpackInstallReport["action"],
-  managedMemoryMib = SPACK_MANAGED_MEMORY_BYTES / 1024 ** 2,
+  managedMemoryMib = 4096,
 ): string[] {
   const prefix = `${site.storeRoot}/releases/`;
   if (
@@ -151,7 +162,12 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
     signal.throwIfAborted();
     let retainStaging = false;
     let directory: string | undefined;
-    let dispatched = false;
+    let workerUncertain = false;
+    let supervisor: SpackProcessSupervision | undefined;
+    let authorization: ExecutionAuthorization | undefined;
+    const execution = installWorkerExecution.getStore();
+    let executionStarted = false;
+    let executionFinished = false;
     let result: Awaited<ReturnType<SpackAuditProcess["run"]>> | undefined;
     try {
       const preflight = await preflightSpackMaterials(prepared, { ...input, signal });
@@ -215,6 +231,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
           siteProfile: site.profile,
           ...(recovery ? { verifiedDependencyHashes: recovery.verifiedDependencyHashes } : {}),
         }),
+        "spack-compatibility.json": JSON.stringify(SPACK_COMPATIBILITY),
         "source_audit.py": auditWorker,
         "install_worker.py": installWorker,
       };
@@ -241,6 +258,15 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       if (!this.options.scheduled)
         await admitSpackManagedMemory(signal, this.options.runtimeDeps, managedMemoryMib);
       signal.throwIfAborted();
+      const authorizedUntil = await input.authorizeInstallation?.(signal);
+      signal.throwIfAborted();
+      if (
+        authorizedUntil !== undefined &&
+        (!Number.isSafeInteger(authorizedUntil) || authorizedUntil > Date.now() + 30_000)
+      )
+        throw new Error("Invalid federation installation grant expiry");
+      if (authorizedUntil !== undefined && authorizedUntil <= Date.now())
+        throw new SpackInstallationPending();
       const remainingMs = Math.floor(expiresAt - performance.now());
       if (remainingMs <= 0) throw new Error("Managed Spack operation timed out");
       const uid = this.options.runtimeDeps?.uid ?? process.getuid?.();
@@ -253,10 +279,41 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
         action,
         managedMemoryMib,
       );
-      const execution = installWorkerExecution.getStore();
-      await execution?.start(basename(storePath), this.options.scheduled ? directory : undefined);
-      dispatched = true;
-      result = await (this.options.process ?? realSpackAuditProcess)
+      if (!this.options.process)
+        supervisor = await prepareSpackProcessSupervision(
+          directory,
+          managedMemoryMib * 1024 ** 2,
+          authorizedUntil,
+        );
+      if (supervisor) await softwareExecution.getStore()?.bindSupervisor?.(supervisor);
+      if (authorizedUntil !== undefined && authorizedUntil <= Date.now()) {
+        throw new SpackInstallationPending();
+      }
+      if (authorizedUntil !== undefined && input.authorizeInstallation) {
+        const ref = supervisor;
+        authorization = new ExecutionAuthorization(
+          authorizedUntil,
+          input.authorizeInstallation,
+          signal,
+          ref ? (expiresAt) => renewSpackProcessAuthorization(ref, expiresAt) : undefined,
+        );
+      }
+      const workerSignal = authorization?.signal ?? signal;
+      await execution?.start(
+        basename(storePath),
+        supervisor,
+        this.options.scheduled ? directory : undefined,
+      );
+      executionStarted = true;
+      workerSignal.throwIfAborted();
+      workerUncertain = true;
+      const transport: SpackAuditProcess = this.options.process ?? {
+        run: (command, options) => {
+          if (!supervisor) throw new Error("Missing Spack process supervision");
+          return runSpackSupervisedProcess(command, options, supervisor);
+        },
+      };
+      result = await transport
         .run(command, {
           cwd: directory,
           env: {
@@ -269,12 +326,21 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
           },
           timeoutMs: remainingMs,
           maxOutputBytes: 2 * 1024 ** 2,
-          signal,
+          signal: workerSignal,
         })
-        .catch(async (error: unknown) => {
-          if (error instanceof SpackProcessNotStartedError) await execution?.finish();
+        .catch((error: unknown) => {
+          if (
+            error instanceof SpackProcessNotStartedError ||
+            error instanceof SpackProcessStoppedError
+          ) {
+            workerUncertain = false;
+          }
+          workerSignal.throwIfAborted();
           throw error;
         });
+      workerUncertain = false;
+      authorization?.assertValid();
+      workerSignal.throwIfAborted();
       const terminal = result.slurmTerminal;
       const proof =
         terminal && action !== "load"
@@ -292,6 +358,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
             })
           : undefined;
       await execution?.finish(proof);
+      executionFinished = true;
       signal.throwIfAborted();
       if (
         result.exitCode !== 0 &&
@@ -338,9 +405,9 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       }
       return report;
     } catch (error) {
-      retainStaging = dispatched || error instanceof SpackWorkerUncertainError;
+      retainStaging = !!result && !authorization?.signal.aborted;
       // An uncertain worker may still own this directory; leave its files untouched.
-      if (directory && dispatched && !(error instanceof SpackWorkerUncertainError)) {
+      if (directory && retainStaging) {
         await writeFile(
           join(directory, "diagnostic.json"),
           JSON.stringify({
@@ -366,7 +433,11 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       }
       throw error;
     } finally {
-      if (directory && !retainStaging) await rm(directory, { recursive: true, force: true });
+      await authorization?.close();
+      if (supervisor && !workerUncertain) await stopSpackSupervisedProcess(supervisor);
+      if (executionStarted && !executionFinished && !workerUncertain) await execution?.finish();
+      if (directory && !workerUncertain && !retainStaging)
+        await rm(directory, { recursive: true, force: true });
     }
   }
 }

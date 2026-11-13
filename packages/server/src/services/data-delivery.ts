@@ -10,6 +10,7 @@ import {
   jobDataBindings,
   jobs,
   type PgDb,
+  type PgTransaction,
 } from "@kuintessence/db";
 import {
   AppError,
@@ -18,9 +19,12 @@ import {
   type SandboxSignedManifest,
 } from "@kuintessence/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { datasetSourceAuthority } from "../federation/dataset-authority";
+import { persistFederationTerminalEvidence } from "../federation/terminal-evidence";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { MinioBackend } from "../storage/minio-client";
 import { isReplicaEligible } from "./data-prerequisite-repository-drizzle";
+import { persistJobCancellations } from "./job-cancellation";
 import { factsRequireRestrictedNoEgress } from "./restricted-no-egress";
 import type { SandboxManifestSigner } from "./sandbox-manifest-signer";
 
@@ -105,11 +109,10 @@ export class DataDeliveryResolver {
   private readonly now: () => Date;
 
   constructor(
-    private readonly db: PgDb,
-    private readonly minio: Pick<
-      MinioBackend,
-      "dataMarketImmutableBucket" | "presignImmutableDownload"
-    >,
+    private readonly db: PgDb | PgTransaction,
+    private readonly minio:
+      | Pick<MinioBackend, "dataMarketImmutableBucket" | "presignImmutableDownload">
+      | undefined,
     private readonly options: DataDeliveryResolverOptions,
   ) {
     this.presignTtlSec = options.presignTtlSec ?? DEFAULT_PRESIGN_TTL_SEC;
@@ -118,12 +121,15 @@ export class DataDeliveryResolver {
     this.now = options.now ?? (() => new Date());
   }
 
-  async resolveForDispatch(input: {
-    jobId: string;
-    actorUserId: string;
-    orgId: string | null;
-    agentId: string;
-  }): Promise<ResolvedDataDelivery[]> {
+  async resolveForDispatch(
+    input: {
+      jobId: string;
+      actorUserId: string;
+      orgId: string | null;
+      agentId: string;
+    },
+    options: { locations?: ReadonlyMap<string, string>; issueCredentials?: boolean } = {},
+  ): Promise<ResolvedDataDelivery[]> {
     const bindings = await this.loadBindings(input.jobId);
     const resolved: ResolvedDataDelivery[] = [];
     for (const binding of bindings) {
@@ -134,17 +140,24 @@ export class DataDeliveryResolver {
         versionId: binding.versionId,
       });
       if (!allowed) throw new AppError(ErrorCode.FORBIDDEN, "DATA_ACCESS_REVOKED", 403);
-      const locations = await this.loadValidLocations(binding.versionId, binding.manifestDigest);
+      const locations = await this.loadValidLocations(
+        binding.versionId,
+        binding.manifestDigest,
+        binding.assetId,
+      );
       const candidates = locations.filter((location) =>
         location.kind === "cp-local" ? location.agentId === input.agentId : true,
       );
       if (binding.allowedLocationIds.length === 0) {
         throw new AppError(ErrorCode.VALIDATION_ERROR, "DATA_LOCATION_UNAVAILABLE", 409);
       }
-      const permitted = candidates.filter((location) =>
-        binding.allowedLocationIds.includes(location.id),
+      const permitted = candidates.filter(
+        (location) =>
+          binding.allowedLocationIds.includes(location.id) &&
+          (!options.locations?.has(binding.id) ||
+            options.locations.get(binding.id) === location.id),
       );
-      const restricted = factsRequireRestrictedNoEgress({
+      let restricted = factsRequireRestrictedNoEgress({
         assetKind: binding.assetKind as "licensed-material" | null,
         sensitivity: binding.sensitivity as "restricted" | "regulated" | null,
         egressPolicy: binding.egressPolicy,
@@ -157,6 +170,19 @@ export class DataDeliveryResolver {
       if (!location) {
         throw new AppError(ErrorCode.VALIDATION_ERROR, "DATA_LOCATION_CONFLICT", 409);
       }
+      const source = await datasetSourceAuthority(
+        this.db,
+        {
+          assetId: binding.assetId,
+          versionId: binding.versionId,
+          locationId: location.id,
+          orgIds: input.orgId ? [input.orgId] : [],
+        },
+        this.now(),
+      );
+      if (source && !source.allowed)
+        throw new AppError(ErrorCode.FORBIDDEN, "DATA_SOURCE_AUTHORIZATION_UNAVAILABLE", 403);
+      if (source) restricted = true;
       const entries = await this.loadEntries(binding, location);
       if (entries.length === 0)
         throw new AppError(ErrorCode.VALIDATION_ERROR, "DATA_MANIFEST_EMPTY", 409);
@@ -178,11 +204,14 @@ export class DataDeliveryResolver {
           managedRootId: location.managedRootId,
           relativePath: location.relativePath,
           restricted,
-          ...this.createLease(),
+          ...this.createLease(source?.expiresAtUnixMs),
         });
         continue;
       }
-      const locationKey = objectKey(location.uri, this.minio.dataMarketImmutableBucket);
+      const minio = this.minio;
+      if (!minio)
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "DATA_OBJECT_STORAGE_UNAVAILABLE", 503);
+      const locationKey = objectKey(location.uri, minio.dataMarketImmutableBucket);
       assertImmutableObjectKey(locationKey);
       const fallbackKey = entries.length === 1 ? locationKey : null;
       resolved.push({
@@ -195,27 +224,36 @@ export class DataDeliveryResolver {
         selectedEntries: await Promise.all(
           entries.map(async (entry) => ({
             ...entry,
-            objectDownloadUrl: await this.minio.presignImmutableDownload(
-              immutableObjectKey(entry.objectKey ?? fallbackKey ?? missingObjectKey()),
-              this.presignTtlSec,
-              requiredObjectVersionId(entry.objectVersionId),
-            ),
+            objectDownloadUrl:
+              options.issueCredentials === false
+                ? undefined
+                : await minio.presignImmutableDownload(
+                    immutableObjectKey(entry.objectKey ?? fallbackKey ?? missingObjectKey()),
+                    this.presignTtlSec,
+                    requiredObjectVersionId(entry.objectVersionId),
+                  ),
           })),
         ),
         stagePath: binding.stagePath,
         method: "object-download",
         restricted,
-        ...this.createLease(),
+        ...this.createLease(source?.expiresAtUnixMs),
       });
     }
     assertDistinctDeliveryTargets(resolved);
     return resolved;
   }
 
-  private createLease(): { leaseId: string; leaseExpiresAtUnixMs: number } {
+  private createLease(sourceExpiry = Number.POSITIVE_INFINITY): {
+    leaseId: string;
+    leaseExpiresAtUnixMs: number;
+  } {
+    const now = this.now().getTime();
+    if (sourceExpiry <= now)
+      throw new AppError(ErrorCode.FORBIDDEN, "DATA_SOURCE_AUTHORIZATION_UNAVAILABLE", 403);
     return {
       leaseId: randomUUID(),
-      leaseExpiresAtUnixMs: this.now().getTime() + this.leaseTtlSec * 1000,
+      leaseExpiresAtUnixMs: Math.min(now + this.leaseTtlSec * 1000, sourceExpiry),
     };
   }
 
@@ -265,6 +303,7 @@ export class DataDeliveryResolver {
   private async loadValidLocations(
     versionId: string,
     manifestDigest: string,
+    assetId: string,
   ): Promise<LocationRow[]> {
     const rows = await this.db
       .select({
@@ -287,7 +326,9 @@ export class DataDeliveryResolver {
       .where(
         and(eq(dataLocations.dataAssetVersionId, versionId), eq(dataLocations.status, "available")),
       );
+    const source = await datasetSourceAuthority(this.db, { assetId, versionId }, this.now());
     return rows.flatMap((row) => {
+      if (source && !source.locationIds.includes(row.id)) return [];
       if (row.versionManifestDigest !== manifestDigest) return [];
       const replica = row.replicaStatus !== null;
       if (
@@ -322,7 +363,13 @@ export class DataDeliveryResolver {
         fileMetadata: dataAssetFiles.metadata,
       })
       .from(dataAssetManifestEntries)
-      .leftJoin(dataAssetFiles, eq(dataAssetManifestEntries.dataAssetFileId, dataAssetFiles.id))
+      .leftJoin(
+        dataAssetFiles,
+        and(
+          eq(dataAssetManifestEntries.dataAssetFileId, dataAssetFiles.id),
+          eq(dataAssetFiles.dataAssetVersionId, binding.versionId),
+        ),
+      )
       .where(eq(dataAssetManifestEntries.dataAssetVersionId, binding.versionId));
     const paths = binding.selectedEntries.length > 0 ? new Set(binding.selectedEntries) : null;
     return rows.flatMap((row) => {
@@ -355,6 +402,7 @@ export interface RestrictedSandboxDeliveryBinding {
     sourceUrl: string;
     deliveryLeaseId: string;
     deliveryLeaseExpiresAtUnixMs: number;
+    localDataSource?: { locationId: string; managedRootId: string; relativePath: string };
   }>;
 }
 
@@ -367,8 +415,12 @@ export class RestrictedSandboxDeliveryBinder {
     deliveries: readonly ResolvedDataDelivery[],
   ): RestrictedSandboxDeliveryBinding {
     if (deliveries.length === 0) return { manifest, inputStaging: [] };
-    if (deliveries.some((delivery) => delivery.method !== "object-download")) {
-      throw new Error("Restricted Sandbox delivery requires immutable object entries");
+    if (
+      deliveries.some(
+        (delivery) => !["object-download", "readonly-mount"].includes(delivery.method),
+      )
+    ) {
+      throw new Error("Restricted Sandbox delivery requires immutable readonly entries");
     }
     const existing = new Set(manifest.mounts.map((mount) => mount.descriptor));
     const mounts = deliveries.map((delivery) => {
@@ -409,6 +461,7 @@ export class RestrictedSandboxDeliveryBinder {
       ...(manifest.executionProfile ? { executionProfile: manifest.executionProfile } : {}),
       identity: manifest.identity,
       mounts: [...manifest.mounts, ...mounts],
+      resources: manifest.resources,
       limits: manifest.limits,
       networkDisabled: manifest.networkDisabled,
     });
@@ -418,13 +471,41 @@ export class RestrictedSandboxDeliveryBinder {
         delivery.selectedEntries.map((entry, entryIndex) => ({
           fileMetadataId: `data-delivery-${delivery.bindingId}-${entryIndex}`,
           stagePath: `inputs/${mounts[deliveryIndex]?.descriptor ?? ""}/${entry.path}`,
-          sourceUrl: requireObjectDownloadUrl(entry.objectDownloadUrl),
+          ...sandboxDataInputSource(delivery, entry),
           deliveryLeaseId: delivery.leaseId,
           deliveryLeaseExpiresAtUnixMs: delivery.leaseExpiresAtUnixMs,
         })),
       ),
     };
   }
+}
+
+export function sandboxDataInputSource(
+  delivery: ResolvedDataDelivery,
+  entry: ResolvedDataDeliveryEntry,
+) {
+  if (delivery.method === "object-download")
+    return {
+      sourceUrl: requireObjectDownloadUrl(entry.objectDownloadUrl),
+      localDataSource: undefined,
+    };
+  if (
+    delivery.method !== "readonly-mount" ||
+    !delivery.restricted ||
+    !delivery.managedRootId ||
+    !delivery.relativePath ||
+    !delivery.locationId ||
+    entry.objectDownloadUrl
+  )
+    throw new Error("Sandbox local data source is invalid");
+  return {
+    sourceUrl: "",
+    localDataSource: {
+      locationId: delivery.locationId,
+      managedRootId: delivery.managedRootId,
+      relativePath: safeEntryPath(`${delivery.relativePath}/${entry.path}`),
+    },
+  };
 }
 
 function sandboxDescriptor(delivery: ResolvedDataDelivery): string {
@@ -466,6 +547,8 @@ export async function revokeDataDeliveryJobs(input: {
     const rows = await tx
       .select({
         jobId: jobs.id,
+        status: jobs.status,
+        startedAt: jobs.startedAt,
         agentId: jobs.agentId,
         restrictedNoEgress: jobs.restrictedNoEgress,
         dispatchEpoch: jobs.dispatchEpoch,
@@ -484,7 +567,7 @@ export async function revokeDataDeliveryJobs(input: {
       .for("update");
     if (rows.length === 0) return rows;
     const now = new Date();
-    await tx
+    const cancelled = await tx
       .update(jobs)
       .set({
         status: "cancelled",
@@ -497,7 +580,11 @@ export async function revokeDataDeliveryJobs(input: {
           jobs.id,
           rows.map((row) => row.jobId),
         ),
-      );
+      )
+      .returning();
+    for (const before of rows)
+      await persistFederationTerminalEvidence(tx, before.jobId, before, "data-revocation");
+    for (const job of cancelled) await persistJobCancellations(tx, job, false);
     const remote = rows.filter((row) => row.agentId !== null);
     if (remote.length > 0) {
       await tx

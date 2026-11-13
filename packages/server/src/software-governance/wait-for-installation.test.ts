@@ -82,3 +82,24 @@ for (const error of [
     ).rejects.toThrow(error);
   });
 }
+
+test("lease loss aborts the real polling delay without waiting for its next tick", async () => {
+  const controller = new AbortController();
+  const reading = Promise.withResolvers<void>();
+  const reason = new Error("lease lost");
+  const pending = waitForSoftwareInstallation({
+    operationId: "original",
+    timeoutMs: 10000,
+    signal: controller.signal,
+    readJobStatus: async () => "pending",
+    readOperation: async () => {
+      reading.resolve();
+      return { status: "running", error: null };
+    },
+    inventoryReady: async () => false,
+  });
+  const caught = pending.catch((error: unknown) => error);
+  await reading.promise;
+  controller.abort(reason);
+  expect(await caught).toBe(reason);
+});

@@ -365,7 +365,7 @@ test("a durable terminal receipt survives staging deletion and is required to re
         id = record.id;
         const worker = installWorkerExecution.getStore();
         if (!worker) throw new Error("Missing install worker execution context");
-        await worker.start(id, `${base}/deleted/installs/run-terminal`);
+        await worker.start(id, undefined, `${base}/deleted/installs/run-terminal`);
         await worker.finish({
           schedulerJobId: "321",
           schedulerJobName: `kq-build-${randomUUID()}`,

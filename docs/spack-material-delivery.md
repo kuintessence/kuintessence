@@ -357,9 +357,9 @@ digest 和大小必须替换为真实返回值，不可直接提交：
 
 ### Lock 预检
 
-本批明确支持 **Spack 1.0.0 生成的 lock v6 / spec v5**。这是已核对的兼容组合，
-不是自动支持所有 Spack 版本。其他版本仍可上传 blob，但当前不能发布新的安装 release。
-已有不可变 manifest 不改写；Agent 在安装入口重新检查，不因它发布于旧版本而跳过。
+版本和格式采用[显式兼容表](spack-compatible-versions.md)，当前研发候选列出 Spack 1.0.0、1.0.3 的 lock v6 / spec v5。
+lock 生产者必须与材料 `spackVersion` 完全一致，Agent 再核对实际运行时；表内版本也不能混用。
+静态发布通过不代表新版本已通过原生安装验收。已有不可变 manifest 不改写，未知版本仍拒绝发布安装 release。
 
 - lock 限制为 16 MiB，必须是有效 UTF-8 JSON，重复键拒绝。
 - 只接受一个 root，其 `spec` 字符串须与 release 的 spec 完全一致。
@@ -459,6 +459,20 @@ Registry 默认要求 HTTPS（loopback 除外）。确需内部 HTTP 时，必�
 Agent 拒绝重定向，按大小和 SHA-256 流式校验，临时文件完成后原子发布；
 复用缓存前重新校验内容与权限。cache 根目录和 digest 目录禁止 group/other 权限，
 新文件发布为 `0400`；已有 `0755` 缓存目录会被拒绝，不自动修改运维目录的权限。
+网络超时、缺件、篡改或版本不符均失败，保留之前已校验缓存，不会回退公网。
+请求建立及响应读取采用最长 60 秒无进度超时，收到非空数据会刷新该时限；整个准备过程
+仍最多 10 分钟。慢链路的大文件仍可能达到总时限，Range/续传和可配置长传输窗口尚待实现。
+
+联邦安装的材料准备现在持续续租短期授权，并在后续 manifest/blob 请求中使用最新 operation ticket。
+原操作、作业、spec 和 manifest 摘要保持不变；当前 HTTP 连接不在中途更换请求头。
+授权服务暂时不可达至许可到期时，中止读取及缓存校验、删除未完成文件，原操作记录等待授权，
+随后按原操作重投恢复；已经完成校验的缓存仍可复用，未完成 blob 从头下载。
+明确撤权、非法续租响应、损坏内容和普通传输失败不转成授权等待。
+
+Server 通过 `federation_installation_material_lease_v1` 拒绝不支持材料持续授权的 Agent 接收或续期
+联邦安装。旧 Agent 需先升级；其已有联邦 worker 得不到续期时仍按原短期许可停止，不能绕过
+材料检查继续授权。此能力不改变非联邦安装的原票据模式。
+
 网络超时、缺件、篡改或版本不符均失败，保留之前已校验缓存，
 不会回退公网。当前请求与票据续期均有最多 60 秒的等待期限；下载每次写入会刷新空闲期限，
 整个准备过程最多 24 小时。blob 网络中断或提前 EOF 会保留私有 `.part`，最多自动重试两次，
@@ -489,14 +503,14 @@ Server ticket、下载校验和静态预检仍然必须先通过；没有 runtim
 - Agent 必须运行在 Linux、使用非 root 专用 UID。Apptainer 与 SIF 必须 root 所有，
   父目录逐级 root 所有且 group/other 不可写，不允许 symlink。SIF 所有写位必须清除。
   每次审计重新校验两者 SHA-256，执行前再次复验；不能填写未知来源文件的 digest 来代替信任审核。
-- runtime 的命令选项以 Apptainer 1.4.3 为兼容基线，SIF 固定包含 Spack 1.0.0，
+- runtime 的命令选项以 Apptainer 1.4.3 为兼容基线，每个 SIF 固定包含一个与材料完全一致的[兼容版本](spack-compatible-versions.md)，
   入口为 `/opt/spack/bin/spack`；包含其 Python 和本地 fetch 工具。镜像不含凭据、宿主配置、
   自动初始化脚本或需要在线 bootstrap 的运行依赖，recipe 必须由运维审核。
 - SIF 预建 `/kq/input`、`/sys/fs/cgroup` 和空的 `/kq/work`。`/kq/work` 必须为实际 Agent UID 所有、
   模式 `0700`，允许该 UID 在 writable-tmpfs 内写入。不同站点 UID 可能需要不同镜像。
   镜像环境不得提前往该目录写文件。
 - 要求 user/network/PID namespace、cgroup v2 及该 UID 的 rootless cgroup delegation；
-  需要可用的用户 systemd/DBus 管理环境。当前固定限制为内存 2 GiB、memory+swap 2 GiB、
+  需要可用的用户 systemd 254+/DBus 管理环境。进程、资源限制与停止证明统一由命名单元管理，见[恢复说明](spack-install-recovery.md)。当前固定限制为内存 2 GiB、memory+swap 2 GiB、
   PID 128、CPU 2、单次 30 分钟、合计 stdout/stderr 2 MiB，每个 Agent auditor 串行执行。
   worker 会检查 namespace、当前 network namespace 内仅有 loopback、NoNewPrivs 和实际 cgroup 限额，
   无法证明限额生效或不支持的 cgroup 布局都直接失败。
@@ -546,7 +560,7 @@ recipe 是可执行 Python，可以影响同进程的审计逻辑和输出，因
 并继承 source audit 的固定 Apptainer/SIF、namespace、cgroup 与输出预算。
 独立 source audit 保持内存 2 GiB/30 分钟，不受此配置影响。managed install/verify/load
 默认内存 4 GiB；`AGENT_SPACK_MANAGED_MEMORY_MIB` 可设为整数 `1024..4096`。
-Apptainer 的 memory 与 memory+swap 均等于配置预算，即不允许 swap。Agent 将同一预算
+systemd 单元的 `MemoryMax` 等于配置预算，`MemorySwapMax=0`，即不允许 swap。Agent 将同一预算
 写入私有目录中的只读 `managed-memory.json`；worker 只读取该输入，不从环境或材料取值，
 缺失、非法类型（含布尔、字符串、小数）或越界均拒绝。worker 核验实际 cgroup 的
 `memory.max` 必须为正数且不超过声明预算，`memory.swap.max` 必须为 0。
@@ -576,7 +590,7 @@ install 的 runner 准备阶段和底层进程共享一个总 deadline，进程�
 不扩大 workflow activation 的排队/校验等待时间。运行中超时或取消仍终止进程组并清理暂存输入，
 PID namespace 隔离保持不变。更长时限不会增加内存或 tmpfs 容量，站点仍须按材料构建需求配置资源。
 
-SIF 必须预装 Spack 1.0.0 及可导入的 `clingo`/`clingo.ast`；
+SIF 必须预装材料所声明的确切 Spack 版本及可导入的 `clingo`/`clingo.ast`；
 worker 禁止 solver bootstrap，不会自动下载或安装缺失的 solver。
 安装/verify/load 命令使用只读 runtime、`--underlay` 和 `--scratch /kq/work`，
 避免 Apptainer 1.4.3 默认产生 VFS 标记为可写的隐式 overlay；

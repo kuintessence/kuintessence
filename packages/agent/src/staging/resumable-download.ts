@@ -1,46 +1,46 @@
-import { createHash, type Hash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { assertStorageCapacity, normalizeStorageCapacityError } from "../storage-capacity";
-import { createDefaultHttpClient, type HttpClient } from "./http-client";
+import { createDefaultHttpClient, type HttpClient, type HttpResponse } from "./http-client";
 
-/**
- * Resumable download of a presigned-GET object into a local file, fetched in
- * `window`-sized HTTP Range requests so memory stays bounded regardless of
- * object size. A sidecar (`<localPath>.netdrive-download.json`) records how
- * many bytes have been written; on resume the existing on-disk prefix is
- * re-hashed to restore the running SHA-256, then the download continues.
- */
+/** Range windows and prefix rehashing both use bounded memory. */
 export interface ResumableDownloadOptions {
   downloadUrl: string;
   localPath: string;
   size: number;
   sha256: string;
-  /** Bytes per Range request. */
   window: number;
   http?: HttpClient;
+  signal?: AbortSignal;
 }
-
 export interface ResumableDownloadResult {
   localPath: string;
   size: number;
   sha256: string;
 }
-
 interface DownloadSidecar {
   version: 1;
   size: number;
   sha256: string;
   bytesWritten: number;
 }
-
 const SIDECAR_SUFFIX = ".netdrive-download.json";
 
 export async function resumableDownload(
   opts: ResumableDownloadOptions,
 ): Promise<ResumableDownloadResult> {
-  if (!Number.isSafeInteger(opts.size) || opts.size < 0)
-    throw new Error("STORAGE_CAPACITY_INVALID");
+  if (
+    !Number.isSafeInteger(opts.size) ||
+    opts.size < 0 ||
+    !/^[a-f0-9]{64}$/i.test(opts.sha256) ||
+    !Number.isSafeInteger(opts.window) ||
+    opts.window < 1 ||
+    opts.window > 64 * 1024 * 1024
+  )
+    throw new Error("Invalid bounded download size, window or digest");
+  opts.signal?.throwIfAborted();
   const http = opts.http ?? createDefaultHttpClient();
   const sidecarPath = `${opts.localPath}${SIDECAR_SUFFIX}`;
   await assertStorageCapacity({
@@ -48,30 +48,39 @@ export async function resumableDownload(
     additionalBytes: 0,
     additionalInodes: 3,
   });
-  await mkdir(dirname(opts.localPath), { recursive: true });
-
-  let offset = 0;
+  await mkdir(dirname(opts.localPath), { recursive: true, mode: 0o700 });
+  const fh = await open(
+    opts.localPath,
+    constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW,
+    0o600,
+  );
   const hash = createHash("sha256");
-  const resumed = await resumeFrom(sidecarPath, opts);
-  if (resumed) {
-    offset = resumed;
-    await rehashPrefix(opts.localPath, offset, hash);
-  } else {
-    await assertStorageCapacity({
-      path: dirname(opts.localPath),
-      additionalBytes: opts.size,
-      additionalInodes: 2,
-    });
-    await writeFile(opts.localPath, Buffer.alloc(0)); // truncate any stale partial
-  }
-
-  const fh = await open(opts.localPath, resumed ? "r+" : "w");
+  let actual: string;
   try {
-    // Discard unacknowledged tail bytes, retaining only the rehashed prefix.
+    const stat = await fh.stat();
+    if (!stat.isFile()) throw new Error("Download target must be a regular file");
+    const saved = await readSidecar(sidecarPath);
+    let offset =
+      saved?.version === 1 &&
+      saved.size === opts.size &&
+      saved.sha256.toLowerCase() === opts.sha256.toLowerCase() &&
+      Number.isSafeInteger(saved.bytesWritten) &&
+      saved.bytesWritten >= 0 &&
+      saved.bytesWritten <= opts.size
+        ? Math.min(saved.bytesWritten, stat.size)
+        : 0;
     await fh.truncate(offset);
+    const prefix = Buffer.alloc(Math.min(64 * 1024, offset));
+    for (let at = 0; at < offset; ) {
+      opts.signal?.throwIfAborted();
+      const { bytesRead } = await fh.read(prefix, 0, Math.min(prefix.length, offset - at), at);
+      if (!bytesRead) throw new Error("Partial download changed during prefix verification");
+      hash.update(prefix.subarray(0, bytesRead));
+      at += bytesRead;
+    }
     const checkpoint = async () => {
       await fh.sync();
-      await saveCheckpoint(sidecarPath, {
+      await saveSidecar(sidecarPath, {
         version: 1,
         size: opts.size,
         sha256: opts.sha256,
@@ -80,6 +89,7 @@ export async function resumableDownload(
     };
     await checkpoint();
     while (offset < opts.size) {
+      opts.signal?.throwIfAborted();
       await assertStorageCapacity({
         path: opts.localPath,
         additionalBytes: opts.size - offset,
@@ -90,16 +100,15 @@ export async function resumableDownload(
         method: "GET",
         url: opts.downloadUrl,
         headers: { Range: `bytes=${offset}-${end}` },
+        signal: opts.signal,
+        redirect: "error",
       });
-      if (!res.ok) {
-        throw new Error(`Resumable download: Range ${offset}-${end} → HTTP ${res.status}`);
-      }
-      const chunk = Buffer.from(await res.arrayBuffer());
-      if (chunk.length === 0) break;
+      const chunk = await readDownloadRange(res, offset, end, opts.size, opts.signal);
       const previous = offset;
       let written = 0;
       try {
         while (written < chunk.length) {
+          opts.signal?.throwIfAborted();
           const { bytesWritten } = await fh.write(chunk, written, chunk.length - written, offset);
           if (
             !Number.isInteger(bytesWritten) ||
@@ -112,76 +121,111 @@ export async function resumableDownload(
           offset += bytesWritten;
         }
       } finally {
-        // A later short write/ENOSPC must not forget bytes already written successfully.
         if (offset > previous) await checkpoint();
       }
     }
+    opts.signal?.throwIfAborted();
+    actual = hash.digest("hex");
   } catch (error) {
     throw normalizeStorageCapacityError(error);
   } finally {
     await fh.close();
   }
-
-  if (offset !== opts.size) {
-    throw new Error(`Resumable download: wrote ${offset} bytes, expected ${opts.size}`);
-  }
-  const actual = hash.digest("hex");
-  if (actual.toLowerCase() !== opts.sha256.toLowerCase()) {
-    throw new Error(`Resumable download: sha256 mismatch — expected ${opts.sha256}, got ${actual}`);
+  if (actual !== opts.sha256.toLowerCase()) {
+    await rm(sidecarPath, { force: true });
+    await rm(opts.localPath, { force: true });
+    throw new Error("Resumable download sha256 mismatch");
   }
   await rm(sidecarPath, { force: true });
   return { localPath: opts.localPath, size: opts.size, sha256: actual };
 }
 
-/** Returns the byte offset to resume from, or null to start fresh. */
-async function resumeFrom(
-  sidecarPath: string,
-  opts: ResumableDownloadOptions,
-): Promise<number | null> {
-  try {
-    const sc = JSON.parse(await readFile(sidecarPath, "utf8")) as DownloadSidecar;
-    if (
-      sc.version !== 1 ||
-      sc.size !== opts.size ||
-      !Number.isSafeInteger(sc.bytesWritten) ||
-      sc.bytesWritten < 0 ||
-      sc.bytesWritten > opts.size ||
-      sc.sha256.toLowerCase() !== opts.sha256.toLowerCase()
-    ) {
-      return null;
-    }
-    const onDisk = (await stat(opts.localPath)).size;
-    // Trust the smaller of sidecar/file to avoid hashing bytes that aren't there.
-    return Math.min(sc.bytesWritten, onDisk);
-  } catch {
-    return null;
+export async function readDownloadRange(
+  res: HttpResponse,
+  offset: number,
+  end: number,
+  size: number,
+  signal?: AbortSignal,
+) {
+  const length = end - offset + 1;
+  const contentRange = res.headers["content-range"] ?? res.headers["Content-Range"];
+  const contentLength = res.headers["content-length"] ?? res.headers["Content-Length"];
+  const encoding = res.headers["content-encoding"] ?? res.headers["Content-Encoding"];
+  if (
+    !res.ok ||
+    res.status !== 206 ||
+    contentRange !== `bytes ${offset}-${end}/${size}` ||
+    (contentLength !== undefined && Number(contentLength) !== length) ||
+    (encoding && encoding !== "identity")
+  ) {
+    await res.body?.cancel();
+    throw new Error("Download server did not return the exact unencoded requested range");
   }
+  return readBoundedResponse(res, length, signal);
 }
 
-async function rehashPrefix(path: string, length: number, hash: Hash): Promise<void> {
-  if (length <= 0) return;
-  const file = await open(path, "r");
+export async function readBoundedResponse(
+  res: HttpResponse,
+  length: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  // Injected legacy clients return an already buffered response; real HTTP always exposes its stream.
+  if (!res.body) {
+    const bytes = Buffer.from(await res.arrayBuffer());
+    signal?.throwIfAborted();
+    if (bytes.length !== length) throw new Error("Download range length mismatch");
+    return bytes;
+  }
+  const reader = res.body.getReader();
+  const abort = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  const bytes = Buffer.alloc(length);
+  let at = 0;
   try {
-    const buffer = Buffer.alloc(Math.min(length, 64 * 1024));
-    let offset = 0;
-    while (offset < length) {
-      const { bytesRead } = await file.read(
-        buffer,
-        0,
-        Math.min(buffer.length, length - offset),
-        offset,
-      );
-      if (bytesRead === 0) throw new Error("Resumable download: prefix ended before checkpoint");
-      hash.update(buffer.subarray(0, bytesRead));
-      offset += bytesRead;
+    while (true) {
+      signal?.throwIfAborted();
+      const chunk = await reader.read();
+      signal?.throwIfAborted();
+      if (chunk.done) break;
+      if (at + chunk.value.length > length)
+        throw new Error("Download range exceeds its bounded window");
+      bytes.set(chunk.value, at);
+      at += chunk.value.length;
     }
+    if (at !== length) throw new Error("Download range length mismatch");
+    return bytes;
   } finally {
-    await file.close();
+    signal?.removeEventListener("abort", abort);
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 }
 
-async function saveCheckpoint(path: string, value: DownloadSidecar): Promise<void> {
-  const temporary = `${path}.${randomUUID()}.tmp`;
+async function readSidecar(path: string): Promise<DownloadSidecar | null> {
+  try {
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.size > 1024) throw new Error("Invalid download checkpoint");
+      const saved = JSON.parse(await file.readFile("utf8"));
+      if (!saved || typeof saved.sha256 !== "string") return null;
+      return saved;
+    } finally {
+      await file.close();
+    }
+  } catch (error) {
+    if (
+      error instanceof SyntaxError ||
+      (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+    )
+      return null;
+    throw error;
+  }
+}
+async function saveSidecar(path: string, value: DownloadSidecar) {
+  const temporary = `${path}.${crypto.randomUUID()}`;
   try {
     const file = await open(temporary, "wx", 0o600);
     try {

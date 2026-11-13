@@ -1,0 +1,23 @@
+# Opt-in only for the isolated AIO test scheduler, never a platform or chain service.
+services:
+  scheduler:
+    privileged: true
+    cgroup: private
+    entrypoint: [/usr/bin/python3, /usr/local/lib/kuintessence/managed.py, init]
+    stop_signal: SIGRTMIN+3
+    stop_grace_period: 60s
+    mem_limit: ${KQ_AIO_MANAGED_MEMORY:-2560m}
+    pids_limit: 1024
+    tmpfs: [/run, /run/lock, /tmp]
+    environment:
+      KQ_AIO_MANAGED_RUNTIME: "1"
+      KQ_AIO_MANAGED_STORE_BYTES: ${KQ_AIO_MANAGED_STORE_BYTES:-2147483648}
+    volumes:
+      - managed-disk:/managed-disk
+      - type: bind
+        source: ${KQ_AIO_PRIVATE_DIRECTORY:?}/runtime
+        target: /opt/kq/runtime
+        read_only: true
+        bind: {create_host_path: false}
+volumes:
+  managed-disk:

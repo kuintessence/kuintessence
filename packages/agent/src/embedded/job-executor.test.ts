@@ -23,6 +23,7 @@ function makeAdapter(opts: {
     version: "0.0",
     submit: opts.submit ?? (async () => ({ schedulerJobId: "scheduler-1" })),
     cancel: async () => {},
+    confirmStopped: async () => true,
     status: async () => {
       const s = opts.statuses?.[i++] ?? { status: "completed" };
       return s;
@@ -156,6 +157,7 @@ const kubernetesSandbox: SandboxJobSpec = {
     serviceAccount: "user",
   },
   mounts: [],
+  resources: { cpus: 1, memoryMb: 1024 },
   limits: { pids: 16, outputBytes: 1_000, logBytes: 1_000 },
   kubernetesArtifactPvc: "artifacts",
 };
@@ -223,7 +225,6 @@ describe("JobRunner", () => {
       failureCode: "QUEUE_NOT_ACCEPTING",
     });
   });
-
   test("keeps legacy and shadow submissions compatible", async () => {
     const reports: JobStatusReport[] = [];
     const shadowRejections: string[] = [];
@@ -258,7 +259,6 @@ describe("JobRunner", () => {
     expect(shadowRejections).toEqual(["QUEUE_NOT_FOUND"]);
     expect(reports.filter((report) => report.status === "completed")).toHaveLength(2);
   });
-
   test("reports scheduler submission failures with a structured failure code", async () => {
     const reports: JobStatusReport[] = [];
     const runner = new JobRunner({
@@ -282,7 +282,6 @@ describe("JobRunner", () => {
       }),
     ]);
   });
-
   test("unknown submission preserves the intent and does not emit a false terminal status", async () => {
     const events: string[] = [];
     const runner = new JobRunner({
@@ -305,10 +304,9 @@ describe("JobRunner", () => {
     });
     expect(await runner.run(baseSpec)).toBeNull();
     await runner.cancelAndKill();
-    await runner.waitForPendingCancellation();
+    await expect(runner.waitForPendingCancellation()).rejects.toThrow("outcome is unknown");
     expect(events).toEqual(["persist-intent", "sbatch-accepted"]);
   });
-
   test("queued status delivery failure cannot erase an already submitted job", async () => {
     const events: string[] = [];
     const runner = new JobRunner({
@@ -328,7 +326,6 @@ describe("JobRunner", () => {
     expect(await runner.run(baseSpec)).toBe("scheduler-1");
     expect(events).toEqual(["persist-id", "queued", "completed", "delete-record"]);
   });
-
   test("suppresses logs and output collection for restricted no-egress jobs", async () => {
     const reports: JobStatusReport[] = [];
     let logReads = 0;
@@ -359,7 +356,6 @@ describe("JobRunner", () => {
     expect(outputCollections).toBe(0);
     expect(reports.at(-1)?.collected).toBeUndefined();
   });
-
   test("submits and emits queued + completed status", async () => {
     const reports: JobStatusReport[] = [];
     const runner = new JobRunner({
@@ -376,7 +372,6 @@ describe("JobRunner", () => {
     expect(reports.map((r) => r.status)).toEqual(["queued", "running", "completed"]);
     expect(reports[2]?.exitCode).toBe(0);
   });
-
   test("awaits terminal status durability before scheduler release and cleanup", async () => {
     let terminalStarted: (() => void) | undefined;
     const terminalObserved = new Promise<void>((resolve) => {
@@ -412,9 +407,8 @@ describe("JobRunner", () => {
     finishPersist?.();
     await runPromise;
 
-    expect(events).toEqual(["persist-start", "persist-done", "release", "finished"]);
+    expect(events).toEqual(["persist-start", "persist-done", "finished", "release"]);
   });
-
   test("does not release or finish a job when terminal durability fails", async () => {
     const events: string[] = [];
     const adapter = makeAdapter({ statuses: [{ status: "completed", exitCode: 0 }] });
@@ -435,7 +429,6 @@ describe("JobRunner", () => {
     await expect(runner.run(baseSpec)).rejects.toThrow("SQLite unavailable");
     expect(events).toEqual([]);
   });
-
   test("stages Kubernetes Sandbox inputs before scheduler submit", async () => {
     const order: string[] = [];
     let ensureWorkingDirCalls = 0;
@@ -466,7 +459,6 @@ describe("JobRunner", () => {
     expect(ensureWorkingDirCalls).toBe(0);
     expect(order).toEqual(["stage:job-1", "before-submit", "submit"]);
   });
-
   test("keeps host working directory preparation for SIF Sandbox jobs", async () => {
     const workingDirs: string[] = [];
     const runner = new JobRunner({
@@ -497,7 +489,6 @@ describe("JobRunner", () => {
     await runner.run({ ...baseSpec, workingDir: "/work/job-1", sandbox: sifSandbox });
     expect(workingDirs).toEqual(["/work/job-1"]);
   });
-
   test("forwards the scheduler-reported node + pending reason on status transitions", async () => {
     const reports: JobStatusReport[] = [];
     const runner = new JobRunner({
@@ -517,7 +508,6 @@ describe("JobRunner", () => {
     expect(running?.node).toBe("node[001-004]");
     expect(running?.reason).toBe("None");
   });
-
   test("re-emits when the pending reason changes while the status stays queued", async () => {
     const reports: JobStatusReport[] = [];
     const runner = new JobRunner({
@@ -540,7 +530,6 @@ describe("JobRunner", () => {
     expect(queuedReasons).toContain("Priority");
     expect(queuedReasons).toContain("Resources");
   });
-
   test("emits failed status when submit throws", async () => {
     const reports: JobStatusReport[] = [];
     const runner = new JobRunner({
@@ -560,7 +549,6 @@ describe("JobRunner", () => {
     expect(reports[0]?.status).toBe("failed");
     expect(reports[0]?.message).toContain("sbatch boom");
   });
-
   test("only emits when status changes", async () => {
     const reports: JobStatusReport[] = [];
     const runner = new JobRunner({
@@ -584,7 +572,6 @@ describe("JobRunner", () => {
     // running (no change), completed (change, terminal).
     expect(reports.map((r) => r.status)).toEqual(["queued", "running", "completed"]);
   });
-
   test("retries on status poll error and continues", async () => {
     let i = 0;
     const adapter: SchedulerAdapter = {
@@ -592,6 +579,7 @@ describe("JobRunner", () => {
       version: "0",
       submit: async () => ({ schedulerJobId: "x" }),
       cancel: async () => {},
+      confirmStopped: async () => true,
       status: async () => {
         if (i++ === 0) throw new Error("transient");
         return { status: "completed", exitCode: 0 };
@@ -608,7 +596,6 @@ describe("JobRunner", () => {
     await runner.run(baseSpec);
     expect(reports.map((r) => r.status)).toEqual(["queued", "completed"]);
   });
-
   test("collects expected outputs on completion and attaches them to the terminal report", async () => {
     const reports: JobStatusReport[] = [];
     let collectArgs: { outputs: unknown; workingDir: string } | undefined;
@@ -632,7 +619,6 @@ describe("JobRunner", () => {
     // Non-terminal reports carry no collected outputs.
     expect(reports.find((r) => r.status === "running")?.collected).toBeUndefined();
   });
-
   test("reports failed when terminal output collection throws", async () => {
     const reports: JobStatusReport[] = [];
     const runner = new JobRunner({
@@ -653,7 +639,6 @@ describe("JobRunner", () => {
     expect(terminal?.message).toContain("collector unavailable");
     expect(terminal?.collected).toBeUndefined();
   });
-
   test("captures scheduler stdout on completion", async () => {
     const reports: JobStatusReport[] = [];
     const runner = new JobRunner({
@@ -674,7 +659,6 @@ describe("JobRunner", () => {
       "id=scheduler-1 lines=200\n",
     );
   });
-
   test("does not clobber a collected file output named stdout", async () => {
     const reports: JobStatusReport[] = [];
     const runner = new JobRunner({
@@ -691,7 +675,6 @@ describe("JobRunner", () => {
     await runner.run(baseSpec, [{ descriptor: "stdout", path: "stdout.txt", isBatch: false }]);
     expect(reports.find((r) => r.status === "completed")?.collected?.stdout).toBe("from file");
   });
-
   test("omits stdout when the adapter has no getJobLogs", async () => {
     const reports: JobStatusReport[] = [];
     const runner = new JobRunner({
@@ -704,7 +687,6 @@ describe("JobRunner", () => {
     await runner.run(baseSpec);
     expect(reports.find((r) => r.status === "completed")?.collected?.stdout).toBeUndefined();
   });
-
   test("omits stdout when getJobLogs throws without failing the job", async () => {
     const reports: JobStatusReport[] = [];
     const runner = new JobRunner({
@@ -724,7 +706,6 @@ describe("JobRunner", () => {
     expect(terminal?.status).toBe("completed");
     expect(terminal?.collected?.stdout).toBeUndefined();
   });
-
   test("ensures the working directory exists before submitting", async () => {
     const calls: string[] = [];
     const runner = new JobRunner({
@@ -736,6 +717,7 @@ describe("JobRunner", () => {
           return { schedulerJobId: "x" };
         },
         cancel: async () => {},
+        confirmStopped: async () => true,
         status: async () => ({ status: "completed" }),
       },
       ensureWorkingDir: async (p) => {
@@ -747,7 +729,6 @@ describe("JobRunner", () => {
     await runner.run({ ...baseSpec, workingDir: "/runs/job-1" });
     expect(calls).toEqual(["mkdir:/runs/job-1", "submit"]);
   });
-
   test("a failure to create the working directory fails the job without submitting", async () => {
     const calls: string[] = [];
     const reports: JobStatusReport[] = [];
@@ -771,7 +752,6 @@ describe("JobRunner", () => {
     expect(calls).not.toContain("submit");
     expect(reports.map((r) => r.status)).toEqual(["failed"]);
   });
-
   test("does not invoke collectOutputs when there are no expected outputs", async () => {
     let called = false;
     const runner = new JobRunner({
@@ -786,7 +766,6 @@ describe("JobRunner", () => {
     await runner.run(baseSpec);
     expect(called).toBe(false);
   });
-
   test("cancel stops polling", async () => {
     let polls = 0;
     const adapter: SchedulerAdapter = {
@@ -794,6 +773,7 @@ describe("JobRunner", () => {
       version: "0",
       submit: async () => ({ schedulerJobId: "x" }),
       cancel: async () => {},
+      confirmStopped: async () => true,
       status: async () => {
         polls++;
         return { status: "running" };
@@ -809,7 +789,6 @@ describe("JobRunner", () => {
     // After submit+queued, loop body is skipped because cancelled=true
     expect(polls).toBe(0);
   });
-
   test("cancellation before scheduler submission emits one terminal report without side effects", async () => {
     let submitCalls = 0;
     const cancelCalls: string[] = [];
@@ -847,7 +826,6 @@ describe("JobRunner", () => {
     expect(reports[0]?.schedulerJobId).toBeUndefined();
     expect(finishedCalls).toBe(1);
   });
-
   test("preparation rejection after cancellation emits only cancelled", async () => {
     let submitCalls = 0;
     let cancelCalls = 0;
@@ -905,7 +883,6 @@ describe("JobRunner", () => {
     expect(reports[0]?.failureCode).toBeUndefined();
     expect(finishedCalls).toBe(1);
   });
-
   test("submission failure after cancellation preserves the scheduler failure", async () => {
     let cancelCalls = 0;
     let finishedCalls = 0;
@@ -952,7 +929,6 @@ describe("JobRunner", () => {
     ]);
     expect(finishedCalls).toBe(1);
   });
-
   test("cancelAndKill mid-run scancels exactly once", async () => {
     const cancelCalls: string[] = [];
     const ref: { runner?: JobRunner } = {};
@@ -963,6 +939,7 @@ describe("JobRunner", () => {
       cancel: async (id) => {
         cancelCalls.push(id);
       },
+      confirmStopped: async () => true,
       status: async () => ({ status: "running" }), // never terminal
     };
     ref.runner = new JobRunner({
@@ -975,9 +952,6 @@ describe("JobRunner", () => {
     await ref.runner.run(baseSpec);
     expect(cancelCalls).toEqual(["slurm-99"]);
   });
-
-  // Agent shutdown (stop()) must stop polling WITHOUT killing the cluster job —
-  // jobs keep running and the agent re-attaches on reconnect.
   test("cancel (shutdown) stops polling without scancelling the cluster job", async () => {
     const cancelCalls: string[] = [];
     const adapter: SchedulerAdapter = {
@@ -994,6 +968,231 @@ describe("JobRunner", () => {
     await runner.run(baseSpec);
     expect(cancelCalls).toEqual([]);
   });
+});
+
+test.each([
+  "submit",
+  "receipt",
+  "receipt-submission-error",
+] as const)("uncertain %s retains durable job inputs without publishing a failure", async (boundary) => {
+  const reports: JobStatusReport[] = [];
+  let cleaned = false;
+  let reconciled = false;
+  const runner = new JobRunner({
+    adapter: makeAdapter({
+      submit: async () => {
+        if (boundary === "submit") throw new Error("submission response lost");
+        return { schedulerJobId: "accepted" };
+      },
+    }),
+    onSchedulerSubmitted: async () => {
+      if (boundary === "receipt-submission-error")
+        throw new SchedulerSubmissionError("receipt write failed after acceptance");
+      throw new Error("receipt write failed");
+    },
+    onSubmissionUncertain: async (spec) => {
+      expect(spec.jobId).toBe(baseSpec.jobId);
+      reconciled = true;
+      return true;
+    },
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+    onJobFinished: () => {
+      cleaned = true;
+    },
+    sleep: noSleep,
+  });
+  await runner.run(baseSpec);
+  expect(reconciled).toBe(true);
+  expect(reports).toEqual([]);
+  expect(cleaned).toBe(false);
+});
+
+test("confirmed scheduler rejection reports failure despite a pending durable intent", async () => {
+  const reports: JobStatusReport[] = [];
+  let uncertainCalls = 0;
+  let cleanups = 0;
+  const runner = new JobRunner({
+    adapter: makeAdapter({
+      submit: async () => {
+        throw new SchedulerSubmissionError("Invalid partition name specified");
+      },
+    }),
+    onSubmissionUncertain: async () => {
+      uncertainCalls++;
+      return true;
+    },
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+    onJobFinished: () => {
+      cleanups++;
+    },
+    sleep: noSleep,
+  });
+  expect(await runner.run(baseSpec)).toBeNull();
+  expect(uncertainCalls).toBe(0);
+  expect(reports).toMatchObject([
+    { jobId: baseSpec.jobId, status: "failed", failureCode: "SCHEDULER_SUBMIT_FAILED" },
+  ]);
+  expect(cleanups).toBe(1);
+});
+
+test("a failed status query during recovery waits without releasing inputs or reporting failure", async () => {
+  const reports: JobStatusReport[] = [];
+  const events: string[] = [];
+  let polls = 0;
+  const adapter = makeAdapter({});
+  adapter.status = async () => {
+    polls++;
+    if (polls === 1) {
+      events.push("unavailable");
+      throw new Error("scheduler unavailable");
+    }
+    return { status: "completed", exitCode: 0 };
+  };
+  const runner = new JobRunner({
+    adapter,
+    sleep: noSleep,
+    onStatusUpdate: (report) => {
+      reports.push(report);
+      events.push(report.status);
+    },
+    onJobFinished: () => {
+      events.push("cleanup");
+    },
+  });
+  await runner.resume(baseSpec, "original-scheduler-job");
+  expect(events).toEqual(["unavailable", "completed", "cleanup"]);
+  expect(reports[0]?.schedulerJobId).toBe("original-scheduler-job");
+});
+
+test("a resumed queued job acknowledges its original scheduler id using the observed state", async () => {
+  const reports: JobStatusReport[] = [];
+  const runner = new JobRunner({
+    adapter: makeAdapter({
+      statuses: [{ status: "queued" }, { status: "completed", exitCode: 0 }],
+    }),
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+    sleep: noSleep,
+  });
+  await runner.resume(baseSpec, "original");
+  expect(reports.map(({ status }) => status)).toEqual(["queued", "completed"]);
+  expect(reports[0]?.schedulerJobId).toBe("original");
+});
+
+test("unconfirmed cancellation retains inputs and can be retried after the scheduler stops", async () => {
+  const poll = Promise.withResolvers<void>();
+  const polling = Promise.withResolvers<void>();
+  let stopped = false;
+  let cleanups = 0;
+  const adapter = makeAdapter({});
+  adapter.confirmStopped = async () => stopped;
+  const runner = new JobRunner({
+    adapter,
+    onStatusUpdate: () => {},
+    onJobFinished: () => {
+      cleanups++;
+    },
+    sleep: () => {
+      polling.resolve();
+      return poll.promise;
+    },
+  });
+  const running = runner.run(baseSpec);
+  await polling.promise;
+  await expect(runner.cancelAndKill()).rejects.toThrow("stop is not confirmed");
+  expect(cleanups).toBe(0);
+  stopped = true;
+  await runner.cancelAndKill();
+  expect(cleanups).toBe(0);
+  poll.resolve();
+  await running;
+  expect(cleanups).toBe(1);
+});
+
+test("runner carries scheduler UID through submission, recovery and cancellation", async () => {
+  const schedulerUid = crypto.randomUUID();
+  let submittedUid: string | undefined;
+  let resumedUid: string | undefined;
+  const cancelled: Array<string | undefined> = [];
+  const adapter: SchedulerAdapter = {
+    type: "kubernetes",
+    version: "test",
+    submit: async () => ({ schedulerJobId: "original", schedulerUid }),
+    prepareResume: (_spec, _id, uid) => {
+      resumedUid = uid;
+    },
+    status: async () => ({ status: "running" }),
+    cancel: async (_id, lookup) => {
+      cancelled.push(lookup?.schedulerUid);
+    },
+    confirmStopped: async () => true,
+  };
+  for (const resume of [false, true]) {
+    const runner = new JobRunner({
+      adapter,
+      onStatusUpdate: async () => {},
+      onSchedulerSubmitted: async (_spec, _id, _outputs, uid) => {
+        submittedUid = uid;
+      },
+      sleep: async () => {
+        await runner.cancelAndKill();
+      },
+    });
+    if (resume) await runner.resume(baseSpec, "original", [], schedulerUid);
+    else await runner.run(baseSpec);
+  }
+  expect(submittedUid).toBe(schedulerUid);
+  expect(resumedUid).toBe(schedulerUid);
+  expect(cancelled).toEqual([schedulerUid, schedulerUid]);
+});
+
+test("terminal runner reports preserve scheduler accounting independently of declared resources", async () => {
+  const accounting = {
+    version: 1,
+    source: "slurm-sacct",
+    schedulerJobId: "scheduler-1",
+    observedAt: new Date().toISOString(),
+    elapsedMilliseconds: "5000",
+    cpuTimeMilliseconds: "1234",
+    allocatedCpus: "2",
+  } as const;
+  const reports: JobStatusReport[] = [];
+  const runner = new JobRunner({
+    adapter: makeAdapter({ statuses: [{ status: "completed", exitCode: 0, accounting }] }),
+    sleep: noSleep,
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+  });
+  await runner.run(baseSpec);
+  expect(reports.find((report) => report.status === "completed")?.accounting).toEqual(accounting);
+});
+
+test.each([
+  false,
+  true,
+])("runner preserves leased cancellation without a Kubernetes UID, resume=%s", async (resume) => {
+  const epochs: Array<number | undefined> = [];
+  const adapter = makeAdapter({});
+  adapter.cancel = async (_id, lookup) => {
+    epochs.push(lookup?.federationDispatchEpoch);
+  };
+  const runner = new JobRunner({
+    adapter,
+    onStatusUpdate: () => {},
+    sleep: async () => {
+      await runner.cancelAndKill();
+    },
+  });
+  const spec = { ...baseSpec, federationDispatchEpoch: 7 };
+  if (resume) await runner.resume(spec, "original");
+  else await runner.run(spec);
+  expect(epochs).toEqual([7]);
 });
 
 test("cancel request acceptance does not release artifacts before confirmed termination", async () => {
@@ -1013,10 +1212,11 @@ test("cancel request acceptance does not release artifacts before confirmed term
     },
   });
   const running = runner.run(baseSpec);
+  const rejected = running.catch((error: unknown) => error);
   await submitted.promise;
-  await runner.cancelAndKill();
+  await expect(runner.cancelAndKill()).rejects.toThrow("stop is not confirmed");
   poll.resolve();
-  await running;
+  expect(await rejected).toBeInstanceOf(AggregateError);
   expect(finished).toBe(false);
 });
 

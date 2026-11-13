@@ -1,0 +1,18 @@
+[Unit]
+Description=KQ AIO isolated scheduler and Agent
+After=dbus.service systemd-logind.service
+Wants=dbus.service systemd-logind.service
+FailureAction=exit
+SuccessAction=exit
+
+[Service]
+Type=simple
+Environment=KQ_AIO_MANAGED_RUNTIME=1
+ExecStart=/usr/bin/python3 /usr/local/lib/kuintessence/managed.py start
+ExecStopPost=-/bin/umount /srv/kq/spack
+Delegate=cpu cpuset io memory pids
+TimeoutStopSec=45
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

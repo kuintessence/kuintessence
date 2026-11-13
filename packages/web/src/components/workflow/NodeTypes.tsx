@@ -1,10 +1,10 @@
 /**
  * Custom React Flow node renderers for the workflow node types.
  *
- * The nine node types share a single `NodeShell` driven by a per-type descriptor
+ * The node types share a single `NodeShell` driven by a per-type descriptor
  * table (icon, border accent, badge, one-line detail extractor). This keeps the canvas
  * scannable — a user can tell a Loop from a Switch from a usecase-compute node
- * at a glance — without nine near-identical components.
+ * at a glance — without near-identical components.
  */
 
 import { Handle, Position, useUpdateNodeInternals } from "@xyflow/react";
@@ -76,6 +76,12 @@ function whenDetail(data: GraphNodeData): string | undefined {
 }
 
 const DESCRIPTORS: Record<GraphNodeKind, NodeDescriptor> = {
+  Federation: {
+    icon: Network,
+    iconClass: "text-muted-foreground",
+    borderClass: "border-border",
+    badgeKey: "Federation",
+  },
   SoftwareUsecaseComputing: {
     icon: Terminal,
     iconClass: "text-muted-foreground",
@@ -336,6 +342,7 @@ const NodeComponent = memo(NodeShell);
  * shell renderer (differentiated by the descriptor table above).
  */
 export const NODE_TYPE_MAP: Record<GraphNodeKind, typeof NodeComponent> = {
+  Federation: NodeComponent,
   SoftwareUsecaseComputing: NodeComponent,
   Script: NodeComponent,
   NoAction: NodeComponent,

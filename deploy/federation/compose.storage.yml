@@ -1,0 +1,48 @@
+# Overlay for the base Compose deployment and compose.ingress.yml.
+# Provision the volume marker, keys, policy and shared report directory first.
+services:
+  server:
+    group_add: ["${FEDERATION_STORAGE_REPORT_GID:?set shared report group}"]
+    environment:
+      FEDERATION_STORAGE_GUARD_FILE: /run/kq-storage/policy.json
+    volumes:
+      - type: bind
+        source: ${FEDERATION_STORAGE_POLICY_FILE:?set Server-owned mode-0600 policy file}
+        target: /run/kq-storage/policy.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${FEDERATION_STORAGE_REPORT_DIRECTORY:?set shared report directory}
+        target: /run/kq-storage-reports
+        read_only: true
+        bind: {create_host_path: false}
+  federation-storage-observer:
+    image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-storage-observer:${KQ_IMAGE_TAG:-main}
+    build:
+      context: .
+      dockerfile: deploy/federation/storage-observer.Dockerfile
+    mem_limit: 128m
+    cpus: 0.25
+    # Must be able to traverse the PostgreSQL data directory and read its marker.
+    # Reports are mode 0640; the Server needs the configured shared group.
+    user: ${FEDERATION_STORAGE_OBSERVER_UID:?set PostgreSQL storage UID}:${FEDERATION_STORAGE_REPORT_GID:?set shared report group}
+    volumes:
+      - pg-data:/observed/postgres:ro
+      - type: bind
+        source: ${FEDERATION_STORAGE_OBSERVER_CONFIG:?set observer-owned mode-0600 config}
+        target: /run/kq-storage/observer.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${FEDERATION_STORAGE_OBSERVER_KEY:?set observer-owned mode-0600 Ed25519 key}
+        target: /run/kq-storage/observer.key
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${FEDERATION_STORAGE_REPORT_DIRECTORY:?set shared report directory}
+        target: /run/kq-storage-reports
+        bind: {create_host_path: false}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped

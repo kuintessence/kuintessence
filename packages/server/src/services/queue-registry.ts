@@ -17,7 +17,11 @@ import {
 } from "@kuintessence/shared";
 import { eq } from "drizzle-orm";
 import { queuePlatformTuple, queueProviderTuple, queueVisibleOrgTuple } from "../authz/projection";
-import type { AuthzService, AuthzTuple } from "../authz/service";
+import {
+  AuthorizationUnavailableError,
+  type AuthzService,
+  type AuthzTuple,
+} from "../authz/service";
 import {
   type AgentQueueInventory,
   isHpcScheduler,
@@ -248,6 +252,15 @@ export class QueueRegistryService {
       ...queueTuples(updated, "create"),
     ]);
     return this.toView(updated);
+  }
+
+  /** Running work needs current permission, not fresh scheduler inventory or an online Agent. */
+  async assertExecutionAccess(queueId: string, ctx: QueueAccessContext): Promise<void> {
+    const row = await this.getRow(queueId);
+    const localAllowed = isVisible(row, ctx);
+    if (!row.enabled || (this.authz?.mode !== "enforce" && !localAllowed))
+      throw new AppError(ErrorCode.FORBIDDEN, "Queue execution authorization revoked", 403);
+    await this.assertThroughSpice(row, "submit", ctx, localAllowed);
   }
 
   async resolveForSubmit(
@@ -630,7 +643,8 @@ export class QueueRegistryService {
     try {
       await this.authz.requirePermission(check, hasRole(ctx.role, "platform_admin"));
       return true;
-    } catch {
+    } catch (error) {
+      if (error instanceof AuthorizationUnavailableError) throw error;
       return false;
     }
   }
@@ -715,6 +729,7 @@ function contextOrgIds(ctx: QueueAccessContext): string[] {
 }
 
 function isSkippablePreferredQueueError(error: AppError): boolean {
+  if (error instanceof AuthorizationUnavailableError) return false;
   return (
     error.code === ErrorCode.NOT_FOUND ||
     error.code === ErrorCode.FORBIDDEN ||

@@ -5,6 +5,8 @@ import type { Logger } from "pino";
 import { runWithMtlsContext } from "../auth/mtls-context";
 import { type MtlsHeaderGuardConfig, mtlsHeaderGuard } from "../auth/mtls-wire";
 import { isTrustedProxyAddress, parseTrustedProxyCidrs } from "../auth/trusted-proxy";
+import type { FederationAccountingCollection } from "../federation/accounting-collection";
+import type { FederationResultTransport } from "../federation/result-transport";
 import type { AgentManager } from "../services/agent-manager";
 import type { DataDeliveryRevocationOutbox } from "../services/data-delivery-revocations";
 import type { JobLogsService } from "../services/job-logs-service";
@@ -26,12 +28,14 @@ import type {
   JobCancellationOutbox,
   JobWorkRootReleaseOutbox,
 } from "./dispatcher";
+import type { JobDispatchOutbox } from "./job-dispatch-outbox";
 
 export type GrpcNodeHttpHandler = ReturnType<typeof connectNodeAdapter>;
 type GrpcServerRequest = Parameters<GrpcNodeHttpHandler>[0];
 type GrpcServerResponse = Parameters<GrpcNodeHttpHandler>[1];
 
 export interface CreateGrpcHandlerDeps {
+  federationResults?: Pick<FederationResultTransport, "grant" | "report" | "canCopy">;
   agentManager: AgentManager;
   jobService: JobService;
   logger: Logger;
@@ -46,6 +50,7 @@ export interface CreateGrpcHandlerDeps {
   sshGateway?: SshGateway;
   shellExecRegistry?: ShellExecRegistry;
   jobLogsService?: JobLogsService;
+  federationAccounting?: Pick<FederationAccountingCollection, "receive">;
   transferRegistry?: TransferRegistry;
   jobCompletionRegistry?: JobCompletionRegistry;
   partUrlMinter?: {
@@ -57,6 +62,7 @@ export interface CreateGrpcHandlerDeps {
   sandboxArtifactRelease?: Pick<SandboxArtifactReleaseService, "resolve">;
   dataDeliveryRevocations?: Pick<DataDeliveryRevocationOutbox, "acknowledge" | "redeliver">;
   jobCancellations?: Pick<JobCancellationOutbox, "acknowledge" | "redeliver">;
+  jobDispatches?: Pick<JobDispatchOutbox, "acknowledge" | "redeliver">;
   jobWorkRootReleases?: Pick<JobWorkRootReleaseOutbox, "acknowledge" | "redeliver">;
 }
 

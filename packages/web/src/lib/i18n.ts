@@ -3,6 +3,8 @@ import { initReactI18next } from "react-i18next";
 import cpEn from "../locales/cp/en.json";
 import cpZh from "../locales/cp/zh.json";
 import en from "../locales/en.json";
+import federationEn from "../locales/federation.en.json";
+import federationZh from "../locales/federation.zh.json";
 import materialsEn from "../locales/materials.en.json";
 import materialsZh from "../locales/materials.zh.json";
 import recipesEn from "../locales/recipes.en.json";
@@ -30,8 +32,8 @@ function detectLang(): Lang {
 // single bundle for backwards compatibility with existing keys (e.g. `nav.*`,
 // `dashboard.*`) while feature-scoped keys live under their own top-level
 // prefix such as `cp.*` and `workflow.editor.*`.
-const enMerged = { ...en, ...cpEn, ...wfEditorEn, ...recipesEn, ...materialsEn };
-const zhMerged = { ...zh, ...cpZh, ...wfEditorZh, ...recipesZh, ...materialsZh };
+const enMerged = { ...en, ...cpEn, ...wfEditorEn, ...recipesEn, ...materialsEn, ...federationEn };
+const zhMerged = { ...zh, ...cpZh, ...wfEditorZh, ...recipesZh, ...materialsZh, ...federationZh };
 
 i18n.use(initReactI18next).init({
   resources: { zh: { translation: zhMerged }, en: { translation: enMerged } },

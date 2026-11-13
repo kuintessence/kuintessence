@@ -1,4 +1,13 @@
 import { z } from "zod";
+import {
+  FederationAmountSchema,
+  FederationArbitrationReferenceSchema,
+  FederationFileDeliverySchema,
+  FederationResourcesSchema,
+} from "../federation";
+import { FederationParameterOverridesSchema } from "../federation/assets";
+import { FederationWorkflowMarketSchema } from "../federation/market";
+import { FederationAssetRefSchema, FederationDigestSchema } from "../federation/references";
 import { RequirementsSchema, SchedulingStrategySchema, SlugSchema, UuidSchema } from "./common";
 import { ExprSchema, IntOrExprSchema } from "./expr";
 import { ValueOutputSchema } from "./extract";
@@ -40,7 +49,8 @@ const NonDatasetInputSlotsSchema = z.array(NodeInputSlotSchema).superRefine((slo
       ctx.addIssue({
         code: "custom",
         path: [index],
-        message: "Dataset input slots are only supported on SoftwareUsecaseComputing nodes",
+        message:
+          "Dataset input slots are only supported on SoftwareUsecaseComputing or Script nodes",
       });
     }
   }
@@ -74,6 +84,65 @@ const SubWorkflowOutputSchema = z.strictObject({
 });
 
 export const WorkflowNodeSchema = z.union([
+  z.strictObject({
+    ...nodeCommon,
+    type: z.literal("Federation"),
+    agreementRevisionId: UuidSchema,
+    market: FederationWorkflowMarketSchema.optional(),
+    arbitration: FederationArbitrationReferenceSchema.optional(),
+    template: FederationAssetRefSchema.refine(
+      (ref) => ref.kind === "workflow" || ref.kind === "script",
+    ),
+    inputManifestDigest: FederationDigestSchema,
+    inputDelivery: FederationFileDeliverySchema.optional(),
+    resultDelivery: FederationFileDeliverySchema.optional(),
+    environmentLockDigest: FederationDigestSchema,
+    resources: FederationResourcesSchema,
+    maxAmount: FederationAmountSchema,
+    admissionWindowSec: z.number().int().min(1).max(3600).default(600),
+    executionExpiresAt: z.iso.datetime().optional(),
+    inputSlots: z
+      .array(NodeInputSlotSchema)
+      .superRefine((slots, ctx) => {
+        if (new Set(slots.map((slot) => slot.descriptor)).size !== slots.length)
+          ctx.addIssue({ code: "custom", message: "Federation input descriptors must be unique" });
+        for (const [index, slot] of slots.entries()) {
+          if (!FederationParameterOverridesSchema.keyType.safeParse(slot.descriptor).success)
+            ctx.addIssue({
+              code: "custom",
+              path: [index, "descriptor"],
+              message: "Invalid federation parameter descriptor",
+            });
+          if (
+            slot.type === "Dataset" ||
+            (slot.type === "Text" && (slot.contents != null || (!slot.from && !slot.sources))) ||
+            (slot.type === "File" &&
+              ((!slot.from && !slot.sources && slot.contents == null) ||
+                (!slot.isBatch && slot.contents != null && slot.contents.length !== 1)))
+          )
+            ctx.addIssue({
+              code: "custom",
+              path: [index],
+              message:
+                "Federation inputs require scalar Text bindings or explicit File/FileBatch selections",
+            });
+        }
+      })
+      .optional(),
+    outputs: z
+      .array(
+        z.strictObject({
+          descriptor: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$/),
+          from: z.strictObject({
+            nodeId: z.string().min(1).max(255),
+            descriptor: z.string().min(1).max(255),
+          }),
+          type: z.enum(["File", "FileBatch"]),
+        }),
+      )
+      .max(256)
+      .default([]),
+  }),
   z
     .strictObject({
       ...nodeCommon,
@@ -134,10 +203,19 @@ export const WorkflowNodeSchema = z.union([
       placementConstraint: PlacementConstraintSchema.optional(),
       inputs: z.record(z.string().min(1), ScriptInputSpecSchema).default({}),
       outputs: z.record(z.string().min(1), ScriptOutputSpecSchema).default({}),
-      inputSlots: NonDatasetInputSlotsSchema.optional(),
+      inputSlots: z.array(NodeInputSlotSchema).optional(),
       outputSlots: z.array(NodeOutputSlotSchema).optional(),
     })
     .superRefine((node, ctx) => {
+      for (const [index, slot] of (node.inputSlots ?? []).entries()) {
+        if (slot.type === "Dataset" && node.inputs[slot.descriptor]?.type !== "FileBatch") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["inputSlots", index],
+            message: "Script Dataset inputs require a declared FileBatch input",
+          });
+        }
+      }
       const hasSource = node.source !== undefined;
       const hasNamedSource = node.scriptRef !== undefined;
       const hasRuntimeProfile = node.runtimeProfileId !== undefined;

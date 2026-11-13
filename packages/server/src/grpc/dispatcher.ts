@@ -8,6 +8,7 @@ import {
   DataDeliveryRevokeSchema,
   DataScanRequestSchema,
   DispatchJobSchema,
+  FederationAccountingRequestSchema,
   FileTransferCancelSchema,
   FileTransferRequestSchema,
   InputStagingSchema,
@@ -22,11 +23,8 @@ import {
   SandboxArtifactReleaseItemSchema,
   SandboxArtifactReleaseSchema,
   SandboxBatchEntrySchema,
-  SandboxExecutionIdentitySchema,
   SandboxExecutionSchema,
-  SandboxIdentityMode,
   SandboxIoType,
-  SandboxKubernetesAccountSchema,
   SandboxLanguage,
   SandboxMountMode,
   SandboxResourceLimitsSchema,
@@ -34,7 +32,6 @@ import {
   SandboxRuntimeRefSchema,
   SandboxScriptBundleSchema,
   SandboxSignatureEnvelopeSchema,
-  SandboxUnixAccountSchema,
   type ServerMessage,
   ServerMessageSchema,
   ShellExecRequestSchema,
@@ -50,9 +47,13 @@ import type {
   SpackAuditContext,
   SpackExecution,
 } from "@kuintessence/shared";
-import { createLogger } from "@kuintessence/shared";
-import { and, asc, eq, gte, isNotNull, isNull, lt } from "drizzle-orm";
+import { createLogger, SPACK_PINNED_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
+import type { FederationAccountingRequest } from "@kuintessence/shared/federation";
+import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import type { ResolvedDataDelivery } from "../services/data-delivery";
+import { enqueueJobCancellation } from "../services/job-cancellation";
+
+import { sandboxIdentityToProto } from "./sandbox-identity";
 
 const logger = createLogger("dispatcher");
 
@@ -84,8 +85,7 @@ function sandboxIoType(value: SandboxSignedManifest["mounts"][number]["ioType"])
   return SandboxIoType.FILE_BATCH;
 }
 
-function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
-  const identity = manifest.identity;
+export function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
   return create(SandboxExecutionSchema, {
     script: create(SandboxScriptBundleSchema, {
       language: sandboxLanguage(manifest.script.language),
@@ -106,33 +106,7 @@ function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
           executionProfile: manifest.executionProfile,
         }
       : {}),
-    executionIdentity: create(SandboxExecutionIdentitySchema, {
-      mode:
-        identity.mode === "SharedService"
-          ? SandboxIdentityMode.SHARED_SERVICE
-          : SandboxIdentityMode.MAPPED_ACCOUNT,
-      accountId: identity.accountId,
-      backend:
-        identity.backend === "Unix"
-          ? {
-              case: "unix",
-              value: create(SandboxUnixAccountSchema, {
-                username: identity.username,
-                uid: identity.uid,
-                gid: identity.gid,
-                schedulerAccount: identity.schedulerAccount ?? "",
-                allowedQueues: identity.allowedQueues,
-              }),
-            }
-          : {
-              case: "kubernetes",
-              value: create(SandboxKubernetesAccountSchema, {
-                namespace: identity.namespace,
-                serviceAccount: identity.serviceAccount,
-                quotaPolicy: identity.quotaPolicy ?? "",
-              }),
-            },
-    }),
+    executionIdentity: sandboxIdentityToProto(manifest.identity),
     artifactMounts: manifest.mounts.map((mount) =>
       create(SandboxArtifactMountSchema, {
         descriptor: mount.descriptor,
@@ -155,6 +129,10 @@ function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
         ),
       }),
     ),
+    computeResources: {
+      cpus: manifest.resources.cpus,
+      memoryMb: BigInt(manifest.resources.memoryMb),
+    },
     limits: create(SandboxResourceLimitsSchema, {
       pids: manifest.limits.pids,
       outputBytes: BigInt(manifest.limits.outputBytes),
@@ -176,6 +154,28 @@ export interface AgentChannel {
   push(msg: ServerMessage): void;
   close(): void;
   spackMaterialDeliveryV1?: boolean;
+  spackPinnedExecutionV1?: boolean;
+  softwareOperationReplayV1?: boolean;
+  federationAccountingV1?: boolean;
+  federationMediaExportV1?: boolean;
+  federationMediaObjectExportV1?: boolean;
+  federationMediaImportV1?: boolean;
+  federationMediaUploadV1?: boolean;
+  federationTargetTransferV1?: boolean;
+  federationInputCopyV1?: boolean;
+  federationInputVerifyV1?: boolean;
+  federationResultCopyV1?: boolean;
+  federationResultVerifyV1?: boolean;
+  federationExecutionV1?: boolean;
+  federationComputeLeaseV1?: boolean;
+  federationSandboxSignatureRenewalV1?: boolean;
+  federationSandboxInputLeaseV1?: boolean;
+  federationSandboxLocalInputV1?: boolean;
+  federationDataPreparationLeaseV1?: boolean;
+  federationNetdriveInputLeaseV1?: boolean;
+  federationInstallationV1?: boolean;
+  federationInstallationLeaseV1?: boolean;
+  federationInstallationMaterialLeaseV1?: boolean;
   verifiedCertFingerprint?: string;
   siteAuditContext?: SpackAuditContext;
   siteAuditObservedAt?: number;
@@ -258,7 +258,125 @@ export class AgentDispatcher {
   pushDispatchJob(
     agentId: string,
     jobId: string,
-    job: JobSubmit & {
+    job: Parameters<AgentDispatcher["buildDispatchJob"]>[1],
+  ): boolean {
+    return this.pushPreparedDispatch(agentId, this.buildDispatchJob(jobId, job));
+  }
+
+  pushPreparedDispatch(agentId: string, message: ServerMessage): boolean {
+    if (message.payload.case !== "dispatchJob") throw new Error("Expected a job dispatch message");
+    if (
+      message.payload.value.inputStaging.some((input) => input.localDataSource) &&
+      (!message.payload.value.federationExecution ||
+        !this.supportsFederationSandboxLocalInput(agentId))
+    )
+      return false;
+    if (message.payload.value.federationExecution && !this.supportsFederationExecution(agentId))
+      return false;
+    if (
+      message.payload.value.federationExecution &&
+      message.payload.value.inputStaging.some((input) => input.netdriveInput) &&
+      !this.supportsFederationNetdriveInputLease(agentId)
+    )
+      return false;
+    if (
+      message.payload.value.federationExecution &&
+      message.payload.value.dataDeliveries.length > 0 &&
+      !this.supportsFederationDataPreparationLease(agentId)
+    )
+      return false;
+    if (
+      message.payload.value.federationExecution &&
+      message.payload.value.sandboxExecution &&
+      !this.supportsFederationSandboxSignatureRenewal(agentId)
+    )
+      return false;
+    if (
+      message.payload.value.federationExecution &&
+      message.payload.value.sandboxExecution &&
+      message.payload.value.inputStaging.length > 0 &&
+      !this.supportsFederationSandboxInputLease(agentId)
+    )
+      return false;
+    if (
+      message.payload.value.spackExecution?.pin &&
+      (message.payload.value.command !== SPACK_PINNED_EXECUTION_PLACEHOLDER ||
+        !this.supportsPinnedSpack(agentId))
+    )
+      return false;
+    return this.pushToAgent(agentId, message);
+  }
+
+  supportsFederationExecution(agentId: string): boolean {
+    const channel = this.getChannel(agentId);
+    return (
+      channel?.federationExecutionV1 === true &&
+      channel.federationComputeLeaseV1 === true &&
+      !!channel.verifiedCertFingerprint
+    );
+  }
+
+  supportsFederationSandboxSignatureRenewal(agentId: string): boolean {
+    return (
+      this.supportsFederationExecution(agentId) &&
+      this.getChannel(agentId)?.federationSandboxSignatureRenewalV1 === true
+    );
+  }
+
+  supportsFederationSandboxInputLease(agentId: string): boolean {
+    return (
+      this.supportsFederationSandboxSignatureRenewal(agentId) &&
+      this.getChannel(agentId)?.federationSandboxInputLeaseV1 === true
+    );
+  }
+
+  supportsFederationSandboxLocalInput(agentId: string): boolean {
+    return (
+      this.supportsFederationSandboxInputLease(agentId) &&
+      this.getChannel(agentId)?.federationSandboxLocalInputV1 === true
+    );
+  }
+
+  supportsFederationNetdriveInputLease(agentId: string): boolean {
+    return (
+      this.supportsFederationExecution(agentId) &&
+      this.getChannel(agentId)?.federationNetdriveInputLeaseV1 === true
+    );
+  }
+
+  supportsFederationDataPreparationLease(agentId: string): boolean {
+    return (
+      this.supportsFederationExecution(agentId) &&
+      this.getChannel(agentId)?.federationDataPreparationLeaseV1 === true
+    );
+  }
+
+  supportsFederationInstallation(agentId: string): boolean {
+    return (
+      this.getChannel(agentId)?.federationInstallationV1 === true &&
+      this.getChannel(agentId)?.federationInstallationLeaseV1 === true &&
+      this.getChannel(agentId)?.federationInstallationMaterialLeaseV1 === true &&
+      this.supportsSoftwareOperationReplay(agentId)
+    );
+  }
+
+  supportsSoftwareOperationReplay(agentId: string): boolean {
+    const channel = this.getChannel(agentId);
+    return (
+      channel?.softwareOperationReplayV1 === true &&
+      channel.spackMaterialDeliveryV1 === true &&
+      !!channel.verifiedCertFingerprint
+    );
+  }
+
+  supportsPinnedSpack(agentId: string): boolean {
+    const channel = this.getChannel(agentId);
+    return channel?.spackPinnedExecutionV1 === true && !!channel.verifiedCertFingerprint;
+  }
+
+  buildDispatchJob(
+    jobId: string,
+    job: Omit<JobSubmit, "inputStaging"> & {
       jobIdInternal: string;
       dispatchEpoch?: number;
       queueName?: string;
@@ -269,6 +387,9 @@ export class AgentDispatcher {
       spackExecution?: SpackExecution;
       licensedMaterialMounts?: Array<{
         selector: string;
+        mappingId?: string;
+        assetId?: string;
+        licenseSubject?: string;
         targetPath: string;
         expectedFingerprint: string;
         requiredElements: string[];
@@ -282,11 +403,18 @@ export class AgentDispatcher {
         sourceUrl?: string;
         deliveryLeaseId?: string;
         deliveryLeaseExpiresAtUnixMs?: number;
+
+        expectedSizeBytes?: number;
+        netdriveInput?: boolean;
+        localDataSource?: { locationId: string; managedRootId: string; relativePath: string };
       }>;
       dataDeliveries?: ResolvedDataDelivery[];
+      federationExecution?: boolean;
     },
-  ): boolean {
-    const msg = create(ServerMessageSchema, {
+  ): ServerMessage {
+    if (job.spackExecution?.pin && job.command !== SPACK_PINNED_EXECUTION_PLACEHOLDER)
+      throw new Error("Pinned Spack execution requires its fail-closed command placeholder");
+    return create(ServerMessageSchema, {
       payload: {
         case: "dispatchJob",
         value: create(DispatchJobSchema, {
@@ -299,23 +427,19 @@ export class AgentDispatcher {
           wallTimeSec: BigInt(job.resources.wallTimeSec ?? 0),
           workingDir: job.workingDir ?? "",
           envVars: job.envVars ?? {},
-          inputStaging: (job.inputStaging ?? []).map((input) => {
-            const staged = input as typeof input & {
-              totalBytes?: number;
-              expectedSha256?: string;
-              deliveryLeaseId?: string;
-              deliveryLeaseExpiresAtUnixMs?: number;
-            };
-            return create(InputStagingSchema, {
-              fileMetadataId: staged.fileMetadataId,
-              totalBytes: BigInt(staged.totalBytes ?? 0),
-              expectedSha256: staged.expectedSha256 ?? "",
-              stagePath: staged.stagePath,
-              sourceUrl: staged.sourceUrl ?? "",
-              deliveryLeaseId: staged.deliveryLeaseId ?? "",
-              deliveryLeaseExpiresAtUnixMs: BigInt(staged.deliveryLeaseExpiresAtUnixMs ?? 0),
-            });
-          }),
+          inputStaging: (job.inputStaging ?? []).map((input) =>
+            create(InputStagingSchema, {
+              fileMetadataId: input.fileMetadataId,
+              stagePath: input.stagePath,
+              sourceUrl: input.sourceUrl ?? "",
+              deliveryLeaseId: input.deliveryLeaseId ?? "",
+              deliveryLeaseExpiresAtUnixMs: BigInt(input.deliveryLeaseExpiresAtUnixMs ?? 0),
+              expectedSha256: input.expectedSha256 ?? "",
+              totalBytes: BigInt(input.totalBytes ?? input.expectedSizeBytes ?? 0),
+              netdriveInput: input.netdriveInput ?? false,
+              localDataSource: input.localDataSource,
+            }),
+          ),
           expectedOutputs: (job.expectedOutputs ?? []).map((output) => ({
             ...output,
             pathsOnly: output.pathsOnly ?? false,
@@ -336,35 +460,12 @@ export class AgentDispatcher {
             create(LicensedMaterialMountSchema, mount),
           ),
           restrictedNoEgress: job.restrictedNoEgress ?? false,
-          dataDeliveries: (job.dataDeliveries ?? []).map((delivery) =>
-            create(DataDeliveryBindingSchema, {
-              bindingId: delivery.bindingId,
-              locationId: delivery.locationId,
-              assetId: delivery.assetId,
-              versionId: delivery.versionId,
-              manifestDigest: delivery.manifestDigest,
-              selectedEntries: delivery.selectedEntries.map((entry) =>
-                create(DataDeliveryEntrySchema, {
-                  path: entry.path,
-                  sha256: entry.sha256,
-                  sizeBytes: BigInt(entry.sizeBytes),
-                  objectDownloadUrl: entry.objectDownloadUrl ?? "",
-                }),
-              ),
-              stagePath: delivery.stagePath,
-              method: dataDeliveryMethodToProto(delivery.method),
-              managedRootId: delivery.managedRootId ?? "",
-              relativePath: delivery.relativePath ?? "",
-              restricted: delivery.restricted,
-              leaseId: delivery.leaseId,
-              leaseExpiresAtUnixMs: BigInt(delivery.leaseExpiresAtUnixMs),
-            }),
-          ),
+          dataDeliveries: (job.dataDeliveries ?? []).map(dataDeliveryToProto),
           dispatchEpoch: BigInt(job.dispatchEpoch ?? 0),
+          federationExecution: job.federationExecution ?? false,
         }),
       },
     });
-    return this.pushToAgent(agentId, msg);
   }
 
   /**
@@ -454,6 +555,22 @@ export class AgentDispatcher {
       },
     });
     return this.pushToAgent(agentId, msg);
+  }
+
+  pushFederationAccounting(agentId: string, request: FederationAccountingRequest): boolean {
+    const channel = this.channels.get(agentId);
+    if (!channel?.federationAccountingV1) return false;
+    channel.push(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "federationAccountingRequest",
+          value: create(FederationAccountingRequestSchema, {
+            requestJson: JSON.stringify(request),
+          }),
+        },
+      }),
+    );
+    return true;
   }
 
   pushJobLogsRequest(
@@ -576,8 +693,12 @@ export class AgentDispatcher {
       requestedBy: string;
       spackMaterialTicket?: string;
       spackManifestDigest?: string;
+      durableReplay?: boolean;
+      federationJobId?: string;
     },
   ): boolean {
+    if (payload.durableReplay && !this.supportsSoftwareOperationReplay(agentId)) return false;
+    if (payload.federationJobId && !this.supportsFederationInstallation(agentId)) return false;
     if (payload.spackMaterialTicket) {
       const channel = this.channels.get(agentId);
       if (!channel?.spackMaterialDeliveryV1 || !channel.verifiedCertFingerprint) return false;
@@ -604,6 +725,8 @@ interface CancellationWaiter {
  */
 export class JobCancellationOutbox {
   private readonly waiters = new Map<string, Set<CancellationWaiter>>();
+  private timer?: ReturnType<typeof setInterval>;
+  private delivering?: Promise<void>;
 
   constructor(
     private readonly db: PgDb,
@@ -611,37 +734,71 @@ export class JobCancellationOutbox {
   ) {}
 
   async enqueue(agentId: string, jobId: string, revokedEpoch: number): Promise<void> {
-    assertCancellationEpoch(revokedEpoch);
-    const inserted = await this.db
-      .insert(jobCancellations)
-      .values({ agentId, jobId, revokedEpoch })
-      .onConflictDoNothing({ target: jobCancellations.jobId })
-      .returning({ jobId: jobCancellations.jobId });
-    if (inserted.length > 0) return;
-
-    // A later epoch supersedes an earlier acknowledgement. The Agent binding
-    // remains immutable after the cancellation intent is first recorded.
-    await this.db
-      .update(jobCancellations)
-      .set({ revokedEpoch, acknowledgedAt: null })
-      .where(
-        and(eq(jobCancellations.jobId, jobId), lt(jobCancellations.revokedEpoch, revokedEpoch)),
-      );
+    await enqueueJobCancellation(this.db, { agentId, jobId, revokedEpoch });
   }
 
-  async redeliver(agentId: string): Promise<number> {
+  start() {
+    if (this.timer) return;
+    const tick = () => {
+      if (this.delivering) return;
+      this.delivering = this.redeliver()
+        .then(() => {})
+        .catch(() => {
+          logger.warn("Job cancellation delivery failed; durable intents remain pending");
+        })
+        .finally(() => {
+          this.delivering = undefined;
+        });
+    };
+    this.timer = setInterval(tick, 10000);
+    this.timer.unref();
+    tick();
+  }
+
+  async stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    await this.delivering;
+  }
+
+  async deliverJob(jobId: string): Promise<number> {
     const rows = await this.db
-      .select({ jobId: jobCancellations.jobId, revokedEpoch: jobCancellations.revokedEpoch })
+      .select()
       .from(jobCancellations)
-      .where(and(eq(jobCancellations.agentId, agentId), isNull(jobCancellations.acknowledgedAt)))
+      .where(eq(jobCancellations.jobId, jobId));
+    for (const row of rows)
+      if (!row.acknowledgedAt)
+        this.dispatcher.pushCancelJob(row.agentId, row.jobId, row.revokedEpoch);
+    return rows.length;
+  }
+
+  async redeliver(agentId?: string): Promise<number> {
+    const rows = await this.db
+      .select({
+        agentId: jobCancellations.agentId,
+        jobId: jobCancellations.jobId,
+        revokedEpoch: jobCancellations.revokedEpoch,
+      })
+      .from(jobCancellations)
+      .where(
+        and(
+          agentId ? eq(jobCancellations.agentId, agentId) : undefined,
+          isNull(jobCancellations.acknowledgedAt),
+        ),
+      )
       .orderBy(asc(jobCancellations.createdAt), asc(jobCancellations.id));
     for (const row of rows) {
-      this.dispatcher.pushCancelJob(agentId, row.jobId, row.revokedEpoch);
+      this.dispatcher.pushCancelJob(row.agentId, row.jobId, row.revokedEpoch);
     }
     return rows.length;
   }
 
-  async acknowledge(agentId: string, jobId: string, revokedEpoch: number): Promise<boolean> {
+  async acknowledge(
+    agentId: string,
+    jobId: string,
+    revokedEpoch: number,
+    installationsStopped = false,
+  ): Promise<boolean> {
     assertCancellationEpoch(revokedEpoch);
     const [updated] = await this.db
       .update(jobCancellations)
@@ -651,6 +808,7 @@ export class JobCancellationOutbox {
           eq(jobCancellations.agentId, agentId),
           eq(jobCancellations.jobId, jobId),
           eq(jobCancellations.revokedEpoch, revokedEpoch),
+          installationsStopped ? undefined : eq(jobCancellations.requiresInstallationStop, false),
           isNull(jobCancellations.acknowledgedAt),
         ),
       )
@@ -668,6 +826,7 @@ export class JobCancellationOutbox {
           eq(jobCancellations.agentId, agentId),
           eq(jobCancellations.jobId, jobId),
           eq(jobCancellations.revokedEpoch, revokedEpoch),
+          installationsStopped ? undefined : eq(jobCancellations.requiresInstallationStop, false),
           isNotNull(jobCancellations.acknowledgedAt),
         ),
       )
@@ -679,24 +838,33 @@ export class JobCancellationOutbox {
 
   async waitForAcknowledgement(jobId: string, revokedEpoch: number): Promise<void> {
     assertCancellationEpoch(revokedEpoch);
-    const waiter = this.addWaiter(jobId, revokedEpoch);
-    try {
-      const [acknowledged] = await this.db
-        .select({ revokedEpoch: jobCancellations.revokedEpoch })
-        .from(jobCancellations)
-        .where(
-          and(
-            eq(jobCancellations.jobId, jobId),
-            gte(jobCancellations.revokedEpoch, revokedEpoch),
-            isNotNull(jobCancellations.acknowledgedAt),
-          ),
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      const waiter = this.addWaiter(jobId, revokedEpoch);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const rows = await this.db
+          .select()
+          .from(jobCancellations)
+          .where(eq(jobCancellations.jobId, jobId));
+        if (
+          rows.length &&
+          rows.every((row) => row.revokedEpoch >= revokedEpoch && row.acknowledgedAt)
         )
-        .limit(1);
-      if (acknowledged) return;
-      await waiter.promise;
-    } finally {
-      this.removeWaiter(jobId, waiter.entry);
+          return;
+        // Another Server can receive the ACK; re-read durable state instead of waiting only in memory.
+        await Promise.race([
+          waiter.promise,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, 1000);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+        this.removeWaiter(jobId, waiter.entry);
+      }
     }
+    throw new Error("Job cancellation acknowledgement pending; recovery must retry");
   }
 
   private addWaiter(
@@ -805,4 +973,29 @@ function dataDeliveryMethodToProto(method: ResolvedDataDelivery["method"]): Data
     case "readonly-mount":
       return DataDeliveryMethod.READONLY_MOUNT;
   }
+}
+
+export function dataDeliveryToProto(delivery: ResolvedDataDelivery) {
+  return create(DataDeliveryBindingSchema, {
+    bindingId: delivery.bindingId,
+    locationId: delivery.locationId,
+    assetId: delivery.assetId,
+    versionId: delivery.versionId,
+    manifestDigest: delivery.manifestDigest,
+    selectedEntries: delivery.selectedEntries.map((entry) =>
+      create(DataDeliveryEntrySchema, {
+        path: entry.path,
+        sha256: entry.sha256,
+        sizeBytes: BigInt(entry.sizeBytes),
+        objectDownloadUrl: entry.objectDownloadUrl ?? "",
+      }),
+    ),
+    stagePath: delivery.stagePath,
+    method: dataDeliveryMethodToProto(delivery.method),
+    managedRootId: delivery.managedRootId ?? "",
+    relativePath: delivery.relativePath ?? "",
+    restricted: delivery.restricted,
+    leaseId: delivery.leaseId,
+    leaseExpiresAtUnixMs: BigInt(delivery.leaseExpiresAtUnixMs),
+  });
 }

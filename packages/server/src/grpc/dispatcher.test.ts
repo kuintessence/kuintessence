@@ -1,12 +1,18 @@
 import { describe, expect, test } from "bun:test";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import type { PgDb } from "@kuintessence/db";
 import {
   QueueTargetMode,
   QueueValidationMode,
   type ServerMessage,
+  ServerMessageSchema,
   SoftwareOperationAction,
 } from "@kuintessence/proto";
-import { type SandboxSignedManifest, SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
+import {
+  type SandboxSignedManifest,
+  SPACK_EXECUTION_PLACEHOLDER,
+  SPACK_PINNED_EXECUTION_PLACEHOLDER,
+} from "@kuintessence/shared";
 import { AgentDispatcher, JobCancellationOutbox, JobWorkRootReleaseOutbox } from "./dispatcher";
 
 function mockChannel() {
@@ -43,7 +49,6 @@ describe("AgentDispatcher", () => {
     expect(message.payload.value.command).toBe("exit 125");
     expect(message.payload.value.spackExecution).toMatchObject(spackExecution);
   });
-
   test("does not send material credentials to a replaced legacy or unverified channel", () => {
     const dispatcher = new AgentDispatcher();
     const payload = {
@@ -67,6 +72,41 @@ describe("AgentDispatcher", () => {
     expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(false);
     expect(legacy.messages).toHaveLength(0);
     dispatcher.register("a", { ...legacy, spackMaterialDeliveryV1: true });
+    expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(false);
+  });
+  test("durable software delivery requires replay capability on the current verified channel", () => {
+    const dispatcher = new AgentDispatcher();
+    const payload = {
+      operationId: "op",
+      action: SoftwareOperationAction.INSTALL,
+      spec: "hello@1",
+      requestedBy: "user",
+      durableReplay: true,
+    };
+    for (const capabilities of [
+      {},
+      { softwareOperationReplayV1: true },
+      { softwareOperationReplayV1: true, spackMaterialDeliveryV1: true },
+      { spackMaterialDeliveryV1: true, verifiedCertFingerprint: "verified" },
+    ]) {
+      const channel = { ...mockChannel(), ...capabilities };
+      dispatcher.register("a", channel);
+      expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(false);
+      expect(channel.messages).toHaveLength(0);
+    }
+    const channel = {
+      ...mockChannel(),
+      softwareOperationReplayV1: true,
+      spackMaterialDeliveryV1: true,
+      verifiedCertFingerprint: "verified",
+    };
+    dispatcher.register("a", channel);
+    expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(true);
+    const message = channel.messages[0];
+    if (!message) throw new Error("Missing software request");
+    const decoded = fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, message));
+    expect(decoded.payload.value).toMatchObject({ durableReplay: true });
+    dispatcher.register("a", mockChannel());
     expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(false);
   });
   const sandboxExecution: SandboxSignedManifest = {
@@ -104,6 +144,7 @@ describe("AgentDispatcher", () => {
       allowedQueues: ["compute"],
     },
     mounts: [],
+    resources: { cpus: 1, memoryMb: 128 },
     limits: { pids: 32, outputBytes: 1_000, logBytes: 1_000 },
     networkDisabled: true,
     envelope: {
@@ -115,7 +156,6 @@ describe("AgentDispatcher", () => {
       signatureBase64: Buffer.from("signature").toString("base64"),
     },
   };
-
   test("isOnline reflects registration", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -125,7 +165,6 @@ describe("AgentDispatcher", () => {
     d.unregister("a");
     expect(d.isOnline("a")).toBe(false);
   });
-
   test("re-register closes previous channel", () => {
     const d = new AgentDispatcher();
     const old = mockChannel();
@@ -133,7 +172,6 @@ describe("AgentDispatcher", () => {
     d.register("a", mockChannel());
     expect(old.isClosed()).toBe(true);
   });
-
   test("stale unregister does not remove a replacement channel", () => {
     const d = new AgentDispatcher();
     const old = mockChannel();
@@ -146,7 +184,6 @@ describe("AgentDispatcher", () => {
     d.unregister("a", replacement);
     expect(d.isOnline("a")).toBe(false);
   });
-
   test("pushDispatchJob enqueues DispatchJob payload", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -175,7 +212,6 @@ describe("AgentDispatcher", () => {
       expect(m.payload.value.dispatchEpoch).toBe(7n);
     }
   });
-
   test("pushDispatchJob carries additive queue target and validation modes", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -196,7 +232,6 @@ describe("AgentDispatcher", () => {
       expect(message.payload.value.queueValidationMode).toBe(QueueValidationMode.ENFORCE);
     }
   });
-
   test("pushDispatchJob carries input staging + expected outputs (P4-f)", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -233,7 +268,6 @@ describe("AgentDispatcher", () => {
       expect(m.payload.value.fileOutputDescriptors).toEqual(["result"]);
     }
   });
-
   test("pushDispatchJob carries resolved Data Market entries without CP absolute paths", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -295,7 +329,6 @@ describe("AgentDispatcher", () => {
     expect(localDelivery?.relativePath).toBe("vasp/potcar-set");
     expect(localDelivery?.selectedEntries[0]?.objectDownloadUrl).toBe("");
   });
-
   test("pushDispatchJob carries a structured signed Sandbox manifest", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -311,6 +344,7 @@ describe("AgentDispatcher", () => {
     expect(message?.payload.case).toBe("dispatchJob");
     if (message?.payload.case !== "dispatchJob") return;
     const sandbox = message.payload.value.sandboxExecution;
+    expect(sandbox?.computeResources).toMatchObject({ cpus: 1, memoryMb: 128n });
     expect(sandbox?.script?.entrypoint).toBe("main.py");
     expect(sandbox?.runtime?.digest).toBe(`sha256:${"3".repeat(64)}`);
     expect(sandbox?.executionMode).toBe("RootImpersonation");
@@ -320,7 +354,6 @@ describe("AgentDispatcher", () => {
     expect(sandbox?.envelope?.nonce).toBe("nonce-1234567890123456");
     expect(sandbox?.networkDisabled).toBe(true);
   });
-
   test("pushes a data delivery revocation without delivery URLs or paths", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -337,7 +370,6 @@ describe("AgentDispatcher", () => {
       }),
     });
   });
-
   test("pushDispatchJob returns false when agent not online", () => {
     const d = new AgentDispatcher();
     const ok = d.pushDispatchJob("nobody", "job-1", {
@@ -348,7 +380,6 @@ describe("AgentDispatcher", () => {
     });
     expect(ok).toBe(false);
   });
-
   test("failed channel push removes stale online state", () => {
     const d = new AgentDispatcher();
     d.register("a", {
@@ -368,7 +399,6 @@ describe("AgentDispatcher", () => {
     expect(ok).toBe(false);
     expect(d.isOnline("a")).toBe(false);
   });
-
   test("pushCancelJob enqueues CancelJob payload", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -381,12 +411,10 @@ describe("AgentDispatcher", () => {
       expect(ch.messages[0].payload.value.revokedEpoch).toBe(8n);
     }
   });
-
   test("pushCancelJob returns false when agent not online", () => {
     const d = new AgentDispatcher();
     expect(d.pushCancelJob("ghost", "job-99")).toBe(false);
   });
-
   test("pushReleaseJobWorkRoot targets the owning Agent", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -399,7 +427,6 @@ describe("AgentDispatcher", () => {
       expect(message.payload.value.jobId).toBe("job-output");
     }
   });
-
   test("redelivers pending durable cancellations after Agent registration", async () => {
     const dispatcher = new AgentDispatcher();
     const channel = mockChannel();
@@ -409,8 +436,8 @@ describe("AgentDispatcher", () => {
         from: () => ({
           where: () => ({
             orderBy: async () => [
-              { jobId: "job-first", revokedEpoch: 3 },
-              { jobId: "job-second", revokedEpoch: 4 },
+              { agentId: "agent-reconnect", jobId: "job-first", revokedEpoch: 3 },
+              { agentId: "agent-reconnect", jobId: "job-second", revokedEpoch: 4 },
             ],
           }),
         }),
@@ -429,7 +456,6 @@ describe("AgentDispatcher", () => {
       ),
     ).toEqual([3n, 4n]);
   });
-
   test("redelivers pending durable Job work-root releases after Agent registration", async () => {
     const dispatcher = new AgentDispatcher();
     const channel = mockChannel();
@@ -451,7 +477,6 @@ describe("AgentDispatcher", () => {
       "releaseJobWorkRoot",
     ]);
   });
-
   test("pushSandboxArtifactRelease emits a structured managed-path request", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -468,7 +493,6 @@ describe("AgentDispatcher", () => {
       expect(message.payload.value.items[0]?.replicaId).toBe("replica-1");
     }
   });
-
   test("pushSoftwareOperation enqueues softwareOperationRequest payload", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -487,7 +511,6 @@ describe("AgentDispatcher", () => {
       expect(m.payload.value.spec).toBe("gromacs@2024.1");
     }
   });
-
   test("pushDispatchJob sets envVars and wallTimeSec", () => {
     const d = new AgentDispatcher();
     const ch = mockChannel();
@@ -508,7 +531,6 @@ describe("AgentDispatcher", () => {
       expect(m.payload.value.workingDir).toBe("/scratch");
     }
   });
-
   test("multiple agents can be registered independently", () => {
     const d = new AgentDispatcher();
     const ch1 = mockChannel();
@@ -520,6 +542,286 @@ describe("AgentDispatcher", () => {
     expect(ch1.messages).toHaveLength(1);
     expect(ch2.messages).toHaveLength(1);
   });
+});
+
+test("pinned dispatch survives encoding and refuses a legacy or unverified replacement channel", () => {
+  const dispatcher = new AgentDispatcher();
+  const pin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: `sha256:${"b".repeat(64)}`,
+    lockfileDigest: `sha256:${"c".repeat(64)}`,
+    spackVersion: "1.0.0" as const,
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  const message = dispatcher.buildDispatchJob("pinned-job", {
+    jobIdInternal: "pinned-job",
+    name: "pinned",
+    command: SPACK_PINNED_EXECUTION_PLACEHOLDER,
+    resources: { cpus: 1, memoryMb: 128 },
+    spackExecution: { spec: "hello@1.0", command: "hello", pin },
+  });
+  const legacy = mockChannel();
+  dispatcher.register("a", legacy);
+  expect(
+    dispatcher.pushPreparedDispatch(
+      "a",
+      fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, message)),
+    ),
+  ).toBe(false);
+  dispatcher.register("a", { ...legacy, spackPinnedExecutionV1: true });
+  expect(
+    dispatcher.pushPreparedDispatch(
+      "a",
+      fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, message)),
+    ),
+  ).toBe(false);
+  expect(legacy.messages).toHaveLength(0);
+  const modern = {
+    ...mockChannel(),
+    spackPinnedExecutionV1: true,
+    verifiedCertFingerprint: "a".repeat(64),
+  };
+  dispatcher.register("a", modern);
+  expect(
+    dispatcher.pushPreparedDispatch(
+      "a",
+      fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, message)),
+    ),
+  ).toBe(true);
+  const sent = modern.messages[0];
+  expect(
+    sent?.payload.case === "dispatchJob" ? sent.payload.value.spackExecution?.pin : undefined,
+  ).toMatchObject(pin);
+  dispatcher.register("a", legacy);
+  expect(
+    dispatcher.pushPreparedDispatch(
+      "a",
+      fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, message)),
+    ),
+  ).toBe(false);
+});
+
+test("federation dispatch requires both renewal capability and verified transport", () => {
+  const dispatcher = new AgentDispatcher();
+  const message = dispatcher.buildDispatchJob("federation-job", {
+    jobIdInternal: "federation-job",
+    name: "federation",
+    command: "true",
+    resources: { cpus: 1, memoryMb: 128 },
+    federationExecution: true,
+  });
+  for (const capabilities of [
+    {},
+    { federationComputeLeaseV1: true, federationExecutionV1: true },
+    { verifiedCertFingerprint: "verified" },
+    { federationExecutionV1: true, verifiedCertFingerprint: "verified" },
+  ]) {
+    const channel = { ...mockChannel(), ...capabilities };
+    dispatcher.register("agent", channel);
+    expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+    expect(channel.messages).toHaveLength(0);
+  }
+  const channel = {
+    ...mockChannel(),
+    federationComputeLeaseV1: true,
+    federationExecutionV1: true,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register("agent", channel);
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  expect(channel.messages).toHaveLength(1);
+});
+
+test("federation installation cannot reach a legacy Agent even with durable replay support", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    softwareOperationReplayV1: true,
+    spackMaterialDeliveryV1: true,
+    verifiedCertFingerprint: "verified",
+  };
+  const payload = {
+    operationId: "operation",
+    federationJobId: "job",
+    action: SoftwareOperationAction.INSTALL,
+    spec: "hello@1",
+    requestedBy: "owner",
+    durableReplay: true,
+  };
+  dispatcher.register("agent", channel);
+  expect(dispatcher.pushSoftwareOperation("agent", payload)).toBe(false);
+  expect(channel.messages).toHaveLength(0);
+  dispatcher.register("agent", { ...channel, federationInstallationV1: true });
+  expect(dispatcher.pushSoftwareOperation("agent", payload)).toBe(false);
+  expect(channel.messages).toHaveLength(0);
+  dispatcher.register("agent", {
+    ...channel,
+    federationInstallationV1: true,
+    federationInstallationLeaseV1: true,
+  });
+  expect(dispatcher.pushSoftwareOperation("agent", payload)).toBe(false);
+  dispatcher.register("agent", {
+    ...channel,
+    federationInstallationV1: true,
+    federationInstallationLeaseV1: true,
+    federationInstallationMaterialLeaseV1: true,
+  });
+  expect(dispatcher.pushSoftwareOperation("agent", payload)).toBe(true);
+  expect(channel.messages[0]?.payload.value).toMatchObject({ federationJobId: "job" });
+});
+
+test("Sandbox signature renewal requires the advertised Agent capability", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    federationExecutionV1: true,
+    federationComputeLeaseV1: true,
+    verifiedCertFingerprint: "verified",
+    federationSandboxSignatureRenewalV1: false,
+  };
+  dispatcher.register("agent", channel);
+  expect(dispatcher.supportsFederationSandboxSignatureRenewal("agent")).toBe(false);
+  channel.federationSandboxSignatureRenewalV1 = true;
+  expect(dispatcher.supportsFederationSandboxSignatureRenewal("agent")).toBe(true);
+  channel.verifiedCertFingerprint = "";
+  expect(dispatcher.supportsFederationSandboxSignatureRenewal("agent")).toBe(false);
+});
+
+test("Sandbox input dispatch waits for an Agent that can stop expired preparation", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    federationExecutionV1: true,
+    federationComputeLeaseV1: true,
+    federationSandboxSignatureRenewalV1: true,
+    federationSandboxInputLeaseV1: false,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register("agent", channel);
+  const message = create(ServerMessageSchema, {
+    payload: {
+      case: "dispatchJob",
+      value: {
+        federationExecution: true,
+        sandboxExecution: { networkDisabled: true },
+        inputStaging: [{ stagePath: "inputs/data", sourceUrl: "https://objects.test/data" }],
+      },
+    },
+  });
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  channel.federationSandboxInputLeaseV1 = true;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  expect(channel.messages).toHaveLength(1);
+});
+
+test("Data Market preparation requires advertised authority support only before federation dispatch", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    federationExecutionV1: true,
+    federationComputeLeaseV1: true,
+    federationDataPreparationLeaseV1: false,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register("agent", channel);
+  const message = create(ServerMessageSchema, {
+    payload: {
+      case: "dispatchJob",
+      value: { federationExecution: true, dataDeliveries: [{ bindingId: "input" }] },
+    },
+  });
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  channel.federationDataPreparationLeaseV1 = true;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  channel.verifiedCertFingerprint = "";
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  if (message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+  message.payload.value.federationExecution = false;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  expect(channel.messages).toHaveLength(2);
+});
+
+test("NetDrive preparation requires advertised authority support and verified transport", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    federationExecutionV1: true,
+    federationComputeLeaseV1: true,
+    federationNetdriveInputLeaseV1: false,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register("agent", channel);
+  const message = dispatcher.buildDispatchJob("job", {
+    jobIdInternal: "job",
+    name: "NetDrive",
+    command: "true",
+    resources: { cpus: 1, memoryMb: 128 },
+    federationExecution: true,
+    inputStaging: [
+      {
+        fileMetadataId: crypto.randomUUID(),
+        stagePath: "input.txt",
+        sourceUrl: "https://objects.test/input",
+        netdriveInput: true,
+        expectedSha256: "a".repeat(64),
+        expectedSizeBytes: 4,
+        deliveryLeaseId: crypto.randomUUID(),
+        deliveryLeaseExpiresAtUnixMs: Date.now() + 60_000,
+      },
+    ],
+  });
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  channel.federationNetdriveInputLeaseV1 = true;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  expect(channel.messages[0]?.payload.value).toMatchObject({
+    inputStaging: [expect.objectContaining({ totalBytes: 4n, netdriveInput: true })],
+  });
+  channel.verifiedCertFingerprint = "";
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  if (message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+  message.payload.value.federationExecution = false;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+});
+
+test("local Sandbox inputs require authenticated advertised capability and a live federation lease", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    verifiedCertFingerprint: "verified",
+    federationExecutionV1: true,
+    federationComputeLeaseV1: true,
+    federationSandboxSignatureRenewalV1: true,
+    federationSandboxInputLeaseV1: true,
+    federationSandboxLocalInputV1: false,
+  };
+  dispatcher.register("agent", channel);
+  const message = create(ServerMessageSchema, {
+    payload: {
+      case: "dispatchJob",
+      value: {
+        federationExecution: true,
+        sandboxExecution: { networkDisabled: true },
+        inputStaging: [
+          {
+            localDataSource: {
+              locationId: "location",
+              managedRootId: "root",
+              relativePath: "dataset/input.dat",
+            },
+          },
+        ],
+      },
+    },
+  });
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  channel.federationSandboxLocalInputV1 = true;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  if (message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+  message.payload.value.federationExecution = false;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  message.payload.value.federationExecution = true;
+  channel.verifiedCertFingerprint = "";
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
 });
 
 test("part URL responses encode independent correlation and upload identity while legacy calls stay valid", () => {

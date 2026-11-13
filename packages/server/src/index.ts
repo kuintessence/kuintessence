@@ -16,9 +16,11 @@ import {
   ErrorCode,
   type RoleName,
   usecase,
+  WorkflowExecutionInterrupted,
   type WorkflowPlacementConfig,
   WorkflowPlacementConfigSchema,
 } from "@kuintessence/shared";
+import { MediaAge } from "@kuintessence/shared/federation/media-age";
 import { and, eq, isNull, ne } from "drizzle-orm";
 import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
@@ -46,16 +48,135 @@ import {
 import { AuthzService, type AuthzTuple } from "./authz/service";
 import { loadServerConfig } from "./config";
 import { EventBus } from "./events/event-bus";
+import { FederationAccountingCollection } from "./federation/accounting-collection";
+import { FederationAdjustmentService } from "./federation/adjustment";
+import { FederationAgreementExchange } from "./federation/agreement-exchange";
+import { FederationAgreementService } from "./federation/agreements";
+import { FederationArbitrationContextService } from "./federation/arbitration-context";
+import { FederationArbitrationDecisionService } from "./federation/arbitration-decision";
+import { FederationArbitrationDecisionDelivery } from "./federation/arbitration-decision-delivery";
+import { FederationArbitrationExecutionExchange } from "./federation/arbitration-execution";
+import { FederationArbitrationPolicyService } from "./federation/arbitration-policy";
+import { FederationArbitrationResolutionService } from "./federation/arbitration-resolution";
+import { FederationArbitrationReviewService } from "./federation/arbitration-review";
+import { FederationArbitrationRevocationDelivery } from "./federation/arbitration-revocations";
+import { FederationAssetService } from "./federation/assets";
+import { FederationAttestationService } from "./federation/attestation";
+import { UnixAttestationClient } from "./federation/attestation-client";
+import { FederationAttestationWorker } from "./federation/attestation-worker";
+import { FederationBillingService } from "./federation/billing";
+import { FederationCancellationMonitor } from "./federation/cancellation-monitor";
+import { FederationCaseArbitrationDecisionService } from "./federation/case-arbitration-decisions";
+import { UnixCaseClient } from "./federation/case-client";
+import { FederationCaseRevocationDelivery } from "./federation/case-revocations";
+import { FederationCaseSubmissionService } from "./federation/case-submissions";
+import { FederationClosingAutomation } from "./federation/closing-automation";
+import { FederationClosingPolicyService } from "./federation/closing-policy";
+import { FederationCommercialAgreementService } from "./federation/commercial-agreements";
+import { FederationCommercialApprovalExchange } from "./federation/commercial-approval-exchange";
+import { UnixCommercialClient } from "./federation/commercial-client";
+import { FederationCommercialExecutionService } from "./federation/commercial-execution";
+import { FederationCommercialSubmissionService } from "./federation/commercial-submissions";
+import { FederationCommercialWorker } from "./federation/commercial-worker";
+import { FederationCompletionCapacity } from "./federation/completion-capacity";
+import { FederationDataDispatch } from "./federation/data-dispatch";
+import { createFederationDatasetPreflight } from "./federation/dataset-preflight";
+import { FederationDatasetPublicationService } from "./federation/dataset-publication";
+import { FederationDatasetUseClient } from "./federation/dataset-use-client";
+import { FederationDatasetUseResponder } from "./federation/dataset-use-exchange";
+import { FederationDatasetUsePolicies } from "./federation/dataset-use-policies";
+import { FederationDatasetUseWorker } from "./federation/dataset-use-worker";
+import { FederationDisclosureService } from "./federation/disclosure";
+import { FederationEvidenceService } from "./federation/disclosure-delivery";
+import { FederationDisclosurePolicyService } from "./federation/disclosure-policy";
+import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
+import { FederationDisputeDelivery } from "./federation/dispute-delivery";
+import { FederationDisputeFreezeExchange } from "./federation/dispute-freeze-exchange";
+import { FederationDisputeResolutionService } from "./federation/dispute-resolution";
+import { FederationDisputeService } from "./federation/disputes";
+import { FederationExecutionAutomation } from "./federation/execution-automation";
+import {
+  FederationExecutionBindingService,
+  loadFederationWorkflowBinding,
+  queueFederationWorkflow,
+} from "./federation/execution-binding";
+import { FederationExecutionConfirmationService } from "./federation/execution-confirmation";
+import { FederationExecutionMonitor } from "./federation/execution-monitor";
+import { FederationExecutionStopService } from "./federation/execution-stop";
+import { FederationExecutionTerminalService } from "./federation/execution-terminal";
+import { FederationTerminalExchange } from "./federation/execution-terminal-exchange";
+import { FederationCommercialHistoryService } from "./federation/history-recovery";
+import { FederationInputImports } from "./federation/input-imports";
+import { FederationInputPublication } from "./federation/input-publication";
+import { FederationInputReader } from "./federation/input-reader";
+import {
+  FederationInputStorage,
+  type FederationInputStorageBackend,
+} from "./federation/input-storage";
+import { FederationInputTransfers } from "./federation/input-transfers";
+import { FederationInputTransport } from "./federation/input-transport";
+import { FederationInputWorker } from "./federation/input-worker";
+import { FederationMarketService } from "./federation/market";
+import { UnixMarketClient } from "./federation/market-client";
+import { FederationMarketRequestService } from "./federation/market-requests";
+import { FederationMaterialExchange } from "./federation/material-exchange";
+import { FederationMediaExportOperations } from "./federation/media-export-operations";
+import { FederationMediaExportTransport } from "./federation/media-export-transport";
+import { FederationMediaExportService } from "./federation/media-exports";
+import { FederationMediaImportOperations } from "./federation/media-import-operations";
+import { FederationMediaImportTransport } from "./federation/media-import-transport";
+import {
+  FederationMediaKeyRequester,
+  FederationMediaKeyResponder,
+} from "./federation/media-key-exchange";
+import { FederationMediaLogistics } from "./federation/media-logistics";
+import { FederationMediaPackageService } from "./federation/media-packages";
+import {
+  FederationMediaReceiptReceiver,
+  FederationMediaReceiptSender,
+} from "./federation/media-receipts";
+import { FederationMediaUploadTransport } from "./federation/media-upload-transport";
+import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
+import { createFederationPackageResolver } from "./federation/package-resolver";
+import { FederationPaymentService } from "./federation/payment";
+import { FederationPermissionService } from "./federation/permissions";
+import { FederationPreparationService } from "./federation/preparation";
+import { FederationPreparationWorker } from "./federation/preparation-worker";
+import { FederationRefundService } from "./federation/refund";
+import { FederationReservationPolicyService } from "./federation/reservation-policy";
+import { FederationReservationProposalService } from "./federation/reservation-proposals";
+import { FederationResultStorage } from "./federation/result-storage";
+import { FederationResultTransport } from "./federation/result-transport";
+import { FederationResultWorker } from "./federation/result-worker";
+import { FederationResultResponder } from "./federation/results";
+import {
+  loadFederationCasePublications,
+  loadFederationSender,
+  loadFederationSigningKey,
+  loadFederationStorageGuard,
+  startFederationIngress,
+} from "./federation/runtime";
+import { FederationSettlementService } from "./federation/settlement";
+import { FederationTaskMediaSources } from "./federation/task-media-source";
+import { FederationTaskMediaTargets } from "./federation/task-media-target";
+import { FederationTerminalAutomation } from "./federation/terminal-automation";
+import { FederationTerminalPolicyService } from "./federation/terminal-policy";
+import { FederationTrustRegistry } from "./federation/trust-registry";
+import { FederationUsageService } from "./federation/usage";
+import { FederationUsageExchange } from "./federation/usage-exchange";
+import { FederationWorkflowExecutor } from "./federation/workflow-executor";
 import {
   AgentDispatcher,
   JobCancellationOutbox,
   JobWorkRootReleaseOutbox,
 } from "./grpc/dispatcher";
+import { JobDispatchOutbox } from "./grpc/job-dispatch-outbox";
 import { createGrpcConnectNodeHandler } from "./grpc/server";
 import { attachGrpcTransportErrorHandlers } from "./grpc/transport-errors";
 import { authMiddleware } from "./middleware/auth";
 import { automationScopeMiddleware } from "./middleware/automation-scope";
 import { createErrorHandler, createNotFoundHandler } from "./middleware/error-handler";
+import { federationOrganizationContext } from "./middleware/federation-organization";
 import { principalBinder } from "./middleware/principal-binder";
 import { securityHeaders } from "./middleware/security-headers";
 import { PreferenceService } from "./preferences/preference-service";
@@ -65,6 +186,9 @@ import { createAdminAuthzRoutes } from "./routes/admin-authz";
 import { createAdminBrandingRoutes } from "./routes/admin-branding";
 import { createAdminDataMarketRoutes } from "./routes/admin-data-market";
 import { createAdminDesensitizeRoutes } from "./routes/admin-desensitize";
+import { createAdminFederationRoutes } from "./routes/admin-federation";
+import { createAdminFederationPermissionRoutes } from "./routes/admin-federation-permissions";
+import { createAdminFederationStorageRoutes } from "./routes/admin-federation-storage";
 import { createAdminFileTransferAuditConfigRoutes } from "./routes/admin-file-transfer-audit-config";
 import { createAdminSshCredentialRoutes } from "./routes/admin-ssh-credentials";
 import { createAdminSshRecordingRoutes } from "./routes/admin-ssh-recordings";
@@ -81,6 +205,14 @@ import { createComputeProviderRoutes } from "./routes/compute-providers";
 import { buildCpRouter } from "./routes/cp";
 import { createDataMarketRoutes } from "./routes/data-market";
 import { dslRoutes } from "./routes/dsl";
+import { createFederationAgreementRoutes } from "./routes/federation-agreements";
+import { createFederationAssetRoutes } from "./routes/federation-assets";
+import { createFederationCasePublicationRoutes } from "./routes/federation-case-publications";
+import { createFederationCommercialRoutes } from "./routes/federation-commercial";
+import { createFederationEvidenceRoutes } from "./routes/federation-evidence";
+import { createFederationMarketRoutes } from "./routes/federation-market";
+import { createFederationMediaRoutes } from "./routes/federation-media";
+import { createFederationOutboundRoutes } from "./routes/federation-outbound";
 import { createFileRoutes } from "./routes/files";
 import { healthRoutes } from "./routes/health";
 import { createInterconnectRoutes } from "./routes/interconnect";
@@ -123,6 +255,7 @@ import {
   DataDeliveryRevocationOutbox,
   DataGrantRevocationCoordinator,
 } from "./services/data-delivery-revocations";
+import { DataDisclosurePolicyService } from "./services/data-disclosure-policies";
 import { PgDataImportCoordinator } from "./services/data-import-coordinator-drizzle";
 import { DataMarketService, type DataUploadPort } from "./services/data-market";
 import { PgDataMarketRepository } from "./services/data-market-repository-drizzle";
@@ -178,6 +311,8 @@ import { TransferRunner } from "./services/transfer-runner";
 import { PgTransferSessionStore } from "./services/transfer-session-store";
 import { assertUsecasePackageExecutionAccess } from "./services/usecase-execution-authorizer";
 import { PgArtifactStore, WorkflowArtifactService } from "./services/workflow-artifact";
+import { WorkflowArtifactFiles } from "./services/workflow-artifact-files";
+import { registerWorkflowAuthorization } from "./services/workflow-authorization";
 import { createWorkflowPlacementBuilder } from "./services/workflow-placement-builder";
 import {
   InstalledRegistry,
@@ -195,11 +330,17 @@ import {
 import { SpackMaterialDelivery } from "./software-governance/spack-material-delivery";
 import { createRealMinioBackend, loadMinioConfigFromEnv } from "./storage/minio-client";
 import { WorkflowAsyncRunner } from "./workflow/async-runner";
-import { createDatasetPreflight } from "./workflow/dataset-preflight";
+import { cancelWorkflowJobs } from "./workflow/cancel-jobs";
+import { createDatasetPreflight, type DatasetPreflightDeps } from "./workflow/dataset-preflight";
 import { createDbPackageStore } from "./workflow/db-package-store";
 import { WorkflowDraftService } from "./workflow/draft-service";
+import { readWorkflowPublishedFiles, saveWorkflowPublishedFiles } from "./workflow/execution-jobs";
+import {
+  type LeasedWorkflowJournal,
+  WorkflowExecutionJournalStore,
+} from "./workflow/execution-journal";
 import { createFileStager } from "./workflow/file-stager";
-import { JobCompletionRegistry } from "./workflow/job-completion-registry";
+import { completionFromJob, JobCompletionRegistry } from "./workflow/job-completion-registry";
 import { createJobSubmitter } from "./workflow/job-submitter";
 import {
   PgWorkflowNamedReferenceRepository,
@@ -219,14 +360,15 @@ import {
 import {
   type OutputTransferInput,
   type OutputTransferStore,
-  sandboxArtifactTransferId,
   waitForOutputTransfer,
 } from "./workflow/output-transfer";
 import { createPackageResolver } from "./workflow/package-resolver";
 import { parseWorkflowYaml } from "./workflow/parser";
+import { constrainWorkflowResources } from "./workflow/resource-limits";
 import { WorkflowRunRegistry } from "./workflow/run-registry";
 import { createWorkflowRunner } from "./workflow/runner";
 import { stageWorkflowInputs } from "./workflow/stage-inputs";
+import { submitWorkflowJob } from "./workflow/submit-job";
 
 const config = loadServerConfig();
 const logger = createLogger("server", config.LOG_LEVEL);
@@ -267,6 +409,27 @@ const eventBus = new EventBus();
 const preferenceService = new PreferenceService(db);
 const dispatcher = new AgentDispatcher();
 const jobCancellationOutbox = new JobCancellationOutbox(db, dispatcher);
+let federationDispatchAuthorization: FederationDispatchAuthorization | undefined;
+let federationDataDispatch = new FederationDataDispatch(db);
+const jobDispatchOutbox = new JobDispatchOutbox(
+  db,
+  dispatcher,
+  async (runId, target) => {
+    if (!federationDispatchAuthorization)
+      throw new WorkflowExecutionInterrupted("Federation dispatch authorization is unavailable", {
+        retryable: false,
+      });
+    return federationDispatchAuthorization.prepare(runId, target);
+  },
+  async (agentId, message) => {
+    return federationDataDispatch.prepare(agentId, message);
+  },
+  (manifest) => {
+    if (!sandboxManifestSigner)
+      throw new WorkflowExecutionInterrupted("Sandbox signature renewal is unavailable");
+    return sandboxManifestSigner.sign(manifest);
+  },
+);
 const jobWorkRootReleaseOutbox = new JobWorkRootReleaseOutbox(db, dispatcher);
 const dataScanCoordinator = new DataScanCoordinator(
   new PgDataImportCoordinator(db),
@@ -439,6 +602,16 @@ const softwareOperations = new SoftwareOperationService(
       throw new AppError(ErrorCode.FORBIDDEN, "Agent operation permission denied", 403);
     }
   },
+  async (runId, target) => {
+    if (!federationDispatchAuthorization)
+      throw new WorkflowExecutionInterrupted(
+        "Federation installation authorization is unavailable",
+        {
+          retryable: false,
+        },
+      );
+    return federationDispatchAuthorization.prepare(runId, target);
+  },
   sourceAuditProofs,
 );
 const metricsRecorder = new PgAgentMetricsRecorder(db);
@@ -473,6 +646,7 @@ const orchestrator = new PlacementOrchestrator({
   preferenceService,
   dispatcher,
   jobCancellations: jobCancellationOutbox,
+  dispatchOutbox: jobDispatchOutbox,
   queueRegistry,
   computeHealth: {
     enforce: config.COMPUTE_HEALTH_ENFORCE,
@@ -574,39 +748,34 @@ const workflowOutputTransferStore: OutputTransferStore = {
   },
 };
 const sandboxArtifactReleaseService = new SandboxArtifactReleaseService(dispatcher);
+const workflowArtifactFiles = new WorkflowArtifactFiles(db, async (input) => {
+  if (!transferRunner || !netdriveServiceForWorkflowOutputs)
+    throw new Error("NetDrive is unavailable for Sandbox artifacts");
+  await waitForWorkflowOutputTransfer({
+    transferId: crypto.randomUUID(),
+    ownerId: input.ownerId,
+    source: input.source,
+    target: input.target,
+    agentId: input.agentId,
+    workflowRunId: input.artifact.workflowRunId,
+    jobId: input.artifact.producerJobId ?? undefined,
+  });
+  const listed = await netdriveServiceForWorkflowOutputs.listFiles(input.ownerId, {
+    prefix: input.target,
+    limit: 1,
+    offset: 0,
+  });
+  const file = listed.files.find((item) => item.path === input.target);
+  if (!file || file.sha256 !== input.sha256 || file.size !== input.sizeBytes)
+    throw new Error("Persisted Sandbox artifact failed size/hash verification");
+  return { netdriveFileId: file.id, storageRef: input.target };
+});
 const workflowArtifactService = new WorkflowArtifactService(
   new PgArtifactStore(db),
-  {
-    persist: async ({ artifact, localReplica, ownerId }) => {
-      if (!transferRunner || !netdriveServiceForWorkflowOutputs) {
-        throw new Error("NetDrive is unavailable for durable Sandbox artifacts");
-      }
-      const safeDescriptor = artifact.descriptor.replace(/[^a-zA-Z0-9._-]/g, "_");
-      const target = `workflow-runs/${artifact.workflowRunId}/artifacts/${artifact.id}/${safeDescriptor}`;
-      const [fileId] = await waitForWorkflowOutputTransfer({
-        transferId: sandboxArtifactTransferId(artifact.id, localReplica.id),
-        ownerId,
-        source: localReplica.storageRef,
-        target,
-        agentId: localReplica.agentId,
-        workflowRunId: artifact.workflowRunId,
-        totalBytes: artifact.sizeBytes,
-      });
-      const file = fileId ? await netdriveServiceForWorkflowOutputs.getFileById(fileId) : undefined;
-      if (
-        !file ||
-        file.ownerId !== ownerId ||
-        file.path !== target ||
-        file.sha256 !== artifact.contentHash ||
-        file.size !== artifact.sizeBytes
-      ) {
-        throw new Error("Persisted Sandbox artifact failed size/hash verification");
-      }
-      return { netdriveFileId: file.id, storageRef: target };
-    },
-  },
+  workflowArtifactFiles,
   (replica) => sandboxArtifactReleaseService.release(replica),
 );
+
 if (config.SANDBOX_ARTIFACT_GC_INTERVAL_SEC > 0) {
   setInterval(() => {
     workflowArtifactService
@@ -646,6 +815,22 @@ const sandboxManifestSigner = config.SANDBOX_ENABLED
         })(),
     })
   : undefined;
+
+// Managed local datasets do not require an object storage service.
+const localDataDeliveryResolver = new DataDeliveryResolver(db, undefined, {
+  verifyAccess: (input) => dataPrerequisiteRepository.verifyAccess(input),
+});
+orchestrator.setDataDeliveryResolver((input) =>
+  localDataDeliveryResolver.resolveForDispatch(input),
+);
+if (sandboxManifestSigner) {
+  const restrictedSandboxDeliveryBinder = new RestrictedSandboxDeliveryBinder(
+    sandboxManifestSigner,
+  );
+  orchestrator.setRestrictedSandboxDeliveryBinder((manifest, deliveries) =>
+    restrictedSandboxDeliveryBinder.bind(manifest, deliveries),
+  );
+}
 
 const app = new Hono();
 
@@ -834,6 +1019,7 @@ protectedApi.use("*", authMiddleware(config.JWT_SECRET, db));
 // cp-rbac middleware and the metering routes.
 protectedApi.use("*", principalBinder(db));
 protectedApi.use("*", automationScopeMiddleware(db));
+protectedApi.use("/federation/*", federationOrganizationContext);
 protectedApi.route("/", createAutomationCredentialRoutes(db));
 // Server CA + cert issuance + mTLS for the Agent connectRPC stream.
 const ca = await ensureCa(config.SERVER_CA_DIR);
@@ -847,7 +1033,12 @@ app.route("/api", createAgentRegistrationRoutes(agentRegistrationService));
 // dispatches it through the placement orchestrator (carrying input staging),
 // and awaits the agent's terminal status (collected outputs) via the
 // completion registry, which the gRPC handler feeds.
-const jobCompletionRegistry = new JobCompletionRegistry();
+const jobCompletionRegistry = new JobCompletionRegistry({
+  load: async (jobId) => {
+    const job = await jobService.getById(jobId);
+    return job ? completionFromJob(job) : null;
+  },
+});
 const workflowPackageStore = createDbPackageStore(db);
 const workflowDataSelectionValidator = createPgDataSelectionValidator(db);
 const namedReferenceResolver = new WorkflowNamedReferenceResolver(
@@ -869,7 +1060,7 @@ const resolveWorkflowVersion = async (workflowVersionId: string) => {
   return parseWorkflowYaml(row.yamlContent);
 };
 
-const validateWorkflowDatasetInputs = createDatasetPreflight({
+const workflowDatasetPreflightDeps: DatasetPreflightDeps = {
   loadUsecasePackage: async (usecaseVersionId) =>
     (await workflowPackageStore.getById(usecaseVersionId))?.spec ?? null,
   assertUsecaseExecutionAccess: (input) =>
@@ -877,7 +1068,8 @@ const validateWorkflowDatasetInputs = createDatasetPreflight({
   resolveWorkflowVersion,
   verifyAccess: (input) => dataPrerequisiteRepository.verifyAccess(input),
   validateUsecase: (input) => workflowDataSelectionValidator.validateUsecase(input),
-});
+};
+const validateWorkflowDatasetInputs = createDatasetPreflight(workflowDatasetPreflightDeps);
 
 async function assertWorkflowExecutionMembership(input: {
   userId: string;
@@ -943,74 +1135,129 @@ const workflowOutputPublisher = new WorkflowOutputPublisher({
   },
 });
 
-const makeRunner = (
-  submittedBy: string,
-  userRole: RoleName,
-  persistRun = true,
-  activeRunId?: string,
-  rawPlacementConfig?: WorkflowPlacementConfig,
-  activeOrgId?: string | null,
-) => {
-  const placementConfig = WorkflowPlacementConfigSchema.parse(rawPlacementConfig ?? {});
-  const authorizeJobSubmission = async (input: {
-    jobId: string;
-    orgId: string | null;
-    queueId: string | null;
-  }): Promise<void> => {
-    const authorizationTuples = jobSubmissionTuples({
-      ...input,
-      userId: submittedBy,
-    });
-    if (authzService.mode === "enforce") {
-      await authzService.writeRelationships(authorizationTuples);
-    }
-    await authzService.enqueueMany(authorizationTuples);
-  };
-  const sandboxExecutor =
-    sandboxManifestSigner && activeRunId
-      ? new SandboxNodeExecutor({
-          db,
-          resolver: sandboxExecutionResolver,
-          signer: sandboxManifestSigner,
-          jobService,
-          orchestrator,
-          artifactService: workflowArtifactService,
-          awaitCompletion: (jobId) =>
-            jobCompletionRegistry.awaitCompletion(
-              jobId,
-              config.SERVER_JOB_COMPLETION_TIMEOUT_SEC * 1000,
-            ),
-          submittedBy,
-          ...(activeOrgId !== undefined ? { orgId: activeOrgId } : {}),
-          userRole,
-          authorizeJobSubmission,
-          workflowRunId: activeRunId,
-          defaultExecutionIdentity: placementConfig.defaultExecutionIdentity,
-          resolvePolicy: (target) => sandboxPolicyService.effectiveFor(target),
-          governance: licenseRuntimeGovernance,
-          resolvePlannedAgents: async (nodeId) => {
-            const [latest] = await placementPlanService.list(activeRunId);
-            const planned = latest?.nodes.find((candidate) => candidate.nodeId === nodeId);
-            return planned ? [planned.preferredAgentId, ...planned.fallbackAgentIds] : [];
-          },
-          recordExecutionStats: (input) => sandboxExecutionStats.record(input),
-          limits: {
-            pids: config.SANDBOX_MAX_PIDS,
-            outputBytes: config.SANDBOX_MAX_OUTPUT_BYTES,
-            logBytes: config.SANDBOX_MAX_LOG_BYTES,
-          },
-        })
-      : undefined;
-  return createWorkflowRunner({
-    deferSpackActivation: true,
-    // Persist runs for audit and visibility in `workflow list`.
-    ...(persistRun
-      ? {
-          persistRun: (name, result, graph) =>
-            workflowRegistry.recordRun(name, submittedBy, result, graph),
+const makeRunner =
+  (
+    submittedBy: string,
+    userRole: RoleName,
+    persistRun = true,
+    activeRunId?: string,
+    rawPlacementConfig?: WorkflowPlacementConfig,
+    activeOrgId?: string | null,
+    executionLease?: LeasedWorkflowJournal,
+  ) =>
+  async (yaml: string) => {
+    if (executionLease && (executionLease.runId !== activeRunId || activeOrgId === undefined))
+      throw new WorkflowExecutionInterrupted(
+        "Workflow runner requires its run and organization scope",
+        { retryable: false },
+      );
+    const federationBinding = activeRunId
+      ? await loadFederationWorkflowBinding(db, activeRunId)
+      : null;
+    const federationSnapshot = federationBinding?.snapshot;
+    if (
+      federationSnapshot &&
+      (submittedBy !== federationSnapshot.identity.userId ||
+        activeOrgId !== federationSnapshot.identity.orgId ||
+        userRole !== "user" ||
+        !executionLease)
+    )
+      throw new WorkflowExecutionInterrupted(
+        "Federation workflow requires its original restricted identity and lease",
+        { retryable: false },
+      );
+    const awaitWorkflowJob = async (jobId: string) => {
+      try {
+        const result = await jobCompletionRegistry.awaitCompletion(
+          jobId,
+          config.SERVER_JOB_COMPLETION_TIMEOUT_SEC * 1000,
+          executionLease?.signal,
+        );
+        await executionLease?.renew();
+        return result;
+      } catch (cause) {
+        if (cause instanceof WorkflowExecutionInterrupted) throw cause;
+        if (executionLease)
+          throw new WorkflowExecutionInterrupted("Waiting for the original workflow Job result", {
+            cause,
+          });
+        throw cause;
+      }
+    };
+    const placementConfig = WorkflowPlacementConfigSchema.parse(rawPlacementConfig ?? {});
+    const authorizeJobSubmission = async (input: {
+      jobId: string;
+      orgId: string | null;
+      queueId: string | null;
+    }): Promise<void> => {
+      const authorizationTuples = jobSubmissionTuples({
+        ...input,
+        userId: submittedBy,
+      });
+      try {
+        if (authzService.mode === "enforce") {
+          await authzService.writeRelationships(authorizationTuples);
         }
-      : {}),
-    resolvePackage: createPackageResolver(workflowPackageStore, async (assetId, spec) => {
+        await authzService.enqueueMany(authorizationTuples);
+      } catch (cause) {
+        if (executionLease)
+          throw new WorkflowExecutionInterrupted(
+            "Workflow Job authorization projection is unavailable",
+            { cause },
+          );
+        throw cause;
+      }
+    };
+    const resolveFileInput = async (value: unknown) => {
+      if (!activeRunId) return value;
+      await executionLease?.renew();
+      const resolved = await workflowArtifactFiles.resolve(
+        value,
+        { workflowRunId: activeRunId, ownerId: submittedBy },
+        workflowArtifactService,
+      );
+      await executionLease?.renew();
+      return resolved;
+    };
+    const sandboxExecutor =
+      sandboxManifestSigner && activeRunId
+        ? new SandboxNodeExecutor({
+            db,
+            resolver: sandboxExecutionResolver,
+            signer: sandboxManifestSigner,
+            jobService,
+            orchestrator,
+            artifactService: workflowArtifactService,
+            resolveFileInput,
+            awaitCompletion: awaitWorkflowJob,
+            executionLease,
+            resourceLimits: federationSnapshot?.request.resources,
+            federationTargets: federationSnapshot
+              ? (federationSnapshot.executionTargets ?? [])
+              : undefined,
+            requiredRuntime: federationSnapshot?.environment.sandboxRuntime,
+            submittedBy,
+            ...(activeOrgId !== undefined ? { orgId: activeOrgId } : {}),
+            userRole,
+            authorizeJobSubmission,
+            workflowRunId: activeRunId,
+            defaultExecutionIdentity: placementConfig.defaultExecutionIdentity,
+            resolvePolicy: (target) => sandboxPolicyService.effectiveFor(target),
+            governance: licenseRuntimeGovernance,
+            resolvePlannedAgents: async (nodeId) => {
+              const [latest] = await placementPlanService.list(activeRunId);
+              const planned = latest?.nodes.find((candidate) => candidate.nodeId === nodeId);
+              return planned ? [planned.preferredAgentId, ...planned.fallbackAgentIds] : [];
+            },
+            recordExecutionStats: (input) => sandboxExecutionStats.record(input),
+            limits: {
+              pids: config.SANDBOX_MAX_PIDS,
+              outputBytes: config.SANDBOX_MAX_OUTPUT_BYTES,
+              logBytes: config.SANDBOX_MAX_LOG_BYTES,
+            },
+          })
+        : undefined;
+    const canInstallSoftware = async (assetId: string, spec: string) => {
       const availability = await softwareAvailability.resolve(
         {
           assetRef: { id: assetId, kind: "spack-package" },
@@ -1029,270 +1276,334 @@ const makeRunner = (
         },
       );
       return availability.installableAvailable.length > 0;
-    }),
-    resolveWorkflowVersion,
-    ...(sandboxExecutor ? { executeScript: sandboxExecutor.execute.bind(sandboxExecutor) } : {}),
-    submitJob: createJobSubmitter({
-      prepare: async (spec) => {
-        await assertWorkflowExecutionMembership({
-          userId: submittedBy,
-          orgId: activeOrgId ?? null,
-        });
-        if (!spec.usecasePackageId) return spec;
-        await assertUsecasePackageExecutionAccess(db, spec.usecasePackageId, {
-          userId: submittedBy,
-          orgId: activeOrgId ?? null,
-        });
-        const row = await workflowPackageStore.getById(
-          spec.usecaseVersionId ?? spec.usecasePackageId,
-        );
-        if (!row) throw new Error(`usecase package not found: ${spec.usecasePackageId}`);
-        const pkg = usecase.UsecasePackageSchema.parse(row.spec);
-        if (!("softwareRef" in pkg)) {
-          throw new Error(
-            "Workflow execution requires a governed usecase package with a software selector",
+    };
+    return createWorkflowRunner({
+      executeFederation: async (node, invocation, parameters, files) => {
+        if (!executionLease || !activeOrgId || !invocation || federationSnapshot)
+          throw new WorkflowExecutionInterrupted(
+            "Federation nodes require a source durable run and organization",
+            { retryable: false },
           );
-        }
-        const dataSelections = await workflowDataSelectionValidator.validateUsecase({
-          pkg,
-          dataInputs: spec.dataInputs ?? {},
-        });
-        const selectedDataInputs = Object.fromEntries(
-          Object.entries(spec.dataInputs ?? {}).map(([descriptor, input]) => {
-            const selection = dataSelections.find((item) => item.descriptor === descriptor);
-            return [
-              descriptor,
-              selection && input.targetPath === undefined
-                ? { ...input, targetPath: selection.stagePath }
-                : input,
-            ];
-          }),
+        if (!federationWorkflowExecutor)
+          throw new WorkflowExecutionInterrupted("Federation execution is unavailable");
+        return federationWorkflowExecutor.execute(
+          { userId: submittedBy, orgId: activeOrgId },
+          executionLease,
+          node,
+          invocation,
+          parameters,
+          files,
         );
-        const marketBackedLicensedMaterials = new Set(
-          dataSelections.flatMap((selection) => selection.satisfiedLicensedMaterialSelectors),
-        );
-        return {
-          ...spec,
-          ...(Object.keys(selectedDataInputs).length > 0 ? { dataInputs: selectedDataInputs } : {}),
-          ...(spec.licensedMaterials
-            ? {
-                licensedMaterials: spec.licensedMaterials.filter(
-                  (material) => !marketBackedLicensedMaterials.has(material.selector),
-                ),
-              }
-            : {}),
-        };
       },
-      submit: async (spec) => {
-        const job = await jobService.submit(
-          {
-            name: spec.name,
-            ...(spec.usecasePackageId ? { usecasePackageId: spec.usecasePackageId } : {}),
-            ...(spec.dataInputs ? { dataInputs: spec.dataInputs } : {}),
-            command: spec.command,
-            // Preserve declared workflow resources before applying defaults.
-            resources: {
-              cpus: spec.resources?.cpus ?? 1,
-              memoryMb: spec.resources?.memoryMb ?? 1024,
-              ...(spec.resources?.wallTimeSec != null
-                ? { wallTimeSec: spec.resources.wallTimeSec }
-                : {}),
+      resolveFileInput,
+      journal: executionLease,
+      deferSpackActivation: true,
+      // Persist runs for audit and visibility in `workflow list`.
+      ...(persistRun
+        ? {
+            persistRun: (name, result, graph) =>
+              workflowRegistry.recordRun(name, submittedBy, result, graph),
+          }
+        : {}),
+      resolvePackage: federationSnapshot
+        ? createFederationPackageResolver(
+            federationSnapshot,
+            federationAssets,
+            workflowPackageStore,
+            canInstallSoftware,
+          )
+        : createPackageResolver(workflowPackageStore, canInstallSoftware),
+      resolveWorkflowVersion: federationSnapshot
+        ? async (id) => federationSnapshot.workflowVersions[id] ?? null
+        : resolveWorkflowVersion,
+      ...(sandboxExecutor
+        ? {
+            executeScript: async (node, ctx, invocation) => {
+              if (federationSnapshot && !federationSnapshot.environment.sandboxRuntime)
+                throw new WorkflowExecutionInterrupted(
+                  "Federation Script lacks a locked sandbox runtime",
+                  { retryable: false },
+                );
+              return sandboxExecutor.execute(node, ctx, invocation);
             },
-            envVars: spec.envVars,
-            ...(spec.softwareRequirements
-              ? { softwareRequirements: spec.softwareRequirements }
-              : {}),
-            inputStaging: spec.inputStaging,
-            expectedOutputs: spec.expectedOutputs,
-            fileOutputDescriptors: spec.fileOutputDescriptors,
-            ...(spec.stdinText !== undefined ? { stdinText: spec.stdinText } : {}),
-            ...(spec.schedulingStrategy ? { schedulingStrategy: spec.schedulingStrategy } : {}),
-          },
-          submittedBy,
-          {
-            ...(activeOrgId !== undefined ? { orgId: activeOrgId } : {}),
-            trustedMaterialization: true,
-            workflowOutputPublication: true,
-            trustedUsecaseRevisionId:
-              spec.usecaseVersionId !== spec.usecasePackageId ? spec.usecaseVersionId : undefined,
-            ...(activeRunId ? { workflow: { runId: activeRunId, nodeId: spec.nodeId } } : {}),
-          },
-        );
-        // Stamp a per-job run directory so input staging, the job cwd, and
-        // relative output collection all target the same place.
-        if (config.WORKFLOW_RUN_BASE) {
-          await jobService.setWorkingDir(job.id, `${config.WORKFLOW_RUN_BASE}/${job.id}`);
-        }
-        await authorizeJobSubmission({
-          jobId: job.id,
-          orgId: job.orgId,
-          queueId: job.queueId,
-        });
-        return { id: job.id };
-      },
-      dispatch: async (
-        jobId,
-        inputStaging,
-        expectedOutputs,
-        stdinText,
-        licensedMaterials,
-        softwareRequirements,
-        schedulingStrategy,
-        spackExecution,
-      ) => {
-        const job = await jobService.getById(jobId);
-        if (!job) {
-          jobCompletionRegistry.complete(jobId, {
-            status: "failed",
-            collected: {},
-            errorMessage: "Workflow job record is unavailable.",
-          });
-          return;
-        }
-        try {
-          const result = await orchestrator.placeAndDispatch({
-            jobId,
-            spackExecution,
-            restrictedNoEgress: job.restrictedNoEgress,
-            ...(activeRunId ? { workflowRunId: activeRunId } : {}),
-            job: {
-              name: job.name,
-              command: job.command,
-              resources: {
-                cpus: job.cpus,
-                memoryMb: job.memoryMb,
-                gpus: job.gpus ?? 0,
-                wallTimeSec: Number(job.wallTimeSec ?? 0),
-              },
-              workingDir: job.workingDir ?? undefined,
-              envVars: job.envVars ?? undefined,
-              ...(job.queueId
-                ? { schedulingStrategy: { queueId: job.queueId } }
-                : schedulingStrategy
-                  ? { schedulingStrategy }
-                  : {}),
-              inputStaging,
-              expectedOutputs,
-              fileOutputDescriptors: job.fileOutputDescriptors ?? undefined,
-              stdinText,
-              ...(licensedMaterials ? { licensedMaterials } : {}),
-              ...(softwareRequirements ? { softwareRequirements } : {}),
-            },
+          }
+        : {}),
+      submitJob: createJobSubmitter({
+        prepare: async (spec) => {
+          if (federationSnapshot)
+            spec = {
+              ...spec,
+              resources: constrainWorkflowResources(
+                spec.resources,
+                federationSnapshot.request.resources,
+              ),
+            };
+          await assertWorkflowExecutionMembership({
             userId: submittedBy,
-            userRole,
-            // The job row carries the submitter's org (stamped at submit); use it
-            // so org-level scheduling preferences and quotas apply to workflow jobs.
-            orgId: job.orgId ?? null,
+            orgId: activeOrgId ?? null,
           });
-          // The job will never run (no eligible agent / closed channel): resolve
-          // the completion as failed so awaitCompletion — and the workflow node — fails
-          // fast instead of hanging until the request times out.
-          if (!result.dispatched) {
-            const failedJob = await jobService.getById(jobId);
+          if (!spec.usecasePackageId) return spec;
+          await assertUsecasePackageExecutionAccess(db, spec.usecasePackageId, {
+            userId: submittedBy,
+            orgId: activeOrgId ?? null,
+          });
+          const row = await workflowPackageStore.getById(
+            spec.usecaseVersionId ?? spec.usecasePackageId,
+          );
+          if (!row) throw new Error(`usecase package not found: ${spec.usecasePackageId}`);
+          const pkg = usecase.UsecasePackageSchema.parse(row.spec);
+          if (!("softwareRef" in pkg)) {
+            throw new Error(
+              "Workflow execution requires a governed usecase package with a software selector",
+            );
+          }
+          const dataSelections = await workflowDataSelectionValidator.validateUsecase({
+            pkg,
+            dataInputs: spec.dataInputs ?? {},
+          });
+          const selectedDataInputs = Object.fromEntries(
+            Object.entries(spec.dataInputs ?? {}).map(([descriptor, input]) => {
+              const selection = dataSelections.find((item) => item.descriptor === descriptor);
+              return [
+                descriptor,
+                selection && input.targetPath === undefined
+                  ? { ...input, targetPath: selection.stagePath }
+                  : input,
+              ];
+            }),
+          );
+          const marketBackedLicensedMaterials = new Set(
+            dataSelections.flatMap((selection) => selection.satisfiedLicensedMaterialSelectors),
+          );
+          return {
+            ...spec,
+            ...(Object.keys(selectedDataInputs).length > 0
+              ? { dataInputs: selectedDataInputs }
+              : {}),
+            ...(spec.licensedMaterials
+              ? {
+                  licensedMaterials: spec.licensedMaterials.filter(
+                    (material) => !marketBackedLicensedMaterials.has(material.selector),
+                  ),
+                }
+              : {}),
+          };
+        },
+        submit: async (spec) => {
+          const job = await submitWorkflowJob({
+            jobService,
+            spec,
+            submittedBy,
+            role: userRole,
+            orgId: activeOrgId,
+            runId: activeRunId,
+            workingDirBase: config.WORKFLOW_RUN_BASE,
+            lease: executionLease,
+          });
+          await authorizeJobSubmission({ jobId: job.id, orgId: job.orgId, queueId: job.queueId });
+          return { id: job.id };
+        },
+        dispatch: async (
+          jobId,
+          inputStaging,
+          expectedOutputs,
+          stdinText,
+          licensedMaterials,
+          softwareRequirements,
+          schedulingStrategy,
+          spackExecution,
+        ) => {
+          const job = await jobService.getById(jobId);
+          if (!job) {
             jobCompletionRegistry.complete(jobId, {
               status: "failed",
               collected: {},
-              errorMessage:
-                failedJob?.errorMessage ?? "No eligible compute resource accepted the job.",
+              errorMessage: "Workflow job record is unavailable.",
+            });
+            return;
+          }
+          try {
+            const result = await orchestrator.placeAndDispatch({
+              jobId,
+              executionLease,
+              spackExecution,
+              federationTargets: federationSnapshot
+                ? (federationSnapshot.executionTargets ?? [])
+                : undefined,
+              restrictedNoEgress: job.restrictedNoEgress,
+              ...(activeRunId ? { workflowRunId: activeRunId } : {}),
+              job: {
+                name: job.name,
+                command: job.command,
+                resources: {
+                  cpus: job.cpus,
+                  memoryMb: job.memoryMb,
+                  gpus: job.gpus ?? 0,
+                  wallTimeSec: Number(job.wallTimeSec ?? 0),
+                },
+                workingDir: job.workingDir ?? undefined,
+                envVars: job.envVars ?? undefined,
+                ...(job.queueId
+                  ? { schedulingStrategy: { queueId: job.queueId } }
+                  : schedulingStrategy
+                    ? { schedulingStrategy }
+                    : {}),
+                inputStaging,
+                expectedOutputs,
+                fileOutputDescriptors: job.fileOutputDescriptors ?? undefined,
+                stdinText,
+                ...(licensedMaterials ? { licensedMaterials } : {}),
+                ...(softwareRequirements ? { softwareRequirements } : {}),
+              },
+              userId: submittedBy,
+              userRole,
+              // The job row carries the submitter's org (stamped at submit); use it
+              // so org-level scheduling preferences and quotas apply to workflow jobs.
+              orgId: job.orgId ?? null,
+            });
+            // The job will never run (no eligible agent / closed channel): resolve
+            // the completion as failed so awaitCompletion — and the workflow node — fails
+            // fast instead of hanging until the request times out.
+            if (!result.dispatched && !result.pendingDelivery) {
+              const failedJob = await jobService.getById(jobId);
+              jobCompletionRegistry.complete(jobId, {
+                status: "failed",
+                collected: {},
+                errorMessage:
+                  failedJob?.errorMessage ?? "No eligible compute resource accepted the job.",
+                ...(failedJob?.exitCode !== null && failedJob?.exitCode !== undefined
+                  ? { exitCode: failedJob.exitCode }
+                  : {}),
+              });
+            } else {
+              const placedJob = await jobService.getById(jobId);
+              if (placedJob?.providerOrgId) {
+                await authzService
+                  .enqueue(jobProviderTuple({ jobId, providerOrgId: placedJob.providerOrgId }))
+                  .catch((err) => {
+                    logger.warn(
+                      { err, jobId, providerOrgId: placedJob.providerOrgId },
+                      "Failed to enqueue workflow job provider authorization",
+                    );
+                  });
+              }
+            }
+          } catch (err) {
+            if (err instanceof WorkflowExecutionInterrupted) throw err;
+            const errorMessage =
+              err instanceof Error ? err.message : "Workflow job dispatch failed.";
+            const failedJob = await jobService
+              .updateStatus(
+                jobId,
+                "failed",
+                undefined,
+                undefined,
+                errorMessage,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                executionLease,
+              )
+              .catch((updateErr) => {
+                if (executionLease) throw updateErr;
+                logger.warn(
+                  { err: updateErr, jobId },
+                  "Failed to mark workflow job failed after dispatch error",
+                );
+                return null;
+              });
+            jobCompletionRegistry.complete(jobId, {
+              status: "failed",
+              collected: {},
+              errorMessage,
               ...(failedJob?.exitCode !== null && failedJob?.exitCode !== undefined
                 ? { exitCode: failedJob.exitCode }
                 : {}),
             });
-          } else {
-            const placedJob = await jobService.getById(jobId);
-            if (placedJob?.providerOrgId) {
-              await authzService
-                .enqueue(jobProviderTuple({ jobId, providerOrgId: placedJob.providerOrgId }))
-                .catch((err) => {
-                  logger.warn(
-                    { err, jobId, providerOrgId: placedJob.providerOrgId },
-                    "Failed to enqueue workflow job provider authorization",
-                  );
-                });
-            }
+            throw err;
           }
-        } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : "Workflow job dispatch failed.";
-          const failedJob = await jobService
-            .updateStatus(jobId, "failed", undefined, undefined, errorMessage)
-            .catch((updateErr) => {
-              logger.warn(
-                { err: updateErr, jobId },
-                "Failed to mark workflow job failed after dispatch error",
-              );
-              return null;
+        },
+        awaitCompletion: awaitWorkflowJob,
+        collectFiles: async (jobId, _spec, _collected) => {
+          try {
+            return await collectWorkflowOutputFiles({
+              jobId,
+              executionLease,
             });
-          jobCompletionRegistry.complete(jobId, {
-            status: "failed",
-            collected: {},
-            errorMessage,
-            ...(failedJob?.exitCode !== null && failedJob?.exitCode !== undefined
-              ? { exitCode: failedJob.exitCode }
-              : {}),
-          });
-          throw err;
-        }
-      },
-      awaitCompletion: (jobId) =>
-        jobCompletionRegistry.awaitCompletion(
-          jobId,
-          config.SERVER_JOB_COMPLETION_TIMEOUT_SEC * 1000,
-        ),
-      collectFiles: (jobId) => collectWorkflowOutputFiles(jobId),
-    }),
-  });
-};
+          } catch (cause) {
+            if (executionLease && !(cause instanceof WorkflowExecutionInterrupted))
+              throw new WorkflowExecutionInterrupted("Workflow file publication is pending", {
+                cause,
+              });
+            throw cause;
+          }
+        },
+      }),
+    })(yaml);
+  };
 const workflowAsyncRunner = new WorkflowAsyncRunner({
+  resolveWorkflowVersion,
+  authorizeFederationExecution: async (runId, lease) => {
+    if (!federationDispatchAuthorization)
+      throw new WorkflowExecutionInterrupted("Federation workflow authorization is unavailable");
+    await federationDispatchAuthorization.authorizeWorkflow(runId, lease);
+  },
   registry: workflowRegistry,
+  journal: new WorkflowExecutionJournalStore(db),
   resolveNamedReferences: (workflow, principal) =>
     namedReferenceResolver.resolve(workflow, principal),
-  validateWorkflow: validateWorkflowDatasetInputs,
+  validateWorkflow: async (workflow, principal, runId) => {
+    const binding = runId ? await loadFederationWorkflowBinding(db, runId) : null;
+    const validate = binding
+      ? createFederationDatasetPreflight(
+          binding.snapshot,
+          federationAssets,
+          workflowDatasetPreflightDeps,
+        )
+      : validateWorkflowDatasetInputs;
+    await validate(workflow, principal);
+  },
   assertExecutionPrincipal: assertWorkflowExecutionMembership,
   preparePlacement: (runId, workflow, placementConfig) =>
     placementPlanService.prepare(runId, workflow, placementConfig),
-  makeRunner: (submittedBy, role, runId, placementConfig, orgId) =>
-    makeRunner(submittedBy, role, false, runId, placementConfig, orgId),
+  makeRunner: (submittedBy, role, runId, placementConfig, orgId, lease) =>
+    makeRunner(submittedBy, role, false, runId, placementConfig, orgId, lease),
   awaitCheckpointPersistence: (runId) => workflowArtifactService.awaitCheckpointPersistence(runId),
   markArtifactsTerminal: (runId) => workflowArtifactService.markWorkflowTerminal(runId),
   cancelSubmittedJobs: async (runId) => {
-    const run = await workflowRegistry.getById(runId);
-    const stepJobs = run?.stepJobs ?? {};
-    const results = await Promise.allSettled(
-      Object.values(stepJobs).map(async (jobId) => {
-        const job = await jobService.getById(jobId);
-        if (!job || job.status === "completed" || job.status === "failed") return;
-        const cancelled = await jobService.updateStatus(jobId, "cancelled");
-        if (cancelled.agentId) {
-          await orchestrator.cancelJob(cancelled.agentId, jobId, cancelled.revokedEpoch);
-          await jobCancellationOutbox.waitForAcknowledgement(jobId, cancelled.revokedEpoch);
-        }
-        jobCompletionRegistry.complete(jobId, { status: "cancelled", collected: {} });
-      }),
-    );
-    const failures: unknown[] = [];
-    for (const [index, result] of results.entries()) {
-      if (result.status === "rejected") {
-        failures.push(result.reason);
-        logger.warn(
-          { err: result.reason, jobId: Object.values(stepJobs)[index], runId },
-          "Failed to cancel submitted workflow job",
-        );
-      }
-    }
-    if (failures.length > 0) {
-      throw new AggregateError(failures, `Workflow ${runId} job cancellation did not converge`);
-    }
+    const results = await Promise.allSettled([
+      cancelWorkflowJobs(
+        runId,
+        workflowRegistry,
+        jobService,
+        jobCancellationOutbox,
+        jobCompletionRegistry,
+      ),
+      federationOutbound?.cancelWorkflow(runId),
+    ]);
+    const errors = results
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason);
+    if (errors.length) throw new AggregateError(errors, "Workflow cancellation is pending");
   },
 });
 
-async function collectWorkflowOutputFiles(
-  jobId: string,
-): Promise<Record<string, usecase.FileInputValue>> {
+async function collectWorkflowOutputFiles(input: {
+  jobId: string;
+  executionLease?: LeasedWorkflowJournal;
+}): Promise<Record<string, usecase.FileInputValue>> {
+  const { jobId, executionLease } = input;
+  const saved = executionLease ? await readWorkflowPublishedFiles(executionLease, jobId) : null;
+  if (saved !== null) return saved;
   const job = await jobService.getById(jobId);
   if (!job?.workingDir || !job.agentId) throw new Error("Workflow output job binding unavailable");
   if (job.restrictedNoEgress) return {};
   await workflowPublicationIntentRecovery.enqueue(jobId);
-  return workflowOutputPublisher.process(jobId);
+  const files = await workflowOutputPublisher.process(jobId);
+  if (executionLease) await saveWorkflowPublishedFiles(executionLease, jobId, files);
+  return files;
 }
 
 async function publishWorkflowPublicationFile(
@@ -1348,7 +1659,8 @@ workflowAsyncRunner
       logger.warn(report, "Recovered interrupted workflow runs");
     }
   })
-  .catch((err) => logger.error({ err }, "Failed to recover interrupted workflow runs"));
+  .catch((err) => logger.error({ err }, "Failed to recover interrupted workflow runs"))
+  .finally(() => workflowAsyncRunner.startRecovery());
 protectedApi.route(
   "/",
   createWorkflowRoutes({
@@ -1367,6 +1679,454 @@ protectedApi.route(
 );
 
 protectedApi.route("/", createAdminAgentRoutes(certService, { authz: authzService }));
+const federationStorageGuard = await loadFederationStorageGuard(config);
+const federationCompletion = config.FEDERATION_SITE_ID
+  ? new FederationCompletionCapacity(db, config.FEDERATION_SITE_ID, federationStorageGuard)
+  : undefined;
+protectedApi.route(
+  "/",
+  createAdminFederationRoutes(
+    new FederationTrustRegistry(db),
+    authzService,
+    federationStorageGuard,
+    federationCompletion,
+  ),
+);
+protectedApi.route(
+  "/",
+  createAdminFederationPermissionRoutes(new FederationPermissionService(db), authzService),
+);
+const federationAssets = new FederationAssetService(db, {
+  authorizeSoftware: (assetId, principal, capability) =>
+    softwareAvailability.assertAssetCapability(assetId, principal, capability),
+});
+const federationSigningKey = await loadFederationSigningKey(config);
+const federationSender = await loadFederationSender(config);
+const federationAgreementExchange = federationSigningKey
+  ? new FederationAgreementExchange(db, federationSigningKey, federationSender)
+  : undefined;
+const federationConfirmations = federationSigningKey
+  ? new FederationExecutionConfirmationService(
+      db,
+      federationSigningKey.siteId,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
+const federationMarketRequests = federationSigningKey
+  ? new FederationMarketRequestService(
+      db,
+      federationSigningKey,
+      federationSender,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+      federationStorageGuard,
+    )
+  : undefined;
+const federationOutbound: FederationOutboundService | undefined =
+  federationSigningKey && federationSender
+    ? new FederationOutboundService(
+        db,
+        federationSigningKey,
+        federationSender,
+        federationAssets,
+        undefined,
+        federationConfirmations,
+        federationMarketRequests,
+        federationStorageGuard,
+        () => federationMediaImportOperations,
+      )
+    : undefined;
+const federationStops = federationSigningKey
+  ? new FederationExecutionStopService(
+      db,
+      federationSigningKey.siteId,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+      federationStorageGuard,
+    )
+  : undefined;
+const federationWorkflowExecutor =
+  federationSigningKey && federationOutbound
+    ? new FederationWorkflowExecutor(db, federationSigningKey.siteId, federationOutbound)
+    : undefined;
+if (federationOutbound) protectedApi.route("/", createFederationOutboundRoutes(federationOutbound));
+const federationAttestation = federationSigningKey
+  ? new FederationAttestationService(
+      db,
+      federationSigningKey,
+      config.FEDERATION_ATTESTATION_SOCKET_PATH
+        ? new UnixAttestationClient(config.FEDERATION_ATTESTATION_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
+const federationArbitrationResolution = federationSigningKey
+  ? new FederationArbitrationResolutionService(db, federationSigningKey)
+  : undefined;
+const federationCommercial = federationSigningKey
+  ? new FederationCommercialSubmissionService(
+      db,
+      federationSigningKey.siteId,
+      config.FEDERATION_COMMERCIAL_SOCKET_PATH
+        ? new UnixCommercialClient(config.FEDERATION_COMMERCIAL_SOCKET_PATH)
+        : undefined,
+      federationArbitrationResolution,
+    )
+  : undefined;
+const federationMarket = federationSigningKey
+  ? new FederationMarketService(
+      db,
+      federationSigningKey.siteId,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+      federationStorageGuard,
+    )
+  : undefined;
+if (federationMarket) protectedApi.route("/", createFederationMarketRoutes(federationMarket));
+const federationAccounting = federationSigningKey
+  ? new FederationAccountingCollection(db, federationSigningKey.siteId, (agentId, request) =>
+      dispatcher.pushFederationAccounting(agentId, request),
+    )
+  : undefined;
+const federationUsage = federationSigningKey
+  ? new FederationUsageService(db, federationSigningKey, federationStorageGuard)
+  : undefined;
+const federationTerminals = federationSigningKey
+  ? new FederationExecutionTerminalService(
+      db,
+      federationSigningKey,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
+const federationClosing = federationSigningKey
+  ? new FederationClosingAutomation(
+      db,
+      federationSigningKey,
+      federationSender,
+      federationStorageGuard,
+    )
+  : undefined;
+const federationTerminalPolicies = federationSigningKey
+  ? new FederationTerminalPolicyService(db, federationSigningKey.siteId)
+  : undefined;
+const federationTerminalAutomation =
+  federationSigningKey && federationTerminals
+    ? new FederationTerminalAutomation(db, federationSigningKey.siteId, federationTerminals)
+    : undefined;
+const federationExecutionAutomation = federationSigningKey
+  ? new FederationExecutionAutomation(
+      db,
+      federationSigningKey,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
+const federationReservationProposals = federationSigningKey
+  ? new FederationReservationProposalService(
+      db,
+      federationSigningKey,
+      federationSender,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+      federationStorageGuard,
+    )
+  : undefined;
+const federationDisputeFreezes = federationSigningKey
+  ? new FederationDisputeFreezeExchange(
+      db,
+      federationSigningKey,
+      federationSender,
+      config.FEDERATION_COMMERCIAL_SOCKET_PATH
+        ? new UnixCommercialClient(config.FEDERATION_COMMERCIAL_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
+const federationDisputeDelivery = federationSigningKey
+  ? new FederationDisputeDelivery(db, federationSigningKey, federationSender)
+  : undefined;
+const federationCasePublications = await loadFederationCasePublications(
+  db,
+  config,
+  federationSigningKey,
+);
+const federationArbitrationExecutions = federationSigningKey
+  ? new FederationArbitrationExecutionExchange(db, federationSigningKey, federationSender)
+  : undefined;
+const federationArbitrationDecisions = federationSigningKey
+  ? new FederationArbitrationDecisionDelivery(db, federationSigningKey, federationSender)
+  : undefined;
+const federationArbitrationRevocations = federationSigningKey
+  ? new FederationArbitrationRevocationDelivery(
+      db,
+      federationSigningKey,
+      new FederationArbitrationPolicyService(db, federationSigningKey),
+      federationSender,
+    )
+  : undefined;
+const federationCaseRevocations =
+  federationSigningKey && federationCasePublications
+    ? new FederationCaseRevocationDelivery(
+        db,
+        federationSigningKey,
+        federationCasePublications,
+        federationSender,
+      )
+    : undefined;
+const federationCaseDecisions =
+  federationSigningKey && federationCasePublications
+    ? new FederationCaseArbitrationDecisionService(
+        db,
+        federationSigningKey,
+        federationCasePublications.ledger,
+      )
+    : undefined;
+const federationCaseSubmissions =
+  federationSigningKey && federationCasePublications
+    ? new FederationCaseSubmissionService(
+        db,
+        federationSigningKey.siteId,
+        federationCasePublications,
+        config.FEDERATION_CASE_SOCKET_PATH
+          ? new UnixCaseClient(config.FEDERATION_CASE_SOCKET_PATH)
+          : undefined,
+        federationCaseDecisions,
+      )
+    : undefined;
+const federationApprovalExchange = federationSigningKey
+  ? new FederationCommercialApprovalExchange(
+      db,
+      federationSigningKey,
+      federationSender,
+      federationCasePublications,
+    )
+  : undefined;
+const federationTerminalExchange = federationSigningKey
+  ? new FederationTerminalExchange(db, federationSigningKey, federationSender)
+  : undefined;
+const federationUsageExchange = federationSigningKey
+  ? new FederationUsageExchange(db, federationSigningKey, federationSender, federationStorageGuard)
+  : undefined;
+if (federationSigningKey) {
+  const evidence = new FederationEvidenceService(db, federationSigningKey, federationSender);
+  const contexts = new FederationArbitrationContextService(
+    db,
+    federationSigningKey,
+    federationSender,
+  );
+  const review = new FederationArbitrationReviewService(db, contexts, evidence);
+  protectedApi.route(
+    "/",
+    createFederationEvidenceRoutes(
+      evidence,
+      contexts,
+      review,
+      new FederationArbitrationDecisionService(db, federationSigningKey, review),
+      federationArbitrationDecisions,
+      federationCaseDecisions,
+      federationCaseSubmissions,
+    ),
+  );
+}
+if (federationCasePublications)
+  protectedApi.route(
+    "/",
+    createFederationCasePublicationRoutes(
+      federationCasePublications,
+      federationApprovalExchange,
+      federationCaseSubmissions,
+      federationCaseRevocations,
+    ),
+  );
+if (federationSigningKey && federationCommercial)
+  protectedApi.route(
+    "/",
+    createFederationCommercialRoutes(
+      new FederationCommercialAgreementService(db, federationSigningKey),
+      federationCommercial,
+      federationUsage,
+      federationUsageExchange,
+      new FederationCommercialExecutionService(
+        db,
+        federationSigningKey,
+        config.FEDERATION_MARKET_SOCKET_PATH
+          ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+          : undefined,
+        undefined,
+        federationStorageGuard,
+      ),
+      federationConfirmations,
+      federationStops,
+      federationTerminals,
+      federationTerminalExchange,
+      federationTerminalPolicies,
+      federationApprovalExchange,
+      new FederationReservationPolicyService(db, federationSigningKey.siteId),
+      federationReservationProposals,
+      federationExecutionAutomation,
+      federationMarketRequests,
+      new FederationBillingService(db, federationSigningKey, federationStorageGuard),
+      new FederationSettlementService(db, federationSigningKey),
+      new FederationClosingPolicyService(db, federationSigningKey.siteId),
+      federationClosing,
+      new FederationAdjustmentService(db, federationSigningKey, federationStorageGuard),
+      new FederationRefundService(db, federationSigningKey, federationStorageGuard),
+      new FederationPaymentService(db, federationSigningKey),
+      new FederationDisclosurePolicyService(db, federationSigningKey),
+      new FederationDisputeService(db, federationSigningKey),
+      federationDisputeDelivery,
+      federationDisputeFreezes,
+      new FederationDisclosureService(db, federationSigningKey),
+      new FederationArbitrationPolicyService(db, federationSigningKey),
+      federationArbitrationRevocations,
+      federationArbitrationDecisions,
+      federationArbitrationResolution,
+      new FederationDisputeResolutionService(db, federationSigningKey),
+      new FederationCommercialHistoryService(db, federationSigningKey),
+    ),
+  );
+const federationPreparation = federationSigningKey
+  ? new FederationPreparationService(
+      db,
+      federationSigningKey.siteId,
+      federationAssets,
+      undefined,
+      federationConfirmations,
+    )
+  : undefined;
+const federationMaterialExchange =
+  federationSigningKey && federationSender && federationPreparation
+    ? new FederationMaterialExchange(
+        db,
+        federationSigningKey,
+        federationSender,
+        federationPreparation,
+        federationAssets,
+      )
+    : undefined;
+const federationInputImports =
+  federationPreparation && federationMaterialExchange
+    ? new FederationInputImports(
+        db,
+        federationPreparation,
+        federationMaterialExchange,
+        undefined,
+        federationStorageGuard,
+      )
+    : undefined;
+federationDispatchAuthorization = federationPreparation
+  ? new FederationDispatchAuthorization(
+      db,
+      federationPreparation,
+      queueRegistry,
+      softwareAvailability,
+      sandboxPolicyService,
+    )
+  : undefined;
+jobDispatchOutbox.start();
+jobCancellationOutbox.start();
+protectedApi.route("/", createFederationAssetRoutes(federationAssets, federationPreparation));
+const federationMediaExports =
+  federationSigningKey &&
+  config.FEDERATION_MEDIA_AGE_DIRECTORY &&
+  config.FEDERATION_MEDIA_WRAPPING_KEY
+    ? new FederationMediaExportService(
+        db,
+        federationSigningKey,
+        new MediaAge(config.FEDERATION_MEDIA_AGE_DIRECTORY),
+        config.FEDERATION_MEDIA_WRAPPING_KEY,
+        undefined,
+        federationOutbound
+          ? new FederationTaskMediaSources(
+              db,
+              federationSigningKey.siteId,
+              federationOutbound,
+              new FederationResultResponder(db, federationSigningKey),
+            )
+          : undefined,
+      )
+    : undefined;
+let federationMediaObjectStorage:
+  | import("./federation/download-credential").FederationDownloadStorage
+  | undefined;
+const federationMediaExportOperations =
+  federationSigningKey && federationMediaExports
+    ? new FederationMediaExportOperations(
+        db,
+        federationSigningKey.siteId,
+        federationMediaExports,
+        undefined,
+        () => federationMediaObjectStorage,
+      )
+    : undefined;
+const federationMediaExportTransport = federationMediaExportOperations
+  ? new FederationMediaExportTransport(federationMediaExportOperations, dispatcher)
+  : undefined;
+const federationMediaKeys =
+  federationSigningKey && federationMediaExports
+    ? new FederationMediaKeyResponder(db, federationSigningKey, federationMediaExports)
+    : undefined;
+const federationMediaInventory = config.FEDERATION_SITE_ID
+  ? new FederationMediaPackageService(
+      db,
+      config.FEDERATION_SITE_ID,
+      undefined,
+      federationPreparation && federationInputImports && federationOutbound
+        ? new FederationTaskMediaTargets(
+            db,
+            config.FEDERATION_SITE_ID,
+            federationPreparation,
+            federationInputImports,
+            federationOutbound.results,
+          )
+        : undefined,
+    )
+  : undefined;
+const federationMediaImportOperations =
+  federationSigningKey && federationSender && federationMediaInventory
+    ? new FederationMediaImportOperations(
+        db,
+        federationSigningKey.siteId,
+        federationMediaInventory,
+        new FederationMediaKeyRequester(
+          db,
+          federationSigningKey,
+          federationMediaInventory,
+          federationSender,
+        ),
+      )
+    : undefined;
+const federationMediaReceiptSender =
+  federationSigningKey && federationSender
+    ? new FederationMediaReceiptSender(db, federationSigningKey, federationSender)
+    : undefined;
+const federationMediaReceiptReceiver = federationSigningKey
+  ? new FederationMediaReceiptReceiver(db, federationSigningKey)
+  : undefined;
+const federationMediaImportTransport = federationMediaImportOperations
+  ? new FederationMediaImportTransport(
+      federationMediaImportOperations,
+      dispatcher,
+      federationMediaReceiptSender,
+    )
+  : undefined;
+
+if (federationSigningKey)
+  protectedApi.route(
+    "/",
+    createFederationAgreementRoutes(
+      new FederationAgreementService(db, federationSigningKey),
+      federationAttestation,
+      federationAgreementExchange,
+    ),
+  );
 protectedApi.route("/", createActiveOrganizationRoutes(db));
 protectedApi.route("/", createPlatformUserRoutes(db, authzService));
 protectedApi.route(
@@ -1493,6 +2253,16 @@ if (config.SSH_SESSION_RECORDING && !config.NETDRIVE_ENABLED) {
 if (!(config.SSH_SESSION_RECORDING && config.NETDRIVE_ENABLED)) {
   protectedApi.get("/admin/ssh-recordings", (c) => c.json({ enabled: false, recordings: [] }));
 }
+let federationResults: FederationResultTransport | undefined;
+let federationResultWorker: FederationResultWorker | undefined;
+let federationResultStorage: FederationResultStorage | undefined;
+let federationInputStorageBackend: FederationInputStorageBackend | undefined;
+let federationInputDownloads:
+  | import("./federation/download-credential").FederationDownloadStorage
+  | undefined;
+let federationResultDownloads:
+  | import("./federation/results").FederationResultDownloadStorage
+  | undefined;
 if (config.NETDRIVE_ENABLED) {
   const minioCfg = loadMinioConfigFromEnv({
     ...process.env,
@@ -1500,6 +2270,48 @@ if (config.NETDRIVE_ENABLED) {
     DATA_MARKET_IMMUTABLE_BUCKET: config.DATA_MARKET_IMMUTABLE_BUCKET,
   });
   const minioBackend = await createRealMinioBackend(minioCfg);
+  federationInputStorageBackend = minioBackend;
+  if (config.FEDERATION_ENABLED && config.FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS.length)
+    federationMediaObjectStorage = {
+      storage: minioBackend,
+      allowedOrigins: config.FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS,
+    };
+  if (config.FEDERATION_ENABLED && config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length)
+    federationInputDownloads = {
+      storage: minioBackend,
+      allowedOrigins: config.FEDERATION_INPUT_DOWNLOAD_ORIGINS,
+    };
+  if (config.FEDERATION_ENABLED && config.FEDERATION_RESULT_DOWNLOAD_ORIGINS.length)
+    federationResultDownloads = {
+      storage: minioBackend,
+      allowedOrigins: config.FEDERATION_RESULT_DOWNLOAD_ORIGINS,
+    };
+  if (
+    config.FEDERATION_ENABLED &&
+    federationOutbound &&
+    config.FEDERATION_RESULT_DOWNLOAD_ORIGINS.length
+  ) {
+    const storage = new FederationResultStorage(
+      federationOutbound.resultImports,
+      federationOutbound.results,
+      minioBackend,
+      {
+        sourceOrigins: config.FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS,
+        destinationOrigins: config.FEDERATION_RESULT_DOWNLOAD_ORIGINS,
+      },
+    );
+    federationResultStorage = storage;
+    federationResults = new FederationResultTransport(
+      federationOutbound.resultImports,
+      storage,
+      dispatcher,
+    );
+    federationResultWorker = new FederationResultWorker(
+      federationOutbound.resultImports,
+      storage,
+      federationResults,
+    );
+  }
   app.route(
     "/api",
     siteDiagnosticsRoutes(
@@ -1589,15 +2401,14 @@ if (config.NETDRIVE_ENABLED) {
   const dataDeliveryResolver = new DataDeliveryResolver(db, minioBackend, {
     verifyAccess: (input) => dataPrerequisiteRepository.verifyAccess(input),
   });
+  federationDataDispatch = new FederationDataDispatch(db, minioBackend, async (key, versionId) => {
+    const expiresAt = Date.now() + 60_000;
+    return {
+      sourceUrl: await minioBackend.presignDownload(key, 60, undefined, versionId),
+      expiresAt,
+    };
+  });
   orchestrator.setDataDeliveryResolver((input) => dataDeliveryResolver.resolveForDispatch(input));
-  if (sandboxManifestSigner) {
-    const restrictedSandboxDeliveryBinder = new RestrictedSandboxDeliveryBinder(
-      sandboxManifestSigner,
-    );
-    orchestrator.setRestrictedSandboxDeliveryBinder((manifest, deliveries) =>
-      restrictedSandboxDeliveryBinder.bind(manifest, deliveries),
-    );
-  }
   netdriveServiceForWorkflowOutputs = netdriveService;
   protectedApi.route(
     "/",
@@ -1617,21 +2428,41 @@ if (config.NETDRIVE_ENABLED) {
       stageOne(agentId, actorUserId, file, targetPath, { jobId, workflowRunId }),
     ),
   );
-  orchestrator.setInputUrlResolver(async ({ jobId, workflowRunId, actorUserId, files }) =>
-    Promise.all(
-      files.map(async (file) => {
-        const { downloadUrl, sha256, size } = await mintAuthorizedNetDriveDownload(
-          actorUserId,
-          file.fileMetadataId,
-          {
-            jobId,
-            workflowRunId,
-            netdriveFileIds: [file.fileMetadataId],
-          },
-        );
-        return { ...file, sourceUrl: downloadUrl, expectedSha256: sha256, totalBytes: size };
-      }),
-    ),
+  orchestrator.setInputUrlResolver(
+    async ({ jobId, workflowRunId, actorUserId, files, federation }) =>
+      Promise.all(
+        files.map(async (file) => {
+          const snapshot = federation
+            ? await netdriveService.getFile(actorUserId, file.fileMetadataId)
+            : undefined;
+          if (federation && !snapshot)
+            throw new Error("Federation NetDrive input must belong to its execution identity");
+          const { downloadUrl, expiresAt, sha256, size } = await mintAuthorizedNetDriveDownload(
+            actorUserId,
+            file.fileMetadataId,
+            {
+              jobId,
+              workflowRunId,
+              netdriveFileIds: [file.fileMetadataId],
+            },
+          );
+          return {
+            ...file,
+            sourceUrl: downloadUrl,
+            expectedSha256: sha256,
+            totalBytes: size,
+            ...(snapshot
+              ? {
+                  netdriveInput: true,
+                  expectedSha256: snapshot.sha256,
+                  expectedSizeBytes: snapshot.size,
+                  deliveryLeaseId: crypto.randomUUID(),
+                  deliveryLeaseExpiresAtUnixMs: Date.parse(expiresAt),
+                }
+              : {}),
+          };
+        }),
+      ),
   );
   transferRunner = new TransferRunner({
     db,
@@ -1693,6 +2524,43 @@ const dataMarketService = new DataMarketService({
     },
   },
 });
+const federationDatasetUsePolicies = federationSigningKey
+  ? new FederationDatasetUsePolicies(db, federationSigningKey.siteId, (actor, assetId) =>
+      dataMarketService.requireManage(actor, assetId),
+    )
+  : undefined;
+const federationDatasetUse =
+  federationSigningKey && federationDatasetUsePolicies
+    ? new FederationDatasetUseResponder(db, federationSigningKey, federationDatasetUsePolicies)
+    : undefined;
+const federationDatasetPublication =
+  federationSigningKey && federationSender && federationMediaInventory
+    ? new FederationDatasetPublicationService(
+        db,
+        federationSigningKey.siteId,
+        federationMediaInventory,
+        new FederationDatasetUseClient(db, federationSigningKey, federationSender),
+      )
+    : undefined;
+const federationDatasetUseWorker = federationDatasetPublication
+  ? new FederationDatasetUseWorker(federationDatasetPublication)
+  : undefined;
+if (federationMediaInventory)
+  protectedApi.route(
+    "/",
+    createFederationMediaRoutes(
+      federationMediaInventory,
+      federationMediaExports,
+      federationMediaExportOperations,
+      federationMediaImportOperations,
+      federationDatasetUsePolicies,
+      federationDatasetPublication,
+      { sender: federationMediaReceiptSender, receiver: federationMediaReceiptReceiver },
+      config.FEDERATION_SITE_ID
+        ? new FederationMediaLogistics(db, config.FEDERATION_SITE_ID)
+        : undefined,
+    ),
+  );
 protectedApi.route("/", createDataMarketRoutes({ service: dataMarketService }));
 protectedApi.route("/", createAdminDataMarketRoutes(dataMarketService));
 // software governance REST surface (PRD F19). org_admin or above.
@@ -1743,6 +2611,9 @@ protectedApi.route(
     agentCerts: certService,
     authz: authzService,
     dataMarket: dataMarketService,
+    dataPolicies: new DataDisclosurePolicyService(db, (actor, assetId) =>
+      dataMarketService.requireManage(actor, assetId),
+    ),
   }),
 );
 // Metering REST surface. Routes themselves carry the
@@ -1764,6 +2635,87 @@ protectedApi.route(
   "/compute-providers",
   createComputeProviderRoutes(new ComputeProviderService(db), authzService),
 );
+
+const federationInputTransfers =
+  federationPreparation && federationInputImports
+    ? new FederationInputTransfers(
+        db,
+        federationPreparation,
+        federationInputImports,
+        undefined,
+        federationMediaImportOperations,
+      )
+    : undefined;
+const federationInputReader =
+  federationInputTransfers && federationSigningKey && federationSender
+    ? new FederationInputReader(
+        db,
+        federationSigningKey,
+        federationSender,
+        federationInputTransfers,
+      )
+    : undefined;
+const federationInputStorage =
+  federationInputTransfers && federationInputStorageBackend
+    ? new FederationInputStorage(federationInputTransfers, federationInputStorageBackend, {
+        grants:
+          federationInputReader && config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length
+            ? {
+                reader: federationInputReader,
+                sourceOrigins: config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS,
+                destinationOrigins: config.FEDERATION_INPUT_DOWNLOAD_ORIGINS,
+              }
+            : undefined,
+      })
+    : undefined;
+const federationInputs =
+  config.FEDERATION_ENABLED &&
+  federationInputTransfers &&
+  federationInputStorage &&
+  federationInputReader &&
+  config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length
+    ? new FederationInputTransport(federationInputTransfers, federationInputStorage, dispatcher)
+    : undefined;
+const federationInputWorker =
+  federationInputTransfers &&
+  federationInputs &&
+  federationPreparation &&
+  federationInputImports &&
+  federationMaterialExchange &&
+  federationInputStorageBackend
+    ? new FederationInputWorker(
+        federationInputTransfers,
+        federationInputs,
+        new FederationInputPublication(
+          db,
+          federationPreparation,
+          federationInputImports,
+          federationMaterialExchange,
+          federationInputStorageBackend,
+          undefined,
+          federationMediaImportOperations,
+        ),
+      )
+    : undefined;
+
+const federationMediaUploads = federationMediaImportOperations
+  ? new FederationMediaUploadTransport(
+      federationMediaImportOperations,
+      dispatcher,
+      federationInputs && federationInputTransfers && federationInputStorage
+        ? { transfers: federationInputTransfers, storage: federationInputStorage }
+        : undefined,
+      federationResults && federationResultStorage && federationOutbound
+        ? { imports: federationOutbound.resultImports, storage: federationResultStorage }
+        : undefined,
+    )
+  : undefined;
+
+if (federationInputTransfers)
+  protectedApi.route(
+    "/",
+    createAdminFederationStorageRoutes(federationInputTransfers, authzService),
+  );
 app.route("/api", protectedApi);
 // NOTE: any future PUBLIC routes must be registered BEFORE app.route("/api", protectedApi)
 // to avoid being shadowed by the auth middleware on protectedApi.
@@ -1784,13 +2736,19 @@ const grpcDeps = {
   sshGateway,
   shellExecRegistry,
   jobLogsService,
+  federationAccounting,
   transferRegistry,
   jobCompletionRegistry,
+  federationResults,
+  federationInputs,
+  federationMediaExports: federationMediaExportTransport,
+  federationMediaImports: federationMediaImportTransport,
   partUrlMinter: transferRunner,
   sandboxArtifactRelease: sandboxArtifactReleaseService,
   dataScanCoordinator,
   dataDeliveryRevocations: dataDeliveryRevocationOutbox,
   jobCancellations: jobCancellationOutbox,
+  jobDispatches: jobDispatchOutbox,
   jobWorkRootReleases: jobWorkRootReleaseOutbox,
 };
 
@@ -1856,6 +2814,121 @@ async function readRequiredGrpcTlsFile(
   return readFile(path, "utf8");
 }
 
+const federationIngress = await startFederationIngress(
+  db,
+  config,
+  federationSigningKey,
+  federationResultDownloads,
+  federationOutbound,
+  federationInputDownloads,
+  federationConfirmations,
+  federationStorageGuard,
+  federationMediaKeys,
+  federationDatasetUse,
+  federationCasePublications,
+);
+const federationPreparationWorker = federationPreparation
+  ? new FederationPreparationWorker(
+      db,
+      federationPreparation,
+      new FederationExecutionBindingService(db, federationPreparation),
+      async (runId) => {
+        if (!federationDispatchAuthorization)
+          throw new WorkflowExecutionInterrupted(
+            "Federation workflow authorization is unavailable",
+          );
+        const binding = await loadFederationWorkflowBinding(db, runId);
+        if (!binding) throw new Error("Federation workflow binding is unavailable");
+        await registerWorkflowAuthorization(
+          authzService,
+          runId,
+          binding.snapshot.identity.userId,
+          binding.snapshot.identity.orgId,
+        );
+        await placementPlanService.prepare(
+          runId,
+          binding.snapshot.workflow,
+          WorkflowPlacementConfigSchema.parse({}),
+        );
+        return queueFederationWorkflow(db, federationDispatchAuthorization, runId);
+      },
+      federationMaterialExchange
+        ? async (id) => {
+            await federationMaterialExchange.ensure(id);
+            await federationInputImports?.ensure(id);
+          }
+        : undefined,
+      federationInputImports
+        ? async () => {
+            await federationInputImports.sweep();
+            if (federationInputStorage) await federationInputStorage.cleanup();
+            else await federationInputTransfers?.expire();
+          }
+        : undefined,
+    )
+  : undefined;
+federationPreparationWorker?.start();
+const federationOutboundWorker = federationOutbound
+  ? new FederationOutboundWorker(federationOutbound)
+  : undefined;
+federationOutboundWorker?.start();
+federationResultWorker?.start();
+federationInputWorker?.start();
+federationMediaExportTransport?.start();
+federationMediaImportTransport?.start();
+federationMediaUploads?.start();
+federationDatasetUseWorker?.start();
+const federationExecutionMonitor = new FederationExecutionMonitor(
+  db,
+  federationDispatchAuthorization,
+  workflowAsyncRunner,
+);
+federationExecutionMonitor.start();
+const federationCancellationMonitor = new FederationCancellationMonitor(
+  db,
+  workflowAsyncRunner,
+  (runId) =>
+    cancelWorkflowJobs(
+      runId,
+      workflowRegistry,
+      jobService,
+      jobCancellationOutbox,
+      jobCompletionRegistry,
+    ),
+);
+federationCancellationMonitor.start();
+const federationAttestationWorker =
+  federationAttestation && config.FEDERATION_ATTESTATION_SOCKET_PATH
+    ? new FederationAttestationWorker(federationAttestation)
+    : undefined;
+federationAttestationWorker?.start();
+const federationCommercialWorker = federationCommercial
+  ? new FederationCommercialWorker(
+      federationCommercial,
+      federationUsage,
+      federationUsageExchange,
+      federationAccounting,
+      federationMarket,
+      federationStops,
+      federationTerminalExchange,
+      federationTerminalAutomation,
+      federationApprovalExchange,
+      federationReservationProposals,
+      federationExecutionAutomation,
+      federationAgreementExchange,
+      federationMarketRequests,
+      federationClosing,
+      federationCompletion,
+      federationDisputeDelivery,
+      federationDisputeFreezes,
+      federationCaseSubmissions,
+      federationCaseRevocations,
+      federationArbitrationRevocations,
+      federationArbitrationDecisions,
+      federationArbitrationExecutions,
+    )
+  : undefined;
+federationCommercialWorker?.start();
 logger.info({ port: config.SERVER_PORT }, "Server starting");
 
 const httpTrustedProxyCidrs = parseTrustedProxyCidrs(config.HTTP_TRUSTED_PROXY_CIDRS);
@@ -1893,6 +2966,22 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "Server shutting down");
   try {
     grpcServer.close();
+    await federationCancellationMonitor.stop();
+    await federationExecutionMonitor.stop();
+    await workflowAsyncRunner.stop();
+    await federationIngress?.stop(true);
+    await federationPreparationWorker?.stop();
+    await federationOutboundWorker?.stop();
+    await federationMediaExportTransport?.stop();
+    await federationMediaUploads?.stop();
+    await federationMediaImportTransport?.stop();
+    await federationDatasetUseWorker?.stop();
+    await federationInputWorker?.stop();
+    await federationResultWorker?.stop();
+    await federationAttestationWorker?.stop();
+    await federationCommercialWorker?.stop();
+    await jobDispatchOutbox.stop();
+    await jobCancellationOutbox.stop();
     fileService.shutdown();
     // Stop the metering rollup cron so an in-flight tick can drain
     // before exit; the cron internally catches and logs errors so this

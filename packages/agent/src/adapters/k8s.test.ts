@@ -270,7 +270,7 @@ describe("K8sAdapter.submit (with mock spawner)", () => {
       { exitCode: 1, stdout: "", stderr: 'namespaces "kq-ns" not found' },
     ]);
     const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "kq-ns", tmpDir: "/tmp" });
-    await expect(adapter.submit(baseSpec)).rejects.toThrow(/kubectl apply failed/);
+    await expect(adapter.submit(baseSpec)).rejects.toThrow(/kubectl submission failed/);
   });
 });
 
@@ -528,19 +528,16 @@ describe("K8sAdapter.status", () => {
     expect(r.status).toBe("queued");
   });
 
-  test("kubectl get returns non-zero exit -> failed", async () => {
+  test("kubectl failure remains an unknown observation", async () => {
     const { spawner } = mockSpawner([{ exitCode: 1, stdout: "", stderr: "not found" }]);
     const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "kq-ns" });
-    const r = await adapter.status("kq-job-abc-123");
-    expect(r.status).toBe("failed");
+    await expect(adapter.status("kq-job-abc-123")).rejects.toThrow("no data");
   });
 
-  test("kubectl returns non-JSON -> failed", async () => {
+  test("invalid kubectl response is retried", async () => {
     const { spawner } = mockSpawner([{ exitCode: 0, stdout: "Error from server" }]);
     const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "kq-ns" });
-    const r = await adapter.status("kq-job-abc-123");
-    expect(r.status).toBe("failed");
-    expect(r.message).toContain("non-JSON");
+    await expect(adapter.status("kq-job-abc-123")).rejects.toThrow("non-JSON");
   });
 });
 
@@ -627,5 +624,366 @@ describe("K8sAdapter.inspectComputeHealth", () => {
       state: "unknown",
       reason: "invalid_scheduler_state",
     });
+  });
+});
+
+describe("Kubernetes stop confirmation", () => {
+  const pod = (phase: string) => ({
+    metadata: { name: "job-pod", ownerReferences: [{ kind: "Job", name: "original-job" }] },
+    status: { phase },
+  });
+  test.each([
+    "Running",
+    "Pending",
+    "Unknown",
+    "Succeeded",
+    "Failed",
+  ])("deleted Job with a %s pod", async (phase) => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: JSON.stringify({ items: [pod(phase)] }) },
+    ]);
+    const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "original-ns" });
+    expect(await adapter.confirmStopped("original-job")).toBe(
+      ["Succeeded", "Failed"].includes(phase),
+    );
+  });
+  test.each([
+    "job-unavailable",
+    "pods-unavailable",
+    "bad-json",
+    "missing-list",
+    "wrong-job",
+  ])("%s cannot prove a stop", async (fault) => {
+    const { spawner } = mockSpawner([
+      {
+        exitCode: fault === "job-unavailable" ? 1 : 0,
+        stdout:
+          fault === "wrong-job"
+            ? JSON.stringify({ metadata: { name: "other" }, status: {} })
+            : fault === "bad-json"
+              ? "invalid"
+              : "",
+      },
+      {
+        exitCode: fault === "pods-unavailable" ? 1 : 0,
+        stdout: JSON.stringify(fault === "missing-list" ? {} : { items: [] }),
+      },
+    ]);
+    const adapter = new K8sAdapter("v1.28.0", { spawner });
+    await expect(adapter.confirmStopped("original-job")).rejects.toThrow();
+  });
+  test("failed pod count is not a terminal Job condition", async () => {
+    const { spawner } = mockSpawner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({ metadata: { name: "original-job" }, status: { failed: 1 } }),
+      },
+    ]);
+    expect(await new K8sAdapter("v1.28.0", { spawner }).confirmStopped("original-job")).toBe(false);
+  });
+  test("foreground cancellation retains the recovered namespace through pod confirmation", async () => {
+    const { spawner, calls } = mockSpawner([
+      { exitCode: 0, stdout: JSON.stringify({ items: [{ metadata: { name: "original-job" } }] }) },
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: JSON.stringify({ items: [] }) },
+    ]);
+    const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "default" });
+    await adapter.findByKuintessenceJobId({ jobId: "original", namespace: "tenant-ns" });
+    await adapter.cancel("original-job");
+    expect(await adapter.confirmStopped("original-job")).toBe(true);
+    expect(calls[1]).toContain("--cascade=foreground");
+    expect(calls[1]).toContain("--wait=false");
+    expect(calls.every((call) => call.includes("tenant-ns"))).toBe(true);
+  });
+});
+
+test("a known scheduler id uses the durable namespace even without a restored local JobSpec", async () => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: "" },
+    { exitCode: 0, stdout: "" },
+    { exitCode: 0, stdout: JSON.stringify({ items: [] }) },
+  ]);
+  const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "default" });
+  const lookup = { jobId: "original", namespace: "persisted-ns" };
+  await adapter.cancel("original-job", lookup);
+  expect(await adapter.confirmStopped("original-job", lookup)).toBe(true);
+  expect(calls.every((call) => call.includes("persisted-ns"))).toBe(true);
+});
+
+test("a remaining job-labeled Pod is not ignored when its owner reference is missing", async () => {
+  const { spawner } = mockSpawner([
+    { exitCode: 0, stdout: "" },
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        items: [{ metadata: { labels: { "job-name": "original" } }, status: { phase: "Running" } }],
+      }),
+    },
+  ]);
+  expect(await new K8sAdapter("v1.28.0", { spawner }).confirmStopped("original")).toBe(false);
+});
+
+describe("federation Kubernetes identity", () => {
+  const uid = "00000000-0000-4000-8000-000000000001";
+  const replacementUid = "00000000-0000-4000-8000-000000000002";
+  const lookup = {
+    jobId: baseSpec.jobId,
+    namespace: "tenant-ns",
+    schedulerUid: uid,
+    federationDispatchEpoch: 5,
+  };
+
+  test("creates an epoch-scoped Job and retains the API UID", async () => {
+    const name = `kq-${baseSpec.jobId}-5`;
+    const { spawner, calls } = mockSpawner([
+      {
+        exitCode: 0,
+        stdout: `NetworkPolicy\tpolicy\ttenant-ns\t${replacementUid}\nConfigMap\tscript\ttenant-ns\t${replacementUid}\nJob\t${name}\ttenant-ns\t${uid}\n`,
+      },
+    ]);
+    const adapter = new K8sAdapter("test", { spawner });
+    const spec = { ...baseSpec, queueName: "tenant-ns", federationDispatchEpoch: 5 };
+    expect(adapter.buildJobManifest(spec)).toMatchObject({
+      metadata: {
+        name,
+        labels: { "kuintessence.io/dispatch-epoch": "5" },
+      },
+    });
+    expect(await adapter.submit(spec)).toEqual({ schedulerJobId: name, schedulerUid: uid });
+    expect(calls[0]).toContain("create");
+    expect(calls[0]?.some((arg) => arg.startsWith("jsonpath="))).toBe(true);
+  });
+
+  test("raw DELETE carries an API UID precondition and the original namespace", async () => {
+    let called = false;
+    const adapter = new K8sAdapter("test", {
+      spawner: {
+        run: async (args, options) => {
+          expect(args).toEqual([
+            "kubectl",
+            "delete",
+            "--raw",
+            "/apis/batch/v1/namespaces/tenant-ns/jobs/original",
+            "-f",
+            "-",
+          ]);
+          expect(JSON.parse(String(options?.stdin))).toEqual({
+            apiVersion: "v1",
+            kind: "DeleteOptions",
+            propagationPolicy: "Foreground",
+            preconditions: { uid },
+          });
+          called = true;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    });
+    await adapter.cancel("original", lookup);
+    expect(called).toBe(true);
+    await expect(
+      adapter.cancel("unknown", { jobId: "unknown", federationDispatchEpoch: 5 }),
+    ).rejects.toThrow("requires a UID");
+    expect(() =>
+      adapter.prepareResume({ ...baseSpec, federationDispatchEpoch: 5 }, "original"),
+    ).toThrow("durable UID");
+  });
+
+  test.each([
+    true,
+    false,
+  ])("same-name replacement cannot hide an original running Pod (remaining=%s)", async (remaining) => {
+    const { spawner } = mockSpawner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          metadata: { name: "original", uid: replacementUid },
+          status: { active: 1 },
+        }),
+      },
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          items: [
+            {
+              metadata: {
+                ownerReferences: [{ kind: "Job", name: "original", uid: replacementUid }],
+              },
+              status: { phase: "Running" },
+            },
+            ...(remaining
+              ? [
+                  {
+                    metadata: { ownerReferences: [{ kind: "Job", name: "original", uid }] },
+                    status: { phase: "Running" },
+                  },
+                ]
+              : []),
+          ],
+        }),
+      },
+    ]);
+    expect(await new K8sAdapter("test", { spawner }).confirmStopped("original", lookup)).toBe(
+      !remaining,
+    );
+  });
+
+  test("controller UID still identifies an original Pod after its name labels and owner were removed", async () => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "" },
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          items: [
+            { metadata: { labels: { "controller-uid": uid } }, status: { phase: "Running" } },
+          ],
+        }),
+      },
+    ]);
+    expect(await new K8sAdapter("test", { spawner }).confirmStopped("original", lookup)).toBe(
+      false,
+    );
+  });
+
+  test("recovery cannot select another epoch or adopt a replacement UID", async () => {
+    const item = (epoch: number, id: string) => ({
+      metadata: {
+        name: `kq-${baseSpec.jobId}-${epoch}`,
+        uid: id,
+        labels: {
+          "kuintessence.io/job-id": baseSpec.jobId,
+          "kuintessence.io/dispatch-epoch": String(epoch),
+          "kuintessence.io/job-name": "kf5",
+        },
+      },
+    });
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: JSON.stringify({ items: [item(4, replacementUid), item(5, uid)] }) },
+      { exitCode: 0, stdout: JSON.stringify({ items: [item(5, replacementUid)] }) },
+    ]);
+    const adapter = new K8sAdapter("test", { spawner });
+    expect(await adapter.findByKuintessenceJobId({ ...lookup, schedulerName: "kf5" })).toEqual({
+      status: "found",
+      schedulerJobId: `kq-${baseSpec.jobId}-5`,
+      schedulerUid: uid,
+    });
+    expect(
+      await adapter.findByKuintessenceJobId({ ...lookup, schedulerName: "kf5" }),
+    ).toMatchObject({ status: "indeterminate" });
+  });
+});
+
+describe("K8sAdapter terminal accounting", () => {
+  const uid = "e8e9e3fa-0254-4b26-9050-c00407599172";
+  const job = {
+    metadata: { name: "kq-metered", namespace: "mapped", uid },
+    spec: { backoffLimit: 0, completions: 1, parallelism: 1 },
+    status: { succeeded: 1 },
+  };
+  const pod = {
+    metadata: {
+      namespace: "mapped",
+      ownerReferences: [{ controller: true, kind: "Job", name: "kq-metered", uid }],
+    },
+    spec: { restartPolicy: "Never", containers: [{ name: "kq-sandbox" }] },
+    status: {
+      phase: "Succeeded",
+      containerStatuses: [
+        {
+          name: "kq-sandbox",
+          restartCount: 0,
+          state: {
+            terminated: {
+              exitCode: 0,
+              startedAt: "2026-01-01T00:00:01Z",
+              finishedAt: "2026-01-01T00:00:03.500Z",
+            },
+          },
+        },
+      ],
+    },
+  };
+  async function read(items: unknown[], original: unknown = job) {
+    const { spawner, calls } = mockSpawner([
+      { exitCode: 0, stdout: JSON.stringify(original) },
+      { exitCode: 0, stdout: "node-a\t2026-01-01T00:00:00Z" },
+      { exitCode: 0, stdout: JSON.stringify({ items }) },
+    ]);
+    const result = await new K8sAdapter("v1.30", { spawner, namespace: "mapped" }).status(
+      "kq-metered",
+    );
+    return { result, calls };
+  }
+  test("uses the original Job UID and terminated container times without inventing CPU usage", async () => {
+    const { result, calls } = await read([pod]);
+    expect(result.accounting).toMatchObject({
+      source: "kubernetes-pod",
+      schedulerJobId: "kq-metered",
+      elapsedMilliseconds: "2500",
+    });
+    expect(result.accounting?.cpuTimeMilliseconds).toBeUndefined();
+    expect(result.accounting?.allocatedCpus).toBeUndefined();
+    expect(calls[2]).toContain(`controller-uid=${uid}`);
+    const zero = structuredClone(pod);
+    zero.status.containerStatuses.forEach((status) => {
+      status.state.terminated.finishedAt = "2026-01-01T00:00:01Z";
+    });
+    expect((await read([zero])).result.accounting?.elapsedMilliseconds).toBe("0");
+  });
+  test("missing, restarted, replaced, multi-pod or malformed observations remain unknown", async () => {
+    for (const mutate of [
+      (p: typeof pod) => {
+        p.metadata.ownerReferences.forEach((owner) => {
+          owner.uid = crypto.randomUUID();
+        });
+      },
+      (p: typeof pod) => {
+        p.metadata.namespace = "other";
+      },
+      (p: typeof pod) => {
+        p.status.containerStatuses.forEach((status) => {
+          status.restartCount = 1;
+        });
+      },
+      (p: typeof pod) => {
+        p.status.containerStatuses.forEach((status) => {
+          status.name = "sidecar";
+        });
+      },
+      (p: typeof pod) => {
+        p.status.containerStatuses.forEach((status) => {
+          status.state.terminated.startedAt = "2026-01-01T00:00:04Z";
+        });
+      },
+      (p: typeof pod) => {
+        p.status.containerStatuses.forEach((status) => {
+          status.state.terminated.finishedAt = "invalid";
+        });
+      },
+      (p: typeof pod) => {
+        p.status.containerStatuses.forEach((status) => {
+          status.state.terminated.finishedAt = "2099-01-01T00:00:00Z";
+        });
+      },
+      (p: typeof pod) => {
+        p.spec.containers.push({ name: "sidecar" });
+      },
+      (p: typeof pod) => {
+        p.status.phase = "Running";
+      },
+    ]) {
+      const changed = structuredClone(pod);
+      mutate(changed);
+      expect((await read([changed])).result.accounting).toBeUndefined();
+    }
+    for (const items of [[], [pod, pod]])
+      expect((await read(items)).result.accounting).toBeUndefined();
+    expect(
+      (await read([pod], { ...job, status: { succeeded: 1, failed: 1 } })).result.accounting,
+    ).toBeUndefined();
+    expect(
+      (await read([pod], { ...job, spec: { ...job.spec, backoffLimit: 2 } })).result.accounting,
+    ).toBeUndefined();
   });
 });

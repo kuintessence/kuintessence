@@ -93,7 +93,13 @@ Server `13000`、Registry `13100`。Casdoor issuer 默认
 - scheduler CLI ready 后，`common/register-agent.sh` 通过 CP registration token API
   调用 `kq agent register`，不通过 register body 自报 provider。
 - 私钥、证书和 `agent.env` 写入 scheduler state volume；
-  `common/start-agent.sh` 重启时复用它们。
+  `common/start-agent.sh` 重启时复用它们，并把相同的注册环境交给 Agent 与独立看守。
+- 共用 `common/supervise-agent.py` 分别拉起 Agent 和看守；任一进程退出后独立重启，
+  Agent 崩溃不会重启调度器或终止看守。监督进程收到 TERM/INT 时停止两组子进程；
+  Slurm/PBS/K3s 入口转发容器终止信号。使用该能力必须重建 scheduler-base 及调度器镜像。
+- 看守与 Agent 共用同一账号和 SQLite。启动时拒绝链接、其他账号或硬链接状态文件，
+  将 SQLite 及已存在的 WAL/SHM 限制为 `0600`，保留原内容；看守不负责迁移数据库。
+  不要把状态目录和 Kubernetes 控制凭据提供给任务。K3s kubeconfig 默认权限为 `0600`。
 - Slurm/PBS/K3s 各有独立 `/scratch` named volume，开发 root 为 `1777`；
   平台可见路径仍必须由 Cluster File Root 授权。
 - `agent-deps` 为三个 Agent 初始化共享 Linux 依赖卷，避免并发写入。
@@ -104,6 +110,10 @@ Server `13000`、Registry `13100`。Casdoor issuer 默认
 状态，只能用于明确批准的开发数据销毁。仅删除 scheduler state 而保留 Server DB 会导致
 同名 Agent 的 enrollment intent 冲突。恢复时应核对原证书、执行正式轮换或采用新 Agent ID，
 禁止未经数据销毁批准清空全栈。
+
+这些容器内监督进程仍共享容器/宿主机的故障域。Pod 被删除、宿主机掉电或整个监督进程冻结时，
+不能承诺固定停止时限；真实远程集群仍应使用独立部署的看守。Helm scheduler 通过相同镜像入口
+获得监督能力，prepare-agent 会拒绝缺少监督脚本的旧镜像；默认仍不自动开放联邦任务。
 
 ### 身份服务
 

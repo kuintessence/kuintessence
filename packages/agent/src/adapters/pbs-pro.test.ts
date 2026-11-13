@@ -575,14 +575,13 @@ describe("PbsProAdapter.status", () => {
     expect(r.exitCode).toBe(1);
   });
 
-  test("qstat non-zero exit -> failed", async () => {
+  test("qstat failure remains an unknown observation", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 1, stdout: "", stderr: "Unknown job" },
       { exitCode: 1, stdout: "", stderr: "Unknown job" },
     ]);
     const adapter = new PbsProAdapter("19.0.0", { spawner });
-    const r = await adapter.status("12345.server");
-    expect(r.status).toBe("failed");
+    await expect(adapter.status("12345.server")).rejects.toThrow("no data");
   });
 
   test("falls back to qstat -x for finished jobs", async () => {
@@ -597,18 +596,16 @@ describe("PbsProAdapter.status", () => {
     expect(r.exitCode).toBe(0);
   });
 
-  test("qstat returns non-JSON -> failed", async () => {
+  test("invalid qstat response is retried", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 0, stdout: "not json at all" },
       { exitCode: 0, stdout: "not json either" },
     ]);
     const adapter = new PbsProAdapter("19.0.0", { spawner });
-    const r = await adapter.status("12345.server");
-    expect(r.status).toBe("failed");
-    expect(r.message).toContain("non-JSON");
+    await expect(adapter.status("12345.server")).rejects.toThrow("non-JSON");
   });
 
-  test("uses first job in Jobs map when key doesn't match exactly", async () => {
+  test("matches the original short job id to its server-qualified identity", async () => {
     // PBS Pro may include full server suffix in keys even if user queries with short id
     const stdout = JSON.stringify({
       Jobs: { "12345.pbs-server": { job_state: "R" } },
@@ -686,4 +683,191 @@ describe("PbsProAdapter.inspectComputeHealth", () => {
       reason: "invalid_scheduler_state",
     });
   });
+});
+
+test("submission recovery includes PBS history and rejects unrelated status records", async () => {
+  const { spawner, calls } = mockSpawner([
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        Jobs: { "42.server": { job_state: "F", Variable_List: "KQ_JOB_ID=original" } },
+      }),
+    },
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({ Jobs: { "other.server": { job_state: "F", Exit_status: 0 } } }),
+    },
+  ]);
+  const adapter = new PbsProAdapter("19.0.0", { spawner });
+  expect(
+    await adapter.findByKuintessenceJobId({ jobId: "original", submittedAfterUnixMs: Date.now() }),
+  ).toEqual({ status: "found", schedulerJobId: "42.server" });
+  expect(calls[0]).toEqual(["qstat", "-x", "-f", "-F", "json"]);
+  await expect(adapter.status("42.server")).rejects.toThrow("not found");
+});
+
+test("a PBS cancellation acknowledgement alone does not prove execution has stopped", async () => {
+  const { spawner } = mockSpawner([
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({ Jobs: { "12345.server": { job_state: "E", Exit_status: 0 } } }),
+    },
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({ Jobs: { "12345.server": { job_state: "F", Exit_status: 0 } } }),
+    },
+    { exitCode: 1, stdout: "", stderr: "offline" },
+    { exitCode: 1, stdout: "", stderr: "offline" },
+  ]);
+  const adapter = new PbsProAdapter("19.0.0", { spawner });
+  expect(await adapter.confirmStopped("12345.server")).toBe(false);
+  expect(await adapter.confirmStopped("12345.server")).toBe(true);
+  await expect(adapter.confirmStopped("12345.server")).rejects.toThrow();
+});
+
+test("recovery lookup binds PBS Job UUID, dispatch epoch name and scheduler account", async () => {
+  const jobs = {
+    "101.server": {
+      Job_Name: "kf1",
+      Account_Name: "approved",
+      Variable_List: { KQ_JOB_ID: "original" },
+    },
+    "102.server": {
+      Job_Name: "kf2",
+      Account_Name: "approved",
+      Variable_List: { KQ_JOB_ID: "original" },
+    },
+    "103.server": {
+      Job_Name: "kf1",
+      Account_Name: "different",
+      Variable_List: { KQ_JOB_ID: "original" },
+    },
+  };
+  const { spawner } = mockSpawner([{ exitCode: 0, stdout: JSON.stringify({ Jobs: jobs }) }]);
+  const adapter = new PbsProAdapter("test", { spawner });
+  expect(
+    await adapter.findByKuintessenceJobId({
+      jobId: "original",
+      schedulerName: "kf1",
+      schedulerAccount: "approved",
+    }),
+  ).toEqual({ status: "found", schedulerJobId: "101.server" });
+});
+
+test("PBS history accounting uses reported resources rather than requested resources", async () => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 153, stdout: "" },
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        Jobs: {
+          "42.pbs": {
+            job_state: "F",
+            Exit_status: 0,
+            Resource_List: { ncpus: 100 },
+            resources_used: { walltime: "00:00:10", cput: "00:00:03", ncpus: "2" },
+          },
+        },
+      }),
+    },
+  ]);
+  const result = await new PbsProAdapter("2024", { spawner }).status("42.pbs");
+  expect(result.accounting).toMatchObject({
+    source: "pbs-qstat",
+    schedulerJobId: "42.pbs",
+    elapsedMilliseconds: "10000",
+    cpuTimeMilliseconds: "3000",
+    allocatedCpus: "2",
+  });
+  expect(calls[1]).toContain("-x");
+});
+
+test("PBS missing CPU accounting stays absent even with requested cores and walltime", async () => {
+  const { spawner } = mockSpawner([
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        Jobs: {
+          "42.pbs": {
+            job_state: "F",
+            Exit_status: 1,
+            Resource_List: { ncpus: 100, walltime: "00:00:30" },
+            resources_used: { walltime: "00:00:00", cput: "Unknown" },
+          },
+        },
+      }),
+    },
+  ]);
+  const result = await new PbsProAdapter("2024", { spawner }).status("42.pbs");
+  expect(result.status).toBe("failed");
+  expect(result.accounting?.elapsedMilliseconds).toBe("0");
+  expect(result.accounting?.cpuTimeMilliseconds).toBeUndefined();
+  expect(result.accounting?.allocatedCpus).toBeUndefined();
+});
+
+test("mapped PBS recovery excludes another user's matching job metadata", async () => {
+  const jobs = Object.fromEntries(
+    ["scientist", "other"].map((owner, index) => [
+      `${index + 1}.server`,
+      {
+        Job_Name: "kf1",
+        Account_Name: "science",
+        Job_Owner: `${owner}@node`,
+        Variable_List: { KQ_JOB_ID: "original" },
+      },
+    ]),
+  );
+  const { spawner } = mockSpawner([{ exitCode: 0, stdout: JSON.stringify({ Jobs: jobs }) }]);
+  expect(
+    await new PbsProAdapter("test", { spawner }).findByKuintessenceJobId({
+      jobId: "original",
+      schedulerName: "kf1",
+      schedulerAccount: "science",
+      executionUser: { uid: 24001, username: "scientist" },
+    }),
+  ).toEqual({ status: "found", schedulerJobId: "1.server" });
+});
+
+test.each([
+  "R",
+  "S",
+  "U",
+  "Q",
+  "E",
+  "F",
+])("leased PBS cancellation respects state %s without postponing termination", async (state) => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: JSON.stringify({ Jobs: { "42.server": { job_state: state } } }) },
+    { exitCode: 0, stdout: "" },
+    { exitCode: 0, stdout: "" },
+  ]);
+  await new PbsProAdapter("23.06", { spawner }).cancel("42.server", {
+    jobId: "original",
+    federationDispatchEpoch: 5,
+  });
+  const commands = calls.slice(1);
+  expect(commands).toEqual(
+    ["R", "S", "U"].includes(state)
+      ? [
+          ["qsig", "-s", "KILL", "42.server"],
+          ["qdel", "42.server"],
+        ]
+      : state === "Q"
+        ? [["qdel", "42.server"]]
+        : [],
+  );
+});
+
+test("leased PBS signal failure remains an error and retains the scheduler record", async () => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: JSON.stringify({ Jobs: { "42.server": { job_state: "R" } } }) },
+    { exitCode: 1, stdout: "", stderr: "MOM unavailable" },
+  ]);
+  await expect(
+    new PbsProAdapter("23.06", { spawner }).cancel("42.server", {
+      jobId: "original",
+      federationDispatchEpoch: 5,
+    }),
+  ).rejects.toThrow("qsig failed");
+  expect(calls).toHaveLength(2);
 });

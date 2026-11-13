@@ -6,12 +6,15 @@ import {
   dataGrants,
   dataLocations,
   dataReplicas,
+  federationDatasetAssets,
   type PgDb,
+  type PgTransaction,
 } from "@kuintessence/db";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { dataAssetGrantTuples } from "../authz/projection";
 import type { AuthzTuple } from "../authz/service";
-import { hasActiveDataAccess } from "./data-access-decision";
+import { datasetSourceAuthority, isFederationDataset } from "../federation/dataset-authority";
+import { type DataAccessAuthorization, evaluateActiveDataAccess } from "./data-access-decision";
 import type {
   DataCandidateLocation,
   DataPrerequisiteRepository,
@@ -21,15 +24,15 @@ import type {
 export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository {
   private readonly replicaMaxAgeMs: number;
   private readonly now: () => Date;
-  private readonly hasActiveAccess: typeof hasActiveDataAccess;
+  private readonly evaluateAccess: typeof evaluateActiveDataAccess;
 
   constructor(
-    private readonly db: PgDb,
+    private readonly db: PgDb | PgTransaction,
     options: DataPrerequisiteRepositoryOptions = {},
   ) {
     this.replicaMaxAgeMs = options.replicaMaxAgeMs ?? DEFAULT_REPLICA_MAX_AGE_MS;
-    this.now = options.now ?? (() => new Date());
-    this.hasActiveAccess = options.hasActiveAccess ?? hasActiveDataAccess;
+    this.now = options.now ?? (() => new Date(Date.now()));
+    this.evaluateAccess = options.evaluateAccess ?? evaluateActiveDataAccess;
   }
 
   async resolveVersion(input: DataRequirement) {
@@ -59,6 +62,7 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
     const rows = await this.db
       .select({
         locationId: dataLocations.id,
+        assetId: dataAssetVersions.dataAssetId,
         agentId: dataLocations.agentId,
         siteId: dataLocations.siteId,
         managedRootId: dataLocations.managedRootId,
@@ -76,7 +80,12 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
       .where(
         and(eq(dataLocations.dataAssetVersionId, versionId), eq(dataLocations.status, "available")),
       );
+    const first = rows[0];
+    const source = first
+      ? await datasetSourceAuthority(this.db, { assetId: first.assetId, versionId }, this.now())
+      : null;
     return rows.flatMap((row) => {
+      if (source && !source.locationIds.includes(row.locationId)) return [];
       if (
         row.replicaId !== null &&
         !isReplicaEligible(
@@ -112,6 +121,8 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
     const rows = await this.db
       .select({
         versionId: dataLocations.dataAssetVersionId,
+        assetId: dataAssetVersions.dataAssetId,
+        locationId: dataLocations.id,
         agentId: dataLocations.agentId,
         siteId: dataLocations.siteId,
         kind: dataLocations.kind,
@@ -131,8 +142,21 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
         ),
       );
     const now = this.now();
+    const sources = new Map<string, Awaited<ReturnType<typeof datasetSourceAuthority>>>();
+    for (const row of rows)
+      if (!sources.has(row.versionId))
+        sources.set(
+          row.versionId,
+          await datasetSourceAuthority(
+            this.db,
+            { assetId: row.assetId, versionId: row.versionId },
+            now,
+          ),
+        );
     return new Set(
       rows.flatMap((row) => {
+        const source = sources.get(row.versionId);
+        if (source && !source.locationIds.includes(row.locationId)) return [];
         if (
           row.replicaId !== null &&
           !isReplicaEligible(
@@ -161,6 +185,26 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
   }): Promise<Set<string>> {
     if (input.candidates.length === 0) return new Set();
     const assetIds = [...new Set(input.candidates.map((candidate) => candidate.assetId))];
+    const foreign = new Set(
+      (
+        await this.db
+          .select({ id: federationDatasetAssets.assetId })
+          .from(federationDatasetAssets)
+          .where(inArray(federationDatasetAssets.assetId, assetIds))
+      ).map((r) => r.id),
+    );
+    const foreignAllowed = new Set<string>();
+    for (const candidate of input.candidates)
+      if (
+        foreign.has(candidate.assetId) &&
+        (await this.verifyAccess({
+          assetId: candidate.assetId,
+          versionId: candidate.versionId,
+          actorUserId: input.actorUserId,
+          orgId: input.orgId,
+        }))
+      )
+        foreignAllowed.add(candidate.versionId);
     const subject = or(
       and(eq(dataGrants.subjectKind, "user"), eq(dataGrants.subjectId, input.actorUserId)),
       ...(input.orgId
@@ -223,6 +267,8 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
     const policiesByAssetId = groupByAssetId(policies);
     return new Set(
       input.candidates.flatMap((candidate) => {
+        if (foreign.has(candidate.assetId))
+          return foreignAllowed.has(candidate.versionId) ? [candidate.versionId] : [];
         if (!requiresActiveEntitlementUse(candidate.kind, candidate.accessMode)) {
           if (candidate.ownerUserId === input.actorUserId) return [candidate.versionId];
           if (
@@ -269,48 +315,60 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
     assetId: string;
     versionId: string;
   }): Promise<boolean> {
+    return (await this.authorizeAccess(input)).allowed;
+  }
+
+  async authorizeAccess(
+    input: Parameters<PgDataPrerequisiteRepository["verifyAccess"]>[0],
+  ): Promise<DataAccessAuthorization> {
     const [asset] = await this.db
       .select()
       .from(dataAssets)
       .where(eq(dataAssets.id, input.assetId))
       .limit(1);
-    if (!asset) return false;
-    if (requiresActiveEntitlementUse(asset.kind, asset.accessMode)) {
-      return this.hasActiveAccess(this.db, {
+    if (!asset) return { allowed: false, expiresAtUnixMs: 0 };
+    if (
+      requiresActiveEntitlementUse(asset.kind, asset.accessMode) ||
+      (await isFederationDataset(this.db, asset.id))
+    ) {
+      return this.evaluateAccess(this.db, {
         assetId: input.assetId,
         versionId: input.versionId,
         actorUserId: input.actorUserId,
         orgIds: input.orgId ? [input.orgId] : [],
         capability: "use",
+        now: this.now(),
       });
     }
-    if (asset.ownerUserId === input.actorUserId) return true;
+    if (asset.ownerUserId === input.actorUserId)
+      return { allowed: true, expiresAtUnixMs: Number.POSITIVE_INFINITY };
     if (
       input.orgId !== null &&
       (asset.ownerOrgId === input.orgId || asset.providerOrgId === input.orgId)
     ) {
-      return true;
+      return { allowed: true, expiresAtUnixMs: Number.POSITIVE_INFINITY };
     }
-    if (asset.visibility === "private") return false;
+    if (asset.visibility === "private") return { allowed: false, expiresAtUnixMs: 0 };
     if (
       asset.visibility === "public" &&
       asset.lifecycle === "published" &&
       asset.accessMode === "open"
     ) {
-      return true;
+      return { allowed: true, expiresAtUnixMs: Number.POSITIVE_INFINITY };
     }
-    return this.hasActiveAccess(this.db, {
+    return this.evaluateAccess(this.db, {
       assetId: input.assetId,
       versionId: input.versionId,
       actorUserId: input.actorUserId,
       orgIds: input.orgId ? [input.orgId] : [],
       capability: "use",
+      now: this.now(),
     });
   }
 }
 
 async function expireAccessRows(
-  db: PgDb,
+  db: PgDb | PgTransaction,
   grants: readonly BatchGrant[],
   policies: readonly BatchPolicy[],
   now: Date,
@@ -432,7 +490,7 @@ const DEFAULT_REPLICA_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export interface DataPrerequisiteRepositoryOptions {
   replicaMaxAgeMs?: number;
   now?: () => Date;
-  hasActiveAccess?: typeof hasActiveDataAccess;
+  evaluateAccess?: typeof evaluateActiveDataAccess;
 }
 
 export function requiresActiveEntitlementUse(kind: string, accessMode: string): boolean {

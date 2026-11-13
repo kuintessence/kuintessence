@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DataAssetEntryPathSchema } from "../data-market/data-assets";
 import { QueueIdSchema } from "../schemas/queue";
 
 /** Template-internal reference key — a CEL-safe identifier (F1). */
@@ -43,6 +44,7 @@ export type Requirements = z.infer<typeof RequirementsSchema>;
 export const FileInputSchema = z.strictObject({
   fileMetadataId: UuidSchema,
   fileMetadataName: z.string(),
+  relativePath: DataAssetEntryPathSchema.optional(),
   hash: z.string(),
   size: z.number().int().nonnegative(),
 });

@@ -1,0 +1,76 @@
+# Overlay for deploy/compose/docker-compose.yml. No Fabric service or dependency.
+# Socket directory and certificates are deployment-owned; use the same UID for both processes.
+services:
+  server:
+    environment:
+      FEDERATION_ENABLED: "true"
+      FEDERATION_SITE_ID: ${FEDERATION_SITE_ID:?set institution UUID}
+      FEDERATION_SIGNING_KEY_ID: ${FEDERATION_SIGNING_KEY_ID:?set registered signing key ID}
+      FEDERATION_SIGNING_KEY_FILE: /run/kq-federation/signing.key
+      FEDERATION_SOCKET_PATH: /run/kq-federation-socket/private/ingress.sock
+      FEDERATION_CLIENT_CA_FILE: /run/kq-federation/client-ca.pem
+      FEDERATION_CLIENT_CERT_FILE: /run/kq-federation/client.pem
+      FEDERATION_CLIENT_KEY_FILE: /run/kq-federation/client.key
+      FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS: ${FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS:-}
+      FEDERATION_INPUT_DOWNLOAD_ORIGINS: ${FEDERATION_INPUT_DOWNLOAD_ORIGINS:-}
+      FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS: ${FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS:-}
+      FEDERATION_RESULT_DOWNLOAD_ORIGINS: ${FEDERATION_RESULT_DOWNLOAD_ORIGINS:-}
+      FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: ${FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS:-}
+    volumes:
+      - federation-socket:/run/kq-federation-socket
+      - type: bind
+        source: ${FEDERATION_SIGNING_KEY_FILE:?set private signing key file}
+        target: /run/kq-federation/signing.key
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${FEDERATION_CLIENT_CA_FILE:?set outbound CA file}
+        target: /run/kq-federation/client-ca.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${FEDERATION_CLIENT_CERT_FILE:?set outbound client certificate}
+        target: /run/kq-federation/client.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${FEDERATION_CLIENT_KEY_FILE:?set outbound private key file}
+        target: /run/kq-federation/client.key
+        read_only: true
+        bind: {create_host_path: false}
+  federation-gateway:
+    image: ghcr.io/${KQ_IMAGE_OWNER:-kuintessence}/kuintessence-federation-gateway:${KQ_IMAGE_TAG:-main}
+    environment:
+      FEDERATION_TLS_PORT: "3443"
+      FEDERATION_TLS_CA_FILE: /run/kq-federation/ca.pem
+      FEDERATION_TLS_CERT_FILE: /run/kq-federation/tls.pem
+      FEDERATION_TLS_KEY_FILE: /run/kq-federation/tls.key
+      FEDERATION_SOCKET_PATH: /run/kq-federation-socket/private/ingress.sock
+    volumes:
+      - federation-socket:/run/kq-federation-socket:ro
+      - type: bind
+        source: ${FEDERATION_TLS_CA_FILE:?set gateway ca file}
+        target: /run/kq-federation/ca.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${FEDERATION_TLS_CERT_FILE:?set gateway cert file}
+        target: /run/kq-federation/tls.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${FEDERATION_TLS_KEY_FILE:?set gateway key file}
+        target: /run/kq-federation/tls.key
+        read_only: true
+        bind: {create_host_path: false}
+    ports:
+      - "${FEDERATION_TLS_BIND:-127.0.0.1}:${FEDERATION_TLS_PORT:-3443}:3443"
+    depends_on:
+      server:
+        condition: service_started
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+volumes:
+  federation-socket:

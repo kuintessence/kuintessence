@@ -21,6 +21,15 @@ function unixSandbox(): SandboxJobSpec {
     runtimeKind: "SIF",
     runtimePath: "/managed/runtimes/python.sif",
     executionMode: "RootImpersonation",
+    runtimeAttestationId: "a".repeat(64),
+    apptainerPath: "/usr/bin/apptainer",
+    seccompProfilePath: "/etc/kuintessence/seccomp.json",
+    cgroupCheck: {
+      path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+      sha256: "c".repeat(64),
+    },
+    attestedQueue: "compute",
+    attestedNodes: ["node-1"],
     identity: {
       mode: "MappedAccount",
       backend: "Unix",
@@ -47,13 +56,14 @@ function unixSandbox(): SandboxJobSpec {
         descriptor: "output",
         ioType: "JSON",
         mode: "WriteOnly",
-        hostPath: "/managed/job/outputs/result.json",
-        relativePath: "outputs/result.json",
+        hostPath: "/managed/job/outputs/output",
+        relativePath: "outputs/output",
         containerPath: "/kq/outputs/output",
         sizeLimitBytes: 1_000,
         required: true,
       },
     ],
+    resources: { cpus: 2, memoryMb: 512 },
     limits: { pids: 32, outputBytes: 2_000, logBytes: 1_000 },
   };
 }
@@ -70,6 +80,10 @@ function kubernetesSandbox(): SandboxJobSpec {
       namespace: "kq-user-a",
       serviceAccount: "user-a",
     },
+    mounts: unixSandbox().mounts.map((mount) => ({
+      ...mount,
+      relativePath: `jobs/00000000-0000-0000-0000-000000000111/00000000-0000-0000-0000-000000000222/${mount.mode === "WriteOnly" ? `outputs/${mount.descriptor}` : mount.relativePath}`,
+    })),
     kubernetesArtifactPvc: "kq-artifacts",
   };
 }
@@ -90,7 +104,74 @@ function job(sandbox: SandboxJobSpec = unixSandbox()): JobSpec {
   };
 }
 
+test.each([
+  "cpu",
+  "memory",
+  "legacy",
+] as const)("all Sandbox adapters reject altered or unsigned scheduler resources: %s", (field) => {
+  for (const adapter of [new SlurmAdapter("23"), new PbsProAdapter("23"), new TorqueAdapter("6")]) {
+    const spec = job();
+    if (field === "cpu") spec.cpus++;
+    if (field === "memory") spec.memoryMb++;
+    if (field === "legacy" && spec.sandbox) delete spec.sandbox.resources;
+    expect(() => adapter.buildSubmitScript(spec)).toThrow(
+      field === "legacy" ? "expected object" : "resources do not match",
+    );
+  }
+  const spec = job(kubernetesSandbox());
+  if (field === "cpu") spec.cpus++;
+  if (field === "memory") spec.memoryMb++;
+  if (field === "legacy" && spec.sandbox) delete spec.sandbox.resources;
+  expect(() => new K8sAdapter("1.30").buildJobManifest(spec)).toThrow(
+    field === "legacy" ? "expected object" : "resources do not match",
+  );
+});
+
 describe("HPC Sandbox adapters", () => {
+  test("binds only the prepared output directory, including absent optional files", () => {
+    const sandbox = unixSandbox();
+    const output = sandbox.mounts[1];
+    if (!output) throw new Error("Missing output fixture");
+    sandbox.mounts.push({
+      ...output,
+      descriptor: "optional",
+      required: false,
+      hostPath: "/managed/job/outputs/optional",
+      relativePath: "outputs/optional",
+      containerPath: "/kq/outputs/optional",
+    });
+    const argv = buildApptainerSandboxArgv(sandbox);
+    expect(argv.filter((arg) => arg.endsWith(":rw"))).toEqual([
+      "/managed/job/outputs:/kq/outputs:rw",
+    ]);
+    expect(argv).toContain("/managed/job/inputs/data.csv:/kq/inputs/input:ro");
+    for (const adapter of [
+      new SlurmAdapter("24"),
+      new PbsProAdapter("23"),
+      new TorqueAdapter("6"),
+    ]) {
+      expect(adapter.buildSubmitScript(job(sandbox))).toContain(
+        "/managed/job/outputs:/kq/outputs:rw",
+      );
+    }
+  });
+
+  test.each([
+    ["/managed/other/outputs/output", "/kq/outputs/output"],
+    ["/managed/job/inputs/output", "/kq/outputs/output"],
+    ["/managed/job/outputs/output", "/kq/inputs/output"],
+    ["/managed/job/outputs/output", "/kq/outputs/.."],
+    ["/managed/job/outputs/output", "/kq/outputs/."],
+    ["/managed/job/outputs/alias", "/kq/outputs/output"],
+  ])("refuses unsafe output directory mappings: %s to %s", (hostPath, containerPath) => {
+    const sandbox = unixSandbox();
+    const output = sandbox.mounts[1];
+    if (!output) throw new Error("Missing output fixture");
+    output.hostPath = hostPath;
+    output.containerPath = containerPath;
+    expect(() => buildApptainerSandboxArgv(sandbox)).toThrow("prepared job output directory");
+  });
+
   test("builds a minimal Apptainer command without the user command or host environment", () => {
     const argv = buildApptainerSandboxArgv(unixSandbox());
     expect(argv).toContain("--containall");
@@ -101,7 +182,44 @@ describe("HPC Sandbox adapters", () => {
     expect(argv).toContain("all");
     expect(argv.join(" ")).not.toContain("attacker.invalid");
     expect(argv.join(" ")).toContain("/kq/script/main.py");
-    expect(buildApptainerSandboxCommand(unixSandbox())).toContain("head -c 1000");
+    expect(buildApptainerSandboxCommand(unixSandbox(), "slurm")).toContain("head -c 1000");
+  });
+
+  test.each([
+    "runtimeAttestationId",
+    "apptainerPath",
+    "seccompProfilePath",
+    "cgroupCheck",
+    "attestedQueue",
+    "attestedNodes",
+  ] as const)("root HPC refuses a new submission without %s", (field) => {
+    const sandbox = unixSandbox();
+    delete sandbox[field];
+    for (const adapter of [
+      new SlurmAdapter("24"),
+      new PbsProAdapter("23"),
+      new TorqueAdapter("6"),
+    ]) {
+      expect(() => adapter.buildSubmitScript(job(sandbox))).toThrow("local execution facts");
+    }
+  });
+
+  test("root HPC binds native resource checks and eligible nodes on each scheduler", () => {
+    const slurm = new SlurmAdapter("24").buildSubmitScript(job());
+    const pbs = new PbsProAdapter("23").buildSubmitScript(job());
+    const torque = new TorqueAdapter("6").buildSubmitScript(job());
+    expect(slurm).toContain("#SBATCH --nodelist=node-1");
+    expect(pbs).toContain(":host=node-1");
+    expect(torque).toContain("nodes=node-1:ppn=2");
+    expect(slurm).toContain("${SLURM_JOB_ID:?");
+    for (const script of [pbs, torque]) {
+      expect(script).toContain("${PBS_JOBID:?");
+      expect(script).not.toContain("${SLURM_JOB_ID");
+    }
+    for (const script of [slurm, pbs, torque]) {
+      expect(script).toContain("no-new-privs,seccomp:/etc/kuintessence/seccomp.json");
+      expect(script).toContain("$(/usr/bin/hostname)");
+    }
   });
 
   test("uses the verified absolute binary instead of a malicious PATH entry", () => {
@@ -143,10 +261,10 @@ describe("HPC Sandbox adapters", () => {
     ]);
     expect(script).toContain("#SBATCH --account=science");
     expect(script).toContain(
-      "#SBATCH --output=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+      "#SBATCH --output=/managed/job/.scheduler-logs/kq-00000000-0000-0000-0000-000000000111.out",
     );
     expect(script).toContain(
-      "#SBATCH --error=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+      "#SBATCH --error=/managed/job/.scheduler-logs/kq-00000000-0000-0000-0000-000000000111.out",
     );
     expect(script).toContain("#SBATCH --chdir=/managed/job");
     expect(script).not.toContain("/private/agent/.scheduler-logs");
@@ -173,6 +291,11 @@ describe("HPC Sandbox adapters", () => {
     sandbox.selfAccount = { username: "kqagent", uid: 2001, gid: 2001 };
     sandbox.apptainerPath = "/usr/bin/apptainer";
     sandbox.seccompProfilePath = "/etc/kuintessence/seccomp.json";
+    sandbox.cgroupCheck = {
+      path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+      sha256: "c".repeat(64),
+    };
+    sandbox.attestedQueue = "compute";
     sandbox.attestedNodes = ["slurm-2"];
     const adapter = new SlurmAdapter("23", {
       logDir: "/private/agent/.scheduler-logs",
@@ -189,15 +312,24 @@ describe("HPC Sandbox adapters", () => {
 
     expect(commands[0]?.slice(0, 2)).toEqual(["sbatch", "--parsable"]);
     expect(script).toContain(
-      "#SBATCH --output=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+      "#SBATCH --output=/managed/job/.scheduler-logs/kq-00000000-0000-0000-0000-000000000111.out",
     );
     expect(script).toContain(
-      "#SBATCH --error=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+      "#SBATCH --error=/managed/job/.scheduler-logs/kq-00000000-0000-0000-0000-000000000111.out",
     );
     expect(script).toContain("#SBATCH --chdir=/managed/job");
     expect(script).not.toContain("/private/agent/.scheduler-logs");
     expect(script).toContain("#SBATCH --nodelist=slurm-2");
     expect(script).toContain("seccomp:/etc/kuintessence/seccomp.json");
+    expect(script).toContain("kq-sandbox-cgroup-check");
+    expect(script).toContain("'--cpus' '2' '--memory-mb' '512'");
+    expect(script).toContain("|| exit 126;");
+    expect(() => adapter.buildSubmitScript({ ...job(sandbox), queueName: "other" })).toThrow(
+      "queue has not passed",
+    );
+    expect(() => adapter.buildSubmitScript(job({ ...sandbox, cgroupCheck: undefined }))).toThrow(
+      "local execution facts",
+    );
     expect(script).toContain("/usr/bin/apptainer");
     expect(() =>
       new SlurmAdapter("23").buildSubmitScript(
@@ -207,6 +339,31 @@ describe("HPC Sandbox adapters", () => {
         }),
       ),
     ).toThrow("does not match local execution facts");
+
+    const pbsCommands: string[][] = [];
+    const pbs = new PbsProAdapter("23", {
+      spawner: {
+        run: async (command) => {
+          pbsCommands.push(command);
+          return { exitCode: 0, stdout: "124.pbs\n", stderr: "" };
+        },
+      },
+    });
+    const pbsScript = pbs.buildSubmitScript(job(sandbox));
+    expect(pbsScript).toContain("select=1:ncpus=2:mem=512mb:host=slurm-2");
+    expect(pbsScript).toContain("PBS_JOBID");
+    expect(pbsScript).toContain("seccomp:/etc/kuintessence/seccomp.json");
+    expect(pbsScript).toContain("kq-sandbox-cgroup-check");
+    await expect(pbs.submit(job(sandbox))).resolves.toEqual({ schedulerJobId: "124.pbs" });
+    expect(pbsCommands).toEqual([["qsub"]]);
+    expect(() => pbs.buildSubmitScript({ ...job(sandbox), queueName: "other" })).toThrow(
+      "queue has not passed",
+    );
+    expect(() =>
+      pbs.buildSubmitScript(
+        job({ ...sandbox, selfAccount: { username: "other", uid: 2001, gid: 2001 } }),
+      ),
+    ).toThrow("local execution facts");
   });
 
   test("PBS Pro and Torque keep sandbox logs in the mapped account workdir", () => {
@@ -217,8 +374,12 @@ describe("HPC Sandbox adapters", () => {
       [torque, "torque"],
     ] as const) {
       const script = adapter.buildSubmitScript(job());
-      expect(script).toContain(`#PBS -o /managed/job/kq-${prefix}-${job().jobId}.out`);
-      expect(script).toContain(`#PBS -e /managed/job/kq-${prefix}-${job().jobId}.err`);
+      expect(script).toContain(
+        `#PBS -o /managed/job/.scheduler-logs/kq-${prefix}-${job().jobId}.out`,
+      );
+      expect(script).toContain(
+        `#PBS -e /managed/job/.scheduler-logs/kq-${prefix}-${job().jobId}.err`,
+      );
       expect(script).not.toContain("/private/agent/.scheduler-logs");
     }
   });
@@ -232,7 +393,7 @@ describe("HPC Sandbox adapters", () => {
       new SlurmAdapter("23", {
         spawner: { run: async () => ({ exitCode: 0, stdout: "1", stderr: "" }) },
       }).submit(value),
-    ).rejects.toThrow("not entitled");
+    ).rejects.toThrow("queue");
   });
 
   test("rejects scheduler directive and bind-path injection", () => {
@@ -284,6 +445,18 @@ describe("HPC Sandbox adapters", () => {
     };
     const restricted = { ...job(sandbox), restrictedNoEgress: true };
     const argv = buildTrustedSandboxArgv(sandbox, buildApptainerSandboxArgv(sandbox));
+    expect(argv.slice(argv.indexOf("--cpus"), argv.indexOf("--cpus") + 4)).toEqual([
+      "--cpus",
+      "2",
+      "--memory-mb",
+      "512",
+    ]);
+    expect(() =>
+      buildTrustedSandboxArgv(
+        { ...sandbox, resources: undefined },
+        buildApptainerSandboxArgv(sandbox),
+      ),
+    ).toThrow();
     expect(argv.slice(0, 12)).toEqual([
       "/usr/libexec/kuintessence/kq-sandbox-wrapper",
       "--profile-id",
@@ -364,6 +537,12 @@ describe("Kubernetes Sandbox adapter", () => {
             }>;
             containers: Array<{
               command: string[];
+              volumeMounts: Array<{
+                name: string;
+                mountPath: string;
+                subPath?: string;
+                readOnly?: boolean;
+              }>;
               securityContext: {
                 allowPrivilegeEscalation: boolean;
                 readOnlyRootFilesystem: boolean;
@@ -375,6 +554,18 @@ describe("Kubernetes Sandbox adapter", () => {
       };
     };
     const pod = resource.spec.template.spec;
+    expect(
+      pod.containers[0]?.volumeMounts.find((mount) => mount.mountPath === "/kq/outputs"),
+    ).toEqual({
+      name: "artifacts",
+      mountPath: "/kq/outputs",
+      subPath:
+        "jobs/00000000-0000-0000-0000-000000000111/00000000-0000-0000-0000-000000000222/outputs",
+      readOnly: false,
+    });
+    expect(pod.containers[0]?.volumeMounts.some((mount) => mount.subPath === "outputs")).toBe(
+      false,
+    );
     expect(pod.serviceAccountName).toBe("user-a");
     expect(pod.nodeName).toBe("k3s-1");
     expect(pod.automountServiceAccountToken).toBe(false);
@@ -411,6 +602,7 @@ describe("Kubernetes Sandbox adapter", () => {
       { exitCode: 0, stdout: "", stderr: "" },
       { exitCode: 0, stdout: "", stderr: "" },
       { exitCode: 0, stdout: "", stderr: "" },
+      { exitCode: 0, stdout: "", stderr: "" },
     ];
     const adapter = new K8sAdapter("1.30", {
       tmpDir: "/tmp",
@@ -435,11 +627,12 @@ describe("Kubernetes Sandbox adapter", () => {
     expect(calls[0]).toContain("apply");
     expect(calls[1]).toContain("pod/kq-00000000-0000-0000-0000-000000000111-stage");
     expect(calls[2]).toContain("mkdir");
-    expect(calls[3]).toContain("/managed/job/inputs/data.csv");
-    expect(calls[3]).toContain(
-      "kq-user-a/kq-00000000-0000-0000-0000-000000000111-stage:/artifacts/inputs/data.csv",
+    expect(calls[2]?.at(-1)).toEndWith("/outputs");
+    expect(calls[4]).toContain("/managed/job/inputs/data.csv");
+    expect(calls[4]).toContain(
+      "kq-user-a/kq-00000000-0000-0000-0000-000000000111-stage:/artifacts/jobs/00000000-0000-0000-0000-000000000111/00000000-0000-0000-0000-000000000222/inputs/data.csv",
     );
-    expect(calls[4]).toContain("--ignore-not-found");
+    expect(calls[5]).toContain("--ignore-not-found");
     const stager = (stagerManifest?.items as Array<Record<string, unknown>>).find(
       (item) => item.kind === "Pod",
     ) as { spec: Record<string, unknown> };
@@ -452,6 +645,69 @@ describe("Kubernetes Sandbox adapter", () => {
         },
       },
     });
+  });
+
+  test("prepares an output-only job without creating an optional result file", async () => {
+    const calls: string[][] = [];
+    const sandbox = kubernetesSandbox();
+    sandbox.mounts = sandbox.mounts.filter((mount) => mount.mode === "WriteOnly");
+    const output = sandbox.mounts[0];
+    if (!output) throw new Error("Missing output fixture");
+    output.required = false;
+    const adapter = new K8sAdapter("1.30", {
+      tmpDir: "/tmp",
+      sandboxSeccompProfile: {
+        localhostProfile: "kuintessence/kq-no-network.json",
+        nodeName: "k3s-1",
+        assertCurrent: async () => {},
+      },
+      spawner: {
+        run: async (command) => {
+          calls.push(command);
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    });
+    await adapter.stageSandboxInputs(sandbox, job().jobId);
+    const preparation = calls.find((command) => command.includes("mkdir"));
+    expect(preparation?.at(-1)).toBe(`/artifacts/${output.relativePath.replace(/\/[^/]+$/, "")}`);
+    expect(calls.some((command) => command.includes("cp") || command.includes("touch"))).toBe(
+      false,
+    );
+  });
+
+  test("skips an absent optional output but rejects a failed collector check", async () => {
+    const sandbox = kubernetesSandbox();
+    sandbox.mounts = sandbox.mounts.filter((mount) => mount.mode === "WriteOnly");
+    const output = sandbox.mounts[0];
+    if (!output) throw new Error("Missing output fixture");
+    output.required = false;
+    let failCheck = false;
+    let copies = 0;
+    const adapter = new K8sAdapter("1.30", {
+      tmpDir: "/tmp",
+      sandboxSeccompProfile: {
+        localhostProfile: "kuintessence/kq-no-network.json",
+        nodeName: "k3s-1",
+        assertCurrent: async () => {},
+      },
+      spawner: {
+        run: async (command) => {
+          if (command[1] === "cp") copies++;
+          if (command[1] === "exec")
+            return failCheck
+              ? { exitCode: 1, stdout: "", stderr: "connection lost" }
+              : { exitCode: 0, stdout: "absent", stderr: "" };
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    });
+    await expect(adapter.stageSandboxOutputs(sandbox, "kq-job-1")).resolves.toBeUndefined();
+    expect(copies).toBe(0);
+    failCheck = true;
+    await expect(adapter.stageSandboxOutputs(sandbox, "kq-job-1")).rejects.toThrow(
+      "optional output check failed",
+    );
   });
 
   test("rechecks and binds the collector before creating its Pod", async () => {

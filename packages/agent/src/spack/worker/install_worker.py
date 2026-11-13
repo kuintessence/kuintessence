@@ -1,9 +1,9 @@
-"""Managed Spack 1.0.0 worker. Entrypoint: spack python /kq/input/install_worker.py.
+"""Managed Spack worker. Entrypoint: spack python /kq/input/install_worker.py.
 
 Only the parent authenticates the runtime SIF and supplies its read-only binds.
 Site confirmations are administrator promises, not compute-node measurements.
 Recipes remain trusted arbitrary Python inside the parent's isolation boundary.
-All native API usage below is pinned to spack/spack tag v1.0.0.
+Native APIs are limited to the explicit compatibility policy; materials pin the exact version.
 """
 
 import contextlib
@@ -279,7 +279,7 @@ def verify_platform(profile: dict) -> None:
     import spack.platforms
     import spack.vendor.archspec.cpu as cpu
 
-    require(spack.__version__ == "1.0.0", "unsupported-spack-version")
+    require(spack.__version__ in audit.SPACK_COMPATIBILITY, "unsupported-spack-version")
     platform, operating_system, target = profile["target"].split("-")
     host = spack.platforms.host()
     require(host.name == platform and str(host.default_operating_system()) == operating_system,
@@ -675,6 +675,8 @@ def run(input_dir: Path, work: Path) -> dict:
     verify_site(profile, store_path_value, mounts)
     verify_platform(profile)
     manifest, lock = material_binding(input_dir, request)
+    import spack
+    require(spack.__version__ == manifest["spackVersion"], "spack-version-mismatch")
     verify_tree(store_path_value, profile)
     if request["action"] != "install" or (store_path_value / ".spack-db").exists():
         database_metadata(store_path_value)
@@ -684,7 +686,8 @@ def run(input_dir: Path, work: Path) -> dict:
         report = audit.audit(input_dir, work, request["manifestDigest"])
         require(report.get("passed") is True, "source-audit-failed")
         require(report.get("manifestDigest") == request["manifestDigest"] and
-                report.get("rootHash") == lock["roots"][0]["hash"], "source-audit-binding")
+                report.get("rootHash") == lock["roots"][0]["hash"] and
+                report.get("spackVersion") == manifest["spackVersion"], "source-audit-binding")
         import spack.config
         import spack.environment
         import spack.installer

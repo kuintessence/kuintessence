@@ -92,11 +92,12 @@ test("adds by names and keeps an existing membership conflict visible without cl
   expect(screen.getByRole("dialog")).toBeTruthy();
 });
 
-test("requires confirmation before removing only the selected organization membership", async () => {
+test("confirms removing the selected membership and its federation grants while keeping the account", async () => {
   const { remove } = setup();
   fireEvent.click(await screen.findByRole("button", { name: "移除 Alice 的组织成员资格" }));
   expect(remove).not.toHaveBeenCalled();
-  expect(screen.getByRole("dialog").textContent).toContain("不删除用户账户");
+  expect(screen.getByRole("dialog").textContent).toContain("保留用户账户");
+  expect(screen.getByRole("dialog").textContent).toContain("重新授予联邦权限");
   fireEvent.click(screen.getByRole("button", { name: "确认移除" }));
   await waitFor(() => expect(remove).toHaveBeenCalledWith("/admin/authz/memberships/user-1/org-1"));
 });

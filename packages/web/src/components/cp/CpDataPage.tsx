@@ -18,6 +18,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
+import { DataDisclosurePolicyPanel } from "./DataDisclosurePolicyPanel";
 
 export function CpDataPage() {
   const { t } = useTranslation();
@@ -362,6 +363,12 @@ export function CpDataPage() {
             ) : null}
             {selectedVersion && !replicas.isError ? (
               <ReplicaList replicas={replicas.data?.replicas ?? []} />
+            ) : null}
+            {activeOrganizationId && selectedVersion ? (
+              <DataDisclosurePolicyPanel
+                organizationId={activeOrganizationId}
+                versionId={selectedVersion.id}
+              />
             ) : null}
           </CardContent>
         </Card>

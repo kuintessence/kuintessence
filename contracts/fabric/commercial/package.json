@@ -1,0 +1,23 @@
+{
+  "name": "@kuintessence/fabric-commercial",
+  "version": "0.1.0-rc.1",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "build": "bun build src/main.ts src/case-main.ts --target=node --format=esm --external fabric-shim --outdir=dist"
+  },
+  "dependencies": {
+    "@kuintessence/shared": "workspace:*",
+    "zod": "^4.3.6",
+    "fabric-shim": "2.5.8"
+  },
+  "devDependencies": {
+    "jose": "^6.2.2"
+  }
+}

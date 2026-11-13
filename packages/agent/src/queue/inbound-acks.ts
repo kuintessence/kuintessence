@@ -31,15 +31,38 @@
 // runner state.
 // ---------------------------------------------------------------------------
 
-import { inboundDispatchPending, type SqliteDb } from "@kuintessence/db";
-import { asc, eq, isNull, sql } from "drizzle-orm";
+import { agentConfig, inboundDispatchPending, type SqliteDb } from "@kuintessence/db";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { z } from "zod";
+import { type PreparedRemoteJob, preparedRemoteJobToJson } from "./active-remote-jobs";
+
+export const RuntimeSchedulerIdentitySchema = z.strictObject({
+  schedulerJobId: z
+    .string()
+    .min(1)
+    .max(63)
+    .regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/),
+  schedulerUid: z.string().uuid(),
+  namespace: z
+    .string()
+    .min(1)
+    .max(63)
+    .regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/),
+});
+export type RuntimeSchedulerIdentity = z.infer<typeof RuntimeSchedulerIdentitySchema>;
+
+export interface FederationRuntimeReceipt {
+  owner: string;
+  expiresAt: number;
+  state: "active" | "stopping" | "finished";
+}
 
 export interface PersistInboundInput {
   /** Stable id of the DispatchJob delivery. Falls back to jobId when proto omits one. */
   dispatchId: string;
   /** The job-id this dispatch is about. */
   jobId: string;
-  /** Original DispatchJob payload, persisted for diagnostics and (future) restart replay. */
+  /** Diagnostics and, for federation dispatches, an immutable recovery fingerprint. */
   payload: Record<string, unknown>;
 }
 
@@ -103,6 +126,253 @@ export class InboundAcks {
       // path from clobbering an earlier acked_at timestamp with a later one.
       sql`${inboundDispatchPending.dispatchId} = ${dispatchId} AND ${inboundDispatchPending.ackedAt} IS NULL`,
     );
+  }
+
+  /** Survives cleanup-journal deletion: an ambiguous submission must never be replayed. */
+  async markSubmissionStarted(
+    dispatchId: string,
+    prepared?: PreparedRemoteJob,
+    runtime?: FederationRuntimeReceipt,
+  ): Promise<void> {
+    if (runtime) this.validateRuntimeExpiry(runtime.expiresAt);
+    const submission = prepared ? JSON.stringify(preparedRemoteJobToJson(prepared)) : "null";
+    const updated = await this.db
+      .update(inboundDispatchPending)
+      .set({
+        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationSubmissionStarted', json('true'), '$.federationSubmission', json(${submission}), '$.federationRuntime', json(${JSON.stringify(runtime ?? null)}))`,
+      })
+      .where(
+        sql`${inboundDispatchPending.dispatchId} = ${dispatchId} AND ${inboundDispatchPending.ackedAt} IS NULL AND coalesce(json_extract(${inboundDispatchPending.payload}, '$.federationSubmissionStarted'), 0) = 0`,
+      )
+      .returning({ dispatchId: inboundDispatchPending.dispatchId });
+    if (updated.length !== 1) throw new Error("Pending federation dispatch receipt is missing");
+  }
+
+  async get(dispatchId: string): Promise<PendingInboundRow | undefined> {
+    return this.db
+      .select()
+      .from(inboundDispatchPending)
+      .where(eq(inboundDispatchPending.dispatchId, dispatchId))
+      .get();
+  }
+
+  /** Claim the original deadline, including acknowledged deliveries; never grant more time. */
+  async claimRuntime(dispatchId: string): Promise<FederationRuntimeReceipt> {
+    const row = await this.get(dispatchId);
+    if (
+      row?.payload.federationExecution !== true ||
+      row.payload.federationSubmissionStarted !== true
+    )
+      throw new Error("Federation runtime receipt is missing");
+    const raw = row.payload.federationRuntime;
+    const previous = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    const now = this.now().getTime();
+    const expiresAt =
+      typeof previous.expiresAt === "number" && Number.isSafeInteger(previous.expiresAt)
+        ? previous.expiresAt
+        : 0;
+    const runtime: FederationRuntimeReceipt = {
+      owner: crypto.randomUUID(),
+      expiresAt,
+      state:
+        previous.state === "finished"
+          ? "finished"
+          : previous.state === "active" && expiresAt > now && expiresAt <= now + 30_000
+            ? "active"
+            : "stopping",
+    };
+    const updated = await this.db
+      .update(inboundDispatchPending)
+      .set({
+        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationRuntime', json(${JSON.stringify(runtime)}))`,
+      })
+      .where(
+        and(
+          eq(inboundDispatchPending.dispatchId, dispatchId),
+          eq(inboundDispatchPending.payload, row.payload),
+        ),
+      )
+      .returning({ dispatchId: inboundDispatchPending.dispatchId });
+    if (updated.length !== 1) throw new Error("Federation runtime receipt changed during recovery");
+    return runtime;
+  }
+
+  async renewRuntime(dispatchId: string, owner: string, expiresAt: number): Promise<void> {
+    this.validateRuntimeExpiry(expiresAt);
+    const updated = await this.db
+      .update(inboundDispatchPending)
+      .set({
+        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationRuntime.expiresAt', ${expiresAt})`,
+      })
+      .where(sql`${inboundDispatchPending.dispatchId} = ${dispatchId}
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationRuntime.owner') = ${owner}
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationRuntime.state') = 'active'
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationRuntime.expiresAt') > ${this.now().getTime()}`)
+      .returning({ dispatchId: inboundDispatchPending.dispatchId });
+    if (updated.length !== 1)
+      throw new Error("Federation runtime authority expired or was replaced");
+  }
+
+  /** Owner fencing also prevents an old timer or completion from changing a recovered job. */
+  async setRuntimeState(
+    dispatchId: string,
+    owner: string,
+    state: "stopping" | "finished",
+  ): Promise<boolean> {
+    const updated = await this.db
+      .update(inboundDispatchPending)
+      .set({
+        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationRuntime.state', ${state})`,
+      })
+      .where(sql`${inboundDispatchPending.dispatchId} = ${dispatchId}
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationRuntime.owner') = ${owner}
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationRuntime.state') != 'finished'`)
+      .returning({ dispatchId: inboundDispatchPending.dispatchId });
+    return updated.length === 1;
+  }
+
+  async runtimeStopCandidates(): Promise<PendingInboundRow[]> {
+    return this.db
+      .select()
+      .from(inboundDispatchPending)
+      .where(sql`
+      json_extract(${inboundDispatchPending.payload}, '$.federationExecution') = 1
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationSubmissionStarted') = 1
+      AND coalesce(json_extract(${inboundDispatchPending.payload}, '$.federationRuntime.state'), '') != 'finished'
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationRuntimeStop') IS NULL
+    `)
+      .orderBy(asc(inboundDispatchPending.id));
+  }
+
+  async latestForJob(jobId: string): Promise<PendingInboundRow | undefined> {
+    return this.db
+      .select()
+      .from(inboundDispatchPending)
+      .where(eq(inboundDispatchPending.jobId, jobId))
+      .orderBy(desc(inboundDispatchPending.id))
+      .limit(1)
+      .get();
+  }
+
+  /** Compare the observed deadline atomically: a concurrent renewal wins or is fenced out. */
+  async fenceRuntimeStop(row: PendingInboundRow): Promise<boolean> {
+    const previous = row.payload.federationRuntime;
+    const runtime =
+      previous && typeof previous === "object" && !Array.isArray(previous)
+        ? { ...previous, state: "stopping" }
+        : { owner: crypto.randomUUID(), expiresAt: 0, state: "stopping" };
+    const updated = await this.db
+      .update(inboundDispatchPending)
+      .set({
+        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationRuntime', json(${JSON.stringify(runtime)}))`,
+      })
+      .where(
+        and(
+          eq(inboundDispatchPending.dispatchId, row.dispatchId),
+          eq(inboundDispatchPending.payload, row.payload),
+        ),
+      )
+      .returning({ dispatchId: inboundDispatchPending.dispatchId });
+    return updated.length === 1;
+  }
+
+  async runtimeSchedulerIdentity(
+    dispatchId: string,
+  ): Promise<RuntimeSchedulerIdentity | undefined> {
+    const row = await this.get(dispatchId);
+    return RuntimeSchedulerIdentitySchema.optional().parse(
+      row?.payload.federationSchedulerIdentity,
+    );
+  }
+
+  async bindRuntimeSchedulerIdentity(
+    dispatchId: string,
+    identity: RuntimeSchedulerIdentity,
+  ): Promise<void> {
+    const value = JSON.stringify(RuntimeSchedulerIdentitySchema.parse(identity));
+    const updated = await this.db
+      .update(inboundDispatchPending)
+      .set({
+        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationSchedulerIdentity', json(${value}))`,
+      })
+      .where(sql`${inboundDispatchPending.dispatchId} = ${dispatchId}
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationExecution') = 1
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationSubmissionStarted') = 1
+      AND (json_extract(${inboundDispatchPending.payload}, '$.federationSchedulerIdentity') IS NULL
+        OR json_extract(${inboundDispatchPending.payload}, '$.federationSchedulerIdentity') = json(${value}))`)
+      .returning({ dispatchId: inboundDispatchPending.dispatchId });
+    if (updated.length !== 1)
+      throw new Error("Federation scheduler identity is missing or was replaced");
+  }
+
+  async recordRuntimeStop(
+    dispatchId: string,
+    schedulerJobId: string,
+    schedulerUid?: string,
+  ): Promise<void> {
+    await this.db
+      .update(inboundDispatchPending)
+      .set({
+        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationRuntimeStop', json(${JSON.stringify({ schedulerJobId, ...(schedulerUid ? { schedulerUid } : {}), confirmedAt: this.now().getTime() })}))`,
+      })
+      .where(sql`${inboundDispatchPending.dispatchId} = ${dispatchId}
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationRuntime.state') = 'stopping'`);
+  }
+
+  async hasConfirmedRuntimeStop(
+    dispatchId: string,
+    schedulerJobId: string,
+    schedulerUid?: string,
+  ): Promise<boolean> {
+    const row = await this.get(dispatchId);
+    const proof = row?.payload.federationRuntimeStop;
+    return (
+      row?.payload.federationExecution === true &&
+      !!proof &&
+      typeof proof === "object" &&
+      "schedulerJobId" in proof &&
+      proof.schedulerJobId === schedulerJobId &&
+      (!schedulerUid || ("schedulerUid" in proof && proof.schedulerUid === schedulerUid)) &&
+      "confirmedAt" in proof &&
+      typeof proof.confirmedAt === "number" &&
+      Number.isSafeInteger(proof.confirmedAt) &&
+      proof.confirmedAt > 0
+    );
+  }
+
+  async recordWatchdogHeartbeat(schedulerType: string): Promise<void> {
+    const value = JSON.stringify({ schedulerType, observedAt: this.now().getTime() });
+    await this.db
+      .insert(agentConfig)
+      .values({ key: "federation-watchdog-v1", value })
+      .onConflictDoUpdate({ target: agentConfig.key, set: { value } });
+  }
+
+  async assertWatchdogReady(schedulerType: string): Promise<void> {
+    const row = await this.db
+      .select()
+      .from(agentConfig)
+      .where(eq(agentConfig.key, "federation-watchdog-v1"))
+      .get();
+    const state: unknown = row ? JSON.parse(row.value) : undefined;
+    if (
+      !state ||
+      typeof state !== "object" ||
+      !("schedulerType" in state) ||
+      state.schedulerType !== schedulerType ||
+      !("observedAt" in state) ||
+      typeof state.observedAt !== "number" ||
+      !Number.isSafeInteger(state.observedAt) ||
+      this.now().getTime() < state.observedAt ||
+      this.now().getTime() - state.observedAt > 2000
+    )
+      throw new Error("Independent federation scheduler watchdog is unavailable");
+  }
+
+  private validateRuntimeExpiry(expiresAt: number): void {
+    const remaining = expiresAt - this.now().getTime();
+    if (!Number.isSafeInteger(expiresAt) || remaining <= 0 || remaining > 30_000)
+      throw new Error("Invalid federation runtime expiry");
   }
 
   /**

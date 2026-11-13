@@ -35,6 +35,12 @@ interface PaletteItem {
 
 const ITEMS: PaletteItem[] = [
   {
+    kind: "Federation",
+    labelKey: "workflow.editor.palette.federation",
+    hintKey: "workflow.editor.palette.federationHint",
+    icon: <Network className="h-4 w-4 text-muted-foreground" aria-hidden="true" />,
+  },
+  {
     kind: "SoftwareUsecaseComputing",
     labelKey: "workflow.editor.palette.usecase",
     hintKey: "workflow.editor.palette.usecaseHint",

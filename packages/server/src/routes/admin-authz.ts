@@ -2,6 +2,7 @@ import {
   auditLog,
   authzOutbox,
   authzShadowDiffs,
+  federationCapabilities,
   orgs,
   type PgDb,
   userCapabilities,
@@ -499,13 +500,22 @@ export function createAdminAuthzRoutes(db: PgDb, options: AdminAuthzRouteOptions
       await tx
         .delete(userOrgMemberships)
         .where(and(eq(userOrgMemberships.userId, userId), eq(userOrgMemberships.orgId, orgId)));
+      const removed = await tx
+        .delete(federationCapabilities)
+        .where(
+          and(eq(federationCapabilities.userId, userId), eq(federationCapabilities.orgId, orgId)),
+        )
+        .returning({ capability: federationCapabilities.capability });
       await insertAuthzOutboxRows(tx, organizationMembershipDeleteTuples({ userId, orgId }));
-    });
-    await writeAudit(db, {
-      actor: actorUserId,
-      action: "authz.membership.delete",
-      target: `organization:${orgId}#membership@user:${userId}`,
-      diff: { before: { userId, orgId } },
+      await tx.insert(auditLog).values({
+        actor: actorUserId,
+        orgId,
+        action: "authz.membership.delete",
+        target: `organization:${orgId}#membership@user:${userId}`,
+        diff: {
+          before: { userId, orgId, federationCapabilities: removed.map((row) => row.capability) },
+        },
+      });
     });
     return c.json({ success: true });
   });

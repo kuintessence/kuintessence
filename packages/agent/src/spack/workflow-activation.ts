@@ -1,7 +1,9 @@
+import type { SpackJobExecution } from "@kuintessence/proto";
 import {
   SPACK_ACTIVATION_FAILURE,
   SPACK_ACTIVATION_TIMEOUT,
   SPACK_EXECUTION_PLACEHOLDER,
+  SPACK_PINNED_EXECUTION_PLACEHOLDER,
   SpackExecutionSchema,
 } from "@kuintessence/shared";
 import { realSpawner, type Spawner } from "../adapters/base";
@@ -13,10 +15,31 @@ export { SPACK_ACTIVATION_FAILURE, SPACK_ACTIVATION_TIMEOUT } from "@kuintessenc
 const MAX_ACTIVATION_TIMEOUT_MS = 30 * 60_000;
 const MAX_SHELL_BYTES = 256 * 1024;
 
+/** Keep the execution constraint in both the durable inbox and the live activation path. */
+export function workflowSpackIntent(message: SpackJobExecution) {
+  const pin = message.pin;
+  return {
+    spec: message.spec,
+    command: message.command,
+    ...(pin
+      ? {
+          pin: {
+            dagHash: pin.dagHash,
+            manifestDigest: pin.manifestDigest,
+            lockfileDigest: pin.lockfileDigest,
+            spackVersion: pin.spackVersion,
+            target: pin.target,
+          },
+        }
+      : {}),
+  };
+}
+
 export interface SpackActivationInput {
   execution: unknown;
   command: string;
-  manager?: Pick<SpackManager, "available" | "runSoftwareOperation">;
+  manager?: Pick<SpackManager, "available" | "runSoftwareOperation"> &
+    Partial<Pick<SpackManager, "loadPinnedWorkflow">>;
   signal: AbortSignal;
   timeoutMs?: number;
   spawner?: Spawner;
@@ -30,7 +53,8 @@ export async function activateWorkflowSpack(input: SpackActivationInput): Promis
   const execution = SpackExecutionSchema.safeParse(input.execution);
   if (
     !execution.success ||
-    input.command !== SPACK_EXECUTION_PLACEHOLDER ||
+    input.command !==
+      (execution.data.pin ? SPACK_PINNED_EXECUTION_PLACEHOLDER : SPACK_EXECUTION_PLACEHOLDER) ||
     !input.manager?.available ||
     input.signal.aborted
   ) {
@@ -59,12 +83,12 @@ export async function activateWorkflowSpack(input: SpackActivationInput): Promis
   const manager = input.manager;
   const prepare = async () => {
     signal.throwIfAborted();
-    const outcome = await manager.runSoftwareOperation(
-      "load",
-      execution.data.spec,
-      undefined,
-      signal,
-    );
+    if (execution.data.pin && !manager.loadPinnedWorkflow)
+      throw new Error(SPACK_ACTIVATION_FAILURE);
+    const outcome =
+      execution.data.pin && manager.loadPinnedWorkflow
+        ? await manager.loadPinnedWorkflow(execution.data.spec, execution.data.pin, signal)
+        : await manager.runSoftwareOperation("load", execution.data.spec, undefined, signal);
     // A cancelled/expired verification can still withdraw a previously advertised install.
     if ("invalidatedHashes" in outcome && outcome.invalidatedHashes?.length) {
       input.invalidate?.(outcome.invalidatedHashes);

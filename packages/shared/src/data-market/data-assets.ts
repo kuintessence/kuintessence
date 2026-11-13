@@ -103,7 +103,8 @@ export const DataAccessPolicySchema = z.strictObject({
   versionId: UuidSchema.optional(),
   subject: DataGrantSubjectSchema,
   effect: DataAccessPolicyEffectSchema,
-  capabilities: z.array(DataAccessCapabilitySchema).min(1),
+  // Disclosure consent is separate from local use/download grants.
+  capabilities: z.array(DataAccessCapabilitySchema.or(z.literal("export"))).min(1),
   accessMode: DataAccessModeSchema,
   sensitivity: DataSensitivitySchema,
   deliveryPolicy: DataDeliveryPolicySchema,

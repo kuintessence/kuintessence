@@ -191,11 +191,7 @@ $defs:
       inputSlots:
         type: array
         items: { $ref: "#/$defs/NodeInputSlot" }
-        not:
-          contains:
-            type: object
-            required: [type]
-            properties: { type: { const: Dataset } }
+        description: Dataset descriptors must match FileBatch entries in inputs; enforced by the canonical DSL validator.
       outputSlots: { type: array, items: { $ref: "#/$defs/NodeOutputSlot" } }
     allOf:
       - oneOf:

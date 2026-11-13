@@ -247,6 +247,37 @@ describe("workflow input configuration", () => {
     expect(analyzeSlot?.type === "Dataset" ? analyzeSlot.contents : null).toBeNull();
   });
 
+  test("configures a static Dataset on a Script FileBatch input", () => {
+    const workflow = SCRIPT_WORKFLOW.replace(
+      "trajectory:\n          type: File",
+      "trajectory:\n          type: FileBatch",
+    ).replace(
+      "type: File\n          optional: false\n          isBatch: false\n          expectedFileName: traj.xtc",
+      "type: Dataset\n          optional: false\n          contents: null",
+    );
+    const model = extractWorkflowInputModel(workflow);
+    expect(model.datasets).toHaveLength(1);
+    expect(model.datasets[0]).toMatchObject({
+      key: "dataset:convert:trajectory",
+      usecaseVersionId: null,
+    });
+    const yaml = applyWorkflowInputConfiguration(
+      workflow,
+      model,
+      {},
+      {},
+      { "dataset:convert:trajectory": DATASET },
+    );
+    const parsed = yamlToGraph(yaml);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error("Invalid configured workflow");
+    const node = parsed.graph.nodes[0]?.data.raw;
+    expect(node?.type).toBe("Script");
+    if (node?.type !== "Script") throw new Error("Expected Script");
+    const slot = node.inputSlots?.find((input) => input.descriptor === "trajectory");
+    expect(slot?.type === "Dataset" ? slot.contents : null).toEqual(DATASET);
+  });
+
   test("keeps an explicit Dataset clear instead of restoring the YAML fallback", () => {
     expect(resolveWorkflowDatasetBinding({ dataset: null }, "dataset", DATASET)).toBeNull();
   });

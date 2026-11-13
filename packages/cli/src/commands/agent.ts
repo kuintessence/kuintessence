@@ -1,4 +1,5 @@
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, mkdir, open, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { generateCsr, persistCertBundle } from "@kuintessence/agent/auth";
@@ -11,6 +12,7 @@ import {
   detectLocalAdapter,
   localSchedulerErrorMessage,
   parseScheduler,
+  type SchedulerType,
 } from "../lib/local-scheduler";
 import { expandTilde, selectBackend } from "../tui/backend/select";
 
@@ -121,21 +123,12 @@ export function registerAgentCommand(program: Command): void {
         outputDir?: string;
         scheduler?: string;
       }) => {
-        if (!!opts.token === !!opts.tokenFile)
-          throw new Error("Provide exactly one of --token or --token-file");
-        const registrationToken =
-          opts.token ??
-          (opts.tokenFile === "-"
-            ? await Bun.stdin.text()
-            : await readFile(opts.tokenFile as string, "utf8")
-          ).trim();
-        if (!registrationToken || registrationToken.length > 16384)
-          throw new Error("Invalid registration token");
+        const token = await readRegistrationToken(opts);
         const scheduler = opts.scheduler ? parseScheduler(opts.scheduler) : undefined;
         const metadata = await registrationPost<AgentRegistrationMetadataResponse>(
           opts.url,
           "/agent-registration/metadata",
-          { token: registrationToken },
+          { token },
         );
         const adapter = await detectLocalAdapter(scheduler).catch((err) => {
           throw new Error(
@@ -151,7 +144,7 @@ export function registerAgentCommand(program: Command): void {
           opts.url,
           "/agent-registration/complete",
           {
-            token: registrationToken,
+            token,
             csrPem,
             schedulerType: adapter.type,
             schedulerVersion: adapter.version,
@@ -166,6 +159,8 @@ export function registerAgentCommand(program: Command): void {
           serverGrpcUrl: opts.grpcUrl,
           agentId: completed.agentId,
           siteName: completed.siteName,
+          schedulerType: parseScheduler(adapter.type),
+          schedulerVersion: adapter.version,
           certPem: completed.certPem,
           keyPem: privateKeyPem,
           caCertPem: completed.caCertPem,
@@ -287,6 +282,42 @@ async function registrationPost<T>(serverUrl: string, path: string, body: unknow
   return (await res.json()) as T;
 }
 
+export async function readRegistrationToken(opts: {
+  token?: string;
+  tokenFile?: string;
+}): Promise<string> {
+  if ((opts.token !== undefined) === (opts.tokenFile !== undefined))
+    throw new Error("Provide exactly one of --token or --token-file");
+  if (opts.token !== undefined) {
+    if (!opts.token.trim() || opts.token.length > 16384)
+      throw new Error("Registration token must not be empty");
+    return opts.token.trim();
+  }
+  if (opts.tokenFile === "-") {
+    const bytes = await new Response(Bun.stdin.stream()).arrayBuffer();
+    if (bytes.byteLength > 16384) throw new Error("Invalid registration token");
+    const token = new TextDecoder().decode(bytes).trim();
+    if (!token) throw new Error("Registration token must not be empty");
+    return token;
+  }
+  const file = await open(opts.tokenFile ?? "", constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const info = await file.stat();
+    if (
+      !info.isFile() ||
+      info.uid !== process.getuid?.() ||
+      (info.mode & 0o077) !== 0 ||
+      info.size > 16384
+    )
+      throw new Error("Token file must be private, owned by this user and at most 16 KiB");
+    const token = (await file.readFile("utf8")).trim();
+    if (!token) throw new Error("Registration token must not be empty");
+    return token;
+  } finally {
+    await file.close();
+  }
+}
+
 export function parsePositiveInt(value: string, label: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -301,6 +332,8 @@ export async function writeAgentRegistrationFiles(input: {
   serverGrpcUrl: string;
   agentId: string;
   siteName: string;
+  schedulerType: SchedulerType;
+  schedulerVersion: string;
   certPem: string;
   keyPem: string;
   caCertPem: string;
@@ -320,6 +353,8 @@ export async function writeAgentRegistrationFiles(input: {
     envLine("SERVER_HTTP_URL", input.serverHttpUrl),
     envLine("AGENT_ID", input.agentId),
     envLine("AGENT_SITE_NAME", input.siteName),
+    envLine("AGENT_SCHEDULER_TYPE", input.schedulerType),
+    envLine("AGENT_SCHEDULER_VERSION", input.schedulerVersion),
     envLine("AGENT_MTLS_REQUIRED", "true"),
     envLine("AGENT_CERT_DIR", certDir),
     envLine("AGENT_DB_PATH", dbPath),

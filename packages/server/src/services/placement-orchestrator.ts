@@ -1,9 +1,12 @@
 import {
   agentInstalledSoftware,
   agentSoftware,
+  jobDispatchOutbox,
   jobs,
   type PgDb,
+  softwareOperations,
   usageQuotas,
+  workflowExecutionJobs,
 } from "@kuintessence/db";
 import type {
   JobSubmit,
@@ -15,9 +18,12 @@ import type {
   SoftwareAvailabilityRequest,
   SpackExecution,
 } from "@kuintessence/shared";
-import { createLogger } from "@kuintessence/shared";
+import { createLogger, WorkflowExecutionInterrupted } from "@kuintessence/shared";
+import type { FederationExecutionTarget } from "@kuintessence/shared/federation";
 import { and, eq, inArray, or } from "drizzle-orm";
+import { resolveFederationTargets } from "../federation/execution-targets";
 import type { AgentDispatcher, JobCancellationOutbox } from "../grpc/dispatcher";
+import type { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
 import type { PreferenceService } from "../preferences/preference-service";
 import { deriveDataSites } from "../scheduler/data-locality";
 import { AutoFilter } from "../scheduler/filters/auto";
@@ -36,7 +42,11 @@ import { UrgencyFilter } from "../scheduler/filters/urgency";
 import { runPlacementWithTrace } from "../scheduler/placement-trace";
 import type { AgentRow, FilterStage, RejectionTrace } from "../scheduler/types";
 import type { SoftwareOperationService } from "../software-governance/operation-service";
-import { waitForSoftwareInstallation } from "../software-governance/wait-for-installation";
+import {
+  SoftwareInstallationWaitError,
+  waitForSoftwareInstallation,
+} from "../software-governance/wait-for-installation";
+import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { AgentManager } from "./agent-manager";
 import type { ResolvedDataDelivery, RestrictedSandboxDeliveryBinding } from "./data-delivery";
 import type { DataPrerequisitePlacementGate, DataRequirement } from "./data-prerequisite";
@@ -65,8 +75,9 @@ export type InputUrlResolver = (args: {
   jobId: string;
   workflowRunId?: string;
   actorUserId: string;
+  federation?: boolean;
   files: { fileMetadataId: string; stagePath: string }[];
-}) => Promise<Array<DispatchInputStaging & { sourceUrl: string }>>;
+}) => Promise<DispatchInputStaging[]>;
 
 export type DispatchInputStaging = {
   totalBytes?: number;
@@ -76,13 +87,19 @@ export type DispatchInputStaging = {
   sourceUrl?: string;
   deliveryLeaseId?: string;
   deliveryLeaseExpiresAtUnixMs?: number;
+
+  expectedSizeBytes?: number;
+  netdriveInput?: boolean;
+  localDataSource?: { locationId: string; managedRootId: string; relativePath: string };
 };
 
 export interface PlaceAndDispatchInput {
   jobId: string;
   workflowRunId?: string;
+  executionLease?: LeasedWorkflowJournal;
+  federationTargets?: readonly FederationExecutionTarget[];
   job: JobSubmit;
-  /** Transient workflow-only intent; the durable job command remains fail-closed. */
+  /** The durable invocation retains this intent; the Job command remains fail-closed. */
   spackExecution?: SpackExecution;
   userId: string;
   userRole: RoleName;
@@ -109,12 +126,16 @@ export interface PlaceAndDispatchResult {
    *  channel. The workflow runner uses this to fail the job's awaitCompletion rather
    *  than hang when the job will never run (no agent / closed channel). */
   dispatched: boolean;
+  /** Authorized envelope is committed and awaiting Agent delivery/receipt. */
+  pendingDelivery?: boolean;
   /** full per-stage trace persisted on the job. */
   trace?: PlacementTrace;
 }
 
 export interface LicensedMaterialDispatchMount extends LicensedMaterialRequest {
   expectedFingerprint: string;
+  mappingId?: string;
+  assetId?: string;
 }
 
 export function restrictToIsolatedAgents<T extends { restrictedDataIsolation: boolean }>(
@@ -185,6 +206,7 @@ export class PlacementOrchestrator {
       jobService: JobService;
       preferenceService: PreferenceService;
       dispatcher: AgentDispatcher;
+      dispatchOutbox?: Pick<JobDispatchOutbox, "enqueue">;
       jobCancellations?: Pick<JobCancellationOutbox, "enqueue" | "redeliver">;
       queueRegistry?: QueueRegistryService;
       computeHealth?: ComputeHealthFilterOptions;
@@ -332,7 +354,7 @@ export class PlacementOrchestrator {
     const {
       jobId,
       workflowRunId,
-      job,
+      job: requestedJob,
       userId,
       userRole,
       orgId,
@@ -341,10 +363,67 @@ export class PlacementOrchestrator {
       restrictedNoEgress = false,
     } = input;
 
+    const durable = await this.durablePreparation(input);
+    if (
+      durable &&
+      (durable.enqueued || ["completed", "failed", "cancelled"].includes(durable.job.status))
+    )
+      return {
+        selectedAgentId: durable.job.agentId,
+        dispatched: !durable.enqueued,
+        pendingDelivery: durable.enqueued,
+        rejections: [],
+      };
+    const resume = durable?.job.agentId ? durable.job : undefined;
+    if (resume && (resume.status !== "queued" || resume.revokedEpoch >= resume.dispatchEpoch))
+      throw new WorkflowExecutionInterrupted("Assigned Job cannot resume dispatch preparation", {
+        retryable: false,
+      });
+    const job = resume
+      ? {
+          ...requestedJob,
+          softwareRequirements: requestedJob.softwareRequirements?.map((item) => ({
+            ...item,
+            installable: false,
+          })),
+        }
+      : requestedJob;
+    const fixedAgentId = resume?.agentId ?? durable?.installationAgentId;
+    if (input.federationTargets && (!this.deps.db || !this.deps.queueRegistry))
+      throw new WorkflowExecutionInterrupted("Federation target authorization is unavailable", {
+        retryable: false,
+      });
+    const scoped =
+      input.federationTargets && this.deps.db && this.deps.queueRegistry
+        ? await resolveFederationTargets(
+            this.deps.db,
+            this.deps.queueRegistry,
+            input.federationTargets,
+            { role: userRole, orgId, userId },
+          )
+        : undefined;
+    if (scoped && scoped.selections.length === 0)
+      throw new WorkflowExecutionInterrupted("No approved federation queue is currently eligible");
+    if (
+      scoped &&
+      job.schedulingStrategy?.queueId &&
+      !scoped.selections.some((queue) => queue.queueId === job.schedulingStrategy?.queueId)
+    )
+      throw new WorkflowExecutionInterrupted(
+        "Requested queue is outside the federation authorization",
+        { retryable: false },
+      );
     const onlineCandidates = await this.deps.agentManager.listOnline();
-    const liveCandidates = onlineCandidates.filter((agent) =>
-      this.deps.dispatcher.isOnline(agent.agentId),
+    const liveCandidates = onlineCandidates.filter(
+      (agent) =>
+        this.deps.dispatcher.isOnline(agent.agentId) &&
+        (!scoped || scoped.selections.some((queue) => queue.agentId === agent.agentId)) &&
+        (!fixedAgentId || agent.agentId === fixedAgentId),
     );
+    if (fixedAgentId && liveCandidates.length === 0)
+      throw new WorkflowExecutionInterrupted(
+        "Original Agent is unavailable for preparation recovery",
+      );
     let candidates = sandboxExecution
       ? liveCandidates.filter((agent) => {
           if (agent.sandboxReadiness !== "ready") return false;
@@ -359,6 +438,28 @@ export class PlacementOrchestrator {
           );
         })
       : liveCandidates;
+    if (input.spackExecution?.pin) {
+      candidates = candidates.filter((agent) =>
+        this.deps.dispatcher.supportsPinnedSpack(agent.agentId),
+      );
+      if (candidates.length === 0 && liveCandidates.length > 0) {
+        const reason =
+          "Pinned Spack execution requires a verified Agent with spack_pinned_execution_v1";
+        const trace = preflightRejectionTrace("spack-execution-pin", liveCandidates, reason);
+        await this.deps.jobService.setPlacementTrace(jobId, trace, input.executionLease);
+        await this.failPreparation(input, reason);
+        return {
+          selectedAgentId: null,
+          dispatched: false,
+          trace,
+          rejections: liveCandidates.map((agent) => ({
+            stage: "spack-execution-pin",
+            agentId: agent.agentId,
+            reason,
+          })),
+        };
+      }
+    }
     if (restrictedNoEgress) {
       candidates = restrictToIsolatedAgents(candidates, true);
       if (candidates.length === 0) {
@@ -366,11 +467,11 @@ export class PlacementOrchestrator {
           "Restricted no-egress jobs require an Agent advertising trusted restricted-data isolation";
         const trace = preflightRejectionTrace("restricted-data-isolation", liveCandidates, reason);
         try {
-          await this.deps.jobService.setPlacementTrace(jobId, trace);
+          await this.deps.jobService.setPlacementTrace(jobId, trace, input.executionLease);
         } catch (error) {
           logger.warn({ error, jobId }, "Failed to persist restricted isolation rejection trace");
         }
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, undefined, reason);
+        await this.failPreparation(input, reason);
         return {
           selectedAgentId: null,
           rejections: liveCandidates.map((agent) => ({
@@ -398,7 +499,7 @@ export class PlacementOrchestrator {
         candidates = candidates.filter((candidate) => eligible.has(candidate.agentId));
       } catch (err) {
         const reason = `Data prerequisites block placement: ${errorMessage(err)}`;
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, undefined, reason);
+        await this.failPreparation(input, reason);
         return {
           selectedAgentId: null,
           rejections: [{ stage: "data-prerequisite", agentId: "", reason }],
@@ -409,7 +510,7 @@ export class PlacementOrchestrator {
     if (candidates.length === 0) {
       if (sandboxExecution && liveCandidates.length > 0) {
         const reason = "No live Agent satisfies the Sandbox capability and signed runtime cache";
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, undefined, reason);
+        await this.failPreparation(input, reason);
         return {
           selectedAgentId: null,
           rejections: liveCandidates.map((agent) => ({
@@ -422,11 +523,8 @@ export class PlacementOrchestrator {
       }
       if (onlineCandidates.length > 0) {
         logger.warn({ jobId }, "Online agents have no live Server channel; marking job failed");
-        await this.deps.jobService.updateStatus(
-          jobId,
-          "failed",
-          undefined,
-          undefined,
+        await this.failPreparation(
+          input,
           "No live agent channel is available for this job. Wait for the agent to reconnect and retry.",
         );
         return { selectedAgentId: null, rejections: [], dispatched: false };
@@ -436,7 +534,15 @@ export class PlacementOrchestrator {
     }
 
     const preferences = await this.deps.preferenceService.resolveEffective(orgId, userId);
-    const schedulingIntent = await this.validateSchedulingIntent({ job, userId, userRole, orgId });
+    const schedulingIntent = scoped
+      ? {
+          queueSelection:
+            scoped.selections.find((queue) => queue.queueId === job.schedulingStrategy?.queueId) ??
+            null,
+          preferredQueueSelections: scoped.selections,
+          preferredQueueRejections: scoped.rejections,
+        }
+      : await this.validateSchedulingIntent({ job, userId, userRole, orgId });
 
     const placedJob = await this.withDerivedDataSites(job);
 
@@ -450,7 +556,9 @@ export class PlacementOrchestrator {
     });
     const quotaMap = await this.loadQuotas(userId, orgId);
     const activeJobsByAgent = await this.loadActiveJobsByAgent(agentIds);
-    const autoQueueRejections = await this.loadAutoQueueRejections(candidates);
+    const autoQueueRejections = scoped
+      ? new Map<string, string>()
+      : await this.loadAutoQueueRejections(candidates);
 
     const sink = new Map<string, number>();
     const stages = this.buildStages(
@@ -496,18 +604,19 @@ export class PlacementOrchestrator {
     );
 
     if (!trace.finalDecision) {
+      if (durable?.installationAgentId)
+        throw new WorkflowExecutionInterrupted(
+          "Original software installation target is not currently eligible",
+        );
       logger.info({ jobId, rejections: rejections.length }, "Placement found no eligible agent");
       // Preserve rejection traces so callers can explain why no target was selected.
       try {
-        await this.deps.jobService.setPlacementTrace(jobId, trace);
+        await this.deps.jobService.setPlacementTrace(jobId, trace, input.executionLease);
       } catch (err) {
         logger.warn({ jobId, err }, "Failed to persist placement trace for unplaced job");
       }
-      await this.deps.jobService.updateStatus(
-        jobId,
-        "failed",
-        undefined,
-        undefined,
+      await this.failPreparation(
+        input,
         "No eligible agent found for this job. Open the placement tab for rejection details.",
       );
       return { selectedAgentId: null, rejections, dispatched: false, trace };
@@ -518,12 +627,22 @@ export class PlacementOrchestrator {
     if (!selectedAgent) {
       throw new Error(`Placement selected unknown agent ${agentId}`);
     }
+    const selectedQueue =
+      schedulingIntent.queueSelection ??
+      schedulingIntent.preferredQueueSelections.find(
+        (queue) =>
+          queue.agentId === agentId && queue.schedulerType === trace.finalDecision?.schedulerType,
+      );
+    if (scoped && !selectedQueue)
+      throw new WorkflowExecutionInterrupted("Federation target has no approved queue", {
+        retryable: false,
+      });
     try {
-      await this.deps.jobService.setPlacementTrace(jobId, trace);
+      await this.deps.jobService.setPlacementTrace(jobId, trace, input.executionLease);
     } catch (err) {
       logger.warn({ jobId, err }, "Failed to persist placement trace");
     }
-    if (await this.installMissingSoftware(input, agentId)) {
+    if (!resume && (await this.installMissingSoftware(input, agentId))) {
       return this.placeAndDispatch({
         ...input,
         job: {
@@ -535,12 +654,6 @@ export class PlacementOrchestrator {
         },
       });
     }
-    const selectedQueue =
-      schedulingIntent.queueSelection ??
-      schedulingIntent.preferredQueueSelections.find(
-        (queue) =>
-          queue.agentId === agentId && queue.schedulerType === trace.finalDecision?.schedulerType,
-      );
     let dispatchQueue: QueueDispatchTarget | QueueSelection | undefined = selectedQueue;
     try {
       dispatchQueue ??= await this.deps.queueRegistry?.resolveAutoTarget(
@@ -549,20 +662,37 @@ export class PlacementOrchestrator {
       );
     } catch (error) {
       const reason = `Queue validation blocks dispatch: ${errorMessage(error)}`;
-      await this.deps.jobService.updateStatus(jobId, "failed", undefined, undefined, reason);
+      await this.failPreparation(input, reason);
       return { selectedAgentId: null, rejections, dispatched: false, trace };
     }
     const queueTargetMode = dispatchQueue?.targetMode ?? "default";
-    const assigned = await this.deps.jobService.assignToAgent(
-      jobId,
-      agentId,
-      selectedAgent.providerOrgId,
-      {
-        targetMode: queueTargetMode,
-        schedulerQueueName: dispatchQueue?.resolvedQueueName ?? dispatchQueue?.queueName ?? null,
-        observedAt: dispatchQueue?.queueObservedAt ?? null,
-      },
-    );
+    if (
+      resume &&
+      (resume.agentId !== agentId ||
+        (scoped && resume.queueId !== selectedQueue?.queueId) ||
+        resume.providerOrgId !== selectedAgent.providerOrgId ||
+        resume.queueTargetMode !== queueTargetMode ||
+        resume.schedulerQueueName !==
+          (dispatchQueue?.resolvedQueueName ?? dispatchQueue?.queueName ?? null))
+    )
+      throw new WorkflowExecutionInterrupted(
+        "Assigned Job target changed during preparation recovery",
+        { retryable: false },
+      );
+    const assigned =
+      resume ??
+      (await this.deps.jobService.assignToAgent(
+        jobId,
+        agentId,
+        selectedAgent.providerOrgId,
+        {
+          ...(scoped && selectedQueue ? { queueId: selectedQueue.queueId } : {}),
+          targetMode: queueTargetMode,
+          schedulerQueueName: dispatchQueue?.resolvedQueueName ?? dispatchQueue?.queueName ?? null,
+          observedAt: dispatchQueue?.queueObservedAt ?? null,
+        },
+        input.executionLease,
+      ));
 
     let licensedMaterialMounts: LicensedMaterialDispatchMount[] = [];
     if (this.deps.dataPrerequisites && dataRequirements.length > 0) {
@@ -575,14 +705,14 @@ export class PlacementOrchestrator {
         });
       } catch (err) {
         const reason = `Data prerequisites block dispatch: ${errorMessage(err)}`;
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
     }
     if ((job.licensedMaterials?.length ?? 0) > 0) {
       if (!this.deps.resolveLicensedMaterials) {
         const reason = "Licensed material resolution is unavailable";
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
       try {
@@ -594,7 +724,7 @@ export class PlacementOrchestrator {
         });
       } catch (error) {
         const reason = `Licensed material prerequisites block dispatch: ${errorMessage(error)}`;
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
     }
@@ -602,7 +732,7 @@ export class PlacementOrchestrator {
     if (dataRequirements.length > 0) {
       if (!this.dataDeliveryResolver) {
         const reason = "Data Market delivery resolver is unavailable";
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
       try {
@@ -614,7 +744,7 @@ export class PlacementOrchestrator {
         });
       } catch (error) {
         const reason = `Data delivery prerequisites block dispatch: ${errorMessage(error)}`;
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
     }
@@ -638,14 +768,16 @@ export class PlacementOrchestrator {
             );
           }
           const bound = this.restrictedSandboxDeliveryBinder(signedSandbox, dataDeliveries);
+          if (bound.inputStaging.some((source) => source.localDataSource) && !scoped)
+            throw new Error("Managed local Sandbox data requires federation runtime authorization");
           signedSandbox = bound.manifest;
           restrictedSandboxInputs = bound.inputStaging;
           dataDeliveries = [];
         }
-        await this.deps.jobService.setSandboxExecution(jobId, signedSandbox);
+        await this.deps.jobService.setSandboxExecution(jobId, signedSandbox, input.executionLease);
       } catch (err) {
         const reason = `Sandbox manifest construction failed: ${errorMessage(err)}`;
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
     }
@@ -657,16 +789,16 @@ export class PlacementOrchestrator {
     ) {
       const reason =
         "Data Market execution cannot mix Agent-managed data with NetDrive file inputs or artifact outputs";
-      await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+      await this.failPreparation(input, reason, agentId);
       return { selectedAgentId: agentId, rejections, dispatched: false, trace };
     }
     let dispatchInputStaging: DispatchInputStaging[] | undefined = job.inputStaging;
     const needsDispatchInputUrls =
-      files.length > 0 && (sandboxExecution !== undefined || !job.workingDir);
+      files.length > 0 && (Boolean(scoped) || sandboxExecution !== undefined || !job.workingDir);
     if (needsDispatchInputUrls) {
       if (!this.inputUrlResolver) {
         const reason = "Artifact inputs require signed NetDrive download URLs";
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
       try {
@@ -674,6 +806,7 @@ export class PlacementOrchestrator {
           jobId,
           workflowRunId,
           actorUserId: userId,
+          federation: Boolean(scoped),
           files,
         });
       } catch (err) {
@@ -681,12 +814,10 @@ export class PlacementOrchestrator {
           { jobId, agentId, err },
           "Input URL resolution failed — job will not be dispatched",
         );
-        await this.deps.jobService.updateStatus(
-          jobId,
-          "failed",
-          undefined,
-          agentId,
+        await this.failPreparation(
+          input,
           `Input URL resolution failed: ${errorMessage(err)}`,
+          agentId,
         );
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
@@ -702,13 +833,7 @@ export class PlacementOrchestrator {
         });
       } catch (err) {
         logger.error({ jobId, agentId, err }, "Input staging failed — job will not be dispatched");
-        await this.deps.jobService.updateStatus(
-          jobId,
-          "failed",
-          undefined,
-          undefined,
-          `Input staging failed: ${errorMessage(err)}`,
-        );
+        await this.failPreparation(input, `Input staging failed: ${errorMessage(err)}`);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
     }
@@ -724,19 +849,21 @@ export class PlacementOrchestrator {
       });
     } catch (error) {
       const reason = `Queue validation blocks dispatch: ${errorMessage(error)}`;
-      await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+      await this.failPreparation(input, reason, agentId);
       return { selectedAgentId: agentId, rejections, dispatched: false, trace };
     }
     const dispatchClaimed = await this.deps.jobService.claimDispatchEpoch(
       jobId,
       assigned.dispatchEpoch,
+      input.executionLease,
     );
     if (!dispatchClaimed) {
       return { selectedAgentId: agentId, rejections, dispatched: false, trace };
     }
-    const ok = this.deps.dispatcher.pushDispatchJob(agentId, jobId, {
+    const message = this.deps.dispatcher.buildDispatchJob(jobId, {
       jobIdInternal: jobId,
       dispatchEpoch: assigned.dispatchEpoch,
+      federationExecution: Boolean(scoped),
       name: job.name,
       command: job.command,
       resources: job.resources,
@@ -748,7 +875,7 @@ export class PlacementOrchestrator {
       stdinText: job.stdinText,
       queueName: dispatchQueue?.queueName,
       queueTargetMode,
-      queueValidationMode: dispatchQueue?.validationMode ?? "off",
+      queueValidationMode: scoped ? "enforce" : (dispatchQueue?.validationMode ?? "off"),
       qos: dispatchQueue?.qos,
       sandboxExecution: signedSandbox,
       spackExecution: input.spackExecution,
@@ -756,22 +883,129 @@ export class PlacementOrchestrator {
       restrictedNoEgress,
       dataDeliveries,
     });
-    if (!ok) {
+    const delivery = this.deps.dispatchOutbox
+      ? await this.deps.dispatchOutbox.enqueue(
+          agentId,
+          message,
+          workflowRunId,
+          input.executionLease,
+        )
+      : { sent: this.deps.dispatcher.pushPreparedDispatch(agentId, message), pending: false };
+    const ok = delivery.sent;
+    if (!ok && !delivery.pending) {
       // Assigned but the channel was gone: don't leave a "queued" row that no
       // agent will ever run. Mark failed so it matches the workflow node outcome.
       // Dispatch fails immediately when no Agent channel is available.
       logger.warn({ jobId, agentId }, "Selected agent has no live channel; marking job failed");
-      await this.deps.jobService.updateStatus(
-        jobId,
-        "failed",
-        undefined,
-        agentId,
+      await this.failPreparation(
+        input,
         "Selected agent channel is unavailable; the job was not dispatched.",
+        agentId,
       );
     }
 
     logger.info({ jobId, agentId, dispatched: ok }, "Job placement complete");
-    return { selectedAgentId: agentId, rejections, dispatched: ok, trace };
+    return {
+      selectedAgentId: agentId,
+      rejections,
+      dispatched: ok,
+      ...(delivery.pending ? { pendingDelivery: true } : {}),
+      trace,
+    };
+  }
+
+  private async durablePreparation(input: PlaceAndDispatchInput) {
+    const lease = input.executionLease;
+    if (!lease) return undefined;
+    if (!this.deps.dispatchOutbox || lease.runId !== input.workflowRunId)
+      throw new WorkflowExecutionInterrupted(
+        "Durable placement requires its run and dispatch outbox",
+        { retryable: false },
+      );
+    return lease.transaction(async (tx) => {
+      const [binding] = await tx
+        .select()
+        .from(workflowExecutionJobs)
+        .where(
+          and(
+            eq(workflowExecutionJobs.runId, lease.runId),
+            eq(workflowExecutionJobs.jobId, input.jobId),
+          ),
+        );
+      const [job] = await tx.select().from(jobs).where(eq(jobs.id, input.jobId));
+      if (!binding || !job || job.submittedBy !== input.userId || job.orgId !== input.orgId)
+        throw new WorkflowExecutionInterrupted("Placement does not match the bound Job principal", {
+          retryable: false,
+        });
+      const [envelope] = await tx
+        .select()
+        .from(jobDispatchOutbox)
+        .where(eq(jobDispatchOutbox.jobId, input.jobId));
+      if (
+        envelope &&
+        (envelope.agentId !== job.agentId ||
+          envelope.dispatchEpoch !== job.dispatchEpoch ||
+          envelope.workflowRunId !== lease.runId)
+      )
+        throw new WorkflowExecutionInterrupted("Bound Job has an inconsistent dispatch envelope", {
+          retryable: false,
+        });
+      if (envelope || ["completed", "failed", "cancelled"].includes(job.status))
+        return { job, enqueued: !!envelope, installationAgentId: undefined };
+      const associations = (job.softwareRequirements ?? []).filter((req) => req.operationId);
+      const ids = [
+        ...new Set(associations.map((req) => req.operationId).filter((id): id is string => !!id)),
+      ];
+      const operations = ids.length
+        ? await tx.select().from(softwareOperations).where(inArray(softwareOperations.id, ids))
+        : [];
+      if (
+        operations.length !== ids.length ||
+        associations.some(
+          (req) =>
+            !operations.some(
+              (op) =>
+                op.id === req.operationId &&
+                op.action === "install" &&
+                op.spec ===
+                  (req.spec ?? (req.version ? `${req.name}@${req.version}` : req.name)).trim(),
+            ),
+        )
+      )
+        throw new WorkflowExecutionInterrupted("Workflow installation binding is inconsistent", {
+          retryable: false,
+        });
+      const installationAgents = new Set(operations.map((op) => op.agentId));
+      if (
+        installationAgents.size > 1 ||
+        (job.agentId && operations.some((op) => op.agentId !== job.agentId))
+      )
+        throw new WorkflowExecutionInterrupted("Workflow installation targets conflict", {
+          retryable: false,
+        });
+      const failure = operations.find((op) => op.status === "failed" || op.status === "rejected");
+      if (failure)
+        throw new Error(
+          `Software installation ${failure.id} ${failure.status}: ${failure.error ?? "installation failed"}`,
+        );
+      return { job, enqueued: !!envelope, installationAgentId: operations[0]?.agentId };
+    });
+  }
+
+  private failPreparation(input: PlaceAndDispatchInput, reason: string, agentId?: string) {
+    return this.deps.jobService.updateStatus(
+      input.jobId,
+      "failed",
+      undefined,
+      agentId,
+      reason,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      input.executionLease,
+    );
   }
 
   /**
@@ -919,6 +1153,7 @@ export class PlacementOrchestrator {
     agentId: string,
   ): Promise<boolean> {
     let installed = false;
+    const saved = input.executionLease ? await this.deps.jobService.getById(input.jobId) : null;
     for (const requirement of input.job.softwareRequirements ?? []) {
       if (!requirement.installable) continue;
       const availability = this.deps.softwareAvailability;
@@ -937,29 +1172,66 @@ export class PlacementOrchestrator {
       };
       const request = availabilityRequestForRequirement(requirement, [agentId]);
       const resolved = await availability.resolve(request, principal);
-      if (resolved.installedAvailable.some((node) => node.agentId === agentId)) continue;
-      if (!resolved.installableAvailable.some((node) => node.agentId === agentId)) {
+      const linked = saved?.softwareRequirements?.some(
+        (req) =>
+          req.operationId &&
+          (req.spec ?? (req.version ? `${req.name}@${req.version}` : req.name)).trim() ===
+            resolved.spec,
+      );
+      const ready = resolved.installedAvailable.some((node) => node.agentId === agentId);
+      if (ready && !linked) continue;
+      if (!ready && !resolved.installableAvailable.some((node) => node.agentId === agentId)) {
         throw new Error(
           `Software installation denied: ${resolved.blocked.flatMap((node) => node.reasons).join("; ")}`,
         );
       }
+      const expectedPin =
+        input.spackExecution?.spec === resolved.spec ? input.spackExecution.pin : undefined;
       const operation = await operations.requestInstallForJob({
         jobId: input.jobId,
         agentId,
         spec: resolved.spec,
         requestedBy: input.userId,
+        executionLease: input.executionLease,
+        expectedPin,
       });
-      await waitForSoftwareInstallation({
-        operationId: operation.id,
-        timeoutMs: this.deps.softwareInstallTimeoutMs ?? 24 * 60 * 60 * 1000,
-        readJobStatus: async () =>
-          (await this.deps.jobService.getById(input.jobId))?.status ?? "failed",
-        readOperation: () => operations.getOperation(operation.id),
-        inventoryReady: async () =>
-          (
-            await availability.resolve({ ...request, installable: false }, principal)
-          ).installedAvailable.some((node) => node.agentId === agentId),
-      });
+      try {
+        await waitForSoftwareInstallation({
+          operationId: operation.id,
+          signal: input.executionLease?.signal,
+          timeoutMs: this.deps.softwareInstallTimeoutMs ?? 24 * 60 * 60 * 1000,
+          readJobStatus: async () =>
+            (await this.deps.jobService.getById(input.jobId))?.status ?? "failed",
+          readOperation: () =>
+            input.executionLease
+              ? operations.requestInstallForJob({
+                  jobId: input.jobId,
+                  agentId,
+                  spec: resolved.spec,
+                  requestedBy: input.userId,
+                  executionLease: input.executionLease,
+                  expectedPin,
+                })
+              : operations.getOperation(operation.id),
+          inventoryReady: async () =>
+            (
+              await availability.resolve({ ...request, installable: false }, principal)
+            ).installedAvailable.some((node) => node.agentId === agentId),
+        });
+      } catch (cause) {
+        if (
+          !input.executionLease ||
+          cause instanceof WorkflowExecutionInterrupted ||
+          (cause instanceof SoftwareInstallationWaitError && cause.reason === "failed")
+        )
+          throw cause;
+        throw new WorkflowExecutionInterrupted("Waiting for the original software installation", {
+          cause,
+          retryable: !(
+            cause instanceof SoftwareInstallationWaitError && cause.reason === "missing"
+          ),
+        });
+      }
       installed = true;
     }
     return installed;

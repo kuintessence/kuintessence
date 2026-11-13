@@ -1,6 +1,8 @@
 #!/bin/sh
 # Installed by the CP as root:root 0755 at /usr/libexec/kuintessence/kq-sandbox-wrapper.
 set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 
 readonly PROFILE_CONFIG=/etc/kuintessence/restricted-execution-profile.conf
 
@@ -14,6 +16,17 @@ secure_regular_file() {
   expected_hash=$2
   [ "$(realpath "$path")" = "$path" ] || die "non-canonical path: $path"
   [ -f "$path" ] && [ ! -L "$path" ] || die "not a regular file: $path"
+  parent=$(dirname "$path")
+  while :; do
+    [ -d "$parent" ] && [ ! -L "$parent" ] || die "unsafe parent: $parent"
+    [ "$(stat -c '%u' "$parent")" = 0 ] || die "parent not root-owned: $parent"
+    parent_mode=$(stat -c '%a' "$parent")
+    case "$parent_mode" in
+      *[2367][0-7]|[0-7]*[2367]) die "parent group/world writable: $parent" ;;
+    esac
+    [ "$parent" = / ] && break
+    parent=$(dirname "$parent")
+  done
   owner=$(stat -c '%u' "$path")
   mode=$(stat -c '%a' "$path")
   [ "$owner" = 0 ] || die "not root-owned: $path"
@@ -28,6 +41,9 @@ secure_regular_file() {
 secure_regular_file "$PROFILE_CONFIG" "$(sha256sum "$PROFILE_CONFIG" | awk '{print $1}')"
 # This file is root-owned and non-writable; its values are the local
 # compute-node authority and are intentionally not inherited from the Agent.
+unset KQ_PROFILE_ID KQ_APPTAINER_PATH KQ_APPTAINER_SHA256 KQ_SIF_PATH KQ_SIF_SHA256
+unset KQ_WRAPPER_PATH KQ_WRAPPER_SHA256 KQ_SECCOMP_PATH KQ_SECCOMP_SHA256
+unset KQ_CGROUP_CHECK_PATH KQ_CGROUP_CHECK_SHA256 KQ_SCHEDULER
 . "$PROFILE_CONFIG"
 
 [ "${KQ_PROFILE_ID:-}" ] || die "missing KQ_PROFILE_ID"
@@ -37,14 +53,46 @@ secure_regular_file "$PROFILE_CONFIG" "$(sha256sum "$PROFILE_CONFIG" | awk '{pri
 [ "${KQ_SIF_SHA256:-}" ] || die "missing KQ_SIF_SHA256"
 [ "${KQ_WRAPPER_PATH:-}" ] || die "missing KQ_WRAPPER_PATH"
 [ "${KQ_WRAPPER_SHA256:-}" ] || die "missing KQ_WRAPPER_SHA256"
+[ "${KQ_SECCOMP_PATH:-}" ] || die "missing KQ_SECCOMP_PATH"
+[ "${KQ_SECCOMP_SHA256:-}" ] || die "missing KQ_SECCOMP_SHA256"
+[ "${KQ_CGROUP_CHECK_PATH:-}" ] || die "missing KQ_CGROUP_CHECK_PATH"
+[ "${KQ_CGROUP_CHECK_SHA256:-}" ] || die "missing KQ_CGROUP_CHECK_SHA256"
+case "${KQ_SCHEDULER:-}" in
+  slurm|pbs-pro|torque) ;;
+  *) die "unsupported or missing KQ_SCHEDULER" ;;
+esac
+case "$KQ_SECCOMP_PATH" in
+  /*) ;;
+  *) die "seccomp path must be absolute" ;;
+esac
+case "$KQ_SECCOMP_PATH" in
+  *','*|*':'*) die "seccomp path contains security option separators" ;;
+esac
 
-[ $# -ge 15 ] || die "incomplete signed execution profile"
+secure_regular_file "$KQ_WRAPPER_PATH" "$KQ_WRAPPER_SHA256"
+secure_regular_file "$KQ_APPTAINER_PATH" "$KQ_APPTAINER_SHA256"
+secure_regular_file "$KQ_SIF_PATH" "$KQ_SIF_SHA256"
+secure_regular_file "$KQ_SECCOMP_PATH" "$KQ_SECCOMP_SHA256"
+secure_regular_file "$KQ_CGROUP_CHECK_PATH" "$KQ_CGROUP_CHECK_SHA256"
+[ -x /usr/bin/python3 ] || die "Python 3 is unavailable"
+[ "$(realpath "$0")" = "$KQ_WRAPPER_PATH" ] || die "wrapper execution path mismatch"
+sif_mode=$(stat -c '%a' "$KQ_SIF_PATH")
+case "$sif_mode" in
+  *[2367][0-7][0-7]|*[2367][0-7]|*[2367]) die "SIF must be readonly" ;;
+esac
+
+# Startup validates files, not the scheduler's per-job kernel limits.
+if [ "$#" -eq 1 ] && [ "$1" = --check-profile ]; then exit 0; fi
+
+[ $# -ge 19 ] || die "incomplete signed execution profile"
 [ "$1" = --profile-id ] || die "profile id flag required"; profile_id=$2; shift 2
 [ "$1" = --apptainer-path ] || die "apptainer path flag required"; apptainer_path=$2; shift 2
 [ "$1" = --apptainer-sha256 ] || die "apptainer hash flag required"; apptainer_sha256=$2; shift 2
 [ "$1" = --sif-path ] || die "SIF path flag required"; sif_path=$2; shift 2
 [ "$1" = --sif-sha256 ] || die "SIF hash flag required"; sif_sha256=$2; shift 2
 [ "$1" = --wrapper-sha256 ] || die "wrapper hash flag required"; wrapper_sha256=$2; shift 2
+[ "$1" = --cpus ] || die "signed CPU count required"; cpus=$2; shift 2
+[ "$1" = --memory-mb ] || die "signed memory required"; memory_mb=$2; shift 2
 [ "$1" = -- ] || die "argv delimiter required"; shift
 
 [ "$profile_id" = "$KQ_PROFILE_ID" ] || die "profile id mismatch"
@@ -54,16 +102,48 @@ secure_regular_file "$PROFILE_CONFIG" "$(sha256sum "$PROFILE_CONFIG" | awk '{pri
 [ "$sif_sha256" = "$KQ_SIF_SHA256" ] || die "SIF hash mismatch"
 [ "$wrapper_sha256" = "$KQ_WRAPPER_SHA256" ] || die "wrapper hash mismatch"
 
-secure_regular_file "$KQ_WRAPPER_PATH" "$KQ_WRAPPER_SHA256"
-secure_regular_file "$KQ_APPTAINER_PATH" "$KQ_APPTAINER_SHA256"
-[ "$(realpath "$0")" = "$KQ_WRAPPER_PATH" ] || die "wrapper execution path mismatch"
-[ "$(realpath "$KQ_SIF_PATH")" = "$KQ_SIF_PATH" ] || die "non-canonical SIF path"
-[ "$(sha256sum "$KQ_SIF_PATH" | awk '{print $1}')" = "$KQ_SIF_SHA256" ] || die "SIF hash mismatch"
-[ "$1" = "$KQ_APPTAINER_PATH" ] && [ "${2:-}" = exec ] || die "unexpected execution argv"
-
-sif_count=0
-for arg in "$@"; do
-  [ "$arg" = "$KQ_SIF_PATH" ] && sif_count=$((sif_count + 1))
+[ "$1" = "$KQ_APPTAINER_PATH" ] || die "unexpected execution binary"
+shift
+# Consume the Agent's exact prefix; the node supplies the mandatory seccomp policy.
+for expected in exec --containall --cleanenv --no-home --no-eval --no-mount \
+  hostfs,cwd,home --net --network none --drop-caps all --security no-new-privs --pwd /kq; do
+  [ "$#" -gt 0 ] && [ "$1" = "$expected" ] || die "unexpected isolation argv"
+  shift
 done
-[ "$sif_count" -eq 1 ] || die "execution argv does not pin exactly one SIF"
-exec "$@"
+
+validate_tail() {
+  while [ "${1:-}" = --bind ]; do
+    [ "$#" -ge 2 ] || die "missing bind path"
+    case "$2" in
+      *','*|*'/../'*|*'/./'*) die "ambiguous bind path" ;;
+    esac
+    case "$2" in
+      /*:/kq/script/*:ro|/*:/kq/context.json:ro|/*:/kq/inputs/*:ro) ;;
+      *) die "restricted execution requires readonly managed mounts" ;;
+    esac
+    shift 2
+  done
+  [ "$#" -eq 3 ] && [ "$1" = "$KQ_SIF_PATH" ] || die "unexpected runtime argv"
+  case "$2" in
+    /bin/bash|/usr/bin/python3|/usr/bin/node) ;;
+    *) die "unexpected interpreter" ;;
+  esac
+  case "$3" in
+    /kq/script/*) ;;
+    *) die "unexpected script path" ;;
+  esac
+}
+validate_tail "$@"
+case "$KQ_SCHEDULER" in
+  slurm) job_id=${SLURM_JOB_ID:-} ;;
+  pbs-pro|torque) job_id=${PBS_JOBID:-} ;;
+esac
+[ "$job_id" ] || die "native scheduler job identity unavailable"
+# -I ignores user Python paths/site hooks; the checker binds the native job ID
+# to the current process's real kernel cgroup before any user code can run.
+/usr/bin/python3 -I "$KQ_CGROUP_CHECK_PATH" --scheduler "$KQ_SCHEDULER" \
+  --job-id "$job_id" --cpus "$cpus" --memory-mb "$memory_mb" >/dev/null \
+  || die "per-job CPU/memory isolation check failed"
+exec "$KQ_APPTAINER_PATH" exec --containall --cleanenv --no-home --no-eval \
+  --no-mount hostfs,cwd,home --net --network none --drop-caps all \
+  --security "no-new-privs,seccomp:$KQ_SECCOMP_PATH" --pwd /kq "$@"

@@ -5,7 +5,7 @@ import {
   type SandboxSignedManifest,
   type SandboxUnsignedManifest,
 } from "@kuintessence/shared";
-import { SandboxManifestVerifier } from "./manifest-verifier";
+import { SandboxManifestVerifier, type SandboxRuntimeCacheFact } from "./manifest-verifier";
 
 const NOW = 1_720_915_200_000;
 
@@ -38,6 +38,7 @@ function unsigned(): SandboxUnsignedManifest {
       digest: `sha256:${"1".repeat(64)}`,
     },
     executionMode: "RootImpersonation",
+    runtimeAttestationId: "a".repeat(64),
     identity: {
       mode: "MappedAccount",
       accountId: "00000000-0000-0000-0000-000000000333",
@@ -49,6 +50,7 @@ function unsigned(): SandboxUnsignedManifest {
       allowedQueues: ["compute"],
     },
     mounts: [],
+    resources: { cpus: 1, memoryMb: 128 },
     limits: { pids: 32, outputBytes: 1_000_000, logBytes: 100_000 },
     networkDisabled: true,
   };
@@ -85,6 +87,16 @@ describe("SandboxManifestVerifier", () => {
           kind: "SIF",
           localPath: "/managed/runtime.sif",
           signatureVerified: true,
+          runtimeAttestationId: "a".repeat(64),
+          apptainerPath: "/usr/bin/apptainer",
+          seccompProfilePath: "/etc/kuintessence/seccomp.json",
+          cgroupCheck: {
+            path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+            sha256: "c".repeat(64),
+          },
+          attestedQueue: "compute",
+          attestedNodes: ["node-1"],
+          expiresAtUnixMs: NOW + 60_000,
         },
       },
       nonceConsumer: {
@@ -109,6 +121,56 @@ describe("SandboxManifestVerifier", () => {
     await expect(verifier.verify(manifest.jobId, manifest)).rejects.toThrow("nonce replay");
   });
 
+  test.each([
+    "missing",
+    "replaced",
+    "expired",
+    "checker",
+    "nodes",
+  ] as const)("root HPC rejects %s runtime evidence before consuming a nonce", async (change) => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const value = unsigned();
+    const runtime: SandboxRuntimeCacheFact = {
+      kind: "SIF",
+      localPath: "/managed/runtime.sif",
+      signatureVerified: true,
+      runtimeAttestationId: "a".repeat(64),
+      apptainerPath: "/usr/bin/apptainer",
+      seccompProfilePath: "/etc/kuintessence/seccomp.json",
+      cgroupCheck: { path: "/usr/libexec/kq-check", sha256: "c".repeat(64) },
+      attestedQueue: "compute",
+      attestedNodes: ["node-1"],
+      expiresAtUnixMs: NOW + 60_000,
+    };
+    if (change === "missing") delete value.runtimeAttestationId;
+    if (change === "replaced") runtime.runtimeAttestationId = "b".repeat(64);
+    if (change === "expired") runtime.expiresAtUnixMs = NOW;
+    if (change === "checker") delete runtime.cgroupCheck;
+    if (change === "nodes") runtime.attestedNodes = [];
+    let consumed = false;
+    const verifier = new SandboxManifestVerifier({
+      publicKeys: { "platform-key": publicKey.export({ type: "spki", format: "pem" }).toString() },
+      runtimeCache: { [value.runtime.digest]: runtime },
+      nonceConsumer: {
+        consume: async () => {
+          consumed = true;
+          return true;
+        },
+      },
+      accountVerifier: { verify: async () => true },
+      adapterType: "pbs-pro",
+      localExecutionMode: "RootImpersonation",
+      processIdentity: { username: "root", uid: 0, gid: 0 },
+      rootImpersonationEnabled: true,
+      sharedServiceAllowed: false,
+      now: () => NOW,
+    });
+    await expect(verifier.verify(value.jobId, signed(privateKey, value))).rejects.toThrow(
+      "runtime attestation",
+    );
+    expect(consumed).toBe(false);
+  });
+
   test("rejects expiry, unsigned runtime cache, uid0 and root-mode downgrade", async () => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const options = {
@@ -120,6 +182,16 @@ describe("SandboxManifestVerifier", () => {
           kind: "SIF" as const,
           localPath: "/managed/runtime.sif",
           signatureVerified: true,
+          runtimeAttestationId: "a".repeat(64),
+          apptainerPath: "/usr/bin/apptainer",
+          seccompProfilePath: "/etc/kuintessence/seccomp.json",
+          cgroupCheck: {
+            path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+            sha256: "c".repeat(64),
+          },
+          attestedQueue: "compute",
+          attestedNodes: ["node-1"],
+          expiresAtUnixMs: NOW + 60_000,
         },
       },
       nonceConsumer: { consume: async () => true },
@@ -170,6 +242,16 @@ describe("SandboxManifestVerifier", () => {
           kind: "SIF",
           localPath: profile.sifCanonicalPath,
           signatureVerified: true,
+          runtimeAttestationId: "a".repeat(64),
+          apptainerPath: "/usr/bin/apptainer",
+          seccompProfilePath: "/etc/kuintessence/seccomp.json",
+          cgroupCheck: {
+            path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+            sha256: "c".repeat(64),
+          },
+          attestedQueue: "compute",
+          attestedNodes: ["node-1"],
+          expiresAtUnixMs: NOW + 60_000,
         },
       },
       nonceConsumer: { consume: async () => true },
@@ -198,7 +280,10 @@ describe("SandboxManifestVerifier", () => {
     );
   });
 
-  test("permits only a current non-root Unix account with the matching runtime attestation", async () => {
+  test.each([
+    "slurm",
+    "pbs-pro",
+  ] as const)("%s requires a current non-root account and matching runtime proof", async (scheduler) => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const processIdentity = { username: "kqagent", uid: 2001, gid: 2001 };
     const value = unsigned();
@@ -211,25 +296,35 @@ describe("SandboxManifestVerifier", () => {
       uid: processIdentity.uid,
       gid: processIdentity.gid,
     };
+    const runtime: SandboxRuntimeCacheFact = {
+      kind: "SIF",
+      localPath: "/managed/runtime.sif",
+      signatureVerified: true,
+      runtimeAttestationId: value.runtimeAttestationId,
+      apptainerPath: "/usr/bin/apptainer",
+      seccompProfilePath: "/etc/kuintessence/seccomp.json",
+      cgroupCheck: {
+        path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+        sha256: "c".repeat(64),
+      },
+      attestedQueue: "compute",
+      attestedNodes: ["slurm-2"],
+      expiresAtUnixMs: NOW + 60_000,
+    };
+    let consumed = 0;
     const verifier = new SandboxManifestVerifier({
       publicKeys: {
         "platform-key": publicKey.export({ type: "spki", format: "pem" }).toString(),
       },
-      runtimeCache: {
-        [`sha256:${"1".repeat(64)}`]: {
-          kind: "SIF",
-          localPath: "/managed/runtime.sif",
-          signatureVerified: true,
-          runtimeAttestationId: value.runtimeAttestationId,
-          apptainerPath: "/usr/bin/apptainer",
-          seccompProfilePath: "/etc/kuintessence/seccomp.json",
-          attestedNodes: ["slurm-2"],
-          expiresAtUnixMs: NOW + 60_000,
+      runtimeCache: { [`sha256:${"1".repeat(64)}`]: runtime },
+      nonceConsumer: {
+        consume: async () => {
+          consumed++;
+          return true;
         },
       },
-      nonceConsumer: { consume: async () => true },
       accountVerifier: { verify: async () => true },
-      adapterType: "slurm",
+      adapterType: scheduler,
       localExecutionMode: "SelfAccount",
       processIdentity,
       rootImpersonationEnabled: false,
@@ -241,7 +336,26 @@ describe("SandboxManifestVerifier", () => {
       runtimeAttestationId: value.runtimeAttestationId,
       apptainerPath: "/usr/bin/apptainer",
       seccompProfilePath: "/etc/kuintessence/seccomp.json",
+      cgroupCheck: {
+        path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+        sha256: "c".repeat(64),
+      },
+      attestedQueue: "compute",
     });
+
+    const originalCheck = runtime.cgroupCheck;
+    runtime.cgroupCheck = undefined;
+    await expect(verifier.verify(value.jobId, signed(privateKey, value))).rejects.toThrow(
+      "attestation is missing",
+    );
+    expect(consumed).toBe(1);
+    runtime.cgroupCheck = originalCheck;
+    runtime.attestedQueue = undefined;
+    await expect(verifier.verify(value.jobId, signed(privateKey, value))).rejects.toThrow(
+      "attestation is missing",
+    );
+    expect(consumed).toBe(1);
+    runtime.attestedQueue = "compute";
 
     const wrongAdapter = new SandboxManifestVerifier({
       publicKeys: {
@@ -255,13 +369,18 @@ describe("SandboxManifestVerifier", () => {
           runtimeAttestationId: value.runtimeAttestationId,
           apptainerPath: "/usr/bin/apptainer",
           seccompProfilePath: "/etc/kuintessence/seccomp.json",
+          cgroupCheck: {
+            path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+            sha256: "c".repeat(64),
+          },
+          attestedQueue: "compute",
           attestedNodes: ["slurm-2"],
           expiresAtUnixMs: NOW + 60_000,
         },
       },
       nonceConsumer: { consume: async () => true },
       accountVerifier: { verify: async () => true },
-      adapterType: "pbs-pro",
+      adapterType: "torque",
       localExecutionMode: "SelfAccount",
       processIdentity,
       rootImpersonationEnabled: false,
@@ -269,7 +388,7 @@ describe("SandboxManifestVerifier", () => {
       now: () => NOW + 1,
     });
     await expect(wrongAdapter.verify(value.jobId, signed(privateKey, value))).rejects.toThrow(
-      "supported only by the Slurm adapter",
+      "supported only by Slurm and PBS Pro adapters",
     );
 
     const differentAccount = structuredClone(value);
@@ -292,6 +411,11 @@ describe("SandboxManifestVerifier", () => {
             runtimeAttestationId: value.runtimeAttestationId,
             apptainerPath: "/usr/bin/apptainer",
             seccompProfilePath: "/etc/kuintessence/seccomp.json",
+            cgroupCheck: {
+              path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+              sha256: "c".repeat(64),
+            },
+            attestedQueue: "compute",
             attestedNodes: ["slurm-2"],
             expiresAtUnixMs: NOW,
           },

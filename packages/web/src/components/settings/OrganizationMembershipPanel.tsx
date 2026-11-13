@@ -99,6 +99,8 @@ export function OrganizationMembershipPanel() {
       if (change.action === "remove" && list.data?.data.length === 1 && page > 0) setPage(page - 1);
       await client.invalidateQueries({ queryKey: key });
       await client.invalidateQueries({ queryKey: ["me"] });
+      await client.invalidateQueries({ queryKey: ["federation", "grants"] });
+      await client.invalidateQueries({ queryKey: ["federation", "current-capabilities"] });
     },
   });
   const startEdit = (existing: Membership | null) => {

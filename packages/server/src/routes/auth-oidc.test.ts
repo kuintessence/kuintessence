@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import {
   authzOutbox,
   createPgDb,
+  orgs,
   type PgDb,
   ssoConfig,
   userOrgMemberships,
@@ -48,6 +49,7 @@ function makeApp(authz?: AuthzService) {
       ssoSecretWrappingKey: SSO_WRAP,
       webBaseUrl: "/",
       allowInsecureIssuer: true,
+      devLoginEnabled: false,
       authz,
     }),
   );
@@ -278,6 +280,7 @@ describe("GET /auth/oidc/callback", () => {
   });
 
   test("happy path: signs JWT cookie, upserts user, redirects to web with session metadata", async () => {
+    const organizationsBefore = await db.select({ id: orgs.id }).from(orgs).orderBy(orgs.id);
     await seedSso({ groupMapping: { admins: "platform_admin" } });
     setOidcClientImplForTesting(makeImpl({ groups: ["admins"] }));
 
@@ -328,6 +331,82 @@ describe("GET /auth/oidc/callback", () => {
     expect(u?.externalId).toBe(oidcExternalIdentityKey("https://idp.example.com", "sub-1"));
     expect(u?.displayName).toBe("Alice");
     expect(decoded.sub).toBe(u.id);
+    expect(decoded.orgIds).toEqual([]);
+    expect(
+      await db.select().from(userOrgMemberships).where(eq(userOrgMemberships.userId, u.id)),
+    ).toEqual([]);
+    expect(await db.select({ id: orgs.id }).from(orgs).orderBy(orgs.id)).toEqual(
+      organizationsBefore,
+    );
+  });
+
+  test("repeated SSO preserves assigned membership while projecting platform role changes", async () => {
+    await seedSso({ groupMapping: { admins: "platform_admin" } });
+    setOidcClientImplForTesting(makeImpl({ groups: ["admins"] }));
+    const [user] = await db
+      .insert(users)
+      .values({ email: TEST_USER_EMAIL, role: "user" })
+      .returning();
+    if (!user) throw new Error("Expected provisioned user");
+    const [organization] = await db
+      .insert(orgs)
+      .values({ name: `SSO assigned ${crypto.randomUUID()}` })
+      .returning();
+    if (!organization) throw new Error("Expected assigned organization");
+    try {
+      await db
+        .insert(userOrgMemberships)
+        .values({ userId: user.id, orgId: organization.id, role: "viewer" });
+      const membershipsBefore = await db
+        .select()
+        .from(userOrgMemberships)
+        .where(eq(userOrgMemberships.userId, user.id));
+      const app = makeApp({ mode: "enforce" } as AuthzService);
+      for (const role of ["platform_admin", "user"] as const) {
+        if (role === "user") setOidcClientImplForTesting(makeImpl({ groups: [] }));
+        await db.delete(authzOutbox).where(eq(authzOutbox.subjectId, user.id));
+        const login = await app.request("/api/auth/oidc/login", { redirect: "manual" });
+        const state = new URL(login.headers.get("Location") ?? "").searchParams.get("state");
+        const callback = await app.request(
+          `/api/auth/oidc/callback?code=fake-code&state=${encodeURIComponent(state ?? "")}`,
+          {
+            redirect: "manual",
+            headers: {
+              Cookie: login.headers
+                .getSetCookie()
+                .map((cookie) => cookie.split(";")[0])
+                .join("; "),
+            },
+          },
+        );
+        expect(callback.status).toBe(302);
+        const token = await verifyToken(authTokenFromSetCookie(callback), JWT_SECRET);
+        expect(token.role).toBe(role);
+        expect(token.orgIds).toEqual([organization.id]);
+        expect(
+          await db.select().from(userOrgMemberships).where(eq(userOrgMemberships.userId, user.id)),
+        ).toEqual(membershipsBefore);
+        const rows = await db.select().from(authzOutbox).where(eq(authzOutbox.subjectId, user.id));
+        expect(rows).toContainEqual(
+          expect.objectContaining({
+            resourceType: "platform",
+            relation: "member",
+            operation: "create",
+          }),
+        );
+        expect(rows).toContainEqual(
+          expect.objectContaining({
+            resourceType: "platform",
+            relation: "admin",
+            operation: role === "platform_admin" ? "create" : "delete",
+          }),
+        );
+        expect(rows.some((row) => row.resourceType === "organization")).toBe(false);
+      }
+    } finally {
+      await db.delete(userOrgMemberships).where(eq(userOrgMemberships.orgId, organization.id));
+      await db.delete(orgs).where(eq(orgs.id, organization.id));
+    }
   });
 
   test("returns a one-time CLI code to loopback and exchanges it for an access token", async () => {

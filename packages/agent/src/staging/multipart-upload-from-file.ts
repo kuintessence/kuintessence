@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { readSiteTransport, siteFetch } from "@kuintessence/shared/site-transport";
 import { z } from "zod";
@@ -12,16 +12,18 @@ export interface MultipartFromFileResult {
   size: number;
 }
 
-export interface MultipartFromFileOptions {
-  /** A spooled temp file containing the whole object. */
-  filePath: string;
+export type MultipartFromFileSource =
+  | { filePath: string; fileHandle?: never }
+  | { fileHandle: FileHandle; filePath?: never };
+
+export type MultipartFromFileOptions = MultipartFromFileSource & {
   /** Exact spooled size in bytes. */
   size: number;
   partSize: number;
   /** Server-backed in prod (sends PartUrlsRequest over connectRPC); a fake in tests. */
   getPartUrls: (partNumbers: number[]) => Promise<{ partNumber: number; url: string }[]>;
   /** Injectable for tests; defaults to a real fetch PUT. Returns the part ETag. */
-  put?: (url: string, body: Uint8Array) => Promise<{ ok: boolean; status: number; etag: string }>;
+  put?: (url: string, body: Blob) => Promise<{ ok: boolean; status: number; etag: string }>;
   connectTo?: string;
   /** Retry count per part before failing the multipart upload. */
   maxRetries?: number;
@@ -29,14 +31,16 @@ export interface MultipartFromFileOptions {
   retryBackoffMs?: number;
   onProgress?: (copiedBytes: number) => void;
   signal?: AbortSignal;
+  /** Refresh source authority before reading each bounded chunk. */
+  authorizeRead?: () => Promise<void>;
   checkpoint?: { path: string; uploadId: string };
   /** Total deadline per PUT attempt, including implementations that ignore cancellation. */
   partTimeoutMs?: number;
-}
+};
 
 const defaultPut = async (
   url: string,
-  body: Uint8Array,
+  body: Blob,
   connectTo?: string,
   signal?: AbortSignal,
 ): Promise<{ ok: boolean; status: number; etag: string }> => {
@@ -47,10 +51,11 @@ const defaultPut = async (
     headers: {
       ...(target.hostHeader ? { Host: target.hostHeader } : {}),
       Connection: "close",
-      "Content-Length": String(body.byteLength),
+      "Content-Length": String(body.size),
       "Content-Type": "application/octet-stream",
     },
     signal,
+    redirect: "error",
   });
   return { ok: res.ok, status: res.status, etag: stripQuotes(res.headers.get("etag") ?? "") };
 };
@@ -103,7 +108,7 @@ async function uploadFromFile(opts: MultipartFromFileOptions): Promise<Multipart
   )
     throw new Error("Invalid multipart dimensions");
   const partCount = Math.max(1, Math.ceil(opts.size / opts.partSize));
-  const partNumbers = Array.from({ length: partCount }, (_, i) => i + 1);
+  if (partCount > 10_000) throw new Error("Multipart upload exceeds the S3 part limit");
   throwIfAborted(opts.signal);
   if (partCount > 10000) throw new Error("Multipart upload exceeds 10000 parts");
   const receiptSchema = z
@@ -168,55 +173,58 @@ async function uploadFromFile(opts: MultipartFromFileOptions): Promise<Multipart
     receipt.parts.some((part) => part.partNumber > partCount)
   )
     throw new Error("Invalid upload checkpoint parts");
-  const missing = partNumbers.filter((part) => !completed.has(part));
-  const urls = missing.length ? await opts.getPartUrls(missing) : [];
-  const urlByPart = new Map(urls.map((u) => [u.partNumber, u.url]));
 
   const hasher = new Bun.CryptoHasher("sha256");
   const parts: { partNumber: number; etag: string }[] = [];
   let copied = 0;
 
-  const fh = await open(
-    opts.filePath,
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-  );
-  const initial = await fh.stat();
-  if (!initial.isFile() || initial.size !== opts.size) {
-    await fh.close();
-    throw new Error("Upload source size changed");
-  }
+  const fh =
+    opts.fileHandle ??
+    (await open(opts.filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK));
   try {
-    for (const partNumber of partNumbers) {
+    const stat = await fh.stat();
+    if (!stat.isFile() || stat.size !== opts.size) throw new Error("Multipart source size changed");
+    const buffer = Buffer.alloc(Math.min(64 * 1024, opts.size));
+    const source = Bun.file(fh.fd);
+    for (let partNumber = 1; partNumber <= partCount; partNumber++) {
       throwIfAborted(opts.signal);
       const offset = (partNumber - 1) * opts.partSize;
       const len = Math.min(opts.partSize, opts.size - offset);
-      const buf = Buffer.alloc(len);
-      let filled = 0;
-      while (filled < len) {
-        const { bytesRead } = await fh.read(buf, filled, len - filled, offset + filled);
-        if (!bytesRead) throw new Error("Upload source truncated");
-        filled += bytesRead;
+      const body = source.slice(offset, offset + len);
+      const partHasher = createHash("sha256");
+      let read = 0;
+      while (read < len) {
+        await opts.authorizeRead?.();
+        throwIfAborted(opts.signal);
+        const { bytesRead } = await fh.read(
+          buffer,
+          0,
+          Math.min(buffer.length, len - read),
+          offset + read,
+        );
+        if (!bytesRead) throw new Error("Multipart source ended before its declared size");
+        hasher.update(buffer.subarray(0, bytesRead));
+        partHasher.update(buffer.subarray(0, bytesRead));
+        read += bytesRead;
       }
-      const partDigest = createHash("sha256").update(buf).digest("hex");
+      const partDigest = partHasher.digest("hex");
       const previous = completed.get(partNumber);
       if (previous) {
         if (previous.sha256 !== partDigest)
           throw new Error("Upload checkpoint source content changed");
-        hasher.update(buf);
         parts.push({ partNumber, etag: previous.etag });
         copied += len;
         opts.onProgress?.(copied);
         continue;
       }
 
-      let url = urlByPart.get(partNumber);
-      if (!url) {
-        throw new Error(`no presigned URL for part ${partNumber}`);
-      }
-
       let res: { ok: boolean; status: number; etag: string } | null = null;
       let attempt = 0;
       while (attempt <= maxRetries) {
+        throwIfAborted(opts.signal);
+        const urls = await opts.getPartUrls([partNumber]);
+        let url = urls.length === 1 && urls[0]?.partNumber === partNumber ? urls[0].url : undefined;
+        if (!url) throw new Error(`no presigned URL for part ${partNumber}`);
         throwIfAborted(opts.signal);
         try {
           if (!url) throw new Error("Part URL missing");
@@ -230,7 +238,7 @@ async function uploadFromFile(opts: MultipartFromFileOptions): Promise<Multipart
             : deadline.signal;
           try {
             res = await abortable(
-              opts.put ? opts.put(url, buf) : defaultPut(url, buf, opts.connectTo, signal),
+              opts.put ? opts.put(url, body) : defaultPut(url, body, opts.connectTo, signal),
               signal,
             );
             throwIfAborted(opts.signal);
@@ -270,7 +278,7 @@ async function uploadFromFile(opts: MultipartFromFileOptions): Promise<Multipart
         throw new Error(`upload part ${partNumber} failed: HTTP ${res.status}`);
       }
 
-      if (!res.etag || res.etag.length > 1024)
+      if (!stripQuotes(res.etag) || res.etag.length > 1024)
         throw new Error("Upload part ETag missing or invalid");
       if (opts.checkpoint) {
         receipt.parts.push({ partNumber, etag: stripQuotes(res.etag), sha256: partDigest });
@@ -296,20 +304,19 @@ async function uploadFromFile(opts: MultipartFromFileOptions): Promise<Multipart
           await directory.close();
         }
       }
-      hasher.update(buf);
       parts.push({ partNumber, etag: stripQuotes(res.etag) });
       copied += len;
       opts.onProgress?.(copied);
     }
     const final = await fh.stat();
     if (
-      final.size !== initial.size ||
-      final.mtimeMs !== initial.mtimeMs ||
-      final.ctimeMs !== initial.ctimeMs
+      final.size !== stat.size ||
+      final.mtimeMs !== stat.mtimeMs ||
+      final.ctimeMs !== stat.ctimeMs
     )
-      throw new Error("Upload source changed while reading");
+      throw new Error("Multipart source changed while uploading");
   } finally {
-    await fh.close();
+    if (!opts.fileHandle) await fh.close();
   }
 
   throwIfAborted(opts.signal);

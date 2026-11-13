@@ -559,20 +559,16 @@ describe("TorqueAdapter.status (plain-text qstat -f parser)", () => {
     expect(r.exitCode).toBe(2);
   });
 
-  test("qstat non-zero exit -> failed", async () => {
+  test("qstat failure remains an unknown observation", async () => {
     const { spawner } = mockSpawner([{ exitCode: 1, stdout: "", stderr: "Unknown job id" }]);
     const adapter = new TorqueAdapter("6.1.0", { spawner });
-    const r = await adapter.status("99999.torque-head");
-    expect(r.status).toBe("failed");
-    expect(r.message).toContain("no data");
+    await expect(adapter.status("99999.torque-head")).rejects.toThrow("no data");
   });
 
-  test("unknown state -> failed with state in message", async () => {
+  test("unknown state is retried", async () => {
     const { spawner } = mockSpawner([{ exitCode: 0, stdout: makeQstatOutput("X") }]);
     const adapter = new TorqueAdapter("6.1.0", { spawner });
-    const r = await adapter.status("99999.torque-head");
-    expect(r.status).toBe("failed");
-    expect(r.message).toContain("X");
+    await expect(adapter.status("99999.torque-head")).rejects.toThrow("X");
   });
 });
 
@@ -639,4 +635,39 @@ describe("TorqueAdapter.inspectComputeHealth", () => {
       reason: "invalid_scheduler_state",
     });
   });
+});
+
+test("recovery lookup binds Torque Job UUID, dispatch epoch name and scheduler account", async () => {
+  const stdout = [
+    "Job Id: 101.server\n    Job_Name = kf1\n    Account_Name = approved\n    Variable_List = KQ_JOB_ID=original",
+    "Job Id: 102.server\n    Job_Name = kf2\n    Account_Name = approved\n    Variable_List = KQ_JOB_ID=original",
+    "Job Id: 103.server\n    Job_Name = kf1\n    Account_Name = different\n    Variable_List = KQ_JOB_ID=original",
+  ].join("\n");
+  const { spawner } = mockSpawner([{ exitCode: 0, stdout }]);
+  const adapter = new TorqueAdapter("test", { spawner });
+  expect(
+    await adapter.findByKuintessenceJobId({
+      jobId: "original",
+      schedulerName: "kf1",
+      schedulerAccount: "approved",
+    }),
+  ).toEqual({ status: "found", schedulerJobId: "101.server" });
+});
+
+test("mapped Torque recovery excludes another user's matching job metadata", async () => {
+  const stdout = ["scientist", "other"]
+    .map(
+      (owner, index) =>
+        `Job Id: ${index + 1}.server\n    Job_Name = kf1\n    Account_Name = science\n    Job_Owner = ${owner}@node\n    Variable_List = KQ_JOB_ID=original`,
+    )
+    .join("\n");
+  const { spawner } = mockSpawner([{ exitCode: 0, stdout }]);
+  expect(
+    await new TorqueAdapter("test", { spawner }).findByKuintessenceJobId({
+      jobId: "original",
+      schedulerName: "kf1",
+      schedulerAccount: "science",
+      executionUser: { uid: 24001, username: "scientist" },
+    }),
+  ).toEqual({ status: "found", schedulerJobId: "1.server" });
 });

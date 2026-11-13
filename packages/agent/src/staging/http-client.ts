@@ -12,6 +12,7 @@ export interface HttpResponse {
   status: number;
   ok: boolean;
   headers: Record<string, string>;
+  body?: ReadableStream<Uint8Array> | null;
   text(): Promise<string>;
   arrayBuffer(): Promise<ArrayBuffer>;
   json<T = unknown>(): Promise<T>;
@@ -22,6 +23,8 @@ export interface HttpRequest {
   url: string;
   headers?: Record<string, string>;
   body?: ArrayBuffer | Uint8Array | string;
+  signal?: AbortSignal;
+  redirect?: RequestInit["redirect"];
 }
 
 export type HttpClient = (req: HttpRequest) => Promise<HttpResponse>;
@@ -36,6 +39,8 @@ export function createDefaultHttpClient(): HttpClient {
     const init: RequestInit = {
       method: req.method,
       headers: req.headers,
+      signal: req.signal,
+      redirect: req.redirect,
     };
     if (req.body !== undefined) {
       init.body = req.body as RequestInit["body"];
@@ -46,6 +51,7 @@ export function createDefaultHttpClient(): HttpClient {
       headers[k] = v;
     });
     return {
+      body: res.body,
       status: res.status,
       ok: res.ok,
       headers,

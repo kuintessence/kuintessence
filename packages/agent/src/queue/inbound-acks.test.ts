@@ -116,3 +116,143 @@ describe("InboundAcks", () => {
     expect(row.payload).toEqual({ name: "blast", cpus: 4 });
   });
 });
+
+test("submission fence is durable, monotonic and cannot resurrect an acknowledged dispatch", async () => {
+  const db = freshDb();
+  const acks = new InboundAcks(db);
+  await acks.persistInbound({
+    dispatchId: "job:1",
+    jobId: "job",
+    payload: { federationExecution: true },
+  });
+  await acks.markSubmissionStarted("job:1");
+  const reopened = new InboundAcks(db);
+  await expect(reopened.markSubmissionStarted("job:1")).rejects.toThrow("receipt is missing");
+  expect((await reopened.pendingInbound())[0]?.payload.federationSubmissionStarted).toBe(true);
+  expect(await reopened.persistInbound({ dispatchId: "job:1", jobId: "job", payload: {} })).toBe(
+    false,
+  );
+  expect((await reopened.pendingInbound())[0]?.payload.federationSubmissionStarted).toBe(true);
+  await reopened.markAcked("job:1");
+  await expect(reopened.markSubmissionStarted("job:1")).rejects.toThrow("receipt is missing");
+  await expect(reopened.markSubmissionStarted("missing")).rejects.toThrow("receipt is missing");
+  expect(await reopened.pendingInbound()).toEqual([]);
+});
+
+test("runtime takeover retains acknowledged deadline and fences old renewal, cancellation and completion", async () => {
+  let now = Date.now();
+  const db = freshDb();
+  const first = new InboundAcks(db, { now: () => new Date(now) });
+  await first.persistInbound({
+    dispatchId: "job:3",
+    jobId: "job",
+    payload: { federationExecution: true },
+  });
+  await first.markSubmissionStarted("job:3", undefined, {
+    owner: "old",
+    expiresAt: now + 1000,
+    state: "active",
+  });
+  await first.markAcked("job:3");
+  now += 200;
+  const second = new InboundAcks(db, { now: () => new Date(now) });
+  const claimed = await second.claimRuntime("job:3");
+  expect(claimed.expiresAt).toBe(now + 800);
+  expect(claimed.state).toBe("active");
+  expect(claimed.owner).not.toBe("old");
+  await expect(first.renewRuntime("job:3", "old", now + 2000)).rejects.toThrow("replaced");
+  expect(await first.setRuntimeState("job:3", "old", "stopping")).toBe(false);
+  expect(await first.setRuntimeState("job:3", "old", "finished")).toBe(false);
+  await second.renewRuntime("job:3", claimed.owner, now + 2000);
+  expect((await second.get("job:3"))?.payload.federationRuntime).toMatchObject({
+    expiresAt: now + 2000,
+  });
+});
+
+test.each([
+  "expired",
+  "stopping",
+  "legacy",
+] as const)("runtime recovery never revives %s receipts", async (kind) => {
+  let now = Date.now();
+  const acks = new InboundAcks(freshDb(), { now: () => new Date(now) });
+  await acks.persistInbound({
+    dispatchId: "job:4",
+    jobId: "job",
+    payload: { federationExecution: true },
+  });
+  await acks.markSubmissionStarted(
+    "job:4",
+    undefined,
+    kind === "legacy" ? undefined : { owner: "old", expiresAt: now + 1000, state: "active" },
+  );
+  if (kind === "stopping") await acks.setRuntimeState("job:4", "old", "stopping");
+  if (kind === "expired") now += 1001;
+  const claimed = await acks.claimRuntime("job:4");
+  expect(claimed.state).toBe("stopping");
+  await expect(acks.renewRuntime("job:4", claimed.owner, now + 2000)).rejects.toThrow("expired");
+  expect(await acks.setRuntimeState("job:4", claimed.owner, "finished")).toBe(true);
+  expect((await acks.claimRuntime("job:4")).state).toBe("finished");
+});
+
+test("expiry at the persistence boundary rejects late grants without changing another epoch", async () => {
+  let now = Date.now();
+  const acks = new InboundAcks(freshDb(), { now: () => new Date(now) });
+  for (const epoch of [1, 2]) {
+    await acks.persistInbound({
+      dispatchId: `job:${epoch}`,
+      jobId: "job",
+      payload: { federationExecution: true },
+    });
+    await acks.markSubmissionStarted(`job:${epoch}`, undefined, {
+      owner: `owner-${epoch}`,
+      expiresAt: now + epoch * 1000,
+      state: "active",
+    });
+  }
+  now += 1000;
+  await expect(acks.renewRuntime("job:1", "owner-1", now + 1000)).rejects.toThrow("expired");
+  await acks.renewRuntime("job:2", "owner-2", now + 2000);
+  expect(await acks.setRuntimeState("job:1", "owner-1", "stopping")).toBe(true);
+  expect((await acks.get("job:2"))?.payload.federationRuntime).toMatchObject({ state: "active" });
+  await expect(acks.renewRuntime("job:2", "owner-2", now + 30_001)).rejects.toThrow("Invalid");
+});
+
+test("Kubernetes UID binding survives reopening, is immutable and scopes stop proof", async () => {
+  const db = freshDb();
+  const inbox = new InboundAcks(db);
+  const identity = {
+    schedulerJobId: "kq-job-5",
+    namespace: "tenant-ns",
+    schedulerUid: crypto.randomUUID(),
+  };
+  await inbox.persistInbound({
+    dispatchId: "job:5",
+    jobId: "job",
+    payload: { federationExecution: true },
+  });
+  await expect(inbox.bindRuntimeSchedulerIdentity("job:5", identity)).rejects.toThrow();
+  await inbox.markSubmissionStarted("job:5", undefined, {
+    owner: "agent",
+    expiresAt: Date.now() + 1000,
+    state: "active",
+  });
+  await inbox.bindRuntimeSchedulerIdentity("job:5", identity);
+  const reopened = new InboundAcks(db);
+  await reopened.bindRuntimeSchedulerIdentity("job:5", identity);
+  expect(await reopened.runtimeSchedulerIdentity("job:5")).toEqual(identity);
+  await expect(
+    reopened.bindRuntimeSchedulerIdentity("job:5", {
+      ...identity,
+      schedulerUid: crypto.randomUUID(),
+    }),
+  ).rejects.toThrow("replaced");
+  await inbox.setRuntimeState("job:5", "agent", "stopping");
+  await reopened.recordRuntimeStop("job:5", identity.schedulerJobId, identity.schedulerUid);
+  expect(
+    await inbox.hasConfirmedRuntimeStop("job:5", identity.schedulerJobId, identity.schedulerUid),
+  ).toBe(true);
+  expect(
+    await inbox.hasConfirmedRuntimeStop("job:5", identity.schedulerJobId, crypto.randomUUID()),
+  ).toBe(false);
+});

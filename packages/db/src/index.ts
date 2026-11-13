@@ -1,9 +1,11 @@
 export * from "./pg/data-market-0043-upgrade";
-export { createPgDb, type PgDb } from "./pg/index";
+export { createPgDb, type PgDb, type PgTransaction } from "./pg/index";
 export * from "./pg/migrate";
 export * from "./pg/schema";
+export * from "./pg/schema-federation";
 export * from "./pg/schema-metering";
 export * from "./pg/schema-spack-materials";
+export * from "./pg/schema-workflow-execution";
 export * from "./pg/spack-install-bindings";
 export * from "./pg/spack-material-lifecycle";
 export { assertSpackMaterialReleasesAvailable } from "./pg/spack-material-lifecycle-state";

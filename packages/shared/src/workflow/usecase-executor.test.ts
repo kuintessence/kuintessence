@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as workflowDsl from "../workflow-dsl";
 import { REQUIRED_COLLECTED_OUTPUTS_KEY, runWorkflow } from "./engine";
-import { SPACK_EXECUTION_PLACEHOLDER } from "./spack-execution";
+import { SPACK_EXECUTION_PLACEHOLDER, SPACK_PINNED_EXECUTION_PLACEHOLDER } from "./spack-execution";
 import {
   createUsecaseExecutor,
   type JobSubmission,
@@ -10,6 +10,24 @@ import {
 
 const UUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const USECASE_PACKAGE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+const federationNode = {
+  id: "remote",
+  name: "Remote",
+  type: "Federation",
+  agreementRevisionId: USECASE_PACKAGE_ID,
+  template: {
+    originSiteId: USECASE_PACKAGE_ID,
+    kind: "workflow",
+    id: USECASE_PACKAGE_ID,
+    revision: "1",
+    digest: `sha256:${"a".repeat(64)}`,
+  },
+  inputManifestDigest: `sha256:${"b".repeat(64)}`,
+  environmentLockDigest: `sha256:${"c".repeat(64)}`,
+  resources: { cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 30 },
+  maxAmount: "1",
+};
 
 const node = workflowDsl.WorkflowNodeSchema.parse({
   type: "SoftwareUsecaseComputing",
@@ -54,6 +72,128 @@ const deps = (capture: { spec?: JobSubmission }): UsecaseExecutorDeps => ({
 });
 
 describe("createUsecaseExecutor", () => {
+  test("federation inputs preserve scalar types, source selection and loop invocation values", async () => {
+    const captured: Array<{ path: string | undefined; parameters: unknown }> = [];
+    const executor = createUsecaseExecutor({
+      ...deps({}),
+      executeFederation: async (_node, invocation, parameters) => {
+        captured.push({ path: invocation?.path, parameters });
+        return { status: "Succeeded", values: {} };
+      },
+    });
+    const wf = workflowDsl.WorkflowSchema.parse({
+      name: "Loop delegation",
+      parameters: [{ name: "enabled", type: "bool", default: true }],
+      spec: {
+        nodeDrafts: [
+          {
+            id: "each",
+            name: "Each",
+            type: "Loop",
+            mode: "ForEach",
+            maxIterations: 2,
+            maxParallel: 2,
+            over: { expr: "[6, 7]" },
+            body: {
+              nodeDrafts: [
+                {
+                  ...federationNode,
+                  inputSlots: [
+                    { descriptor: "value", type: "Text", from: { expr: "loop.item" } },
+                    { descriptor: "enabled", type: "Text", from: { param: "enabled" } },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect((await runWorkflow(wf, executor)).status.each).toBe("Succeeded");
+    expect(captured.map((item) => item.parameters)).toEqual([
+      { value: 6, enabled: true },
+      { value: 7, enabled: true },
+    ]);
+    expect(new Set(captured.map((item) => item.path)).size).toBe(2);
+    const selected = workflowDsl.WorkflowNodeSchema.parse({
+      ...federationNode,
+      inputSlots: [
+        {
+          descriptor: "label",
+          type: "Text",
+          sources: [
+            { node: "left", output: "value" },
+            { node: "right", output: "value" },
+          ],
+          select: "FirstAvailable",
+        },
+        {
+          descriptor: "optional",
+          type: "Text",
+          from: { node: "left", output: "missing" },
+          optional: true,
+        },
+      ],
+    });
+    await executor(selected, {
+      nodes: {
+        left: { status: "Skipped", values: {} },
+        right: { status: "Succeeded", values: { value: "chosen" } },
+      },
+    });
+    expect(captured.at(-1)?.parameters).toEqual({ label: "chosen" });
+  });
+
+  test("federation inputs reject file handles and non-finite values before submitting", async () => {
+    let submitted = 0;
+    const executor = createUsecaseExecutor({
+      ...deps({}),
+      executeFederation: async () => {
+        submitted++;
+        return { status: "Succeeded", values: {} };
+      },
+    });
+    const node = workflowDsl.WorkflowNodeSchema.parse({
+      ...federationNode,
+      inputSlots: [{ descriptor: "value", type: "Text", from: { param: "value" } }],
+    });
+    for (const value of [
+      { fileMetadataId: USECASE_PACKAGE_ID, fileMetadataName: "private.dat" },
+      Infinity,
+      null,
+    ])
+      await expect(executor(node, { params: { value } })).rejects.toThrow("finite scalar");
+    expect(submitted).toBe(0);
+  });
+  test("passes invocation identity to the governed Script executor", async () => {
+    const invocation = { path: JSON.stringify(["node", "sub", "subworkflow", "node", "script"]) };
+    const script = workflowDsl.WorkflowNodeSchema.parse({
+      type: "Script",
+      id: "script",
+      name: "script",
+      source: { type: "Inline", language: "python", content: "print(1)" },
+      runtimeProfileId: UUID,
+    });
+    const executor = createUsecaseExecutor({
+      ...deps({}),
+      executeScript: async (_node, _ctx, context) => {
+        expect(context).toEqual(invocation);
+        return { status: "Succeeded" };
+      },
+    });
+    expect((await executor(script, {}, invocation)).status).toBe("Succeeded");
+  });
+  test("preserves dynamic invocation identity through software materialization", async () => {
+    const capture: { spec?: JobSubmission } = {};
+    const invocation = { path: JSON.stringify(["node", "loop", "iteration", 2, "node", "solve"]) };
+    await createUsecaseExecutor(deps(capture))(
+      node,
+      { params: { endTime: "500" }, nodes: {} },
+      invocation,
+    );
+    expect(capture.spec?.invocation).toEqual(invocation);
+  });
+
   test("fails closed when named asset references were not frozen before execution", async () => {
     const executor = createUsecaseExecutor(deps({}));
 
@@ -534,6 +674,7 @@ describe("createUsecaseExecutor", () => {
             {
               fileMetadataId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
               fileMetadataName: "a.txt",
+              relativePath: "nested/a.txt",
               hash: "sha-a",
               size: 5,
             },
@@ -551,7 +692,7 @@ describe("createUsecaseExecutor", () => {
     await exec(batchNode, { params: {}, nodes: {} });
 
     expect(capture.spec?.inputStaging).toEqual([
-      { fileMetadataId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1", stagePath: "inputs/a.txt" },
+      { fileMetadataId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1", stagePath: "inputs/nested/a.txt" },
       { fileMetadataId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2", stagePath: "inputs/b.txt" },
     ]);
   });
@@ -1165,4 +1306,186 @@ describe("createUsecaseExecutor", () => {
     expect(r.status.solve).toBe("Succeeded");
     expect(r.values.solve?.values.residual).toBe(0.001);
   });
+});
+
+test("pinned packages preserve their installation identity in Agent intent and refuse legacy shell wrapping", async () => {
+  const capture: { spec?: JobSubmission } = {};
+  const dependencies = deps(capture);
+  const pin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: `sha256:${"b".repeat(64)}`,
+    lockfileDigest: `sha256:${"c".repeat(64)}`,
+    spackVersion: "1.0.0" as const,
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  const resolvePackage = async () => ({
+    ...(await dependencies.resolvePackage(UUID, UUID)),
+    spackExecutionPin: pin,
+  });
+  const executor = createUsecaseExecutor({
+    ...dependencies,
+    resolvePackage,
+    deferSpackActivation: true,
+  });
+  await executor(node, { params: { endTime: "50" }, nodes: {} });
+  expect(capture.spec?.spackExecution?.pin).toEqual(pin);
+  expect(capture.spec?.command).toBe(SPACK_PINNED_EXECUTION_PLACEHOLDER);
+  await expect(
+    createUsecaseExecutor({ ...dependencies, resolvePackage })(node, {
+      params: { endTime: "50" },
+      nodes: {},
+    }),
+  ).rejects.toThrow("requires managed Agent activation");
+});
+
+test("federation file slots resolve managed artifacts and preserve batch paths without mixing scalar parameters", async () => {
+  const captured: Array<{ parameters: unknown; files: unknown }> = [];
+  const resolved: unknown[] = [];
+  const artifact = { artifactId: UUID };
+  const file = { fileMetadataId: USECASE_PACKAGE_ID, fileMetadataName: "source.txt" };
+  const executor = createUsecaseExecutor({
+    ...deps({}),
+    resolveFileInput: async (value) => {
+      resolved.push(value);
+      return value === artifact ? file : value;
+    },
+    executeFederation: async (_node, _invocation, parameters, files) => {
+      captured.push({ parameters, files });
+      return { status: "Succeeded", values: {} };
+    },
+  });
+  const node = workflowDsl.WorkflowNodeSchema.parse({
+    ...federationNode,
+    inputSlots: [
+      { descriptor: "count", type: "Text", from: { param: "count" } },
+      {
+        descriptor: "input",
+        type: "File",
+        from: { param: "artifact" },
+        expectedFileName: "input.dat",
+      },
+      {
+        descriptor: "batch",
+        type: "File",
+        isBatch: true,
+        sources: [{ node: "upstream", output: "files" }],
+        select: "RequireExactlyOne",
+      },
+      { descriptor: "empty", type: "File", isBatch: true, contents: [] },
+      { descriptor: "optional", type: "File", optional: true, from: { param: "absent" } },
+    ],
+  });
+  const batch = [
+    { ...file, fileMetadataName: "display-first.txt", relativePath: "nested/first.txt" },
+    { ...file, fileMetadataName: "second.txt" },
+  ];
+  await executor(node, {
+    params: { count: 2, artifact },
+    nodes: { upstream: { status: "Succeeded", values: { files: batch } } },
+  });
+  expect(captured).toEqual([
+    {
+      parameters: { count: 2 },
+      files: [
+        {
+          descriptor: "input",
+          type: "File",
+          files: [{ fileId: USECASE_PACKAGE_ID, path: "input.dat" }],
+        },
+        {
+          descriptor: "batch",
+          type: "FileBatch",
+          files: [
+            { fileId: USECASE_PACKAGE_ID, path: "nested/first.txt" },
+            { fileId: USECASE_PACKAGE_ID, path: "second.txt" },
+          ],
+        },
+        { descriptor: "empty", type: "FileBatch", files: [] },
+      ],
+    },
+  ]);
+  expect(resolved).toEqual([artifact, batch, []]);
+});
+
+test("federation file slots reject wrong cardinality and unsafe file references before delegation", async () => {
+  let submitted = 0;
+  const executor = createUsecaseExecutor({
+    ...deps({}),
+    executeFederation: async () => {
+      submitted++;
+      return { status: "Succeeded", values: {} };
+    },
+  });
+  for (const isBatch of [false, true]) {
+    const node = workflowDsl.WorkflowNodeSchema.parse({
+      ...federationNode,
+      inputSlots: [{ descriptor: "input", type: "File", isBatch, from: { param: "input" } }],
+    });
+    for (const value of [
+      undefined,
+      null,
+      "filename.txt",
+      { fileMetadataId: "bad", fileMetadataName: "ok.txt" },
+      { fileMetadataId: USECASE_PACKAGE_ID, fileMetadataName: "../escape" },
+      { fileMetadataId: USECASE_PACKAGE_ID, fileMetadataName: "/absolute" },
+    ]) {
+      const input = isBatch && value !== undefined ? [value] : value;
+      await expect(executor(node, { params: { input } })).rejects.toThrow();
+    }
+    const file = { fileMetadataId: USECASE_PACKAGE_ID, fileMetadataName: "input.dat" };
+    await expect(executor(node, { params: { input: isBatch ? file : [file] } })).rejects.toThrow();
+  }
+  expect(submitted).toBe(0);
+});
+
+test("federation file slots accept explicit single files and preserve absence of an optional input", async () => {
+  let selected: unknown;
+  const executor = createUsecaseExecutor({
+    ...deps({}),
+    executeFederation: async (_node, _invocation, _parameters, files) => {
+      selected = files;
+      return { status: "Succeeded", values: {} };
+    },
+  });
+  const contents = [
+    {
+      fileMetadataId: USECASE_PACKAGE_ID,
+      fileMetadataName: "chosen.dat",
+      hash: "untrusted",
+      size: 999,
+    },
+  ];
+  const node = workflowDsl.WorkflowNodeSchema.parse({
+    ...federationNode,
+    inputSlots: [{ descriptor: "input", type: "File", contents }],
+  });
+  await executor(node, {});
+  expect(selected).toEqual([
+    {
+      descriptor: "input",
+      type: "File",
+      files: [{ fileId: USECASE_PACKAGE_ID, path: "chosen.dat" }],
+    },
+  ]);
+  await executor(
+    workflowDsl.WorkflowNodeSchema.parse({
+      ...federationNode,
+      inputSlots: [
+        { descriptor: "optional", type: "File", optional: true, from: { param: "missing" } },
+      ],
+    }),
+    { params: {} },
+  );
+  expect(selected).toBeUndefined();
+  for (const slots of [
+    [{ descriptor: "input", type: "File", contents: [] }],
+    [{ descriptor: "input", type: "File" }],
+    [
+      { descriptor: "input", type: "File", contents },
+      { descriptor: "input", type: "Text", from: { param: "input" } },
+    ],
+  ])
+    expect(
+      workflowDsl.WorkflowNodeSchema.safeParse({ ...federationNode, inputSlots: slots }).success,
+    ).toBe(false);
 });

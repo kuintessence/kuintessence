@@ -336,6 +336,7 @@ if "$spack_managed"; then
     uninstall_timeout=300s
   fi
   legacy_probe_status
+  "${compose[@]}" exec -T --user kq -e KQ_TEST_SYSTEMD_USER=1 scheduler bun test packages/agent/src/spack/supervised-process.integration.test.ts --test-name-pattern 'preserves literal arguments'
   "${compose[@]}" exec -T --user kq scheduler bun deploy/pr-test/spack-managed/probe.ts
   "${compose[@]}" exec -T --user kq scheduler bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
   if "$spack_web" && [[ "$KQ_PR_SPACK_CASE" == hello ]]; then

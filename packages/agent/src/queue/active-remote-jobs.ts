@@ -1,13 +1,20 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { activeRemoteJobs, type SqliteDb } from "@kuintessence/db";
+import {
+  QueueTargetModeSchema,
+  QueueValidationModeSchema,
+  SchedulerAccountingSchema,
+} from "@kuintessence/shared";
 import { and, asc, eq } from "drizzle-orm";
+import { z } from "zod";
 import {
   type JobSpec,
   type JobStatusResult,
   SchedulerSubmissionUnknownError,
 } from "../adapters/base";
 import type { ExpectedOutput, ProtectedPathMount } from "../output-collector";
+import { SandboxJobSpecSchema } from "./sandbox-job-spec";
 
 export const PENDING_SCHEDULER_SUBMISSION = "__kq_submission_pending__";
 
@@ -23,14 +30,41 @@ export interface ActiveRemoteJobRecord {
   completionSnapshot?: CompletedJobSnapshot;
   jobId: string;
   schedulerJobId: string;
+  schedulerUid?: string;
+  dispatchId?: string;
   spec: JobSpec;
   expectedOutputs: ExpectedOutput[];
 }
 
-export interface RecordSubmittedInput {
+export interface PreparedRemoteJob {
   spec: JobSpec;
-  schedulerJobId: string;
   expectedOutputs: ExpectedOutput[];
+}
+
+export interface RecordSubmittedInput extends PreparedRemoteJob {
+  schedulerJobId: string;
+  schedulerUid?: string;
+  dispatchId?: string;
+}
+
+export function preparedRemoteJobToJson(input: PreparedRemoteJob): Record<string, unknown> {
+  return {
+    spec: jobSpecToJson(input.spec),
+    expectedOutputs: input.expectedOutputs.map(expectedOutputToJson),
+  };
+}
+
+export function jsonToPreparedRemoteJob(value: unknown): PreparedRemoteJob {
+  const parsed = z
+    .object({
+      spec: z.record(z.string(), z.unknown()),
+      expectedOutputs: z.array(z.record(z.string(), z.unknown())),
+    })
+    .parse(value);
+  return {
+    spec: jsonToJobSpec(parsed.spec),
+    expectedOutputs: parsed.expectedOutputs.map(jsonToExpectedOutput),
+  };
 }
 
 export class ActiveRemoteJobs {
@@ -39,7 +73,12 @@ export class ActiveRemoteJobs {
   async recordSubmitted(input: RecordSubmittedInput): Promise<void> {
     this.assertConfirmedId(input.schedulerJobId);
     if (await this.insert(input)) return;
-    const existing = await this.get(input.spec.jobId);
+    const [row] = await this.db
+      .select()
+      .from(activeRemoteJobs)
+      .where(eq(activeRemoteJobs.jobId, input.spec.jobId))
+      .limit(1);
+    const existing = row ? activeRemoteJobFromRow(row) : undefined;
     if (
       !existing ||
       !isDeepStrictEqual(existing.spec, jsonToJobSpec(jobSpecToJson(input.spec))) ||
@@ -51,12 +90,52 @@ export class ActiveRemoteJobs {
       throw new SchedulerSubmissionUnknownError(
         "Submitted job conflicts with its durable execution binding",
       );
-    if (existing.schedulerJobId === input.schedulerJobId) return;
-    if (await this.confirmSubmission(input.spec.jobId, input.schedulerJobId)) return;
-    if ((await this.get(input.spec.jobId))?.schedulerJobId !== input.schedulerJobId)
+    if (
+      (existing.dispatchId !== undefined &&
+        input.dispatchId !== undefined &&
+        existing.dispatchId !== input.dispatchId) ||
+      (existing.schedulerUid !== undefined &&
+        input.schedulerUid !== undefined &&
+        existing.schedulerUid !== input.schedulerUid) ||
+      (existing.schedulerJobId !== PENDING_SCHEDULER_SUBMISSION &&
+        existing.schedulerJobId !== input.schedulerJobId)
+    )
       throw new SchedulerSubmissionUnknownError(
         "Submitted job conflicts with its durable scheduler identity",
       );
+    const dispatchId = existing.dispatchId ?? input.dispatchId;
+    const schedulerUid = existing.schedulerUid ?? input.schedulerUid;
+    if (
+      existing.schedulerJobId === input.schedulerJobId &&
+      existing.dispatchId === dispatchId &&
+      existing.schedulerUid === schedulerUid
+    )
+      return;
+    if (!row) throw new SchedulerSubmissionUnknownError("Submission binding disappeared");
+    const updated = await this.db
+      .update(activeRemoteJobs)
+      .set({
+        schedulerJobId: input.schedulerJobId,
+        spec: { ...row.spec, dispatchId, schedulerUid },
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(activeRemoteJobs.jobId, input.spec.jobId),
+          eq(activeRemoteJobs.schedulerJobId, row.schedulerJobId),
+          eq(activeRemoteJobs.spec, row.spec),
+        ),
+      )
+      .returning({ jobId: activeRemoteJobs.jobId });
+    if (!updated.length) {
+      const current = await this.get(input.spec.jobId);
+      if (
+        current?.schedulerJobId !== input.schedulerJobId ||
+        current.dispatchId !== dispatchId ||
+        current.schedulerUid !== schedulerUid
+      )
+        throw new SchedulerSubmissionUnknownError("Submission binding changed before confirmation");
+    }
   }
 
   async recordSubmissionIntent(spec: JobSpec, expectedOutputs: ExpectedOutput[]): Promise<void> {
@@ -75,7 +154,11 @@ export class ActiveRemoteJobs {
       .values({
         jobId: input.spec.jobId,
         schedulerJobId: input.schedulerJobId,
-        spec: jobSpecToJson(input.spec),
+        spec: {
+          ...jobSpecToJson(input.spec),
+          dispatchId: input.dispatchId,
+          schedulerUid: input.schedulerUid,
+        },
         expectedOutputs: input.expectedOutputs.map(expectedOutputToJson),
         createdAt: now,
         updatedAt: now,
@@ -191,6 +274,8 @@ function activeRemoteJobFromRow(row: typeof activeRemoteJobs.$inferSelect): Acti
         );
   return {
     jobId: row.jobId,
+    dispatchId: optionalString(row.spec.dispatchId),
+    schedulerUid: z.string().uuid().optional().parse(row.spec.schedulerUid),
     submittedAfter: new Date(row.createdAt.getTime() - 86400000).toISOString().slice(0, 10),
     schedulerJobId: row.schedulerJobId,
     spec,
@@ -262,10 +347,19 @@ export function validateCompletionSnapshot(
       (key) => fields[key] !== undefined && typeof fields[key] !== "string",
     ) ||
     Object.keys(fields).some(
-      (key) => !["status", "exitCode", "message", "node", "reason", "startedAt"].includes(key),
+      (key) =>
+        !["status", "exitCode", "message", "node", "reason", "startedAt", "accounting"].includes(
+          key,
+        ),
     )
   )
     throw new Error("Invalid completed job result");
+  const accounting =
+    fields.accounting === undefined
+      ? undefined
+      : SchedulerAccountingSchema.parse(fields.accounting);
+  if (accounting && accounting.schedulerJobId !== schedulerJobId)
+    throw new Error("Completed job accounting binding mismatch");
   return {
     format: 1,
     schedulerJobId,
@@ -277,31 +371,13 @@ export function validateCompletionSnapshot(
       node: fields.node as string | undefined,
       reason: fields.reason as string | undefined,
       startedAt: fields.startedAt as string | undefined,
+      accounting,
     },
   };
 }
 
 function jobSpecToJson(spec: JobSpec): Record<string, unknown> {
-  return {
-    jobId: spec.jobId,
-    name: spec.name,
-    command: spec.command,
-    cpus: spec.cpus,
-    memoryMb: spec.memoryMb,
-    gpus: spec.gpus,
-    wallTimeSec: spec.wallTimeSec,
-    workingDir: spec.workingDir,
-    envVars: spec.envVars,
-    queueTargetMode: spec.queueTargetMode,
-    queueValidationMode: spec.queueValidationMode,
-    queueName: spec.queueName,
-    schedulerName: spec.schedulerName,
-    qos: spec.qos,
-    stdinText: spec.stdinText,
-    restrictedNoEgress: spec.restrictedNoEgress,
-    dataDeliveryCleanup: spec.dataDeliveryCleanup?.map((delivery) => ({ ...delivery })),
-    licensedMaterialCleanup: spec.licensedMaterialCleanup?.map((mount) => ({ ...mount })),
-  };
+  return { ...spec };
 }
 
 function expectedOutputToJson(output: ExpectedOutput): Record<string, unknown> {
@@ -327,9 +403,17 @@ function jsonToJobSpec(value: Record<string, unknown>): JobSpec {
     workingDir: requireString(value.workingDir, "workingDir"),
     envVars: jsonToStringMap(value.envVars),
     queueName: optionalString(value.queueName),
-    queueTargetMode: optionalQueueTargetMode(value.queueTargetMode),
-    queueValidationMode: optionalQueueValidationMode(value.queueValidationMode),
     schedulerName: optionalString(value.schedulerName),
+    federationDispatchEpoch: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional()
+      .parse(value.federationDispatchEpoch),
+    queueTargetMode: QueueTargetModeSchema.optional().parse(value.queueTargetMode),
+    queueValidationMode: QueueValidationModeSchema.optional().parse(value.queueValidationMode),
+    sandbox: SandboxJobSpecSchema.optional().parse(value.sandbox),
     qos: optionalString(value.qos),
     stdinText: optionalString(value.stdinText),
     restrictedNoEgress: value.restrictedNoEgress === true,
@@ -448,14 +532,4 @@ function requireNumber(value: unknown, field: string): number {
     throw new Error(`active remote job ${field} must be a number`);
   }
   return value;
-}
-
-function optionalQueueTargetMode(value: unknown): JobSpec["queueTargetMode"] {
-  if (value === undefined || value === "default" || value === "named") return value;
-  throw new Error("Invalid durable queue target mode");
-}
-function optionalQueueValidationMode(value: unknown): JobSpec["queueValidationMode"] {
-  if (value === undefined || value === "off" || value === "shadow" || value === "enforce")
-    return value;
-  throw new Error("Invalid durable queue validation mode");
 }

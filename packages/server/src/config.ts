@@ -7,6 +7,7 @@ import {
   registryPublisherRolesConfigSchema,
   SpackMaterialBindingSchema,
 } from "@kuintessence/shared";
+import { FederationDataOriginSchema } from "@kuintessence/shared/federation";
 import { z } from "zod";
 
 const ecosystemTrustedKeysSchema = z
@@ -33,8 +34,43 @@ const ecosystemTrustedKeysSchema = z
     }
   });
 
+const federationStorageOrigins = z
+  .string()
+  .default("")
+  .transform((value) =>
+    value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )
+  .pipe(z.array(FederationDataOriginSchema).max(16));
+
 const ServerConfigSchema = z.object({
   DATABASE_URL: z.string().url(),
+  FEDERATION_ENABLED: envBool(false),
+  FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS: federationStorageOrigins,
+  FEDERATION_RESULT_DOWNLOAD_ORIGINS: federationStorageOrigins,
+  FEDERATION_INPUT_DOWNLOAD_ORIGINS: federationStorageOrigins,
+  FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS: federationStorageOrigins,
+  FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: federationStorageOrigins,
+  FEDERATION_SITE_ID: z.uuid().optional(),
+  FEDERATION_SOCKET_PATH: z.string().min(1).optional(),
+  FEDERATION_SIGNING_KEY_ID: z
+    .string()
+    .regex(/^[a-zA-Z0-9_.:-]{1,128}$/)
+    .optional(),
+  FEDERATION_SIGNING_KEY_FILE: z.string().min(1).optional(),
+  FEDERATION_MEDIA_AGE_DIRECTORY: z.string().startsWith("/").optional(),
+  FEDERATION_MEDIA_WRAPPING_KEY: z.string().min(32).optional(),
+  FEDERATION_CLIENT_CERT_FILE: z.string().startsWith("/").optional(),
+  FEDERATION_CLIENT_KEY_FILE: z.string().startsWith("/").optional(),
+  FEDERATION_CLIENT_CA_FILE: z.string().startsWith("/").optional(),
+  FEDERATION_MARKET_SOCKET_PATH: z.string().startsWith("/").optional(),
+  FEDERATION_CASE_SOCKET_PATH: z.string().startsWith("/").optional(),
+  FEDERATION_CASE_TRUST_FILE: z.string().startsWith("/").optional(),
+  FEDERATION_COMMERCIAL_SOCKET_PATH: z.string().startsWith("/").optional(),
+  FEDERATION_STORAGE_GUARD_FILE: z.string().startsWith("/").optional(),
+  FEDERATION_ATTESTATION_SOCKET_PATH: z.string().startsWith("/").optional(),
   DB_MAX_CONNECTIONS: positiveInt(10),
   DB_IDLE_TIMEOUT_SEC: nonNegativeInt(0),
   REDIS_URL: z.string(),
@@ -345,6 +381,84 @@ const ServerConfigSchema = z.object({
 });
 
 const ValidatedServerConfigSchema = ServerConfigSchema.superRefine((cfg, ctx) => {
+  if (
+    cfg.FEDERATION_CASE_SOCKET_PATH &&
+    (!cfg.FEDERATION_ENABLED || !cfg.FEDERATION_CASE_TRUST_FILE)
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["FEDERATION_CASE_SOCKET_PATH"],
+      message: "Case ledger requires federation and case trust",
+    });
+  if (cfg.FEDERATION_CASE_TRUST_FILE && !cfg.FEDERATION_ENABLED)
+    ctx.addIssue({
+      code: "custom",
+      path: ["FEDERATION_CASE_TRUST_FILE"],
+      message: "Case approval requires federation",
+    });
+  if (cfg.FEDERATION_MEDIA_AGE_DIRECTORY || cfg.FEDERATION_MEDIA_WRAPPING_KEY) {
+    if (
+      cfg.FEDERATION_MEDIA_WRAPPING_KEY &&
+      [cfg.JWT_SECRET, cfg.SSO_SECRET_KEY].includes(cfg.FEDERATION_MEDIA_WRAPPING_KEY)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["FEDERATION_MEDIA_WRAPPING_KEY"],
+        message: "Media identities require an independent wrapping key",
+      });
+    }
+    for (const key of [
+      "FEDERATION_ENABLED",
+      "FEDERATION_MEDIA_AGE_DIRECTORY",
+      "FEDERATION_MEDIA_WRAPPING_KEY",
+    ] as const) {
+      if (!cfg[key])
+        ctx.addIssue({ code: "custom", path: [key], message: "Required for source media exports" });
+    }
+  }
+  if (cfg.FEDERATION_STORAGE_GUARD_FILE && !cfg.FEDERATION_ENABLED)
+    ctx.addIssue({
+      code: "custom",
+      path: ["FEDERATION_STORAGE_GUARD_FILE"],
+      message: "Storage admission guard requires federation",
+    });
+  if (cfg.FEDERATION_ENABLED) {
+    for (const key of [
+      "FEDERATION_SITE_ID",
+      "FEDERATION_SOCKET_PATH",
+      "FEDERATION_SIGNING_KEY_ID",
+      "FEDERATION_SIGNING_KEY_FILE",
+    ] as const) {
+      if (!cfg[key])
+        ctx.addIssue({ code: "custom", path: [key], message: "required for federation ingress" });
+    }
+    if (cfg.FEDERATION_SOCKET_PATH && !cfg.FEDERATION_SOCKET_PATH.startsWith("/"))
+      ctx.addIssue({
+        code: "custom",
+        path: ["FEDERATION_SOCKET_PATH"],
+        message: "must be an absolute Unix socket path",
+      });
+  }
+  const clientFiles = [
+    "FEDERATION_CLIENT_CERT_FILE",
+    "FEDERATION_CLIENT_KEY_FILE",
+    "FEDERATION_CLIENT_CA_FILE",
+  ] as const;
+  if (clientFiles.some((key) => cfg[key])) {
+    if (!cfg.FEDERATION_ENABLED)
+      ctx.addIssue({
+        code: "custom",
+        path: ["FEDERATION_ENABLED"],
+        message: "required for federation outbound",
+      });
+    for (const key of clientFiles)
+      if (!cfg[key])
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: "required for federation outbound mTLS",
+        });
+  }
   if (cfg.REGISTRY_PUBLIC_ORIGIN && !cfg.SPACK_REGISTRY_JWT_SECRET) {
     ctx.addIssue({
       code: "custom",

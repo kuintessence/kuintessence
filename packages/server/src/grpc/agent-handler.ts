@@ -5,6 +5,13 @@ import {
   AgentService,
   type ComputeHealth,
   ComputeHealthState,
+  FederationExecutionDecision,
+  type FederationExecutionResponse,
+  FederationExecutionResponseSchema,
+  FederationInputGrantResponseSchema,
+  FederationMediaExportLeaseResponseSchema,
+  FederationMediaImportGrantResponseSchema,
+  FederationResultGrantResponseSchema,
   HeartbeatAckSchema,
   JobStatusAckSchema,
   type QueueInventory,
@@ -19,15 +26,27 @@ import {
   ServerMessageSchema,
 } from "@kuintessence/proto";
 import {
+  AppError,
+  ErrorCode,
   ManagedDatasetRootIdsSchema,
   parseSiteOperations,
   QueueFailureCodeSchema,
   SandboxRuntimeAttestationIdSchema,
   SandboxSelfAccountSchema,
+  SandboxTrustedExecutionProfileSchema,
+  SchedulerAccountingSchema,
   type SpackAuditContext,
+  WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
+import { FederationError } from "@kuintessence/shared/federation";
 import type { Logger } from "pino";
 import { mtlsContext } from "../auth/mtls-context";
+import { AuthorizationUnavailableError } from "../authz/service";
+import type { FederationAccountingCollection } from "../federation/accounting-collection";
+import type { FederationInputTransport } from "../federation/input-transport";
+import type { FederationMediaExportTransport } from "../federation/media-export-transport";
+import type { FederationMediaImportTransport } from "../federation/media-import-transport";
+import type { FederationResultTransport } from "../federation/result-transport";
 import type { AgentManager, ComputeHealthReport } from "../services/agent-manager";
 import type { DataDeliveryRevocationOutbox } from "../services/data-delivery-revocations";
 import type { DataScanCoordinator } from "../services/data-scan-coordinator";
@@ -47,7 +66,11 @@ import type { InstalledRegistry } from "../software-governance/installed-registr
 import type { SoftwareOperationService } from "../software-governance/operation-service";
 import type { PolicyPusher } from "../software-governance/policy-pusher";
 import type { PolicyStore } from "../software-governance/policy-store";
-import type { JobCompletionRegistry } from "../workflow/job-completion-registry";
+import { completionFromJob, type JobCompletionRegistry } from "../workflow/job-completion-registry";
+import type { JobDispatchOutbox } from "./job-dispatch-outbox";
+
+export { collectedForJobCompletion } from "../workflow/job-completion-registry";
+
 import type {
   AgentDispatcher,
   JobCancellationOutbox,
@@ -98,6 +121,18 @@ export function sandboxCapabilityFacts(capability: SandboxCapability | undefined
           gid: capability.selfAccount.gid,
         })
       : undefined;
+  const profile = capability.restrictedExecutionProfile;
+  const restrictedProfile = SandboxTrustedExecutionProfileSchema.safeParse(
+    profile && {
+      profileId: profile.profileId,
+      apptainerCanonicalPath: profile.apptainerCanonicalPath,
+      apptainerSha256: profile.apptainerSha256,
+      sifCanonicalPath: profile.sifCanonicalPath,
+      sifSha256: profile.sifSha256,
+      trustedWrapperCanonicalPath: profile.trustedWrapperCanonicalPath,
+      trustedWrapperSha256: profile.trustedWrapperSha256,
+    },
+  );
   return {
     rootMode: capability.rootMode,
     sandboxReadiness: readiness,
@@ -113,9 +148,7 @@ export function sandboxCapabilityFacts(capability: SandboxCapability | undefined
       managedRoot: capability.managedRoot,
       ...(executionMode ? { executionMode } : {}),
       ...(selfAccount?.success ? { selfAccount: selfAccount.data } : {}),
-      ...(capability.restrictedExecutionProfile
-        ? { restrictedExecutionProfile: capability.restrictedExecutionProfile }
-        : {}),
+      ...(restrictedProfile.success ? { restrictedExecutionProfile: restrictedProfile.data } : {}),
     },
     sandboxRuntimeCache: capability.runtimeCache.flatMap((runtime) => {
       const kind = sandboxRuntimeKindFact(runtime.kind);
@@ -123,6 +156,9 @@ export function sandboxCapabilityFacts(capability: SandboxCapability | undefined
       const attestation = SandboxRuntimeAttestationIdSchema.safeParse(runtime.runtimeAttestationId);
       const expiresAtUnixMs = safeProtoUnixMs(runtime.expiresAtUnixMs);
       const attestedNodes = runtime.attestedNodes.filter((node) => node.trim().length > 0);
+      const attestedQueue = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(runtime.attestedQueue)
+        ? runtime.attestedQueue
+        : undefined;
       return [
         {
           digest: runtime.digest,
@@ -130,6 +166,7 @@ export function sandboxCapabilityFacts(capability: SandboxCapability | undefined
           signatureVerified: runtime.signatureVerified,
           ...(attestation.success ? { runtimeAttestationId: attestation.data } : {}),
           ...(attestedNodes.length > 0 ? { attestedNodes } : {}),
+          ...(attestedQueue ? { attestedQueue } : {}),
           ...(expiresAtUnixMs ? { expiresAtUnixMs } : {}),
         },
       ];
@@ -231,13 +268,6 @@ function protoToSchedulerQueueState(state: SchedulerQueueState): "up" | "down" |
   }
 }
 
-export function collectedForJobCompletion(
-  restrictedNoEgress: boolean,
-  collected: Record<string, string>,
-): Record<string, string> {
-  return restrictedNoEgress ? {} : collected;
-}
-
 export interface AgentMetricsRecorder {
   /**
    * Persist one or more metric samples for an agent. Implementations
@@ -256,13 +286,18 @@ export interface AgentMetricsRecorder {
 }
 
 export interface AgentHandlerDeps {
+  federationMediaExports?: Pick<FederationMediaExportTransport, "grant" | "report">;
+  federationMediaImports?: Pick<FederationMediaImportTransport, "grant" | "report">;
+  federationResults?: Pick<FederationResultTransport, "grant" | "report" | "canCopy">;
+  federationInputs?: Pick<FederationInputTransport, "grant" | "report" | "canCopy">;
   agentManager: AgentManager;
   jobService: JobService;
   logger: Logger;
   dispatcher: AgentDispatcher;
   /** Optional: when present, heartbeat installed_software is mirrored here. */
   installedRegistry?: InstalledRegistry;
-  softwareOperations?: Pick<SoftwareOperationService, "applyAgentResult">;
+  softwareOperations?: Pick<SoftwareOperationService, "applyAgentResult"> &
+    Partial<Pick<SoftwareOperationService, "renewFederationInstallation">>;
   policyStore?: Pick<PolicyStore, "getForAgent">;
   policyPusher?: Pick<PolicyPusher, "pushToAgent">;
   /** Optional: when present, GPU/disk/queue-depth samples land here. */
@@ -283,6 +318,7 @@ export interface AgentHandlerDeps {
    */
   shellExecRegistry?: ShellExecRegistry;
   jobLogsService?: Pick<JobLogsService, "resolve">;
+  federationAccounting?: Pick<FederationAccountingCollection, "receive">;
   /**
    * Optional: when present, FileTransferProgress events are routed to
    * the matching transfer listener so the Server's Transfer row tracks
@@ -312,6 +348,8 @@ export interface AgentHandlerDeps {
   dataScanCoordinator?: Pick<DataScanCoordinator, "acceptAgentResult" | "onAgentConnected">;
   dataDeliveryRevocations?: Pick<DataDeliveryRevocationOutbox, "acknowledge" | "redeliver">;
   jobCancellations?: Pick<JobCancellationOutbox, "acknowledge" | "redeliver">;
+  jobDispatches?: Pick<JobDispatchOutbox, "acknowledge" | "redeliver"> &
+    Partial<Pick<JobDispatchOutbox, "renewExecution">>;
   jobWorkRootReleases?: Pick<JobWorkRootReleaseOutbox, "acknowledge" | "redeliver">;
 }
 
@@ -366,6 +404,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
     sshGateway,
     shellExecRegistry,
     jobLogsService,
+    federationAccounting,
     transferRegistry,
     jobCompletionRegistry,
     partUrlMinter,
@@ -373,6 +412,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
     dataScanCoordinator,
     dataDeliveryRevocations,
     jobCancellations,
+    jobDispatches,
     jobWorkRootReleases,
   } = deps;
 
@@ -385,10 +425,34 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
       let computeHealthV1 = false;
       let queueInventoryV1 = false;
       let active = true;
+      const pendingFederationGrants = new Set<string>();
+      const pendingTransferRequests = new Set<string>();
       const requestIterator = requests[Symbol.asyncIterator]();
 
       const channel = {
         spackMaterialDeliveryV1: false,
+        spackPinnedExecutionV1: false,
+        softwareOperationReplayV1: false,
+        federationAccountingV1: false,
+        federationMediaExportV1: false,
+        federationMediaObjectExportV1: false,
+        federationMediaImportV1: false,
+        federationMediaUploadV1: false,
+        federationTargetTransferV1: false,
+        federationInputCopyV1: false,
+        federationInputVerifyV1: false,
+        federationResultCopyV1: false,
+        federationResultVerifyV1: false,
+        federationExecutionV1: false,
+        federationComputeLeaseV1: false,
+        federationSandboxSignatureRenewalV1: false,
+        federationSandboxInputLeaseV1: false,
+        federationSandboxLocalInputV1: false,
+        federationDataPreparationLeaseV1: false,
+        federationNetdriveInputLeaseV1: false,
+        federationInstallationV1: false,
+        federationInstallationLeaseV1: false,
+        federationInstallationMaterialLeaseV1: false,
         verifiedCertFingerprint: undefined as string | undefined,
         siteAuditContext: undefined as SpackAuditContext | undefined,
         siteAuditObservedAt: undefined as number | undefined,
@@ -502,6 +566,31 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               computeHealthV1 = reg.computeHealthV1;
               queueInventoryV1 = reg.queueInventoryV1;
               channel.spackMaterialDeliveryV1 = reg.spackMaterialDeliveryV1;
+              channel.spackPinnedExecutionV1 = reg.spackPinnedExecutionV1;
+              channel.softwareOperationReplayV1 = reg.softwareOperationReplayV1;
+              channel.federationAccountingV1 = reg.federationAccountingV1;
+              channel.federationMediaExportV1 = reg.federationMediaExportV1;
+              channel.federationMediaObjectExportV1 =
+                reg.federationMediaExportV1 && reg.federationMediaObjectExportV1;
+              channel.federationMediaImportV1 = reg.federationMediaImportV1;
+              channel.federationMediaUploadV1 =
+                reg.federationMediaImportV1 && reg.federationMediaUploadV1;
+              channel.federationTargetTransferV1 = reg.federationTargetTransferV1;
+              channel.federationInputCopyV1 = reg.federationInputCopyV1;
+              channel.federationInputVerifyV1 = reg.federationInputVerifyV1;
+              channel.federationResultCopyV1 = reg.federationResultCopyV1;
+              channel.federationResultVerifyV1 = reg.federationResultVerifyV1;
+              channel.federationExecutionV1 = reg.federationExecutionV1;
+              channel.federationComputeLeaseV1 = reg.federationComputeLeaseV1;
+              channel.federationSandboxSignatureRenewalV1 = reg.federationSandboxSignatureRenewalV1;
+              channel.federationSandboxInputLeaseV1 = reg.federationSandboxInputLeaseV1;
+              channel.federationSandboxLocalInputV1 = reg.federationSandboxLocalInputV1;
+              channel.federationDataPreparationLeaseV1 = reg.federationDataPreparationLeaseV1;
+              channel.federationNetdriveInputLeaseV1 = reg.federationNetdriveInputLeaseV1;
+              channel.federationInstallationV1 = reg.federationInstallationV1;
+              channel.federationInstallationLeaseV1 = reg.federationInstallationLeaseV1;
+              channel.federationInstallationMaterialLeaseV1 =
+                reg.federationInstallationMaterialLeaseV1;
               channel.verifiedCertFingerprint =
                 mtlsContext.getStore()?.fingerprintSha256 ?? undefined;
               dispatcher.register(registeredAgentId, channel);
@@ -521,6 +610,56 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       computeHealthV1Supported: true,
                       queueInventoryV1Supported: queueInventory !== undefined,
                       queueValidationShadowRejectionAckSupported: queueObservability !== undefined,
+                      federationMediaObjectExportV1Supported:
+                        !!deps.federationMediaExports &&
+                        channel.federationMediaObjectExportV1 &&
+                        !!channel.verifiedCertFingerprint,
+                      federationMediaExportV1Supported:
+                        !!deps.federationMediaExports &&
+                        reg.federationMediaExportV1 &&
+                        !!channel.verifiedCertFingerprint,
+                      federationMediaUploadV1Supported:
+                        !!deps.federationMediaImports &&
+                        channel.federationMediaUploadV1 &&
+                        !!channel.verifiedCertFingerprint &&
+                        ((!!deps.federationInputs &&
+                          reg.federationInputVerifyV1 &&
+                          (reg.federationTargetTransferV1 ||
+                            (deps.federationInputs.canCopy && reg.federationInputCopyV1))) ||
+                          (!!deps.federationResults &&
+                            reg.federationResultVerifyV1 &&
+                            (reg.federationTargetTransferV1 ||
+                              (deps.federationResults.canCopy && reg.federationResultCopyV1)))),
+                      federationMediaImportV1Supported:
+                        !!deps.federationMediaImports &&
+                        reg.federationMediaImportV1 &&
+                        !!channel.verifiedCertFingerprint,
+                      federationResultVerifyV1Supported:
+                        !!deps.federationResults &&
+                        (reg.federationTargetTransferV1 || reg.federationResultCopyV1) &&
+                        reg.federationResultVerifyV1 &&
+                        !!channel.verifiedCertFingerprint,
+                      federationResultCopyV1Supported:
+                        !!deps.federationResults?.canCopy &&
+                        reg.federationResultCopyV1 &&
+                        reg.federationResultVerifyV1 &&
+                        !!channel.verifiedCertFingerprint,
+                      federationInputVerifyV1Supported:
+                        !!deps.federationInputs &&
+                        (reg.federationTargetTransferV1 || reg.federationInputCopyV1) &&
+                        reg.federationInputVerifyV1 &&
+                        !!channel.verifiedCertFingerprint,
+                      federationInputCopyV1Supported:
+                        !!deps.federationInputs?.canCopy &&
+                        reg.federationInputCopyV1 &&
+                        reg.federationInputVerifyV1 &&
+                        !!channel.verifiedCertFingerprint,
+                      federationExecutionV1Supported:
+                        jobDispatches?.renewExecution !== undefined && reg.federationComputeLeaseV1,
+                      federationInstallationV1Supported:
+                        softwareOperations?.renewFederationInstallation !== undefined &&
+                        reg.federationInstallationLeaseV1 &&
+                        reg.federationInstallationMaterialLeaseV1,
                     }),
                   },
                 }),
@@ -534,6 +673,11 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                     "Failed to push stored software policy after agent register",
                   );
                 }
+              }
+              try {
+                await jobDispatches?.redeliver(registeredAgentId);
+              } catch (err) {
+                logger.warn({ err, agentId: registeredAgentId }, "Job dispatch replay deferred");
               }
             } catch (err) {
               logger.error({ err, agentId: reg.agentId }, "Agent registration failed");
@@ -841,9 +985,23 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 {
                   ...(update.node ? { node: update.node } : {}),
                   reason: failureCode.success ? failureCode.data : update.reason || null,
+                  ...(update.accounting
+                    ? {
+                        accounting: SchedulerAccountingSchema.parse({
+                          version: 1,
+                          source: update.accounting.source,
+                          schedulerJobId: update.accounting.schedulerJobId,
+                          observedAt: update.accounting.observedAt,
+                          elapsedMilliseconds: update.accounting.elapsedMilliseconds,
+                          cpuTimeMilliseconds: update.accounting.cpuTimeMilliseconds,
+                          allocatedCpus: update.accounting.allocatedCpus,
+                        }),
+                      }
+                    : {}),
                 },
                 update.workingDir || undefined,
               );
+              await jobDispatches?.acknowledge(registeredAgentId, update.jobId);
               if (failureCode.success && failureCode.data === "SCHEDULER_SUBMIT_FAILED") {
                 if (!update.eventId) {
                   logger.warn(
@@ -867,22 +1025,9 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 { jobId: update.jobId, status: internalStatus, agentId: registeredAgentId },
                 "Job status update from agent",
               );
-              if (
-                jobCompletionRegistry &&
-                (persistedJob.status === "completed" ||
-                  persistedJob.status === "failed" ||
-                  persistedJob.status === "cancelled")
-              ) {
-                jobCompletionRegistry.complete(update.jobId, {
-                  status: persistedJob.status,
-                  collected: collectedForJobCompletion(
-                    persistedJob.restrictedNoEgress,
-                    persistedJob.collectedOutputs ?? {},
-                  ),
-                  ...(persistedJob.errorMessage ? { errorMessage: persistedJob.errorMessage } : {}),
-                  ...(persistedJob.reason ? { reason: persistedJob.reason } : {}),
-                  ...(persistedJob.exitCode !== null ? { exitCode: persistedJob.exitCode } : {}),
-                });
+              if (jobCompletionRegistry) {
+                const completion = completionFromJob(persistedJob);
+                if (completion) jobCompletionRegistry.complete(update.jobId, completion);
               }
               if (update.eventId) {
                 channel.push(
@@ -932,6 +1077,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               registeredAgentId,
               payload.value.jobId,
               revokedEpoch,
+              payload.value.installationsStopped,
             );
             if (acknowledged === false) {
               logger.warn(
@@ -1053,6 +1199,24 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             continue;
           }
 
+          if (payload.case === "federationAccountingResponse") {
+            if (
+              registeredAgentId === null ||
+              !channel.federationAccountingV1 ||
+              !federationAccounting
+            )
+              continue;
+            try {
+              await federationAccounting.receive(registeredAgentId, payload.value.responseJson);
+            } catch {
+              logger.warn(
+                { agentId: registeredAgentId },
+                "Accounting response rejected; collection remains pending",
+              );
+            }
+            continue;
+          }
+
           if (payload.case === "jobLogsResponse") {
             const response = payload.value;
             if (jobLogsService) {
@@ -1084,6 +1248,330 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             } else {
               logger.debug({ requestId: p.requestId }, "fileTransferProgress with no registry");
             }
+            continue;
+          }
+
+          if (
+            payload.case === "federationMediaExportLeaseRequest" ||
+            payload.case === "federationMediaExportReport"
+          ) {
+            if (
+              !registeredAgentId ||
+              !active ||
+              !channel.federationMediaExportV1 ||
+              !channel.verifiedCertFingerprint ||
+              !deps.federationMediaExports ||
+              !dispatcher.isCurrentChannel(registeredAgentId, channel)
+            )
+              continue;
+            const agentId = registeredAgentId;
+            const transport = deps.federationMediaExports;
+            const request = payload;
+            const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
+            const key =
+              request.case === "federationMediaExportLeaseRequest"
+                ? request.value.requestId
+                : "media-export-report";
+            if (
+              key.length > 128 ||
+              pendingTransferRequests.has(key) ||
+              pendingTransferRequests.size >= 2
+            )
+              continue;
+            pendingTransferRequests.add(key);
+            void (async () => {
+              try {
+                if (request.case === "federationMediaExportLeaseRequest") {
+                  const response = await transport.grant(agentId, request.value);
+                  if (current())
+                    channel.push(
+                      create(ServerMessageSchema, {
+                        payload: { case: "federationMediaExportLeaseResponse", value: response },
+                      }),
+                    );
+                } else await transport.report(agentId, request.value);
+              } catch {
+                if (request.case === "federationMediaExportLeaseRequest" && current())
+                  channel.push(
+                    create(ServerMessageSchema, {
+                      payload: {
+                        case: "federationMediaExportLeaseResponse",
+                        value: create(FederationMediaExportLeaseResponseSchema, {
+                          requestId: request.value.requestId,
+                        }),
+                      },
+                    }),
+                  );
+              }
+            })()
+              .catch(() => logger.warn({ agentId }, "Media export response unavailable"))
+              .finally(() => pendingTransferRequests.delete(key));
+            continue;
+          }
+
+          if (
+            payload.case === "federationMediaImportKeyRequest" ||
+            payload.case === "federationMediaImportReport"
+          ) {
+            if (
+              !registeredAgentId ||
+              !active ||
+              !channel.federationMediaImportV1 ||
+              !channel.verifiedCertFingerprint ||
+              !deps.federationMediaImports ||
+              !dispatcher.isCurrentChannel(registeredAgentId, channel)
+            )
+              continue;
+            const agentId = registeredAgentId;
+            const transport = deps.federationMediaImports;
+            const request = payload;
+            const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
+            const key =
+              request.case === "federationMediaImportKeyRequest"
+                ? request.value.requestId
+                : "media-import-report";
+            if (
+              key.length > 128 ||
+              pendingTransferRequests.has(key) ||
+              pendingTransferRequests.size >= 2
+            )
+              continue;
+            pendingTransferRequests.add(key);
+            void (async () => {
+              try {
+                if (request.case === "federationMediaImportKeyRequest") {
+                  const response = await transport.grant(agentId, request.value);
+                  if (current())
+                    channel.push(
+                      create(ServerMessageSchema, {
+                        payload: { case: "federationMediaImportGrantResponse", value: response },
+                      }),
+                    );
+                } else await transport.report(agentId, request.value);
+              } catch {
+                if (request.case === "federationMediaImportKeyRequest" && current())
+                  channel.push(
+                    create(ServerMessageSchema, {
+                      payload: {
+                        case: "federationMediaImportGrantResponse",
+                        value: create(FederationMediaImportGrantResponseSchema, {
+                          requestId: request.value.requestId,
+                        }),
+                      },
+                    }),
+                  );
+              }
+            })()
+              .catch(() => logger.warn({ agentId }, "Media import response unavailable"))
+              .finally(() => pendingTransferRequests.delete(key));
+            continue;
+          }
+
+          if (
+            payload.case === "federationResultGrantRequest" ||
+            payload.case === "federationResultCopyReport"
+          ) {
+            if (
+              !registeredAgentId ||
+              !active ||
+              !channel.federationResultVerifyV1 ||
+              (!channel.federationResultCopyV1 && !channel.federationTargetTransferV1) ||
+              !channel.verifiedCertFingerprint ||
+              !deps.federationResults ||
+              !dispatcher.isCurrentChannel(registeredAgentId, channel)
+            )
+              continue;
+            const agentId = registeredAgentId;
+            const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
+            const request = payload;
+            const key =
+              request.case === "federationResultGrantRequest"
+                ? request.value.requestId
+                : request.value.generation;
+            if (
+              key.length > 128 ||
+              pendingTransferRequests.has(key) ||
+              pendingTransferRequests.size >= 2
+            )
+              continue;
+            pendingTransferRequests.add(key);
+            const transport = deps.federationResults;
+            void (async () => {
+              try {
+                if (request.case === "federationResultGrantRequest") {
+                  if (
+                    !request.value.verificationJson &&
+                    !request.value.upload &&
+                    (!channel.federationResultCopyV1 || !transport.canCopy)
+                  )
+                    throw new Error("SOURCE_DOWNLOAD_DISABLED");
+                  const response = await transport.grant(agentId, request.value);
+                  if (current())
+                    channel.push(
+                      create(ServerMessageSchema, {
+                        payload: { case: "federationResultGrantResponse", value: response },
+                      }),
+                    );
+                } else await transport.report(agentId, request.value);
+              } catch {
+                if (request.case === "federationResultGrantRequest" && current())
+                  channel.push(
+                    create(ServerMessageSchema, {
+                      payload: {
+                        case: "federationResultGrantResponse",
+                        value: create(FederationResultGrantResponseSchema, {
+                          requestId: request.value.requestId,
+                        }),
+                      },
+                    }),
+                  );
+                // Never log request bodies, presigned grants or raw storage errors.
+              }
+            })()
+              .catch(() => logger.warn({ agentId }, "Federation result response unavailable"))
+              .finally(() => pendingTransferRequests.delete(key));
+            continue;
+          }
+
+          if (
+            payload.case === "federationInputGrantRequest" ||
+            payload.case === "federationInputCopyReport"
+          ) {
+            if (
+              !registeredAgentId ||
+              !active ||
+              !channel.federationInputVerifyV1 ||
+              (!channel.federationInputCopyV1 && !channel.federationTargetTransferV1) ||
+              !channel.verifiedCertFingerprint ||
+              !deps.federationInputs ||
+              !dispatcher.isCurrentChannel(registeredAgentId, channel)
+            )
+              continue;
+            const agentId = registeredAgentId;
+            const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
+            const request = payload;
+            const key =
+              request.case === "federationInputGrantRequest"
+                ? request.value.requestId
+                : request.value.generation;
+            if (
+              key.length > 128 ||
+              pendingTransferRequests.has(key) ||
+              pendingTransferRequests.size >= 2
+            )
+              continue;
+            pendingTransferRequests.add(key);
+            const transport = deps.federationInputs;
+            void (async () => {
+              try {
+                if (request.case === "federationInputGrantRequest") {
+                  if (
+                    !request.value.verificationJson &&
+                    !request.value.upload &&
+                    (!channel.federationInputCopyV1 || !transport.canCopy)
+                  )
+                    throw new Error("SOURCE_DOWNLOAD_DISABLED");
+                  const response = await transport.grant(agentId, request.value);
+                  if (current())
+                    channel.push(
+                      create(ServerMessageSchema, {
+                        payload: { case: "federationInputGrantResponse", value: response },
+                      }),
+                    );
+                } else await transport.report(agentId, request.value);
+              } catch {
+                if (request.case === "federationInputGrantRequest" && current())
+                  channel.push(
+                    create(ServerMessageSchema, {
+                      payload: {
+                        case: "federationInputGrantResponse",
+                        value: create(FederationInputGrantResponseSchema, {
+                          requestId: request.value.requestId,
+                        }),
+                      },
+                    }),
+                  );
+                // Never log request bodies, presigned grants or raw storage errors.
+              }
+            })()
+              .catch(() => logger.warn({ agentId }, "Federation input response unavailable"))
+              .finally(() => pendingTransferRequests.delete(key));
+            continue;
+          }
+
+          if (payload.case === "federationExecutionRequest") {
+            if (registeredAgentId === null) continue;
+            const request = payload.value;
+            if (
+              request.requestId.length > 128 ||
+              request.jobId.length > 128 ||
+              request.operationId.length > 128 ||
+              pendingFederationGrants.has(request.requestId)
+            )
+              continue;
+            const agentId = registeredAgentId;
+            const respond = (decision: FederationExecutionDecision) =>
+              channel.push(
+                create(ServerMessageSchema, {
+                  payload: {
+                    case: "federationExecutionResponse",
+                    value: create(FederationExecutionResponseSchema, {
+                      requestId: request.requestId,
+                      jobId: request.jobId,
+                      dispatchEpoch: request.dispatchEpoch,
+                      operationId: request.operationId,
+                      runtimeRenewal: request.runtimeRenewal,
+                      decision,
+                    }),
+                  },
+                }),
+              );
+            if (
+              (request.operationId && request.runtimeRenewal) ||
+              !(request.operationId
+                ? channel.federationInstallationV1 &&
+                  channel.federationInstallationLeaseV1 &&
+                  channel.federationInstallationMaterialLeaseV1
+                : channel.federationExecutionV1 && channel.federationComputeLeaseV1) ||
+              !channel.verifiedCertFingerprint
+            ) {
+              respond(FederationExecutionDecision.DENIED);
+              continue;
+            }
+            if (pendingFederationGrants.size >= 16) {
+              respond(FederationExecutionDecision.RETRY);
+              continue;
+            }
+            pendingFederationGrants.add(request.requestId);
+            void (async () => {
+              try {
+                const send = (response: FederationExecutionResponse) =>
+                  channel.push(
+                    create(ServerMessageSchema, {
+                      payload: { case: "federationExecutionResponse", value: response },
+                    }),
+                  );
+                const granted = request.operationId
+                  ? await softwareOperations?.renewFederationInstallation?.(agentId, request, send)
+                  : await jobDispatches?.renewExecution?.(agentId, request, send);
+                if (!granted) respond(FederationExecutionDecision.DENIED);
+              } catch (error) {
+                const denied =
+                  !(error instanceof AuthorizationUnavailableError) &&
+                  ((error instanceof FederationError &&
+                    error.code !== "DATA_WAITING" &&
+                    error.code !== "ASSET_UNAVAILABLE") ||
+                    (error instanceof WorkflowExecutionInterrupted && !error.retryable) ||
+                    (error instanceof AppError && error.code === ErrorCode.FORBIDDEN));
+                respond(
+                  denied ? FederationExecutionDecision.DENIED : FederationExecutionDecision.RETRY,
+                );
+              }
+            })()
+              .catch(() =>
+                logger.warn({ agentId }, "Federation execution response could not be delivered"),
+              )
+              .finally(() => pendingFederationGrants.delete(request.requestId));
             continue;
           }
 

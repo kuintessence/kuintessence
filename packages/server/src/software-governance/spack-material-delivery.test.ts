@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash, sign, X509Certificate } from "node:crypto";
-import { AppError, type SpackMaterialManifest } from "@kuintessence/shared";
+import { AppError, type SpackExecutionPin, type SpackMaterialManifest } from "@kuintessence/shared";
 import { Hono } from "hono";
 import { decodeJwt, SignJWT } from "jose";
 import forge from "node-forge";
@@ -12,20 +12,27 @@ import {
 } from "./spack-material-delivery";
 
 const operationId = "11111111-1111-4111-8111-111111111111";
+
 const userId = "22222222-2222-4222-8222-222222222222";
+
 const hash = (bytes: Uint8Array | string) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+
 const blobBytes = Buffer.from("fixture source");
+
 const blob = { digest: hash(blobBytes), size: blobBytes.length };
+
 const ticketKey = "ticket-only-secret".repeat(3);
+
 const registryKey = "registry-secret".repeat(3);
 
 function fixture(
   repository = "org/provider-a/sources",
   downloadLifetimeMs?: number,
+  v2 = false,
   ticketLifetimeSec?: number,
 ) {
-  const manifest: SpackMaterialManifest = {
+  let manifest: SpackMaterialManifest = {
     version: 1,
     repository,
     spec: "zlib@1.3.1",
@@ -43,6 +50,23 @@ function fixture(
     sources: [{ path: "zlib/zlib-1.3.1.tar.gz", blob }],
     lockfile: blob,
   };
+  if (v2)
+    manifest = {
+      ...manifest,
+      version: 2,
+      target: "linux-ubuntu24.04-x86_64",
+      evidence: {
+        version: 1,
+        materials: [
+          {
+            subject: blob,
+            license: { expression: "MIT", status: "approved" },
+            provenance: [{ origin: "https://example.test/source", original: blob, evidence: blob }],
+            attachments: [{ path: "LICENSE", kind: "license", blob }],
+          },
+        ],
+      },
+    };
   const bytes = Buffer.from(JSON.stringify(manifest));
   const binding = {
     repositoryId: createHash("sha256").update(repository).digest("hex"),
@@ -134,12 +158,13 @@ function fixture(
     return c.json({ error: "internal" }, 500);
   });
   app.route("/api", createAgentSpackMaterialRoutes(delivery));
-  const prepare = () =>
+  const prepare = (expectedPin?: SpackExecutionPin) =>
     delivery.prepareOperation({
       operationId,
       agentId: "agent-a",
       requestedBy: userId,
       spec: manifest.spec,
+      ...(expectedPin ? { expectedPin } : {}),
     });
   return {
     delivery,
@@ -198,13 +223,11 @@ describe("Server Spack material delivery", () => {
       },
     ]);
   });
-
   test("concurrent initialization shares one configuration registration", async () => {
     const f = fixture();
     await Promise.all([f.delivery.initialize(), f.delivery.initialize()]);
     expect(f.registeredBindings).toHaveLength(1);
   });
-
   test("failed configuration registration denies preparation without exposing database details", async () => {
     const f = fixture();
     f.setRegistrationFailure(true);
@@ -214,7 +237,6 @@ describe("Server Spack material delivery", () => {
     f.setRegistrationFailure(false);
     expect((await f.prepare()).spackMaterialTicket).toBeTruthy();
   });
-
   test("a failed operation reference prevents ticket issue and download", async () => {
     const f = fixture();
     f.setReferenceFailure(true);
@@ -235,7 +257,6 @@ describe("Server Spack material delivery", () => {
     expect(body).toContain("reference registry is unavailable");
     expect(body).not.toContain("private database");
   });
-
   test("download retains the ticket binding in its durable reference after configuration changes", async () => {
     const f = fixture();
     const ticket = await f.prepare();
@@ -244,7 +265,6 @@ describe("Server Spack material delivery", () => {
     expect(f.operationReferences.at(-1)?.manifestDigest).toBe(f.binding.manifestDigest);
     expect(f.referenceEvents.slice(-2)).toEqual(["acquire", "fetch"]);
   });
-
   test("pins exact manifest and keeps Registry credentials and URLs behind Server", async () => {
     const f = fixture();
     const ticket = await f.prepare();
@@ -265,7 +285,6 @@ describe("Server Spack material delivery", () => {
     expect(registryAuthorization).not.toBe(`Bearer ${ticket.spackMaterialTicket}`);
     expect(decodeJwt(registryAuthorization?.slice(7) ?? "").sub).toBe(userId);
   });
-
   test("serves only listed blobs and validates checksum", async () => {
     const f = fixture();
     const { spackMaterialTicket } = await f.prepare();
@@ -278,7 +297,6 @@ describe("Server Spack material delivery", () => {
     const corrupt = await f.delivery.download(operationId, spackMaterialTicket, blob.digest);
     await expect(corrupt.arrayBuffer()).rejects.toThrow();
   });
-
   test("rejects absent capability, non-mTLS channel, and revoked certificate", async () => {
     const f = fixture();
     f.channel.spackMaterialDeliveryV1 = false;
@@ -291,13 +309,11 @@ describe("Server Spack material delivery", () => {
     await expect(f.prepare()).rejects.toThrow("authorization");
     expect(f.calls).toHaveLength(0);
   });
-
   test("refuses cross-provider and personal releases even for a Registry-authorized user", async () => {
     await expect(fixture("org/provider-b/sources").prepare()).rejects.toThrow("provider scope");
     await expect(fixture(`user/${userId}/sources`).prepare()).rejects.toThrow("provider scope");
     expect((await fixture("public/sources").prepare()).spackMaterialTicket).toBeTruthy();
   });
-
   test("rechecks operation state, provider membership and certificate on each download", async () => {
     const f = fixture();
     const { spackMaterialTicket } = await f.prepare();
@@ -320,7 +336,6 @@ describe("Server Spack material delivery", () => {
       "authorization",
     );
   });
-
   test("ticket remains pinned when configured binding changes", async () => {
     const f = fixture();
     const { spackMaterialTicket } = await f.prepare();
@@ -330,7 +345,6 @@ describe("Server Spack material delivery", () => {
     );
     expect(f.calls.at(-1)?.url).toContain(f.binding.manifestDigest);
   });
-
   test("rejects expired, forged, wrong-audience, or wrong-operation credentials", async () => {
     const f = fixture();
     const { spackMaterialTicket } = await f.prepare();
@@ -352,7 +366,6 @@ describe("Server Spack material delivery", () => {
       await expect(f.delivery.download(operationId, token)).rejects.toThrow("ticket");
     }
   });
-
   test("rejects unknown spec, corrupt manifests and all upstream redirect/error responses", async () => {
     const f = fixture();
     delete f.bindings["zlib@1.3.1"];
@@ -366,7 +379,6 @@ describe("Server Spack material delivery", () => {
       await expect(redirect.prepare()).rejects.toThrow("unavailable or invalid");
     }
   });
-
   test("rejects query credentials/URLs and unsupported Range", async () => {
     const f = fixture();
     const ticket = await f.prepare();
@@ -380,7 +392,6 @@ describe("Server Spack material delivery", () => {
       (await f.app.request(path, { headers: { ...headers, Range: "bytes=0-1" } })).status,
     ).toBe(400);
   });
-
   test("caps concurrent streams and releases capacity on cancellation", async () => {
     const f = fixture();
     const { spackMaterialTicket } = await f.prepare();
@@ -394,7 +405,6 @@ describe("Server Spack material delivery", () => {
     for (const response of responses) await response.body?.cancel();
     expect(await (await f.delivery.download(operationId, spackMaterialTicket)).text()).toBeTruthy();
   });
-
   test("expires abandoned streams even when the consumer never reads them", async () => {
     const f = fixture("public/sources", 20);
     const { spackMaterialTicket } = await f.prepare();
@@ -403,7 +413,6 @@ describe("Server Spack material delivery", () => {
     await expect((async () => response.arrayBuffer())()).rejects.toThrow();
     expect((await f.delivery.download(operationId, spackMaterialTicket)).status).toBe(200);
   });
-
   test("an error response with a stalled cancel hook cannot retain download slots", async () => {
     const f = fixture();
     const { spackMaterialTicket } = await f.prepare();
@@ -415,6 +424,32 @@ describe("Server Spack material delivery", () => {
       );
     }
   }, 1000);
+});
+
+test("locked installations issue tickets only for the exact v2 manifest, native lock and target", async () => {
+  const f = fixture(undefined, undefined, true);
+  const pin: SpackExecutionPin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: f.binding.manifestDigest,
+    lockfileDigest: blob.digest,
+    spackVersion: "1.0.0",
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  expect((await f.prepare(pin)).spackManifestDigest).toBe(pin.manifestDigest);
+  for (const change of [
+    { manifestDigest: hash("other manifest") },
+    { lockfileDigest: hash("other lock") },
+    { target: "linux-ubuntu24.04-aarch64" },
+  ]) {
+    const before = f.operationReferences.length;
+    await expect(f.prepare({ ...pin, ...change })).rejects.toThrow("execution pin");
+    expect(f.operationReferences).toHaveLength(before);
+  }
+  const legacy = fixture();
+  await expect(
+    legacy.prepare({ ...pin, manifestDigest: legacy.binding.manifestDigest }),
+  ).rejects.toThrow("execution pin");
+  expect(legacy.operationReferences).toHaveLength(0);
 });
 
 test("authorized material resume preserves ETag, handles If-Range and rejects invalid offsets", async () => {
@@ -522,10 +557,10 @@ test("audit-only mode is signed from the persisted authorized operation and retu
 
 test("bounded ticket lifetime controls signed expiry without changing the default", async () => {
   for (const lifetime of [undefined, 30, 60, 900]) {
-    const f = fixture(undefined, undefined, lifetime);
+    const f = fixture(undefined, undefined, false, lifetime);
     const claims = decodeJwt((await f.prepare()).spackMaterialTicket);
     expect((claims.exp ?? 0) - (claims.iat ?? 0)).toBe(lifetime ?? 900);
   }
   for (const lifetime of [0, 29, 901, 30.5])
-    expect(() => fixture(undefined, undefined, lifetime)).toThrow();
+    expect(() => fixture(undefined, undefined, false, lifetime)).toThrow();
 });

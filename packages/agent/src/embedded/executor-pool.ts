@@ -12,6 +12,7 @@ export interface ExecutorPoolDeps {
   ensureWorkingDir?: JobRunnerDeps["ensureWorkingDir"];
   onSchedulerSubmitted?: JobRunnerDeps["onSchedulerSubmitted"];
   onSchedulerSubmitting?: JobRunnerDeps["onSchedulerSubmitting"];
+  onSubmissionUncertain?: JobRunnerDeps["onSubmissionUncertain"];
   onSchedulerCompleted?: JobRunnerDeps["onSchedulerCompleted"];
   onQueueValidationShadowRejection?: JobRunnerDeps["onQueueValidationShadowRejection"];
   onJobFinished?: JobRunnerDeps["onJobFinished"];
@@ -54,6 +55,7 @@ export class ExecutorPool {
       ensureWorkingDir: this.deps.ensureWorkingDir,
       onSchedulerSubmitted: this.deps.onSchedulerSubmitted,
       onSchedulerSubmitting: this.deps.onSchedulerSubmitting,
+      onSubmissionUncertain: this.deps.onSubmissionUncertain,
       onSchedulerCompleted: this.deps.onSchedulerCompleted,
       onQueueValidationShadowRejection: this.deps.onQueueValidationShadowRejection,
       onJobFinished: this.deps.onJobFinished,
@@ -77,7 +79,11 @@ export class ExecutorPool {
   async resume(
     spec: JobSpec,
     schedulerJobId: string,
-    opts: { expectedOutputs?: ExpectedOutput[]; completionSnapshot?: CompletedJobSnapshot } = {},
+    opts: {
+      expectedOutputs?: ExpectedOutput[];
+      schedulerUid?: string;
+      completionSnapshot?: CompletedJobSnapshot;
+    } = {},
   ): Promise<{ jobId: string }> {
     if (!this.accepting) throw new ExecutorPoolStoppedError();
     if (this.active.has(spec.jobId)) {
@@ -91,6 +97,7 @@ export class ExecutorPool {
       ensureWorkingDir: this.deps.ensureWorkingDir,
       onSchedulerSubmitted: this.deps.onSchedulerSubmitted,
       onSchedulerSubmitting: this.deps.onSchedulerSubmitting,
+      onSubmissionUncertain: this.deps.onSubmissionUncertain,
       onSchedulerCompleted: this.deps.onSchedulerCompleted,
       onQueueValidationShadowRejection: this.deps.onQueueValidationShadowRejection,
       onJobFinished: this.deps.onJobFinished,
@@ -100,7 +107,13 @@ export class ExecutorPool {
     });
     this.active.set(spec.jobId, runner);
     const p = runner
-      .resume(spec, schedulerJobId, opts.expectedOutputs ?? [], opts.completionSnapshot)
+      .resume(
+        spec,
+        schedulerJobId,
+        opts.expectedOutputs ?? [],
+        opts.schedulerUid,
+        opts.completionSnapshot,
+      )
       .then(() => undefined)
       .catch(() => undefined)
       .finally(() => {
@@ -112,11 +125,12 @@ export class ExecutorPool {
   }
 
   /** User-initiated cancel: stop polling AND kill the cluster job. */
-  async cancel(jobId: string): Promise<void> {
+  async cancel(jobId: string): Promise<boolean> {
     const runner = this.active.get(jobId);
-    if (!runner) return;
+    if (!runner) return false;
     await runner.cancelAndKill();
     await runner.waitForPendingCancellation();
+    return true;
   }
 
   get(jobId: string): JobRunner | undefined {

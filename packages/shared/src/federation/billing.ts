@@ -1,0 +1,452 @@
+import type { ArbitrationDecision } from "./arbitration-decision";
+import {
+  type CommercialAdjustment,
+  CommercialAdjustmentSchema,
+  type CommercialAgreement,
+  CommercialAgreementSchema,
+  type CommercialBill,
+  CommercialBillCalculationSchema,
+  CommercialBillSchema,
+  type CommercialDiscount,
+  CommercialDiscountSchema,
+  type CommercialPayment,
+  CommercialPaymentSchema,
+  type CommercialRefund,
+  CommercialRefundSchema,
+  type CommercialSettlement,
+  CommercialSettlementSchema,
+  type CommercialUsage,
+  CommercialUsageSchema,
+} from "./commercial";
+import {
+  assertDelegationTerms,
+  FederationAmountSchema,
+  type FederationCancellationReceipt,
+  type FederationDelegation,
+  FederationDelegationSchema,
+  FederationError,
+  federationCanonicalJson,
+} from "./index";
+
+/** Pure calculation shared by local billing and chain validation; never consumes a balance. */
+export function calculateCommercialBill(
+  rawTerms: CommercialAgreement,
+  rawRequest: FederationDelegation,
+  rawUsage: CommercialUsage,
+  rawDiscount = "0",
+) {
+  const terms = CommercialAgreementSchema.parse(rawTerms);
+  const request = FederationDelegationSchema.parse(rawRequest);
+  const usage = CommercialUsageSchema.parse(rawUsage);
+  const discount = BigInt(FederationAmountSchema.parse(rawDiscount));
+  // A historical bill may be confirmed after execution authority expires.
+  assertDelegationTerms(terms.agreement, request, new Date(request.issuedAt));
+  if (
+    usage.domainId !== terms.domainId ||
+    usage.agreementRevisionId !== request.agreementRevisionId ||
+    usage.taskId !== request.taskId ||
+    usage.attempt !== request.attempt ||
+    usage.sourceSiteId !== request.senderSiteId ||
+    usage.targetSiteId !== request.recipientSiteId ||
+    Date.parse(usage.periodStart) < Date.parse(request.issuedAt) ||
+    Date.parse(usage.periodEnd) > Date.parse(terms.agreement.validUntil) ||
+    usage.measurements.length !== terms.prices.length
+  )
+    throw new FederationError("POLICY_DENIED");
+  const lines = terms.prices.map((price) => {
+    const measured = usage.measurements.find((item) => item.metric === price.metric);
+    if (!measured || measured.quantityUnit !== price.quantityUnit)
+      throw new FederationError("POLICY_DENIED");
+    const numerator = BigInt(measured.quantity) * BigInt(price.amount);
+    const denominator = BigInt(price.perQuantity);
+    return {
+      metric: price.metric,
+      quantityUnit: price.quantityUnit,
+      quantity: measured.quantity,
+      perQuantity: price.perQuantity,
+      rateAmount: price.amount,
+      amount: ((numerator + denominator - 1n) / denominator).toString(),
+    };
+  });
+  const gross = lines.reduce((sum, line) => sum + BigInt(line.amount), 0n);
+  const cap = BigInt(request.maxAmount);
+  const capped = gross < cap ? gross : cap;
+  if (discount > capped) throw new FederationError("POLICY_DENIED");
+  // Reject unrepresentable original amounts even when a cap would hide the overflow.
+  return CommercialBillCalculationSchema.parse({
+    rounding: "ceil-per-line",
+    lines,
+    grossAmount: gross.toString(),
+    capReduction: (gross - capped).toString(),
+    discountAmount: discount.toString(),
+    dueAmount: (capped - discount).toString(),
+  });
+}
+
+export function assertCommercialDiscount(
+  raw: CommercialDiscount,
+  terms: CommercialAgreement,
+  agreementDigest: string,
+  usage: CommercialUsage,
+  reportDigest: string,
+) {
+  const discount = CommercialDiscountSchema.parse(raw);
+  if (
+    discount.domainId !== terms.domainId ||
+    discount.agreementRevisionId !== terms.agreement.agreementRevisionId ||
+    discount.agreementDigest !== agreementDigest ||
+    usage.agreementDigest !== agreementDigest ||
+    usage.domainId !== terms.domainId ||
+    usage.agreementRevisionId !== discount.agreementRevisionId ||
+    usage.sourceSiteId !== terms.agreement.sourceSiteId ||
+    usage.targetSiteId !== terms.agreement.targetSiteId ||
+    discount.reportId !== usage.reportId ||
+    discount.reportDigest !== reportDigest ||
+    discount.taskId !== usage.taskId ||
+    discount.attempt !== usage.attempt ||
+    discount.sourceSiteId !== usage.sourceSiteId ||
+    discount.targetSiteId !== usage.targetSiteId ||
+    discount.unit !== terms.agreement.unit ||
+    terms.consideration === "charity" ||
+    Date.parse(discount.issuedAt) < Date.parse(usage.reportedAt)
+  )
+    throw new FederationError("POLICY_DENIED");
+}
+
+/** Callers supply authenticated immutable originals, not summaries received from the bill author. */
+export function assertCommercialBill(
+  raw: CommercialBill,
+  terms: CommercialAgreement,
+  agreementDigest: string,
+  usage: CommercialUsage,
+  reportDigest: string,
+  concession?: { terms: CommercialDiscount; digest: string },
+) {
+  const bill = CommercialBillSchema.parse(raw);
+  if (
+    bill.domainId !== terms.domainId ||
+    bill.agreementDigest !== agreementDigest ||
+    usage.agreementDigest !== agreementDigest ||
+    bill.priceVersionId !== terms.priceVersionId ||
+    bill.reportId !== usage.reportId ||
+    bill.reportDigest !== reportDigest ||
+    Date.parse(bill.issuedAt) < Date.parse(usage.reportedAt) ||
+    Boolean(bill.discount) !== Boolean(concession)
+  )
+    throw new FederationError("POLICY_DENIED");
+  if (concession) {
+    assertCommercialDiscount(concession.terms, terms, agreementDigest, usage, reportDigest);
+    if (
+      concession.terms.billId !== bill.billId ||
+      concession.terms.discountId !== bill.discount?.discountId ||
+      concession.digest !== bill.discount.digest ||
+      Date.parse(concession.terms.issuedAt) > Date.parse(bill.issuedAt)
+    )
+      throw new FederationError("POLICY_DENIED");
+  }
+  const calculation = calculateCommercialBill(terms, bill.request, usage, concession?.terms.amount);
+  if (federationCanonicalJson(calculation) !== federationCanonicalJson(bill.calculation))
+    throw new FederationError("OPERATION_CONFLICT");
+}
+
+function assertSettlementIdentity(
+  raw: CommercialSettlement,
+  original: CommercialBill,
+  billDigest: string,
+) {
+  const value = CommercialSettlementSchema.parse(raw),
+    bill = CommercialBillSchema.parse(original);
+  if (
+    value.domainId !== bill.domainId ||
+    value.agreementRevisionId !== bill.request.agreementRevisionId ||
+    value.billId !== bill.billId ||
+    value.billDigest !== billDigest ||
+    value.sourceSiteId !== bill.request.senderSiteId ||
+    value.targetSiteId !== bill.request.recipientSiteId ||
+    value.reservationId !== bill.reservationId ||
+    value.unit !== bill.request.unit ||
+    value.reservedAmount !== bill.request.maxAmount ||
+    Date.parse(value.issuedAt) < Date.parse(bill.issuedAt)
+  )
+    throw new FederationError("POLICY_DENIED");
+}
+
+export function assertCommercialSettlement(
+  raw: CommercialSettlement,
+  original: CommercialBill,
+  billDigest: string,
+) {
+  assertSettlementIdentity(raw, original, billDigest);
+  if (raw.chargedAmount !== original.calculation.dueAmount)
+    throw new FederationError("POLICY_DENIED");
+}
+
+/** Caller authenticates the original decision; this derives terms, never bilateral signatures. */
+export function arbitrationSettlementTerms(
+  decision: ArbitrationDecision,
+  bill: CommercialBill,
+  billDigest: string,
+  terminal: CommercialSettlement["terminal"],
+): CommercialSettlement {
+  const { binding: b, outcome } = decision.intent;
+  if (
+    outcome.action !== "settle" ||
+    outcome.bill.recordId !== bill.billId ||
+    outcome.bill.recordDigest !== billDigest ||
+    b.agreementDigest !== bill.agreementDigest ||
+    b.domainId !== bill.domainId ||
+    b.agreementRevisionId !== bill.request.agreementRevisionId ||
+    b.sourceSiteId !== bill.request.senderSiteId ||
+    b.targetSiteId !== bill.request.recipientSiteId ||
+    b.taskId !== bill.request.taskId ||
+    b.attempt !== bill.request.attempt ||
+    b.operationId !== bill.request.operationId ||
+    b.mode !== bill.request.mode ||
+    b.unit !== bill.request.unit ||
+    (bill.reservationId !== null && b.reservationId !== bill.reservationId) ||
+    BigInt(outcome.chargedAmount) > BigInt(bill.request.maxAmount)
+  )
+    throw new FederationError("POLICY_DENIED");
+  const value = CommercialSettlementSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-settlement",
+    settlementId: decision.intent.decisionId,
+    domainId: b.domainId,
+    agreementRevisionId: b.agreementRevisionId,
+    billId: bill.billId,
+    billDigest,
+    sourceSiteId: b.sourceSiteId,
+    targetSiteId: b.targetSiteId,
+    reservationId: bill.reservationId,
+    terminal,
+    unit: b.unit,
+    reservedAmount: bill.request.maxAmount,
+    chargedAmount: outcome.chargedAmount,
+    releasedAmount: (BigInt(bill.request.maxAmount) - BigInt(outcome.chargedAmount)).toString(),
+    issuedAt: decision.issuedAt,
+    salt: decision.intent.salt,
+  });
+  assertSettlementIdentity(value, bill, billDigest);
+  return value;
+}
+
+/** An authenticated ledger original may carry R authority instead of A/B financial signatures. */
+export function assertArbitratedSettlement(
+  value: CommercialSettlement,
+  bill: CommercialBill,
+  billDigest: string,
+  decision: ArbitrationDecision,
+) {
+  if (
+    federationCanonicalJson(value) !==
+    federationCanonicalJson(arbitrationSettlementTerms(decision, bill, billDigest, value.terminal))
+  )
+    throw new FederationError("OPERATION_CONFLICT");
+}
+
+/** Originals must already be authenticated; callers supply the current head under their ledger lock. */
+export function arbitrationAdjustmentTerms(
+  decision: ArbitrationDecision,
+  originals: Parameters<typeof assertCommercialAdjustment>[1],
+): CommercialAdjustment {
+  const { binding: b, outcome } = decision.intent;
+  const { bill, settlement, previous } = originals;
+  if (
+    outcome.action !== "adjust" ||
+    outcome.bill.recordId !== bill.terms.billId ||
+    outcome.bill.recordDigest !== bill.digest ||
+    outcome.settlement.recordId !== settlement.terms.settlementId ||
+    outcome.settlement.recordDigest !== settlement.digest ||
+    federationCanonicalJson(outcome.previousAdjustment) !==
+      federationCanonicalJson(
+        previous ? { recordId: previous.terms.adjustmentId, recordDigest: previous.digest } : null,
+      ) ||
+    b.domainId !== bill.terms.domainId ||
+    b.agreementDigest !== bill.terms.agreementDigest ||
+    b.agreementRevisionId !== bill.terms.request.agreementRevisionId ||
+    b.sourceSiteId !== bill.terms.request.senderSiteId ||
+    b.targetSiteId !== bill.terms.request.recipientSiteId ||
+    b.taskId !== bill.terms.request.taskId ||
+    b.attempt !== bill.terms.request.attempt ||
+    b.operationId !== bill.terms.request.operationId ||
+    b.mode !== bill.terms.request.mode ||
+    b.unit !== bill.terms.request.unit ||
+    (bill.terms.reservationId !== null && b.reservationId !== bill.terms.reservationId)
+  )
+    throw new FederationError("POLICY_DENIED");
+  const value = CommercialAdjustmentSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-adjustment",
+    adjustmentId: decision.intent.decisionId,
+    domainId: b.domainId,
+    agreementRevisionId: b.agreementRevisionId,
+    billId: bill.terms.billId,
+    billDigest: bill.digest,
+    settlementId: settlement.terms.settlementId,
+    settlementDigest: settlement.digest,
+    sourceSiteId: b.sourceSiteId,
+    targetSiteId: b.targetSiteId,
+    unit: b.unit,
+    previous: previous
+      ? { adjustmentId: previous.terms.adjustmentId, digest: previous.digest }
+      : null,
+    previousChargedAmount: previous?.terms.chargedAmount ?? settlement.terms.chargedAmount,
+    chargedAmount: outcome.chargedAmount,
+    reason: decision.intent.reason,
+    supportingEvidenceDigest: decision.basisDigest,
+    issuedAt: decision.issuedAt,
+    salt: decision.intent.salt,
+  });
+  assertCommercialAdjustment(value, originals);
+  return value;
+}
+
+/** Originals must already be authenticated; callers supply the current head under their ledger lock. */
+export function assertCommercialAdjustment(
+  raw: CommercialAdjustment,
+  originals: {
+    agreement: CommercialAgreement;
+    bill: { terms: CommercialBill; digest: string };
+    settlement: { terms: CommercialSettlement; digest: string; arbitration?: ArbitrationDecision };
+    previous?: { terms: CommercialAdjustment; digest: string };
+  },
+) {
+  const value = CommercialAdjustmentSchema.parse(raw),
+    agreement = CommercialAgreementSchema.parse(originals.agreement),
+    bill = CommercialBillSchema.parse(originals.bill.terms),
+    settlement = CommercialSettlementSchema.parse(originals.settlement.terms),
+    previous = originals.previous
+      ? CommercialAdjustmentSchema.parse(originals.previous.terms)
+      : undefined;
+  if (originals.settlement.arbitration)
+    assertArbitratedSettlement(
+      settlement,
+      bill,
+      originals.bill.digest,
+      originals.settlement.arbitration,
+    );
+  else assertCommercialSettlement(settlement, bill, originals.bill.digest);
+  if (
+    value.domainId !== bill.domainId ||
+    value.agreementRevisionId !== bill.request.agreementRevisionId ||
+    value.billId !== bill.billId ||
+    value.billDigest !== originals.bill.digest ||
+    value.settlementId !== settlement.settlementId ||
+    value.settlementDigest !== originals.settlement.digest ||
+    value.sourceSiteId !== settlement.sourceSiteId ||
+    value.targetSiteId !== settlement.targetSiteId ||
+    value.unit !== settlement.unit ||
+    agreement.domainId !== value.domainId ||
+    agreement.agreement.agreementRevisionId !== value.agreementRevisionId ||
+    agreement.agreement.sourceSiteId !== value.sourceSiteId ||
+    agreement.agreement.targetSiteId !== value.targetSiteId ||
+    agreement.agreement.unit !== value.unit ||
+    (agreement.consideration === "charity" && value.chargedAmount !== "0") ||
+    BigInt(value.chargedAmount) > BigInt(settlement.reservedAmount) ||
+    Boolean(value.previous) !== Boolean(previous) ||
+    Date.parse(value.issuedAt) < Date.parse(settlement.issuedAt)
+  )
+    throw new FederationError("POLICY_DENIED");
+  if (
+    previous &&
+    (previous.domainId !== value.domainId ||
+      previous.agreementRevisionId !== value.agreementRevisionId ||
+      previous.billId !== value.billId ||
+      previous.billDigest !== value.billDigest ||
+      previous.settlementId !== value.settlementId ||
+      previous.settlementDigest !== value.settlementDigest ||
+      previous.sourceSiteId !== value.sourceSiteId ||
+      previous.targetSiteId !== value.targetSiteId ||
+      previous.unit !== value.unit ||
+      value.previous?.adjustmentId !== previous.adjustmentId ||
+      value.previous.digest !== originals.previous?.digest ||
+      Date.parse(value.issuedAt) < Date.parse(previous.issuedAt))
+  )
+    throw new FederationError("OPERATION_CONFLICT");
+  if (value.previousChargedAmount !== (previous?.chargedAmount ?? settlement.chargedAmount))
+    throw new FederationError("OPERATION_CONFLICT");
+}
+
+/** The receipt is authenticated by the caller; stopped alone never authorizes a financial release. */
+export function assertCommercialRefund(
+  raw: CommercialRefund,
+  terms: CommercialAgreement,
+  agreementDigest: string,
+  receipt: FederationCancellationReceipt,
+) {
+  const value = CommercialRefundSchema.parse(raw),
+    request = value.request;
+  assertDelegationTerms(terms.agreement, request, new Date(request.issuedAt));
+  if (
+    value.domainId !== terms.domainId ||
+    value.agreementDigest !== agreementDigest ||
+    receipt.state !== "stopped" ||
+    receipt.workflow !== null ||
+    receipt.senderSiteId !== request.recipientSiteId ||
+    receipt.recipientSiteId !== request.senderSiteId ||
+    receipt.operationId !== request.operationId ||
+    receipt.agreementRevisionId !== request.agreementRevisionId ||
+    receipt.taskId !== request.taskId ||
+    receipt.attempt !== request.attempt ||
+    receipt.requestDigest !== value.requestDigest ||
+    Date.parse(receipt.recordedAt) < Date.parse(request.issuedAt) ||
+    Date.parse(receipt.observedAt) < Date.parse(receipt.recordedAt) ||
+    Date.parse(value.issuedAt) < Date.parse(receipt.observedAt)
+  )
+    throw new FederationError("POLICY_DENIED");
+}
+
+/** Original signatures and the current receipt head must be checked by the caller. */
+export function assertCommercialPayment(
+  raw: CommercialPayment,
+  originals: {
+    agreement: CommercialAgreement;
+    agreementDigest: string;
+    bill: { terms: CommercialBill; digest: string };
+    previous?: { terms: CommercialPayment; digest: string };
+  },
+) {
+  const value = CommercialPaymentSchema.parse(raw);
+  const agreement = CommercialAgreementSchema.parse(originals.agreement);
+  const bill = CommercialBillSchema.parse(originals.bill.terms);
+  if (
+    agreement.consideration !== "paid" ||
+    value.domainId !== agreement.domainId ||
+    value.domainId !== bill.domainId ||
+    value.agreementRevisionId !== agreement.agreement.agreementRevisionId ||
+    value.agreementRevisionId !== bill.request.agreementRevisionId ||
+    value.agreementDigest !== originals.agreementDigest ||
+    value.agreementDigest !== bill.agreementDigest ||
+    value.billId !== bill.billId ||
+    value.billDigest !== originals.bill.digest ||
+    value.sourceSiteId !== agreement.agreement.sourceSiteId ||
+    value.sourceSiteId !== bill.request.senderSiteId ||
+    value.targetSiteId !== agreement.agreement.targetSiteId ||
+    value.targetSiteId !== bill.request.recipientSiteId ||
+    value.unit !== agreement.agreement.unit ||
+    value.unit !== bill.request.unit ||
+    Date.parse(value.issuedAt) < Date.parse(bill.issuedAt)
+  )
+    throw new FederationError("POLICY_DENIED");
+  const previous = originals.previous;
+  if (Boolean(value.previous) !== Boolean(previous))
+    throw new FederationError("OPERATION_CONFLICT");
+  if (previous) {
+    const prior = CommercialPaymentSchema.parse(previous.terms);
+    if (
+      value.previous?.receiptId !== prior.receiptId ||
+      value.previous.digest !== previous.digest ||
+      value.paymentId !== prior.paymentId ||
+      value.domainId !== prior.domainId ||
+      value.agreementRevisionId !== prior.agreementRevisionId ||
+      value.agreementDigest !== prior.agreementDigest ||
+      value.billId !== prior.billId ||
+      value.billDigest !== prior.billDigest ||
+      value.sourceSiteId !== prior.sourceSiteId ||
+      value.targetSiteId !== prior.targetSiteId ||
+      value.unit !== prior.unit ||
+      Date.parse(value.issuedAt) < Date.parse(prior.issuedAt)
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+  }
+}

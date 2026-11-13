@@ -771,3 +771,25 @@ test("keeps delayed cancellation scoped to the original workflow after navigatio
     status: "running",
   });
 });
+
+test.each([
+  false,
+  true,
+])("media export link carries the original workflow and direction: receiver=%s", async (receiver) => {
+  const body = {
+    ...workflowRunBody(receiver ? "completed" : "running"),
+    graph: {
+      nodes: [{ id: "remote", name: "Remote task", kind: receiver ? "Script" : "Federation" }],
+      edges: [],
+    },
+    ...(receiver
+      ? { input: { federationReservationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } }
+      : {}),
+  };
+  mockFetchOnce(body, { status: 200, headers: { "Content-Type": "application/json" } });
+  render(<WorkflowDagView runId={body.id} />, { wrapper: makeWrapper() });
+  const link = await screen.findByRole("link", { name: "federation.delivery.prepareFromWorkflow" });
+  expect(link.getAttribute("href")).toBe(
+    `/federation?mediaWorkflow=${body.id}&mediaKind=${receiver ? "task-result" : "task-input"}`,
+  );
+});

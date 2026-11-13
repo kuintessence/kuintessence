@@ -110,6 +110,16 @@ message AgentMessage {
     CancelJobAck cancel_job_ack = 17;
     JobWorkRootReleaseAck job_work_root_release_ack = 18;
     QueueValidationShadowRejection queue_validation_shadow_rejection = 19;
+    FederationExecutionRequest federation_execution_request = 20;
+    FederationResultGrantRequest federation_result_grant_request = 21;
+    FederationResultCopyReport federation_result_copy_report = 22;
+    FederationInputGrantRequest federation_input_grant_request = 23;
+    FederationInputCopyReport federation_input_copy_report = 24;
+    FederationAccountingResponse federation_accounting_response = 25;
+    FederationMediaExportLeaseRequest federation_media_export_lease_request = 26;
+    FederationMediaExportReport federation_media_export_report = 27;
+    FederationMediaImportKeyRequest federation_media_import_key_request = 28;
+    FederationMediaImportReport federation_media_import_report = 29;
   }
   reserved 15;
 }
@@ -146,6 +156,19 @@ message ServerMessage {
     HeartbeatAck heartbeat_ack = 20;
     ReleaseJobWorkRoot release_job_work_root = 21;
     QueueValidationShadowRejectionAck queue_validation_shadow_rejection_ack = 22;
+    FederationExecutionResponse federation_execution_response = 23;
+    FederationResultCopy federation_result_copy = 24;
+    FederationResultGrantResponse federation_result_grant_response = 25;
+    FederationResultVerify federation_result_verify = 26;
+    FederationInputCopy federation_input_copy = 27;
+    FederationInputGrantResponse federation_input_grant_response = 28;
+    FederationInputVerify federation_input_verify = 29;
+    FederationAccountingRequest federation_accounting_request = 30;
+    FederationMediaExport federation_media_export = 31;
+    FederationMediaExportLeaseResponse federation_media_export_lease_response = 32;
+    FederationMediaImport federation_media_import = 33;
+    FederationMediaImportGrantResponse federation_media_import_grant_response = 34;
+    FederationMediaUpload federation_media_upload = 35;
   }
 }
 
@@ -207,6 +230,38 @@ message RegisterRequest {
   bool spack_material_delivery_v1 = 18;
   // IDs of dataset roots validated locally at startup. Paths remain on the Agent.
   repeated string managed_dataset_root_ids = 19;
+  // Enforces immutable managed Spack execution pins; absent means unsupported.
+  bool spack_pinned_execution_v1 = 20;
+  // Durable installation receipts reject changed intent and replay the original operation.
+  bool software_operation_replay_v1 = 21;
+  // Reauthorizes received federation work before preparation and scheduler submission.
+  bool federation_execution_v1 = 22;
+  bool federation_installation_v1 = 23;
+  // Renews running audit/install/verify authority and independently stops expired workers.
+  bool federation_installation_lease_v1 = 24;
+  // Persists runtime deadlines and requires an independent scheduler watchdog.
+  bool federation_compute_lease_v1 = 25;
+  // Accepts a refreshed Sandbox envelope while pinning the original execution content.
+  bool federation_sandbox_signature_renewal_v1 = 26;
+  // Stops Sandbox input downloads when live preparation authority expires.
+  bool federation_sandbox_input_lease_v1 = 27;
+  // Stops Data Market transfer, copy and verification when preparation authority expires.
+  bool federation_data_preparation_lease_v1 = 28;
+  // Renews material tickets and stops installation downloads on expired authority.
+  bool federation_installation_material_lease_v1 = 29;
+  bool federation_netdrive_input_lease_v1 = 30;
+  bool federation_result_copy_v1 = 31;
+  bool federation_result_verify_v1 = 32;
+  bool federation_input_copy_v1 = 33;
+  bool federation_input_verify_v1 = 34;
+  bool federation_accounting_v1 = 35;
+  bool federation_media_export_v1 = 36;
+  bool federation_media_import_v1 = 37;
+  bool federation_sandbox_local_input_v1 = 38;
+  bool federation_media_object_export_v1 = 39;
+  bool federation_media_upload_v1 = 40;
+  // Understands target upload/verification negotiation independent of network copying.
+  bool federation_target_transfer_v1 = 41;
 }
 
 message RegisterResponse {
@@ -224,6 +279,17 @@ message RegisterResponse {
   // When advertised, shadow rejection events remain durable on the Agent
   // until the Server has persisted their idempotent counter increment.
   bool queue_validation_shadow_rejection_ack_supported = 7;
+  bool federation_execution_v1_supported = 8;
+  bool federation_installation_v1_supported = 9;
+  bool federation_result_copy_v1_supported = 10;
+  bool federation_input_copy_v1_supported = 11;
+  bool federation_media_export_v1_supported = 12;
+  bool federation_media_import_v1_supported = 13;
+  bool federation_media_object_export_v1_supported = 14;
+  bool federation_media_upload_v1_supported = 15;
+  // Target verification is available without permitting source downloads.
+  bool federation_input_verify_v1_supported = 16;
+  bool federation_result_verify_v1_supported = 17;
 }
 
 // tags 7–10 carry extended monitoring + installed-software
@@ -308,13 +374,54 @@ message DispatchJob {
   repeated string file_output_descriptors = 21;
   QueueTargetMode queue_target_mode = 22;
   QueueValidationMode queue_validation_mode = 23;
-  // Workflow-only intent. command MUST remain "exit 125" for older Agents.
+  // Workflow-only intent. command is "exit 125", or "exit 126" when pin is set.
   SpackJobExecution spack_execution = 24;
+  // Requires a fresh FederationExecutionResponse before starting scheduler submission.
+  bool federation_execution = 25;
+}
+
+message FederationExecutionRequest {
+  string request_id = 1;
+  string job_id = 2;
+  int64 dispatch_epoch = 3;
+  // Installation requests use the owning job, operation ID and a zero dispatch epoch.
+  string operation_id = 4;
+  // Continue the same submitted compute attempt; grants no dispatch or download authority.
+  bool runtime_renewal = 5;
+}
+
+enum FederationExecutionDecision {
+  FEDERATION_EXECUTION_DECISION_UNSPECIFIED = 0;
+  FEDERATION_EXECUTION_DECISION_GRANTED = 1;
+  FEDERATION_EXECUTION_DECISION_RETRY = 2;
+  FEDERATION_EXECUTION_DECISION_DENIED = 3;
+}
+
+message FederationExecutionResponse {
+  string request_id = 1;
+  string job_id = 2;
+  int64 dispatch_epoch = 3;
+  FederationExecutionDecision decision = 4;
+  int64 expires_at_unix_ms = 5;
+  // Original intent with renewed transport credentials. Never a replacement Job.
+  DispatchJob dispatch = 6;
+  string operation_id = 7;
+  SoftwareOperationRequest installation = 8;
+  bool runtime_renewal = 9;
 }
 
 message SpackJobExecution {
   string spec = 1;
   string command = 2;
+  SpackExecutionPin pin = 3;
+}
+
+message SpackExecutionPin {
+  string dag_hash = 1;
+  string manifest_digest = 2;
+  string lockfile_digest = 3;
+  string spack_version = 4;
+  string target = 5;
 }
 
 enum DataDeliveryMethod {
@@ -379,6 +486,10 @@ message LicensedMaterialMount {
   string target_path = 2;
   string expected_fingerprint = 3;
   repeated string required_elements = 4;
+  // Pins the local authorization identity for federation renewals; not a bearer credential.
+  string mapping_id = 5;
+  string asset_id = 6;
+  string license_subject = 7;
 }
 
 enum SandboxLanguage {
@@ -477,6 +588,12 @@ message SandboxBatchEntry {
   int64 size_bytes = 3;
 }
 
+// Signed per-job scheduler resources; memory is measured in MiB.
+message SandboxComputeResources {
+  int32 cpus = 1;
+  int64 memory_mb = 2;
+}
+
 message SandboxResourceLimits {
   int32 pids = 1;
   int64 output_bytes = 2;
@@ -517,6 +634,7 @@ message SandboxExecution {
   string execution_mode = 9;
   // Required for SelfAccount; this is an opaque SHA-256 evidence id.
   string runtime_attestation_id = 10;
+  SandboxComputeResources compute_resources = 11;
 }
 
 message SandboxRuntimeCacheEntry {
@@ -529,6 +647,8 @@ message SandboxRuntimeCacheEntry {
   repeated string attested_nodes = 5;
   // Unix epoch milliseconds; zero means no usable attestation.
   int64 expires_at_unix_ms = 6;
+  // Explicit scheduler queue covered by this runtime evidence; empty is unusable for SelfAccount.
+  string attested_queue = 7;
 }
 
 message SandboxCapability {
@@ -562,6 +682,16 @@ message InputStaging {
   int64 delivery_lease_expires_at_unix_ms = 5;
   int64 total_bytes = 6;
   string expected_sha256 = 7;
+  // Pins a NetDrive file separately from a Data Market delivery binding.
+  bool netdrive_input = 8;
+  // Mutually exclusive with source_url; only Server-authorized managed data roots.
+  SandboxLocalDataSource local_data_source = 9;
+}
+
+message SandboxLocalDataSource {
+  string location_id = 1;
+  string managed_root_id = 2;
+  string relative_path = 3;
 }
 
 // P4-f: one output the agent is expected to surface after the run.
@@ -582,6 +712,8 @@ message CancelJob {
 message CancelJobAck {
   string job_id = 1;
   int64 revoked_epoch = 2;
+  // True only after durable software receipts prove this Job's installations stopped.
+  bool installations_stopped = 3;
 }
 
 message ReleaseJobWorkRoot {
@@ -608,6 +740,16 @@ message SandboxArtifactReleaseAck {
   map<string, string> failures = 3;
 }
 
+// Optional scheduler assertions. Absent quantities are unknown, never inferred zero.
+message SchedulerAccounting {
+  string source = 1;
+  string scheduler_job_id = 2;
+  string observed_at = 3;
+  optional string elapsed_milliseconds = 4;
+  optional string cpu_time_milliseconds = 5;
+  optional string allocated_cpus = 6;
+}
+
 message JobStatusUpdate {
   string job_id = 1;
   JobStatus status = 2;
@@ -631,6 +773,7 @@ message JobStatusUpdate {
   string working_dir = 10;
   reserved 11 to 15;
   string failure_code = 16;
+  SchedulerAccounting accounting = 17;
 }
 
 message QueueValidationShadowRejection {
@@ -742,6 +885,8 @@ message SoftwareOperationRequest {
   // Short-lived, operation-scoped download credential, never a Registry credential.
   string spack_material_ticket = 5;
   string spack_manifest_digest = 6;
+  bool durable_replay = 7;
+  string federation_job_id = 8;
 }
 
 message SoftwareOperationResult {
@@ -951,4 +1096,108 @@ message PartUrlsResponse {
   repeated PartUrl urls = 2;
   string correlation_id = 3;
   string upload_id = 4;
+}
+
+// JSON metadata uses the shared strict federation schemas. Never includes file bytes.
+message FederationResultCopy {
+  string task_json = 1; // At most 256 KiB.
+  int64 lease_expires_at_unix_ms = 2;
+}
+message FederationResultGrantRequest {
+  string request_id = 1;
+  string binding_json = 2; // At most 8 KiB.
+  bool upload = 3;
+  optional uint32 part_number = 4;
+  string verification_json = 5; // When set, binding_json must be empty; at most 16 KiB.
+}
+message FederationResultGrantResponse {
+  string request_id = 1;
+  string grant_json = 2; // Sensitive bearer credential; memory only. Empty means denied.
+  int64 lease_expires_at_unix_ms = 3;
+}
+message FederationResultCopyReport {
+  string generation = 1;
+  string copied_json = 2; // At most 4 MiB; metadata only, never a publication receipt.
+  bool failed = 3;
+  string verified_json = 4; // Exclusive with copied_json/failed; at most 16 KiB.
+}
+
+message FederationResultVerify {
+  string task_json = 1; // FederationResultVerifyTask, at most 16 KiB.
+  int64 lease_expires_at_unix_ms = 2;
+}
+
+// JSON metadata uses the shared strict federation schemas. Never includes file bytes.
+message FederationInputCopy {
+  string task_json = 1; // At most 256 KiB.
+  int64 lease_expires_at_unix_ms = 2;
+}
+message FederationInputGrantRequest {
+  string request_id = 1;
+  string binding_json = 2; // At most 8 KiB.
+  bool upload = 3;
+  optional uint32 part_number = 4;
+  string verification_json = 5; // When set, binding_json must be empty; at most 16 KiB.
+}
+message FederationInputGrantResponse {
+  string request_id = 1;
+  string grant_json = 2; // Sensitive bearer credential; memory only. Empty means denied.
+  int64 lease_expires_at_unix_ms = 3;
+}
+message FederationInputCopyReport {
+  string generation = 1;
+  string copied_json = 2; // At most 4 MiB; metadata only, never a publication receipt.
+  bool failed = 3;
+  string verified_json = 4; // Exclusive with copied_json/failed; at most 16 KiB.
+}
+
+message FederationInputVerify {
+  string task_json = 1; // FederationInputVerifyTask, at most 16 KiB.
+  int64 lease_expires_at_unix_ms = 2;
+}
+
+// Read-only, challenge-bound query; durable retry and observation storage belong to Server.
+message FederationAccountingRequest { string request_json = 1; }
+message FederationAccountingResponse { string response_json = 1; }
+
+// Dedicated encrypted media export. No raw keys or arbitrary output paths.
+message FederationMediaExport {
+  string task_json = 1; // Shared FederationMediaExportTask, at most 512 KiB.
+  int64 lease_expires_at_unix_ms = 2;
+}
+message FederationMediaExportLeaseRequest {
+  string request_id = 1;
+  string binding_json = 2; // Export binding or fixed object member binding, at most 8 KiB.
+}
+message FederationMediaExportLeaseResponse {
+  string request_id = 1;
+  string grant_json = 2; // Empty denies further work.
+  int64 lease_expires_at_unix_ms = 3;
+}
+message FederationMediaExportReport {
+  string report_json = 1; // Encrypted file metadata or failure, at most 8 KiB.
+}
+
+// Dedicated encrypted media import. Public ephemeral recipient keys only; no caller-selected paths.
+message FederationMediaImport {
+  string task_json = 1; // Shared FederationMediaImportTask, at most 512 KiB.
+  int64 lease_expires_at_unix_ms = 2;
+}
+message FederationMediaImportKeyRequest {
+  string request_id = 1;
+  string binding_json = 2; // Import binding and ephemeral public JWK, at most 8 KiB.
+}
+message FederationMediaImportGrantResponse {
+  string request_id = 1;
+  string grant_json = 2; // Empty denies further work.
+  int64 lease_expires_at_unix_ms = 3;
+}
+message FederationMediaImportReport {
+  string report_json = 1; // Private verification result or failure, at most 8 KiB.
+}
+
+// Upload one verified private task member; source and destination generations remain distinct.
+message FederationMediaUpload {
+  string task_json = 1; // Shared FederationMediaUploadTask, at most 512 KiB.
+  int64 lease_expires_at_unix_ms = 2;
 }

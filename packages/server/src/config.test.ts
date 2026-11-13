@@ -7,6 +7,32 @@ const VALID_BASE = {
   JWT_SECRET: "x".repeat(32),
 };
 
+describe("Media export configuration", () => {
+  test("requires federation, pinned tools and an independent wrapping key together", () => {
+    const configured = {
+      ...VALID_BASE,
+      FEDERATION_ENABLED: "true",
+      FEDERATION_SITE_ID: crypto.randomUUID(),
+      FEDERATION_SOCKET_PATH: "/tmp/federation.sock",
+      FEDERATION_SIGNING_KEY_ID: "media-test",
+      FEDERATION_SIGNING_KEY_FILE: "/private/signing.pem",
+      FEDERATION_MEDIA_AGE_DIRECTORY: "/opt/age/1.3.2",
+      FEDERATION_MEDIA_WRAPPING_KEY: "media-only".repeat(5),
+    };
+    expect(loadServerConfig(configured).FEDERATION_MEDIA_AGE_DIRECTORY).toBe("/opt/age/1.3.2");
+    for (const patch of [
+      { FEDERATION_ENABLED: "false" },
+      { FEDERATION_MEDIA_AGE_DIRECTORY: undefined },
+      { FEDERATION_MEDIA_WRAPPING_KEY: undefined },
+      { FEDERATION_MEDIA_WRAPPING_KEY: VALID_BASE.JWT_SECRET },
+      { FEDERATION_MEDIA_AGE_DIRECTORY: "relative/path" },
+      { FEDERATION_MEDIA_WRAPPING_KEY: "short" },
+    ])
+      expect(() => loadServerConfig({ ...configured, ...patch })).toThrow();
+    expect(loadServerConfig(VALID_BASE).FEDERATION_MEDIA_WRAPPING_KEY).toBeUndefined();
+  });
+});
+
 describe("Spack material delivery configuration", () => {
   test("validates the rollout epoch independently of material delivery enablement", () => {
     const epoch = "12345678-abcd-4123-8123-123456789abc";
@@ -101,7 +127,6 @@ describe("loadServerConfig (mTLS additions)", () => {
     expect(cfg.DB_MAX_CONNECTIONS).toBe(10);
     expect(cfg.DB_IDLE_TIMEOUT_SEC).toBe(0);
   });
-
   test("DB pool config honors operator overrides", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -111,7 +136,6 @@ describe("loadServerConfig (mTLS additions)", () => {
     expect(cfg.DB_MAX_CONNECTIONS).toBe(4);
     expect(cfg.DB_IDLE_TIMEOUT_SEC).toBe(30);
   });
-
   test("loads the Registry publisher role contract", () => {
     expect(
       loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv).REGISTRY_PUBLISHER_ROLES,
@@ -123,22 +147,18 @@ describe("loadServerConfig (mTLS additions)", () => {
       } as NodeJS.ProcessEnv).REGISTRY_PUBLISHER_ROLES,
     ).toEqual(["platform_admin", "operator"]);
   });
-
   test("MTLS_REQUIRED defaults to false", () => {
     const cfg = loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv);
     expect(cfg.MTLS_REQUIRED).toBe(false);
   });
-
   test("MTLS_REQUIRED parses 'true' to boolean", () => {
     const cfg = loadServerConfig({ ...VALID_BASE, MTLS_REQUIRED: "true" } as NodeJS.ProcessEnv);
     expect(cfg.MTLS_REQUIRED).toBe(true);
   });
-
   test("MTLS_REQUIRED parses case-insensitively", () => {
     const cfg = loadServerConfig({ ...VALID_BASE, MTLS_REQUIRED: "TRUE" } as NodeJS.ProcessEnv);
     expect(cfg.MTLS_REQUIRED).toBe(true);
   });
-
   test("MTLS_MODE accepts the production mode selector", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -150,7 +170,6 @@ describe("loadServerConfig (mTLS additions)", () => {
     expect(cfg.MTLS_TRUSTED_PROXY_CIDRS).toBe("10.0.0.0/8");
     expect(cfg.MTLS_HEADER_FINGERPRINT).toBe("x-client-cert-sha256");
   });
-
   test("keeps HTTP proxy CIDRs separate from the mTLS proxy boundary", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -158,7 +177,6 @@ describe("loadServerConfig (mTLS additions)", () => {
     } as NodeJS.ProcessEnv);
     expect(cfg.HTTP_TRUSTED_PROXY_CIDRS).toBe("10.42.7.18/32,fd00:42::/64");
   });
-
   test("direct mTLS preserves the HTTP/2 server certificate paths", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -169,18 +187,15 @@ describe("loadServerConfig (mTLS additions)", () => {
     expect(cfg.SERVER_GRPC_TLS_CERT_FILE).toBe("/etc/kq/grpc.crt");
     expect(cfg.SERVER_GRPC_TLS_KEY_FILE).toBe("/etc/kq/grpc.key");
   });
-
   test("WEB_CSP is optional but preserved when configured", () => {
     const policy = "default-src 'self'";
     const cfg = loadServerConfig({ ...VALID_BASE, WEB_CSP: policy } as NodeJS.ProcessEnv);
     expect(cfg.WEB_CSP).toBe(policy);
   });
-
   test("SERVER_CA_DIR defaults to ./server-ca", () => {
     const cfg = loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv);
     expect(cfg.SERVER_CA_DIR).toBe("./server-ca");
   });
-
   test("SERVER_CA_DIR honors override", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -197,7 +212,6 @@ describe("NetDrive multipart config", () => {
     expect(cfg.NETDRIVE_MULTIPART_THRESHOLD_MB).toBe(64);
     expect(cfg.NETDRIVE_MULTIPART_TTL_SEC).toBe(3600);
   });
-
   test("rejects a part size below the 5 MiB S3 floor", () => {
     expect(() =>
       loadServerConfig({
@@ -206,7 +220,6 @@ describe("NetDrive multipart config", () => {
       } as NodeJS.ProcessEnv),
     ).toThrow();
   });
-
   test("requires a positive immutable Data Market retention period", () => {
     expect(
       loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv).DATA_MARKET_IMMUTABLE_RETENTION_DAYS,
@@ -225,7 +238,6 @@ describe("workflow sync config", () => {
     const cfg = loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv);
     expect(cfg.WORKFLOW_SYNC_ENABLED).toBe(false);
   });
-
   test("parses WORKFLOW_SYNC_ENABLED as a boolean", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -254,7 +266,6 @@ describe("cluster file static roots config", () => {
     const cfg = loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv);
     expect(cfg.CLUSTER_FILE_STATIC_ROOTS).toEqual([]);
   });
-
   test("parses an explicit comma-separated development fallback", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -262,7 +273,6 @@ describe("cluster file static roots config", () => {
     } as NodeJS.ProcessEnv);
     expect(cfg.CLUSTER_FILE_STATIC_ROOTS).toEqual(["/home", "/scratch", "/work"]);
   });
-
   test("rejects relative and filesystem-wide static roots", () => {
     expect(() =>
       loadServerConfig({
@@ -278,7 +288,6 @@ describe("scheduler queue-wait aggregation config", () => {
     const cfg = loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv);
     expect(cfg.SCHEDULER_QUEUE_WAIT_AGG_SEC).toBe(0);
   });
-
   test("honors a positive SCHEDULER_QUEUE_WAIT_AGG_SEC override", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -294,7 +303,6 @@ describe("Agent heartbeat reconciliation config", () => {
     expect(cfg.AGENT_HEARTBEAT_TIMEOUT_SEC).toBe(90);
     expect(cfg.AGENT_HEARTBEAT_SWEEP_INTERVAL_SEC).toBe(30);
   });
-
   test("rejects non-positive heartbeat timeout and negative sweep intervals", () => {
     expect(() =>
       loadServerConfig({ ...VALID_BASE, AGENT_HEARTBEAT_TIMEOUT_SEC: "0" } as NodeJS.ProcessEnv),
@@ -315,7 +323,6 @@ describe("compute health config", () => {
     expect(cfg.COMPUTE_HEALTH_MAX_AGE_SEC).toBe(120);
     expect(cfg.COMPUTE_HEALTH_MAX_FUTURE_SKEW_SEC).toBe(5);
   });
-
   test("parses explicit enforcement and validates health time bounds", () => {
     const enforced = loadServerConfig({
       ...VALID_BASE,
@@ -351,7 +358,6 @@ describe("queue inventory config", () => {
     expect(cfg.QUEUE_INVENTORY_MAX_AGE_SEC).toBe(120);
     expect(cfg.QUEUE_INVENTORY_MAX_FUTURE_SKEW_SEC).toBe(5);
   });
-
   test("accepts enforce mode and validates observation bounds", () => {
     const cfg = loadServerConfig({
       ...VALID_BASE,
@@ -366,6 +372,130 @@ describe("queue inventory config", () => {
       loadServerConfig({ ...VALID_BASE, QUEUE_INVENTORY_MAX_AGE_SEC: "0" } as NodeJS.ProcessEnv),
     ).toThrow();
   });
+});
+
+for (const field of [
+  "FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS",
+  "FEDERATION_RESULT_DOWNLOAD_ORIGINS",
+  "FEDERATION_INPUT_DOWNLOAD_ORIGINS",
+  "FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS",
+] as const) {
+  test(`${field} defaults to closed and requires clean HTTPS origins`, () => {
+    expect(loadServerConfig(VALID_BASE)[field]).toEqual([]);
+    expect(
+      loadServerConfig({
+        ...VALID_BASE,
+        [field]: "https://storage.example.org, https://archive.example.org:9443",
+      })[field],
+    ).toEqual(["https://storage.example.org", "https://archive.example.org:9443"]);
+    for (const value of [
+      "http://storage.example.org",
+      "https://user:pass@storage.example.org",
+      "https://storage.example.org/path",
+      "https://storage.example.org?token=secret",
+    ])
+      expect(() => loadServerConfig({ ...VALID_BASE, [field]: value })).toThrow();
+  });
+}
+
+test("federation result import source origins stay independent of local download origins", () => {
+  expect(loadServerConfig(VALID_BASE).FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS).toEqual([]);
+  const config = loadServerConfig({
+    ...VALID_BASE,
+    FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: "https://remote.example.org",
+  });
+  expect(config.FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS).toEqual(["https://remote.example.org"]);
+  expect(config.FEDERATION_RESULT_DOWNLOAD_ORIGINS).toEqual([]);
+  expect(() =>
+    loadServerConfig({
+      ...VALID_BASE,
+      FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: "http://remote.example.org",
+    }),
+  ).toThrow();
+});
+
+test("input import source origins never inherit export or result origins", () => {
+  const config = loadServerConfig({
+    ...VALID_BASE,
+    FEDERATION_INPUT_DOWNLOAD_ORIGINS: "https://local.example.org",
+    FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: "https://results.example.org",
+  });
+  expect(config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS).toEqual([]);
+  expect(
+    loadServerConfig({
+      ...VALID_BASE,
+      FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS: "https://source.example.org",
+    }).FEDERATION_INPUT_DOWNLOAD_ORIGINS,
+  ).toEqual([]);
+});
+
+test("storage guard configuration is explicit, absolute and cannot be silently ignored with federation disabled", () => {
+  expect(loadServerConfig(VALID_BASE).FEDERATION_STORAGE_GUARD_FILE).toBeUndefined();
+  expect(() =>
+    loadServerConfig({ ...VALID_BASE, FEDERATION_STORAGE_GUARD_FILE: "/run/storage.json" }),
+  ).toThrow();
+  const enabled = {
+    ...VALID_BASE,
+    FEDERATION_ENABLED: "true",
+    FEDERATION_SITE_ID: crypto.randomUUID(),
+    FEDERATION_SOCKET_PATH: "/run/private/ingress.sock",
+    FEDERATION_SIGNING_KEY_ID: "local",
+    FEDERATION_SIGNING_KEY_FILE: "/run/private/signing.key",
+  };
+  expect(
+    loadServerConfig({ ...enabled, FEDERATION_STORAGE_GUARD_FILE: "/run/storage.json" })
+      .FEDERATION_STORAGE_GUARD_FILE,
+  ).toBe("/run/storage.json");
+  expect(() =>
+    loadServerConfig({ ...enabled, FEDERATION_STORAGE_GUARD_FILE: "storage.json" }),
+  ).toThrow();
+});
+
+test("case publication trust is opt-in and requires an absolute path and federation", () => {
+  expect(loadServerConfig(VALID_BASE).FEDERATION_CASE_TRUST_FILE).toBeUndefined();
+  expect(() =>
+    loadServerConfig({ ...VALID_BASE, FEDERATION_CASE_TRUST_FILE: "/run/cases.json" }),
+  ).toThrow();
+  const enabled = {
+    ...VALID_BASE,
+    FEDERATION_ENABLED: "true",
+    FEDERATION_SITE_ID: crypto.randomUUID(),
+    FEDERATION_SOCKET_PATH: "/run/private/ingress.sock",
+    FEDERATION_SIGNING_KEY_ID: "local",
+    FEDERATION_SIGNING_KEY_FILE: "/run/private/signing.key",
+  };
+  expect(
+    loadServerConfig({ ...enabled, FEDERATION_CASE_TRUST_FILE: "/run/cases.json" })
+      .FEDERATION_CASE_TRUST_FILE,
+  ).toBe("/run/cases.json");
+  expect(() =>
+    loadServerConfig({ ...enabled, FEDERATION_CASE_TRUST_FILE: "cases.json" }),
+  ).toThrow();
+});
+
+test("case ledger socket requires federation and case trust with an absolute path", () => {
+  const enabled = {
+    ...VALID_BASE,
+    FEDERATION_ENABLED: "true",
+    FEDERATION_SITE_ID: crypto.randomUUID(),
+    FEDERATION_SOCKET_PATH: "/run/private/ingress.sock",
+    FEDERATION_SIGNING_KEY_ID: "local",
+    FEDERATION_SIGNING_KEY_FILE: "/run/private/signing.key",
+  };
+  expect(() =>
+    loadServerConfig({ ...VALID_BASE, FEDERATION_CASE_SOCKET_PATH: "/run/private/case.sock" }),
+  ).toThrow();
+  expect(() =>
+    loadServerConfig({ ...enabled, FEDERATION_CASE_SOCKET_PATH: "/run/private/case.sock" }),
+  ).toThrow();
+  const configured = { ...enabled, FEDERATION_CASE_TRUST_FILE: "/run/case.json" };
+  expect(() =>
+    loadServerConfig({ ...configured, FEDERATION_CASE_SOCKET_PATH: "case.sock" }),
+  ).toThrow();
+  expect(
+    loadServerConfig({ ...configured, FEDERATION_CASE_SOCKET_PATH: "/run/private/case.sock" })
+      .FEDERATION_CASE_SOCKET_PATH,
+  ).toBe("/run/private/case.sock");
 });
 
 test("Spack material ticket lifetime defaults to 15 minutes and stays within 30..900 seconds", () => {

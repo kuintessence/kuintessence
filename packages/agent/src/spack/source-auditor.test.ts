@@ -13,34 +13,100 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { SpackMaterialManifest } from "@kuintessence/shared";
-import type { SpackAuditProcess } from "./audit-process";
+import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
 import type {
   SpackAuditFileIdentity,
   SpackAuditRuntimeDeps,
   SpackAuditRuntimeProfile,
 } from "./audit-runtime";
+import { SpackInstallationPending } from "./execution-identity";
 import { type PreparedSpackMaterials, SpackMaterialClient } from "./material-client";
 import { SpackWorkerUncertainError } from "./slurm-process";
 import type { SpackSourceAuditReport } from "./source-audit-report";
 import { SpackSourceAuditor, type SpackSourceAuditorOptions } from "./source-auditor";
+import { SpackProcessStoppedError } from "./supervised-process";
 
 type Run = SpackAuditProcess["run"];
+
 type RunResult = Awaited<ReturnType<Run>>;
+
 const rootHash = "a".repeat(32);
+
 const prefix = "KQ_SPACK_AUDIT_RESULT:";
+
 const profile: SpackAuditRuntimeProfile = {
   apptainerPath: "/usr/bin/apptainer",
   apptainerSha256: "a".repeat(64),
   sifPath: "/srv/kq/runtime.sif",
   sifSha256: "b".repeat(64),
 };
+
 const namespaces = { hostNetworkNamespace: "net:[100]", hostPidNamespace: "pid:[200]" };
+
 const digest = (text: string | Uint8Array) =>
   `sha256:${createHash("sha256").update(text).digest("hex")}`;
+
 const blob = (text: string) => ({ digest: digest(text), size: Buffer.byteLength(text) });
+
 const roots: string[] = [];
+
+test.each([
+  "offline",
+  "revoked",
+  "renewed",
+] as const)("source audit observes running installation authority: %s", async (kind) => {
+  const f = await fixture();
+  const h = harness(f, {
+    run: async (_command, options) => {
+      try {
+        await delay(kind === "renewed" ? 350 : 10000, undefined, { signal: options.signal });
+        return wire(report(f));
+      } catch {
+        throw new SpackProcessStoppedError("audit stopped");
+      }
+    },
+  });
+  let renewals = 0;
+  const task = h.auditor.audit(f.prepared, {
+    ...f.input,
+    authorizeInstallation: async (signal) => {
+      if (++renewals === 1 || kind === "renewed") return Date.now() + 200;
+      if (kind === "revoked") throw new Error("denied");
+      await delay(10000, undefined, { signal });
+      return Date.now() + 200;
+    },
+  });
+  if (kind === "renewed") expect((await task).passed).toBe(true);
+  else
+    await expect(task).rejects.toThrow(
+      kind === "revoked" ? "renewal failed" : "authorization expired",
+    );
+  expect(renewals).toBeGreaterThan(1);
+  expect(h.calls).toHaveLength(1);
+  await expectClean(f);
+  // A proven stopped audit releases the execution slot for another operation.
+  h.setRun(async () => wire(report(f)));
+  expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
+});
+
+test("source audit waits on pre-start authorization without spawning a worker", async () => {
+  const f = await fixture();
+  const h = harness(f);
+  await expect(
+    h.auditor.audit(f.prepared, {
+      ...f.input,
+      authorizeInstallation: async () => {
+        throw new SpackInstallationPending();
+      },
+    }),
+  ).rejects.toBeInstanceOf(SpackInstallationPending);
+  expect(h.calls).toHaveLength(0);
+  await expectClean(f);
+  expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
+});
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -139,6 +205,7 @@ const wire = (value: unknown, exitCode = 0): RunResult => ({
   stdout: `${prefix}${JSON.stringify(value)}\n`,
   stderr: "",
 });
+
 const identity = (path: string): SpackAuditFileIdentity => ({
   canonicalPath: path,
   uid: 0,
@@ -263,14 +330,6 @@ describe("SpackSourceAuditor input boundary", () => {
           "all",
           "--security",
           "no-new-privs",
-          "--pids-limit",
-          "128",
-          "--memory",
-          "2147483648",
-          "--memory-swap",
-          "2147483648",
-          "--cpus",
-          "2",
           "--pwd",
           "/kq/work",
           "--bind",
@@ -315,6 +374,7 @@ describe("SpackSourceAuditor input boundary", () => {
           "manifest.json",
           "runtime.json",
           "source_audit.py",
+          "spack-compatibility.json",
         ]);
         expect((await readdir(join(input, "blobs"))).sort()).toEqual(
           f.prepared.blobs.map((ref) => ref.digest.slice(7)).sort(),
@@ -368,7 +428,6 @@ describe("SpackSourceAuditor input boundary", () => {
       expect((await lstat(ref.path)).nlink).toBe(1);
     }
   });
-
   test("rejects an invalid static lock before runtime inspection or execution", async () => {
     const f = await fixture("opaque invalid lock");
     const h = harness(f);
@@ -377,7 +436,6 @@ describe("SpackSourceAuditor input boundary", () => {
     expect(h.calls).toEqual([]);
     await expectClean(f);
   });
-
   test("rejects forged prepared metadata, references and requested bindings before execution", async () => {
     const f = await fixture();
     const h = harness(f);
@@ -407,7 +465,6 @@ describe("SpackSourceAuditor input boundary", () => {
     await expectClean(f);
     expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
   });
-
   test.each([
     "manifest",
     "lock",
@@ -439,7 +496,6 @@ describe("SpackSourceAuditor input boundary", () => {
     await chmod(path, 0o400);
     expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
   });
-
   test("rejects missing or symlinked source cache entries without following outside files", async () => {
     const f = await fixture();
     const h = harness(f);
@@ -472,7 +528,6 @@ describe("SpackSourceAuditor report boundary", () => {
     expect(await h.auditor.audit(f.prepared, f.input)).toEqual(expected);
     await expectClean(f);
   });
-
   test("binds external counts without claiming external nodes were verified", async () => {
     const f = await fixture(lock(true));
     const expected = report(f, {
@@ -484,7 +539,6 @@ describe("SpackSourceAuditor report boundary", () => {
     expect(await h.auditor.audit(f.prepared, f.input)).toEqual(expected);
     await expectClean(f);
   });
-
   test.each([
     { manifestDigest: `sha256:${"f".repeat(64)}` },
     { rootHash: "b".repeat(32) },
@@ -496,7 +550,6 @@ describe("SpackSourceAuditor report boundary", () => {
     await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("binding or exit status");
     await expectRetained(f);
   });
-
   test.each([
     { passed: true, exitCode: 1 },
     { passed: true, exitCode: 2 },
@@ -517,7 +570,6 @@ describe("SpackSourceAuditor report boundary", () => {
     await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("binding or exit status");
     await expectRetained(f);
   });
-
   test.each([
     "empty",
     "no-prefix",
@@ -548,7 +600,6 @@ describe("SpackSourceAuditor report boundary", () => {
     );
     await expectRetained(f);
   });
-
   test.each([
     ["wrong version", { version: 2 }],
     ["wrong validation", { validation: "static-only" }],
@@ -612,7 +663,14 @@ describe("SpackSourceAuditor report boundary", () => {
     );
     await expectRetained(f);
   });
-
+  test("rejects another supported version in a runtime report", async () => {
+    const f = await fixture();
+    const h = harness(f, { run: async () => wire({ ...report(f), spackVersion: "1.0.3" }) });
+    await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow(
+      "binding or exit status mismatch",
+    );
+    await expectRetained(f);
+  });
   test("accepts exactly 100 bounded issues", async () => {
     const f = await fixture();
     const expected = report(f, {
@@ -625,6 +683,143 @@ describe("SpackSourceAuditor report boundary", () => {
 });
 
 describe("SpackSourceAuditor lifecycle", () => {
+  test("confirmed supervised stop releases input and allows another audit", async () => {
+    const f = await fixture();
+    const h = harness(f, {
+      run: async () => {
+        throw new SpackProcessStoppedError("fixture stop");
+      },
+    });
+    await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("fixture stop");
+    await expectClean(f);
+    h.setRun(async () => wire(report(f)));
+    expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
+  });
+  test.each([
+    true,
+    false,
+  ])("only proven spawn failure releases source audit inputs and its slot: %s", async (notStarted) => {
+    const f = await fixture();
+    const h = harness(f, {
+      run: async () => {
+        throw notStarted
+          ? new SpackProcessNotStartedError("fixture process failed")
+          : new Error("fixture process failed");
+      },
+    });
+    await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("fixture process failed");
+    expect(await runDirectories(f)).toHaveLength(notStarted ? 0 : 1);
+    h.setRun(async () => wire(report(f)));
+    if (!notStarted) {
+      await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("already running");
+      return;
+    }
+    expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
+    expect(h.calls[0]?.options.cwd).not.toBe(h.calls[1]?.options.cwd);
+    expect(await runDirectories(f)).toEqual([]);
+  });
+  test("rejects concurrent calls without deleting an active run, then permits reuse", async () => {
+    const f = await fixture();
+    const entered = deferred<void>();
+    const release = deferred<RunResult>();
+    const h = harness(f, {
+      run: async () => {
+        entered.resolve();
+        return release.promise;
+      },
+    });
+    const first = h.auditor.audit(f.prepared, f.input);
+    try {
+      await entered.promise;
+      await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("already running");
+      expect(h.calls).toHaveLength(1);
+      expect(await runDirectories(f)).toHaveLength(1);
+    } finally {
+      release.resolve(wire(report(f)));
+      await first;
+    }
+    await expectClean(f);
+    h.setRun(async () => wire(report(f)));
+    expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
+    await expectClean(f);
+  });
+  test("pre-aborted input never inspects runtime or executes and does not retain the slot", async () => {
+    const f = await fixture();
+    const h = harness(f);
+    await expect(
+      h.auditor.audit(f.prepared, {
+        ...f.input,
+        signal: AbortSignal.abort(new Error("fixture canceled")),
+      }),
+    ).rejects.toThrow("fixture canceled");
+    expect(h.inspections).toEqual([]);
+    expect(h.calls).toEqual([]);
+    await expectClean(f);
+    expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
+  });
+  test("forwards cancellation but preserves input and its slot until the source audit worker is proven stopped", async () => {
+    const f = await fixture();
+    const controller = new AbortController();
+    const entered = deferred<void>();
+    const h = harness(f, {
+      run: async (_command, { signal }) =>
+        new Promise<RunResult>((_resolve, reject) => {
+          if (!signal) throw new Error("Missing process signal");
+          signal.addEventListener("abort", () => reject(new Error("fixture canceled")), {
+            once: true,
+          });
+          entered.resolve();
+        }),
+    });
+    const result = h.auditor.audit(f.prepared, { ...f.input, signal: controller.signal });
+    await entered.promise;
+    controller.abort(new Error("fixture canceled"));
+    await expect(result).rejects.toThrow("fixture canceled");
+    expect(h.calls[0]?.options.signal?.aborted).toBe(true);
+    expect(await runDirectories(f)).toHaveLength(1);
+    h.setRun(async () => wire(report(f)));
+    await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("already running");
+  });
+  test("rejects cancellation even when the process returns a valid successful report", async () => {
+    const f = await fixture();
+    const controller = new AbortController();
+    const h = harness(f, {
+      run: async () => {
+        controller.abort(new Error("fixture canceled"));
+        return wire(report(f));
+      },
+    });
+    await expect(
+      h.auditor.audit(f.prepared, {
+        ...f.input,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("fixture canceled");
+    await expectRetained(f);
+  });
+  test("cancellation at final runtime verification prevents dispatch and cleans staged input", async () => {
+    const f = await fixture();
+    const controller = new AbortController();
+    let inspected = 0;
+    const h = harness(f, {
+      runtimeDeps: {
+        inspect: async (path, signal) => {
+          signal.throwIfAborted();
+          if (++inspected === 4) controller.abort(new Error("fixture canceled"));
+          return identity(path);
+        },
+      },
+    });
+    await expect(
+      h.auditor.audit(f.prepared, {
+        ...f.input,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("fixture canceled");
+    await expectClean(f);
+    expect(h.calls).toHaveLength(0);
+  });
+
   test("retains exit 143 worker logs with bounded private diagnostics", async () => {
     const f = await fixture();
     const stderr = "private-worker-detail" + "\u0000".repeat(20_000);
@@ -665,68 +860,27 @@ describe("SpackSourceAuditor lifecycle", () => {
     expect((await readdir(directory)).sort()).toEqual(["input", "work", "worker-journal.json"]);
     expect(await readFile(join(directory, "worker-journal.json"), "utf8")).toBe("fixture journal");
     h.setRun(async () => wire(report(f)));
-    expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
+    await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("already running");
+    expect(h.calls).toHaveLength(1);
     expect(await runDirectories(f)).toEqual(runs);
   });
 
-  test("retains process failure diagnostics and releases the slot for the next audit", async () => {
+  test("a confirmed process stop releases the slot for the next audit", async () => {
     const f = await fixture();
     const h = harness(f, {
       run: async () => {
-        throw new Error("fixture process failed");
+        throw new SpackProcessStoppedError("fixture process failed");
       },
     });
     await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("fixture process failed");
-    const retained = await expectRetained(f);
-    expect(retained.diagnostic.phase).toBe("execution");
+    await expectClean(f);
     h.setRun(async () => wire(report(f)));
     expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
     expect(h.calls[0]?.options.cwd).not.toBe(h.calls[1]?.options.cwd);
-    expect(await runDirectories(f)).toEqual([basename(retained.directory)]);
-  });
-
-  test("rejects concurrent calls without deleting an active run, then permits reuse", async () => {
-    const f = await fixture();
-    const entered = deferred<void>();
-    const release = deferred<RunResult>();
-    const h = harness(f, {
-      run: async () => {
-        entered.resolve();
-        return release.promise;
-      },
-    });
-    const first = h.auditor.audit(f.prepared, f.input);
-    try {
-      await entered.promise;
-      await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("already running");
-      expect(h.calls).toHaveLength(1);
-      expect(await runDirectories(f)).toHaveLength(1);
-    } finally {
-      release.resolve(wire(report(f)));
-      await first;
-    }
-    await expectClean(f);
-    h.setRun(async () => wire(report(f)));
-    expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
     await expectClean(f);
   });
 
-  test("pre-aborted input never inspects runtime or executes and does not retain the slot", async () => {
-    const f = await fixture();
-    const h = harness(f);
-    await expect(
-      h.auditor.audit(f.prepared, {
-        ...f.input,
-        signal: AbortSignal.abort(new Error("fixture canceled")),
-      }),
-    ).rejects.toThrow("fixture canceled");
-    expect(h.inspections).toEqual([]);
-    expect(h.calls).toEqual([]);
-    await expectClean(f);
-    expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
-  });
-
-  test("forwards cancellation to a running process, retains input and permits the next audit", async () => {
+  test("forwards cancellation to a running process, retains input and blocks reuse without stop proof", async () => {
     const f = await fixture();
     const controller = new AbortController();
     const entered = deferred<void>();
@@ -745,50 +899,14 @@ describe("SpackSourceAuditor lifecycle", () => {
     controller.abort(new Error("fixture canceled"));
     await expect(result).rejects.toThrow("fixture canceled");
     expect(h.calls[0]?.options.signal?.aborted).toBe(true);
-    await expectRetained(f);
+    const runs = await runDirectories(f);
+    expect(runs).toHaveLength(1);
+    expect(await readdir(join(f.cacheDir, "audits", runs[0] ?? "missing"))).not.toContain(
+      "diagnostic.json",
+    );
     h.setRun(async () => wire(report(f)));
-    expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
-  });
-
-  test("rejects cancellation even when the process returns a valid successful report", async () => {
-    const f = await fixture();
-    const controller = new AbortController();
-    const h = harness(f, {
-      run: async () => {
-        controller.abort(new Error("fixture canceled"));
-        return wire(report(f));
-      },
-    });
-    await expect(
-      h.auditor.audit(f.prepared, {
-        ...f.input,
-        signal: controller.signal,
-      }),
-    ).rejects.toThrow("fixture canceled");
-    await expectRetained(f);
-  });
-
-  test("cancellation at final runtime verification prevents dispatch and cleans staged input", async () => {
-    const f = await fixture();
-    const controller = new AbortController();
-    let inspected = 0;
-    const h = harness(f, {
-      runtimeDeps: {
-        inspect: async (path, signal) => {
-          signal.throwIfAborted();
-          if (++inspected === 4) controller.abort(new Error("fixture canceled"));
-          return identity(path);
-        },
-      },
-    });
-    await expect(
-      h.auditor.audit(f.prepared, {
-        ...f.input,
-        signal: controller.signal,
-      }),
-    ).rejects.toThrow("fixture canceled");
-    await expectClean(f);
-    expect(h.calls).toHaveLength(0);
+    await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("already running");
+    expect(h.calls).toHaveLength(1);
   });
 });
 
@@ -805,7 +923,6 @@ describe("SpackSourceAuditor runtime rejection", () => {
     expect(h.calls).toEqual([]);
     await expectClean(f);
   });
-
   test.each([
     { apptainerPath: "apptainer" },
     { sifPath: "/tmp/../runtime.sif" },
@@ -821,7 +938,6 @@ describe("SpackSourceAuditor runtime rejection", () => {
     expect(h.calls).toEqual([]);
     await expectClean(f);
   });
-
   test.each([
     "apptainer",
     "sif",
@@ -845,7 +961,6 @@ describe("SpackSourceAuditor runtime rejection", () => {
     await expectClean(f);
     expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
   });
-
   test.each([
     { uid: 1000 },
     { mode: 0o100777 },
@@ -864,7 +979,6 @@ describe("SpackSourceAuditor runtime rejection", () => {
     expect(h.calls).toEqual([]);
     await expectClean(f);
   });
-
   test("propagates runtime inspection/context exceptions without executing", async () => {
     const f = await fixture();
     for (const options of [
@@ -889,7 +1003,6 @@ describe("SpackSourceAuditor runtime rejection", () => {
       await expectClean(f);
     }
   });
-
   test.each([
     { hostNetworkNamespace: "unknown" },
     { hostPidNamespace: "net:[200]" },
@@ -901,7 +1014,6 @@ describe("SpackSourceAuditor runtime rejection", () => {
     expect(h.calls).toEqual([]);
     await expectClean(f);
   });
-
   test.each(["permissions", "symlink"])("rejects an unsafe audits directory (%s)", async (kind) => {
     const f = await fixture();
     const audits = join(f.cacheDir, "audits");

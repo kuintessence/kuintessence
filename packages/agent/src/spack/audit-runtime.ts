@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, normalize, parse } from "node:path";
 
-const SPACK_AUDIT_MEMORY_BYTES = 2_147_483_648;
+export const SPACK_AUDIT_MEMORY_BYTES = 2_147_483_648;
 export const SPACK_MANAGED_MEMORY_BYTES = 4_294_967_296;
 
 export interface SpackAuditRuntimeProfile {
@@ -217,14 +217,6 @@ export function buildSpackAuditCommand(
     "all",
     "--security",
     "no-new-privs",
-    "--pids-limit",
-    "128",
-    "--memory",
-    String(memoryLimitBytes),
-    "--memory-swap",
-    String(memoryLimitBytes),
-    "--cpus",
-    "2",
     "--pwd",
     "/kq/work",
     "--bind",

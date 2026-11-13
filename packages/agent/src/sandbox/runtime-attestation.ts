@@ -1,12 +1,20 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { dirname, join } from "node:path";
-import { canonicalJson } from "@kuintessence/shared";
+import { dirname } from "node:path";
+import { canonicalJson, createLogger } from "@kuintessence/shared";
+import { z } from "zod";
 import type { Spawner } from "../adapters/base";
 import { shellQuote } from "../adapters/base";
+import { PbsProAdapter } from "../adapters/pbs-pro";
+import { SlurmAdapter } from "../adapters/slurm";
+import { TorqueAdapter } from "../adapters/torque";
 import type { AgentConfig } from "../config";
+import { buildHpcCgroupCommand, type SandboxCgroupCheck } from "./cgroup-command";
+import { runNativeRuntimeProbe } from "./native-runtime-probe";
+
+const logger = createLogger("sandbox-runtime-attestation");
 
 export interface SandboxProcessIdentity {
   username: string;
@@ -21,6 +29,8 @@ export interface AttestedSandboxRuntime {
   runtimeAttestationId: string;
   apptainerPath: string;
   seccompProfilePath: string;
+  cgroupCheck: SandboxCgroupCheck;
+  attestedQueue: string;
   attestedNodes: string[];
   verifiedAtUnixMs: number;
   expiresAtUnixMs: number;
@@ -123,7 +133,7 @@ async function assertSecureAncestorDirectories(path: string): Promise<void> {
 
 function apptainerBaseArgv(
   apptainerPath: string,
-  seccompProfilePath: string,
+  seccompProfilePath: string | undefined,
   runtimePath: string,
 ): string[] {
   return [
@@ -141,7 +151,7 @@ function apptainerBaseArgv(
     "--drop-caps",
     "all",
     "--security",
-    `no-new-privs,seccomp:${seccompProfilePath}`,
+    seccompProfilePath ? `no-new-privs,seccomp:${seccompProfilePath}` : "no-new-privs",
     "--pwd",
     "/",
     runtimePath,
@@ -156,92 +166,223 @@ function sha256Check(path: string, expectedSha256: string): string {
   return `printf '%s  %s\\n' ${shellQuote(expectedSha256)} ${shellQuote(path)} | sha256sum -c -`;
 }
 
-async function runSlurmProbe(
+export function buildRuntimeIsolationProbeCommands(
+  unfiltered: string[],
+  production: string[],
+  seccompProbe: string[],
+): string[] {
+  const socket = "exec 3<>/dev/tcp/127.0.0.1/1";
+  const expectErrno = (command: string[], messages: string[]) =>
+    [
+      "export LC_ALL=C",
+      "rc=0",
+      `output=$(${shellCommand(command)} 2>&1) || rc=$?`,
+      `[[ $rc == 1 && ( ${messages.map((message) => `$output == *${shellQuote(message)}*`).join(" || ")} ) ]]`,
+    ].join("; ");
+  const socketCommand = ["/usr/bin/timeout", "3", "/bin/bash", "-c", socket];
+  return [
+    // The same image must execute the probes before a policy denial can count as evidence.
+    shellCommand([...unfiltered, "/bin/uname"]),
+    shellCommand([
+      ...unfiltered,
+      "/bin/bash",
+      "-c",
+      expectErrno(socketCommand, ["Connection refused", "Network is unreachable"]),
+    ]),
+    shellCommand([...production, "/bin/true"]),
+    shellCommand([
+      ...production,
+      "/bin/bash",
+      "-c",
+      expectErrno(socketCommand, ["Operation not permitted"]),
+    ]),
+    shellCommand([
+      ...seccompProbe,
+      "/bin/bash",
+      "-c",
+      expectErrno(["/bin/uname"], ["Operation not permitted"]),
+    ]),
+    shellCommand([
+      ...production,
+      "/bin/bash",
+      "-c",
+      [
+        "set -eu",
+        "loopback=0",
+        "while IFS=: read -r iface counters; do",
+        "  [[ -n $counters ]] || continue",
+        `  [[ \${iface//[[:space:]]/} == lo ]] || exit 43`,
+        "  loopback=$((loopback + 1))",
+        "done </proc/net/dev",
+        "[[ $loopback == 1 ]]",
+      ].join("\n"),
+    ]),
+  ];
+}
+
+export function buildEclRejectionProbeCommand(argv: string[]): string {
+  return [
+    "rc=0",
+    `ecl_error=$(${shellCommand(argv)} 2>&1) || rc=$?`,
+    "[[ $rc == 255 && $ecl_error == *'while checking container image with ECL: image signature not valid:'* ]] || exit 41",
+  ].join("; ");
+}
+
+export function assertPinnedPgpVerification(output: string, fingerprint: string): void {
+  const report = z
+    .object({
+      Signatures: z.number().int().positive(),
+      SignerKeys: z
+        .array(
+          z.object({
+            Signer: z.object({
+              Partition: z.string(),
+              Fingerprint: z.string().regex(/^[a-fA-F0-9]{40}$/),
+              // Global trusted keys report false; the CLI's --local prohibits keyserver lookup.
+              KeyLocal: z.boolean(),
+              KeyCheck: z.literal(true),
+              DataCheck: z.literal(true),
+            }),
+          }),
+        )
+        .min(1),
+    })
+    .parse(JSON.parse(output));
+  if (
+    !report.SignerKeys.some(({ Signer }) => Signer.Partition === "FS") ||
+    report.SignerKeys.some(
+      ({ Signer }) => Signer.Fingerprint.toLowerCase() !== fingerprint.toLowerCase(),
+    )
+  ) {
+    throw new Error("SIF verification does not match the pinned PGP signer");
+  }
+}
+
+interface RootProbeAccount extends SandboxProcessIdentity {
+  home: string;
+}
+
+export async function resolveRootProbeAccount(
+  spawner: Spawner,
+  username: string,
+): Promise<RootProbeAccount> {
+  if (!/^[A-Za-z_][A-Za-z0-9_-]{0,31}$/.test(username)) throw new Error("Invalid probe account");
+  const result = await spawner.run(["getent", "passwd", username], { timeoutMs: 10_000 });
+  const fields = result.stdout.trim().split(":");
+  const uid = Number(fields[2]);
+  const gid = Number(fields[3]);
+  const home = fields[5];
+  if (
+    result.exitCode !== 0 ||
+    fields.length !== 7 ||
+    fields[0] !== username ||
+    !/^[0-9]+$/.test(fields[2] ?? "") ||
+    !/^[0-9]+$/.test(fields[3] ?? "") ||
+    !Number.isSafeInteger(uid) ||
+    uid <= 0 ||
+    !Number.isSafeInteger(gid) ||
+    gid <= 0 ||
+    !home?.startsWith("/") ||
+    /[\0\r\n]/.test(home) ||
+    home.split("/").includes("..") ||
+    result.stdout.trim().includes("\n")
+  ) {
+    throw new Error("Root Sandbox probe requires a real non-root passwd account");
+  }
+  return { username, uid, gid, home };
+}
+
+async function runHpcProbe(
   config: AgentConfig,
+  scheduler: "slurm" | "pbs-pro" | "torque",
+  account: RootProbeAccount | undefined,
   spawner: Spawner,
   runtimePath: string,
   negativeRuntimePath: string | undefined,
   seccompProfilePath: string,
   seccompProbeProfilePath: string,
+  cgroupCheck: SandboxCgroupCheck,
   expectedSha256: {
     apptainer: string;
     runtime: string;
     seccomp: string;
     seccompProbe: string;
+    ecl?: string;
+    negativeRuntime?: string;
   },
 ): Promise<string[]> {
-  const probeRoot = await mkdtemp(join(config.AGENT_SANDBOX_ROOT, ".attest-"));
-  const scriptPath = join(probeRoot, "probe.sh");
-  const stdoutPath = join(probeRoot, "stdout.log");
-  const stderrPath = join(probeRoot, "stderr.log");
   const apptainerPath = config.AGENT_SANDBOX_APPTAINER_PATH;
   const positive = apptainerBaseArgv(apptainerPath, seccompProfilePath, runtimePath);
+  const unfiltered = apptainerBaseArgv(apptainerPath, undefined, runtimePath);
   const unauthorized = negativeRuntimePath
     ? apptainerBaseArgv(apptainerPath, seccompProfilePath, negativeRuntimePath)
     : undefined;
-  const productionSeccompNegative = [...positive, "/bin/uname"];
   const seccompNegative = apptainerBaseArgv(apptainerPath, seccompProbeProfilePath, runtimePath);
-  const networkNegative = [
-    ...positive,
-    "/usr/bin/timeout",
-    "3",
-    "/bin/bash",
-    "-c",
-    "exec 3<>/dev/tcp/1.1.1.1/53",
-  ];
   const script = [
     "#!/bin/bash",
     "set -euo pipefail",
+    `${buildHpcCgroupCommand(cgroupCheck, { cpus: 1, memoryMb: 128 }, scheduler)} >/dev/null`,
+    ...(account ? [`[[ $(id -u) == ${account.uid} && $(id -g) == ${account.gid} ]]`] : []),
     sha256Check(apptainerPath, expectedSha256.apptainer),
     sha256Check(runtimePath, expectedSha256.runtime),
     sha256Check(seccompProfilePath, expectedSha256.seccomp),
     sha256Check(seccompProbeProfilePath, expectedSha256.seccompProbe),
-    shellCommand([...positive, "/bin/true"]),
-    ...(unauthorized
-      ? [`if ${shellCommand([...unauthorized, "/bin/true"])}; then exit 41; fi`]
+    ...(expectedSha256.ecl
+      ? [
+          `ecl_dir=$(${shellCommand([apptainerPath, "buildcfg"])} | sed -n 's/^APPTAINER_CONFDIR=//p')`,
+          `[[ "$ecl_dir/ecl.toml" == ${shellQuote(config.AGENT_SANDBOX_ECL_PATH)} ]]`,
+          sha256Check(config.AGENT_SANDBOX_ECL_PATH, expectedSha256.ecl),
+        ]
       : []),
-    `if ${shellCommand(productionSeccompNegative)}; then exit 42; fi`,
-    `if ${shellCommand([...seccompNegative, "/bin/uname"])}; then exit 44; fi`,
-    `if ${shellCommand(networkNegative)}; then exit 43; fi`,
-    "grep -Eq '(slurm|job_)' /proc/self/cgroup",
+    ...(negativeRuntimePath && expectedSha256.negativeRuntime
+      ? [sha256Check(negativeRuntimePath, expectedSha256.negativeRuntime)]
+      : []),
+    ...buildRuntimeIsolationProbeCommands(unfiltered, positive, seccompNegative),
+    ...(unauthorized ? [buildEclRejectionProbeCommand([...unauthorized, "/bin/true"])] : []),
     "printf 'KQ_ATTESTED_NODE=%s\\n' \"$(hostname)\"",
   ].join("\n");
-  try {
-    await writeFile(scriptPath, script, { flag: "wx", mode: 0o700 });
-    await chmod(scriptPath, 0o700);
-    const command = [
-      "sbatch",
-      "--wait",
-      "--parsable",
-      "--job-name=kq-sandbox-attest",
-      "--cpus-per-task=1",
-      "--mem=128M",
-      "--time=00:02:00",
-      `--output=${stdoutPath}`,
-      `--error=${stderrPath}`,
-      ...(config.AGENT_SANDBOX_ATTESTATION_QUEUE
-        ? [`--partition=${config.AGENT_SANDBOX_ATTESTATION_QUEUE}`]
-        : []),
-      scriptPath,
-    ];
-    const result = await spawner.run(command, { timeoutMs: 150_000 });
-    const stdout = await readFile(stdoutPath, "utf8").catch(() => "");
-    const stderr = await readFile(stderrPath, "utf8").catch(() => "");
-    if (result.exitCode !== 0) {
-      throw new Error(
-        `Slurm Sandbox attestation failed (${result.exitCode}): ${stderr || result.stderr}`,
-      );
-    }
-    const nodes = stdout
-      .split("\n")
-      .flatMap((line) => (line.startsWith("KQ_ATTESTED_NODE=") ? [line.slice(17).trim()] : []));
-    if (nodes.length === 0 || nodes.some((node) => !/^[A-Za-z0-9._-]{1,255}$/.test(node))) {
-      throw new Error("Slurm Sandbox attestation did not report a safe compute node");
-    }
-    return [...new Set(nodes)].toSorted();
-  } finally {
-    await rm(probeRoot, { recursive: true, force: true });
-  }
+  const boundedSpawner: Spawner = {
+    run: (command, options) =>
+      spawner.run(
+        account
+          ? [
+              "setpriv",
+              `--reuid=${account.uid}`,
+              `--regid=${account.gid}`,
+              "--init-groups",
+              "--",
+              "env",
+              "-i",
+              "PATH=/usr/local/bin:/usr/bin:/bin:/opt/pbs/bin",
+              `HOME=${account.home}`,
+              `USER=${account.username}`,
+              `LOGNAME=${account.username}`,
+              "LC_ALL=C",
+              ...command,
+            ]
+          : command,
+        {
+          ...options,
+          timeoutMs: Math.min(options?.timeoutMs ?? 10_000, 10_000),
+        },
+      ),
+  };
+  return runNativeRuntimeProbe({
+    root: config.AGENT_SANDBOX_ROOT,
+    queue: config.AGENT_SANDBOX_ATTESTATION_QUEUE as string,
+    script,
+    ...(account
+      ? { account: { username: account.username, uid: account.uid, gid: account.gid } }
+      : {}),
+    adapter: (logDir) => {
+      const deps = { spawner: boundedSpawner, logDir };
+      if (scheduler === "slurm")
+        return new SlurmAdapter("attestation", { ...deps, terminalStatusBackend: "scontrol" });
+      return scheduler === "pbs-pro"
+        ? new PbsProAdapter("attestation", deps)
+        : new TorqueAdapter("attestation", deps);
+    },
+  });
 }
 
 export async function attestSandboxRuntimeEnvironment(
@@ -267,7 +408,10 @@ export async function attestSandboxRuntimeEnvironment(
       missingRequirements: ["sandbox-disabled"],
     };
   }
-  if (adapterType !== "slurm") {
+  if (
+    (adapterType !== "slurm" && adapterType !== "pbs-pro" && adapterType !== "torque") ||
+    (config.AGENT_SANDBOX_EXECUTION_MODE === "self-account" && adapterType === "torque")
+  ) {
     return {
       runtimeCache,
       networkIsolation: false,
@@ -290,15 +434,31 @@ export async function attestSandboxRuntimeEnvironment(
   const seccompProbeHash = config.AGENT_SANDBOX_SECCOMP_PROBE_PROFILE_SHA256;
   const publicKeyPath = config.AGENT_SANDBOX_SIF_PUBLIC_KEY_PATH;
   const publicKeyHash = config.AGENT_SANDBOX_SIF_PUBLIC_KEY_SHA256;
+  const pgpFingerprint = config.AGENT_SANDBOX_SIF_PGP_FINGERPRINT;
   const eclHash = config.AGENT_SANDBOX_ECL_SHA256;
   const negativeRuntimePath = config.AGENT_SANDBOX_ECL_NEGATIVE_PROBE_SIF_PATH;
+  const cgroupPath = config.AGENT_SANDBOX_CGROUP_CHECK_PATH;
+  const cgroupHash = config.AGENT_SANDBOX_CGROUP_CHECK_SHA256;
+  const attestedQueue = config.AGENT_SANDBOX_ATTESTATION_QUEUE;
+  if (!cgroupPath || !cgroupHash) missingRequirements.push("cgroup-checker");
+  if (!attestedQueue) missingRequirements.push("runtime-attestation-queue");
   if (!seccompPath || !seccompHash || !seccompProbePath || !seccompProbeHash) {
     missingRequirements.push("seccomp-attestation-profile");
   }
-  if (!publicKeyPath || !publicKeyHash) missingRequirements.push("sif-public-key");
+  if (
+    (!pgpFingerprint && (!publicKeyPath || !publicKeyHash)) ||
+    (pgpFingerprint && (publicKeyPath || publicKeyHash))
+  )
+    missingRequirements.push("sif-public-key");
   const eclRequired =
     config.AGENT_SANDBOX_EXECUTION_MODE === "root-impersonation" ||
     (config.AGENT_SANDBOX_EXECUTION_MODE === "disabled" && config.AGENT_SANDBOX_ROOT_IMPERSONATION);
+  if (eclRequired && (!config.AGENT_SANDBOX_ROOT_IMPERSONATION || processIdentity?.uid !== 0)) {
+    missingRequirements.push("root-impersonation-identity");
+  }
+  if (eclRequired && !config.AGENT_SANDBOX_ATTESTATION_ACCOUNT)
+    missingRequirements.push("runtime-attestation-account");
+  if (eclRequired && !pgpFingerprint) missingRequirements.push("ecl-pgp-signer");
   if (eclRequired && (!eclHash || !negativeRuntimePath)) {
     missingRequirements.push("ecl-negative-probe");
   }
@@ -321,6 +481,10 @@ export async function attestSandboxRuntimeEnvironment(
   const inspectFile = deps.inspectFile ?? inspectSecureFile;
   const validateAncestors = deps.validateAncestors ?? assertSecureAncestorDirectories;
   try {
+    const probeAccount = eclRequired
+      ? await resolveRootProbeAccount(spawner, config.AGENT_SANDBOX_ATTESTATION_ACCOUNT as string)
+      : undefined;
+    await mkdir(config.AGENT_SANDBOX_ROOT, { recursive: true, mode: 0o700 });
     const managedRoot = await lstat(config.AGENT_SANDBOX_ROOT);
     const expectedRootUid =
       config.AGENT_SANDBOX_EXECUTION_MODE === "self-account" ? processIdentity?.uid : 0;
@@ -333,12 +497,19 @@ export async function attestSandboxRuntimeEnvironment(
     ) {
       throw new Error("Sandbox managed root ownership or mode is unsafe");
     }
+    if (probeAccount) await chmod(config.AGENT_SANDBOX_ROOT, 0o711);
     const apptainer = await inspectFile(config.AGENT_SANDBOX_APPTAINER_PATH);
     assertSecureFile(config.AGENT_SANDBOX_APPTAINER_PATH, apptainer, undefined, true);
     await validateAncestors(config.AGENT_SANDBOX_APPTAINER_PATH);
-    const publicKey = await inspectFile(publicKeyPath as string);
-    assertSecureFile(publicKeyPath as string, publicKey, publicKeyHash, false);
-    await validateAncestors(publicKeyPath as string);
+    const checker = await inspectFile(cgroupPath as string);
+    assertSecureFile(cgroupPath as string, checker, cgroupHash, false);
+    await validateAncestors(cgroupPath as string);
+    const cgroupCheck = { path: cgroupPath as string, sha256: checker.sha256 };
+    const publicKey = publicKeyPath ? await inspectFile(publicKeyPath) : undefined;
+    if (publicKey && publicKeyPath) {
+      assertSecureFile(publicKeyPath, publicKey, publicKeyHash, false);
+      await validateAncestors(publicKeyPath);
+    }
     const seccomp = await inspectFile(seccompPath as string);
     assertSecureFile(seccompPath as string, seccomp, seccompHash, false);
     await validateAncestors(seccompPath as string);
@@ -350,10 +521,12 @@ export async function attestSandboxRuntimeEnvironment(
     const ecl = eclHash ? await inspectFile(config.AGENT_SANDBOX_ECL_PATH) : undefined;
     if (ecl) assertSecureFile(config.AGENT_SANDBOX_ECL_PATH, ecl, eclHash, false);
     if (ecl) await validateAncestors(config.AGENT_SANDBOX_ECL_PATH);
+    let negativeRuntimeSha256: string | undefined;
     if (negativeRuntimePath) {
       const negativeRuntime = await inspectFile(negativeRuntimePath);
       assertSecureFile(negativeRuntimePath, negativeRuntime, undefined, false);
       await validateAncestors(negativeRuntimePath);
+      negativeRuntimeSha256 = negativeRuntime.sha256;
       const negativeInspect = await spawner.run(
         [config.AGENT_SANDBOX_APPTAINER_PATH, "sif", "list", negativeRuntimePath],
         { timeoutMs: 15_000 },
@@ -374,8 +547,7 @@ export async function attestSandboxRuntimeEnvironment(
           config.AGENT_SANDBOX_APPTAINER_PATH,
           "verify",
           "--all",
-          "--key",
-          publicKeyPath as string,
+          ...(pgpFingerprint ? ["--local", "--json"] : ["--key", publicKeyPath as string]),
           runtime.localPath,
         ],
         { timeoutMs: 30_000 },
@@ -383,18 +555,24 @@ export async function attestSandboxRuntimeEnvironment(
       if (verified.exitCode !== 0) {
         throw new Error(`Sandbox SIF signature verification failed: ${runtime.localPath}`);
       }
-      const attestedNodes = await runSlurmProbe(
+      if (pgpFingerprint) assertPinnedPgpVerification(verified.stdout, pgpFingerprint);
+      const attestedNodes = await runHpcProbe(
         config,
+        adapterType,
+        probeAccount,
         spawner,
         runtime.localPath,
         negativeRuntimePath,
         seccompPath as string,
         seccompProbePath as string,
+        cgroupCheck,
         {
           apptainer: apptainer.sha256,
           runtime: file.sha256,
           seccomp: seccomp.sha256,
           seccompProbe: seccompProbe.sha256,
+          ecl: ecl?.sha256,
+          negativeRuntime: negativeRuntimeSha256,
         },
       );
       const verifiedAtUnixMs = (deps.now ?? Date.now)();
@@ -405,12 +583,18 @@ export async function attestSandboxRuntimeEnvironment(
             adapterType,
             apptainerSha256: apptainer.sha256,
             attestedNodes,
+            attestedQueue,
+            cgroupCheck,
             digest,
             eclSha256: ecl?.sha256,
             processIdentity,
-            publicKeySha256: publicKey.sha256,
+            probeAccount,
+            negativeRuntimeSha256,
+            publicKeySha256: publicKey?.sha256,
+            pgpFingerprint,
             runtimePath: runtime.localPath,
             seccompSha256: seccomp.sha256,
+            seccompProbeSha256: seccompProbe.sha256,
           }),
         )
         .digest("hex");
@@ -421,6 +605,8 @@ export async function attestSandboxRuntimeEnvironment(
         runtimeAttestationId,
         apptainerPath: config.AGENT_SANDBOX_APPTAINER_PATH,
         seccompProfilePath: seccompPath as string,
+        cgroupCheck,
+        attestedQueue: attestedQueue as string,
         attestedNodes,
         verifiedAtUnixMs,
         expiresAtUnixMs,
@@ -435,7 +621,8 @@ export async function attestSandboxRuntimeEnvironment(
       ecl: eclRequired,
       missingRequirements: [],
     };
-  } catch {
+  } catch (error) {
+    logger.warn({ err: error }, "Sandbox runtime attestation failed");
     return {
       runtimeCache: {},
       networkIsolation: false,

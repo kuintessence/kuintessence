@@ -61,7 +61,5 @@ gui/src-tauri/binaries/
 gui/src-tauri/gen/
 gui/node_modules/
 gui/dist/
-
-# Python helpers and worker test caches.
 __pycache__/
-*.pyc
+*.py[cod]

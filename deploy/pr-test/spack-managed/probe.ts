@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { copyFile, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { realSpackAuditProcess } from "../../../packages/agent/src/spack/audit-process";
+import { prepareSpackProcessSupervision, runSpackSupervisedProcess, stopSpackSupervisedProcess } from "../../../packages/agent/src/spack/supervised-process";
 import { buildSpackAuditCommand, verifySpackAuditRuntime } from "../../../packages/agent/src/spack/audit-runtime";
 
 assert.equal(process.env.KQ_PR_TEST, "1");
@@ -19,14 +19,16 @@ const runtime = {
 const signal = AbortSignal.timeout(90_000);
 await verifySpackAuditRuntime(runtime, signal);
 const input = await mkdtemp("/var/lib/kuintessence/runtime-probe-");
+const supervisor = await prepareSpackProcessSupervision(input, 2 * 1024 ** 3);
 try {
   await writeFile(join(input, "runtime.json"), JSON.stringify({
     hostNetworkNamespace: await readlink("/proc/self/ns/net"),
     hostPidNamespace: await readlink("/proc/self/ns/pid"),
   }), { mode: 0o400 });
   await copyFile("packages/agent/src/spack/worker/source_audit.py", join(input, "boundary.py"));
+  await copyFile("packages/shared/src/spack-compatibility.json", join(input, "spack-compatibility.json"));
   await copyFile("deploy/pr-test/spack-managed/probe.py", join(input, "source_audit.py"));
-  const result = await realSpackAuditProcess.run(
+  const result = await runSpackSupervisedProcess(
     buildSpackAuditCommand(runtime, input, `sha256:${"0".repeat(64)}`),
     {
       cwd: input,
@@ -41,6 +43,7 @@ try {
       maxOutputBytes: 2 * 1024 ** 2,
       signal,
     },
+    supervisor,
   );
   // This pre-material probe has no recipe, certificate or ticket. Still whitelist
   // runtime diagnostics instead of publishing arbitrary native error strings.
@@ -63,5 +66,6 @@ try {
   assert.equal(result.stdout.trim(), "managed-runtime-boundary-ok");
   console.log("Managed case: production namespace/network/cgroup verifier passed");
 } finally {
+  await stopSpackSupervisedProcess(supervisor);
   await rm(input, { recursive: true, force: true });
 }

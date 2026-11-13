@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { PgDb } from "@kuintessence/db";
 import { ErrorCode } from "@kuintessence/shared";
-import type { AuthzService } from "../authz/service";
+import { AuthorizationUnavailableError, type AuthzService } from "../authz/service";
 import { QueueRegistryService } from "./queue-registry";
 
 interface FakeQueueRow {
@@ -354,4 +354,33 @@ describe("QueueRegistryService SpiceDB authorization", () => {
     });
     expect(selected).not.toHaveProperty("queueName");
   });
+});
+
+test("execution permission checks ignore inventory readiness and preserve authz backend errors", async () => {
+  const ctx = { role: "user" as const, orgId: "consumer-org", userId: "user-1" };
+  const local = new QueueRegistryService(fakeQueueDb(), undefined, { validationMode: "enforce" });
+  await local.assertExecutionAccess("queue-1", ctx);
+  await expect(
+    new QueueRegistryService(fakeQueueDb([{ ...queueRow, enabled: false }])).assertExecutionAccess(
+      "queue-1",
+      ctx,
+    ),
+  ).rejects.toMatchObject({ statusCode: 403 });
+  await expect(
+    new QueueRegistryService(
+      fakeQueueDb([{ ...queueRow, visibleOrgIds: [] }]),
+    ).assertExecutionAccess("queue-1", ctx),
+  ).rejects.toMatchObject({ statusCode: 403 });
+  const unavailable = new AuthorizationUnavailableError(
+    "Authorization unavailable: SpiceDB unavailable",
+  );
+  const authz = {
+    mode: "enforce",
+    requirePermission: async () => {
+      throw unavailable;
+    },
+  } as unknown as AuthzService;
+  await expect(
+    new QueueRegistryService(fakeQueueDb(), authz).assertExecutionAccess("queue-1", ctx),
+  ).rejects.toBe(unavailable);
 });

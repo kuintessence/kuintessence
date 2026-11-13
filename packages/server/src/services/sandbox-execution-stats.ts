@@ -1,4 +1,4 @@
-import { type PgDb, scriptExecutionStats } from "@kuintessence/db";
+import { jobs, type PgDb, scriptExecutionStats } from "@kuintessence/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 
 export function sandboxInputSizeBucket(inputBytes: number): string {
@@ -51,6 +51,7 @@ export class SandboxExecutionStatsService {
   }
 
   async record(input: {
+    jobId: string;
     assetRevisionId: string | null;
     inlineScriptHash: string | null;
     runtimeProfileId: string;
@@ -60,6 +61,21 @@ export class SandboxExecutionStatsService {
     succeeded: boolean;
   }): Promise<void> {
     await this.db.transaction(async (tx) => {
+      const [job] = await tx
+        .select({ status: jobs.status, recordedAt: jobs.sandboxStatsRecordedAt })
+        .from(jobs)
+        .where(eq(jobs.id, input.jobId))
+        .for("update");
+      if (!job || !["completed", "failed", "cancelled"].includes(job.status))
+        throw new Error("Sandbox statistics require a terminal Job");
+      if (input.succeeded !== (job.status === "completed"))
+        throw new Error("Sandbox statistics disagree with the Job result");
+      if (job.recordedAt) return;
+      // The marker and aggregate commit together; a crash can retry without double counting.
+      await tx
+        .update(jobs)
+        .set({ sandboxStatsRecordedAt: new Date() })
+        .where(eq(jobs.id, input.jobId));
       const bucket = sandboxInputSizeBucket(input.inputBytes);
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtext(${`${input.assetRevisionId ?? input.inlineScriptHash}:${input.runtimeProfileId}:${bucket}`}))`,

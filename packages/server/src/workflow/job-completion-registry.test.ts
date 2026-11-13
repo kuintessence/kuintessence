@@ -1,7 +1,117 @@
 import { describe, expect, test } from "bun:test";
-import { JobCompletionRegistry } from "./job-completion-registry";
+import {
+  completionFromJob,
+  type JobCompletion,
+  JobCompletionRegistry,
+} from "./job-completion-registry";
 
 describe("JobCompletionRegistry", () => {
+  test("multiple waiters do not replace each other and time out independently", async () => {
+    const reg = new JobCompletionRegistry();
+    const early = reg.awaitCompletion("shared", 5);
+    const remaining = reg.awaitCompletion("shared", 1000);
+    await expect(early).rejects.toThrow("timed out");
+    reg.complete("shared", { status: "completed", collected: { value: "done" } });
+    expect((await remaining).collected).toEqual({ value: "done" });
+  });
+
+  test("recovers a persisted completion without any in-memory notification", async () => {
+    const completion: JobCompletion = { status: "completed", collected: { output: "persisted" } };
+    const load = async () => completion;
+    const before = new JobCompletionRegistry({ load });
+    before.complete("job", { status: "failed", collected: {} });
+    expect(await before.awaitCompletion("job", 100)).toEqual(completion);
+    const after = new JobCompletionRegistry({ load });
+    expect(await after.awaitCompletion("job", 100)).toEqual(completion);
+    expect(await after.awaitCompletion("job", 100)).toEqual(completion);
+  });
+
+  test("polls persistent results when an event is lost and retries transient read errors", async () => {
+    let reads = 0;
+    const reg = new JobCompletionRegistry({
+      pollIntervalMs: 2,
+      load: async () => {
+        reads++;
+        if (reads === 1) throw new Error("temporary database outage");
+        if (reads === 2) return null;
+        return { status: "completed", collected: { value: "saved" } };
+      },
+    });
+    const [first, second] = await Promise.all([
+      reg.awaitCompletion("job", 1000),
+      reg.awaitCompletion("job", 1000),
+    ]);
+    expect(first).toEqual(second);
+    expect(first.collected.value).toBe("saved");
+    expect(reads).toBe(3);
+  });
+
+  test("notification during a stale database read triggers another read instead of trusting event data", async () => {
+    let release: (value: JobCompletion | null) => void = () => {};
+    const stale = new Promise<JobCompletion | null>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0;
+    const reg = new JobCompletionRegistry({
+      pollIntervalMs: 60_000,
+      load: async () => {
+        reads++;
+        return reads === 1 ? stale : { status: "completed", collected: { value: "database" } };
+      },
+    });
+    const result = reg.awaitCompletion("job", 1000);
+    reg.complete("job", { status: "failed", collected: { value: "uncommitted notification" } });
+    release(null);
+    expect(await result).toEqual({ status: "completed", collected: { value: "database" } });
+    expect(reads).toBe(2);
+  });
+
+  test("aborting a waiter stops its polling and a stale read cannot resolve a new waiter", async () => {
+    let release: (value: JobCompletion | null) => void = () => {};
+    const stale = new Promise<JobCompletion | null>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0;
+    const reg = new JobCompletionRegistry({
+      pollIntervalMs: 60_000,
+      load: async () => {
+        reads++;
+        return reads === 1 ? stale : { status: "completed", collected: { value: "new" } };
+      },
+    });
+    const controller = new AbortController();
+    const first = reg.awaitCompletion("job", 1000, controller.signal);
+    controller.abort(new Error("lease lost"));
+    await expect(first).rejects.toThrow("lease lost");
+    const second = reg.awaitCompletion("job", 1000);
+    release({ status: "failed", collected: {} });
+    expect((await second).collected.value).toBe("new");
+    await Bun.sleep(5);
+    expect(reads).toBe(2);
+  });
+
+  test("reconstructed results retain failure details but exclude restricted outputs", () => {
+    const job = {
+      status: "failed",
+      restrictedNoEgress: true,
+      collectedOutputs: { secret: "data" },
+      errorMessage: "exit failed",
+      reason: "TIMEOUT",
+      exitCode: 124,
+    };
+    expect(completionFromJob(job)).toEqual({
+      status: "failed",
+      collected: {},
+      errorMessage: "exit failed",
+      reason: "TIMEOUT",
+      exitCode: 124,
+    });
+    expect(completionFromJob({ ...job, status: "running" })).toBeNull();
+    expect(completionFromJob({ ...job, restrictedNoEgress: false })?.collected).toEqual({
+      secret: "data",
+    });
+  });
+
   test("resolves an awaited job when it completes", async () => {
     const reg = new JobCompletionRegistry();
     const p = reg.awaitCompletion("j1");

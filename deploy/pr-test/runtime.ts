@@ -154,11 +154,33 @@ async function main() {
   }
   const marker = `kq-pr-${scheduler}-completed`;
   const completed = await submit(`printf '${marker}\\n'`);
+  let lastState = "";
   const final = await waitFor(
     "completed scheduler job",
-    () => job(completed.id),
+    async () => {
+      const value = await job(completed.id);
+      const state = `${value.status}/${value.schedulerJobId ?? "unassigned"}`;
+      if (state !== lastState) {
+        console.log(`Scheduler job: ${state}`);
+        lastState = state;
+      }
+      return value;
+    },
     (value) => ["completed", "failed", "cancelled"].includes(value.status),
-  );
+  ).catch(async (error: unknown) => {
+    if (scheduler === "pbs") {
+      // Summary commands omit Variable_List (which can contain ephemeral credentials).
+      for (const [command, args] of [["qstat", ["-ans"]], ["pbsnodes", ["-aSj"]]] as const) {
+        try {
+          const result = await execute(command, [...args], { timeout: 10_000, maxBuffer: 65536 });
+          console.error(`${command} summary: ${result.stdout}`);
+        } catch {
+          console.error(`${command} summary unavailable`);
+        }
+      }
+    }
+    throw error;
+  });
   assert.equal(final.status, "completed");
   assert(final.schedulerJobId, "Agent did not return a real scheduler job ID");
   await waitFor(

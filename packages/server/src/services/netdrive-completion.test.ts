@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import type { PgDb } from "@kuintessence/db";
+import { netdriveFiles, type PgDb } from "@kuintessence/db";
 import type { MinioBackend } from "../storage/minio-client";
 import { NetDriveService } from "./netdrive";
 
@@ -29,11 +29,13 @@ function fixture() {
   const db = {
     execute: async () => {},
     select: () => ({
-      from: () => ({
+      from: (table: unknown) => ({
         where: () => {
-          const result = Promise.resolve(rows);
+          const selectedRows = table === netdriveFiles ? rows : [];
+          const result = Promise.resolve(selectedRows);
           return Object.assign(result, {
-            limit: async () => rows,
+            limit: async () => selectedRows,
+            groupBy: async () => [],
             orderBy: () => ({ limit: async () => [] }),
           });
         },

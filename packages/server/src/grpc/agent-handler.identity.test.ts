@@ -5,6 +5,7 @@ import {
   AgentMessageSchema,
   CancelJobAckSchema,
   DataScanResultSchema,
+  FederationAccountingResponseSchema,
   FileTransferProgressSchema,
   HeartbeatSchema,
   JobLogsResponseSchema,
@@ -27,8 +28,7 @@ import type { JobService, SchedulerRuntimeDetails } from "../services/job-servic
 import type { TransferRegistry } from "../services/transfer-registry";
 import type { InstalledRegistry } from "../software-governance/installed-registry";
 import { JobCompletionRegistry } from "../workflow/job-completion-registry";
-import type { AgentMetricsRecorder } from "./agent-handler";
-import { registerAgentHandler } from "./agent-handler";
+import { type AgentMetricsRecorder, registerAgentHandler } from "./agent-handler";
 import { AgentDispatcher } from "./dispatcher";
 
 const silent = pino({ level: "silent" });
@@ -87,7 +87,10 @@ function registerMsg(agentId: string) {
 }
 
 describe("agent-handler identity pinning", () => {
-  test("redelivers cancellations on register and accepts only the registered Agent ACK", async () => {
+  test.each([
+    false,
+    true,
+  ])("redelivers cancellations and binds stop proof to the registered Agent: %s", async (installationsStopped) => {
     const calls: string[] = [];
     const { router, handlers } = createMockRouter();
     registerAgentHandler(router, {
@@ -100,8 +103,8 @@ describe("agent-handler identity pinning", () => {
           calls.push(`redeliver:${agentId}`);
           return 1;
         },
-        acknowledge: async (agentId, jobId, revokedEpoch) => {
-          calls.push(`ack:${agentId}:${jobId}:${revokedEpoch}`);
+        acknowledge: async (agentId, jobId, revokedEpoch, proof) => {
+          calls.push(`ack:${agentId}:${jobId}:${revokedEpoch}:${proof}`);
           return true;
         },
       },
@@ -109,16 +112,19 @@ describe("agent-handler identity pinning", () => {
     const acknowledgement = create(AgentMessageSchema, {
       payload: {
         case: "cancelJobAck",
-        value: create(CancelJobAckSchema, { jobId: "job-1", revokedEpoch: 7n }),
+        value: create(CancelJobAckSchema, {
+          jobId: "job-1",
+          revokedEpoch: 7n,
+          installationsStopped,
+        }),
       },
     });
 
     if (!handlers.connect) throw new Error("connect handler not registered");
     await drain(handlers.connect(iter(registerMsg("agent-1"), acknowledgement)));
 
-    expect(calls).toEqual(["redeliver:agent-1", "ack:agent-1:job-1:7"]);
+    expect(calls).toEqual(["redeliver:agent-1", `ack:agent-1:job-1:7:${installationsStopped}`]);
   });
-
   test("redelivers Job work-root releases and accepts the registered Agent ACK", async () => {
     const calls: string[] = [];
     const { router, handlers } = createMockRouter();
@@ -150,7 +156,6 @@ describe("agent-handler identity pinning", () => {
 
     expect(calls).toEqual(["redeliver:agent-1", "ack:agent-1:job-1"]);
   });
-
   test("fences status and cancellation ACK messages from a replaced Agent stream", async () => {
     const calls: string[] = [];
     const dispatcher = new AgentDispatcher();
@@ -208,7 +213,6 @@ describe("agent-handler identity pinning", () => {
 
     expect(calls).toEqual([]);
   });
-
   test("routes a CP-local scan only under the registered Agent identity", async () => {
     const accepted: Array<{ registeredAgentId: string; resultAgentId: string; requestId: string }> =
       [];
@@ -258,8 +262,8 @@ describe("agent-handler identity pinning", () => {
       { registeredAgentId: "agent-1", resultAgentId: "agent-1", requestId: "request-1" },
     ]);
   });
-
   test("acks a job status event only after the registered Agent update succeeds", async () => {
+    const receiptEvents: string[] = [];
     const calls: Array<
       [
         string,
@@ -287,6 +291,7 @@ describe("agent-handler identity pinning", () => {
         schedulerDetails?: SchedulerRuntimeDetails,
         workingDir?: string,
       ) => {
+        receiptEvents.push("persisted");
         calls.push([
           jobId,
           status,
@@ -308,6 +313,14 @@ describe("agent-handler identity pinning", () => {
       jobService: fakeJob,
       logger: silent,
       dispatcher: new AgentDispatcher(),
+      jobDispatches: {
+        redeliver: async (id) => {
+          receiptEvents.push(`replay:${id}`);
+        },
+        acknowledge: async (id, jobId) => {
+          receiptEvents.push(`receipt:${id}:${jobId}`);
+        },
+      },
     });
 
     const status = create(AgentMessageSchema, {
@@ -324,6 +337,12 @@ describe("agent-handler identity pinning", () => {
           workingDir: "/shared/agent-owned/job-1",
           node: "compute-03",
           reason: "None",
+          accounting: {
+            source: "slurm-sacct",
+            schedulerJobId: "scheduler-1",
+            observedAt: "2026-11-07T00:00:00.000Z",
+            cpuTimeMilliseconds: "9007199254740993",
+          },
         }),
       },
     });
@@ -331,6 +350,7 @@ describe("agent-handler identity pinning", () => {
     if (!handlers.connect) throw new Error("connect handler not registered");
     const responses = await collectServer(handlers.connect(iter(registerMsg("agent-1"), status)));
 
+    expect(receiptEvents).toEqual(["replay:agent-1", "persisted", "receipt:agent-1:job-1"]);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual([
       "job-1",
@@ -341,7 +361,19 @@ describe("agent-handler identity pinning", () => {
       0,
       { result: "ok" },
       "status-event-1",
-      { node: "compute-03", reason: "None" },
+      {
+        node: "compute-03",
+        reason: "None",
+        accounting: {
+          version: 1,
+          source: "slurm-sacct",
+          schedulerJobId: "scheduler-1",
+          observedAt: "2026-11-07T00:00:00.000Z",
+          cpuTimeMilliseconds: "9007199254740993",
+          elapsedMilliseconds: undefined,
+          allocatedCpus: undefined,
+        },
+      },
       "/shared/agent-owned/job-1",
     ]);
     expect(responses.map((message) => message.payload.case)).toEqual([
@@ -353,7 +385,6 @@ describe("agent-handler identity pinning", () => {
       value: { eventId: "status-event-1" },
     });
   });
-
   test("does not ack a job status event when persistence fails", async () => {
     const { router, handlers } = createMockRouter();
     registerAgentHandler(router, {
@@ -382,7 +413,6 @@ describe("agent-handler identity pinning", () => {
     const responses = await collectServer(handlers.connect(iter(registerMsg("agent-1"), status)));
     expect(responses.map((message) => message.payload.case)).toEqual(["registerResponse"]);
   });
-
   test("acks a different reported directory while projecting the persisted binding and sticky terminal status", async () => {
     const completionRegistry = new JobCompletionRegistry();
     const completion = completionRegistry.awaitCompletion("job-sticky");
@@ -429,7 +459,6 @@ describe("agent-handler identity pinning", () => {
       value: { eventId: "status-event-sticky" },
     });
   });
-
   test("advertises heartbeat ACK support and acks only applied heartbeat sequences", async () => {
     const heartbeatSequences: bigint[] = [];
     const { router, handlers } = createMockRouter();
@@ -468,7 +497,6 @@ describe("agent-handler identity pinning", () => {
     });
     expect(heartbeatSequences).toEqual([41n]);
   });
-
   test("does not ack a heartbeat sequence when the Agent heartbeat update fails", async () => {
     const { router, handlers } = createMockRouter();
     registerAgentHandler(router, {
@@ -495,7 +523,6 @@ describe("agent-handler identity pinning", () => {
     );
     expect(responses.map((message) => message.payload.case)).toEqual(["registerResponse"]);
   });
-
   test("jobStatus before register is ignored (no updateStatus call)", async () => {
     let called = false;
     const fakeJob = {
@@ -523,7 +550,6 @@ describe("agent-handler identity pinning", () => {
     await drain(handlers.connect(iter(status)));
     expect(called).toBe(false);
   });
-
   test("softwareOperationResult ingest failure does not stop later jobStatus handling", async () => {
     const calls: Array<[string, string, string | undefined, string | undefined]> = [];
     const fakeJob = {
@@ -579,7 +605,6 @@ describe("agent-handler identity pinning", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual(["job-after-software-result", "completed", undefined, "agent-1"]);
   });
-
   test("heartbeat installed-software and metrics are attributed to the registered agent", async () => {
     const replacedFor: string[] = [];
     const metricAgentIds: string[] = [];
@@ -627,7 +652,6 @@ describe("agent-handler identity pinning", () => {
     expect(metricAgentIds.every((id) => id === "agent-1")).toBe(true);
     expect(metricAgentIds.length).toBeGreaterThan(0);
   });
-
   test("agent register pushes the latest stored software policy", async () => {
     const pushed: Array<{
       agentId: string;
@@ -690,7 +714,6 @@ describe("agent-handler identity pinning", () => {
       },
     ]);
   });
-
   test.each([
     false,
     true,
@@ -777,7 +800,6 @@ describe("agent-handler identity pinning", () => {
     expect(pushed[0]?.correlationId).toBe(correlated ? "correlation-1" : "");
     expect(pushed[0]?.uploadId).toBe(correlated ? "upload-1" : "");
   });
-
   test("partUrlsRequest before register is ignored (minter not called)", async () => {
     let called = false;
     const fakeMinter = {
@@ -807,7 +829,6 @@ describe("agent-handler identity pinning", () => {
     await drain(handlers.connect(iter(req)));
     expect(called).toBe(false);
   });
-
   test("fileTransferProgress parts reach the transfer registry", async () => {
     const updates: Array<{ requestId: string; event: { parts?: unknown } }> = [];
     const fakeRegistry = {
@@ -850,7 +871,6 @@ describe("agent-handler identity pinning", () => {
       { partNumber: 2, etag: "e2" },
     ]);
   });
-
   test("jobLogsResponse resolves the pending Server request", async () => {
     const resolved: unknown[] = [];
     const jobLogsService = {
@@ -885,4 +905,66 @@ describe("agent-handler identity pinning", () => {
       { requestId: "logs-1", result: { text: "done\n", error: "", unavailable: true } },
     ]);
   });
+
+  test("redelivers cancellations on register and accepts only the registered Agent ACK", async () => {
+    const calls: string[] = [];
+    const { router, handlers } = createMockRouter();
+    registerAgentHandler(router, {
+      agentManager: { register: async () => undefined } as unknown as AgentManager,
+      jobService: {} as unknown as JobService,
+      logger: silent,
+      dispatcher: new AgentDispatcher(),
+      jobCancellations: {
+        redeliver: async (agentId) => {
+          calls.push(`redeliver:${agentId}`);
+          return 1;
+        },
+        acknowledge: async (agentId, jobId, revokedEpoch) => {
+          calls.push(`ack:${agentId}:${jobId}:${revokedEpoch}`);
+          return true;
+        },
+      },
+    });
+    const acknowledgement = create(AgentMessageSchema, {
+      payload: {
+        case: "cancelJobAck",
+        value: create(CancelJobAckSchema, { jobId: "job-1", revokedEpoch: 7n }),
+      },
+    });
+
+    if (!handlers.connect) throw new Error("connect handler not registered");
+    await drain(handlers.connect(iter(registerMsg("agent-1"), acknowledgement)));
+
+    expect(calls).toEqual(["redeliver:agent-1", "ack:agent-1:job-1:7"]);
+  });
+});
+
+test("accounting responses require registration and capability and carry the pinned Agent identity", async () => {
+  for (const advertised of [false, true]) {
+    const seen: string[] = [];
+    const { router, handlers } = createMockRouter();
+    registerAgentHandler(router, {
+      agentManager: { register: async () => undefined } as unknown as AgentManager,
+      jobService: {} as unknown as JobService,
+      logger: silent,
+      dispatcher: new AgentDispatcher(),
+      federationAccounting: {
+        receive: async (agentId, body) => {
+          seen.push(`${agentId}:${body}`);
+        },
+      },
+    });
+    const response = create(AgentMessageSchema, {
+      payload: {
+        case: "federationAccountingResponse",
+        value: create(FederationAccountingResponseSchema, { responseJson: "probe" }),
+      },
+    });
+    const registration = registerMsg("original-agent");
+    if (registration.payload.case !== "register" || !handlers.connect)
+      throw new Error("Missing fixture");
+    registration.payload.value.federationAccountingV1 = advertised;
+    await drain(handlers.connect(iter(response, registration, response)));
+    expect(seen).toEqual(advertised ? ["original-agent:probe"] : []);
+  }
 });

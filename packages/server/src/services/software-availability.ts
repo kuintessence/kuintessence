@@ -78,7 +78,11 @@ export class SoftwareAvailabilityService {
     private readonly authz?: AuthzService,
   ) {}
 
-  async resolve(input: SoftwareAvailabilityRequest, principal: BoundPrincipal) {
+  async resolve(
+    input: SoftwareAvailabilityRequest,
+    principal: BoundPrincipal,
+    options: { requireInstallation?: boolean } = {},
+  ) {
     const asset = await this.resolveAsset(input);
     const spec = this.resolveSpec(input, asset);
     if (!spec) {
@@ -153,14 +157,14 @@ export class SoftwareAvailabilityService {
         accessAllowed: access.allowed,
         installAllowed: installAccess.allowed,
         installRequested: input.installable,
-        installedSpec,
+        installedSpec: options.requireInstallation ? undefined : installedSpec,
         sourceAuditVerified,
         usecaseRef: input.usecaseRef,
         controlChannelOnline: controlChannelOnline.get(agent.agentId) ?? null,
       });
       const licenseBlocks = await this.evaluateLicense(
         asset,
-        !installedSpec && input.installable,
+        (options.requireInstallation === true || !installedSpec) && input.installable,
         principal,
         spec,
         agent.providerOrgId ?? asset?.providerOrgId ?? null,
@@ -213,6 +217,63 @@ export class SoftwareAvailabilityService {
     if (!access.allowed) {
       throw new AppError(ErrorCode.FORBIDDEN, access.reason, 403);
     }
+  }
+
+  /** Recheck policy for an existing execution without interpreting lost inventory as revocation. */
+  async assertExecutionAccess(
+    input: SoftwareAvailabilityRequest,
+    principal: BoundPrincipal,
+    installing: boolean,
+  ): Promise<void> {
+    const asset = await this.resolveAsset(input);
+    const spec = this.resolveSpec(input, asset);
+    const agentId = input.targetAgentIds?.[0];
+    if (
+      !asset ||
+      asset.kind !== "spack-package" ||
+      asset.id !== input.assetRef?.id ||
+      !spec ||
+      !agentId ||
+      input.targetAgentIds?.length !== 1
+    )
+      throw new AppError(ErrorCode.FORBIDDEN, "Execution software binding is unavailable", 403);
+    const [agent] = await this.db.select().from(agents).where(eq(agents.agentId, agentId));
+    if (!agent)
+      throw new AppError(ErrorCode.FORBIDDEN, "Execution Agent binding is unavailable", 403);
+    const access = await authorizeSoftwareAssetAccessThroughSpice({
+      authz: this.authz,
+      assetId: asset.id,
+      capability: "use",
+      principal,
+      local: await this.evaluateAccess(asset, principal, "use"),
+    });
+    const installAccess = installing
+      ? await authorizeSoftwareAssetAccessThroughSpice({
+          authz: this.authz,
+          assetId: asset.id,
+          capability: "install",
+          principal,
+          local: await this.evaluateAccess(asset, principal, "install"),
+        })
+      : { allowed: true };
+    const policy = (await this.loadPolicies([agent])).get(agentId) ?? defaultPolicy();
+    const reasons = this.evaluateAgent({
+      agent,
+      asset,
+      spec,
+      policy,
+      accessAllowed: access.allowed,
+      installAllowed: installAccess.allowed,
+      installRequested: installing,
+      // Compute is already using this spec; this is not an inventory or installation claim.
+      installedSpec: installing ? undefined : spec,
+      sourceAuditVerified:
+        !installing || (await this.runtime.sourceAuditAvailable?.(agentId, spec)) === true,
+      usecaseRef: input.usecaseRef,
+      controlChannelOnline: null,
+    });
+    if (reasons.length)
+      throw new AppError(ErrorCode.FORBIDDEN, "Execution software policy revoked", 403);
   }
 
   private async evaluateLicense(

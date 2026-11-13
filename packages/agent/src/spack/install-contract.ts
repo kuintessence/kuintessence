@@ -1,5 +1,6 @@
 import {
   InstalledSpecSchema,
+  type SpackExecutionPin,
   SpackMaterialDigestSchema,
   type SpackPolicy,
 } from "@kuintessence/shared";
@@ -150,7 +151,17 @@ export type SpackWorkerStopProof = z.infer<typeof SpackWorkerStopProofSchema>;
 export const SpackInstallRecordSchema = z.strictObject({
   version: z.literal(1),
   id: z.string().uuid(),
-  state: z.enum(["building", "verifying", "ready", "unavailable", "failed", "removing", "removed"]),
+  state: z.enum([
+    "building",
+    "waiting_install",
+    "verifying",
+    "waiting_verify",
+    "ready",
+    "unavailable",
+    "failed",
+    "removing",
+    "removed",
+  ]),
   manifestDigest: SpackMaterialDigestSchema,
   manifestSize: z
     .number()
@@ -177,10 +188,17 @@ export const SpackInstallRecordSchema = z.strictObject({
     .optional(),
   updatedAt: z.string().datetime(),
   report: SpackInstallReportSchema.optional(),
+  buildReport: SpackInstallReportSchema.optional(),
 });
 export type SpackInstallRecord = z.infer<typeof SpackInstallRecordSchema>;
 
 export interface SpackManagedInstallation {
+  loadPinned?(
+    spec: string,
+    pin: SpackExecutionPin,
+    policy: SpackPolicy,
+    signal?: AbortSignal,
+  ): Promise<SoftwareOperationOutcome>;
   install(
     prepared: PreparedSpackMaterials,
     input: SpackMaterialPrepareInput,

@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { JobSpec, SchedulerAdapter } from "../adapters/base";
 import { JobRunner, type JobStatusReport } from "../embedded/job-executor";
-import { ActiveRemoteJobs } from "./active-remote-jobs";
+import { ActiveRemoteJobs, validateCompletionSnapshot } from "./active-remote-jobs";
 
 const spec: JobSpec = {
   jobId: "completed-job",
@@ -34,7 +34,20 @@ const adapter = (): SchedulerAdapter => ({
   cancel: async () => {},
 });
 
-test("durable completion survives SQLite reopen and purged scheduler history without resubmission", async () => {
+const accounting = {
+  version: 1 as const,
+  source: "pbs-qstat" as const,
+  schedulerJobId: "123",
+  observedAt: "2026-11-13T00:00:00.000Z",
+  elapsedMilliseconds: "1000",
+  cpuTimeMilliseconds: "500",
+  allocatedCpus: "1",
+};
+
+test.each([
+  false,
+  true,
+])("durable completion survives SQLite reopen and purged scheduler history without resubmission (accounting=%s)", async (withAccounting) => {
   const root = await mkdtemp(join(tmpdir(), "kq-completed-recovery-"));
   let sqlite = new Database(join(root, "agent.db"));
   try {
@@ -50,6 +63,12 @@ test("durable completion survives SQLite reopen and purged scheduler history wit
     });
     let captured = false;
     const firstAdapter = adapter();
+    firstAdapter.status = async () => ({
+      status: "completed",
+      exitCode: 0,
+      node: "compute-1",
+      accounting: withAccounting ? accounting : undefined,
+    });
     let released = false;
     firstAdapter.releaseJob = async () => {
       released = true;
@@ -80,6 +99,9 @@ test("durable completion survives SQLite reopen and purged scheduler history wit
     store = new ActiveRemoteJobs(drizzle(sqlite));
     const recovered = await store.get(spec.jobId);
     if (!recovered?.completionSnapshot) throw new Error("Missing durable completion");
+    expect(recovered.completionSnapshot.result.accounting).toEqual(
+      withAccounting ? accounting : undefined,
+    );
     const reports: JobStatusReport[] = [];
     let schedulerQueries = 0;
     const purged = adapter();
@@ -107,6 +129,7 @@ test("durable completion survives SQLite reopen and purged scheduler history wit
       recovered.spec,
       recovered.schedulerJobId,
       recovered.expectedOutputs,
+      undefined,
       recovered.completionSnapshot,
     );
     expect(schedulerQueries).toBe(0);
@@ -114,10 +137,43 @@ test("durable completion survives SQLite reopen and purged scheduler history wit
       { status: "completed", schedulerJobId: "123", collected: { result: "scientific result" } },
     ]);
     expect(released).toBe(true);
+    expect(reports[0]?.accounting).toEqual(withAccounting ? accounting : undefined);
     expect(await store.get(spec.jobId)).toBeUndefined();
   } finally {
     sqlite.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("completion accounting rejects another job, malformed quantities and unknown fields", async () => {
+  const db: SqliteDb = drizzle(new Database(":memory:"));
+  runSqliteMigrations(db.$client);
+  const store = new ActiveRemoteJobs(db);
+  try {
+    await store.recordSubmitted({ spec, schedulerJobId: "123", expectedOutputs: outputs });
+    await store.recordCompleted(
+      { spec, schedulerJobId: "123", expectedOutputs: outputs },
+      { status: "completed", exitCode: 0, accounting },
+    );
+    const snapshot = (await store.get(spec.jobId))?.completionSnapshot;
+    if (!snapshot) throw new Error("Missing durable completion");
+    for (const changed of [
+      { ...accounting, schedulerJobId: "124" },
+      { ...accounting, cpuTimeMilliseconds: "-1" },
+      { ...accounting, version: 2 },
+      { ...accounting, extra: "untrusted" },
+    ]) {
+      expect(() =>
+        validateCompletionSnapshot(
+          { ...snapshot, result: { ...snapshot.result, accounting: changed } },
+          spec,
+          "123",
+          outputs,
+        ),
+      ).toThrow();
+    }
+  } finally {
+    db.$client.close();
   }
 });
 
@@ -220,7 +276,13 @@ test("restricted completion snapshots keep the original no-egress collection pol
       onStatusUpdate: (report) => {
         reports.push(report);
       },
-    }).resume(recovered.spec, "123", recovered.expectedOutputs, recovered.completionSnapshot);
+    }).resume(
+      recovered.spec,
+      "123",
+      recovered.expectedOutputs,
+      undefined,
+      recovered.completionSnapshot,
+    );
     expect(reports[0]?.status).toBe("completed");
     expect(reports[0]?.collected).toBeUndefined();
   } finally {

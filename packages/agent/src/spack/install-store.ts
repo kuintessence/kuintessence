@@ -21,6 +21,7 @@ import {
   type SpackWorkerStopProof,
   SpackWorkerStopProofSchema,
 } from "./install-contract";
+import { removeSpackSupervisedInputs, SpackProcessSupervisionSchema } from "./supervised-process";
 
 type CreateInput = Pick<
   SpackInstallRecord,
@@ -59,8 +60,10 @@ const CreateSchema = SpackInstallRecordSchema.pick({
   rootHash: true,
 });
 const NEXT: Record<SpackInstallRecord["state"], SpackInstallRecord["state"][]> = {
-  building: ["verifying", "failed"],
-  verifying: ["ready", "failed"],
+  building: ["waiting_install", "verifying", "failed"],
+  waiting_install: ["building", "failed", "removing"],
+  verifying: ["waiting_verify", "ready", "failed"],
+  waiting_verify: ["verifying", "failed", "removing"],
   ready: ["unavailable", "removing"],
   unavailable: ["ready", "removing"],
   failed: ["removing"],
@@ -354,12 +357,24 @@ export class SpackInstallStore {
               }
               recoveredWorker = true;
             }
-            if (uncertain && state !== "rebooted" && !recoveredWorker)
-              throw new Error(RECOVERY_REQUIRED);
-            if (state === "alive") throw new Error(LOCK_HELD);
-            // shortcut: same-boot workers stay fenced until a supervised cgroup can prove them stopped.
-            if (state === "unknown" || (state !== "rebooted" && worker && !recoveredWorker)) {
-              throw new Error(RECOVERY_REQUIRED);
+            const settledOwner = uncertain && owner.identity.instance === identity.instance;
+            if (state === "alive" && !settledOwner) throw new Error(LOCK_HELD);
+            if (state === "unknown") throw new Error(RECOVERY_REQUIRED);
+            if (state !== "rebooted" && worker && !recoveredWorker) {
+              if (await optionalStat(join(previousPath, "unsupervised.json")))
+                throw new Error(RECOVERY_REQUIRED);
+              const supervisors = join(previousPath, "supervisors");
+              await directory(supervisors, false, 0o700);
+              let count = 0;
+              for await (const entry of await opendir(supervisors)) {
+                const ref = SpackProcessSupervisionSchema.parse(
+                  await this.lockJson(join(supervisors, entry.name)),
+                );
+                if (entry.name !== `${ref.unit}.json`) throw new Error(RECOVERY_REQUIRED);
+                await removeSpackSupervisedInputs(ref);
+                count++;
+              }
+              if (!count) throw new Error(RECOVERY_REQUIRED);
             }
           }
         } catch (error) {
@@ -409,8 +424,16 @@ export class SpackInstallStore {
         reconciled = true;
         return installWorkerExecution.run(
           {
-            start: async (recordId, stagingPath) => {
+            start: async (recordId, supervisor, stagingPath) => {
               await this.assertLocked();
+              if (supervisor) {
+                const ref = SpackProcessSupervisionSchema.parse(supervisor);
+                const supervisors = join(active.path, "supervisors");
+                await directory(supervisors, true, 0o700);
+                await this.lockWrite(join(supervisors, `${ref.unit}.json`), ref);
+              } else if (!(await optionalStat(join(active.path, "unsupervised.json")))) {
+                await this.lockWrite(join(active.path, "unsupervised.json"), identity.token);
+              }
               // Persist before spawn; even a crash in the spawn/PID-registration gap is fenced.
               if (active.workerPending) throw new Error(RECOVERY_REQUIRED);
               active.stoppedWorker = undefined;
@@ -518,6 +541,25 @@ export class SpackInstallStore {
   }
   private validate(value: unknown): SpackInstallRecord {
     const record = SpackInstallRecordSchema.parse(value);
+    if (record.state === "waiting_install" || record.state === "waiting_verify") {
+      if (
+        !record.operationId ||
+        !record.executionIdentity ||
+        (record.state === "waiting_install" && record.buildReport) ||
+        (record.state === "waiting_verify" && !record.buildReport)
+      )
+        throw new Error("Invalid Spack authorization checkpoint");
+    }
+    if (
+      record.buildReport &&
+      (record.buildReport.action !== "install" ||
+        record.buildReport.root.hash !== record.rootHash ||
+        record.buildReport.root.spec !== record.spec ||
+        record.buildReport.manifestDigest !== record.manifestDigest ||
+        record.buildReport.siteProfileDigest !== record.siteProfileDigest ||
+        record.buildReport.storePath !== this.path(record.id))
+    )
+      throw new Error("Invalid Spack build checkpoint");
     if (record.state === "ready") {
       const report = record.report;
       if (
@@ -627,6 +669,27 @@ export class SpackInstallStore {
       return record;
     });
   }
+  async awaitingAuthorization(operationId: string): Promise<boolean> {
+    return (await this.list()).some(
+      (record) =>
+        record.operationId === operationId &&
+        (record.state === "waiting_install" || record.state === "waiting_verify"),
+    );
+  }
+
+  async cancelAuthorizationWait(operationId: string): Promise<void> {
+    await this.withLock(async () => {
+      for (const record of await this.list()) {
+        if (
+          record.operationId === operationId &&
+          (record.state === "waiting_install" || record.state === "waiting_verify")
+        ) {
+          await this.save({ ...record, state: "failed", updatedAt: new Date().toISOString() });
+        }
+      }
+    });
+  }
+
   async resumeFailed(id: string, expected: CreateInput): Promise<SpackInstallRecord> {
     return this.mutate(async () => {
       const previous = await this.read(id);
@@ -689,6 +752,11 @@ export class SpackInstallStore {
       ) {
         throw new Error("Spack record identity is immutable");
       }
+      if (
+        previous.buildReport &&
+        JSON.stringify(previous.buildReport) !== JSON.stringify(record.buildReport)
+      )
+        throw new Error("Spack build checkpoint is immutable");
       if (record.state !== previous.state && !NEXT[previous.state].includes(record.state)) {
         throw new Error("Invalid Spack installation state transition");
       }

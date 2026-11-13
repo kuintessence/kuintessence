@@ -1,3 +1,11 @@
+import compatibility from "./spack-compatibility.json" with { type: "json" };
+
+export const SPACK_COMPATIBILITY = compatibility;
+
+export function spackCompatibility(version: unknown) {
+  return Object.entries(SPACK_COMPATIBILITY).find(([candidate]) => candidate === version)?.[1];
+}
+
 export const SPACK_LOCK_MAX_BYTES = 16 * 1024 ** 2;
 
 export interface SpackLockReport {
@@ -228,7 +236,7 @@ function inspectGraph(
 }
 
 /**
- * The supported contract is only Spack v1.0.0, lockfile 6 / specfile 5.
+ * Versions and lock/spec formats are explicitly listed in the compatibility policy.
  * A valid report means these bounded static checks passed, not installation readiness.
  */
 export function inspectSpackLock(
@@ -324,28 +332,29 @@ export function inspectSpackLock(
     error("invalid-document", "Spack lock must be a JSON object.");
     return report;
   }
+  const format = spackCompatibility(binding.spackVersion);
+  if (!isObject(document.spack) || !spackCompatibility(document.spack.version) || !format) {
+    error(
+      "unsupported-spack-version",
+      "Producer and binding Spack versions must be listed in the compatibility policy.",
+    );
+    return report;
+  }
   const meta = document._meta;
   if (
     !isObject(meta) ||
     meta["file-type"] !== "spack-lockfile" ||
-    meta["lockfile-version"] !== 6 ||
-    meta["specfile-version"] !== 5
+    meta["lockfile-version"] !== format.lockfileVersion ||
+    meta["specfile-version"] !== format.specfileVersion
   ) {
     error(
       "unsupported-format",
-      "Only spack-lockfile format 6 with specfile format 5 is supported.",
+      "Lock/spec formats must match the exact Spack compatibility entry.",
     );
     return report;
   }
-  if (
-    !isObject(document.spack) ||
-    document.spack.version !== "1.0.0" ||
-    binding.spackVersion !== "1.0.0"
-  ) {
-    error(
-      "unsupported-spack-version",
-      "Only producer and binding Spack version 1.0.0 are verified.",
-    );
+  if (document.spack.version !== binding.spackVersion) {
+    error("spack-version-mismatch", "Lock producer must exactly match the material Spack version.");
     return report;
   }
   if (!isObject(document.concrete_specs)) {

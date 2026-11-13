@@ -80,7 +80,8 @@ describe("NetDriveService", () => {
       contentType: "text/plain",
     });
     expect(minted.uploadUrl).toContain("/upload/");
-    expect(minted.storageKey).toMatch(/^netdrive\//);
+    expect(minted.storageKey).toMatch(/^netdrive\/objects\/[a-f0-9-]{36}$/);
+    expect(minted.storageKey).not.toContain(OWNER_ID);
     expect(minted.commitToken.split(".")).toHaveLength(3); // JWS format
     expect(minted.expiresAt).toMatch(/Z$/);
   });
@@ -124,7 +125,8 @@ describe("NetDriveService", () => {
       size: 5_000_000_000,
     });
     expect(res.uploadId).toMatch(/.+/);
-    expect(res.storageKey).toContain(`netdrive/${OWNER_ID}/`);
+    expect(res.storageKey).toMatch(/^netdrive\/objects\/[a-f0-9-]{36}$/);
+    expect(res.storageKey).not.toContain(OWNER_ID);
     expect(res.partSize).toBeGreaterThanOrEqual(5 * 1024 * 1024);
     expect(typeof res.commitToken).toBe("string");
     const verified = await jose.jwtVerify(res.commitToken, new TextEncoder().encode(COMMIT_SECRET));
@@ -460,6 +462,40 @@ describe("NetDriveService", () => {
     expect(
       (await svc.findFilesByPath(OWNER_ID, "inputs/exact.dat")).map((file) => file.id),
     ).toEqual([secondId]);
+  });
+
+  test.each([
+    "single",
+    "multipart",
+  ] as const)("pins the committed storage version for %s downloads after overwrite", async (kind) => {
+    const { service, backend } = makeService();
+    const path = `pinned/${kind}.txt`,
+      bytes = Buffer.from("original");
+    const sha256 = await sha256Hex("original");
+    let file: Awaited<ReturnType<NetDriveService["commitFile"]>>;
+    if (kind === "single") {
+      const minted = await service.mintUploadUrl(OWNER_ID, { path, size: bytes.length });
+      await backend.putBlob(minted.storageKey, bytes, "text/plain");
+      file = await service.commitFile(OWNER_ID, { ...minted, path, size: bytes.length, sha256 });
+    } else {
+      const init = await service.initiateMultipart(OWNER_ID, { path, size: bytes.length });
+      const { etag } = await backend.putUploadedPart(init.storageKey, init.uploadId, 1, bytes);
+      file = await service.completeMultipart(OWNER_ID, {
+        ...init,
+        path,
+        size: bytes.length,
+        sha256,
+        parts: [{ partNumber: 1, etag }],
+      });
+    }
+    const version = (await backend.head(file.storageKey))?.versionId;
+    expect(version).toBeTruthy();
+    expect(file.storageVersionId).toBe(version);
+    await backend.putBlob(file.storageKey, Buffer.from("new body"), "text/plain");
+    const fetched = await service.getFile(OWNER_ID, file.id);
+    expect(fetched?.storageVersionId).toBe(version);
+    const download = await service.mintDownloadUrl(OWNER_ID, file.id);
+    expect(new URL(download.downloadUrl).searchParams.get("versionId")).toBe(version ?? null);
   });
 
   test("mintDownloadUrl returns a presigned URL only for live owned rows", async () => {

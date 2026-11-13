@@ -117,6 +117,7 @@ describe("agent-handler under mTLS context", () => {
         value: create(RegisterRequestSchema, {
           agentId: "agent-good",
           spackMaterialDeliveryV1: true,
+          spackPinnedExecutionV1: true,
           siteName: "site-x",
           schedulerType: SchedulerType.SLURM,
           schedulerVersion: "20.11",
@@ -133,6 +134,7 @@ describe("agent-handler under mTLS context", () => {
           out.push(m);
           const channel = dispatcher.getChannel("agent-good");
           expect(channel?.spackMaterialDeliveryV1).toBe(true);
+          expect(dispatcher.supportsPinnedSpack("agent-good")).toBe(true);
           expect(channel?.verifiedCertFingerprint).toBe("0".repeat(64));
           if (out.length >= 1) break;
         }

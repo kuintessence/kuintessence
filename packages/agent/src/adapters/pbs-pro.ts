@@ -5,6 +5,7 @@ import {
   type SchedulerQueueFact,
   type SchedulerQueueInventory,
 } from "@kuintessence/shared";
+import { accountingDuration, accountingInteger, schedulerAccounting } from "./accounting";
 import {
   appendEnvAndCommand,
   assertSandboxSchedulerMetadata,
@@ -232,7 +233,7 @@ export class PbsProAdapter implements SchedulerAdapter {
     assertSandboxSchedulerMetadata(spec);
     const lines: string[] = ["#!/bin/bash"];
     const executionRoot = spec.workingDir || this.logDir;
-    const logRoot = spec.sandbox ? executionRoot : this.logDir;
+    const logRoot = spec.sandbox ? join(executionRoot, ".scheduler-logs") : this.logDir;
     lines.push(`#PBS -N ${spec.schedulerName ?? spec.name}`);
     lines.push(`#PBS -v KQ_JOB_ID=${spec.jobId}`);
     lines.push(`#PBS -o ${join(logRoot, `kq-pbs-${spec.jobId}.out`)}`);
@@ -240,7 +241,9 @@ export class PbsProAdapter implements SchedulerAdapter {
     const select = `select=1:ncpus=${spec.cpus}:mem=${spec.memoryMb}mb${
       spec.gpus > 0 ? `:ngpus=${spec.gpus}` : ""
     }`;
-    lines.push(`#PBS -l ${select}`);
+    lines.push(
+      `#PBS -l ${select}${spec.sandbox ? `:host=${spec.sandbox.attestedNodes?.[0]}` : ""}`,
+    );
     if (spec.queueName) {
       lines.push(`#PBS -q ${spec.queueName}`);
     }
@@ -254,7 +257,7 @@ export class PbsProAdapter implements SchedulerAdapter {
       lines.push(`#PBS -l walltime=${this.formatWallTime(spec.wallTimeSec)}`);
     }
     lines.push(`cd -- ${shellQuote(executionRoot)} || exit 1`);
-    return appendEnvAndCommand(lines, spec);
+    return appendEnvAndCommand(lines, spec, "pbs-pro");
   }
 
   async submit(spec: JobSpec): Promise<JobResult> {
@@ -308,7 +311,20 @@ export class PbsProAdapter implements SchedulerAdapter {
     }
   }
 
-  async cancel(schedulerJobId: string): Promise<void> {
+  async cancel(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<void> {
+    if (lookup?.federationDispatchEpoch !== undefined) {
+      const data = (await this.queryJob(schedulerJobId)) as {
+        Jobs?: Record<string, { job_state?: string }>;
+      };
+      const job = data.Jobs?.[schedulerJobId];
+      if (!job) throw new Error("PBS cancellation cannot establish the job state");
+      // Repeated qdel resets PBS's TERM→KILL deadline. Revoked leases cannot keep extending it.
+      if (job.job_state === "F" || job.job_state === "E") return;
+      if (["R", "S", "U"].includes(job.job_state ?? "")) {
+        const signal = await this.spawner.run(["qsig", "-s", "KILL", schedulerJobId]);
+        if (signal.exitCode !== 0) throw new Error(`qsig failed (exit ${signal.exitCode})`);
+      }
+    }
     const { exitCode, stderr } = await this.spawner.run(["qdel", schedulerJobId]);
     if (exitCode !== 0) {
       throw new Error(`qdel failed (exit ${exitCode}): ${stderr.trim()}`);
@@ -334,7 +350,10 @@ export class PbsProAdapter implements SchedulerAdapter {
     lookup: KuintessenceJobLookup,
   ): Promise<KuintessenceJobLookupResult> {
     try {
-      const { exitCode, stdout, stderr } = await this.spawner.run(["qstat", "-f", "-F", "json"]);
+      const { exitCode, stdout, stderr } = await this.spawner.run(
+        ["qstat", ...(lookup.submittedAfterUnixMs !== undefined ? ["-x"] : []), "-f", "-F", "json"],
+        { timeoutMs: 5_000 },
+      );
       if (exitCode !== 0) {
         return { status: "indeterminate", reason: `qstat failed: ${stderr.trim()}` };
       }
@@ -344,10 +363,26 @@ export class PbsProAdapter implements SchedulerAdapter {
       } catch {
         return { status: "indeterminate", reason: "qstat returned non-JSON output" };
       }
-      const jobs = (parsed as { Jobs?: Record<string, { Variable_List?: unknown }> }).Jobs;
+      const jobs = (
+        parsed as {
+          Jobs?: Record<
+            string,
+            {
+              Variable_List?: unknown;
+              Job_Name?: string;
+              Account_Name?: string;
+              Job_Owner?: string;
+            }
+          >;
+        }
+      ).Jobs;
       if (!jobs) return { status: "not_found" };
-      const matches = Object.entries(jobs).filter(([, job]) =>
-        hasKuintessenceJobId(job.Variable_List, lookup.jobId),
+      const matches = Object.entries(jobs).filter(
+        ([, job]) =>
+          hasKuintessenceJobId(job.Variable_List, lookup.jobId) &&
+          (!lookup.schedulerName || job.Job_Name === lookup.schedulerName) &&
+          (!lookup.schedulerAccount || job.Account_Name === lookup.schedulerAccount) &&
+          (!lookup.executionUser || job.Job_Owner?.split("@")[0] === lookup.executionUser.username),
       );
       if (matches.length === 0) return { status: "not_found" };
       if (matches.length !== 1) {
@@ -456,23 +491,32 @@ export class PbsProAdapter implements SchedulerAdapter {
     }));
   }
 
+  async confirmStopped(schedulerJobId: string): Promise<boolean> {
+    const result = await this.status(schedulerJobId);
+    return result.status === "completed" || result.status === "failed";
+  }
+
   async status(schedulerJobId: string): Promise<JobStatusResult> {
-    let parsed: unknown;
-    try {
-      parsed = await this.queryJob(schedulerJobId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "qstat returned no data";
-      return { status: "failed", message };
-    }
+    const parsed = await this.queryJob(schedulerJobId);
     const data = parsed as {
       Jobs?: Record<
         string,
-        { job_state?: string; Exit_status?: number; exec_host?: string; comment?: string }
+        {
+          job_state?: string;
+          Exit_status?: number;
+          exec_host?: string;
+          comment?: string;
+          resources_used?: { walltime?: unknown; cput?: unknown; ncpus?: unknown };
+        }
       >;
     };
     const jobs = data.Jobs ?? {};
-    const job = jobs[schedulerJobId] ?? Object.values(jobs)[0];
-    if (!job) return { status: "failed", message: "job not found" };
+    const shortMatches = schedulerJobId.includes(".")
+      ? []
+      : Object.entries(jobs).filter(([id]) => id.split(".")[0] === schedulerJobId);
+    const job =
+      jobs[schedulerJobId] ?? (shortMatches.length === 1 ? shortMatches[0]?.[1] : undefined);
+    if (!job) throw new Error("job not found or ambiguous");
 
     const state = job.job_state ?? "";
     const node = parseExecHost(job.exec_host);
@@ -489,11 +533,18 @@ export class PbsProAdapter implements SchedulerAdapter {
     if (["Q", "H", "W", "T", "M", "B"].includes(state)) return withNode({ status: "queued" });
     if (["R", "E", "S", "U"].includes(state)) return withNode({ status: "running" });
     if (state === "F") {
+      const accounting = schedulerAccounting("pbs-qstat", schedulerJobId, {
+        elapsedMilliseconds: accountingDuration(job.resources_used?.walltime),
+        cpuTimeMilliseconds: accountingDuration(job.resources_used?.cput),
+        allocatedCpus: accountingInteger(job.resources_used?.ncpus),
+      });
+      const terminal = (result: JobStatusResult) =>
+        withNode({ ...result, ...(accounting ? { accounting } : {}) });
       const exitStatus = job.Exit_status ?? 0;
-      if (exitStatus === 0) return withNode({ status: "completed", exitCode: 0 });
-      return withNode({ status: "failed", exitCode: exitStatus, message: `Exit ${exitStatus}` });
+      if (exitStatus === 0) return terminal({ status: "completed", exitCode: 0 });
+      return terminal({ status: "failed", exitCode: exitStatus, message: `Exit ${exitStatus}` });
     }
-    return withNode({ status: "failed", message: `State: ${state}` });
+    throw new Error(`Unknown PBS job state: ${state}`);
   }
 
   private async queryJob(schedulerJobId: string): Promise<unknown> {

@@ -1,0 +1,274 @@
+OpenPBS 23.06.06: retain Python hooks with Python 3.11/3.12.
+
+Backport the header fix from upstream #2594 and only the Python initialization
+changes from #2662 (unrelated build warnings, PTL and documentation omitted):
+https://github.com/openpbs/openpbs/commit/1d17427c010c8b288511a6d7b42784a3b5aec830
+https://github.com/openpbs/openpbs/commit/a84a5315fb860037bd9d0b380396e2010511237c
+
+PyConfig is available since Python 3.8 (Ubuntu 20.04). Linux uses the explicit
+isolated configuration; Windows retains its original initialization path.
+
+diff --git a/src/lib/Libpython/pbs_python_external.c b/src/lib/Libpython/pbs_python_external.c
+index e0c33fca08..5fdf55718b 100644
+--- a/src/lib/Libpython/pbs_python_external.c
++++ b/src/lib/Libpython/pbs_python_external.c
+@@ -54,7 +54,7 @@
+ #ifdef PYTHON
+ 
+ #include <pbs_python_private.h> /* private python file  */
+-#include <eval.h>		/* For PyEval_EvalCode  */
++#include <Python.h>		/* Includes eval.h for PyEval_EvalCode  */
+ #include <pythonrun.h>		/* For Py_SetPythonHome */
+ #include <sys/types.h>
+ #include <sys/stat.h>
+diff --git a/src/lib/Libpython/pbs_python_external.c b/src/lib/Libpython/pbs_python_external.c
+index 5fdf55718b..e8b5e3055c 100644
+--- a/src/lib/Libpython/pbs_python_external.c
++++ b/src/lib/Libpython/pbs_python_external.c
+@@ -93,6 +93,55 @@ char *pbs_python_daemon_name;
+  * ===================   BEGIN   EXTERNAL ROUTINES  ===================
+  */
+ 
++static int
++initialize_python_config(int install_signal_handlers)
++{
++	PyStatus py_status;
++	PyConfig py_config;
++	char *python_binpath = NULL;
++	static wchar_t w_python_binpath[MAXPATHLEN + 1] = {'\0'};
++
++	PyConfig_InitPythonConfig(&py_config);
++
++	py_config._install_importlib = 1;
++	py_config.use_environment = 0;
++	py_config.optimization_level = 2;
++	py_config.isolated = 1;
++	py_config.site_import = 0;
++	py_config.install_signal_handlers = install_signal_handlers;
++
++	/* Set python binary path if it's not already set */
++	if (w_python_binpath[0] == '\0') {
++		if (get_py_progname(&python_binpath)) {
++			log_err(-1, __func__, "Failed to find python binary path!");
++			return -1;
++		}
++		mbstowcs(w_python_binpath, python_binpath, MAXPATHLEN + 1);
++		free(python_binpath);
++	}
++
++	/* Set the program name in the Python configuration */
++	py_status = PyConfig_SetString(&py_config, &py_config.program_name, w_python_binpath);
++	if (PyStatus_Exception(py_status))
++		return -1;
++
++	/* Initialize the top-level module */
++	if (PyImport_ExtendInittab(pbs_python_inittab_modules) != 0) {
++		log_err(-1, "PyImport_ExtendInittab", "--> Failed to initialize Python interpreter <--");
++		return -1;
++	}
++
++	/* Initialize the Python interpreter with the given configuration */
++	py_status = Py_InitializeFromConfig(&py_config);
++	if (PyStatus_Exception(py_status)) {
++		log_err(-1, "Py_InitializeFromConfig", "--> Failed to initialize Python interpreter <--");
++		PyConfig_Clear(&py_config);  /* Clear the configuration object */
++		return -1;
++	}
++
++	return 0;
++}
++
+ /**
+  *
+  * @brief
+@@ -171,13 +220,12 @@ pbs_python_ext_start_interpreter(struct python_interpreter_data *interp_data)
+ 		goto ERROR_EXIT;
+ 	}
+ 
++#ifdef WIN32
+ 	Py_NoSiteFlag = 1;
+ 	Py_FrozenFlag = 1;
+-	Py_OptimizeFlag = 2;	      /* TODO make this a compile flag variable */
++	Py_OptimizeFlag = 2;          /* TODO make this a compile flag variable */
+ 	Py_IgnoreEnvironmentFlag = 1; /* ignore PYTHONPATH and PYTHONHOME */
+-
+ 	set_py_progname();
+-
+ 	/* we make sure our top level module is initialized */
+ 	if ((PyImport_ExtendInittab(pbs_python_inittab_modules) != 0)) {
+ 		log_err(-1, "PyImport_ExtendInittab",
+@@ -191,6 +239,11 @@ pbs_python_ext_start_interpreter(struct python_interpreter_data *interp_data)
+ 	 * Python script to be able to interrupt it
+ 	 */
+ 	Py_InitializeEx(1);
++#else
++	if (initialize_python_config(1))
++		goto ERROR_EXIT;
++
++#endif
+ 
+ 	if (Py_IsInitialized()) {
+ 		char *msgbuf;
+@@ -359,20 +412,24 @@ pbs_python_ext_quick_start_interpreter(void)
+ 	snprintf(pbs_python_destlib2, MAXPATHLEN, "%s/lib/python/altair/pbs/v1",
+ 		 pbs_conf.pbs_exec_path);
+ 
++#ifdef WIN32
+ 	Py_NoSiteFlag = 1;
+ 	Py_FrozenFlag = 1;
+ 	Py_OptimizeFlag = 2;	      /* TODO make this a compile flag variable */
+ 	Py_IgnoreEnvironmentFlag = 1; /* ignore PYTHONPATH and PYTHONHOME */
+ 	set_py_progname();
+-
+ 	/* we make sure our top level module is initialized */
+ 	if ((PyImport_ExtendInittab(pbs_python_inittab_modules) != 0)) {
+ 		log_err(-1, "PyImport_ExtendInittab",
+ 			"--> Failed to initialize Python interpreter <--");
+-		return;
++		goto ERROR_EXIT;
+ 	}
+ 
+ 	Py_InitializeEx(0); /* SKIP initialization of signals */
++#else
++	if (initialize_python_config(0))
++		goto ERROR_EXIT;
++#endif
+ 
+ 	if (Py_IsInitialized()) {
+ 		char *msgbuf;
+diff --git a/src/lib/Libpython/shared_python_utils.c b/src/lib/Libpython/shared_python_utils.c
+index bdc9eab5ae..8e615dc0bc 100644
+--- a/src/lib/Libpython/shared_python_utils.c
++++ b/src/lib/Libpython/shared_python_utils.c
+@@ -126,6 +126,7 @@ get_py_progname(char **binpath)
+ 	return 1;
+ #endif
+ }
++#ifdef WIN32
+ /**
+  * @brief set_py_progname
+  * 	Find and tell Python interpreter where python binary is located
+@@ -150,7 +151,6 @@ set_py_progname(void)
+ 		free(python_binpath);
+ 	}
+ 	Py_SetProgramName(w_python_binpath);
+-#ifdef WIN32
+ 	/*
+ 	 *  There is a bug in windows version of python resulting need to set python home explicitly.
+ 	 */
+@@ -165,9 +165,10 @@ set_py_progname(void)
+ 		free(python_homepath);
+ 	}
+ 	Py_SetPythonHome(w_python_homepath);
+-#endif
++
+ 	return 0;
+ #else
+ 	return 0;
+ #endif
+ }
++#endif
+diff --git a/src/resmom/mom_main.c b/src/resmom/mom_main.c
+index 52b4269009..500a40bbfd 100644
+--- a/src/resmom/mom_main.c
++++ b/src/resmom/mom_main.c
+@@ -8183,12 +8183,45 @@ main(int argc, char *argv[])
+ 	cleanup_hooks_in_path_spool(0);
+ 
+ #ifdef PYTHON
++#ifdef WIN32
+ 	set_py_progname();
+ 	Py_NoSiteFlag = 1;
+ 	Py_FrozenFlag = 1;
+ 	Py_OptimizeFlag = 2;
+ 	Py_IgnoreEnvironmentFlag = 1;
+ 	Py_InitializeEx(0);
++#else
++	char *python_binpath = NULL;
++	static wchar_t w_python_binpath[MAXPATHLEN + 1] = {'\0'};
++	PyStatus py_status;
++	PyConfig py_config;
++
++	PyConfig_InitPythonConfig(&py_config);
++
++	py_config._install_importlib = 1;
++	py_config.use_environment = 0;
++	py_config.optimization_level = 2;
++	py_config.isolated = 1;
++	py_config.site_import = 0;
++	py_config.install_signal_handlers = 0;
++        if (w_python_binpath[0] == '\0') {
++                if (get_py_progname(&python_binpath))
++                        log_err(-1, __func__, "Failed to find python binary path!");
++                mbstowcs(w_python_binpath, python_binpath, MAXPATHLEN + 1);
++                free(python_binpath);
++        }
++
++	py_status = PyConfig_SetString(&py_config, &py_config.program_name, w_python_binpath);
++	if (PyStatus_Exception(py_status))
++		log_err(-1, __func__, "Failed to set python binary path!");
++
++	py_status = Py_InitializeFromConfig(&py_config);
++	if (PyStatus_Exception(py_status)) {
++		log_err(-1, "Py_InitializeFromConfig",
++			"--> Failed to initialize Python interpreter <--");
++		PyConfig_Clear(&py_config);  // Clear the configuration object
++	}
++#endif
+ #endif
+ 
+ #ifndef WIN32
+diff --git a/src/scheduler/fifo.cpp b/src/scheduler/fifo.cpp
+index 0b0c6162d7..534d59b363 100644
+--- a/src/scheduler/fifo.cpp
++++ b/src/scheduler/fifo.cpp
+@@ -165,13 +165,48 @@ schedinit(int nthreads)
+ 	set_ical_zoneinfo(zone_dir);
+ 
+ #ifdef PYTHON
++#ifdef WIN32
+ 	Py_NoSiteFlag = 1;
+ 	Py_FrozenFlag = 1;
+ 	Py_IgnoreEnvironmentFlag = 1;
+-
+ 	set_py_progname();
+ 	Py_InitializeEx(0);
++#else
++	static wchar_t w_python_binpath[MAXPATHLEN + 1] = {'\0'};
++	char *python_binpath = NULL;
++	PyStatus py_status;
++	PyConfig py_config;
++
++	PyConfig_InitPythonConfig(&py_config);
++
++	py_config._install_importlib = 1;
++	py_config.use_environment = 0;
++	py_config.optimization_level = 2;
++	py_config.isolated = 1;
++	py_config.site_import = 0;
++	py_config.install_signal_handlers = 0;
++
++        if (w_python_binpath[0] == '\0') {
++                if (get_py_progname(&python_binpath)) {
++                        log_err(-1, __func__, "Failed to find python binary path!");
++                        return -1;
++                }
++                mbstowcs(w_python_binpath, python_binpath, MAXPATHLEN + 1);
++                free(python_binpath);
++        }
++
++	py_status = PyConfig_SetString(&py_config, &py_config.program_name, w_python_binpath);
++	if (PyStatus_Exception(py_status))
++		return -1;
+ 
++	py_status = Py_InitializeFromConfig(&py_config);
++	if (PyStatus_Exception(py_status)) {
++		log_err(-1, "Py_InitializeFromConfig",
++			"--> Failed to initialize Python interpreter <--");
++		PyConfig_Clear(&py_config);  // Clear the configuration object
++		return -1;
++	}
++#endif
+ 	PyRun_SimpleString(
+ 		"_err =\"\"\n"
+ 		"ex = None\n"

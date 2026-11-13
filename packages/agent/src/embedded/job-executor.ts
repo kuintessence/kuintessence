@@ -1,10 +1,16 @@
-import { createLogger, type QueueFailureCode } from "@kuintessence/shared";
+import {
+  createLogger,
+  type QueueFailureCode,
+  type SchedulerAccounting,
+} from "@kuintessence/shared";
 import type { Logger } from "pino";
 import {
+  cancelAndConfirmStopped,
   type JobSpec,
   type JobStatusResult,
   QueueValidationError,
   type SchedulerAdapter,
+  SchedulerSubmissionError,
   SchedulerSubmissionUnknownError,
 } from "../adapters/base";
 import { queueFailureCode } from "../adapters/queue-inventory";
@@ -31,6 +37,7 @@ type SubmissionAttempt =
     };
 
 export interface JobStatusReport {
+  accounting?: SchedulerAccounting;
   jobId: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   schedulerJobId?: string;
@@ -75,11 +82,14 @@ export interface JobRunnerDeps {
     spec: JobSpec,
     schedulerJobId: string,
     expectedOutputs: ExpectedOutput[],
+    schedulerUid?: string,
   ) => void | Promise<void>;
   onSchedulerSubmitting?: (
     spec: JobSpec,
     expectedOutputs: ExpectedOutput[],
   ) => void | Promise<void>;
+  /** True retains a durable submission for reconciliation instead of reporting failure/cleaning inputs. */
+  onSubmissionUncertain?: (spec: JobSpec, error: unknown) => Promise<boolean>;
   /** Persist the scheduler's real completion before reading or releasing outputs. */
   onSchedulerCompleted?: (
     spec: JobSpec,
@@ -105,7 +115,10 @@ export class JobRunner {
   private userCancelRequested = false;
   private killRequested = false;
   private killed = false;
+  private pendingKill: Promise<void> | undefined;
   private schedulerJobId: string | null = null;
+  private schedulerUid: string | undefined;
+  private federationDispatchEpoch: number | undefined;
   private jobId: string | null = null;
   private jobFinished = false;
   private schedulerSubmissionStarted = false;
@@ -127,6 +140,7 @@ export class JobRunner {
    */
   async run(spec: JobSpec, expectedOutputs: ExpectedOutput[] = []): Promise<string | null> {
     this.jobId = spec.jobId;
+    this.federationDispatchEpoch = spec.federationDispatchEpoch;
 
     let attempt: SubmissionAttempt;
     try {
@@ -162,9 +176,15 @@ export class JobRunner {
 
     const schedulerJobId = attempt.result.schedulerJobId;
     this.schedulerJobId = schedulerJobId;
+    this.schedulerUid = attempt.result.schedulerUid;
     this.logger.info({ jobId: spec.jobId, schedulerJobId }, "Job submitted to scheduler");
     try {
-      await this.deps.onSchedulerSubmitted?.(spec, schedulerJobId, expectedOutputs);
+      await this.deps.onSchedulerSubmitted?.(
+        spec,
+        schedulerJobId,
+        expectedOutputs,
+        this.schedulerUid,
+      );
     } catch (err) {
       if (err instanceof SchedulerSubmissionUnknownError) {
         this.markSchedulerSubmissionSettled();
@@ -188,10 +208,11 @@ export class JobRunner {
       );
     }
 
-    if (this.killRequested) {
-      await this.killScheduler();
+    try {
+      if (this.killRequested) await this.killScheduler();
+    } finally {
+      this.markSchedulerSubmissionSettled();
     }
-    this.markSchedulerSubmissionSettled();
 
     await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs, initialStatus);
     return schedulerJobId;
@@ -247,8 +268,15 @@ export class JobRunner {
   }
 
   private async reportSubmissionFailure(spec: JobSpec, err: unknown): Promise<null> {
-    this.logger.error({ jobId: spec.jobId, err }, "Job submission failed");
     try {
+      if (
+        this.schedulerSubmissionStarted &&
+        !(err instanceof SchedulerSubmissionError && this.schedulerJobId === null) &&
+        ((await this.deps.onSubmissionUncertain?.(spec, err)) ||
+          err instanceof SchedulerSubmissionUnknownError)
+      )
+        return null;
+      this.logger.error({ jobId: spec.jobId, err }, "Job submission failed");
       await this.deps.onStatusUpdate({
         jobId: spec.jobId,
         status: "failed",
@@ -307,16 +335,19 @@ export class JobRunner {
     spec: JobSpec,
     schedulerJobId: string,
     expectedOutputs: ExpectedOutput[] = [],
+    schedulerUid?: string,
     completionSnapshot?: CompletedJobSnapshot,
   ): Promise<string> {
     this.jobId = spec.jobId;
     this.schedulerJobId = schedulerJobId;
+    this.schedulerUid = schedulerUid;
+    this.federationDispatchEpoch = spec.federationDispatchEpoch;
     const completed =
       completionSnapshot === undefined
         ? undefined
         : validateCompletionSnapshot(completionSnapshot, spec, schedulerJobId, expectedOutputs)
             .result;
-    if (!completed) await this.deps.adapter.prepareResume?.(spec, schedulerJobId);
+    if (!completed) await this.deps.adapter.prepareResume?.(spec, schedulerJobId, schedulerUid);
     this.logger.info({ jobId: spec.jobId, schedulerJobId }, "Resuming scheduler job polling");
     await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs, undefined, completed);
     return schedulerJobId;
@@ -422,6 +453,7 @@ export class JobRunner {
           message: reportMessage,
           node: result.node,
           reason: result.reason,
+          ...(result.accounting ? { accounting: result.accounting } : {}),
           collected,
           workingDir: spec.workingDir,
         });
@@ -433,9 +465,13 @@ export class JobRunner {
       }
     }
 
+    if (!terminal && this.userCancelRequested) {
+      await this.killScheduler();
+      terminal = this.killed;
+    }
     if (terminal) {
-      await adapter.releaseJob?.(schedulerJobId);
       await this.notifyJobFinished(spec.jobId);
+      await adapter.releaseJob?.(schedulerJobId);
     }
   }
 
@@ -480,7 +516,7 @@ export class JobRunner {
 
   /**
    * User-initiated cancel: stop polling AND kill the cluster job (scancel/qdel).
-   * Idempotent — the scheduler is asked to cancel at most once.
+   * Concurrent requests share one stop check; an unconfirmed stop remains retryable.
    */
   async cancelAndKill(): Promise<void> {
     this.userCancelRequested = true;
@@ -493,39 +529,36 @@ export class JobRunner {
   }
 
   async waitForPendingCancellation(): Promise<void> {
-    if (!this.killRequested || this.killed || this.schedulerSubmissionSettled) return;
-    await this.schedulerSubmission;
+    if (!this.killRequested || this.killed) return;
+    if (!this.schedulerSubmissionSettled) await this.schedulerSubmission;
+    if (this.schedulerSubmissionStarted && !this.schedulerJobId)
+      throw new Error("Scheduler submission outcome is unknown; cancellation remains pending");
+    await this.killScheduler();
   }
 
-  /** Ask the scheduler to cancel the job at most once. No-op without an id. */
   private async killScheduler(): Promise<void> {
     if (this.killed || !this.schedulerJobId) return;
-    this.killed = true;
-    try {
-      await this.deps.adapter.cancel(this.schedulerJobId);
-      this.logger.info(
-        { jobId: this.jobId, schedulerJobId: this.schedulerJobId },
-        "Scheduler job cancelled",
+    if (this.pendingKill) return this.pendingKill;
+    const schedulerJobId = this.schedulerJobId;
+    const kill = async () => {
+      await cancelAndConfirmStopped(
+        this.deps.adapter,
+        schedulerJobId,
+        this.jobId && (this.schedulerUid || this.federationDispatchEpoch !== undefined)
+          ? {
+              jobId: this.jobId,
+              schedulerUid: this.schedulerUid,
+              federationDispatchEpoch: this.federationDispatchEpoch,
+            }
+          : undefined,
       );
-      if (
-        this.deps.adapter.confirmStopped &&
-        !(await this.deps.adapter.confirmStopped(this.schedulerJobId))
-      ) {
-        this.logger.info(
-          { jobId: this.jobId },
-          "Scheduler cancellation accepted; awaiting termination before cleanup",
-        );
-        return;
-      }
-      if (this.jobId) {
-        await this.notifyJobFinished(this.jobId);
-      }
-    } catch (err) {
-      this.logger.warn(
-        { jobId: this.jobId, schedulerJobId: this.schedulerJobId, err },
-        "Failed to cancel scheduler job",
-      );
-    }
+      this.killed = true;
+      this.logger.info({ jobId: this.jobId, schedulerJobId }, "Scheduler job stop confirmed");
+    };
+    this.pendingKill = kill().finally(() => {
+      this.pendingKill = undefined;
+    });
+    return this.pendingKill;
   }
 
   private async notifyJobFinished(jobId: string): Promise<void> {

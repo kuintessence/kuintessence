@@ -1,12 +1,21 @@
-import type {
-  QueueFailureCode,
-  QueueTargetMode,
-  QueueValidationMode,
-  SandboxExecutionMode,
-  SandboxSelfAccount,
-  SandboxTrustedExecutionProfile,
-  SchedulerQueueInventory,
+import { posix } from "node:path";
+import {
+  type QueueFailureCode,
+  type QueueTargetMode,
+  type QueueValidationMode,
+  type SandboxComputeResources,
+  SandboxComputeResourcesSchema,
+  type SandboxExecutionMode,
+  type SandboxSelfAccount,
+  type SandboxTrustedExecutionProfile,
+  type SchedulerAccounting,
+  type SchedulerQueueInventory,
 } from "@kuintessence/shared";
+import {
+  buildHpcCgroupCommand,
+  type SandboxCgroupCheck,
+  SandboxCgroupCheckSchema,
+} from "../sandbox/cgroup-command";
 
 export interface JobSpec {
   jobId: string;
@@ -22,6 +31,7 @@ export interface JobSpec {
   queueTargetMode?: QueueTargetMode;
   queueValidationMode?: QueueValidationMode;
   schedulerName?: string;
+  federationDispatchEpoch?: number;
   qos?: string;
   stdinText?: string;
   restrictedNoEgress?: boolean;
@@ -83,22 +93,28 @@ export interface SandboxJobSpec {
   executionMode: SandboxExecutionMode;
   runtimeAttestationId?: string;
   selfAccount?: SandboxSelfAccount;
-  /** Bound only during trusted restricted-profile materialization. */
+  /** Bound from locally attested runtime facts. */
   apptainerPath?: string;
   /** Bound only from a locally attested immutable seccomp profile. */
   seccompProfilePath?: string;
+  /** Local attestation facts; optional only to recover existing running jobs. */
+  cgroupCheck?: SandboxCgroupCheck;
+  attestedQueue?: string;
   /** Scheduler nodes that have passed the runtime attestation probe. */
   attestedNodes?: string[];
   /** Signed immutable identity; never completed or replaced by the Agent. */
   executionProfile?: SandboxTrustedExecutionProfile;
   identity: SandboxJobIdentity;
   mounts: SandboxJobMount[];
+  /** Legacy running jobs may be monitored, but cannot be submitted without signed resources. */
+  resources?: SandboxComputeResources;
   limits: { pids: number; outputBytes: number; logBytes: number };
   kubernetesArtifactPvc?: string;
 }
 
 export interface JobResult {
   schedulerJobId: string;
+  schedulerUid?: string;
 }
 
 export interface QueueTargetValidation {
@@ -139,6 +155,7 @@ export function isSchedulerQueueName(value: string): boolean {
 }
 
 export interface JobStatusResult {
+  accounting?: SchedulerAccounting;
   status: "queued" | "running" | "completed" | "failed";
   exitCode?: number;
   message?: string;
@@ -231,7 +248,11 @@ export function formatWallTime(seconds: number): string {
 
 /** Append the shared submit-script tail (env exports + the command) and
  *  return the joined script. Single-quote values are shell-escaped. */
-export function appendEnvAndCommand(lines: string[], spec: JobSpec): string {
+export function appendEnvAndCommand(
+  lines: string[],
+  spec: JobSpec,
+  scheduler: "slurm" | "pbs-pro" | "torque",
+): string {
   lines.push("");
   if (!spec.sandbox) {
     for (const [k, v] of Object.entries(spec.envVars)) {
@@ -241,7 +262,9 @@ export function appendEnvAndCommand(lines: string[], spec: JobSpec): string {
   }
   lines.push("");
   lines.push(
-    spec.sandbox ? buildApptainerSandboxCommand(spec.sandbox) : commandWithOptionalStdin(spec),
+    spec.sandbox
+      ? buildApptainerSandboxCommand(spec.sandbox, scheduler)
+      : commandWithOptionalStdin(spec),
   );
   return lines.join("\n");
 }
@@ -257,21 +280,44 @@ export function schedulerCommand(spec: JobSpec, command: string[]): string[] {
     throw new Error(`Sandbox execution account is not entitled to queue ${spec.queueName}`);
   }
   if (sandbox.executionMode === "SelfAccount") {
-    assertSelfAccountSubmission(sandbox);
+    assertHpcSubmission(sandbox);
     return command;
   }
+  assertHpcSubmission(sandbox);
   return [
     "setpriv",
     `--reuid=${identity.uid}`,
     `--regid=${identity.gid}`,
     "--init-groups",
     "--",
+    "env",
+    "-i",
+    "PATH=/usr/local/bin:/usr/bin:/bin:/opt/pbs/bin",
+    "HOME=/nonexistent",
+    `USER=${identity.username}`,
+    `LOGNAME=${identity.username}`,
+    "LC_ALL=C",
     ...command,
   ];
 }
 
 function isCanonicalAbsolutePath(value: string | undefined): value is string {
   return !!value && /^\/[^\0\r\n ]+$/.test(value) && !value.split("/").includes("..");
+}
+
+function assertHpcSubmission(sandbox: SandboxJobSpec): void {
+  if (
+    !/^[0-9a-f]{64}$/.test(sandbox.runtimeAttestationId ?? "") ||
+    !isCanonicalAbsolutePath(sandbox.apptainerPath) ||
+    !isCanonicalAbsolutePath(sandbox.seccompProfilePath) ||
+    !SandboxCgroupCheckSchema.safeParse(sandbox.cgroupCheck).success ||
+    !sandbox.attestedQueue ||
+    !isSchedulerQueueName(sandbox.attestedQueue) ||
+    !sandbox.attestedNodes?.length ||
+    sandbox.attestedNodes.some((node) => !/^[A-Za-z0-9._-]{1,255}$/.test(node))
+  )
+    throw new Error("HPC Sandbox submission does not match local execution facts");
+  if (sandbox.executionMode === "SelfAccount") assertSelfAccountSubmission(sandbox);
 }
 
 function assertSelfAccountSubmission(sandbox: SandboxJobSpec): void {
@@ -286,18 +332,22 @@ function assertSelfAccountSubmission(sandbox: SandboxJobSpec): void {
     identity.username !== selfAccount.username ||
     identity.uid !== selfAccount.uid ||
     identity.gid !== selfAccount.gid ||
-    !/^[0-9a-f]{64}$/.test(sandbox.runtimeAttestationId ?? "") ||
-    !isCanonicalAbsolutePath(sandbox.apptainerPath) ||
-    !isCanonicalAbsolutePath(sandbox.seccompProfilePath) ||
-    !sandbox.attestedNodes?.length ||
-    sandbox.attestedNodes.some((node) => !/^[A-Za-z0-9._-]{1,255}$/.test(node)) ||
     sandbox.executionProfile
   ) {
     throw new Error("SelfAccount Sandbox submission does not match local execution facts");
   }
 }
 
+export function assertSandboxComputeResources(spec: JobSpec): void {
+  if (!spec.sandbox) return;
+  const resources = SandboxComputeResourcesSchema.parse(spec.sandbox.resources);
+  if (resources.cpus !== spec.cpus || resources.memoryMb !== spec.memoryMb) {
+    throw new Error("Sandbox scheduler resources do not match the signed manifest");
+  }
+}
+
 export function assertSandboxSchedulerMetadata(spec: JobSpec): void {
+  assertSandboxComputeResources(spec);
   if (spec.queueName && !isSchedulerQueueName(spec.queueName)) {
     throw new QueueValidationError("QUEUE_NOT_FOUND");
   }
@@ -333,8 +383,11 @@ export function assertSandboxSchedulerMetadata(spec: JobSpec): void {
     }
   }
   if (!spec.sandbox) return;
-  if (spec.sandbox.executionMode === "SelfAccount") {
-    assertSelfAccountSubmission(spec.sandbox);
+  if (spec.sandbox.identity.backend === "Unix") {
+    assertHpcSubmission(spec.sandbox);
+    if (spec.queueName !== spec.sandbox.attestedQueue) {
+      throw new Error("HPC Sandbox queue has not passed local runtime attestation");
+    }
   }
   const token = /^[A-Za-z0-9._-]{1,128}$/;
   if (!token.test(spec.schedulerName ?? spec.name)) {
@@ -360,8 +413,7 @@ export function sandboxInterpreter(language: SandboxJobSpec["language"]): string
 
 export function buildApptainerSandboxArgv(sandbox: SandboxJobSpec): string[] {
   if (sandbox.runtimeKind !== "SIF") throw new Error("HPC Sandbox requires a SIF runtime");
-  const selfAccount = sandbox.executionMode === "SelfAccount";
-  if (selfAccount) assertSelfAccountSubmission(sandbox);
+  assertHpcSubmission(sandbox);
   const hostPaths = [
     sandbox.scriptHostPath,
     sandbox.contextHostPath,
@@ -370,16 +422,31 @@ export function buildApptainerSandboxArgv(sandbox: SandboxJobSpec): string[] {
   if (hostPaths.some((path) => !path.startsWith("/") || /[:,\r\n]/.test(path))) {
     throw new Error("Sandbox bind paths must be absolute managed paths without bind separators");
   }
+  const outputs = sandbox.mounts.filter((mount) => mount.mode === "WriteOnly");
+  const outputDirectory = posix.join(posix.dirname(sandbox.contextHostPath), "outputs");
+  if (
+    outputs.some((mount) => {
+      const name = posix.basename(mount.containerPath);
+      return (
+        !/^\/kq\/outputs\/[A-Za-z0-9._-]{1,128}$/.test(mount.containerPath) ||
+        name === "." ||
+        name === ".." ||
+        mount.hostPath !== `${outputDirectory}/${name}`
+      );
+    })
+  ) {
+    throw new Error("HPC Sandbox outputs require a prepared job output directory");
+  }
   const binds = [
     `${sandbox.scriptHostPath}:/kq/script/${sandbox.entrypoint}:ro`,
     `${sandbox.contextHostPath}:/kq/context.json:ro`,
-    ...sandbox.mounts.map(
-      (mount) =>
-        `${mount.hostPath}:${mount.containerPath}${mount.mode === "ReadOnly" ? ":ro" : ":rw"}`,
-    ),
+    ...sandbox.mounts
+      .filter((mount) => mount.mode === "ReadOnly")
+      .map((mount) => `${mount.hostPath}:${mount.containerPath}:ro`),
+    ...(outputs.length > 0 ? [`${outputDirectory}:/kq/outputs:rw`] : []),
   ];
   return [
-    selfAccount ? (sandbox.apptainerPath as string) : (sandbox.apptainerPath ?? "apptainer"),
+    sandbox.apptainerPath as string,
     "exec",
     "--containall",
     "--cleanenv",
@@ -393,7 +460,9 @@ export function buildApptainerSandboxArgv(sandbox: SandboxJobSpec): string[] {
     "--drop-caps",
     "all",
     "--security",
-    selfAccount ? `no-new-privs,seccomp:${sandbox.seccompProfilePath}` : "no-new-privs",
+    sandbox.executionProfile
+      ? "no-new-privs"
+      : `no-new-privs,seccomp:${sandbox.seccompProfilePath}`,
     "--pwd",
     "/kq",
     ...binds.flatMap((bind) => ["--bind", bind]),
@@ -403,11 +472,16 @@ export function buildApptainerSandboxArgv(sandbox: SandboxJobSpec): string[] {
   ];
 }
 
-export function buildApptainerSandboxCommand(sandbox: SandboxJobSpec): string {
+export function buildApptainerSandboxCommand(
+  sandbox: SandboxJobSpec,
+  scheduler: "slurm" | "pbs-pro" | "torque",
+): string {
   const fileBlocks = Math.max(1, Math.ceil(sandbox.limits.outputBytes / 512));
   const apptainerArgv = buildApptainerSandboxArgv(sandbox);
   const argv = buildTrustedSandboxArgv(sandbox, apptainerArgv).map(shellQuote).join(" ");
-  return `set -o pipefail; (ulimit -u ${sandbox.limits.pids}; ulimit -f ${fileBlocks}; exec ${argv}) 2>&1 | head -c ${sandbox.limits.logBytes}`;
+  const resourceCheck = `${buildHpcCgroupCommand(sandbox.cgroupCheck, sandbox.resources, scheduler)} >/dev/null || exit 126; `;
+  const nodeCheck = `[[ $(/usr/bin/hostname) == ${shellQuote(sandbox.attestedNodes?.[0] as string)} ]] || exit 126; `;
+  return `set -o pipefail; (ulimit -u ${sandbox.limits.pids}; ulimit -f ${fileBlocks}; ${nodeCheck}${resourceCheck}exec ${argv}) 2>&1 | head -c ${sandbox.limits.logBytes}`;
 }
 
 export function buildTrustedSandboxArgv(
@@ -416,6 +490,7 @@ export function buildTrustedSandboxArgv(
 ): string[] {
   const profile = sandbox.executionProfile;
   if (!profile) return apptainerArgv;
+  const resources = SandboxComputeResourcesSchema.parse(sandbox.resources);
   if (
     apptainerArgv[0] !== profile.apptainerCanonicalPath ||
     sandbox.runtimePath !== profile.sifCanonicalPath
@@ -436,6 +511,10 @@ export function buildTrustedSandboxArgv(
     profile.sifSha256,
     "--wrapper-sha256",
     profile.trustedWrapperSha256,
+    "--cpus",
+    String(resources.cpus),
+    "--memory-mb",
+    String(resources.memoryMb),
     "--",
     ...apptainerArgv,
   ];
@@ -498,9 +577,15 @@ export interface KuintessenceJobLookup {
   includeCompleted?: boolean;
   submittedAfter?: string;
   jobId: string;
+  schedulerUid?: string;
+  federationDispatchEpoch?: number;
+  /** Include retained completed jobs during submission recovery, starting at this receipt time. */
+  submittedAfterUnixMs?: number;
   schedulerName?: string;
   schedulerAccount?: string;
   namespace?: string;
+  /** Verified Unix identity used to submit a mapped Sandbox job. */
+  executionUser?: { uid: number; username: string };
 }
 
 /**
@@ -509,7 +594,7 @@ export interface KuintessenceJobLookup {
  * `indeterminate`.
  */
 export type KuintessenceJobLookupResult =
-  | { status: "found"; schedulerJobId: string }
+  | { status: "found"; schedulerJobId: string; schedulerUid?: string }
   | { status: "not_found" }
   | { status: "indeterminate"; reason: string };
 
@@ -551,10 +636,10 @@ export interface SchedulerAdapter {
   readonly version: string;
 
   submit(spec: JobSpec): Promise<JobResult>;
-  cancel(schedulerJobId: string): Promise<void>;
-  /** A successful cancel request alone may precede termination and resource cleanup. */
-  confirmStopped?(schedulerJobId: string): Promise<boolean>;
+  cancel(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<void>;
   status(schedulerJobId: string): Promise<JobStatusResult>;
+  /** Positive proof that execution stopped; missing/failed queries must not return true. */
+  confirmStopped?(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<boolean>;
 
   inspectQueues?(): Promise<SchedulerQueueInventory>;
   validateQueueTarget?(target: QueueTargetValidation): Promise<QueueTargetValidationResult>;
@@ -585,8 +670,32 @@ export interface SchedulerAdapter {
     jobId?: string,
     includeStderr?: boolean,
   ): Promise<string>;
-  prepareResume?(spec: JobSpec, schedulerJobId: string): void | Promise<void>;
+  prepareResume?(
+    spec: JobSpec,
+    schedulerJobId: string,
+    schedulerUid?: string,
+  ): void | Promise<void>;
   releaseJob?(schedulerJobId: string): void | Promise<void>;
   stageSandboxInputs?(sandbox: SandboxJobSpec, jobId: string): Promise<void>;
   stageSandboxOutputs?(sandbox: SandboxJobSpec, schedulerJobId: string): Promise<void>;
+}
+
+/** A cancellation response is not proof that processes have stopped. */
+export async function cancelAndConfirmStopped(
+  adapter: SchedulerAdapter,
+  schedulerJobId: string,
+  lookup?: KuintessenceJobLookup,
+): Promise<void> {
+  const failures: unknown[] = [];
+  try {
+    await adapter.cancel(schedulerJobId, lookup);
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    if (await adapter.confirmStopped?.(schedulerJobId, lookup)) return;
+  } catch (error) {
+    failures.push(error);
+  }
+  throw new AggregateError(failures, "Scheduler stop is not confirmed; retaining job inputs");
 }

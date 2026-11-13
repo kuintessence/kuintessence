@@ -266,13 +266,15 @@ export class TorqueAdapter implements SchedulerAdapter {
     assertSandboxSchedulerMetadata(spec);
     const lines: string[] = ["#!/bin/bash"];
     const executionRoot = spec.workingDir || this.logDir;
-    const logRoot = spec.sandbox ? executionRoot : this.logDir;
+    const logRoot = spec.sandbox ? join(executionRoot, ".scheduler-logs") : this.logDir;
     lines.push(`#PBS -N ${spec.schedulerName ?? spec.name}`);
     lines.push(`#PBS -v KQ_JOB_ID=${spec.jobId}`);
     lines.push(`#PBS -o ${join(logRoot, `kq-torque-${spec.jobId}.out`)}`);
     lines.push(`#PBS -e ${join(logRoot, `kq-torque-${spec.jobId}.err`)}`);
     // Torque uses nodes=N:ppn=N rather than select=
-    lines.push(`#PBS -l nodes=1:ppn=${spec.cpus}`);
+    lines.push(
+      `#PBS -l nodes=${spec.sandbox ? spec.sandbox.attestedNodes?.[0] : 1}:ppn=${spec.cpus}`,
+    );
     lines.push(`#PBS -l mem=${spec.memoryMb}mb`);
     if (spec.queueName) {
       lines.push(`#PBS -q ${spec.queueName}`);
@@ -290,7 +292,7 @@ export class TorqueAdapter implements SchedulerAdapter {
       lines.push(`#PBS -l gpus=${spec.gpus}`);
     }
     lines.push(`cd -- ${shellQuote(executionRoot)} || exit 1`);
-    return appendEnvAndCommand(lines, spec);
+    return appendEnvAndCommand(lines, spec, "torque");
   }
 
   async submit(spec: JobSpec): Promise<JobResult> {
@@ -376,7 +378,17 @@ export class TorqueAdapter implements SchedulerAdapter {
       }
       const matches = stdout
         .split(/(?=^Job Id:\s*)/m)
-        .filter((record) => hasKuintessenceJobId(record, lookup.jobId))
+        .filter(
+          (record) =>
+            hasKuintessenceJobId(record, lookup.jobId) &&
+            (!lookup.schedulerName ||
+              parseQstatAttribute(record, "Job_Name") === lookup.schedulerName) &&
+            (!lookup.schedulerAccount ||
+              parseQstatAttribute(record, "Account_Name") === lookup.schedulerAccount) &&
+            (!lookup.executionUser ||
+              parseQstatAttribute(record, "Job_Owner")?.split("@")[0] ===
+                lookup.executionUser.username),
+        )
         .map((record) => /^Job Id:\s*(\S+)/m.exec(record)?.[1])
         .filter((schedulerJobId): schedulerJobId is string => !!schedulerJobId);
       if (matches.length === 0) return { status: "not_found" };
@@ -485,10 +497,15 @@ export class TorqueAdapter implements SchedulerAdapter {
     return jobs;
   }
 
+  async confirmStopped(schedulerJobId: string): Promise<boolean> {
+    const result = await this.status(schedulerJobId);
+    return result.status === "completed" || result.status === "failed";
+  }
+
   async status(schedulerJobId: string): Promise<JobStatusResult> {
     const { exitCode, stdout } = await this.spawner.run(["qstat", "-f", schedulerJobId]);
     if (exitCode !== 0 || !stdout.trim()) {
-      return { status: "failed", message: "qstat returned no data" };
+      throw new Error("qstat returned no data");
     }
     // Torque qstat -f output is plain "key = value" lines (not JSON)
     const lines = stdout.split("\n").map((l) => l.trim());
@@ -521,6 +538,6 @@ export class TorqueAdapter implements SchedulerAdapter {
       if (rawExitCode === 0) return withNode({ status: "completed", exitCode: 0 });
       return withNode({ status: "failed", exitCode: rawExitCode, message: `Exit ${rawExitCode}` });
     }
-    return withNode({ status: "failed", message: `State: ${state}` });
+    throw new Error(`Unknown Torque job state: ${state}`);
   }
 }
