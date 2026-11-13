@@ -6,5 +6,5 @@
     "types": ["bun-types"],
     "lib": ["ESNext"]
   },
-  "include": ["*.ts", "../../packages/agent/src/spack/python.d.ts"]
+  "include": ["*.ts"]
 }

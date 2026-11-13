@@ -1,3 +1,5 @@
+/// <reference path="./python.d.ts" />
+
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {

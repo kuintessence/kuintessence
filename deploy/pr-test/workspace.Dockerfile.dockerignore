@@ -5,6 +5,8 @@
 !biome.json
 !packages
 !packages/**
+!contracts
+!contracts/**
 !authz
 !authz/**
 !scripts
