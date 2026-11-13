@@ -2,7 +2,7 @@
 
 三台新增虚拟机运行独立 A/B/C 平台、Fabric 和容器测试集群，A/B 使用 Slurm，C 使用 PBS；R 按需在 A 主机运行独立项目。现有集群不变，主平台只新增第四个 Orderer。完整范围见[实施清单](../../../docs/design/federation/aio-delivery.md)。
 
-当前固定候选 `038aa6f` 的 21 镜像归档已完成交付和身份核对，三个独立平台均通过受限启动、真实 SSO 和机构读取权限检查；未启用调度器或 Agent，Peer／Orderer 尚未加入通道。其中一个平台验收后停止，保留容器与卷，恢复该机原 CI Runner。镜像使用 Spack 1.0.3，兼容规则见[多版本严格绑定](../../../docs/spack-compatible-versions.md)。旧 `b54743b` 的两类 target／runtime 入口和 GNU Hello 原生检查保留为历史证据，不追改旧镜像。正式托管、三机构联合交易、SmartBFT、容量准入及科研验收仍待完成，PR 未合并；后续源码修复未自动进入该固定归档。
+当前固定候选 `038aa6f` 的 21 镜像归档已完成交付和身份核对，三个独立平台均通过受限启动、真实 SSO 和机构读取权限检查。2026-11-13 已完成三 Peer／四 SmartBFT Orderer 的真实存证、私有读取隔离、必需背书拒绝及主排序节点停机恢复，最终四个排序节点 active、高度 38，三 Peer 高度与区块摘要一致；详见[四节点验收](../four-node-acceptance.md)。三个平台保持运行，原 CI Runner／DinD 按用户要求停止并保留数据；未启用调度器或 Agent。镜像使用 Spack 1.0.3，兼容规则见[多版本严格绑定](../../../docs/spack-compatible-versions.md)。旧 `b54743b` 的两类 target／runtime 入口和 GNU Hello 原生检查保留为历史证据，不追改旧镜像。正式托管、完整跨机构业务矩阵、容量准入及科研验收仍待完成，PR 正按合并候选检查；后续源码修复未自动进入该固定归档。
 
 ## 本机构建与导出
 

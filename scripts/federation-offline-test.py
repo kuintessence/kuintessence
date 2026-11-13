@@ -1024,6 +1024,8 @@ class ConfigurationTests(unittest.TestCase):
             env = {
                 "POSTGRES_PASSWORD": "test-only", "DATABASE_URL": "postgres://kq:unused@postgres/kuintessence",
                 "JWT_SECRET": "test-only", "AUTHZ_SPICEDB_TOKEN": "test-only", "RUSTFS_ACCESS_KEY": "test-only",
+                "REGISTRY_JWT_SECRET": "test-registry-only", "SPACK_MATERIAL_TICKET_SECRET": "test-material-only",
+                "REGISTRY_PUBLIC_ORIGIN": "https://registry.example.org",
                 "RUSTFS_SECRET_KEY": "test-only", "SSO_BOOTSTRAP_CLIENT_ID": "test-only",
                 "SSO_BOOTSTRAP_CLIENT_SECRET": "test-only", "SSO_BOOTSTRAP_ISSUER_URL": "https://sso.example.org",
                 "SSO_BOOTSTRAP_REDIRECT_URI": "https://example.org/callback", "WEB_BASE_URL": "https://example.org",

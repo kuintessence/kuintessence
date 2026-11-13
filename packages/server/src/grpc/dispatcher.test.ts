@@ -774,7 +774,7 @@ test("NetDrive preparation requires advertised authority support and verified tr
   channel.federationNetdriveInputLeaseV1 = true;
   expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
   expect(channel.messages[0]?.payload.value).toMatchObject({
-    inputStaging: [expect.objectContaining({ expectedSizeBytes: 4n, netdriveInput: true })],
+    inputStaging: [expect.objectContaining({ totalBytes: 4n, netdriveInput: true })],
   });
   channel.verifiedCertFingerprint = "";
   expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);

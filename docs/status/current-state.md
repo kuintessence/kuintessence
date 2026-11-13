@@ -1108,4 +1108,6 @@ AIO 交付继续补齐网络输入／结果搬运与持久 0700 暂存目录、�
 
 三机构独立平台、三个 Peer 与四个 SmartBFT Orderer 已完成 Gateway 原生 VALID 存证、AB 集合必需背书拒绝、第三 Peer 私有读取拒绝、原交易恢复、主排序节点停机后的三节点提交。Fabric 3.1.5 追平的双向 TLS 证书摘要问题采用原生 `simple` 区块拉取修复，仍验证 BFT 区块签名。具体交易和边界见[四节点验收](../../deploy/federation/four-node-acceptance.md)。调度器、Agent、R 和通知未启动；不能将本轮结果扩展为全部 38 项通过。
 
+合并接续已修复普通作业恢复不应依赖联邦收件箱、过期计算授权取消互等及跨 epoch ACK；AgentStream 完整 238 项及后续定向 10 项通过。CI 开发登录检查发现案件 schema 静态加载 Node 加密库，已改为验签时按需加载；真实 Chromium 开发登录复验通过，案件签署／验证专项 14 项通过。配置夹具同步 main 的独立 Registry／材料票据密钥和公共 origin；远端仅执行 Compose 配置渲染，direct／fabric、AIO 与独立 Orderer 通过，未因此启动服务。商业 PostgreSQL 342 个测试本体通过后的整体清理超时单独调整为 60 秒，完整 CI 结果仍单独核对。
+
 main 合并的数据库路径保留 main 0000–0078、生成整合 0079，已验证新库和 main 0078 升级保留数据。旧分支试验数据库不能直接运行此整合迁移；远端维持原镜像，升级需另制基线。

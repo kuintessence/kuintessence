@@ -11,12 +11,7 @@ import {
 import { FederationError } from "./errors";
 import { FabricEvidenceTrustSchema } from "./ledger";
 import { FederationDigestSchema } from "./references";
-import {
-  type FederationVerificationKey,
-  federationMessageKeyId,
-  parseFederationPublicKey,
-  verifyFederationMessage,
-} from "./signatures";
+import type { FederationVerificationKey } from "./signatures";
 
 export const CaseSigningKindSchema = z.enum([
   "case-evidence-publication",
@@ -257,6 +252,7 @@ export async function caseVerificationKeys(
   input: CaseProposal,
   revoked: (site: string, key: string) => Promise<boolean>,
 ) {
+  const { federationMessageKeyId, parseFederationPublicKey } = await import("./signatures");
   const references =
     input.operation !== "record-case-evidence"
       ? [{ siteId: input.envelope.issuerSiteId, jws: input.envelope.jws }]
@@ -299,6 +295,7 @@ export async function verifyCaseSignature<T extends { kind: string }>(
   keys: readonly FederationVerificationKey[],
   now: Date,
 ) {
+  const { federationMessageKeyId, verifyFederationMessage } = await import("./signatures");
   const matches = keys.filter(
     (key) => key.siteId === siteId && key.keyId === federationMessageKeyId(jws),
   );

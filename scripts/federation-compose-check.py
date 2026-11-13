@@ -11,8 +11,10 @@ KINDS = ("evidence", "commercial", "market", "case")
 def render(mode, env, *extra):
     result = subprocess.run(
         ["bash", "deploy/federation/compose.sh", mode, *extra, "config", "--format", "json"],
-        cwd=ROOT, env=env, text=True, capture_output=True, check=True,
+        cwd=ROOT, env=env, text=True, capture_output=True,
     )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "Compose configuration failed")
     return json.loads(result.stdout)
 
 with tempfile.TemporaryDirectory(prefix="kq-compose-") as directory:
@@ -20,11 +22,13 @@ with tempfile.TemporaryDirectory(prefix="kq-compose-") as directory:
     env.update({key: "test-only" for key in (
         "POSTGRES_PASSWORD", "JWT_SECRET", "AUTHZ_SPICEDB_TOKEN", "RUSTFS_ACCESS_KEY",
         "RUSTFS_SECRET_KEY", "SSO_BOOTSTRAP_CLIENT_ID", "SSO_BOOTSTRAP_CLIENT_SECRET",
+        "REGISTRY_JWT_SECRET", "SPACK_MATERIAL_TICKET_SECRET",
     )})
     env.update({
         "DATABASE_URL": "postgres://kq:unused@postgres/kuintessence",
         "MTLS_TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
         "WEB_BASE_URL": "https://platform.example.com",
+        "REGISTRY_PUBLIC_ORIGIN": "https://registry.example.com",
         "SSO_BOOTSTRAP_ISSUER_URL": "https://sso.example.com",
         "SSO_BOOTSTRAP_REDIRECT_URI": "https://platform.example.com/callback",
         "FEDERATION_SITE_ID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
