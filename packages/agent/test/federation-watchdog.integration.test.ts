@@ -26,6 +26,12 @@ if command == 'sbatch':
     print('slurm 24.11.0')
 elif command == 'qsub':
     print('pbs_version = 23.0.0')
+elif command == 'qsig':
+    if sys.argv[1:] != ['-s', 'KILL', state['schedulerJobId']]: sys.exit(2)
+    try: os.kill(state['pid'], signal.SIGKILL)
+    except ProcessLookupError: pass
+    state['killSent'] = True
+    path.write_text(json.dumps(state))
 elif command in ('scancel', 'qdel'):
     if sys.argv[1] != state['schedulerJobId']: sys.exit(2)
     try: os.kill(state['pid'], signal.SIGTERM)
@@ -113,7 +119,7 @@ test.each([
   );
   const cli = join(directory, "scheduler-cli");
   await writeFile(cli, schedulerCli, { mode: 0o700 });
-  for (const command of ["sbatch", "squeue", "scancel", "qsub", "qstat", "qdel"])
+  for (const command of ["sbatch", "squeue", "scancel", "qsub", "qstat", "qdel", "qsig"])
     await symlink(cli, join(directory, command));
   const binary = process.env.KQ_TEST_WATCHDOG_BINARY;
   const watchdogCommand = binary
@@ -192,6 +198,8 @@ os.execv(command[0], command)
     process.kill(writerPid, "SIGKILL");
     await waitFor(async () => !!(await inbox.get(dispatchId))?.payload.federationRuntimeStop);
     expect(await worker.exited).not.toBe(0);
+    const stopped: { killSent?: boolean } = await Bun.file(statePath).json();
+    expect(stopped.killSent).toBe(schedulerType === "pbs-pro" ? true : undefined);
     expect((await inbox.get(dispatchId))?.payload.federationRuntime).toMatchObject({
       state: "stopping",
     });
