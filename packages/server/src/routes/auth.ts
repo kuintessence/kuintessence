@@ -856,7 +856,7 @@ async function ensureLoginAuthzSeed(db: AuthSeedDb, input: AuthzSeedInput): Prom
       .from(orgs)
       .where(or(eq(orgs.name, orgName), eq(orgs.name, "Development Compute Provider")))
       .limit(1);
-    if (existingOrg && existingOrg.name !== orgName) {
+    if (existingOrg?.name === "Development Compute Provider") {
       await db.update(orgs).set({ name: orgName }).where(eq(orgs.id, existingOrg.id));
     }
     const org =
