@@ -91,11 +91,13 @@ export class FederationAssetService {
         .select({
           localOrgId: federationMaterials.localOrgId,
           originSiteId: federationMaterials.originSiteId,
+          originName: federationSites.name,
           digest: federationMaterials.digest,
           kind: federationMaterials.kind,
           createdAt: federationMaterials.createdAt,
         })
         .from(federationMaterials)
+        .leftJoin(federationSites, eq(federationSites.id, federationMaterials.originSiteId))
         .where(eq(federationMaterials.localOrgId, actor.orgId))
         .orderBy(
           desc(federationMaterials.createdAt),

@@ -639,7 +639,10 @@ describe("SubmitJobDialog usecase picker", () => {
   test("uses a popup catalog and hides legacy script-style usecases", async () => {
     render(<SubmitJobDialog open={true} onOpenChange={() => {}} />, { wrapper: wrapper() });
 
-    expect(await screen.findByTestId("submit-usecase-input-steps")).toBeTruthy();
+    const steps = await screen.findByTestId("submit-usecase-input-steps");
+    expect(steps).toBeTruthy();
+    const selectedCard = screen.getByText("Selected usecase").closest(".bg-card");
+    expect(selectedCard?.contains(steps)).toBe(true);
     expect(screen.queryByTestId("submit-usecase-input-script")).toBeNull();
     expect(screen.getByTestId("submit-usecase-picker-open").className).toContain("w-full");
 

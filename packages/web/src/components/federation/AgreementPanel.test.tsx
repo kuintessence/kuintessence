@@ -241,11 +241,11 @@ test("keeps historical verification visible when communication is disabled", asy
 test("failed status refresh hides stale retry controls and preserves signed terms", async () => {
   rows = [approval];
   exchange.sync = { ...pendingExchange, state: "needs_review", lastError: "OPERATION_CONFLICT" };
-  mount();
+  const { client } = mount();
   await openDetail();
   await screen.findByRole("button", { name: "Retry signature exchange" });
   exchangeError = new Error("permission revoked");
-  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  await client.invalidateQueries({ queryKey: ["federation", "agreements"] });
   await screen.findByText("Could not load. Refresh to try again.");
   expect(screen.queryByRole("button", { name: "Retry signature exchange" })).toBeNull();
   expect(screen.getByLabelText("Our signature")).toBeTruthy();

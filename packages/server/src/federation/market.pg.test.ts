@@ -5,6 +5,7 @@ import {
   auditLog,
   federationUnreservedClosures as closures,
   createPgDb,
+  federationSites,
   orgs,
   federationMarketSubmissions as submissions,
   userOrgMemberships,
@@ -883,4 +884,34 @@ test("unreserved market retirement clears only expired committed leases after a 
   await capacity.advanceNext();
   expect((await capacity.inspect()).allocatedBytes).toBe("0");
   expect((await f.view()).transactions[0]?.stage).toBe("committed");
+});
+
+test("market names are limited to returned parties and do not alter ledger evidence", async () => {
+  const f = await fixture();
+  await f.permissions.set({ ...f.actor, capability: "market.read", enabled: true }, f.actor.userId);
+  const unrelated = randomUUID();
+  await db.insert(federationSites).values([
+    { id: f.siteId, name: "North Research", endpoint: "https://north.invalid" },
+    { id: unrelated, name: "Unrelated institution", endpoint: "https://unrelated.invalid" },
+  ]);
+  const demand = MarketDemandStateSchema.parse({
+    demand: f.input.demand,
+    digest: federationMaterialDigest(f.input.demand),
+    version: 1,
+    status: "OPEN",
+    claim: null,
+    cancellation: null,
+  });
+  f.adapter.onQuery = async (input) =>
+    input.operation === "list-demands"
+      ? { operation: "list-demands", demands: [demand], bookmark: "" }
+      : { operation: "get-demand", demand };
+  for (const input of [
+    { operation: "list-demands", limit: 20, bookmark: "" },
+    { operation: "get-demand", demandId: demand.demand.demandId },
+  ] as const) {
+    const result = await f.service.query(f.actor, input);
+    expect(result.siteNames).toEqual({ [f.siteId]: "North Research" });
+    expect(result.operation === "list-demands" ? result.demands[0] : result.demand).toEqual(demand);
+  }
 });

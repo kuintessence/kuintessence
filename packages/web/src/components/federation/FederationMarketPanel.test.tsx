@@ -170,11 +170,24 @@ beforeEach(async () => {
     if (path.includes("/market/demands?")) {
       if (failDirectory) throw new ApiError(503, "LEDGER_UNAVAILABLE", "offline");
       return {
-        data: { operation: "list-demands", demands: [demand], bookmark: "", observedAt: now },
+        data: {
+          operation: "list-demands",
+          demands: [demand],
+          bookmark: "",
+          observedAt: now,
+          siteNames: { [source]: "North Research" },
+        },
       };
     }
     if (path.includes("/market/demands/"))
-      return { data: { operation: "get-demand", demand, observedAt: now } };
+      return {
+        data: {
+          operation: "get-demand",
+          demand,
+          observedAt: now,
+          siteNames: { [source]: "North Research" },
+        },
+      };
     if (path.includes("/market/operations?"))
       return { data: { enabled, data: [...records.values()], hasMore: false } };
     if (path.includes("/market/operations/")) {
@@ -434,4 +447,14 @@ test("an expired open demand can still be cancelled using its exact current vers
     operation: "cancel-open-demand",
     cancellation: { demandId: demand.demand.demandId, expectedVersion: 1 },
   });
+});
+
+test("market details pair the source name with its full ID and keep the signed demand unchanged", async () => {
+  const before = JSON.stringify(demand);
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: /Public BWA demand/ }));
+  await screen.findByText("North Research");
+  expect(screen.getByText(source)).toBeTruthy();
+  expect(JSON.stringify(demand)).toBe(before);
+  expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
 });

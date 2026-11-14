@@ -16,6 +16,7 @@ import { Button } from "../ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import {
   FederationEmpty,
+  FederationLoadError,
   FederationRefreshNotice,
   FederationSectionTitle,
 } from "./FederationLayout";
@@ -157,13 +158,6 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
           </TabsList>
         </Tabs>
         <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            disabled={busy || !!action || list.isFetching || (!!selected && detail.isFetching)}
-            onClick={reload}
-          >
-            {t("federation.refresh")}
-          </Button>
           {!action && !selected ? (
             <Button
               disabled={busy || list.isPending || list.isError}
@@ -175,7 +169,7 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
         </div>
       </div>
       {federationReadFailed(list) ? (
-        <p role="alert">{t("federation.loadFailed")}</p>
+        <FederationLoadError onRetry={() => void list.refetch()} />
       ) : action ? (
         <MediaLogisticsForm
           scope={scope}
@@ -197,7 +191,7 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
             {t("federation.logistics.back")}
           </Button>
           {federationReadFailed(detail) ? (
-            <p role="alert">{t("federation.loadFailed")}</p>
+            <FederationLoadError onRetry={() => void detail.refetch()} />
           ) : !current ? (
             <p role="status">{t("federation.loading")}</p>
           ) : (

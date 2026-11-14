@@ -15,6 +15,7 @@ import { Button } from "../ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import {
   FederationEmpty,
+  FederationLoadError,
   FederationRefreshNotice,
   FederationSectionTitle,
 } from "./FederationLayout";
@@ -193,13 +194,6 @@ function MediaInventory({
           </TabsList>
         </Tabs>
         <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            disabled={busy || list.isFetching || !!action}
-            onClick={() => void reload()}
-          >
-            {t("federation.refresh")}
-          </Button>
           {!selected && !action && capabilities.includes(mediaActionCapability(next)) ? (
             <Button
               disabled={busy || list.isPending || list.isError}
@@ -211,7 +205,7 @@ function MediaInventory({
         </div>
       </div>
       {federationReadFailed(list) ? (
-        <p role="alert">{t("federation.loadFailed")}</p>
+        <FederationLoadError onRetry={() => void list.refetch()} />
       ) : action ? (
         <MediaDeliveryForm
           scope={scope}

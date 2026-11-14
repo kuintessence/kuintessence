@@ -40,6 +40,7 @@ let grants: FederationCapability[],
   materialRows: {
     localOrgId: string;
     originSiteId: string;
+    originName?: string | null;
     digest: string;
     kind: string;
     createdAt: string;
@@ -64,7 +65,7 @@ function mappingsTab() {
 }
 async function prepareMaterial() {
   fireEvent.click(await screen.findByRole("button", { name: "Import material" }));
-  fireEvent.change(screen.getByLabelText("Origin site ID"), { target: { value: site } });
+  fireEvent.change(screen.getByLabelText("Origin site"), { target: { value: site } });
   fireEvent.change(screen.getByLabelText("Original material"), {
     target: { value: JSON.stringify(content) },
   });
@@ -169,7 +170,7 @@ test("registers exact dataset and local version mapping, then revokes it indepen
   mappingsTab();
   fireEvent.click(await screen.findByRole("button", { name: "Register mapping" }));
   for (const [label, value] of [
-    ["Origin site ID", site],
+    ["Origin site", site],
     ["Origin asset ID", mapping.originId],
     ["Origin revision", "1"],
     ["SHA-256", digest],
@@ -220,6 +221,8 @@ test("read-only viewers inspect verified content but cannot import or revoke", a
   fireEvent.click(row);
   await screen.findByRole("button", { name: "Export material" });
   expect(screen.getByText("Parameters")).toBeTruthy();
+  expect(screen.getByText("Site name unavailable")).toBeTruthy();
+  expect(screen.getByText(site)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Back to materials" }));
   mappingsTab();
   await screen.findByText("Active");
@@ -250,7 +253,7 @@ test("refuses modified material contents and wrong-organization lists", async ()
 test("rejects invalid or excessively nested material before writing", async () => {
   mount();
   fireEvent.click(await screen.findByRole("button", { name: "Import material" }));
-  fireEvent.change(screen.getByLabelText("Origin site ID"), { target: { value: site } });
+  fireEvent.change(screen.getByLabelText("Origin site"), { target: { value: site } });
   const nested = `${"[".repeat(40)}0${"]".repeat(40)}`;
   for (const json of [
     "not JSON",
@@ -294,7 +297,7 @@ test("reviews an environment lock with its real target and exact native lock ref
   vi.mocked(api.post).mockResolvedValue({ data: { digest: lockDigest, kind: lock.kind } });
   mount();
   fireEvent.click(await screen.findByRole("button", { name: "Import material" }));
-  fireEvent.change(screen.getByLabelText("Origin site ID"), { target: { value: site } });
+  fireEvent.change(screen.getByLabelText("Origin site"), { target: { value: site } });
   fireEvent.change(screen.getByLabelText("Original material"), {
     target: { value: JSON.stringify(lock) },
   });
@@ -337,4 +340,39 @@ test("a file finishing after permission revocation cannot restore a writable dra
   });
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(api.post).not.toHaveBeenCalled();
+});
+
+test("material source shows the institution name and full ID without changing verified content", async () => {
+  materialRows = [
+    {
+      localOrgId: org,
+      originSiteId: site,
+      originName: "North Research",
+      digest,
+      kind: "inputs",
+      createdAt: mapping.createdAt,
+    },
+  ];
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: new RegExp(digest.slice(0, 19)) }));
+  await screen.findByRole("button", { name: "Export material" });
+  expect(screen.getByText("North Research")).toBeTruthy();
+  expect(screen.getByText(site)).toBeTruthy();
+  expect(screen.queryByText("Site name unavailable")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+});
+
+test("an initial material read failure can recover without a permanent refresh toolbar", async () => {
+  const get = vi.mocked(api.get).getMockImplementation();
+  let failing = true;
+  vi.mocked(api.get).mockImplementation(async (path, ...args) => {
+    if (path.includes("/materials?") && failing) throw new ApiError(503, "UNAVAILABLE", "offline");
+    return get?.(path, ...args);
+  });
+  mount();
+  await screen.findByRole("alert");
+  failing = false;
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  await screen.findByText("No input snapshots or environment locks.");
+  expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
 });

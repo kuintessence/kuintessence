@@ -31,9 +31,11 @@ import { AgreementFact } from "./AgreementTerms";
 import { materialDigest } from "./asset-material";
 import {
   FederationEmpty,
+  FederationLoadError,
   FederationPanelHeader,
   FederationRefreshNotice,
 } from "./FederationLayout";
+import { FederationSiteIdentity } from "./FederationSiteIdentity";
 import {
   loadMarketClaimContract,
   loadMarketClaimRequests,
@@ -132,7 +134,10 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
   }, [grants, readOnly, intent]);
   async function getDemand(id: string) {
     const result = MarketQueryResultSchema.options[1]
-      .extend({ observedAt: MarketOperationsTime })
+      .extend({
+        observedAt: MarketOperationsTime,
+        siteNames: z.record(z.uuid(), z.string()).default({}),
+      })
       .parse((await api.get<{ data: unknown }>(`${path}/demands/${id}`, scope)).data);
     if (
       !result.demand ||
@@ -162,7 +167,10 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
       canRead && context.data?.enabled === true && tab === "directory" && !selected && !creating,
     queryFn: async () => {
       const result = MarketQueryResultSchema.options[0]
-        .extend({ observedAt: MarketOperationsTime })
+        .extend({
+          observedAt: MarketOperationsTime,
+          siteNames: z.record(z.uuid(), z.string()).default({}),
+        })
         .parse(
           (
             await api.get<{ data: unknown }>(
@@ -383,7 +391,10 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
         {t(`federation.market.states.${row.status}`)}
       </AgreementFact>
       <AgreementFact label={t("federation.market.fields.source")}>
-        {row.demand.sourceSiteId}
+        <FederationSiteIdentity
+          id={row.demand.sourceSiteId}
+          name={(detail.data?.siteNames ?? directory.data?.siteNames)?.[row.demand.sourceSiteId]}
+        />
       </AgreementFact>
       <AgreementFact label={t("federation.market.fields.platform")}>
         {row.demand.platform} / {row.demand.architecture}
@@ -400,7 +411,10 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
       <AgreementFact label={t("federation.market.version")}>{row.version}</AgreementFact>
       {row.claim ? (
         <AgreementFact label={t("federation.market.fields.provider")}>
-          {row.claim.providerSiteId}
+          <FederationSiteIdentity
+            id={row.claim.providerSiteId}
+            name={(detail.data?.siteNames ?? directory.data?.siteNames)?.[row.claim.providerSiteId]}
+          />
         </AgreementFact>
       ) : null}
     </dl>
@@ -420,9 +434,6 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
   return (
     <div className="space-y-5">
       <FederationPanelHeader title={t("federation.market.title")}>
-        <Button variant="outline" disabled={busy} onClick={refresh}>
-          {t("federation.refresh")}
-        </Button>
         {enabled &&
         localSiteId &&
         grants.includes("market.publish") &&
@@ -444,7 +455,7 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
       {operations.data?.enabled === false && !operations.isError ? (
         <p role="status">{t("federation.market.disabled")}</p>
       ) : null}
-      {context.isError ? <p role="alert">{t("federation.loadFailed")}</p> : null}
+      {context.isError ? <FederationLoadError onRetry={() => void context.refetch()} /> : null}
       {recover.isError ? <p role="alert">{t("federation.market.operationUnavailable")}</p> : null}
       {mutation.isError ? (
         <div role="alert" className="space-y-2">
@@ -519,7 +530,10 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
                 {detail.isPending ? (
                   <p role="status">{t("federation.loading")}</p>
                 ) : detail.isError ? (
-                  <p role="alert">{t("federation.market.unavailable")}</p>
+                  <FederationLoadError
+                    message={t("federation.market.unavailable")}
+                    onRetry={() => void detail.refetch()}
+                  />
                 ) : demand ? (
                   <>
                     <h3 className="font-semibold">{demand.demand.title}</h3>
@@ -649,7 +663,10 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
                   {t("federation.market.back")}
                 </Button>
                 {transaction.isError ? (
-                  <p role="alert">{t("federation.market.operationUnavailable")}</p>
+                  <FederationLoadError
+                    message={t("federation.market.operationUnavailable")}
+                    onRetry={() => void transaction.refetch()}
+                  />
                 ) : transaction.isPending ? (
                   <p role="status">{t("federation.loading")}</p>
                 ) : op ? (
@@ -746,7 +763,7 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
                 ) : null}
               </>
             ) : federationReadFailed(operations) ? (
-              <p role="alert">{t("federation.loadFailed")}</p>
+              <FederationLoadError onRetry={() => void operations.refetch()} />
             ) : operations.isPending || !operations.data ? (
               <p role="status">{t("federation.loading")}</p>
             ) : (
