@@ -26,6 +26,7 @@
 | [软件与 Sandbox](software.md) | 资产发布、授权、Spack、签名生态、受限数据和隔离运行 |
 | [Spack 受控上游导入](spack-upstream-import.md) | Registry 专用代理、HTTPS 白名单、recipe/material JSON 导入及维护边界 |
 | [Spack 固定案例材料导出](spack-material-artifacts.md) | Actions 成套材料、校验、初始化和真实 Web 导入 |
+| [联邦协同](federation-collaboration.md) | 跨机构委派、合作模式、材料、商业与仲裁操作 |
 | [客户端](clients.md) | CLI/TUI、本地工作流、GUI 与 Tauri |
 | [工作流](workflow-schema/README.md) | 控制流 DSL、物化、执行、取消与恢复 |
 | [前端维护](frontend.md) | 工作区导航、权限投影和共享动效约定 |

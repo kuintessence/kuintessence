@@ -20,6 +20,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { AgreementFact } from "./AgreementTerms";
+import { FederationEmpty } from "./FederationLayout";
 import { MarketRequestForm } from "./MarketRequestForm";
 import {
   checkRequestScope,
@@ -238,7 +239,7 @@ function RequestsPanel({ approval, scope, grants, readOnly, busy }: Props) {
     <div className="space-y-5">
       <div className="flex flex-wrap justify-between gap-2">
         <h3 className="font-semibold">{t("federation.marketRequest.title")}</h3>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
             disabled={blocked}
@@ -395,9 +396,11 @@ function RequestsPanel({ approval, scope, grants, readOnly, busy }: Props) {
                 </button>
               ))}
             </div>
-            {!records.data.records.length ? <p>{t("federation.marketRequest.empty")}</p> : null}
+            {!records.data.records.length ? (
+              <FederationEmpty>{t("federation.marketRequest.empty")}</FederationEmpty>
+            ) : null}
             {page > 0 || records.data.records.length === 20 ? (
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
                   disabled={blocked || page === 0 || records.isFetching}

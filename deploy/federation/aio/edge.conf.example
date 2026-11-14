@@ -1,7 +1,17 @@
-# Copy to the private edge/ directory. Replace the three DNS names and provide TLS files.
+# Copy to the private edge/ directory. Replace the DNS name and provide TLS files.
+map $http_upgrade $kq_connection_upgrade {
+  default upgrade;
+  "" close;
+}
+map $http_authorization $kq_registry_authorization {
+  default $http_authorization;
+  "" "Bearer $cookie_kq_access_token";
+}
+
 server {
   listen 443 ssl;
   server_name platform.site.example;
+  absolute_redirect off;
   ssl_certificate /run/kq-edge/tls/server.crt;
   ssl_certificate_key /run/kq-edge/tls/server.key;
   ssl_protocols TLSv1.2 TLSv1.3;
@@ -10,6 +20,7 @@ server {
   proxy_set_header X-Forwarded-Host $http_host;
   proxy_set_header X-Forwarded-Proto https;
   proxy_set_header X-Forwarded-For $remote_addr;
+  location = /api/registry/token { proxy_pass http://server:3000; }
   location /platform/api/ {
     rewrite ^/platform(/.*)$ $1 break;
     proxy_pass http://server:3000;
@@ -21,45 +32,60 @@ server {
     proxy_pass http://server:3000;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection upgrade;
+    proxy_set_header Connection $kq_connection_upgrade;
     proxy_set_header Host $http_host;
     proxy_set_header X-Forwarded-Proto https;
   }
   location /software/api/ {
     rewrite ^/software/(.*)$ /$1 break;
     proxy_pass http://registry:3100;
+    proxy_set_header Host $http_host;
+    proxy_set_header Authorization $kq_registry_authorization;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_request_buffering off;
     proxy_read_timeout 1800s;
   }
-  location /v2/ { proxy_pass http://registry:3100; }
-  location /buildcache/ { proxy_pass http://registry:3100; }
-  location / { proxy_pass http://web:80; }
-}
-server {
-  listen 443 ssl;
-  server_name sso.site.example;
-  ssl_certificate /run/kq-edge/tls/server.crt;
-  ssl_certificate_key /run/kq-edge/tls/server.key;
-  ssl_protocols TLSv1.2 TLSv1.3;
-  location / {
-    proxy_pass http://casdoor:8000;
+  location /v2/ {
+    proxy_pass http://registry:3100;
     proxy_set_header Host $http_host;
-    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header Authorization $kq_registry_authorization;
     proxy_set_header X-Forwarded-Proto https;
   }
-}
-server {
-  listen 443 ssl;
-  server_name storage.site.example;
-  ssl_certificate /run/kq-edge/tls/server.crt;
-  ssl_certificate_key /run/kq-edge/tls/server.key;
-  ssl_protocols TLSv1.2 TLSv1.3;
-  client_max_body_size 1g;
-  location / {
-    proxy_pass http://rustfs:9000;
+  location /buildcache/ {
+    proxy_pass http://registry:3100;
     proxy_set_header Host $http_host;
+    proxy_set_header Authorization $kq_registry_authorization;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
+  # Keep Casdoor's native paths and issuer on the platform origin.
+  location = /sso { return 302 /sso/; }
+  location = /sso/img/casdoor-logo_1185x256.png {
+    alias /etc/nginx/conf.d/casdoor-logo.png;
+  }
+  location ^~ /sso/ { proxy_pass http://casdoor:8000; }
+  location ^~ /.well-known/ { proxy_pass http://casdoor:8000; }
+  location ^~ /login/oauth/ { return 302 /sso$request_uri; }
+  location ^~ /static/ { proxy_pass http://casdoor:8000; }
+  location ^~ /img/ { proxy_pass http://casdoor:8000; }
+  location ^~ /site/casdoor/ { proxy_pass http://casdoor:8000; }
+  location ~ ^/api/(get-account|get-app-login|login|userinfo|logout|device-auth|oauth/register)$ {
+    proxy_pass http://casdoor:8000;
+  }
+  location ^~ /api/login/oauth/ { proxy_pass http://casdoor:8000; }
+
+  # Preserve bucket paths, query strings and Host for S3 signatures.
+  location ~ ^/(kq-netdrive|kq-data-market-staging|kq-data-market-immutable)/ {
+    client_max_body_size 1g;
+    proxy_pass http://rustfs:9000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_request_buffering off;
     proxy_buffering off;
     proxy_read_timeout 900s;
   }
+  location / { proxy_pass http://web:80; }
 }

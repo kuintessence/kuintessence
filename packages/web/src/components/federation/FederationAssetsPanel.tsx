@@ -29,6 +29,7 @@ import {
   materialDigest,
 } from "./asset-material";
 import { FederationAssetImport } from "./FederationAssetImport";
+import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
 
 type MaterialOption = z.infer<typeof FederationMaterialOptionSchema>;
 const path = "/federation/assets";
@@ -229,34 +230,31 @@ export function FederationAssetsPanel({
     : "";
   return (
     <div className="min-w-0 space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold">{t("federation.assets.title")}</h2>
-        <div className="flex flex-wrap gap-2">
+      <FederationPanelHeader title={t("federation.assets.title")}>
+        <Button
+          ref={refreshFocus}
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            void capabilities.refetch();
+            void client.invalidateQueries({ queryKey: key });
+          }}
+        >
+          {t("federation.refresh")}
+        </Button>
+        {canWrite && !creating && !draft && !selected ? (
           <Button
-            ref={refreshFocus}
-            variant="outline"
             disabled={busy}
             onClick={() => {
-              void capabilities.refetch();
-              void client.invalidateQueries({ queryKey: key });
+              setSaved(false);
+              mutation.reset();
+              setCreating(true);
             }}
           >
-            {t("federation.refresh")}
+            {t(`federation.assets.add.${tab}`)}
           </Button>
-          {canWrite && !creating && !draft && !selected ? (
-            <Button
-              disabled={busy}
-              onClick={() => {
-                setSaved(false);
-                mutation.reset();
-                setCreating(true);
-              }}
-            >
-              {t(`federation.assets.add.${tab}`)}
-            </Button>
-          ) : null}
-        </div>
-      </div>
+        ) : null}
+      </FederationPanelHeader>
       {saved ? (
         <p role="status" className="text-sm">
           {t("federation.assets.saved")}
@@ -353,7 +351,7 @@ export function FederationAssetsPanel({
               setSaved(false);
             }}
           >
-            <TabsList aria-label={t("federation.assets.title")}>
+            <TabsList className="federation-subnav" aria-label={t("federation.assets.title")}>
               <TabsTrigger value="material">{t("federation.assets.materials")}</TabsTrigger>
               <TabsTrigger value="mapping">{t("federation.assets.mappings")}</TabsTrigger>
             </TabsList>
@@ -363,13 +361,13 @@ export function FederationAssetsPanel({
           ) : pending ? (
             <p role="status">{t("federation.loading")}</p>
           ) : (
-            <ul className="divide-y divide-border">
+            <ul className="federation-list divide-y divide-border">
               {tab === "material"
                 ? materials.data?.data.map((row) => (
                     <li key={`${row.originSiteId}:${row.digest}`} className="py-4">
                       <button
                         type="button"
-                        className="w-full space-y-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="federation-list-row w-full space-y-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         onClick={() => setSelected(row)}
                       >
                         <span className="block font-medium text-sm">
@@ -423,12 +421,10 @@ export function FederationAssetsPanel({
           {!failed &&
           !pending &&
           !(tab === "material" ? materials.data?.data.length : mappings.data?.length) ? (
-            <p role="status" className="text-sm text-muted-foreground">
-              {t(`federation.assets.empty.${tab}`)}
-            </p>
+            <FederationEmpty>{t(`federation.assets.empty.${tab}`)}</FederationEmpty>
           ) : null}
           {page > 0 || hasMore ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 disabled={busy || fetching || page === 0}

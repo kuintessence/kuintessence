@@ -27,6 +27,7 @@ import { AgreementBacklog } from "./AgreementBacklog";
 import { AgreementExchangeStatus } from "./AgreementExchangeStatus";
 import { AgreementImport } from "./AgreementImport";
 import { AgreementFact, AgreementTerms } from "./AgreementTerms";
+import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
 
 const path = "/federation/agreements";
 type Action =
@@ -150,35 +151,32 @@ export function AgreementPanel({
     );
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold">{t("federation.agreements.agreements")}</h2>
-        <div className="flex gap-2">
+      <FederationPanelHeader title={t("federation.agreements.agreements")}>
+        <Button
+          variant="outline"
+          disabled={
+            switching ||
+            mutation.isPending ||
+            capabilities.isFetching ||
+            context.isFetching ||
+            list.isFetching
+          }
+          onClick={refresh}
+        >
+          {t("federation.refresh")}
+        </Button>
+        {canApprove && !importing ? (
           <Button
-            variant="outline"
-            disabled={
-              switching ||
-              mutation.isPending ||
-              capabilities.isFetching ||
-              context.isFetching ||
-              list.isFetching
-            }
-            onClick={refresh}
+            disabled={busy}
+            onClick={() => {
+              setImporting(true);
+              setSelected(null);
+            }}
           >
-            {t("federation.refresh")}
+            {t("federation.agreements.importTerms")}
           </Button>
-          {canApprove && !importing ? (
-            <Button
-              disabled={busy}
-              onClick={() => {
-                setImporting(true);
-                setSelected(null);
-              }}
-            >
-              {t("federation.agreements.importTerms")}
-            </Button>
-          ) : null}
-        </div>
-      </div>
+        ) : null}
+      </FederationPanelHeader>
       {mobileReadOnly ? (
         <p className="text-sm text-muted-foreground">{t("federation.agreements.desktopOnly")}</p>
       ) : null}
@@ -233,12 +231,12 @@ export function AgreementPanel({
       ) : (
         <>
           {list.data.length ? (
-            <ul className="divide-y divide-border rounded-md border border-border">
+            <ul className="federation-list divide-y divide-border rounded-md border border-border">
               {list.data.map((approval) => (
                 <li key={approval.revisionId}>
                   <button
                     type="button"
-                    className="flex w-full flex-col gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring sm:flex-row sm:justify-between"
+                    className="federation-list-row flex w-full flex-col gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring sm:flex-row sm:justify-between"
                     onClick={() => setSelected(approval.revisionId)}
                   >
                     <span className="min-w-0 space-y-1">
@@ -267,10 +265,10 @@ export function AgreementPanel({
               ))}
             </ul>
           ) : (
-            <p className="py-8 text-sm text-muted-foreground">{t("federation.agreements.empty")}</p>
+            <FederationEmpty>{t("federation.agreements.empty")}</FederationEmpty>
           )}
           {page > 0 || list.data.length === 20 ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 disabled={page === 0 || list.isFetching}
@@ -320,7 +318,7 @@ export function AgreementPanel({
             ) : null}
           </DialogBody>
           <DialogFooter>
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <Button
                 variant="outline"
                 disabled={mutation.isPending}

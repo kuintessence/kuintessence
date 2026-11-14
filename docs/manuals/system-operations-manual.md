@@ -63,6 +63,16 @@
 
 完整配置见[反向代理部署](../deployment.md#proxy)。
 
+### 3.3 联邦协同部署与巡检
+
+联邦协同（原“机构合作”）连接独立平台；较早的部署版本可能仍显示旧名称。各站点保留独立身份、数据库、对象存储、软件仓库和机构密钥。
+
+两种交付共用基础平台：`direct` 不依赖 Fabric；`fabric` 增加 Peer、Orderer、链码和 Adapter。AIO 可附加测试调度器，普通生产部署不强制启用。
+
+巡检分别核对平台登录与授权、Gateway 与站点信任、链健康与交易有效性、Agent 与调度执行能力。平台可登录或链正常不代表具备计算能力。异步模式在约定范围内继续执行，恢复后补交原证据；链上协调未完成必要交易并确认 VALID 前不能执行，也不能降级绕过。
+
+离线交付核对提交、镜像身份和归档 SHA-256，使用包内镜像启动，不在目标端临时拉取或构建。机构私钥与密码独立配置，不放入通用镜像包。配置及恢复入口见[联邦部署](../../deploy/federation/README.md)、[两种 Compose 部署](../../deploy/federation/deployment.md)和[联邦协同使用指南](../federation-collaboration.md)。
+
 ## 4. 日常巡检
 
 ### 4.1 平台页面
@@ -388,6 +398,7 @@ SSH 子系统包括凭据保管库、活跃会话、会话限制和可选会话�
 
 ## 18. 相关文档
 
+- [联邦协同使用指南](../federation-collaboration.md)
 - [平台通用用户手册](user-manual.md)
 - [中英双语术语表](../terminology-glossary.md)
 - [反向代理部署](../deployment.md#proxy)

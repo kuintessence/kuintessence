@@ -14,6 +14,7 @@ import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { ApiError, type ApiOrganizationScope, api } from "../../lib/api-client";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -27,6 +28,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { AgreementFact } from "./AgreementTerms";
 import { materialDigest } from "./asset-material";
+import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
 import {
   loadMarketClaimContract,
   loadMarketClaimRequests,
@@ -412,31 +414,28 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
     );
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold">{t("federation.market.title")}</h2>
-        <div className="flex gap-2">
-          <Button variant="outline" disabled={busy} onClick={refresh}>
-            {t("federation.refresh")}
+      <FederationPanelHeader title={t("federation.market.title")}>
+        <Button variant="outline" disabled={busy} onClick={refresh}>
+          {t("federation.refresh")}
+        </Button>
+        {enabled &&
+        localSiteId &&
+        grants.includes("market.publish") &&
+        !readOnly &&
+        !creating &&
+        !intent ? (
+          <Button
+            disabled={busy}
+            onClick={() => {
+              setCreating(true);
+              setSelected(null);
+              setOperation(null);
+            }}
+          >
+            {t("federation.market.publish")}
           </Button>
-          {enabled &&
-          localSiteId &&
-          grants.includes("market.publish") &&
-          !readOnly &&
-          !creating &&
-          !intent ? (
-            <Button
-              disabled={busy}
-              onClick={() => {
-                setCreating(true);
-                setSelected(null);
-                setOperation(null);
-              }}
-            >
-              {t("federation.market.publish")}
-            </Button>
-          ) : null}
-        </div>
-      </div>
+        ) : null}
+      </FederationPanelHeader>
       {operations.data?.enabled === false && !operations.isError ? (
         <p role="status">{t("federation.market.disabled")}</p>
       ) : null}
@@ -494,7 +493,7 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
             setClaiming(false);
           }}
         >
-          <TabsList aria-label={t("federation.market.title")}>
+          <TabsList className="federation-subnav" aria-label={t("federation.market.title")}>
             <TabsTrigger value="directory">{t("federation.market.directory")}</TabsTrigger>
             <TabsTrigger value="operations">{t("federation.market.operations")}</TabsTrigger>
           </TabsList>
@@ -538,7 +537,7 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
                       />
                     ) : null}
                     {demand.status === "OPEN" && enabled && localSiteId && !readOnly && !intent ? (
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         {grants.includes("market.claim") &&
                         grants.includes("agreement.read") &&
                         demand.demand.sourceSiteId !== localSiteId &&
@@ -584,30 +583,32 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
               <p role="status">{t("federation.loading")}</p>
             ) : (
               <>
-                <div className="divide-y">
+                <div className="federation-list divide-y">
                   {directory.data.demands.map((row) => (
                     <button
                       key={row.demand.demandId}
                       type="button"
-                      className="flex w-full flex-wrap items-center justify-between gap-2 py-4 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="federation-list-row flex w-full flex-wrap items-center justify-between gap-2 py-4 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => setSelected(row.demand.demandId)}
                     >
                       <span className="min-w-0 break-words font-medium">{row.demand.title}</span>
-                      <span className="text-sm">
+                      <Badge variant="outline">
                         {t(`federation.market.states.${row.status}`)}
                         {Date.parse(row.demand.expiresAt) <= Date.now()
                           ? ` · ${t("federation.market.expired")}`
                           : ""}
-                      </span>
+                      </Badge>
                     </button>
                   ))}
                 </div>
-                {!directory.data.demands.length ? <p>{t("federation.market.empty")}</p> : null}
+                {!directory.data.demands.length ? (
+                  <FederationEmpty>{t("federation.market.empty")}</FederationEmpty>
+                ) : null}
                 <p className="text-sm text-muted-foreground">
                   {t("federation.market.observedAt", { time: date(directory.data.observedAt) })}
                 </p>
                 {bookmarks.length > 1 || directory.data.bookmark ? (
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button
                       variant="outline"
                       disabled={bookmarks.length === 1 || directory.isFetching}
@@ -717,7 +718,7 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
                       <p className="text-sm">{t("federation.market.noTransactions")}</p>
                     ) : null}
                     {txPage > 0 || transaction.data.hasMore ? (
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         <Button
                           variant="outline"
                           disabled={txPage === 0 || transaction.isFetching}
@@ -743,12 +744,12 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
               <p role="status">{t("federation.loading")}</p>
             ) : (
               <>
-                <div className="divide-y">
+                <div className="federation-list divide-y">
                   {operations.data.data.map((row) => (
                     <button
                       key={row.id}
                       type="button"
-                      className="flex w-full flex-wrap justify-between gap-2 py-4 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="federation-list-row flex w-full flex-wrap justify-between gap-2 py-4 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => {
                         setOperation(row.id);
                         setTxPage(0);
@@ -762,10 +763,10 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
                   ))}
                 </div>
                 {!operations.data.data.length ? (
-                  <p>{t("federation.market.emptyOperations")}</p>
+                  <FederationEmpty>{t("federation.market.emptyOperations")}</FederationEmpty>
                 ) : null}
                 {page > 0 || operations.data.hasMore ? (
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button
                       variant="outline"
                       disabled={page === 0 || operations.isFetching}

@@ -12,6 +12,10 @@
 | 平台运营 | [平台运营手册](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/platform-operator-manual.md) | 告警、事件分级、审批、授权、审计和交班 |
 | 系统运维 | [系统运维手册](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/system-operations-manual.md) | 健康检查、备份、发布、回滚和恢复 |
 
+## 联邦协同
+
+跨机构合作、任务委派、材料准备及商业争议操作见[联邦协同指南](/guide/federation-collaboration)。各角色手册已补充对应职责，技术角色不自动获得联邦签署权。
+
 ## 交付包与来源
 
 - [文档与手册索引](https://github.com/kuintessence/kuintessence/blob/main/docs/README.md)

@@ -438,7 +438,7 @@ export function FederationTaskDetail({
                     </ul>
                   )}
                   {importPage > 0 || imports.data.hasMore ? (
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <Button
                         variant="ghost"
                         disabled={!importPage || imports.isFetching}

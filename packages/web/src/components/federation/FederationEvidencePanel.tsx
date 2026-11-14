@@ -9,10 +9,12 @@ import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { EvidenceCaseDetail } from "./EvidenceCaseDetail";
 import { type EvidenceCase, EvidenceCaseSchema } from "./evidence-case-view";
+import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
 
 const path = "/federation/evidence-cases";
 export function FederationEvidencePanel({
@@ -109,7 +111,7 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
   if (!canRead) return <p>{t("federation.agreements.noPermission")}</p>;
   return (
     <section className="space-y-5">
-      <div className="flex flex-wrap gap-2">
+      <FederationPanelHeader title={t("federation.evidence.title")}>
         <Button
           variant="outline"
           disabled={switching || register.isPending}
@@ -129,7 +131,7 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
             {t(creating ? "federation.cancel" : "federation.evidence.register")}
           </Button>
         ) : null}
-      </div>
+      </FederationPanelHeader>
       {creating && !selected && allowed.current ? (
         <form
           className="space-y-4"
@@ -194,24 +196,26 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
         <p role="status">{t("federation.loading")}</p>
       ) : (
         <>
-          <ul className="divide-y divide-border rounded-md border border-border">
+          <ul className="federation-list divide-y divide-border rounded-md border border-border">
             {list.data.data.map((row) => (
               <li key={row.caseId}>
                 <button
-                  className="flex w-full flex-wrap justify-between gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+                  className="federation-list-row flex w-full flex-wrap justify-between gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
                   type="button"
                   onClick={() => setSelected(row)}
                 >
                   <span className="min-w-0 break-all">{row.caseId}</span>
-                  <span>
+                  <Badge variant="outline">
                     {t(row.closedAt ? "federation.evidence.closed" : "federation.evidence.open")}
-                  </span>
+                  </Badge>
                 </button>
               </li>
             ))}
           </ul>
-          {!list.data.data.length ? <p>{t("federation.evidence.empty")}</p> : null}
-          <div className="flex gap-2">
+          {!list.data.data.length ? (
+            <FederationEmpty>{t("federation.evidence.empty")}</FederationEmpty>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               disabled={!page || switching}

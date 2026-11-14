@@ -32,6 +32,9 @@ vi.mock("./AgreementPanel", () => ({
 vi.mock("./CommercialPanel", () => ({
   CommercialPanel: () => <input aria-label="Commercial draft" />,
 }));
+vi.mock("./FederationAssetsPanel", () => ({
+  FederationAssetsPanel: () => <div>Asset list</div>,
+}));
 const orgA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const orgB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 function mount() {
@@ -76,6 +79,47 @@ test("ordinary members can select their institutions and switching discards the 
   expect(setActiveOrganization).toHaveBeenCalledWith(orgB, expect.anything());
   await waitFor(() => expect(client.getQueryData(["jobs-list"])).toBeUndefined());
   expect(client.getQueryData(["unrelated", "theme"])).toBe("dark");
+});
+
+test("the renamed workspace exposes all eight sections with keyboard navigation", async () => {
+  mount();
+  await screen.findByLabelText("Draft");
+  expect(screen.getByRole("heading", { level: 1, name: "Federation Collaboration" })).toBeTruthy();
+  const navigation = screen.getByRole("tablist", { name: "Federation Collaboration" });
+  expect(navigation.querySelectorAll('[role="tab"]')).toHaveLength(8);
+  const agreements = screen.getByRole("tab", { name: "Agreements" });
+  expect(agreements.getAttribute("aria-selected")).toBe("true");
+  agreements.focus();
+  fireEvent.keyDown(agreements, { key: "ArrowRight" });
+  await waitFor(() =>
+    expect(
+      screen.getByRole("tab", { name: "Federation assets" }).getAttribute("aria-selected"),
+    ).toBe("true"),
+  );
+});
+
+test("no organization retains the workspace heading without exposing institution panels", async () => {
+  localStorage.removeItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
+  vi.mocked(getActiveOrganizationContext).mockResolvedValue({
+    activeOrganizationId: null,
+    organizations: [],
+  });
+  mount();
+  await screen.findByLabelText("Current institution");
+  expect(screen.getByRole("heading", { name: "Federation Collaboration" })).toBeTruthy();
+  expect(screen.queryByRole("tablist")).toBeNull();
+  expect(screen.getByRole("status").textContent).toBe("Choose institution");
+});
+
+test("distinct institution names omit identifiers from the selector", async () => {
+  vi.mocked(getActiveOrganizationContext).mockResolvedValue({
+    activeOrganizationId: orgA,
+    organizations: [{ orgId: orgA, name: "Research center", role: "member" }],
+  });
+  mount();
+  await screen.findByLabelText("Draft");
+  expect(screen.getByRole("option", { name: "Research center" })).toBeTruthy();
+  expect(screen.queryByRole("option", { name: `Research center · ${orgA}` })).toBeNull();
 });
 
 test("login identity changes remount the agreement form", async () => {

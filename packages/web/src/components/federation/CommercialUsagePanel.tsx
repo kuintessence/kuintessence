@@ -27,6 +27,7 @@ import {
 import { Input, Textarea } from "../ui/input";
 import { AgreementFact } from "./AgreementTerms";
 import { commercialMetric, commercialUnit } from "./commercial-format";
+import { FederationEmpty } from "./FederationLayout";
 
 type Action =
   | { kind: "retry" | "refresh"; id: string }
@@ -277,10 +278,10 @@ export function CommercialUsagePanel({
                 ))}
               </ul>
             ) : (
-              <p className="py-5 text-sm text-muted-foreground">{t("federation.usage.empty")}</p>
+              <FederationEmpty>{t("federation.usage.empty")}</FederationEmpty>
             )}
             {page > 0 || list.data.length === 20 ? (
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
                   disabled={blocked || list.isFetching || page === 0}
@@ -485,7 +486,7 @@ export function CommercialUsagePanel({
                       />
                     </label>
                   </fieldset>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button type="submit" disabled={blocked || !!intent}>
                       {t("federation.usage.reviewCorrection")}
                     </Button>
@@ -639,7 +640,7 @@ export function CommercialUsagePanel({
                 </p>
               )}
               {historyPage > 0 || detail.data.hasMore ? (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button
                     variant="outline"
                     disabled={blocked || !!draft || detail.isFetching || historyPage === 0}
@@ -714,7 +715,7 @@ export function CommercialUsagePanel({
             ) : null}
           </DialogBody>
           <DialogFooter>
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <Button
                 variant="outline"
                 disabled={mutation.isPending}

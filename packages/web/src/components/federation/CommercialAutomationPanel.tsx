@@ -260,7 +260,7 @@ function AutomationPanel({ approval, scope, grants, writable, busy }: Props) {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-lg font-semibold">{t("federation.automation.title")}</h3>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             ref={refreshFocus}
             variant="outline"
@@ -299,7 +299,7 @@ function AutomationPanel({ approval, scope, grants, writable, busy }: Props) {
           setInvalid(false);
         }}
       >
-        <TabsList aria-label={t("federation.automation.title")}>
+        <TabsList className="federation-subnav" aria-label={t("federation.automation.title")}>
           <TabsTrigger
             value="reservation"
             disabled={mutation.isPending || !!intent || editing || uncertain}
@@ -442,7 +442,7 @@ function AutomationPanel({ approval, scope, grants, writable, busy }: Props) {
                     {t("federation.automation.invalid")}
                   </p>
                 ) : null}
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button type="submit">{t("federation.automation.review")}</Button>
                   <Button variant="outline" type="button" onClick={() => setEditing(false)}>
                     {t("federation.cancel")}

@@ -23,6 +23,7 @@ import {
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { CommercialAdjustmentTerms } from "./CommercialAdjustmentTerms";
+import { FederationEmpty } from "./FederationLayout";
 
 type Action =
   | { kind: "approve"; adjustment: CommercialAdjustment }
@@ -692,10 +693,10 @@ function AdjustmentPanel({
               ))}
             </ul>
           ) : (
-            <p className="py-6 text-sm text-muted-foreground">{t("federation.adjustment.empty")}</p>
+            <FederationEmpty>{t("federation.adjustment.empty")}</FederationEmpty>
           )}
           {page > 0 || list.data?.hasMore ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 disabled={page === 0 || list.isFetching}

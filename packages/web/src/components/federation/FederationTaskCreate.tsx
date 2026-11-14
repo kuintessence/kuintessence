@@ -202,7 +202,7 @@ export function FederationTaskCreate({
           </select>
         </label>
         {agreementPage > 0 || agreements.data?.length === 20 ? (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
               type="button"
               variant="ghost"
@@ -282,7 +282,7 @@ export function FederationTaskCreate({
               })}
             </div>
             {materialPage > 0 || materials.data?.hasMore ? (
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
                   variant="ghost"

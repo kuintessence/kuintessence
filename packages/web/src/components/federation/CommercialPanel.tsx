@@ -42,6 +42,7 @@ import { CommercialRefundPanel } from "./CommercialRefundPanel";
 import { CommercialSettlementPanel } from "./CommercialSettlementPanel";
 import { CommercialTerms } from "./CommercialTerms";
 import { CommercialUsagePanel } from "./CommercialUsagePanel";
+import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
 
 const path = "/federation/commercial-agreements";
 type Action =
@@ -228,28 +229,26 @@ export function CommercialPanel({
     );
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-end gap-3">
-        <div className="flex gap-2">
+      <FederationPanelHeader title={t("federation.commercial.title")}>
+        <Button
+          variant="outline"
+          disabled={switching || mutation.isPending || capabilities.isFetching || list.isFetching}
+          onClick={refresh}
+        >
+          {t("federation.refresh")}
+        </Button>
+        {canApprove && !creating ? (
           <Button
-            variant="outline"
-            disabled={switching || mutation.isPending || capabilities.isFetching || list.isFetching}
-            onClick={refresh}
+            disabled={busy}
+            onClick={() => {
+              setCreating(true);
+              setSelected(null);
+            }}
           >
-            {t("federation.refresh")}
+            {t("federation.commercial.newContract")}
           </Button>
-          {canApprove && !creating ? (
-            <Button
-              disabled={busy}
-              onClick={() => {
-                setCreating(true);
-                setSelected(null);
-              }}
-            >
-              {t("federation.commercial.newContract")}
-            </Button>
-          ) : null}
-        </div>
-      </div>
+        ) : null}
+      </FederationPanelHeader>
       {readOnly ? (
         <p className="text-sm text-muted-foreground">{t("federation.agreements.desktopOnly")}</p>
       ) : null}
@@ -293,7 +292,10 @@ export function CommercialPanel({
                 setAdjustmentSettlement(undefined);
               }}
             >
-              <TabsList aria-label={t("federation.usage.contractSections")}>
+              <TabsList
+                className="federation-subnav"
+                aria-label={t("federation.usage.contractSections")}
+              >
                 <TabsTrigger value="terms">{t("federation.commercial.terms")}</TabsTrigger>
                 <TabsTrigger value="usage">{t("federation.usage.title")}</TabsTrigger>
                 <TabsTrigger value="bills">{t("federation.billing.title")}</TabsTrigger>
@@ -554,12 +556,12 @@ export function CommercialPanel({
       ) : (
         <>
           {list.data.length ? (
-            <ul className="divide-y divide-border rounded-md border border-border">
+            <ul className="federation-list divide-y divide-border rounded-md border border-border">
               {list.data.map((row) => (
                 <li key={row.revisionId}>
                   <button
                     type="button"
-                    className="flex w-full flex-col gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring sm:flex-row sm:justify-between"
+                    className="federation-list-row flex w-full flex-col gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring sm:flex-row sm:justify-between"
                     onClick={() => {
                       setSelected(row.revisionId);
                       setDisputeSubject(null);
@@ -596,10 +598,10 @@ export function CommercialPanel({
               ))}
             </ul>
           ) : (
-            <p className="py-8 text-sm text-muted-foreground">{t("federation.commercial.empty")}</p>
+            <FederationEmpty>{t("federation.commercial.empty")}</FederationEmpty>
           )}
           {page > 0 || list.data.length === 20 ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 disabled={page === 0 || list.isFetching}
@@ -657,7 +659,7 @@ export function CommercialPanel({
             ) : null}
           </DialogBody>
           <DialogFooter>
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <Button
                 variant="outline"
                 disabled={mutation.isPending}

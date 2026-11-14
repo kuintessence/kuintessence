@@ -2,7 +2,9 @@
 
 三台新增虚拟机运行独立 A/B/C 平台、Fabric 和容器测试集群，A/B 使用 Slurm，C 使用 PBS；R 按需在 A 主机运行独立项目。现有集群不变，主平台只新增第四个 Orderer。完整范围见[实施清单](../../../docs/design/federation/aio-delivery.md)。
 
-当前固定候选 `038aa6f` 的 21 镜像归档已完成交付和身份核对，三个独立平台均通过受限启动、真实 SSO 和机构读取权限检查。2026-11-13 已完成三 Peer／四 SmartBFT Orderer 的真实存证、私有读取隔离、必需背书拒绝及主排序节点停机恢复，最终四个排序节点 active、高度 38，三 Peer 高度与区块摘要一致；详见[四节点验收](../four-node-acceptance.md)。三个平台保持运行，原 CI Runner／DinD 按用户要求停止并保留数据；未启用调度器或 Agent。镜像使用 Spack 1.0.3，兼容规则见[多版本严格绑定](../../../docs/spack-compatible-versions.md)。旧 `b54743b` 的两类 target／runtime 入口和 GNU Hello 原生检查保留为历史证据，不追改旧镜像。正式托管、完整跨机构业务矩阵、容量准入及科研验收仍待完成，PR 正按合并候选检查；后续源码修复未自动进入该固定归档。
+2026-11-13，PR #71 合并的 main `90a4eaa` 已通过 CI 生成 21 镜像 AIO 交付包，经本机中转到云端，并完成三机构的[保留数据升级](main-upgrade.md)。三站各有 21 个常驻服务，真实 SSO、权限就绪、合作协议／联邦任务／联邦资产读取均通过，无新增 OOM。升级后的 Adapter 已完成一笔有效存证及升级前原交易恢复，四个排序节点 active、高度 39，三 Peer 高度与区块摘要一致。早期 `038aa6f` 的私有读取隔离、必需背书拒绝及主排序节点停机恢复证据见[四节点验收](../four-node-acceptance.md)，本轮未重复故障矩阵。现有主平台沿原 CI 完成 platform-only 发布，第四 Orderer 保持原部署。C 站原 CI Runner／DinD 继续停止，数据保留；未启用调度器、Agent 或 R。镜像携带 Spack 1.0.3，兼容规则见[多版本严格绑定](../../../docs/spack-compatible-versions.md)，镜像存在不代表已安装科研软件。正式托管、完整跨机构业务写操作、容量准入及科研验收仍待完成。
+
+后续人工试用准备已完成三站真实签约、原签名自动交换、输入原件导入／导出、市场发布／取消及只读用户越权检查。AB 直接合同无链提交，AC 异步合同原生 VALID；四 Orderer 与三 Peer 最终高度 43。上述为平台／链的试用范围，完整任务、财务、仲裁及 38 项验收没有全部完成。应用层跨站信任、账户权限和科研／恢复边界见[试用准备](trial-readiness.md)。Fabric 通道正常不代表平台网关已经互信；不要用新建业务记录替代原签名或原交易的恢复。
 
 ## 本机构建与导出
 
@@ -216,10 +218,14 @@ privileged 测试容器不能抵御宿主管理员或容器 root 越权，不能
 
 `KQ_AIO_PRIVATE_DIRECTORY` 下准备：
 
-- `casdoor/app.conf`：独立 SSO 数据库连接、origin、初始化数据和客户端。`staticBaseUrl` 使用本站资源，不能依赖国外 CDN；不使用开发免密登录。用户 `groups` 使用完整的 `机构/组名`；应用显式设置 `tokenGroupFormat: "Name"`，使令牌的组名与 KQ 的 SSO 映射一致。已有库的 `initDataNewOnly` 不会修复旧组关系，须由 SSO 管理员通过正常接口更新后重新登录。平台角色不隐含联邦业务权限，机构成员仍须在“设置 → 安全 → 联邦权限”独立授权。
-- `edge/`、`tls/`：参考[HTTPS 示例](edge.conf.example)配置平台、SSO、对象存储三类域名；SAN 和 DNS 匹配。受控 CA 加入浏览器/Server/Agent 信任，不关闭 TLS 校验。
+- `casdoor/app.conf`：独立 SSO 数据库连接、origin、初始化数据和客户端。同域名部署使用支持 `basePath` 的 Casdoor：`origin` 为平台 HTTPS origin，`basePath = /sso`，`originFrontend` 和 `staticBaseUrl` 为该 origin 加 `/sso`。原生前缀同时作用于页面、API 和静态资源，避免与 KQ 的 `/assets/` 冲突，也避免把 KQ 回调误认为 Casdoor 自身登录。不依赖国外 CDN，不使用开发免密登录。修改挂载配置后须重启 Casdoor。用户 `groups` 使用完整的 `机构/组名`；应用显式设置 `tokenGroupFormat: "Name"`，使令牌的组名与 KQ 的 SSO 映射一致。已有库的 `initDataNewOnly` 不会修复旧组关系，须由 SSO 管理员通过正常接口更新后重新登录。平台角色不隐含联邦业务权限，机构成员仍须在“设置 → 安全 → 联邦权限”独立授权。
+- `edge/`、`tls/`：参考[HTTPS 示例](edge.conf.example)以本站一个域名分流平台、SSO 和对象存储；SAN 和 DNS 匹配。`WEB_BASE_URL`、`SSO_BOOTSTRAP_ISSUER_URL`、`KQ_STORAGE_PUBLIC_URL` 与 Casdoor 的 `origin`、`staticBaseUrl` 使用同一 HTTPS origin，回调仍为 `/platform/api/auth/oidc/callback`。Casdoor 前端与管理入口使用 `/sso/`，根路径的 `/.well-known/` 和必要 `/api/` 继续提供 OIDC 发现、令牌及用户信息接口；旧 `/login/oauth/` 保留参数跳转至 `/sso/login/oauth/`；S3 保留原桶路径和 Host，不额外添加 `/storage` 前缀。更换桶名时同步修改代理路径。已有站点须通过管理员 SSO 配置接口更新持久化 issuer，不能只改 bootstrap 环境变量。受控 CA 加入浏览器/Server/Agent 信任，不关闭 TLS 校验。
 - `grpc/server.crt`、`grpc/server.key`：Server direct mTLS 的服务端证书和私钥，只读挂载；SAN 覆盖 Agent 实际连接名，由 Agent 信任的 CA 签发。客户端验证仍使用本站持久 Server CA。即使不启用调度器，Server 启动也需要这两个文件；私钥只供 Server 读取，不把 CA 私钥挂给 Agent。
 - `agent-enrollment/token`：经本站正式 API 签发的单次注册令牌，归容器执行账号所有、0600；Slurm 为 root，PBS 默认为 kq。
+
+登录品牌配置须同时写入现有 SSO 数据库与私有初始化数据：应用 `logo` 使用本站 HTTPS origin 加 `/branding/logo.svg`，机构 `favicon` 使用该 origin 加 `/branding/favicon.svg`。空 Logo 在不同 Casdoor 版本会显示破图或回退至缺失的静态文件；只改 `init_data.json` 不会更新已有数据库。将交付包的 `casdoor-logo.png` 及 `casdoor-logo.LICENSE` 复制到私有部署中的 `edge/` 目录。该目录仅存放公开代理配置与品牌素材，权限设为 `0755`、PNG 为 `0644`，供 Nginx worker 读取；私钥和凭据仍放在独立的受限目录。HTTPS 示例会在 `/sso/img/casdoor-logo_1185x256.png` 提供本地 Casdoor 署名图片，不依赖 CDN。检查应包含浏览器 `naturalWidth > 0` 及图片内容类型，不能只看 HTTP 200，SPA 回退也可能返回 200 HTML。
+
+内网试用三站已按此方式切换，五类人员登录与既有主服务对齐，15 个角色登录／权限和三站同域名文件往返通过。更换人员登录时保留历史审批人和签名，停用旧 SSO 登录并撤销旧会话；人员口令对齐不改变每站的数据库、对象存储、OIDC client secret、业务密钥或 MSP。完整 38 项边界继续见[试用说明](trial-readiness.md)。
 
 机构 mTLS、Fabric 及治理材料沿[部署契约](../deployment.md)配置，端点必须是可达 VPC 地址。调度器预置 Agent 和注册工具，没有源码挂载、Bun 在线安装或开发登录。注册成功持久化；未知结果留下 `registration.attempt`，管理员核对原 Agent/证书后才可再次登记，不能反复生成身份绕过。
 

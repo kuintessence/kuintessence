@@ -23,6 +23,7 @@ import {
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { CommercialBillTerms } from "./CommercialBillTerms";
+import { FederationEmpty } from "./FederationLayout";
 
 type Action =
   | { kind: "approve"; bill: CommercialBill }
@@ -529,10 +530,10 @@ function BillingPanel({
               ))}
             </ul>
           ) : (
-            <p className="py-6 text-sm text-muted-foreground">{t("federation.billing.empty")}</p>
+            <FederationEmpty>{t("federation.billing.empty")}</FederationEmpty>
           )}
           {page > 0 || list.data?.hasMore ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 disabled={page === 0 || list.isFetching}

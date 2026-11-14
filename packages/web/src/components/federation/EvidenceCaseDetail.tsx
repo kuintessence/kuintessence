@@ -270,7 +270,7 @@ export function EvidenceCaseDetail({
               ))}
             </ul>
             {!materials.data.data.length ? <p>{t("federation.evidence.noMaterials")}</p> : null}
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 disabled={!page || blocked}
