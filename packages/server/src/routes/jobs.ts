@@ -13,6 +13,7 @@ import {
   JobUsecaseSubmitSchema,
   usecase,
 } from "@kuintessence/shared";
+import { FederationError } from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
@@ -22,6 +23,8 @@ import { jobProviderTuple, jobSubmissionTuples } from "../authz/projection";
 import type { AuthzCheck, AuthzService } from "../authz/service";
 import { makeAliasRecorder } from "../desensitize/alias-recorder";
 import { loadDesensitizeConfig } from "../desensitize/config-loader";
+import type { FederationClusterQueueService } from "../federation/cluster-queues";
+import type { FederationJobService } from "../federation/jobs";
 import { applyDesensitizationToBody } from "../middleware/desensitize";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { parseUuidParam } from "../middleware/uuid-param";
@@ -106,6 +109,8 @@ type JobLogsTarget = {
 export interface JobRouteOptions {
   /** Stable salt for the `alias` action on job command/env. */
   aliasSalt?: string;
+  federationClusters?: FederationClusterQueueService;
+  federationJobs?: FederationJobService;
   authz?: AuthzService;
   defaultRunBase?: string;
   jobLogs?: Pick<JobLogsService, "get">;
@@ -122,6 +127,11 @@ export function createJobRoutes(
   opts: JobRouteOptions = {},
 ) {
   const routes = new Hono();
+  routes.onError((error, c) => {
+    if (error instanceof FederationError)
+      return c.json({ error: { code: error.code } }, error.code === "POLICY_DENIED" ? 403 : 409);
+    throw error;
+  });
   const aliasSalt = opts.aliasSalt ?? "kq-job-v1";
   const recordAlias = makeAliasRecorder(db);
   const resolveJobLogsTarget = async (c: ContextLike, id: string): Promise<JobLogsTarget> => {
@@ -275,6 +285,13 @@ export function createJobRoutes(
       const submitter = requireCanonicalJobActor(c);
       const job = await materializeUsecaseJob(db, body, submitter, opts.governance);
       await assertRawSoftwareRequirements(db, job, submitter, opts.governance);
+      if (submitter.orgId && opts.federationClusters) {
+        const remote = await opts.federationClusters.previewJob(
+          { userId: submitter.userId, orgId: submitter.orgId },
+          job,
+        );
+        if (remote) return c.json(remote);
+      }
       await validateJobSubmitIntent({
         c,
         opts,
@@ -572,6 +589,15 @@ export function createJobRoutes(
     if (!canCancel) {
       throw new AppError(ErrorCode.FORBIDDEN, "You can only cancel your own jobs", 403);
     }
+    if (existing.federationRunId) {
+      if (!opts.federationJobs)
+        throw new AppError(
+          ErrorCode.JOB_DISPATCH_FAILED,
+          "Federation execution is unavailable",
+          503,
+        );
+      return c.json(await opts.federationJobs.cancel(existing));
+    }
     const job = await jobService.cancel(id);
     // Propagate to the agent so it actually kills the scheduler job (scancel/
     // qdel) — without this the DB reads "cancelled" but the cluster job keeps
@@ -638,6 +664,38 @@ async function submitJobSpec(input: {
 }) {
   const { c, opts, db, jobService, orchestrator, data, submitter, route, trustedMaterialization } =
     input;
+  if (opts.federationClusters && submitter.orgId) {
+    const remote = await opts.federationClusters.prepareJob(
+      { userId: submitter.userId, orgId: submitter.orgId },
+      data,
+    );
+    if (remote) {
+      if (!opts.federationJobs)
+        throw new AppError(
+          ErrorCode.JOB_DISPATCH_FAILED,
+          "Federation execution is unavailable",
+          503,
+        );
+      await assertRawSoftwareRequirements(db, data, submitter, opts.governance);
+      const principal = (c as unknown as { get(key: "principal"): BoundPrincipal | undefined }).get(
+        "principal",
+      );
+      if (
+        !principal?.userId ||
+        principal.userId !== submitter.userId ||
+        principal.orgId !== submitter.orgId
+      )
+        throw new AppError(ErrorCode.FORBIDDEN, "Canonical federation submitter required", 403);
+      const job = await opts.federationJobs.submit(
+        data,
+        { ...principal, role: submitter.role },
+        remote,
+        (jobId) =>
+          enqueueJobSubmitAuthorization(opts.authz, jobId, submitter.userId, submitter.orgId, null),
+      );
+      return { job, placementResult: { selectedAgentId: null, rejections: [] } };
+    }
+  }
   await validateJobSubmitIntent({ c, opts, orchestrator, data, submitter, route });
   await assertRawSoftwareRequirements(db, data, submitter, opts.governance);
   const queueId = data.schedulingStrategy?.queueId ?? null;

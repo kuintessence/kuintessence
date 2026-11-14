@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   FederationAmountSchema,
   FederationArbitrationReferenceSchema,
+  FederationExecutionTargetSchema,
   FederationFileDeliverySchema,
   FederationResourcesSchema,
 } from "../federation";
@@ -88,6 +89,8 @@ export const WorkflowNodeSchema = z.union([
     ...nodeCommon,
     type: z.literal("Federation"),
     agreementRevisionId: UuidSchema,
+    executionTarget: FederationExecutionTargetSchema.optional(),
+    managedPlacement: z.strictObject({ queueId: UuidSchema, profileId: UuidSchema }).optional(),
     market: FederationWorkflowMarketSchema.optional(),
     arbitration: FederationArbitrationReferenceSchema.optional(),
     template: FederationAssetRefSchema.refine(

@@ -32,7 +32,12 @@
       "page": "第 {{page}} / {{pages}} 页",
       "previous": "上一页",
       "range": "{{start}}-{{end}} / {{total}}"
-    }
+    },
+    "saved": "已保存",
+    "saving": "正在保存…",
+    "select": "请选择",
+    "back": "返回",
+    "download": "下载"
   },
   "globalError": {
     "title": "页面暂时无法加载",
@@ -536,7 +541,10 @@
     "noMatches": "没有符合筛选条件的作业。",
     "loading": "正在加载作业…",
     "commandMode": "直接命令",
-    "loadFailed": "无法加载作业列表，请重试。"
+    "loadFailed": "无法加载作业列表，请重试。",
+    "executionDetails": "执行详情",
+    "remoteOutputsPending": "结果文件尚未返回",
+    "cancelRequested": "已请求取消“{{name}}”，等待执行端确认停止。"
   },
   "workflows": {
     "title": "工作流",
@@ -1742,6 +1750,10 @@
         "federationTrust": {
           "title": "联邦信任",
           "description": "机构、公钥和客户端证书"
+        },
+        "federationClusters": {
+          "title": "联盟集群",
+          "description": "维护队列、授权、合作额度与显示设置"
         }
       },
       "auditSettings": "审计设置",
@@ -1957,7 +1969,8 @@
       "cost-rates": "成本费率",
       "federation-permissions": "联邦权限",
       "federation-storage": "输入存储核对",
-      "federation-trust": "联邦信任"
+      "federation-trust": "联邦信任",
+      "federation-clusters": "联盟集群"
     }
   },
   "terminal": {

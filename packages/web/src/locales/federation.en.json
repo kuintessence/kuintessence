@@ -284,7 +284,9 @@
           "decide": "Sign arbitration decisions",
           "execute": "Execute authorized arbitration resolutions"
         },
-        "attestation.recover": "Approve historical attestation recovery"
+        "attestation.recover": "Approve historical attestation recovery",
+        "cluster.use": "Use authorized federation clusters",
+        "cluster.manage": "Manage federation clusters"
       },
       "effects": {
         "attestation": {
@@ -350,7 +352,9 @@
           "approve": "Approve or revoke arbitration policies, including contract viewing. Grants no award, admission, debit or payment authority.",
           "decide": "Sign this site’s arbitration decisions. New decisions also require context and evidence access; this grants no debit or unfreeze authority.",
           "execute": "Execute a received no-financial-change award after rechecking the original preauthorization and current freeze. Does not authorize settlement, adjustment or payment."
-        }
+        },
+        "cluster.use": "Use clusters opened by administrators, and view or cancel your own tasks.",
+        "cluster.manage": "Manage remote clusters, execution mappings and member access; the management page also requires platform administration permission."
       }
     },
     "agreements": {
@@ -1652,6 +1656,50 @@
       "reauthorize": "Reapprove original recovery",
       "reauthorizeEffect": "Preserve the original text and prior signatures, then approve with current local authority. The counterpart must approve again. Transactions with an unknown result must be recovered first."
     },
-    "refreshFailed": "Refresh failed. Showing the previously loaded data."
+    "refreshFailed": "Refresh failed. Showing the previously loaded data.",
+    "clusters": {
+      "title": "Federation clusters",
+      "add": "Add federation cluster",
+      "empty": "No federation clusters are available",
+      "clusterName": "Cluster name",
+      "agreement": "Cooperation agreement",
+      "executionQueue": "Authorized execution queue",
+      "queueName": "Queue name",
+      "scheduler": "Scheduler",
+      "budget": "Cooperation allowance",
+      "taskLimit": "Allowance per task",
+      "concurrency": "Concurrent tasks",
+      "members": "Authorized members",
+      "allMembers": "All members of this organization",
+      "showPartner": "Show federation label",
+      "executionProfiles": "Execution mappings",
+      "profilesHelp": "Configure approved templates, pinned software environments, and input/output mappings.",
+      "invalidJson": "Execution mappings contain invalid JSON. Correct it and save again.",
+      "disable": "Disable cluster",
+      "moreMembers": "Search by name or email to find more members.",
+      "searchMembers": "Search organization members",
+      "addProfile": "Add execution mapping",
+      "profileName": "Mapping name",
+      "sourceKind": "Task type",
+      "sourceKinds": {
+        "command": "Command job",
+        "usecase": "Software usecase",
+        "script": "Workflow script"
+      },
+      "commandParameter": "Command input parameter",
+      "sourceRevision": "Local asset revision ID",
+      "template": "Authorized execution template",
+      "inputManifestDigest": "Input material",
+      "environmentLockDigest": "Software environment lock",
+      "profileAllowance": "Allowance reserved per task",
+      "jobPackage": "Job usecase binding",
+      "packageId": "Usecase package ID",
+      "packageDigest": "Usecase package digest",
+      "marketPolicy": "Automatic reservation policy ID",
+      "marketTitle": "Public task market name",
+      "outputMappings": "Result mappings",
+      "removeProfile": "Remove execution mapping",
+      "placementNotice": "The partner confirms execution authorization, allowance and queue availability after submission."
+    }
   }
 }

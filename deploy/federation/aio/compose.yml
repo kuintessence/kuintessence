@@ -19,6 +19,7 @@ services:
     mem_limit: 512m
     cpus: 1
     environment:
+      FEDERATION_PERMISSION_PRESET: ${FEDERATION_PERMISSION_PRESET:-lab}
       MTLS_MODE: direct
       SERVER_GRPC_TLS_CERT_FILE: /run/kq-grpc/server.crt
       SERVER_GRPC_TLS_KEY_FILE: /run/kq-grpc/server.key

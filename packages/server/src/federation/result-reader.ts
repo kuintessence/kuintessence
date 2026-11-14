@@ -19,7 +19,11 @@ import { and, eq } from "drizzle-orm";
 import { federationMaterialDigest } from "./assets";
 import { signedDownloadExpiry } from "./download-credential";
 import type { FederationSend } from "./outbound-client";
-import { type FederationActor, requireFederationCapability } from "./permissions";
+import {
+  type FederationActor,
+  hasExplicitFederationCapability,
+  requireFederationCapability,
+} from "./permissions";
 import { requireFederationResultPolicy } from "./result-policy";
 import {
   type FederationSigningKey,
@@ -50,6 +54,7 @@ export class FederationResultReader {
     );
     if (!ownKey.allowedKinds.includes("result-query"))
       throw new FederationError("UNTRUSTED_IDENTITY");
+    const issuedAt = this.clock();
     const query = FederationResultQuerySchema.parse({
       protocolVersion: 1,
       kind: "result-query",
@@ -62,8 +67,8 @@ export class FederationResultReader {
       attempt: row.attempt,
       reservationId: receipt.reservationId,
       requestDigest: row.requestDigest,
-      issuedAt: this.clock().toISOString(),
-      expiresAt: new Date(this.clock().getTime() + 60_000).toISOString(),
+      issuedAt: issuedAt.toISOString(),
+      expiresAt: new Date(issuedAt.getTime() + 60_000).toISOString(),
     });
     const jws = await signFederationMessage(FederationResultQuerySchema, query, this.signingKey);
     const verified = await verifyFederationMessage(
@@ -238,7 +243,12 @@ export class FederationResultReader {
           eq(federationOutbound.operationId, operationId),
         ),
       );
-    if (!row) throw new FederationError("POLICY_DENIED");
+    if (
+      !row ||
+      ((row.submittedBy !== actor.userId || !row.request.managedPlacement) &&
+        !(await hasExplicitFederationCapability(tx, actor, "result.read")))
+    )
+      throw new FederationError("POLICY_DENIED");
     if (row.state !== "accepted" || !row.receipt) throw new FederationError("OPERATION_CONFLICT");
     const [approval] = await tx
       .select()

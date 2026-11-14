@@ -13,6 +13,7 @@ import {
   federationCancellations,
   federationCapabilities,
   federationCertificates,
+  federationClusterQueues,
   federationEvidence,
   federationInputAttempts,
   federationInputImports,
@@ -121,6 +122,7 @@ import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationCancellationReceiver } from "./cancellation";
 import { FederationCancellationMonitor } from "./cancellation-monitor";
 import { readFederationCancellationState } from "./cancellation-state";
+import { FederationClusterQueueService } from "./cluster-queues";
 import type { FederationDownloadStorage } from "./download-credential";
 import { FederationExecutionBindingService } from "./execution-binding";
 import { createFederationIngress } from "./ingress";
@@ -371,6 +373,9 @@ beforeAll(async () => {
 afterAll(async () => {
   const orgIds = [actor.orgId, receiver.orgId];
   await db
+    .delete(federationClusterQueues)
+    .where(inArray(federationClusterQueues.localOrgId, orgIds));
+  await db
     .delete(federationMediaKeyGrants)
     .where(inArray(federationMediaKeyGrants.localSiteId, [a.signing.siteId, b.signing.siteId]));
   await db
@@ -496,9 +501,14 @@ async function fixture(
   inputPolicy?: FederationAgreement["inputPolicy"],
   scriptInputs: Record<string, workflowDsl.ScriptInputSpec> = {},
   maxReservations = 100,
+  executionTargets?: FederationAgreement["executionTargets"],
 ) {
   time = new Date(testNow);
-  const terms = { ...testAgreement(a.signing.siteId, b.signing.siteId), maxReservations };
+  const terms = {
+    ...testAgreement(a.signing.siteId, b.signing.siteId),
+    maxReservations,
+    ...(executionTargets ? { executionTargets } : {}),
+  };
   if (resultPolicy) terms.resultPolicy = resultPolicy;
   if (inputPolicy) terms.inputPolicy = inputPolicy;
   agreements.push(terms);
@@ -623,6 +633,90 @@ async function workflowDelegationFixture(
   const invocation = { path: JSON.stringify(["node", "remote"]) };
   return { ...f, registry, runId, journal, lease, plan, invocation };
 }
+
+test("cluster-only members submit a managed target while peer task access stays private", async () => {
+  const target = {
+    providerOrgId: receiver.orgId,
+    clusterId: "partner-cpu",
+    agentId: "partner-agent",
+    queueId: crypto.randomUUID(),
+  };
+  const f = await fixture(undefined, {}, undefined, {}, 100, [target]);
+  const clusters = new FederationClusterQueueService(db, a.signing.siteId, assets, clock);
+  await permission.set({ ...actor, capability: "cluster.manage", enabled: true }, actor.userId);
+  await permission.set({ ...actor, capability: "cluster.use", enabled: true }, actor.userId);
+  const profile = {
+    id: crypto.randomUUID(),
+    name: "Command",
+    source: { kind: "command", commandParameter: "command" },
+    template: f.request.template,
+    inputManifestDigest: f.request.inputManifestDigest,
+    environmentLockDigest: f.request.environmentLockDigest,
+    maxAmount: f.request.maxAmount,
+    outputs: [],
+  };
+  const saved = await clusters.save(actor, {
+    localOrgId: actor.orgId,
+    name: "Partner CPU",
+    clusterName: "Partner CPU",
+    queueName: "batch",
+    schedulerType: "slurm",
+    agreementRevisionId: f.terms.agreementRevisionId,
+    executionTarget: target,
+    allowAllMembers: true,
+    profiles: [profile],
+  });
+  const other = { orgId: actor.orgId, userId: crypto.randomUUID() };
+  await db.insert(users).values({
+    id: other.userId,
+    orgId: other.orgId,
+    role: "user",
+    email: `${other.userId}@example.test`,
+  });
+  await db.insert(userOrgMemberships).values({ ...other, role: "member" });
+  await permission.set({ ...other, capability: "cluster.use", enabled: true }, actor.userId);
+  const legacy = {
+    ...f.request,
+    operationId: crypto.randomUUID(),
+    taskId: crypto.randomUUID(),
+    maxAmount: "0",
+  };
+  await f.service().enqueue(actor, legacy);
+  await f.service().deliverNext();
+  await permission.set({ ...actor, capability: "delegation.submit", enabled: false }, actor.userId);
+  try {
+    const service = f.service();
+    await expect(service.get(actor, legacy.operationId)).rejects.toThrow("POLICY_DENIED");
+    await expect(service.enqueue(actor, f.request)).rejects.toThrow("POLICY_DENIED");
+    const request = {
+      ...f.request,
+      executionTarget: target,
+      managedPlacement: { queueId: saved.id, profileId: profile.id },
+    };
+    await service.enqueue(actor, request);
+    await service.deliverNext();
+    expect((await row(request.operationId)).state).toBe("accepted");
+    expect((await service.list(other)).some((v) => v.operationId === request.operationId)).toBe(
+      false,
+    );
+    await expect(service.get(other, request.operationId)).rejects.toThrow("POLICY_DENIED");
+    await expect(service.retry(other, request.operationId)).rejects.toThrow("POLICY_DENIED");
+    await expect(service.cancellations.request(other, request.operationId)).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    await expect(service.results.read(other, request.operationId)).rejects.toThrow("POLICY_DENIED");
+  } finally {
+    await permission.set(
+      { ...actor, capability: "delegation.submit", enabled: true },
+      actor.userId,
+    );
+    await permission.set({ ...actor, capability: "cluster.use", enabled: false }, actor.userId);
+    await permission.set({ ...actor, capability: "cluster.manage", enabled: false }, actor.userId);
+    await db.delete(federationCapabilities).where(eq(federationCapabilities.userId, other.userId));
+    await db.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, other.userId));
+    await db.delete(users).where(eq(users.id, other.userId));
+  }
+});
 
 test("source storage pressure rejects new work with opaque 503 but preserves replay and delivery", async () => {
   const f = await fixture();
@@ -1448,6 +1542,25 @@ test("a stale sender cannot replace the newer worker's accepted receipt", async 
     await sending;
   }
   expect(await row(f.request.operationId)).toMatchObject({ state: "accepted", lastError: null });
+});
+
+test("remote status query windows stay within one minute while the clock advances", async () => {
+  const f = await fixture();
+  const admitted = f.service();
+  await admitted.enqueue(actor, f.request);
+  await admitted.deliverNext();
+  const responder = new FederationStatusResponder(db, b.signing, clock);
+  let ticks = 0;
+  const reader = new FederationOutboundService(
+    db,
+    a.signing,
+    (_endpoint, jws) => responder.receive(jws, sourceFingerprint),
+    assets,
+    () => new Date(clock().getTime() + ticks++),
+  );
+  expect((await reader.remoteStatus(actor, f.request.operationId)).report.requestDigest).toBe(
+    (await row(f.request.operationId)).requestDigest,
+  );
 });
 
 test("remote status is scoped, signed and read-only after admission and agreement expiry", async () => {

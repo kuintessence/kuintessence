@@ -107,3 +107,7 @@
 - [介质交付与运输](design/federation/media-logistics.md)
 - [联邦财务 CLI](federation-cli.md)
 - [架构、协议与业务契约](design/federation/README.md)
+
+## 统一集群选择
+
+管理员通过「联邦协同 → 管理 → 联盟集群」开放资源，用户在作业和工作流中选择已授权的队列。合作方名称可以隐藏，后台仍保留真实执行目标和签名记录。操作和运行限制见[联盟集群](federation-clusters.md)。

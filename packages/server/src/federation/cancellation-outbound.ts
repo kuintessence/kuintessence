@@ -16,7 +16,11 @@ import { and, asc, eq, inArray, lte, or } from "drizzle-orm";
 import { renewTaskCompletion } from "./completion-capacity";
 import { stopCancelledExecution } from "./execution-stop";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
-import { type FederationActor, requireFederationCapability } from "./permissions";
+import {
+  type FederationActor,
+  hasExplicitFederationCapability,
+  requireFederationCapability,
+} from "./permissions";
 import {
   type FederationSigningKey,
   federationMessageKeyId,
@@ -61,7 +65,12 @@ export class FederationCancellationSender {
           .from(federationOutbound)
           .where(and(this.key(operationId), eq(federationOutbound.localOrgId, actor.orgId)))
           .for("update");
-        if (!row) throw new FederationError("POLICY_DENIED");
+        if (
+          !row ||
+          ((row.submittedBy !== actor.userId || !row.request.managedPlacement) &&
+            !(await hasExplicitFederationCapability(tx, actor, "delegation.cancel")))
+        )
+          throw new FederationError("POLICY_DENIED");
         return { row, actor };
       },
       operationId,

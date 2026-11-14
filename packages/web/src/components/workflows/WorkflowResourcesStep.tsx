@@ -2,6 +2,7 @@ import type { workflowDsl } from "@kuintessence/shared/browser";
 import { CircleDollarSign, Clock3, Cpu, Route } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { queueDisplayName } from "../../lib/queue-selection";
 import { estimateWorkflow } from "../../lib/workflow-estimate";
 import { graphToYaml, yamlToGraph } from "../../lib/yaml-graph-sync";
 import { Badge } from "../ui/badge";
@@ -18,6 +19,7 @@ export interface WorkflowQueueOption {
   queueName: string;
   qos: string | null;
   clusterName?: string | null;
+  federation?: { partnerName: string | null };
   costRate?: number | null;
 }
 
@@ -93,6 +95,11 @@ export function WorkflowResourcesStep({
     if (!parsed.ok || !selectedNode) return;
     const fallbackQueueId = queueId || selectedQueueId || selectableQueues[0]?.queueId;
     if (type !== "Auto" && !fallbackQueueId) return;
+    if (
+      type !== "Auto" &&
+      selectableQueues.find((queue) => queue.queueId === fallbackQueueId)?.federation
+    )
+      type = "Manual";
     const nextStrategy: workflowDsl.SchedulingStrategy =
       type === "Auto" ? { type: "Auto" } : { type, queues: [fallbackQueueId as string] };
     const nextNodes = parsed.graph.nodes.map((node) => {
@@ -292,7 +299,7 @@ export function WorkflowResourcesStep({
                     >
                       {selectableQueues.map((queue) => (
                         <option key={queue.queueId} value={queue.queueId}>
-                          {queue.name} · {queue.schedulerType}
+                          {queueDisplayName(queue)} · {queue.queueName}
                         </option>
                       ))}
                     </NativeSelect>

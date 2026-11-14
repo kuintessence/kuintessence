@@ -107,6 +107,38 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
       toast.error(toUserFacingError(err, t("jobs.files.downloadFailed")));
     }
   };
+  if (job.federationRunId)
+    return (
+      <div className="divide-y" data-testid="federation-job-files">
+        {Object.entries(job.federationOutputs ?? {}).flatMap(([descriptor, files]) =>
+          files.map((file) => (
+            <div
+              key={`${descriptor}:${file.fileMetadataId}`}
+              className="flex min-w-0 items-center justify-between gap-3 py-3"
+            >
+              <span className="min-w-0 break-all text-sm">{file.fileMetadataName}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleCloudDownload(file.fileMetadataId, file.fileMetadataName)}
+              >
+                <Download className="size-4" />
+                {t("common.download")}
+              </Button>
+            </div>
+          )),
+        )}
+        {!Object.keys(job.federationOutputs ?? {}).length ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            {t(
+              ["completed", "failed", "cancelled"].includes(job.status)
+                ? "jobs.files.empty"
+                : "jobs.remoteOutputsPending",
+            )}
+          </p>
+        ) : null}
+      </div>
+    );
   if (inputs.length === 0 && outputs.length === 0) {
     return (
       <div className="rounded-md border border-border p-4 text-sm text-muted-foreground">

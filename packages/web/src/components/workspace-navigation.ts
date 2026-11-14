@@ -427,6 +427,12 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
         items: [
           {
             to: "/settings",
+            hash: "security/federation-clusters",
+            labelKey: "settings.sections.federation-clusters",
+            icon: ShieldCheck,
+          },
+          {
+            to: "/settings",
             hash: "security/federation-permissions",
             labelKey: "settings.sections.federation-permissions",
             icon: UsersRound,

@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("react-i18next", () => ({
@@ -276,4 +277,28 @@ test("hides cached details and cancellation after access is revoked, then retrie
   denied = false;
   fireEvent.click(screen.getByRole("button", { name: "common.retry" }));
   expect(await screen.findByTestId("job-cancel-button")).toBeTruthy();
+});
+
+test("a cancellation awaiting remote confirmation keeps the job active and reports a request", async () => {
+  const jobId = "867d9e1e-c725-4a09-b258-e6073e0c75b8";
+  const job = {
+    id: jobId,
+    name: "Read alignment",
+    status: "running",
+    submittedAt: "2026-01-01T00:00:00Z",
+  };
+  const message = vi.spyOn(toast, "success");
+  vi.stubGlobal("confirm", () => true);
+  mockFetchByPath((path) =>
+    path.endsWith("/placement")
+      ? { body: { error: { code: "NOT_FOUND" } }, init: { status: 404 } }
+      : { body: job, init: { status: 200 } },
+  );
+  render(<JobDetailSheet jobId={jobId} open={true} onOpenChange={() => {}} />, {
+    wrapper: makeWrapper(),
+  });
+  fireEvent.click(await screen.findByTestId("job-cancel-button"));
+  await waitFor(() => expect(message).toHaveBeenCalledWith("jobs.cancelRequested"));
+  expect(screen.getByTestId("job-cancel-button")).toBeTruthy();
+  expect(message).not.toHaveBeenCalledWith("jobs.cancelled");
 });

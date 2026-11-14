@@ -24,7 +24,11 @@ import { allocateTaskCompletion } from "./completion-capacity";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
-import { type FederationActor, requireFederationCapability } from "./permissions";
+import {
+  type FederationActor,
+  hasExplicitFederationCapability,
+  requireFederationCapability,
+} from "./permissions";
 import { assertReservationCapacity } from "./reservation-capacity";
 import { FederationReservationPolicyService } from "./reservation-policy";
 import {
@@ -159,7 +163,11 @@ export class FederationReservationProposalService {
       throw new FederationError("POLICY_DENIED");
     return this.db.transaction(async (tx) => {
       if (guard) await guard(tx);
-      else await requireFederationCapability(tx, actor, "delegation.submit");
+      else {
+        await requireFederationCapability(tx, actor, "delegation.submit");
+        if (!(await hasExplicitFederationCapability(tx, actor, "delegation.submit")))
+          throw new FederationError("POLICY_DENIED");
+      }
       await this.contract(tx, revisionId, actor.orgId);
       const [existing] = await tx.select().from(proposals).where(this.key(payload.reservationId));
       if (existing) {

@@ -1,3 +1,17 @@
+import {
+  FederationAmountSchema,
+  type FederationExecutionTarget,
+  FederationExecutionTargetSchema,
+  FederationResourcesSchema,
+} from "./execution-target";
+
+export {
+  FederationAmountSchema,
+  type FederationExecutionTarget,
+  FederationExecutionTargetSchema,
+  FederationResourcesSchema,
+} from "./execution-target";
+
 import { FederationError } from "./errors";
 
 export { FederationError } from "./errors";
@@ -24,27 +38,9 @@ export const FederationModeSchema = z.enum([
 ]);
 export type FederationMode = z.infer<typeof FederationModeSchema>;
 
-/** Fixed-point amounts: the agreement defines the unit; never round through a JS number. */
-export const FederationAmountSchema = z.string().regex(/^(0|[1-9][0-9]{0,37})$/);
 const Id = z.uuid();
 const Time = z.iso.datetime();
 const Unit = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_.:-]{0,63}$/);
-
-export const FederationResourcesSchema = z.strictObject({
-  cpus: z.number().int().min(1).max(1_000_000),
-  memoryMb: z.number().int().min(1).max(1_000_000_000),
-  gpus: z.number().int().min(0).max(100_000),
-  wallTimeSec: z.number().int().min(1).max(31_536_000),
-});
-
-/** Receiver-owned resource identities, explicitly included in the signed agreement. */
-export const FederationExecutionTargetSchema = z.strictObject({
-  providerOrgId: Id,
-  clusterId: z.string().min(1).max(255),
-  agentId: z.string().min(1).max(255),
-  queueId: z.string().min(1).max(255),
-});
-export type FederationExecutionTarget = z.infer<typeof FederationExecutionTargetSchema>;
 
 export const FederationAttestationLimitsSchema = z.strictObject({
   maxOutstandingTasks: z.number().int().min(1).max(100_000),
@@ -182,6 +178,8 @@ export const FederationDelegationSchema = z
     inputDelivery: FederationFileDeliverySchema.optional(),
     resultDelivery: FederationFileDeliverySchema.optional(),
     environmentLockDigest: FederationDigestSchema,
+    executionTarget: FederationExecutionTargetSchema.optional(),
+    managedPlacement: z.strictObject({ queueId: Id, profileId: Id }).optional(),
     resources: FederationResourcesSchema,
     maxAmount: FederationAmountSchema,
     unit: Unit,
@@ -270,6 +268,15 @@ export function assertDelegationTerms(
     ),
   );
   if (
+    request.executionTarget &&
+    !agreement.executionTargets?.some((target) =>
+      (Object.keys(target) as (keyof FederationExecutionTarget)[]).every(
+        (key) => target[key] === request.executionTarget?.[key],
+      ),
+    )
+  )
+    throw new FederationError("POLICY_DENIED");
+  if (
     (request.inputFilesDigest && !agreement.inputPolicy) ||
     !templateAllowed ||
     BigInt(request.maxAmount) > BigInt(agreement.maxTaskAmount) ||
@@ -284,6 +291,7 @@ export function assertDelegationTerms(
 export * from "./accounting";
 export * from "./assets";
 export * from "./cancellation";
+export * from "./cluster-queues";
 export * from "./dataset-use";
 export * from "./input-files";
 export * from "./input-transfer";

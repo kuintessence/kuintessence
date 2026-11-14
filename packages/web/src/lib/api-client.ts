@@ -112,18 +112,18 @@ export const api = {
       headers: { "Content-Type": "application/json", ...authHeaders(scope) },
       body: body ? JSON.stringify(body) : undefined,
     })),
-  put: <T>(path: string, body?: unknown) =>
+  put: <T>(path: string, body?: unknown, scope?: ApiOrganizationScope) =>
     mutationRequest<T>(path, () => ({
       credentials: "same-origin",
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
+      headers: { "Content-Type": "application/json", ...authHeaders(scope) },
       body: body ? JSON.stringify(body) : undefined,
     })),
-  delete: <T>(path: string) =>
+  delete: <T>(path: string, scope?: ApiOrganizationScope) =>
     mutationRequest<T>(path, () => ({
       credentials: "same-origin",
       method: "DELETE",
-      headers: authHeaders(),
+      headers: authHeaders(scope),
     })),
 };
 

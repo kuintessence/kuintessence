@@ -32,7 +32,12 @@
       "page": "Page {{page}} of {{pages}}",
       "previous": "Previous",
       "range": "{{start}}-{{end}} / {{total}}"
-    }
+    },
+    "saved": "Saved",
+    "saving": "Saving…",
+    "select": "Select",
+    "back": "Back",
+    "download": "Download"
   },
   "globalError": {
     "title": "This page is temporarily unavailable",
@@ -535,7 +540,10 @@
     },
     "noMatches": "No jobs match these filters.",
     "loading": "Loading jobs…",
-    "loadFailed": "Unable to load jobs. Please try again."
+    "loadFailed": "Unable to load jobs. Please try again.",
+    "executionDetails": "Execution details",
+    "remoteOutputsPending": "Result files have not arrived yet",
+    "cancelRequested": "Cancellation requested for {{name}}; waiting for the execution site to confirm it has stopped."
   },
   "workflows": {
     "title": "Workflows",
@@ -1741,6 +1749,10 @@
         "federationTrust": {
           "title": "Federation trust",
           "description": "Institutions, signing keys, and client certificates"
+        },
+        "federationClusters": {
+          "title": "Federation clusters",
+          "description": "Manage queues, authorization, allowances, and display settings"
         }
       },
       "auditSettings": "Audit settings",
@@ -1956,7 +1968,8 @@
       "cost-rates": "Cost rates",
       "federation-permissions": "Federation permissions",
       "federation-storage": "Input storage reconciliation",
-      "federation-trust": "Federation trust"
+      "federation-trust": "Federation trust",
+      "federation-clusters": "Federation clusters"
     }
   },
   "terminal": {

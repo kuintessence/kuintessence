@@ -1,7 +1,9 @@
 import type { PgDb } from "@kuintessence/db";
 import { AppError, ErrorCode, hasRole, JobSubmitSchema, type RoleName } from "@kuintessence/shared";
+import { FederationError } from "@kuintessence/shared/federation";
 import { Hono } from "hono";
 import type { AuthzCheck, AuthzService } from "../authz/service";
+import type { FederationClusterQueueService } from "../federation/cluster-queues";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
 import type { PlacementOrchestrator } from "../services/placement-orchestrator";
@@ -19,6 +21,7 @@ import type { PlacementOrchestrator } from "../services/placement-orchestrator";
  */
 export interface SchedulerRouteOptions {
   authz?: AuthzService;
+  federationClusters?: FederationClusterQueueService;
 }
 
 export function createSchedulerRoutes(
@@ -27,6 +30,11 @@ export function createSchedulerRoutes(
   opts: SchedulerRouteOptions = {},
 ) {
   const routes = new Hono();
+  routes.onError((error, c) => {
+    if (error instanceof FederationError)
+      return c.json({ error: { code: error.code } }, error.code === "POLICY_DENIED" ? 403 : 409);
+    throw error;
+  });
 
   routes.post(
     "/scheduler/preview-placement",
@@ -35,6 +43,13 @@ export function createSchedulerRoutes(
       const data = c.req.valid("json");
       const principal = c.get("principal" as never) as BoundPrincipal | undefined;
       const actor = requireBoundSchedulerPrincipal(principal);
+      if (actor.orgId && opts.federationClusters) {
+        const remote = await opts.federationClusters.previewJob(
+          { userId: actor.userId, orgId: actor.orgId },
+          data,
+        );
+        if (remote) return c.json(remote);
+      }
 
       const queueId = data.schedulingStrategy?.queueId ?? null;
       if (queueId) {

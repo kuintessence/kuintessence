@@ -35,6 +35,7 @@ import {
 import {
   buildSchedulingStrategy,
   type PlacementSelection,
+  queueDisplayName,
   queueEligibility,
   queueTargetMode,
 } from "../../lib/queue-selection";
@@ -1611,7 +1612,10 @@ export function SubmitJobDialog({
                           : `${queue.agentId} · ${queue.schedulerType} · ${queue.queueName ?? ""}${queue.qos ? ` / ${queue.qos}` : ""}`;
                       return (
                         <option key={queue.queueId} value={queue.queueId}>
-                          {queue.name} · {targetDescription}
+                          {queueDisplayName(queue)}
+                          {queue.federation
+                            ? ` · ${queue.queueName ?? ""}`
+                            : ` · ${targetDescription}`}
                           {status}
                         </option>
                       );

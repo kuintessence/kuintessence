@@ -1,6 +1,7 @@
 import {
   auditLog,
   federationCapabilities,
+  federationPermissionPresets,
   type PgDb,
   userOrgMemberships,
   users,
@@ -23,9 +24,24 @@ export interface FederationActor {
   orgId: string;
 }
 
+let labDefaultsEnabled = false;
+
+/** Explicitly enabled at startup by experimental deployments, never inferred from a platform role. */
+export function configureFederationLabDefaults(enabled: boolean) {
+  labDefaultsEnabled = enabled;
+}
+
+export function federationLabCapabilities(role: string): FederationCapability[] {
+  return role === "super_admin" || role === "platform_admin"
+    ? [...FederationCapabilitySchema.options]
+    : ["user", "org_admin", "operator"].includes(role)
+      ? ["cluster.use"]
+      : [];
+}
+
 async function requireHumanMember(tx: FederationTransaction, actor: FederationActor) {
   const [member] = await tx
-    .select({ id: users.id })
+    .select({ id: users.id, role: users.role, membershipId: userOrgMemberships.id })
     .from(users)
     .innerJoin(
       userOrgMemberships,
@@ -36,6 +52,34 @@ async function requireHumanMember(tx: FederationTransaction, actor: FederationAc
     )
     .for("share", { of: [users, userOrgMemberships] });
   if (!member) throw new FederationError("POLICY_DENIED");
+  if (labDefaultsEnabled) {
+    const [applied] = await tx
+      .insert(federationPermissionPresets)
+      .values({ membershipId: member.membershipId, preset: "lab-v1" })
+      .onConflictDoNothing()
+      .returning();
+    if (applied) {
+      const capabilities = federationLabCapabilities(member.role);
+      if (capabilities.length)
+        await tx
+          .insert(federationCapabilities)
+          .values(
+            capabilities.map((capability) => ({
+              ...actor,
+              capability,
+              grantedBy: actor.userId,
+            })),
+          )
+          .onConflictDoNothing();
+      await tx.insert(auditLog).values({
+        actor: actor.userId,
+        orgId: actor.orgId,
+        action: "federation.permissions.preset",
+        target: member.membershipId,
+        diff: { after: { preset: "lab-v1", capabilities } },
+      });
+    }
+  }
 }
 
 export async function requireFederationCapability(
@@ -60,6 +104,30 @@ export async function requireFederationCapability(
     )
     .for("share");
   if (!grant) throw new FederationError("POLICY_DENIED");
+}
+
+/** Cluster users have operation ownership; only explicit business grants have organization scope. */
+export async function hasExplicitFederationCapability(
+  tx: FederationTransaction,
+  actor: FederationActor,
+  capability: FederationCapability,
+): Promise<boolean> {
+  const sources = federationCapabilitySources(capability).filter(
+    (source) => source !== "cluster.use",
+  );
+  if (!sources.length) return false;
+  const [row] = await tx
+    .select({ capability: federationCapabilities.capability })
+    .from(federationCapabilities)
+    .where(
+      and(
+        eq(federationCapabilities.orgId, actor.orgId),
+        eq(federationCapabilities.userId, actor.userId),
+        inArray(federationCapabilities.capability, sources),
+      ),
+    )
+    .for("share");
+  return !!row;
 }
 
 /** Called only from the platform permission-management route; never from a peer request. */
@@ -132,7 +200,11 @@ export class FederationPermissionService {
         ...actor,
         grants,
         effectiveCapabilities: FederationCapabilitySchema.options.filter((capability) =>
-          federationCapabilitySources(capability).some((source) => grants.includes(source)),
+          federationCapabilitySources(capability).some(
+            (source) =>
+              grants.includes(source) &&
+              !(capability === "delegation.submit" && source === "cluster.use"),
+          ),
         ),
       };
     });
@@ -143,8 +215,13 @@ export class FederationPermissionService {
     grantedBy: string,
   ) {
     await this.db.transaction(async (tx) => {
-      if (input.enabled) {
+      try {
         await requireHumanMember(tx, input);
+      } catch (error) {
+        if (input.enabled || !(error instanceof FederationError) || error.code !== "POLICY_DENIED")
+          throw error;
+      }
+      if (input.enabled) {
         await tx
           .insert(federationCapabilities)
           .values({

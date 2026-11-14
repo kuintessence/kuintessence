@@ -127,7 +127,7 @@ async function loadVisibleQueues(): Promise<VisibleQueuesResp> {
   return {
     queues: response.queues.map((queue) => {
       const agent = agentsById.get(queue.agentId);
-      const clusterName = agent?.clusterId ?? agent?.siteName ?? null;
+      const clusterName = queue.clusterName ?? agent?.clusterId ?? agent?.siteName ?? null;
       return {
         ...queue,
         clusterName,

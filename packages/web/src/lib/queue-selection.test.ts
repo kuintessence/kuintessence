@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   buildSchedulingStrategy,
   isPlacementSelectionAvailable,
+  queueDisplayName,
   queueEligibility,
   queueTargetMode,
 } from "./queue-selection";
@@ -32,6 +33,17 @@ const namedQueue = {
 };
 
 describe("queue selection", () => {
+  test("partner display is controlled independently from the stable queue identity", () => {
+    expect(
+      queueDisplayName({ ...namedQueue, federation: { partnerName: "Research partner" } }),
+    ).toBe("Named queue Research partner");
+    expect(queueDisplayName({ ...namedQueue, federation: { partnerName: null } })).toBe(
+      "Named queue",
+    );
+    expect(buildSchedulingStrategy({ mode: "named", queueId: namedQueue.queueId })).toEqual({
+      queueId: namedQueue.queueId,
+    });
+  });
   test("uses no scheduling strategy for Auto and a stable queueId for explicit modes", () => {
     expect(buildSchedulingStrategy({ mode: "auto" })).toBeUndefined();
     expect(buildSchedulingStrategy({ mode: "default", queueId: "queue-default" })).toEqual({

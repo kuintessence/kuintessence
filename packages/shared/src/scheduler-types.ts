@@ -90,5 +90,8 @@ export const PlacementTraceSchema = z.object({
   stages: z.array(PlacementStageResultSchema),
   softPreferenceRejections: z.array(PlacementPreferenceRejectionSchema).optional(),
   finalDecision: PlacementAgentSummarySchema.nullable(),
+  federation: z
+    .object({ queueId: z.uuid(), clusterName: z.string(), profileName: z.string() })
+    .optional(),
 });
 export type PlacementTrace = z.infer<typeof PlacementTraceSchema>;

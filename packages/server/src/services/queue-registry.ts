@@ -1,4 +1,4 @@
-import { type PgDb, schedulerQueues } from "@kuintessence/db";
+import { federationClusterQueues, type PgDb, schedulerQueues } from "@kuintessence/db";
 import {
   AppError,
   ErrorCode,
@@ -126,6 +126,20 @@ export class QueueRegistryService {
   }
 
   async create(input: QueueRegistryCreate, ctx: QueueAccessContext): Promise<QueueRegistryView> {
+    if (
+      /^[0-9a-f-]{36}$/i.test(input.queueId) &&
+      (
+        await this.db
+          .select({ id: federationClusterQueues.id })
+          .from(federationClusterQueues)
+          .where(eq(federationClusterQueues.id, input.queueId))
+      ).length
+    )
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        "Queue identity is reserved by a federation cluster",
+        409,
+      );
     const providerOrgId = input.providerOrgId ?? ctx.orgId ?? contextOrgIds(ctx)[0];
     if (!providerOrgId) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, "providerOrgId is required", 400);

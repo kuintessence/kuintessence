@@ -72,6 +72,7 @@ import { FederationCaseRevocationDelivery } from "./federation/case-revocations"
 import { FederationCaseSubmissionService } from "./federation/case-submissions";
 import { FederationClosingAutomation } from "./federation/closing-automation";
 import { FederationClosingPolicyService } from "./federation/closing-policy";
+import { FederationClusterQueueService } from "./federation/cluster-queues";
 import { FederationCommercialAgreementService } from "./federation/commercial-agreements";
 import { FederationCommercialApprovalExchange } from "./federation/commercial-approval-exchange";
 import { UnixCommercialClient } from "./federation/commercial-client";
@@ -116,6 +117,7 @@ import {
 import { FederationInputTransfers } from "./federation/input-transfers";
 import { FederationInputTransport } from "./federation/input-transport";
 import { FederationInputWorker } from "./federation/input-worker";
+import { FederationJobService } from "./federation/jobs";
 import { FederationMarketService } from "./federation/market";
 import { UnixMarketClient } from "./federation/market-client";
 import { FederationMarketRequestService } from "./federation/market-requests";
@@ -139,7 +141,10 @@ import { FederationMediaUploadTransport } from "./federation/media-upload-transp
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
 import { FederationPaymentService } from "./federation/payment";
-import { FederationPermissionService } from "./federation/permissions";
+import {
+  configureFederationLabDefaults,
+  FederationPermissionService,
+} from "./federation/permissions";
 import { FederationPreparationService } from "./federation/preparation";
 import { FederationPreparationWorker } from "./federation/preparation-worker";
 import { FederationRefundService } from "./federation/refund";
@@ -187,6 +192,7 @@ import { createAdminBrandingRoutes } from "./routes/admin-branding";
 import { createAdminDataMarketRoutes } from "./routes/admin-data-market";
 import { createAdminDesensitizeRoutes } from "./routes/admin-desensitize";
 import { createAdminFederationRoutes } from "./routes/admin-federation";
+import { createAdminFederationClusterRoutes } from "./routes/admin-federation-clusters";
 import { createAdminFederationPermissionRoutes } from "./routes/admin-federation-permissions";
 import { createAdminFederationStorageRoutes } from "./routes/admin-federation-storage";
 import { createAdminFileTransferAuditConfigRoutes } from "./routes/admin-file-transfer-audit-config";
@@ -520,6 +526,7 @@ const meteringWorkflowAttribution = new MeteringWorkflowAttributionService(db);
 // JobService is constructed after the metering bundle so it can record compute
 // usage on every terminal job transition (the metering producer). MeteringService
 // structurally satisfies JobMeteringRecorder.
+configureFederationLabDefaults(config.FEDERATION_PERMISSION_PRESET === "lab");
 const jobService = new JobService(
   db,
   eventBus,
@@ -1545,6 +1552,8 @@ const makeRunner =
   };
 const workflowAsyncRunner = new WorkflowAsyncRunner({
   resolveWorkflowVersion,
+  prepareFederationPlacement: (workflow, principal, placement) =>
+    federationClusters.prepareWorkflow(workflow, principal, placement),
   authorizeFederationExecution: async (runId, lease) => {
     if (!federationDispatchAuthorization)
       throw new WorkflowExecutionInterrupted("Federation workflow authorization is unavailable");
@@ -1700,6 +1709,19 @@ const federationAssets = new FederationAssetService(db, {
   authorizeSoftware: (assetId, principal, capability) =>
     softwareAvailability.assertAssetCapability(assetId, principal, capability),
 });
+const federationClusters = new FederationClusterQueueService(
+  db,
+  config.FEDERATION_ENABLED ? config.FEDERATION_SITE_ID : undefined,
+  federationAssets,
+);
+const federationJobs = new FederationJobService(
+  db,
+  jobService,
+  workflowAsyncRunner,
+  federationClusters,
+  authzService,
+);
+protectedApi.route("/", createAdminFederationClusterRoutes(federationClusters, authzService));
 const federationSigningKey = await loadFederationSigningKey(config);
 const federationSender = await loadFederationSender(config);
 const federationAgreementExchange = federationSigningKey
@@ -2145,6 +2167,8 @@ protectedApi.route("/", createAgentRoutes(agentManager, { authz: authzService })
 protectedApi.route(
   "/",
   createJobRoutes(jobService, db, orchestrator, {
+    federationClusters,
+    federationJobs: federationOutbound ? federationJobs : undefined,
     outputPublication: { get: (jobId) => workflowOutputPublisher.inspect(jobId) },
     authz: authzService,
     defaultRunBase: config.WORKFLOW_RUN_BASE,
@@ -2154,11 +2178,17 @@ protectedApi.route(
   }),
 );
 protectedApi.route("/", createPreferenceRoutes(preferenceService, db, { authz: authzService }));
-protectedApi.route("/", createQueueRoutes(queueRegistry, db, { authz: authzService }));
+protectedApi.route(
+  "/",
+  createQueueRoutes(queueRegistry, db, { authz: authzService, federationClusters }),
+);
 // placement-preview endpoint (POST /api/scheduler/preview-placement).
 // Reuses the same orchestrator instance as the dispatch path, so preview
 // stays consistent with real placement.
-protectedApi.route("/", createSchedulerRoutes(orchestrator, db, { authz: authzService }));
+protectedApi.route(
+  "/",
+  createSchedulerRoutes(orchestrator, db, { authz: authzService, federationClusters }),
+);
 protectedApi.route("/", createAuditLogRoutes(db, { authz: authzService }));
 protectedApi.route(
   "/",
@@ -2958,6 +2988,8 @@ export default {
   websocket,
 };
 
+if (federationOutbound) federationJobs.start();
+
 // Graceful shutdown
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
@@ -2966,6 +2998,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "Server shutting down");
   try {
     grpcServer.close();
+    await federationJobs.stop();
     await federationCancellationMonitor.stop();
     await federationExecutionMonitor.stop();
     await workflowAsyncRunner.stop();

@@ -48,6 +48,7 @@ const federationStorageOrigins = z
 const ServerConfigSchema = z.object({
   DATABASE_URL: z.string().url(),
   FEDERATION_ENABLED: envBool(false),
+  FEDERATION_PERMISSION_PRESET: z.enum(["explicit", "lab"]).default("explicit"),
   FEDERATION_MEDIA_OBJECT_DOWNLOAD_ORIGINS: federationStorageOrigins,
   FEDERATION_RESULT_DOWNLOAD_ORIGINS: federationStorageOrigins,
   FEDERATION_INPUT_DOWNLOAD_ORIGINS: federationStorageOrigins,

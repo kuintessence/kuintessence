@@ -195,6 +195,7 @@ export class FederationMaterialExchange {
       let total: number | undefined;
       let offset = 0;
       do {
+        const issuedAt = this.clock();
         const query = FederationMaterialQuerySchema.parse({
           protocolVersion: 1,
           kind: "material-query",
@@ -209,8 +210,8 @@ export class FederationMaterialExchange {
           requestDigest: saved.reservation.requestDigest,
           materialDigest: ref.digest,
           offset,
-          issuedAt: this.clock().toISOString(),
-          expiresAt: new Date(this.clock().getTime() + 60_000).toISOString(),
+          issuedAt: issuedAt.toISOString(),
+          expiresAt: new Date(issuedAt.getTime() + 60_000).toISOString(),
         });
         const jws = await signFederationMessage(FederationMaterialQuerySchema, query, this.signing);
         const { digest } = await verifyFederationMessage(

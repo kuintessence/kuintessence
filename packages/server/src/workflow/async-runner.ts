@@ -37,6 +37,11 @@ export interface WorkflowAsyncRunnerDeps {
   awaitCheckpointPersistence?: (runId: string) => Promise<void>;
   markArtifactsTerminal?: (runId: string) => Promise<void>;
   schedule?: (task: () => Promise<void>) => void;
+  prepareFederationPlacement?: (
+    workflow: Workflow,
+    principal?: BoundPrincipal,
+    config?: WorkflowPlacementConfig,
+  ) => Promise<Workflow>;
   resolveNamedReferences?: (workflow: Workflow, principal?: BoundPrincipal) => Promise<Workflow>;
   resolveWorkflowVersion?: (id: string) => Promise<Workflow | null>;
   validateWorkflow?: (
@@ -97,14 +102,23 @@ export class WorkflowAsyncRunner {
   async submit(input: WorkflowAsyncSubmit): Promise<WorkflowAsyncSubmitResult> {
     if (input.executionModel && (input.executionModel !== "durable-v2" || !this.deps.journal))
       throw new Error("Requested durable workflow execution is unavailable");
+    const placementConfig = WorkflowPlacementConfigSchema.parse(input.placementConfig ?? {});
     const parsedWorkflow = parseWorkflowYaml(input.yaml);
     await this.deps.assertExecutionPrincipal?.({
       userId: input.submittedBy,
       orgId: input.principal?.orgId ?? null,
     });
-    const wf = this.deps.resolveNamedReferences
+    const resolved = this.deps.resolveNamedReferences
       ? await this.deps.resolveNamedReferences(parsedWorkflow, input.principal)
       : parsedWorkflow;
+    await this.deps.validateWorkflow?.(resolved, input.principal);
+    const wf = this.deps.prepareFederationPlacement
+      ? parseWorkflowYaml(
+          stringify(
+            await this.deps.prepareFederationPlacement(resolved, input.principal, placementConfig),
+          ),
+        )
+      : resolved;
     if (await requiresDurableWorkflow(wf, this.deps.resolveWorkflowVersion)) {
       if (!input.principal?.orgId || input.principal.userId !== input.submittedBy)
         throw new Error("Federation nodes require a canonical principal and active organization");
@@ -112,9 +126,10 @@ export class WorkflowAsyncRunner {
         throw new Error("Federation nodes require durable workflow execution");
       input = { ...input, executionModel: "durable-v2" };
     }
-    await this.deps.validateWorkflow?.(wf, input.principal);
-    const resolvedYaml = this.deps.resolveNamedReferences ? stringify(wf) : input.yaml;
-    const placementConfig = WorkflowPlacementConfigSchema.parse(input.placementConfig ?? {});
+    const resolvedYaml =
+      this.deps.resolveNamedReferences || this.deps.prepareFederationPlacement
+        ? stringify(wf)
+        : input.yaml;
     const runId = await this.deps.registry.createRun(
       wf.name,
       input.submittedBy,

@@ -36,3 +36,12 @@ export function isPlacementSelectionAvailable(
   const queue = queues.find((item) => item.queueId === selection.queueId);
   return Boolean(queue && queueTargetMode(queue) === selection.mode);
 }
+
+export function queueDisplayName(queue: {
+  name: string;
+  federation?: { partnerName: string | null };
+}): string {
+  return queue.federation?.partnerName
+    ? `${queue.name} ${queue.federation.partnerName}`
+    : queue.name;
+}

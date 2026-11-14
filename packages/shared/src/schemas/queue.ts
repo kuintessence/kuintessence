@@ -275,6 +275,8 @@ export const QueueRegistryUpdateSchema = z
   });
 
 export const QueueRegistryViewSchema = z.object({
+  clusterName: z.string().nullable().optional(),
+  federation: z.object({ partnerName: z.string().nullable() }).optional(),
   queueId: QueueIdSchema,
   name: z.string().min(1).max(255),
   providerOrgId: z.string().uuid(),

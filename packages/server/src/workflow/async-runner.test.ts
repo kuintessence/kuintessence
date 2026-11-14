@@ -167,6 +167,33 @@ describe("WorkflowAsyncRunner", () => {
     ]);
   });
 
+  test("source permissions are checked before cluster conversion can replace executable nodes", async () => {
+    const events: string[] = [];
+    let converted = false;
+    const runner = new WorkflowAsyncRunner({
+      registry: makeRegistry(events),
+      validateWorkflow: async () => {
+        throw new Error("Source use is denied");
+      },
+      prepareFederationPlacement: async (workflow) => {
+        converted = true;
+        return workflow;
+      },
+      makeRunner: () => async () => ({ status: {}, values: {} }),
+      schedule: () => {},
+    });
+    await expect(
+      runner.submit({
+        yaml: validYaml,
+        submittedBy: "member",
+        role: "user",
+        authorizeRun: async () => {},
+      }),
+    ).rejects.toThrow("Source use is denied");
+    expect(converted).toBe(false);
+    expect(events).toEqual([]);
+  });
+
   test("passes the canonical principal to named-reference resolution before persisting the run", async () => {
     const events: string[] = [];
     const scheduled: Array<() => Promise<void>> = [];
