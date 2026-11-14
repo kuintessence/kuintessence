@@ -66,7 +66,11 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
       queryClient.setQueryData(["job-detail", cancelId], job);
       queryClient.invalidateQueries({ queryKey: ["jobs-list"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      toast.success(t("jobs.cancelled", { name: job.name }));
+      toast.success(
+        t(job.status.toLowerCase() === "cancelled" ? "jobs.cancelled" : "jobs.cancelRequested", {
+          name: job.name,
+        }),
+      );
     },
     onError: (err) => {
       toast.error(toUserFacingError(err, t("jobs.cancelFailed")));

@@ -543,7 +543,8 @@
     "commandMode": "直接命令",
     "loadFailed": "无法加载作业列表，请重试。",
     "executionDetails": "执行详情",
-    "remoteOutputsPending": "结果文件尚未返回"
+    "remoteOutputsPending": "结果文件尚未返回",
+    "cancelRequested": "已请求取消“{{name}}”，等待执行端确认停止。"
   },
   "workflows": {
     "title": "工作流",
