@@ -692,9 +692,8 @@ describe("preview test orchestration", () => {
     expect(portal?.needs).toBe("static-checks");
     const download = portal?.steps?.find((step) => step.uses === "actions/download-artifact@v4");
     const upload = staticSteps.find((step) => step.uses === "actions/upload-artifact@v4");
-    expect(upload?.with?.name).toBe(ci.jobs["static-checks"]?.outputs?.web_artifact);
     expect(download?.with).toEqual({
-      name: "${{ needs.static-checks.outputs.web_artifact }}",
+      name: upload?.with?.name,
       path: "packages/web/dist/",
     });
     expect(portal?.steps?.some((step) => step.run === "bun run build")).toBe(false);

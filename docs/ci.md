@@ -21,7 +21,7 @@ PR 的检查围绕同一提交运行，部署始终等待所选检查全部成�
 
 范围根据完整 PR diff 计算，重命名同时检查新旧路径，文件清单缺失或解析失败不会当作无改动。`workflow_dispatch` 可显式运行完整组合；`[full-workflows]` 保留完整工作流入口。
 
-同仓库非草稿 PR 只在预览测试内执行一遍基础检查。fork 和草稿保留独立 CI。默认 Web 构建在同一 run/attempt 内作为 artifact 提供给软件门户浏览器检查；生产 Web 的 `VITE_PREVIEW_LOGIN=false` 与预览配置不同，二者不复用产物。
+同仓库非草稿 PR 只在预览测试内执行一遍基础检查。fork 和草稿保留独立 CI。默认 Web 构建在同一次 workflow run 中作为 artifact 提供给软件门户浏览器检查；生产 Web 的 `VITE_PREVIEW_LOGIN=false` 与预览配置不同，二者不复用产物。
 
 ## 并行构建与部署
 
