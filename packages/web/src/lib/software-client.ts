@@ -418,8 +418,8 @@ export interface SpackCatalog {
   packages: SpackCatalogPackage[];
 }
 
-const WORKFLOW_TEMPLATE_FULL_LOAD_MAX_PAGES = 10;
-const WORKFLOW_TEMPLATE_FULL_LOAD_PAGE_SIZE = 100;
+const CATALOG_FULL_LOAD_MAX_PAGES = 10;
+const CATALOG_FULL_LOAD_PAGE_SIZE = 100;
 
 export async function listWorkflowTemplatePage(
   input: { page?: number; pageSize?: number; q?: string; tag?: string } = {},
@@ -458,10 +458,10 @@ export async function listWorkflowTemplatePage(
 export async function listWorkflowTemplates(): Promise<WorkflowTemplate[]> {
   const templates = new Map<string, WorkflowTemplate>();
   let expectedTotal: number | null = null;
-  for (let page = 1; page <= WORKFLOW_TEMPLATE_FULL_LOAD_MAX_PAGES; page += 1) {
+  for (let page = 1; page <= CATALOG_FULL_LOAD_MAX_PAGES; page += 1) {
     const result = await listWorkflowTemplatePage({
       page,
-      pageSize: WORKFLOW_TEMPLATE_FULL_LOAD_PAGE_SIZE,
+      pageSize: CATALOG_FULL_LOAD_PAGE_SIZE,
     });
     if (expectedTotal !== null && result.total !== expectedTotal) {
       throw new SoftwareError(
@@ -483,7 +483,7 @@ export async function listWorkflowTemplates(): Promise<WorkflowTemplate[]> {
   }
   throw new SoftwareError(
     413,
-    `Workflow template list exceeds ${WORKFLOW_TEMPLATE_FULL_LOAD_MAX_PAGES * WORKFLOW_TEMPLATE_FULL_LOAD_PAGE_SIZE} entries. Use paginated search instead.`,
+    `Workflow template list exceeds ${CATALOG_FULL_LOAD_MAX_PAGES * CATALOG_FULL_LOAD_PAGE_SIZE} entries. Use paginated search instead.`,
   );
 }
 
@@ -713,13 +713,30 @@ export async function deleteAppTemplate(id: string): Promise<void> {
 export async function listUsecasePackages(
   input: { orgId?: string } = {},
 ): Promise<UsecasePackage[]> {
-  const params = new URLSearchParams();
-  if (input.orgId) params.set("orgId", input.orgId);
-  const suffix = params.toString();
-  const body = await requestJson<{ usecasePackages?: UsecasePackage[] }>(
-    `/usecase-packages${suffix ? `?${suffix}` : ""}`,
+  const packages = new Map<string, UsecasePackage>();
+  let expectedTotal: number | null = null;
+  for (let page = 1; page <= CATALOG_FULL_LOAD_MAX_PAGES; page += 1) {
+    const result = await listUsecasePackagePage({
+      ...input,
+      page,
+      pageSize: CATALOG_FULL_LOAD_PAGE_SIZE,
+    });
+    if (expectedTotal !== null && result.total !== expectedTotal) {
+      throw new SoftwareError(409, "Usecase list changed while loading. Refresh and try again.");
+    }
+    expectedTotal = result.total;
+    for (const pkg of result.usecasePackages) packages.set(pkg.id, pkg);
+    if (!result.hasNext) {
+      if (packages.size !== result.total) {
+        throw new SoftwareError(409, "Usecase list changed while loading. Refresh and try again.");
+      }
+      return [...packages.values()];
+    }
+  }
+  throw new SoftwareError(
+    413,
+    `Usecase list exceeds ${CATALOG_FULL_LOAD_MAX_PAGES * CATALOG_FULL_LOAD_PAGE_SIZE} entries. Use paginated search instead.`,
   );
-  return body.usecasePackages ?? [];
 }
 
 export async function listUsecasePackagePage(
