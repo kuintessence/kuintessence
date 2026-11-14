@@ -31,12 +31,12 @@ describe("CI job change scope", () => {
   });
 
   test.each([
-    "generate-db-migrations", "static-checks", "lint-and-typecheck", "test", "rustfs-deployments",
+    "generate-db-migrations", "static-checks", "lint-and-typecheck", "test", "unit-tests", "spack-lifecycle-portal", "rustfs-deployments",
   ])("changes to baseline job %s keep the heavy groups disabled", (job) => {
     expect(classifyCIChange(workflow, editJob(workflow, job, "timeout-minutes", "25"))).toEqual(NONE);
   });
 
-  test.each(["spack-artifact-imports", "spack-lifecycle-portal", "spack-upstream"])(
+  test.each(["spack-artifact-imports", "spack-upstream"])(
     "changes to %s select Spack only", (job) => {
       expect(classifyCIChange(workflow, editJob(workflow, job, "timeout-minutes", "25")))
         .toEqual({ spack: true, schedulers: false });

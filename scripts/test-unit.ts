@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import postgres from "postgres";
+import durations from "./unit-test-durations.json";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const defaultDatabaseUrl = "postgres://kq:kq@localhost:5432/kuintessence";
@@ -50,6 +51,41 @@ export function selectUnitTestSlices(args: string[]): TestSlice[] {
   const selected = [...slices, offlineSlurmPg].find((slice) => slice.name === args[1]);
   if (!selected) throw new Error("Unknown unit test suite");
   return [selected];
+}
+
+export function unitTestOptions(args: string[]): {
+  slices: TestSlice[];
+  shard: number;
+  total: number;
+} {
+  const index = args.indexOf("--shard");
+  if (index === -1) return { slices: selectUnitTestSlices(args), shard: 1, total: 1 };
+  const match = /^([1-9][0-9]*)\/([1-9][0-9]*)$/.exec(args[index + 1] ?? "");
+  if (!match || Number(match[1]) > Number(match[2]) || Number(match[2]) > 32) {
+    throw new Error("--shard must be INDEX/TOTAL with 1 <= INDEX <= TOTAL <= 32");
+  }
+  return {
+    slices: selectUnitTestSlices([...args.slice(0, index), ...args.slice(index + 2)]),
+    shard: Number(match[1]),
+    total: Number(match[2]),
+  };
+}
+
+export function partitionUnitTestFiles(
+  files: string[],
+  total: number,
+  timings: Record<string, number> = durations,
+): string[][] {
+  if (!Number.isInteger(total) || total < 1 || total > 32) throw new Error("Invalid shard count");
+  const shards = Array.from({ length: total }, () => ({ seconds: 0, files: [] as string[] }));
+  const weight = (file: string) => timings[relative(repoRoot, file)] ?? 1;
+  const ordered = [...new Set(files)].sort((a, b) => weight(b) - weight(a) || a.localeCompare(b));
+  for (const file of ordered) {
+    const shard = shards.reduce((a, b) => (a.seconds <= b.seconds ? a : b));
+    shard.files.push(file);
+    shard.seconds += weight(file);
+  }
+  return shards.map((shard) => shard.files);
 }
 
 export function databaseUrlWithName(baseUrl: string, databaseName: string): string {
@@ -137,7 +173,10 @@ export async function collectUnitTestFiles(paths: string[]): Promise<string[]> {
 }
 
 async function main(): Promise<void> {
-  const selected = selectUnitTestSlices(Bun.argv.slice(2));
+  const selected = unitTestOptions(Bun.argv.slice(2));
+  const files = await collectUnitTestFiles(selected.slices.flatMap((slice) => slice.paths));
+  const testFiles = partitionUnitTestFiles(files, selected.total)[selected.shard - 1] ?? [];
+  if (!testFiles.length) throw new Error("Selected unit test shard is empty");
   const sourceUrl = Bun.env.DATABASE_URL ?? defaultDatabaseUrl;
   const databaseName = unitDatabaseName(new Date(), globalThis.process.pid, randomUUID());
   const adminUrl = databaseUrlWithName(sourceUrl, "postgres");
@@ -152,14 +191,18 @@ async function main(): Promise<void> {
     process.stdout.write(`Unit test database created: ${databaseName}\n`);
     const childEnvironment = unitChildEnvironment(Bun.env, testUrl);
     await runCommand(["bun", "run", "db:migrate"], childEnvironment);
-    for (const slice of selected) {
-      const testFiles = await collectUnitTestFiles(slice.paths);
+    process.stdout.write(
+      `Running unit test shard ${selected.shard}/${selected.total} (${testFiles.length}/${files.length} isolated files)\n`,
+    );
+    for (const testFile of testFiles) {
+      const started = performance.now();
+      await runCommand(["bun", "test", "--timeout=15000", testFile], childEnvironment);
       process.stdout.write(
-        `Running unit test slice: ${slice.name} (${testFiles.length} isolated files)\n`,
+        `UNIT_TEST_TIMING ${JSON.stringify({
+          file: relative(repoRoot, testFile),
+          seconds: (performance.now() - started) / 1000,
+        })}\n`,
       );
-      for (const testFile of testFiles) {
-        await runCommand(["bun", "test", "--timeout=15000", testFile], childEnvironment);
-      }
     }
   } catch (error) {
     primaryError = error;

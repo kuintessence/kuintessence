@@ -92,6 +92,10 @@ Ubuntu 24.04 amd64 新机可使用发行版的 `docker.io`、`docker-compose-v2`
 
 SSH 公钥须预先核对。续传只写专用 incoming 目录，不启动服务。
 
+同一版本分发多个站点时，只跨境传输一次已核验的交付包。中继机具备 rsync 和受信任工具后，
+在中继机使用下面同一 `transfer` 命令，通过云内网送到其余站点；每站仍独立核对可信 manifest
+摘要并加载。不重新构建镜像，也不把中继机的运行数据或机构密钥混入通用包。
+
 ```sh
 python3 deploy/federation/offline.py transfer \
   --bundle /交付盘/指定版本 --manifest-sha256 <可信摘要> \

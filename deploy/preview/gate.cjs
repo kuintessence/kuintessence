@@ -8,6 +8,10 @@ const REQUIRED_JOBS = [
   "ci / Spack artifact imports (hello) / export-and-import",
   "ci / Spack artifact imports (samtools) / export-and-import",
   "ci / Unit + integration tests",
+  "ci / Isolated unit tests (1/4)",
+  "ci / Isolated unit tests (2/4)",
+  "ci / Isolated unit tests (3/4)",
+  "ci / Isolated unit tests (4/4)",
   "ci / E2E slice (CLI -> Server -> Agent -> Slurm)",
   "ci / RustFS Compose + AIO",
   "ci / Spack lifecycle portal",
@@ -29,7 +33,7 @@ const REQUIRED_JOBS = [
 ];
 const GROUP_JOBS = {
   spack: new Set(REQUIRED_JOBS.filter((name) =>
-    name.startsWith("ci / Spack ") ||
+    (name.startsWith("ci / Spack ") && name !== "ci / Spack lifecycle portal") ||
     name.startsWith("schedulers / Spack "),
   )),
   workflows: new Set(REQUIRED_JOBS.filter((name) => name.startsWith("workflows / "))),
@@ -126,6 +130,11 @@ async function getPermission(github, repo, username) {
 
 async function gate({ github, context, core }, options = {}) {
   core.setOutput("allowed", "false");
+  core.setOutput("tested", "false");
+  const buildOnly = options.buildOnly === true;
+  if (buildOnly && (context.eventName !== "workflow_run" || context.payload.action !== "requested")) {
+    throw new Error("Early image builds require a workflow_run requested event");
+  }
   const repo = context.repo;
   const repository = `${repo.owner}/${repo.repo}`;
   const inputs = context.payload.inputs ?? {};
@@ -138,8 +147,11 @@ async function gate({ github, context, core }, options = {}) {
     run.path !== WORKFLOW_PATH ||
     !["pull_request", "workflow_dispatch"].includes(run.event) ||
     run.head_repository?.full_name !== repository ||
-    run.status !== "completed" ||
-    run.conclusion !== "success"
+    (buildOnly
+      ? !["queued", "in_progress", "completed"].includes(run.status) ||
+        (run.conclusion != null && run.conclusion !== "success") ||
+        run.display_title === "PR preview tests (ignored label event)"
+      : run.status !== "completed" || run.conclusion !== "success")
   ) {
     core.info("Preview refused: the full test run is not eligible.");
     return;
@@ -174,13 +186,13 @@ async function gate({ github, context, core }, options = {}) {
     core.info("Preview refused: trust, membership, state or tested revision changed.");
     return;
   }
-  const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+  const jobs = buildOnly ? [] : await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
     ...repo,
     run_id: runId,
     filter: "latest",
     per_page: 100,
   });
-  if (!testsPassed(jobs)) {
+  if (!buildOnly && !testsPassed(jobs)) {
     // Only the trusted controller may derive exemptions from the live PR files.
     // Manual runs always require the full suite; old full runs need no scope API.
     if (run.event !== "pull_request") {
@@ -228,6 +240,8 @@ async function gate({ github, context, core }, options = {}) {
   core.setOutput("sha", pr.head.sha);
   core.setOutput("owner", repo.owner.toLowerCase());
   core.setOutput("run", String(runId));
+  core.setOutput("test_attempt", String(positiveInteger(run.run_attempt ?? 1, "test attempt")));
+  core.setOutput("tested", String(!buildOnly));
   core.setOutput("url", `https://pr-${prNumber}.preview.dev.kuintessence.com`);
 }
 

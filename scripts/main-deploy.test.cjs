@@ -42,6 +42,18 @@ fs.writeFileSync(process.env.CALL_FILE, JSON.stringify({
   args, keyMode: fs.statSync(key).mode & 0o777,
   keyUnset: !Object.hasOwn(process.env, "MAIN_SSH_KEY"),
 }));
+if (args.includes("-M")) {
+  if (process.env.FAIL_TUNNEL === "true") process.exit(255);
+  const socket = args[args.indexOf("-S") + 1];
+  require("node:net").createServer().listen(socket, () => process.exit(0));
+  return;
+}
+if (args.includes("-O")) {
+  const mode = args[args.indexOf("-O") + 1];
+  if (mode === "forward") process.stdout.write(process.env.BAD_RELAY_PORT === "true" ? "0" : "45234");
+  if (mode === "exit") { fs.unlinkSync(args[args.indexOf("-S") + 1]); fs.writeFileSync(process.env.TUNNEL_CLOSED, "closed"); }
+  process.exit(0);
+}
 const input = fs.readFileSync(0);
 if (process.env.FAIL_SSH === "true") process.exit(255);
 let command = args.at(-1).replaceAll("/opt/deploy", process.env.REMOTE_DIR);
@@ -64,7 +76,14 @@ const { createHash } = require("node:crypto");
 const { gunzipSync } = require("node:zlib");
 const args = process.argv.slice(2);
 const remote = process.cwd() === process.env.REMOTE_DIR;
-if (args[0] === "pull") process.exit(process.env.FAIL_PULL === "true" ? 1 : 0);
+fs.appendFileSync(process.env.DOCKER_CALLS, JSON.stringify({ remote, args }) + "\\n");
+if (args[0] === "run") { process.stdout.write("relay-registry"); process.exit(0); }
+if (args[0] === "port") { process.stdout.write("127.0.0.1:51234"); process.exit(0); }
+if (args[0] === "exec") { process.stdout.write("10000 /var/lib/registry"); process.exit(0); }
+if (args[0] === "push") process.exit(process.env.FAIL_RELAY_PUSH === "true" ? 1 : 0);
+if (args[0] === "rm") { fs.writeFileSync(process.env.REGISTRY_REMOVED, "removed"); process.exit(0); }
+if (args[0] === "tag" || (args[0] === "image" && args[1] === "rm")) process.exit(0);
+if (args[0] === "pull") process.exit((remote ? process.env.FAIL_REMOTE_PULL : process.env.FAIL_PULL) === "true" ? 1 : 0);
 if (args[0] === "save") {
   if (process.env.FAIL_SAVE === "true") process.exit(1);
   process.stdout.write(JSON.stringify(args.slice(1)));
@@ -76,7 +95,9 @@ if (args[0] === "save") {
   fs.writeFileSync(process.env.LOAD_FILE, "loaded");
 } else if (args[0] === "image" && args[1] === "inspect") {
   if (!remote && process.env.FAIL_IMAGE_INSPECT === "true") process.exit(1);
-  const digest = createHash("sha256").update(args.at(-1)).digest("hex");
+  if (args[3] === "{{.Size}}") { process.stdout.write("1000000"); process.exit(0); }
+  const image = args.at(-1).replace(new RegExp("^127[.]0[.]0[.]1:[0-9]+/(.+):sha-[a-f0-9]{40}$"), "ghcr.io/$1:main");
+  const digest = createHash("sha256").update(image).digest("hex");
   const layers = JSON.stringify(["sha256:" + (remote && process.env.WRONG_IMAGE_LAYERS === "true" ? "b".repeat(64) : digest)]);
   if (args[3] === "{{.Id}}") {
     // Classic and containerd stores can report different IDs for identical content.
@@ -92,6 +113,12 @@ if (args[0] === "save") {
 `,
     { mode: 0o700 },
   );
+  writeFileSync(join(bin, "curl"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  writeFileSync(
+    join(bin, "ss"),
+    '#!/bin/sh\nif [ "$BAD_RELAY_BIND" = true ]; then printf "LISTEN 0 128 0.0.0.0:45234 0.0.0.0:*\\n"; else printf "LISTEN 0 128 127.0.0.1:45234 0.0.0.0:*\\n"; fi\n',
+    { mode: 0o700 },
+  );
   try {
     const result = spawnSync("bash", [join(source, "remote.sh")], {
       encoding: "utf8",
@@ -102,6 +129,7 @@ if (args[0] === "save") {
         GITHUB_SHA: revision,
         GITHUB_REPOSITORY: "example/kuintessence",
         RUNNER_TEMP: runner,
+        MAIN_IMAGE_TRANSPORT: "archive",
         MAIN_SSH_HOST: "deploy.example.com",
         MAIN_SSH_PORT: "2222",
         MAIN_SSH_USER: "deploy",
@@ -111,6 +139,9 @@ if (args[0] === "save") {
         FAIL_SSH: String(options.failSSH ?? false),
         CORRUPT_ARCHIVE: String(options.corruptArchive ?? false),
         LOAD_FILE: join(directory, "image-load"),
+        DOCKER_CALLS: join(directory, "docker-calls"),
+        REGISTRY_REMOVED: join(directory, "registry-removed"),
+        TUNNEL_CLOSED: join(directory, "tunnel-closed"),
         SPACE_FILE: join(directory, "space-check"),
         ...options.env,
       },
@@ -127,6 +158,11 @@ if (args[0] === "save") {
       call,
       remote,
       run,
+      dockerCalls: readdirSync(directory).includes("docker-calls")
+        ? readFileSync(join(directory, "docker-calls"), "utf8").trim().split("\n").map(JSON.parse)
+        : [],
+      registryRemoved: readdirSync(directory).includes("registry-removed"),
+      tunnelClosed: readdirSync(directory).includes("tunnel-closed"),
       imagesLoaded: readdirSync(directory).includes("image-load"),
       spaceCheck: readdirSync(directory).includes("space-check")
         ? readFileSync(join(directory, "space-check"), "utf8")
@@ -139,6 +175,37 @@ if (args[0] === "save") {
 }
 
 describe("main SSH deployment", () => {
+  test("relay pulls by layer over loopback, verifies content and cleans its tunnel", () => {
+    const result = deploy({ env: { MAIN_IMAGE_TRANSPORT: "relay", FAIL_SAVE: "true" } });
+    expect(result.status).toBe(0);
+    expect(result.imagesLoaded).toBe(false);
+    const pulls = result.dockerCalls.filter((call) => call.remote && call.args[0] === "pull");
+    expect(pulls).toHaveLength(4);
+    expect(pulls.every((call) => call.args.at(-1).startsWith("127.0.0.1:45234/"))).toBe(true);
+    expect(result.dockerCalls.some((call) => call.args[0] === "save")).toBe(false);
+    expect(result.registryRemoved).toBe(true);
+    expect(result.tunnelClosed).toBe(true);
+    expect(result.files["deployed-args"]).toBe(`deploy --expected-revision ${revision}`);
+    expect(result.files[".env"]).toBe("existing secrets");
+    expect(result.temporaryFiles).toEqual([]);
+  });
+
+  test.each([
+    "FAIL_TUNNEL",
+    "FAIL_RELAY_PUSH",
+    "FAIL_REMOTE_PULL",
+    "BAD_RELAY_PORT",
+    "BAD_RELAY_BIND",
+    "WRONG_IMAGE_LAYERS",
+  ])("relay failure %s preserves configuration and blocks deployment", (name) => {
+    const result = deploy({ env: { MAIN_IMAGE_TRANSPORT: "relay", [name]: "true" } });
+    expect(result.status).not.toBe(0);
+    expect(result.files["compose.yml"]).toBe("old compose");
+    expect(result.files.deployed).toBeUndefined();
+    expect(result.registryRemoved).toBe(true);
+    expect(result.temporaryFiles).toEqual([]);
+  });
+
   test("replaces deployment files, preserves site state, then invokes the existing script", () => {
     const result = deploy();
     expect(result.status).toBe(0);

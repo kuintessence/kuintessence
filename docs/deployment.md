@@ -197,15 +197,15 @@ ready 时 epoch 缺失/不匹配均拒绝材料 runtime。新的 pause 更换 ep
 <a id="actions"></a>
 ## GitHub Actions
 
-`CI` 工作流在推送 `main` 和目标为 `main` 的 PR 时默认只执行静态检查：
-Biome、本地文档链接、workflow 引用、轻量 CI 编排检查，以及科学工作流交付模板的离线合同检查
-和该检查文件的 TypeScript 类型检查。模板检查只读取仓库文件，不下载或执行 recipe。
-依赖安装使用
-`bun install --frozen-lockfile --ignore-scripts`，不运行安装生命周期脚本、
-protobuf 生成、业务运行时测试、构建或容器。
+`CI` 的基础检查包括 Biome、本地文档链接、workflow 引用、部署脚本契约，
+以及默认配置的 Web 构建和浏览器交互。安装依赖时使用
+`bun install --frozen-lockfile --ignore-scripts`；需要的 protobuf 单独生成。
+同仓库非草稿 PR 的基础检查由 `PR preview tests` 调用一次；独立 `CI`
+保留 main、fork 与草稿的检查，避免同一 PR 重复构建 Web。
 
-完整 TypeScript 检查依赖生成的 protobuf，由手动完整检查或 `PR preview tests` 调用。
-自动静态 job 的结果仅覆盖上述范围，不证明材料闭包、受管安装或科学工作流成功。
+完整类型检查、数据库测试、Helm 和选中的运行测试由手动完整模式或
+`PR preview tests` 调用。类型检查与数据库分片独立启动；四个分片各用独立服务，
+汇总后只执行一次 seed 数据库与 Agent 集成测试。完整配置见[CI 编排](ci.md)。
 
 仅允许在 Actions 执行生成器时，可手动选择目标分支并勾选
 `generate_db_migrations`（默认关闭）。独立 job 运行 `db:generate`，
@@ -226,9 +226,17 @@ protobuf 生成、业务运行时测试、构建或容器。
 | `PR scheduler tests` | 相关源码变更时由 PR 测试编排调用，或手动触发；`run_spack`、`run_schedulers` 分别选择材料运行检查与 Slurm/PBS matrix |
 | `Spack workflow execution` | 自动调用默认仅 GNU Hello 工作流；手动或当前 HEAD 提交消息含 `[full-workflows]` 时运行完整三案例 |
 | `Docs Site` | 仅从 `main` 手动构建并发布到 `gh-pages`；GitHub Pages 须单独配置发布源 |
-| `Preview` / `Preview Cleanup` | 全部必需测试成功且通过信任门禁后部署远程 k3s，关闭/暂停/撤销标签后清理；无 main 常驻预览 |
+| `Preview` / `Preview Cleanup` | 通过信任检查后与测试并行构建镜像；全部必需测试成功后才部署远程 k3s，关闭/暂停/撤销标签后清理 |
 
 ### 生产镜像
+
+main 的 SSH 交付默认通过临时镜像仓库和反向隧道传输镜像层，目标 Docker 只拉取缺少的层。
+仓库在 Actions runner 运行，使用回环地址；目标机不需要连接 GHCR。加载后核对平台、
+提交、来源与层摘要，仍由现有 `/opt/deploy/run.sh` 完成空间管理、更新与恢复。
+首次交付可能需要全部层，后续传输量取决于变更。若目标 SSH 策略禁止远程端口转发，
+可将仓库 Actions variable `MAIN_IMAGE_TRANSPORT` 设置为 `archive`，使用原 SHA-256
+归档传输；不配置时采用 `relay`。传输或身份检查失败不会自动改配置或执行部署。
+
 
 [`Build production images`](../.github/workflows/build-images.yml) 使用现有 Dockerfile，
 构建 `linux/amd64` 镜像，发布到 `ghcr.io/<仓库所有者的小写名称>/`：

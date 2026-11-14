@@ -586,12 +586,16 @@ describe("preview test orchestration", () => {
   test("keeps baseline runtime checks and gates expensive jobs on reusable scope inputs", async () => {
     const ci = await workflow("ci.yml");
     expect(ci.on.pull_request?.branches).toBeUndefined();
-    for (const id of ["lint-and-typecheck", "test", "rustfs-deployments"]) {
+    for (const id of [
+      "lint-and-typecheck",
+      "unit-tests",
+      "rustfs-deployments",
+      "spack-lifecycle-portal",
+    ]) {
       expect(ci.jobs[id]?.if).toBe("inputs.run_runtime_checks || inputs.source_sha");
     }
     const scoped: Record<string, string> = {
       "spack-artifact-imports": "run_spack",
-      "spack-lifecycle-portal": "run_spack",
       "spack-upstream": "run_spack",
       "e2e-slice": "run_schedulers",
     };
@@ -677,35 +681,24 @@ describe("preview test orchestration", () => {
         }
       }
     }
-    for (const [name, command] of [
-      ["Run complete Web unit suite", "bun run test"],
-      ["Build web application and styles", "bun run build"],
-    ]) {
-      const steps = baseline?.steps?.filter((step) => step.name === name) ?? [];
-      expect(steps).toHaveLength(1);
-      expect(steps[0]).toMatchObject({ run: command, "working-directory": "packages/web" });
-      expect(steps[0]?.if).toBeUndefined();
-    }
-    const portalSteps = ci.jobs["spack-lifecycle-portal"]?.steps ?? [];
-    expect(portalSteps.some((step) => step.name === "Run complete Web unit suite")).toBe(false);
-    expect(
-      portalSteps.some(
-        (step) =>
-          step["working-directory"] === "packages/web" && step.run?.trim() === "bun run test",
-      ),
-    ).toBe(false);
-    const build = portalSteps.findIndex((step) => step.name === "Build web application and styles");
-    const browser = portalSteps.findIndex(
-      (step) =>
-        step["working-directory"] === "packages/web" && step.run?.startsWith("bun run e2e "),
-    );
-    expect(build).toBeGreaterThanOrEqual(0);
-    expect(browser).toBeGreaterThan(build);
-    expect(portalSteps[build]).toMatchObject({
-      run: "bun run build",
-      "working-directory": "packages/web",
+    expect(baseline?.steps?.filter((step) => step.name === "Run complete Web unit suite")).toEqual([
+      expect.objectContaining({ run: "bun run test", "working-directory": "packages/web" }),
+    ]);
+    expect(baseline?.steps?.some((step) => step.run === "bun run build")).toBe(false);
+    const staticSteps = ci.jobs["static-checks"]?.steps ?? [];
+    expect(staticSteps.filter((step) => step.run === "bun run build")).toHaveLength(1);
+    const portal = ci.jobs["spack-lifecycle-portal"];
+    expect(portal?.if).toBe("inputs.run_runtime_checks || inputs.source_sha");
+    expect(portal?.needs).toBe("static-checks");
+    const download = portal?.steps?.find((step) => step.uses === "actions/download-artifact@v4");
+    const upload = staticSteps.find((step) => step.uses === "actions/upload-artifact@v4");
+    expect(upload?.with?.name).toBe(ci.jobs["static-checks"]?.outputs?.web_artifact);
+    expect(download?.with).toEqual({
+      name: "${{ needs.static-checks.outputs.web_artifact }}",
+      path: "packages/web/dist/",
     });
-    expect(portalSteps[build]?.if).toBeUndefined();
+    expect(portal?.steps?.some((step) => step.run === "bun run build")).toBe(false);
+    expect(portal?.steps?.some((step) => step.run?.startsWith("bun run e2e "))).toBe(true);
   });
 
   test("keeps other matrices intact and defaults formal workflows to quick", async () => {
@@ -759,10 +752,11 @@ describe("preview test orchestration", () => {
     const steps = ci.jobs.test?.steps ?? [];
     const migrations = steps.findIndex((step) => step.run === "bun run db:migrate");
     const seed = steps.findIndex((step) => step.run === "bun test deploy/seed/store.test.ts");
-    const unit = steps.findIndex((step) => step.run === "bun run test:unit");
+    const integration = steps.findIndex((step) => step.run === "bun run test:integration");
     expect(migrations).toBeGreaterThanOrEqual(0);
     expect(seed).toBeGreaterThan(migrations);
-    expect(unit).toBeGreaterThan(seed);
+    expect(integration).toBeGreaterThan(seed);
+    expect(ci.jobs.test?.needs).toBe("unit-tests");
     expect(steps[seed]?.if).toBeUndefined();
     expect(steps[seed]?.env).toEqual({
       SEED_TEST_DATABASE_URL: "postgres://kq:kq@localhost:5432/kuintessence",
@@ -778,6 +772,7 @@ describe("preview test orchestration", () => {
         "lint-and-typecheck": "Full typecheck + Helm validation",
         "spack-artifact-imports": "Spack artifact imports (${{ matrix.case }})",
         test: "Unit + integration tests",
+        "unit-tests": "Isolated unit tests (${{ matrix.shard }}/4)",
         "e2e-slice": "E2E slice (CLI -> Server -> Agent -> Slurm)",
         "rustfs-deployments": "RustFS Compose + AIO",
         "spack-lifecycle-portal": "Spack lifecycle portal",
