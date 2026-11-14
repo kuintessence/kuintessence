@@ -7,6 +7,10 @@
 !packages/*/package.json
 !packages/shared/**
 !packages/db/**
+!contracts/
+!contracts/fabric/
+!contracts/fabric/evidence/
+!contracts/fabric/evidence/package.json
 !deploy/
 !deploy/seed/
 !deploy/seed/*.ts
