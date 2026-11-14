@@ -9,13 +9,18 @@ const BASE = [
   "ci / Static checks",
   "ci / Full typecheck + Helm validation",
   "ci / Unit + integration tests",
+  "ci / Spack lifecycle portal",
+  "ci / Isolated unit tests (1/4)",
+  "ci / Isolated unit tests (2/4)",
+  "ci / Isolated unit tests (3/4)",
+  "ci / Isolated unit tests (4/4)",
+
   "ci / RustFS Compose + AIO",
   "all-required-tests",
 ];
 const SPACK = [
   "ci / Spack artifact imports (hello) / export-and-import",
   "ci / Spack artifact imports (samtools) / export-and-import",
-  "ci / Spack lifecycle portal",
   "ci / Spack HTTP and SOCKS online imports",
   "schedulers / Spack GNU Hello managed installation",
   "schedulers / Spack samtools managed installation",

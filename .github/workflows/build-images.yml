@@ -140,6 +140,7 @@ jobs:
           password: ${{ github.token }}
       - name: Upload verified images and Compose configuration, then deploy
         env:
+          MAIN_IMAGE_TRANSPORT: ${{ vars.MAIN_IMAGE_TRANSPORT || 'relay' }}
           MAIN_SSH_HOST: ${{ secrets.MAIN_SSH_HOST }}
           MAIN_SSH_PORT: ${{ secrets.MAIN_SSH_PORT }}
           MAIN_SSH_USER: ${{ secrets.MAIN_SSH_USER }}

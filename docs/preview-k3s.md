@@ -9,12 +9,16 @@ PR 预览使用预先创建的共享 preview namespace，每个 PR 对应独立 
    则运行全部组。相关源码自动执行的正式工作流默认只有 GNU Hello 基础案例；
    当前 HEAD 提交消息带 `[full-workflows]` 时运行完整工作流矩阵。
    测试容器只存在于 runner。
-2. [`Preview`](../.github/workflows/preview.yml) 从可信 workflow 版本加载部署逻辑，
-   校验当前 PR、作者权限、标签、受测 SHA、必需 job 以及后续重跑状态。
+2. [`Preview`](../.github/workflows/preview.yml) 从默认分支的可信 workflow 加载控制器。
+   收到测试开始事件后检查当前 PR、作者权限、标签和 SHA，提前启动镜像构建。
+   测试完成后另一次控制器运行检查必需 job 及后续重跑状态。
 3. 独立镜像 job 构建 `linux/amd64` 的 Server、Registry、Web、db-migrate、seed、
    scheduler 六个镜像并推送 GHCR。名称为 `ghcr.io/<owner>/kq-dev-<component>`，
    tag 为 `pr-<PR编号>-sha-<完整提交SHA>-run-<run ID>-<attempt>`，
    Helm 实际使用构建返回的 digest。
+   完成测试的控制器只复用同一测试 run/attempt、PR SHA 和控制器版本的发布记录；
+   缺少可用记录时重新构建。GitHub 的测试重跑不会再次发送 requested 事件，
+   因而重跑也可走这一后备流程。提前构建本身不能触发部署。
 4. 独立部署 job 再次核验授权，通过 SSH 本地转发访问远程 k3s 的 `127.0.0.1:6443`，
    在预建的 `preview` namespace 安装 `kq-preview` Chart，每个 PR 使用独立的
    `kq-pr-<编号>` Helm release。runner 只绑定 `127.0.0.1:16443`。
@@ -32,6 +36,11 @@ PR 必须同时满足：同仓库、目标为默认分支、打开、非草稿�
 文件列表不完整、超过可完整查询的范围或查询期间版本变化时拒绝继续。
 堆叠 PR 可先运行全部测试；应先完成依赖合并并将 base 调整为默认分支，再进入部署。
 部署和自动清理采用相同的 base 限制，避免从非默认 base 执行带集群凭据的控制器。
+
+完整数据库测试按四个耗时均衡的分片运行，各片拥有独立 PostgreSQL、Redis 和临时数据库；
+分片内部每个文件仍使用独立进程。任一分片失败都不能通过汇总门禁。
+前端源码保留完整 Web 单元测试与软件门户浏览器检查；冷安装由材料、安装、执行相关源码
+或真实安装 E2E 的改动触发。文档、导航和文案不触发冷安装。详见[CI 编排](ci.md)。
 
 ## Secrets
 

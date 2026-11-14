@@ -4,7 +4,7 @@ run-name: Remote k3s preview
 on:
   workflow_run:
     workflows: [PR preview tests]
-    types: [completed]
+    types: [requested, completed]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -36,6 +36,8 @@ jobs:
       pull-requests: read
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
+      tested: ${{ steps.check.outputs.tested }}
+      test_attempt: ${{ steps.check.outputs.test_attempt }}
       pr: ${{ steps.check.outputs.pr }}
       sha: ${{ steps.check.outputs.sha }}
       owner: ${{ steps.check.outputs.owner }}
@@ -52,7 +54,9 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            await require("./deploy/preview/gate.cjs").gate({github, context, core});
+            await require("./deploy/preview/gate.cjs").gate({github, context, core}, {
+              buildOnly: context.eventName === "workflow_run" && context.payload.action === "requested",
+            });
 
   images:
     needs: gate
@@ -66,6 +70,8 @@ jobs:
       packages: write
     outputs:
       attempt: ${{ steps.manifest.outputs.attempt }}
+      run: ${{ steps.manifest.outputs.run }}
+      artifact_attempt: ${{ github.run_attempt }}
       deployable: ${{ steps.handoff.outputs.deployable }}
     env:
       PREVIEW_PR: ${{ needs.gate.outputs.pr }}
@@ -73,6 +79,8 @@ jobs:
       PREVIEW_RUN: ${{ github.run_id }}
       PREVIEW_ATTEMPT: ${{ github.run_attempt }}
       TEST_RUN_ID: ${{ needs.gate.outputs.run }}
+      TEST_ATTEMPT: ${{ needs.gate.outputs.test_attempt }}
+      TOOLING_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,17 +99,36 @@ jobs:
           script: |
             await require("./tooling/deploy/preview/gate.cjs").gate({github, context, core}, {
               pr: process.env.PREVIEW_PR, runId: process.env.TEST_RUN_ID,
+              buildOnly: context.eventName === "workflow_run" && context.payload.action === "requested",
             });
+      - name: Find images already built alongside these tests
+        id: cached
+        if: steps.recheck.outputs.allowed == 'true' && needs.gate.outputs.tested == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require("./tooling/deploy/preview/publication.cjs").findPublication(
+              {github, context, core}, {
+                testRun: process.env.TEST_RUN_ID, testAttempt: process.env.TEST_ATTEMPT,
+              },
+            );
+      - uses: actions/download-artifact@v4
+        if: steps.cached.outputs.reuse_run != ''
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.cached.outputs.reuse_run }}
+          name: ${{ steps.cached.outputs.reuse_name }}
+          path: ${{ runner.temp }}/kq-prior-publication
       - uses: docker/setup-buildx-action@v3
-        if: steps.recheck.outputs.allowed == 'true'
+        if: steps.recheck.outputs.allowed == 'true' && steps.cached.outputs.reuse_run == ''
       - uses: docker/login-action@v3
-        if: steps.recheck.outputs.allowed == 'true'
+        if: steps.recheck.outputs.allowed == 'true' && steps.cached.outputs.reuse_run == ''
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Build and push tested amd64 images
-        if: steps.recheck.outputs.allowed == 'true'
+      - name: Build and push trusted amd64 images
+        if: steps.recheck.outputs.allowed == 'true' && steps.cached.outputs.reuse_run == ''
         working-directory: source
         env:
           IMAGE_PREFIX: ghcr.io/${{ needs.gate.outputs.owner }}/kq-dev
@@ -113,14 +140,36 @@ jobs:
           --provenance=false --sbom=false
           --push --metadata-file "$RUNNER_TEMP/kq-images-metadata.json"
       - name: Record immutable image digests
-        id: manifest
-        if: steps.recheck.outputs.allowed == 'true'
+        id: collect
+        if: steps.recheck.outputs.allowed == 'true' && steps.cached.outputs.reuse_run == ''
         env:
           IMAGE_OWNER: ${{ needs.gate.outputs.owner }}
           PREVIEW_SHA: ${{ needs.gate.outputs.sha }}
         run: >-
           node tooling/deploy/preview/images.cjs collect
           "$RUNNER_TEMP/kq-images-metadata.json" "$RUNNER_TEMP/kq-images.json"
+      - name: Validate publication identity for this test attempt
+        id: manifest
+        if: steps.recheck.outputs.allowed == 'true'
+        env:
+          IMAGE_OWNER: ${{ needs.gate.outputs.owner }}
+          REUSE_RUN: ${{ steps.cached.outputs.reuse_run }}
+          REUSE_NAME: ${{ steps.cached.outputs.reuse_name }}
+        run: |
+          source="$RUNNER_TEMP/kq-images.json"
+          if [[ -n "$REUSE_RUN" ]]; then
+            source="$RUNNER_TEMP/kq-prior-publication/kq-images.json.publication"
+          fi
+          node tooling/deploy/preview/publication.cjs "$source" "$RUNNER_TEMP/kq-images.json"
+      - name: Save early publication for the completed-test controller
+        if: steps.recheck.outputs.allowed == 'true' && needs.gate.outputs.tested == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kq-preview-publication-test-${{ needs.gate.outputs.run }}-${{ needs.gate.outputs.test_attempt }}
+          path: ${{ runner.temp }}/kq-images.json.publication
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: steps.recheck.outputs.allowed == 'true'
         with:
@@ -139,6 +188,9 @@ jobs:
             );
       - name: Remove this unpublished-to-k3s attempt after PR revocation
         id: late-images
+        env:
+          PREVIEW_RUN: ${{ steps.manifest.outputs.run || github.run_id }}
+          PREVIEW_ATTEMPT: ${{ steps.manifest.outputs.attempt || github.run_attempt }}
         if: always() && steps.revoked.outputs.allowed == 'true'
         uses: actions/github-script@v7
         with:
@@ -158,7 +210,7 @@ jobs:
 
   deploy:
     needs: [gate, images]
-    if: needs.images.outputs.attempt != '' && needs.images.outputs.deployable == 'true'
+    if: needs.gate.outputs.tested == 'true' && needs.images.outputs.attempt != '' && needs.images.outputs.deployable == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
@@ -175,7 +227,7 @@ jobs:
       PREVIEW_SHA: ${{ needs.gate.outputs.sha }}
       TEST_RUN_ID: ${{ needs.gate.outputs.run }}
       IMAGE_OWNER: ${{ needs.gate.outputs.owner }}
-      PREVIEW_RUN: ${{ github.run_id }}
+      PREVIEW_RUN: ${{ needs.images.outputs.run }}
       PREVIEW_ATTEMPT: ${{ needs.images.outputs.attempt }}
     steps:
       - uses: actions/checkout@v4
@@ -238,7 +290,7 @@ jobs:
       - uses: actions/download-artifact@v4
         if: steps.recheck.outputs.allowed == 'true'
         with:
-          name: kq-preview-images-${{ needs.gate.outputs.sha }}-${{ github.run_id }}-${{ needs.images.outputs.attempt }}
+          name: kq-preview-images-${{ needs.gate.outputs.sha }}-${{ github.run_id }}-${{ needs.images.outputs.artifact_attempt }}
           path: ${{ runner.temp }}/kq-preview-images
       - name: Require anonymous GHCR pulls before accessing k3s
         if: steps.recheck.outputs.allowed == 'true'

@@ -6,9 +6,11 @@ import { parse } from "yaml";
 import {
   collectUnitTestFiles,
   databaseUrlWithName,
+  partitionUnitTestFiles,
   selectUnitTestSlices,
   unitChildEnvironment,
   unitDatabaseName,
+  unitTestOptions,
 } from "./test-unit";
 
 describe("unit test database harness", () => {
@@ -55,7 +57,43 @@ describe("unit test database harness", () => {
     );
   });
 
-  test("CI runs the focused disposable-database suite against its PostgreSQL service", async () => {
+  test("shards cover every file once and separate the two slowest files", async () => {
+    const files = await collectUnitTestFiles(
+      selectUnitTestSlices([]).flatMap((slice) => slice.paths),
+    );
+    const shards = partitionUnitTestFiles(files, 4);
+    expect(shards.flat().sort()).toEqual(files);
+    const commercial = files.find((file) => file.endsWith("/federation/commercial.pg.test.ts"));
+    const terminal = files.find((file) =>
+      file.endsWith("/federation/terminal-evidence.pg.test.ts"),
+    );
+    expect(commercial).toBeDefined();
+    expect(terminal).toBeDefined();
+    expect(shards.findIndex((files) => files.includes(commercial ?? ""))).not.toBe(
+      shards.findIndex((files) => files.includes(terminal ?? "")),
+    );
+    expect(partitionUnitTestFiles([...files].reverse(), 4)).toEqual(shards);
+    expect(partitionUnitTestFiles([...files, ...files], 4)).toEqual(shards);
+    expect(shards.every((files) => files.length > 0)).toBe(true);
+  });
+
+  test("validates shard arguments without changing suite selection", () => {
+    expect(unitTestOptions(["--shard", "2/4", "--suite", "server"])).toMatchObject({
+      shard: 2,
+      total: 4,
+      slices: selectUnitTestSlices(["--suite", "server"]),
+    });
+    expect(unitTestOptions([])).toMatchObject({ shard: 1, total: 1 });
+    for (const value of ["0/4", "5/4", "1/0", "1/33", "1.5/4", "01/4", "1/4x", ""]) {
+      expect(() => unitTestOptions(["--shard", value])).toThrow("--shard");
+    }
+    expect(() => unitTestOptions(["--shard", "1/4", "--shard", "2/4"])).toThrow("Usage");
+    for (const total of [0, 33, 1.5, NaN]) {
+      expect(() => partitionUnitTestFiles([], total)).toThrow("Invalid shard count");
+    }
+  });
+
+  test("CI isolates PostgreSQL and Redis per shard without repeating the Slurm file", async () => {
     const workflow = parse(
       await readFile(resolve(import.meta.dir, "../.github/workflows/ci.yml"), "utf8"),
     ) as {
@@ -63,22 +101,22 @@ describe("unit test database harness", () => {
         string,
         {
           services?: Record<string, { image?: string }>;
+          needs?: string;
+          strategy?: { matrix: { shard: number[] } };
           steps: { name?: string; run?: string; env?: Record<string, string> }[];
         }
       >;
     };
-    const job = workflow.jobs.test;
+    const job = workflow.jobs["unit-tests"];
     expect(job?.services?.postgres?.image).toBe("postgres:16-alpine");
-    const focused = job?.steps.find(
-      (step) => step.run === "bun run test:unit --suite offline-slurm-pg",
+    expect(job?.services?.redis?.image).toBe("redis:7-alpine");
+    expect(job?.strategy?.matrix.shard).toEqual([1, 2, 3, 4]);
+    expect(job?.needs).toBeUndefined();
+    expect(job?.steps.find((step) => step.name === "Run isolated unit tests")?.run).toBe(
+      "bun run test:unit --shard ${{ matrix.shard }}/4",
     );
-    expect(focused).toBeDefined();
-    expect(focused?.env?.DATABASE_URL).toBe("postgres://kq:kq@localhost:5432/kuintessence");
-    const stepIndex = focused ? (job?.steps.indexOf(focused) ?? -1) : -1;
-    const migrateIndex =
-      job?.steps.findIndex((step) => step.name === "Run database migrations") ?? -1;
-    expect(stepIndex).toBeGreaterThanOrEqual(0);
-    expect(migrateIndex).toBeGreaterThan(stepIndex);
+    expect(JSON.stringify(workflow)).not.toContain("--suite offline-slurm-pg");
+    expect(workflow.jobs.test?.needs).toBe("unit-tests");
   });
 
   test("replaces only the database name and preserves connection options", () => {

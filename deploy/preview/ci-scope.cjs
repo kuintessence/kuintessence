@@ -4,9 +4,10 @@ const JOB_SCOPES = {
   "static-checks": [],
   "lint-and-typecheck": [],
   test: [],
+  "unit-tests": [],
   "rustfs-deployments": [],
   "spack-artifact-imports": ["spack"],
-  "spack-lifecycle-portal": ["spack"],
+  "spack-lifecycle-portal": [],
   "spack-upstream": ["spack"],
   "e2e-slice": ["schedulers"],
 };

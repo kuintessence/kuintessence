@@ -32,6 +32,8 @@ const SHARED = [
   /^\.github\/workflows\/pr-scheduler-tests\.ya?ml$/,
 ];
 
+// Web source changes retain complete Web tests and lifecycle browser checks;
+// cold installs are reserved for material/runtime changes and real install E2E.
 const SPACK = [
   /^packages\/cli\/src\/(?:commands\/software|lib\/local-spack)(?:[./])/,
   /^packages\/agent\/src\/spack\//,
@@ -40,14 +42,6 @@ const SPACK = [
   /^packages\/server\/src\/software-governance\//,
   /^packages\/server\/src\/services\/(?:software|usecase|license-runtime)(?:[-./])/,
   /^packages\/server\/src\/routes\/(?:software|agent-spack)(?:[-./])/,
-  /^packages\/web\/src\/(?:components\/(?:software|material|recipe|spack|workflow)[^/]*\/|routes\/[^/]*(?:software|material|recipe|spack|workflow)|lib\/(?:use-cp-software|software|material|recipe|spack|workflow)[-./])/,
-  /^packages\/web\/src\/components\/cp\/SoftwarePolicyTable(?:\.[^/]+)$/,
-  /^packages\/web\/src\/(?:main|routeTree\.gen)(?:\.[^/]+)$/,
-  /^packages\/web\/src\/routes\/-?(?:__root|login)(?:\.[^/]+)$/,
-  /^packages\/web\/src\/components\/(?:AppShell|ProtectedRoute|GlobalErrorPage|ThemeProvider)(?:\.[^/]+)$/,
-  /^packages\/web\/src\/lib\/(?:auth|auth-redirect|authenticated-fetch|api-client|query-client|local-mode|active-organization|platform-capabilities|platform-paths|mobile-management-policy|i18n|monaco-env)(?:\.[^/]+)$/,
-  /^packages\/web\/src\/lib\/api-schemas\//,
-  /^packages\/web\/src\/locales\/(?:software|materials?|recipes?|spack|workflow)[.-]/,
   /^packages\/web\/e2e\/(?:fixtures\/)?(?:software|material|recipe|spack|workflows?)[-./]/,
   /^packages\/web\/e2e\/cp-spack-install(?:\.[^/]+)$/,
   /^packages\/web\/(?:index\.html|nginx\.conf|tsconfig[^/]*\.json|bunfig\.toml|\.env(?:\.[^/]+)?|(?:vite\.config|playwright\.config)\.[^/]+)$/,

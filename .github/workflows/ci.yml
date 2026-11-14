@@ -79,6 +79,10 @@ jobs:
 
   static-checks:
     name: Static checks
+    if: >-
+      github.event_name != 'pull_request' || inputs.source_sha ||
+      github.event.pull_request.head.repo.full_name != github.repository ||
+      github.event.pull_request.draft
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -148,6 +152,15 @@ jobs:
       - name: Build Web for isolated UI regression tests
         working-directory: packages/web
         run: bun run build
+      - name: Share the identical Web build with lifecycle browser checks
+        if: inputs.run_runtime_checks || inputs.source_sha
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist-${{ github.run_id }}
+          path: packages/web/dist/
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 1
       - name: Install Chromium and screenshot fonts
         working-directory: packages/web
         run: |
@@ -171,7 +184,6 @@ jobs:
   lint-and-typecheck:
     name: Full typecheck + Helm validation
     if: inputs.run_runtime_checks || inputs.source_sha
-    needs: static-checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -233,6 +245,14 @@ jobs:
           scripts/spack-web-managed.test.ts
           deploy/pr-test/spack-artifacts/*.test.ts
 
+      - name: Verify real SSH image layer delivery on the disposable runner
+        run: |
+          if [[ ! -x /usr/sbin/sshd ]]; then
+            sudo apt-get update
+            sudo apt-get install -y openssh-server
+          fi
+          bash deploy/main/relay-ci.sh
+
       - name: Type check (all packages)
         run: bun run typecheck
 
@@ -246,14 +266,9 @@ jobs:
         working-directory: packages/web
         run: bun run test
 
-      - name: Build web application and styles
-        working-directory: packages/web
-        run: bun run build
-
   spack-artifact-imports:
     name: Spack artifact imports (${{ matrix.case }})
     if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_spack
-    needs: lint-and-typecheck
     strategy:
       fail-fast: false
       matrix:
@@ -267,11 +282,15 @@ jobs:
       publish_artifact: false
       acknowledge_redistribution: false
 
-  test:
-    name: Unit + integration tests
+  unit-tests:
+    name: Isolated unit tests (${{ matrix.shard }}/4)
     if: inputs.run_runtime_checks || inputs.source_sha
     runs-on: ubuntu-latest
-    needs: lint-and-typecheck
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     services:
       postgres:
@@ -315,11 +334,66 @@ jobs:
       - name: Generate protobuf stubs
         run: bun run --filter @kuintessence/proto generate
 
-      - name: Verify offline Slurm PostgreSQL recovery in a disposable database
-        run: bun run test:unit --suite offline-slurm-pg
+      - name: Run isolated unit tests
+        run: bun run test:unit --shard ${{ matrix.shard }}/4
         env:
           DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
+          REDIS_URL: redis://localhost:6379
           LOG_LEVEL: warn
+
+  test:
+    name: Unit + integration tests
+    if: always() && (inputs.run_runtime_checks || inputs.source_sha)
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kq
+          POSTGRES_PASSWORD: kq
+          POSTGRES_DB: kuintessence
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kq -d kuintessence"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Require all four isolated unit shards
+        env:
+          UNIT_RESULT: ${{ needs.unit-tests.result }}
+        run: test "$UNIT_RESULT" = success
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate protobuf stubs
+        run: bun run --filter @kuintessence/proto generate
 
       - name: Run database migrations
         run: bun run db:migrate
@@ -339,13 +413,6 @@ jobs:
           --module ESNext --moduleResolution bundler --types bun-types
           scripts/workflow-software.pg.test.ts
 
-      - name: Run isolated unit tests
-        run: bun run test:unit
-        env:
-          DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
-          REDIS_URL: redis://localhost:6379
-          LOG_LEVEL: warn
-
       - name: Run Agent integration tests
         run: bun run test:integration
         env:
@@ -357,7 +424,6 @@ jobs:
     name: E2E slice (CLI -> Server -> Agent -> Slurm)
     if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_schedulers
     runs-on: ubuntu-latest
-    needs: lint-and-typecheck
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -383,7 +449,6 @@ jobs:
     name: RustFS Compose + AIO
     if: inputs.run_runtime_checks || inputs.source_sha
     runs-on: ubuntu-latest
-    needs: static-checks
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -395,8 +460,8 @@ jobs:
 
   spack-lifecycle-portal:
     name: Spack lifecycle portal
-    if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_spack
     needs: static-checks
+    if: inputs.run_runtime_checks || inputs.source_sha
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -412,30 +477,11 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Generate protobuf stubs
         run: bun run --filter @kuintessence/proto generate
-      - name: Verify lifecycle clients and portal sessions
-        working-directory: packages/web
-        run: >-
-          bun run test
-          src/lib/spack-material-lifecycle-client.test.ts
-          src/lib/spack-material-management-client.test.ts
-          src/lib/spack-material-visibility-client.test.ts
-          src/lib/spack-materials-client.test.ts
-          src/lib/spack-install-bindings-client.test.ts
-          src/lib/spack-install-binding-access.test.ts
-          src/components/software/MaterialLifecycle*.test.tsx
-          src/components/software/SpackMaterials*.test.tsx
-          src/components/software/SpackInstallBinding*.test.tsx
-          src/components/software/SoftwareBindingEntry.test.tsx
-          src/components/software/MaterialCatalog*.test.tsx
-          src/components/software/MaterialManagementCatalog*.test.tsx
-          src/components/software/MaterialManagementSession.test.tsx
-          src/components/software/MaterialManagementEditors.test.tsx
-          src/components/software/MaterialVisibility*.test.tsx
-          src/components/software/SpackOnlineImport.test.tsx
-          src/routes/-cp-capability-errors.test.tsx
-      - name: Build web application and styles
-        working-directory: packages/web
-        run: bun run build
+      - name: Reuse the checked default Web build
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist-${{ github.run_id }}
+          path: packages/web/dist/
       - name: Install Chromium for isolated browser tests
         working-directory: packages/web
         run: bunx patchright install --with-deps chromium
@@ -492,15 +538,3 @@ jobs:
         run: >-
           timeout --signal=TERM --kill-after=5s 180s
           bun test --timeout=15000 packages/registry/src/services/spack-upstream-download.test.ts
-      - name: Verify online import browser state and client contract
-        if: ${{ !cancelled() && steps.upstream-dependencies.outcome == 'success' }}
-        working-directory: packages/web
-        run: >-
-          timeout --signal=TERM --kill-after=5s 180s
-          bun run test
-          src/lib/spack-upstream-client.test.ts
-          src/components/software/SpackOnlineImport.test.tsx
-          src/components/software/RecipeRepositoriesPanel.test.tsx
-          src/components/software/RecipeRepositorySession.test.tsx
-          src/components/software/SpackMaterialsPanel.test.tsx
-          src/components/software/SpackMaterialsSession.test.tsx

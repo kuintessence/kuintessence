@@ -179,7 +179,7 @@ describe("material artifact deployment contracts", () => {
     ) as Workflow;
     const job = workflow.jobs["spack-artifact-imports"];
     expect(job?.if).toBe("(inputs.run_runtime_checks || inputs.source_sha) && inputs.run_spack");
-    expect(job?.needs).toBe("lint-and-typecheck");
+    expect(job?.needs).toBeUndefined();
     expect(job?.uses).toBe("./.github/workflows/spack-material-artifacts.yml");
     expect(job?.strategy).toEqual({ "fail-fast": false, matrix: { case: ["hello", "samtools"] } });
     expect(job?.with).toMatchObject({

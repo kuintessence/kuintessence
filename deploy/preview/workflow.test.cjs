@@ -21,7 +21,8 @@ function stepAllowed(step, steps, successful = true) {
     return false;
   }
   return runInNewContext(condition.replace(/steps\.([\w-]+)/g, 'steps["$1"]'), {
-    steps,
+    steps: { cached: { outputs: { reuse_run: "" } }, ...steps },
+    needs: { gate: { outputs: { tested: "true" } } },
     always: () => true,
     success: () => successful,
     failure: () => !successful,
@@ -238,7 +239,7 @@ describe("privileged preview orchestration boundaries", () => {
     const { images, deploy } = preview().jobs;
     expect(images.outputs.attempt).toBe("${{ steps.manifest.outputs.attempt }}");
     expect(deploy.if).toBe(
-      "needs.images.outputs.attempt != '' && needs.images.outputs.deployable == 'true'",
+      "needs.gate.outputs.tested == 'true' && needs.images.outputs.attempt != '' && needs.images.outputs.deployable == 'true'",
     );
     const publishedAttempt = interpolate(images.outputs.attempt, {
       steps: { manifest: { outputs: { attempt: "1" } } },
@@ -247,7 +248,7 @@ describe("privileged preview orchestration boundaries", () => {
       github: { run_id: "99", run_attempt: "2" },
       needs: {
         gate: { outputs: { pr: "17", sha: revision, owner: "example", run: "88" } },
-        images: { outputs: { attempt: publishedAttempt, deployable: "true" } },
+        images: { outputs: { run: "99", attempt: publishedAttempt, artifact_attempt: "1", deployable: "true" } },
       },
     };
     const env = Object.fromEntries(Object.entries(deploy.env).map(([key, value]) =>
@@ -256,7 +257,7 @@ describe("privileged preview orchestration boundaries", () => {
     expect(env.PREVIEW_ATTEMPT).toBe("1");
     expect(deploy.env.PREVIEW_ATTEMPT).toBe("${{ needs.images.outputs.attempt }}");
     expect(images.env.PREVIEW_ATTEMPT).toBe("${{ github.run_attempt }}");
-    const upload = images.steps.find((step) => step.uses === "actions/upload-artifact@v4");
+    const upload = images.steps.find((step) => step.with?.name?.startsWith("kq-preview-images-"));
     const download = deploy.steps.find((step) => step.uses === "actions/download-artifact@v4");
     const firstPublish = { ...context, github: { ...context.github, run_attempt: "1" } };
     const originalArtifact = `kq-preview-images-${revision}-99-1`;
@@ -267,13 +268,17 @@ describe("privileged preview orchestration boundaries", () => {
     expect(republishedArtifact).not.toBe(originalArtifact);
     expect(interpolate(download.with.name, {
       ...context,
-      needs: { ...context.needs, images: { outputs: { attempt: "2", deployable: "true" } } },
+      needs: { ...context.needs, images: { outputs: { attempt: "2", artifact_attempt: "2", deployable: "true" } } },
     })).toBe(republishedArtifact);
     expect(interpolate(upload.with.name, {
       ...context, github: { run_id: "100", run_attempt: "1" },
     })).toBe(`kq-preview-images-${revision}-100-1`);
     expect(upload.with.overwrite).not.toBe(true);
     expect(download.with["run-id"]).toBeUndefined();
+    expect(interpolate(download.with.name, {
+      ...context,
+      needs: { ...context.needs, images: { outputs: { attempt: "3", artifact_attempt: "1" } } },
+    })).toBe(originalArtifact);
     const build = images.steps.find((step) => step.run?.includes("docker buildx bake"));
     expect(interpolate(build.env.IMAGE_TAG, firstPublish)).toBe(
       imageTag(env.PREVIEW_PR, env.PREVIEW_SHA, env.PREVIEW_RUN, env.PREVIEW_ATTEMPT),
@@ -342,15 +347,17 @@ describe("privileged preview orchestration boundaries", () => {
           steps: { handoff: { outputs: { deployable: mayHandoff ? "true" : "" } } },
         });
         for (const attempt of ["1", ""]) {
-          expect(runInNewContext(deploy.if, {
-            needs: { images: { outputs: { attempt, deployable } } },
-          })).toBe(mayHandoff && attempt !== "");
+          for (const tested of ["true", "false", ""]) {
+            expect(runInNewContext(deploy.if, {
+              needs: { gate: { outputs: { tested } }, images: { outputs: { attempt, deployable } } },
+            })).toBe(tested === "true" && mayHandoff && attempt !== "");
+          }
         }
       }
     }
     for (const deployable of ["false", "", "TRUE", undefined]) {
       expect(runInNewContext(deploy.if, {
-        needs: { images: { outputs: { attempt: "1", deployable } } },
+        needs: { gate: { outputs: { tested: "true" } }, images: { outputs: { attempt: "1", deployable } } },
       })).toBe(false);
     }
   });
@@ -758,7 +765,7 @@ describe("manual preview inspection", () => {
       } } } },
     })).rejects.toThrow("Mock authorization API unavailable");
     expect(requests).toEqual([{ owner: "example", repo: "project", run_id: 88 }]);
-    expect(outputs).toEqual({ allowed: "false" });
+    expect(outputs).toEqual({ allowed: "false", tested: "false" });
     for (const inspection of ["true", "false"]) {
       const state = {
         helm: { outputs: { inspection, attempted: "true", applied: "true" } },
