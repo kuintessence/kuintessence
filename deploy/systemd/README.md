@@ -78,7 +78,7 @@ sudo bash deploy/systemd/install-agent.sh ./kq-agent
 脚本创建服务账号、安装二进制和配置模板，并重新加载 systemd。
 它不执行 Agent，也不启用、启动或重启服务。
 
-在已登录平台的 `kq` CLI 中，为目标算力提供者签发一次性注册凭证：
+在已登录平台的 `kq` CLI 中，为目标算力中心签发一次性注册凭证：
 
 ```bash
 kq agent token create \

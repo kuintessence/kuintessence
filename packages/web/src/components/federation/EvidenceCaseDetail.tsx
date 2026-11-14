@@ -6,6 +6,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -19,6 +20,7 @@ import {
 import { Input } from "../ui/input";
 import { ArbitrationDecisionPanel } from "./ArbitrationDecisionPanel";
 import { checkEvidenceScope, type EvidenceCase, EvidenceCaseSchema } from "./evidence-case-view";
+import { FederationRefreshNotice } from "./FederationLayout";
 
 const MaterialsSchema = z.object({
   data: z
@@ -151,7 +153,9 @@ export function EvidenceCaseDetail({
     },
     onError: () => setUnknown(true),
   });
-  const blocked = busy || mutation.isPending || read.isPending;
+  const refreshing = busy || mutation.isPending || read.isPending || materials.isFetching;
+  const blocked = refreshing || materials.isError;
+  allowed.current = allowed.current && !materials.isError && !materials.isFetching;
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -185,9 +189,8 @@ export function EvidenceCaseDetail({
           <h3 className="font-medium">{t("federation.evidence.materials")}</h3>
           <Button
             variant="outline"
-            disabled={blocked}
+            disabled={refreshing}
             onClick={() => {
-              setEvidence(null);
               void materials.refetch();
             }}
           >
@@ -231,9 +234,10 @@ export function EvidenceCaseDetail({
           </form>
         ) : null}
         {invalid ? <p role="alert">{t("federation.governance.invalid")}</p> : null}
-        {materials.isError ? (
+        <FederationRefreshNotice query={materials} onRetry={() => void materials.refetch()} />
+        {federationReadFailed(materials) ? (
           <p role="alert">{t("federation.loadFailed")}</p>
-        ) : materials.isPending ? (
+        ) : materials.isPending || !materials.data ? (
           <p role="status">{t("federation.loading")}</p>
         ) : (
           <>
@@ -295,7 +299,7 @@ export function EvidenceCaseDetail({
           </>
         )}
         {read.isError ? <p role="alert">{t("federation.evidence.readFailed")}</p> : null}
-        {evidence ? (
+        {evidence && !federationReadFailed(materials) ? (
           <div className="space-y-2">
             <p className="text-sm">
               {t("federation.evidence.checkedAt")}:{" "}
@@ -307,7 +311,7 @@ export function EvidenceCaseDetail({
           </div>
         ) : null}
       </section>
-      {grants.includes("arbitration.read") ? (
+      {grants.includes("arbitration.read") && !federationReadFailed(materials) ? (
         <ArbitrationDecisionPanel
           row={row}
           scope={scope}
@@ -318,7 +322,7 @@ export function EvidenceCaseDetail({
         />
       ) : null}
       <Dialog
-        open={!!intent}
+        open={!!intent && !federationReadFailed(materials)}
         onOpenChange={(open) => {
           if (!open && !mutation.isPending && !unknown) setIntent(null);
         }}

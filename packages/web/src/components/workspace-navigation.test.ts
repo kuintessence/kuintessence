@@ -179,3 +179,33 @@ test("platform operators reach resource management without entering the provider
     expect(inferWorkspaceIdentity("/operations", `#${area}`)).toBe("platform-operations");
   }
 });
+
+test("federation has a standalone domain, stable module links and protected administration", () => {
+  const business = getWorkspaceIdentity("federation-collaboration");
+  expect(business.domain).toBe("federation");
+  expect(business.entry).toEqual({ to: "/federation", hash: "tasks" });
+  const items = business.sections.flatMap((section) => section.items);
+  expect(items).toHaveLength(8);
+  for (const item of items) {
+    expect(inferWorkspaceIdentity(item.to, item.hash ?? "")).toBe("federation-collaboration");
+    expect(isWorkspaceNavItemActive(item, item.to, item.hash ?? "")).toBe(true);
+  }
+  expect(
+    getWorkspaceIdentity("consumer")
+      .sections.flatMap((section) => section.items)
+      .some((item) => item.to === "/federation"),
+  ).toBe(false);
+  expect(inferWorkspaceIdentity("/settings", "security/federation-trust")).toBe(
+    "federation-administration",
+  );
+  expect(canUseWorkspaceIdentity(business, "user", true, null)).toBe(false);
+  expect(
+    canUseWorkspaceIdentity(
+      getWorkspaceIdentity("federation-administration"),
+      "user",
+      false,
+      null,
+      new Set(),
+    ),
+  ).toBe(false);
+});

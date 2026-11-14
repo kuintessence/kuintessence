@@ -174,7 +174,11 @@ beforeEach(async () => {
   vi.mocked(api.post).mockResolvedValue({ data: saved });
 });
 async function openBill() {
-  fireEvent.click(await screen.findByRole("button", { name: new RegExp(billId) }));
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: new RegExp(`${saved.payload.calculation.dueAmount} ${saved.payload.request.unit}`),
+    }),
+  );
 }
 async function importBill(value: unknown = bill) {
   fireEvent.click(await screen.findByRole("button", { name: "Create bill" }));
@@ -230,7 +234,7 @@ test("source shows unsynchronized provider evidence, never a false commitment", 
   first().bill.counterpartyJws = "peer.bill.signature";
   mount({ approval: local });
   await openBill();
-  expect(screen.getByText("Provider submits evidence; status not synchronized")).toBeTruthy();
+  expect(screen.getByText("Compute Center submits evidence; status not synchronized")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Import bill" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Create bill" })).toBeNull();
 });

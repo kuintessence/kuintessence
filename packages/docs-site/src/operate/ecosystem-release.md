@@ -14,7 +14,7 @@ Usecase 的 `description` 应说明研究目的、适用任务、计算内容和
 
 Sandbox script 的 `payload.sha256` 必须等于 UTF-8 `content` 的 SHA-256。激活时该摘要写入资产修订的 `contentSha256`，供编辑器选取、测试运行和运行校验使用。升级或重新激活历史 release 时，仅补齐同内容修订缺失的摘要，不新增修订；已有摘要冲突则拒绝激活。脚本是独立资产，加入工作流不要求关联 usecase；执行仍须满足 runtime、身份和输入输出契约。
 
-资产名称面向使用者表达用途，批次号及验收状态放在 provenance 和 description 中。更新名称时保持 `releaseKey` 和 `ecosystemKey`，发布新的签名版本，并同步所有名称引用；同一来源和类型下的 name/version 必须唯一，确有不同构建配置时用配置名称区分。Workflow 模板详情优先显示 DSL 的 `description`，未提供时兼容回退到 `name`。
+资产名称面向使用者表达用途，批次号及内部运行记录保存在 provenance，description 说明用途、输入、处理内容及输出。更新名称时保持 `releaseKey` 和 `ecosystemKey`，发布新的签名版本，并同步所有名称引用；同一来源和类型下的 name/version 必须唯一，确有不同构建配置时用配置名称区分。Workflow 模板详情优先显示 DSL 的 `description`，未提供时兼容回退到 `name`。
 
 ## 导入与激活
 
@@ -55,7 +55,7 @@ GET /api/ecosystem-releases/scientific-ecosystem/status
 
 1. 平台管理员导入 bundle，先进入 staged 状态。
 2. 所有静态检查成功后，事务性 materialize 并激活 release。缺少或不匹配 `specDigest` 的 legacy bundle 可以保留为 staged 审计记录，但不能激活。
-3. bundle-owned 资产按 stable ecosystem key 创建不可变 revision；用户或 CP 自建资产不会被覆盖。
+3. bundle-owned 资产按 stable ecosystem key 创建不可变 revision；用户或算力中心自建资产不会被覆盖。
 4. 新 release 不再包含的生态资产会被标记 `deprecated`，不会影响历史 run。
 
 只有绑定 active release 的 usecase 和 workflow 才会出现在目录中，并参与 name/version 解析；inactive release 中的记录只能按 ID 查询。没有 ecosystem binding 的普通 catalog 记录仍按 namespace/owner 规则显示。Activation 在同一 PostgreSQL transaction 内为 Software Asset 写入 authz outbox：仅 `published + platform-public` 资产获得公共权限，deprecated、隐藏或私有资产的公共授权会被撤销；Server `authz rebuild` 使用相同规则。

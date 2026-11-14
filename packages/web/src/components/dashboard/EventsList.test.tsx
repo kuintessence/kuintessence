@@ -22,7 +22,7 @@ test("resource audits retain action/object meaning and configurable feed length"
   expect(screen.getAllByRole("listitem")).toHaveLength(10);
   expect(screen.getByText("新增算力中心")).toBeTruthy();
   expect(screen.getByText("北京中心")).toBeTruthy();
-  expect(screen.getByText("修改算力提供者")).toBeTruthy();
+  expect(screen.getByText("修改算力中心")).toBeTruthy();
   expect(screen.getByText("科研提供者")).toBeTruthy();
   expect(screen.queryByText("更新了平台配置")).toBeNull();
   expect(screen.getAllByText("unrecognized.action").length).toBeGreaterThan(0);

@@ -8,6 +8,7 @@ import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { z } from "zod";
 import { api } from "../../lib/api-client";
+import { compactUuid, statusLabel } from "../../lib/format";
 import { Button } from "../ui/button";
 import { checkMediaScope, MediaPagination, type MediaScope } from "./MediaLogisticsShared";
 
@@ -80,13 +81,13 @@ export function MediaOptionPicker({
       ? query.data.kind === "agreements"
         ? query.data.data.map((value) => ({
             id: value.revisionId,
-            label: `${value.peerName} · ${value.revisionId} · ${new Date(value.validUntil).toLocaleDateString(i18n.language)}`,
+            label: `${value.peerName} · ${compactUuid(value.revisionId)} · ${new Date(value.validUntil).toLocaleDateString(i18n.language)}`,
             option: { kind: "agreements", value },
           }))
         : query.data.kind === "agents"
           ? query.data.data.map((value) => ({
               id: value.agentId,
-              label: `${value.name} · ${value.agentId} · ${value.status}`,
+              label: `${value.name} · ${statusLabel(value.status, i18n.language)}`,
               option: { kind: "agents", value },
             }))
           : query.data.kind === "roots"
@@ -103,7 +104,7 @@ export function MediaOptionPicker({
                 }))
               : query.data.data.map((value) => ({
                   id: `${value.agreementRevisionId}:${value.operationId}`,
-                  label: `${value.workflowName} · ${value.invocationPath ?? value.operationId}`,
+                  label: `${value.workflowName} · ${value.invocationPath ?? compactUuid(value.operationId)}`,
                   option: { kind: kind === "task-input" ? "task-input" : "task-result", value },
                 }))
       : [];
@@ -143,11 +144,19 @@ export function MediaOptionPicker({
             {rows.map((row) => (
               <option key={row.id} value={row.id}>
                 {row.label}
+                {rows.some((other) => other.id !== row.id && other.label === row.label)
+                  ? ` · ${compactUuid(row.id)}`
+                  : ""}
               </option>
             ))}
           </select>
-          {selected && !rows.some((row) => row.id === selected) ? (
-            <code className="block text-xs break-all">{selected}</code>
+          {selected ? (
+            <details className="text-xs text-muted-foreground">
+              <summary className="cursor-pointer rounded-sm py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                {t("federation.delivery.selectedIdentifier")}
+              </summary>
+              <code className="mt-1 block break-all">{selected}</code>
+            </details>
           ) : null}
         </>
       )}

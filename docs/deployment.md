@@ -1,7 +1,7 @@
 # 部署、调度器与队列
 
 本指南介绍本地 Compose、生产入口与调度队列配置。命令示例从仓库根目录执行；
-启动、重建、迁移和运行态验收会改变环境，执行前应确认目标与维护窗口。
+启动、重建、迁移和运行状态检查会改变环境，执行前应确认目标与维护窗口。
 Server 当前只支持单实例部署，尚未通过 Redis 实现多实例协调。
 
 自托管对象存储使用 RustFS，旧 MinIO 数据不自动迁移；升级前先阅读
@@ -90,7 +90,7 @@ Server `13000`、Registry `13100`。Casdoor issuer 默认
 
 ### 初始化与持久化
 
-- scheduler CLI ready 后，`common/register-agent.sh` 通过 CP registration token API
+- scheduler CLI ready 后，`common/register-agent.sh` 通过算力中心注册 token API
   调用 `kq agent register`，不通过 register body 自报 provider。
 - 私钥、证书和 `agent.env` 写入 scheduler state volume；
   `common/start-agent.sh` 重启时复用它们，并把相同的注册环境交给 Agent 与独立看守。
@@ -169,9 +169,9 @@ bun run compose -- aio down
 <a id="spack-material-rollout"></a>
 ## Spack 材料升级屏障
 
-材料生命周期第二批提供离线 `SpackMaterialRollout.execute` 的
+材料生命周期提供离线 `SpackMaterialRollout.execute` 的
 `inspect/pause/reconcile/activate`，不是下架、恢复、ACL 或 GC。
-第三批另有[离线绑定退役](spack-binding-retirement.md) 的 `retire`：
+另有[离线绑定退役](spack-binding-retirement.md) 的 `retire`：
 要求维护窗口、额外的旧配置移除确认及重新 reconcile，不提供恢复或 Web 入口。
 完整步骤与命令 JSON 见 [Spack 材料 Rollout](spack-material-rollout.md)。
 CLI 约定为 `bun packages/db/src/spack-material-rollout-cli.ts <absolute-command-json-path>`；
@@ -191,8 +191,8 @@ epoch 不能 fence 不检查它的旧代码；门禁只控制准入，不中断�
 只有无 journal 且无 epoch 时保留 observe 兼容模式；paused、DB 失败或
 ready 时 epoch 缺失/不匹配均拒绝材料 runtime。新的 pause 更换 epoch，不自动回退。
 保留 append-only journal，删除历史可能不安全地重置 observe，禁止以清表解除屏障。
-部署静态测试只覆盖接线、配置和文档；测试与运行态验收仅在 GitHub Actions
-隔离环境执行，以对应提交结果为准，部署接线不代表运行态验收通过。
+部署静态测试只覆盖接线、配置和文档；测试与运行状态检查仅在 GitHub Actions
+隔离环境执行，以对应提交结果为准，部署接线不代表运行成功。
 
 <a id="actions"></a>
 ## GitHub Actions
@@ -223,7 +223,7 @@ protobuf 生成、业务运行时测试、构建或容器。
 | `PR preview tests` | 同仓库非草稿 PR 固定 head SHA，按完整 PR diff 选择 Spack 和 scheduler 重型测试；手动触发强制全部组，全部必测组成功后允许进入部署门禁 |
 | `Build Agent binary` / `Build CLI binary` | 仅手动构建并运行 binary smoke，默认只保存 Actions artifact；在 `v*` tag 上手动触发且勾选 `publish_release` 才上传 Release |
 | `Scheduler image architecture` | 仅手动构建并运行调度器镜像架构验证 |
-| `PR scheduler tests` | 相关源码变更时由 PR 测试编排调用，或手动触发；`run_spack`、`run_schedulers` 分别选择材料验收与 Slurm/PBS matrix |
+| `PR scheduler tests` | 相关源码变更时由 PR 测试编排调用，或手动触发；`run_spack`、`run_schedulers` 分别选择材料运行检查与 Slurm/PBS matrix |
 | `Spack workflow execution` | 自动调用默认仅 GNU Hello 工作流；手动或当前 HEAD 提交消息含 `[full-workflows]` 时运行完整三案例 |
 | `Docs Site` | 仅从 `main` 手动构建并发布到 `gh-pages`；GitHub Pages 须单独配置发布源 |
 | `Preview` / `Preview Cleanup` | 全部必需测试成功且通过信任门禁后部署远程 k3s，关闭/暂停/撤销标签后清理；无 main 常驻预览 |
@@ -258,7 +258,7 @@ protobuf 生成、业务运行时测试、构建或容器。
 发布使用仓库 `GITHUB_TOKEN` 的 `packages: write` 权限，无需另配推送凭据。
 GHCR package 的可见性由仓库所有者配置；私有镜像需通过 Helm 的
 `global.imagePullSecrets` 提供拉取凭据，公开镜像可匿名拉取。
-构建与发布结果以对应 Actions run 为准，生产配置与站点验收仍按 Chart 指南执行。
+构建与发布结果以对应 Actions run 为准，生产配置与站点运行检查仍按 Chart 指南执行。
 
 ### Server 内置 Agent
 
@@ -327,7 +327,7 @@ package 权限下载私有镜像。`run.sh` 仍负责站点认证、版本核对
 注册表元数据访问仍需要站点网络及相应凭据。此传输方式不包含 PostgreSQL 等基础服务镜像。
 重新运行失败的部署 job 会重新传输并校验镜像，然后调用脚本；未完成的迁移仍应按站点维护流程处理。
 
-若版本已部署、只需要重新验收，在 Actions 选择
+若版本已部署、只需要重新运行检查，在 Actions 选择
 [Retry main acceptance](../.github/workflows/retry-main-acceptance.yml)，分支选 main，
 填写当前已部署版本的完整 40 位 SHA。也可使用：
 
@@ -338,10 +338,10 @@ gh workflow run retry-main-acceptance.yml --ref main -f revision=<已部署完�
 此入口通过 SSH 调用 `/opt/deploy/run.sh acceptance --expected-revision <SHA>`，
 不构建、拉取或传输镜像，不更新 Compose；与正常发布共用 Actions concurrency 分组。
 站点部署工具须实现 acceptance 子命令，并在发布锁内核对 current/release、完整发布状态、
-运行镜像与 Agent 制品，拒绝不匹配版本和未结束的历史验收工作流。
+运行镜像与 Agent 制品，拒绝不匹配版本和未结束的历史运行检查工作流。
 每次结果写入该 release 的独立 acceptance-retries 子目录，保留原报告；
 调度器仍有活动作业时拒绝提交。站点尚不支持该命令时明确失败，不回退为重新部署。
-验收失败通过非零退出码传回 CI；重复点击不会绕过发布锁或覆盖证据。
+运行检查失败通过非零退出码传回 CI；重复点击不会绕过发布锁或覆盖证据。
 
 main 专用 Compose 直接引用四个 `kuintessence-*:main` 镜像，
 不依赖源码构建或仓库 bind mount。它内置 PostgreSQL、Redis、RustFS、SpiceDB，
@@ -524,7 +524,7 @@ gateway bind-mounted 配置经原子 rename 更新后，单纯 reload 可能仍�
 
 ### Registry 与观测
 
-Server 不修改 scheduler 的 queue 配置。CP Queue Registry 保存纳管配置，
+Server 不修改 scheduler 的 queue 配置。算力中心 Queue Registry 保存纳管配置，
 Agent Queue Inventory 保存调度器观测结果。
 `target.mode=default` 表示使用调度器默认目标，不应改写成具名队列。
 
@@ -553,7 +553,7 @@ Kubernetes 不纳入 HPC queue enforce。
 Agent 无法从本地配置获知 Server 的自定义 freshness，不对其硬编码跨服务约束。
 这不会跳过 stale/no-go，也不会立即清除既有 no-go；仍须满足后述连续健康恢复条件。
 
-CP `/cp/queues` 分别展示“已纳管目标”和“调度器观测”：
+算力中心 `/cp/queues` 分别展示“已纳管目标”和“调度器观测”：
 
 - named target 固定一个发现的 `queueName`；default target 不发送 queueName。
 - fresh 可用 observation 才能启用目标；stale last-known named fact 可预建，

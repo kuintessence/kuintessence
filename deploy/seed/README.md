@@ -18,12 +18,12 @@ PR 镜像名：`ghcr.io/<owner>/kq-dev-seed:sha-fullSHA`。
 - `minimal` 只初始化 `Kuintessence` 机构。不创建用户、密码、session、token，
   不修改 SSO、认证配置或现有策略默认值。当前 users schema 没有密码认证字段，
   生产首个用户及权限应由既有 SSO onboarding 配置建立。
-- `demo` 包含 minimal，并增加 `Development Compute Provider`、以下演示身份
+- `demo` 包含 minimal，并增加 `Development Compute Center`、以下演示身份
   及对应 membership，以及两个 NoAction workflow templates。模板无需真实软件、
   队列或 Agent，不伪造执行记录。模板写入现有 workflow template catalog，
   不创建软件资产、签名 package 或 ecosystem release。
 
-| 演示邮箱 | 初始 role | Provider membership |
+| 演示邮箱 | 初始 role | Compute Center membership |
 | --- | --- | --- |
 | `demo-user@kuintessence.test` | `user` | `member` |
 | `demo-provider@kuintessence.test` | `org_admin` | `admin` |
@@ -67,4 +67,3 @@ minimal 后可升级为 demo，demo 后运行 minimal 不会删除演示数据�
 `deploy/seed/index.test.ts` 覆盖配置验证、关闭连接和错误日志脱敏。
 `deploy/seed/store.test.ts` 为显式 opt-in 的 PostgreSQL integration contracts，
 使用 `SEED_TEST_DATABASE_URL` 指向已迁移的独立测试数据库。
-本次实施按约束未运行 tests、lint、typecheck、build 或容器。

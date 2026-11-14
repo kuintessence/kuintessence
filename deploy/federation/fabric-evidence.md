@@ -1,8 +1,8 @@
 # Fabric 证据链码与独立 Adapter
 
-当前已接通 Server 存证 outbox、批次/序号、数据库恢复检查点、独立 Node Adapter 和证据链码的代码路径。**证据链与 PostgreSQL 补交 worker 已通过 Fabric 3.1.5 联合验证，真实平台作业验收仍未完成**。配置私有 Adapter socket 后，后台 worker 会消费现有待办；此路径不创建联邦作业，也不修改任务额度。直接模式不创建待办、不调用 Adapter，不要求链连接。
+Server 通过存证 outbox 管理批次、序号和数据库恢复检查点，由独立 Node Adapter 向证据链码提交。配置私有 Adapter socket 后，后台 worker 会消费现有待办；此路径不创建联邦作业，也不修改任务额度。直接模式不创建待办、不调用 Adapter，不要求链连接。
 
-代码位置：[证据链码](../../contracts/fabric/evidence/src/contract.ts)、[Adapter](../../packages/fabric-adapter/src/evidence.ts)、[私有进程入口](../../packages/fabric-adapter/src/runtime.ts)、[协议与集合配置](../../packages/shared/src/federation/ledger.ts)。Linux 运行环境还须安装 util-linux（flock）。Node 至少 22.12，Gateway 固定 1.13.0，fabric-shim 固定 2.5.8。Peer/Orderer 已使用官方 Fabric 3.1.5 验证；测试证书由 cryptogen 与 OpenSSL 生成，没有运行 Fabric CA 服务，不代表生产 CA 运维已验收；四节点受控故障结果见[四节点验收](four-node-acceptance.md)。
+代码位置：[证据链码](../../contracts/fabric/evidence/src/contract.ts)、[Adapter](../../packages/fabric-adapter/src/evidence.ts)、[私有进程入口](../../packages/fabric-adapter/src/runtime.ts)、[协议与集合配置](../../packages/shared/src/federation/ledger.ts)。Linux 运行环境还须安装 util-linux（flock）。Node 至少 22.12，Gateway 固定 1.13.0，fabric-shim 固定 2.5.8。Peer/Orderer 使用官方 Fabric 3.1.5；实验环境由 cryptogen 与 OpenSSL 生成证书，不部署 Fabric CA 服务。生产环境须另行配置 CA 签发、轮换和撤销流程。四节点配置与运维要求见[四节点运行](four-node-acceptance.md)。
 
 ## 信任与原生策略
 
@@ -53,7 +53,7 @@ Fabric 客户端证书同时带有 `kq.federation.site=<site UUID>` 和 `kq.fede
 
 `confirmation=unilateral` 只允许发送方业务签名；`bilateral` 必须由双方针对相同的精确 manifest 字节签名。两个 Peer 的背书不会被显示为“两家机构已确认账单”。当前批次只支持已实现的 delegation、acceptance 证据，尚未支持用量/更正/结算证据。
 
-相同 batchId、相同摘要重试返回原回执；同 ID 改内容、换 ID 重复纳入同一证据、跨机构提交和过期/撤销密钥均拒绝。PDC 字节缺失但仍有已提交 hash 时返回等待，不能将其当作空游标重建序号。`RevokeKey(siteId,keyId)` 只允许该机构的 trust-admin，永久撤销。可以在本代部署时预置后续有效期的轮换公钥；新机构、新集合及未预置密钥的代次迁移尚待实现。链码撤销与平台信任登记是两个独立执行域，目前不会自动同步。
+相同 batchId、相同摘要重试返回原回执；同 ID 改内容、换 ID 重复纳入同一证据、跨机构提交和过期/撤销密钥均拒绝。PDC 字节缺失但仍有已提交 hash 时返回等待，不能将其当作空游标重建序号。`RevokeKey(siteId,keyId)` 只允许该机构的 trust-admin，永久撤销。链码撤销与平台信任登记是两个独立执行域，目前不会自动同步。
 
 ## 构建和进程配置
 
@@ -100,15 +100,13 @@ Adapter 仅监听 `runDirectory/evidence.sock`，权限 0600，没有 TCP API。
 
 加密恢复记录包含完整签名 proposal/transaction 和预先建立的 commit 查询请求，由 AES-256-GCM 保护，绑定部署策略、channel 和调用身份。Adapter 没有第二套数据库；Server 应在其已有数据库中保存该 opaque token。提交/查询超时返回 pending 并保留原交易；背书失败不会自动改选第三方机构。调用方不得把 prepared、HTTP 成功或 submit 成功显示为已上链，也不得因 invalid 自动退款或重复执行任务。
 
-恢复密钥必须与检查点一起纳入受控备份。替换配置、业务证书或恢复密钥会使旧 token 无法恢复；当前应先处理待办再轮换，不能直接覆盖旧凭据。Linux 重启现使用与 Server 相同的私有目录/文件锁检查，仅自动清理确定没有监听者的本 UID socket；活跃监听、文件/符号链接及不确定探测均保留并拒绝启动。锁由内核在进程退出时释放，不能删除仍使用中的 evidence.sock.lock。非 Linux 仍需管理员确认无监听者后处理遗留路径。数据库 worker 已接通，凭据轮换恢复、归档后的批次终态核对仍待完善。
+恢复密钥必须与检查点一起纳入受控备份。替换配置、业务证书或恢复密钥会使旧 token 无法恢复；当前应先处理待办再轮换，不能直接覆盖旧凭据。Linux 重启现使用与 Server 相同的私有目录/文件锁检查，仅自动清理确定没有监听者的本 UID socket；活跃监听、文件/符号链接及不确定探测均保留并拒绝启动。锁由内核在进程退出时释放，不能删除仍使用中的 evidence.sock.lock。非 Linux 仍需管理员确认无监听者后处理遗留路径。
 
 ## Server 后台补交和人工复核
 
 Server 启用联邦并配置 `FEDERATION_ATTESTATION_SOCKET_PATH`（Adapter 的绝对 Unix socket 路径）后启动补交 worker。未配置时原证据仍保留 pending，列表可以查看未组批数量，Server 不探测链。socket 临时缺失、Adapter 不可达、背书或提交超时只影响存证状态，不进入接单同步路径。
 
 本站签名公钥必须在平台登记 `evidence-batch` 用途，并出现在链码共同批准的 trust.json 中；用途登记不可覆盖旧 keyId，既有密钥缺用途时须按原信任登记规则新增 keyId。当前合作域采用原协议的 `budgetDomainId`，须对应预先批准的 domainId 和机构对，不自动创建/扩大集合。worker 签署的是单方批次；即使原始委派与回执各有机构签名，也不会冒充双方确认同一批次。
-
-每十秒扫描，每轮最多推进八个检查点。每个 domainId＋issuerSiteId 同时只有一个未完成批次；同一批次限定一个协议版本/epoch，最多 100 项。分配连续序号、固定 manifest/随机盐和关联原证据在同一 PostgreSQL 事务内完成。独立数据库租约使用 DB 时间，超时持有者不能写入晚到结果；网络请求不占用数据库事务。
 
 处理依次为：固定批次 → 签名落库 → proposal 检查点落库 → transaction 检查点落库 → 原 txId 的 VALID 确认。只有最后一步把批次、交易记录和对应 outbox 一起置为 anchored。失败至少间隔三十秒重试；身份/策略/内容不兼容及明确 INVALID 进入 needs_review，停止后续同流批次，不删除原证据或退回预算。
 
@@ -119,22 +117,18 @@ Server 启用联邦并配置 `FEDERATION_ATTESTATION_SOCKET_PATH`（Adapter 的�
 | `GET /api/federation/agreements/:revisionId/attestation?limit=50&offset=0` | 本组织 `agreement.read`；返回是否配置 worker、未组批证据数、批次状态/摘要/数量/错误码/更新时间，不返回恢复密文、私钥或租约 token |
 | `POST /api/federation/agreements/:revisionId/attestation/:batchId/retry` | 本组织 `agreement.approve`；仅恢复 needs_review，记录操作者与原错误码 |
 
-人工重试不会修改批次内容、签名或序号。已经送交或可能送交的 transaction 必须继续核对原交易，不能因为超时另起交易。只有明确 INVALID 后才创建新交易记录，旧记录保留；从未达到可提交检查点的 proposal 可以标记 abandoned 后重新创建。平台角色名称、受限执行账号或自动化 token 不能代替人工复核权。当前 UI 和凭据迁移流程尚未接通，完整功能不因此视为交付。
+人工重试不会修改批次内容、签名或序号。已经送交或可能送交的 transaction 必须继续核对原交易，不能因为超时另起交易。只有明确 INVALID 后才创建新交易记录，旧记录保留；从未达到可提交检查点的 proposal 可以标记 abandoned 后重新创建。平台角色名称、受限执行账号或自动化 token 不能代替人工复核权。
 
-## 已执行检查与真实网络验收边界
+## 网络诊断与运行边界
 
-本地测试覆盖链码的机构边界、签名、序号、重复提交、密钥撤销；Gateway 测试使用真实 SDK 编码/签名/恢复方法和受控 RPC 返回，覆盖精确两方 transient 路由、提交回执丢失、VALID/INVALID 区分、加密 token 篡改以及重启恢复。Unix HTTP 测试验证路由与字段白名单和错误脱敏。
-
-隔离 PostgreSQL 测试验证并发组批、链故障期间继续接单、检查点先落库再提交、重启沿用原交易、过期 worker 被隔离、INVALID 人工重试保留历史、SQL 约束及 HTTP 权限。两个迁移由 Drizzle 生成，测试从空库应用。
-
-新增的[真实网络验证](../../scripts/fabric-evidence-network.ts)运行三个独立 Peer/私有状态库、三个双向 TLS 链码进程和一个测试 Raft Orderer，调用实际链码、官方 Gateway、Server Unix client 和 Adapter HTTP 实现。12 项断言通过：
+Unix HTTP 测试验证路由与字段白名单和错误脱敏。
 
 - 删掉 B 背书后重新签署的交易得到 `ENDORSEMENT_POLICY_FAILURE=10`；正常两方交易 VALID。重放原批次仍需要两方背书。
 - 直接读取 Fabric block/private-data delivery：A/A、B/B 能读取正文；C/A、A/C、C/C 均无私有写入；公共区块不含私有 JWS。此检查绕过应用查询接口。
 - 每个检查点由新 Node 进程推进；已确认交易恢复仍返回原 txId/区块。Orderer 真实停止时保持 pending，重启并完成 Raft 选主后原交易 VALID。
 - 同序号两份已背书交易仅一份 VALID，另一份为 `MVCC_READ_CONFLICT=11`；重新提交过期序号明确拒绝。非管理员/其他机构不能撤销 A 密钥；A 自己的管理员仅经 A 背书成功撤销，已背书但未提交的旧密钥交易因读集冲突失效，后续背书拒绝。
 
-发现并修复 Adapter 的错误分类：来自实际链码的明确身份、策略、内容或顺序拒绝转换为脱敏错误码，交由现有 Server worker 进入人工复核；未知/混合错误、网络故障和私有数据等待仍重试。不会返回原始 Peer 错误详情。
+Adapter 按以下方式分类错误：来自实际链码的明确身份、策略、内容或顺序拒绝转换为脱敏错误码，交由现有 Server worker 进入人工复核；未知/混合错误、网络故障和私有数据等待仍重试。不会返回原始 Peer 错误详情。
 
 需要 Linux x86_64、Bun 1.4.2、Node 22.12+、Python 3、OpenSSL、tar，以及已经校验的官方 Fabric 3.1.5 解压目录。无需 Docker 或现有联盟链：
 
@@ -155,21 +149,19 @@ KQ_FABRIC_REPORT=/path/to/result.json \
 bun run test:fabric:integration
 ```
 
-联合入口缺少数据库配置会立即失败，不静默退回纯链测试。新增四组检查与原十二项一起通过，共 16 项：
-
 1. Orderer 和 Adapter 均未运行时，直接接单成功且没有上链 outbox。
 2. 存证接单产生真实证据和数据库检查点；Orderer 停机时保存 `LEDGER_PENDING` 和原 txId，同时第二个存证请求继续接单、记录待补交证据。
 3. 强制结束并重启 Node Adapter，保留恢复密钥；再强制结束刚取得真实 VALID、尚未写入数据库的 worker。数据库仍保留原 transaction 检查点和租约。
 4. 新后台 worker 等待真实 90 秒数据库租约到期后，自动确认原交易，再提交下一批。两批序号分别从 1、3 开始，四条 outbox 全部 anchored，只有两个交易尝试；额度不变，Job 表仍为空。
 
-测试没有缩短租约、回写成功状态或模拟 Gateway。正常结束及收到终止信号时，由父进程清理本次 worker、Adapter、Peer/Orderer 和数据库。首次检查修正了独立测试 worker 缺少常驻事件句柄的问题；生产 worker 仍由 Server 生命周期承载，没有调整其重试/租约时间。
+测试没有缩短租约、回写成功状态或模拟 Gateway。正常结束及收到终止信号时，由父进程清理本次 worker、Adapter、Peer/Orderer 和数据库。
 
-[GitHub 检查](../../.github/workflows/fabric-evidence-network.yml)已加入 PostgreSQL 服务，相关 PR 改动运行相同联合入口，固定官方 Fabric 发布包 SHA-256，只上传无私有材料的断言摘要。本地已验证；远端 CI 尚待分支推送后执行。
+[GitHub 检查](../../.github/workflows/fabric-evidence-network.yml)已加入 PostgreSQL 服务，相关 PR 改动运行相同联合入口，固定官方 Fabric 发布包 SHA-256，只上传无私有材料的断言摘要。
 
-**仍不代表完整联邦业务闭环**：已验证接单和证据补交，但没有三套完整 KQ、真实 Slurm/PBS 作业、商业字段/日志/备份的全通道隐私测试或多 Orderer 容灾。完整 L02/L04/L05/L06 及 A02 等验收不能因此标为全部通过。
+联合入口的检查范围限于上述后台存证与恢复路径，不包含科研作业执行、长期容量或跨主机身份管理。
 
 ## Fabric 3.1.5 排序节点追平
 
-带双向 TLS 的四节点 SmartBFT 配置固定 `General.Cluster.ReplicationPolicy: simple`（Compose 使用 `ORDERER_GENERAL_CLUSTER_REPLICATIONPOLICY`）。3.1.5 的 `BFTSynchronizer` 创建 `BFTDeliverer` 时未设置 TLS 证书摘要，重启后的 Deliver 请求被其他排序节点以 `BAD_REQUEST: client didn’t include its TLS cert hash` 拒绝。`simple` 是 Fabric 原生同步器，发送证书摘要，并通过 `VerifyBlocksBFT` 校验区块链和共识签名；共识仍为四节点 SmartBFT。此选择不含 `consensus` 同步器的独立头部审查检测，不能据此宣称通过恶意节点审查攻击验收。
+带双向 TLS 的四节点 SmartBFT 配置固定 `General.Cluster.ReplicationPolicy: simple`（Compose 使用 `ORDERER_GENERAL_CLUSTER_REPLICATIONPOLICY`）。3.1.5 的 `BFTSynchronizer` 创建 `BFTDeliverer` 时未设置 TLS 证书摘要，重启后的 Deliver 请求被其他排序节点以 `BAD_REQUEST: client didn’t include its TLS cert hash` 拒绝。`simple` 是 Fabric 原生同步器，发送证书摘要，并通过 `VerifyBlocksBFT` 校验区块链和共识签名；共识仍为四节点 SmartBFT。此选择不含 `consensus` 同步器的独立头部审查检测，此配置不提供恶意节点审查攻击的检测保证。
 
 升级 Fabric 后，仅在双向 TLS 下完成落后节点追平测试后再切回 `consensus`。不得关闭 TLS、客户端证书检查或区块验证来恢复同步。管理员端口继续只在 Compose 网络内开放。

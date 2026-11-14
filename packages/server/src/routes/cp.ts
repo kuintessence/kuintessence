@@ -1,4 +1,4 @@
-// `/api/cp/*` REST surface for the Compute Provider console.
+// `/api/cp/*` REST surface for the Compute Center console.
 //
 // Every route here applies `cpRbac()` middleware, which sets `cpScope`
 // on the Hono context. Handlers read `cpScope` and pass it to the

@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { ApiError, type ApiOrganizationScope, api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -28,7 +29,11 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { AgreementFact } from "./AgreementTerms";
 import { materialDigest } from "./asset-material";
-import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
+import {
+  FederationEmpty,
+  FederationPanelHeader,
+  FederationRefreshNotice,
+} from "./FederationLayout";
 import {
   loadMarketClaimContract,
   loadMarketClaimRequests,
@@ -498,6 +503,7 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
             <TabsTrigger value="operations">{t("federation.market.operations")}</TabsTrigger>
           </TabsList>
           <TabsContent value="directory" className="space-y-4">
+            <FederationRefreshNotice query={directory} onRetry={() => void directory.refetch()} />
             {selected ? (
               <>
                 <Button
@@ -579,7 +585,7 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
               </>
             ) : context.data?.enabled === false ? null : directory.isError ? (
               <p role="alert">{t("federation.market.unavailable")}</p>
-            ) : directory.isPending ? (
+            ) : directory.isPending || !directory.data ? (
               <p role="status">{t("federation.loading")}</p>
             ) : (
               <>
@@ -629,6 +635,7 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
             )}
           </TabsContent>
           <TabsContent value="operations" className="space-y-4">
+            <FederationRefreshNotice query={operations} onRetry={() => void operations.refetch()} />
             {operation ? (
               <>
                 <Button
@@ -738,9 +745,9 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
                   </>
                 ) : null}
               </>
-            ) : operations.isError ? (
+            ) : federationReadFailed(operations) ? (
               <p role="alert">{t("federation.loadFailed")}</p>
-            ) : operations.isPending ? (
+            ) : operations.isPending || !operations.data ? (
               <p role="status">{t("federation.loading")}</p>
             ) : (
               <>

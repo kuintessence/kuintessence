@@ -86,7 +86,7 @@ kq-release-review/
 
 launcher 保持 `--containall --userns --cleanenv --no-home --net --network none`，仅显式绑定 CLI state 到 `/kq/cli`，固定工作目录 `/kq/cli`、禁用 local config，设置容器内私有 HOME/config/cache，并通过 Spack 命令作用域把 install tree 固定到 `/kq/cli/store`、禁止 bootstrap。它不绑定 site profile 的 managed store，也不从 legacy CLI 数据库生成 managed 安装记录；managed 库存仍由匹配的验证报告与账本决定。
 
-此 CLI store 是该 portable Spack 入口真实使用的 legacy 数据库，首次初始化后 `spack find --json` 可以真实返回 `[]`；launcher 不伪造 JSON，也不将读取失败转换为空库存。它不会自动发现或迁移另一宿主 Spack 分发的旧库存。目标节点验收须以 Agent 身份执行实际 `spack find --json`，检查冷启动与重启后的持久状态，再验 managed install/load/uninstall 的合并库存；legacy 查询失败仍使整体操作失败。不同 uid 不得共享同一个 `spack-cli`；需为它们分配独立共享根。
+此 CLI store 是该 portable Spack 入口真实使用的 legacy 数据库，首次初始化后 `spack find --json` 可以真实返回 `[]`；launcher 不伪造 JSON，也不将读取失败转换为空库存。它不会自动发现或迁移另一宿主 Spack 分发的旧库存。目标节点运行检查须以 Agent 身份执行实际 `spack find --json`，检查冷启动与重启后的持久状态，再验 managed install/load/uninstall 的合并库存；legacy 查询失败仍使整体操作失败。不同 uid 不得共享同一个 `spack-cli`；需为它们分配独立共享根。
 
 ## 平台仍需准备的 Spack 材料
 
@@ -164,4 +164,4 @@ bun deploy/site-release/source-provenance.ts /verified/source-DIGEST.json /new/i
 
 该命令只恢复普通文件，不自动安装依赖或构建；随后按来源记录使用相同 Bun、冻结安装、显式 codegen 和编译命令。
 档案提供可审查的完整自有源码与锁定依赖来源，不承诺不同操作系统、工具链下载或未来依赖可用性下二进制 bit-for-bit 一致，
-也不将构建成功解释为目标站点兼容或现场验收通过。本轮仅实现代码和测试场景，没有执行安装、生成、构建、检查或发布。
+也不将构建成功解释为目标站点兼容或现场运行成功。

@@ -43,7 +43,11 @@ function mount() {
 }
 test("case receiver can navigate evidence but cannot sign without arbitrator capability", async () => {
   mount();
-  fireEvent.click(await screen.findByRole("button", { name: new RegExp(evidenceCase.caseId) }));
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: new RegExp(`Arbitration case.*${evidenceCase.caseId.slice(0, 8)}`),
+    }),
+  );
   await screen.findByText("No received evidence.");
   expect(screen.queryByRole("button", { name: "Sign decision" })).toBeNull();
   expect(screen.getByRole("button", { name: "Fetch authorized evidence" })).toBeTruthy();
@@ -64,7 +68,11 @@ test("cross organization cases never become selectable", async () => {
   );
   mount();
   await screen.findByRole("alert");
-  expect(screen.queryByRole("button", { name: new RegExp(evidenceCase.caseId) })).toBeNull();
+  expect(
+    screen.queryByRole("button", {
+      name: new RegExp(`Arbitration case.*${evidenceCase.caseId.slice(0, 8)}`),
+    }),
+  ).toBeNull();
 });
 test("unconfirmed registration retries the same case and immutable context", async () => {
   mount();

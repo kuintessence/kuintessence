@@ -13,7 +13,7 @@ Registry 通过已签名 release 发布软件、软件用例、Sandbox script �
 
 生态 workflow 使用 `source/name/version` 引用资产。提交时 Server 将其解析为唯一 asset/revision 并保存到 run；后续 release 更新不会改变历史 run 的引用。
 
-找不到资产或匹配到多个资产时，提交会被拒绝。引用 CP 私有资产还必须提供 `providerOrgId`，以确定提供方。
+找不到资产或匹配到多个资产时，提交会被拒绝。引用算力中心私有资产还必须提供 `providerOrgId`，以确定资源所属算力中心。
 
 ## 数据与受限内容
 

@@ -1,8 +1,9 @@
 import { FederationCapabilitySchema } from "@kuintessence/shared/federation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api-client";
+import { clearAuth, setAuth } from "../../lib/auth";
 import i18n from "../../lib/i18n";
 import { FederationPermissionsPanel } from "./FederationPermissionsPanel";
 
@@ -160,17 +161,28 @@ test("mobile users can inspect grants but cannot create or remove them", async (
   expect(api.put).not.toHaveBeenCalled();
 });
 
-test("refresh failure hides old grants and blocks writes without trapping a draft", async () => {
+test.each([
+  "hard",
+  "transport",
+])("%s refresh failure blocks writes without trapping a draft", async (kind) => {
   const client = mount();
   await open();
   await startGrant();
   vi.mocked(api.get).mockImplementation(async (path) => {
-    if (path.startsWith(`${root}?`)) throw new Error("offline");
+    if (path.startsWith(`${root}?`))
+      throw kind === "transport" ? new TypeError("offline") : new Error("invalid response");
     return members;
   });
   await client.invalidateQueries({ queryKey: ["federation", "grants", orgId, 0] });
-  await screen.findByRole("alert");
-  expect(screen.queryByRole("button", { name: "Remove grant" })).toBeNull();
+  if (kind === "transport") {
+    await screen.findByText("Refresh failed. Showing the previously loaded data.");
+    expect(screen.getByRole("button", { name: "Remove grant" }).hasAttribute("disabled")).toBe(
+      true,
+    );
+  } else {
+    await screen.findByRole("alert");
+    expect(screen.queryByRole("button", { name: "Remove grant" })).toBeNull();
+  }
   expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.queryByLabelText("Permission")).toBeNull();
@@ -241,4 +253,21 @@ test("distinguishes organizations with the same name before granting authority",
   await screen.findByText("No federation grants in this organization");
   expect(screen.getByText(secondOrgId)).toBeTruthy();
   expect(api.get).toHaveBeenCalledWith(`${root}?orgId=${secondOrgId}&limit=20&offset=0`);
+});
+
+test("changing login discards prior grants and drafts when the new session cannot refresh", async () => {
+  mount();
+  await open();
+  await startGrant();
+  vi.mocked(api.get).mockRejectedValue(new TypeError("offline"));
+  try {
+    act(() => setAuth({ email: "another@example.test", role: "admin" }));
+    await screen.findByRole("alert");
+    expect(screen.queryByRole("button", { name: "Remove grant" })).toBeNull();
+    expect(screen.queryByLabelText("Permission")).toBeNull();
+    expect(screen.queryByText("Research North")).toBeNull();
+    expect(api.put).not.toHaveBeenCalled();
+  } finally {
+    act(() => clearAuth());
+  }
 });

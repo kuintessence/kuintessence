@@ -54,7 +54,7 @@ function setup(mode: "provider" | "operator") {
 test("provider edits its profile without create/delete controls and refreshes organization names", async () => {
   const { client, unmount } = setup("provider");
   expect(await screen.findByText("研究中心")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "新增提供者" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "新增算力中心" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "编辑资料" }));
   expect(screen.queryByRole("button", { name: "删除" })).toBeNull();
   fireEvent.change(screen.getByLabelText("名称"), { target: { value: "更新的中心" } });
@@ -80,7 +80,7 @@ test("platform deletion requires confirmation and shows dependency failures", as
   fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
   expect(await screen.findByRole("alert")).toHaveProperty(
     "textContent",
-    "该提供者仍有关联成员、资源或历史业务记录，不能删除",
+    "该算力中心仍有关联成员、资源或历史业务记录，不能删除",
   );
   expect(screen.getByRole("dialog")).toBeTruthy();
   unmount();
@@ -114,8 +114,8 @@ test("mobile policy keeps profile reads available without opening forbidden edit
   } as unknown as MediaQueryList);
   const { client, unmount } = setup("operator");
   await screen.findByText("研究中心");
-  expect(screen.getByText("请在电脑端编辑提供者资料。")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "新增提供者" })).toBeNull();
+  expect(screen.getByText("请在电脑端编辑算力中心资料。")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "新增算力中心" })).toBeNull();
   expect(screen.queryByRole("button", { name: "编辑资料" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "研究中心" }));
   expect(screen.getByRole("dialog")).toBeTruthy();

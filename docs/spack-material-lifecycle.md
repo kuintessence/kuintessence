@@ -1,6 +1,6 @@
 # Spack 材料下架与恢复
 
-第四批提供 Registry 的 release 状态 API。它只控制后续材料准入，
+Registry 的 release 状态 API 控制后续材料准入，
 **不删除 recipe Git、源码、manifest 或历史引用，不卸载已安装软件**。
 下架与[配置绑定退役](spack-binding-retirement.md) 是不同操作：
 下架针对整个 `(repositoryId, manifestDigest)`，退役针对其中一个精确 spec 绑定。
@@ -16,7 +16,7 @@
 管理 API 要求[Rollout](spack-material-rollout.md) 已显式进入 `ready`，
 Server 与 Registry 配置同一个 `SPACK_MATERIAL_EPOCH`。
 没有 journal 的 observe 兼容模式只能使用既有读取/发布能力，不允许管理状态。
-升级第四批前仍须执行 pause、外部排空、撤销旧访问、reconcile 和 activate：
+启用生命周期管理前仍须执行 pause、外部排空、撤销旧访问、reconcile 和 activate：
 **已支持 epoch 或绑定退役、但不检查 release 状态的旧版本同样必须被隔离**。
 只更换它们的 epoch 不构成安全升级。
 
@@ -142,15 +142,11 @@ Registry 的目录、直接 manifest/blob 下载和重新发布同一内容均�
 直接下载下架材料返回普通 404，不向无权限调用者公开管理历史或占用细节。
 Server 继续使用原有通用引用错误，对 Agent 不暴露数据库异常或查询参数。
 
-回归包含真实 PostgreSQL 的事务、CAS、权限快照、缺表和审计回滚，以及 Registry HTTP
-目录/下载/恢复/重导入一致性。所有验证只在 GitHub Actions 执行；
-结果须对应当前提交，不沿用旧版本的绿色 CI。
-本批没有自定义可见范围、物理回收、受限安装包授权，
-也不替代 15 个科学工作流的材料准备、安装和运行验收。
+自定义读取范围见[材料可见策略](spack-material-visibility.md)。此入口不提供物理回收或受限安装包授权；每个工作流仍需独立准备完整材料、安装环境和输入。
 
-## 平台与 CP 门户
+## 平台与算力中心门户
 
-软件中心的 Spack 页和 CP 软件页共用材料面板中的 **发布项生命周期**。
+软件生态的 Spack 页和算力中心软件页共用材料面板中的 **发布项生命周期**。
 此入口查询管理 API，不依赖普通 manifest 下载，因此下架后仍可按精确 binding 恢复。
 从材料目录或导入结果查阅发布项时会预填 binding，但不会自动发起管理请求。
 已下架项不出现在普通目录中。可在维护者目录输入完整仓库名称并筛选状态，
@@ -182,9 +178,6 @@ Server 继续使用原有通用引用错误，对 Agent 不暴露数据库异常
 binding 输入和管理模式切换也保持锁定，重新查询同一 binding 确认当前状态后解除限制。
 页面关闭、身份切换或重新选择 binding 不撤销服务器上已提交的操作；
 页面不将原因、历史或待确认队列保存到本地持久存储。
-
-组件的真实浏览器回归覆盖桌面/移动端布局与交互，API 使用隔离的模拟响应；
-它不代替真实 Registry/PostgreSQL 权限和并发测试，也不是生产部署验收。
 
 额外的用户/组织读取限制见[材料可见策略](spack-material-visibility.md)。
 policy 与 lifecycle 使用独立 revision 和审计；恢复材料不会解除允许列表限制。

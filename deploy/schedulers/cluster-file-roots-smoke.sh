@@ -194,7 +194,7 @@ login() {
 
 provider_org_id() {
   api_json GET "/cp/agent-registration-context" | json_get '
-    (data.providerOrgs ?? []).find((org) => org.name === "Development Compute Provider")?.id ??
+    (data.providerOrgs ?? []).find((org) => org.name === "Development Compute Center")?.id ??
       (data.providerOrgs ?? [])[0]?.id
   '
 }

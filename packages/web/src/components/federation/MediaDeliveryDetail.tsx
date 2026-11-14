@@ -11,7 +11,9 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { Button } from "../ui/button";
+import { FederationRefreshNotice } from "./FederationLayout";
 import {
   type MediaDeliveryAction,
   MediaDeliveryForm,
@@ -62,7 +64,7 @@ export function MediaDeliveryDetail({
     },
     refetchOnWindowFocus: false,
   });
-  const current = !query.isError ? query.data : undefined;
+  const current = !federationReadFailed(query) ? query.data : undefined;
   const blocked = busy || query.isFetching || query.isError;
   const actionAuthorization =
     current && "authorizations" in current && action && "authorizationId" in action
@@ -89,7 +91,7 @@ export function MediaDeliveryDetail({
       }}
     />
   ) : null;
-  if (query.isError)
+  if (federationReadFailed(query))
     return (
       <div className="space-y-5">
         <p role="alert">{t("federation.loadFailed")}</p>
@@ -142,6 +144,7 @@ export function MediaDeliveryDetail({
   };
   return (
     <div className="space-y-5">
+      <FederationRefreshNotice query={query} onRetry={() => void query.refetch()} />
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <h3 className="text-lg font-semibold">
@@ -396,12 +399,14 @@ function MediaDeliveryOperation({
     )
       throw new Error("Media receipt mismatch");
   }
-  if (operation.isError) return <p role="alert">{t("federation.loadFailed")}</p>;
-  if (operation.isPending) return <p role="status">{t("federation.loading")}</p>;
+  if (federationReadFailed(operation)) return <p role="alert">{t("federation.loadFailed")}</p>;
+  if (operation.isPending || operation.data === undefined)
+    return <p role="status">{t("federation.loading")}</p>;
   const row = operation.data;
   const run: MediaDeliveryAction = { kind: "run", direction, packageId, authorizationId };
   return (
     <section className="space-y-3 border-t pt-4" aria-label={t("federation.delivery.operation")}>
+      <FederationRefreshNotice query={operation} onRetry={() => void operation.refetch()} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h4 className="font-medium">
           {t("federation.delivery.operation")} ·{" "}
@@ -411,7 +416,11 @@ function MediaDeliveryOperation({
           <Button
             variant="outline"
             disabled={
-              blocked || operation.isFetching || !active || (!!row && row.state !== "failed")
+              blocked ||
+              operation.isFetching ||
+              operation.isError ||
+              !active ||
+              (!!row && row.state !== "failed")
             }
             onClick={() => onAction(run)}
           >
@@ -439,7 +448,8 @@ function MediaDeliveryOperation({
           </summary>
           {receiptsOpen ? (
             <div className="mt-3 space-y-3">
-              {receipts.isError ? (
+              <FederationRefreshNotice query={receipts} onRetry={() => void receipts.refetch()} />
+              {federationReadFailed(receipts) ? (
                 <p role="alert">{t("federation.loadFailed")}</p>
               ) : receipts.isPending ? (
                 <p role="status">{t("federation.loading")}</p>
@@ -476,7 +486,9 @@ function MediaDeliveryOperation({
                   capabilities.includes("media.import") ? (
                     <Button
                       variant="outline"
-                      disabled={blocked || receipts.isFetching}
+                      disabled={
+                        blocked || operation.isError || receipts.isFetching || receipts.isError
+                      }
                       onClick={() => onAction({ kind: "retryReceipt", packageId, authorizationId })}
                     >
                       {t("federation.delivery.actions.retryReceipt")}

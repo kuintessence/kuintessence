@@ -102,7 +102,11 @@ async function importTerms(input: unknown = terms) {
   fireEvent.click(screen.getByRole("button", { name: "Review terms" }));
 }
 async function openDetail() {
-  fireEvent.click(await screen.findByRole("button", { name: new RegExp(`${source}.*${target}`) }));
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: new RegExp(`Agreements.*${revisionId.slice(0, 8)}`),
+    }),
+  );
   await screen.findByRole("heading", { name: "Our signature" });
 }
 beforeEach(async () => {
@@ -415,9 +419,7 @@ test("a failed context load leaves refresh usable and blocks signing", async () 
   });
   mount();
   await screen.findByRole("alert");
-  expect(
-    (screen.getByRole("button", { name: "Import agreement terms" }) as HTMLButtonElement).disabled,
-  ).toBe(true);
+  expect(screen.queryByRole("button", { name: "Import agreement terms" })).toBeNull();
   const refresh = screen.getByRole("button", { name: "Refresh" });
   expect((refresh as HTMLButtonElement).disabled).toBe(false);
   failure = false;
@@ -479,4 +481,14 @@ test("provider agreement detail loads its own backlog but the source never guess
   mount();
   await openDetail();
   expect(api.get).not.toHaveBeenCalledWith(`/federation/agreements/${revisionId}/backlog`, scope);
+});
+
+test("agreement list uses authorized institution names while retaining revision details", async () => {
+  rows = [{ ...approval, sourceName: "Institution A", targetName: "Institution B" }];
+  mount();
+  const button = await screen.findByRole("button", { name: /Institution A → Institution B/ });
+  expect(button.textContent).not.toContain(approval.revisionId);
+  fireEvent.click(button);
+  await screen.findByRole("heading", { name: "Our signature" });
+  expect(screen.getAllByText(approval.revisionId).length).toBeGreaterThan(0);
 });

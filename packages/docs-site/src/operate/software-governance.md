@@ -4,7 +4,7 @@ Server 与 Registry 共同管理软件资产，职责如下。
 
 ## 权威边界
 
-- Server 负责权限、组织、CP、Agent 和调度可用性。
+- Server 负责权限、组织、算力中心、Agent 和调度可用性。
 - Registry 负责 registry/catalog/buildcache 的存储与编辑。
 - `app_templates`、`usecase_packages`、`workflow_templates` API 的写路径同步到统一 asset/revision。
 
@@ -41,7 +41,7 @@ Registry 内置以下官方 Spack package 缓存，运行时无需临时从上�
 
 ## Review 与 Official Fork
 
-SP 或 CP 提交后：
+SP 或算力中心提交后：
 
 1. asset 进入 `submitted`。
 2. 平台查看 review detail、diff、dependency refs、impact。
@@ -65,9 +65,9 @@ capability 包括：
 
 workflow/usecase 分享或发布前，可调用 downstream grant 补齐流程，为依赖的 usecase/package 显式补 `use` grant。
 
-## CP Policy
+## 算力中心软件策略
 
-CP runtime policy 使用三层 overlay：
+算力中心运行策略 使用三层 overlay：
 
 `provider -> cluster -> agent`
 
@@ -75,7 +75,7 @@ Resolver 会同时检查：
 
 - ACL。
 - asset lifecycle。
-- CP allow/deny/lock/install mode。
+- 算力中心 allow/deny/lock/install mode。
 - Agent online 状态。
 - installed/preinstalled mapping。
 - mirror/cache/concretize 记录。
@@ -94,13 +94,13 @@ POST /api/software/resolve-availability
 - `installableAvailable`
 - `blocked`
 - concretized DAG 或 metadata
-- ACL、CP policy、mirror/cache、agent status、缺失依赖解释
+- ACL、算力中心策略、mirror/cache、agent status、缺失依赖解释
 
 调度 software stage 应通过 resolver 校验以上条件；只读取 `agent_software` 不足以判断可运行性。
 
 ## 科学软件生态 release
 
-科学软件内容由 Registry 的已签名 OCI release 管理。导入前完成 manifest、签名、License、引用与 DAG 静态校验，成功后才原子切换 active release。生态资产使用 stable ecosystem key 和不可变 revision，用户/CP 自建资产不会被覆盖。
+科学软件内容由 Registry 的已签名 OCI release 管理。导入前完成 manifest、签名、License、引用与 DAG 静态校验，成功后才原子切换 active release。生态资产使用 stable ecosystem key 和不可变 revision，用户/算力中心自建资产不会被覆盖。
 
 License、runtime 和 VASP 等受限材料的操作流程见[治理说明](/operate/license-runtime-governance)；导入、激活和回滚操作见[生态 Release 手册](/operate/ecosystem-release)。
 
@@ -108,15 +108,15 @@ License、runtime 和 VASP 等受限材料的操作流程见[治理说明](/oper
 
 Software asset/revision 不存储科学数据、NetDrive 文件、Data Market payload 或 POTCAR 文件内容。软件或 usecase 可以声明数据前置条件；数据版本、位置与权限由 Data Market 的 `DataAsset`、`DataAssetVersion`、location/replica 和 capability 管理。`AGENT_DATASET_ROOT` 是 Agent 受管数据集根，`JOB_WORK_ROOT` 是短生命周期作业目录；这两个目录不能配置为 Registry bundle 路径。
 
-VASP POTCAR 支持 CP Agent 本地 selector/fingerprint/element set，以及 entitlement 允许的本地受管解析。管理服务只保存 selector、证明和策略，不复制受限文件内容。Data Market 的 CP-local scan 只接收 `agentId + managedRootId + relativePath`，metadata 由 mTLS Agent attestation 验证。
+VASP POTCAR 支持算力中心 Agent 本地 selector/fingerprint/element set，以及 entitlement 允许的本地受管解析。管理服务只保存 selector、证明和策略，不复制受限文件内容。Data Market 的 CP-local scan 只接收 `agentId + managedRootId + relativePath`，metadata 由 mTLS Agent attestation 验证。
 
-## 当前硬化缺口
+## 运行条件与限制
 
-以下功能尚未完成：
+以下操作不在当前支持范围：
 
 - sandbox 中的 `spack concretize/install`。
 - source mirror/pass-through buildcache worker。
 - signed air-gap bundle export/import。
 - 通知执行器。
 - Monaco + 结构化 `package.py` 编辑器。
-- CP 预装映射审核操作和安装成本估算。
+- 算力中心预装映射审核操作和安装成本估算。

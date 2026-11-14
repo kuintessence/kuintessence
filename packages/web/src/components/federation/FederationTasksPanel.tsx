@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { ApiError, type ApiOrganizationScope, api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -23,7 +24,11 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { AgreementFact } from "./AgreementTerms";
-import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
+import {
+  FederationEmpty,
+  FederationPanelHeader,
+  FederationRefreshNotice,
+} from "./FederationLayout";
 import { FederationTaskCreate } from "./FederationTaskCreate";
 import { FederationTaskDetail } from "./FederationTaskDetail";
 
@@ -51,11 +56,11 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
       ),
   });
   const grants =
-    !capabilities.isError && capabilities.data?.orgId === scope.organizationId
+    !federationReadFailed(capabilities) && capabilities.data?.orgId === scope.organizationId
       ? capabilities.data.effectiveCapabilities
       : [];
   const canRead = grants.includes("delegation.read");
-  const canSubmit = grants.includes("delegation.submit") && !readOnly;
+  const canSubmit = grants.includes("delegation.submit") && !readOnly && !capabilities.isError;
   const canPrepare =
     canSubmit && grants.includes("agreement.read") && grants.includes("asset.read");
   const allowed = useRef(false);
@@ -126,9 +131,16 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
   const uncertain =
     submit.isError &&
     !(submit.error instanceof ApiError && [400, 403, 409].includes(submit.error.status));
-  const busy = switching || capabilities.isFetching || submit.isPending;
+  const busy =
+    switching ||
+    capabilities.isFetching ||
+    submit.isPending ||
+    capabilities.isError ||
+    context.isError ||
+    list.isError;
+  allowed.current = allowed.current && !busy;
   if (capabilities.isPending) return <p role="status">{t("federation.loading")}</p>;
-  if (capabilities.isError || !canRead)
+  if (federationReadFailed(capabilities) || (canRead && federationReadFailed(context)) || !canRead)
     return (
       <p role={capabilities.isError ? "alert" : "status"}>
         {t(capabilities.isError ? "federation.loadFailed" : "federation.tasks.noPermission")}
@@ -136,6 +148,9 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
     );
   return (
     <div className="space-y-5">
+      <FederationRefreshNotice query={capabilities} onRetry={() => void capabilities.refetch()} />
+      <FederationRefreshNotice query={context} onRetry={() => void context.refetch()} />
+      <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
       <FederationPanelHeader title={t("federation.tasks.title")}>
         <Button
           variant="outline"
@@ -224,9 +239,9 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
           busy={busy}
           onBack={() => setSelected(null)}
         />
-      ) : list.isError ? (
+      ) : federationReadFailed(list) ? (
         <p role="alert">{t("federation.loadFailed")}</p>
-      ) : list.isPending ? (
+      ) : list.isPending || !list.data ? (
         <p role="status">{t("federation.loading")}</p>
       ) : (
         <>

@@ -1,8 +1,6 @@
 # k3s PR 预览
 
-本轮将部署范围调整为预先创建的共享 `preview` namespace。以下为该模式的部署与
-清理契约，安全实现仍待复核，须以对应提交的 Actions 和真实 HTTPS 验收为准，
-不代表共享 namespace 模式已上线。旧独立 namespace 不会自动迁移或清理。
+PR 预览使用预先创建的共享 preview namespace，每个 PR 对应独立 Helm release、数据库、持久卷和入口凭据。旧独立 namespace 不会自动迁移或清理。
 
 ## 流程
 
@@ -99,7 +97,7 @@ namespace，也不要求创建或修改 ClusterRole/ClusterRoleBinding，或取�
 - Traefik Ingress 使用完整 Host 和 `tls.hosts`，由现有默认 TLSStore 提供证书。
   不跨 namespace 引用 TLS Secret，不请求 cert-manager 签发，不修改集群 TLSStore。
 - 开发登录只允许经受保护的 gateway 访问。入口使用仓库 Secrets 中的
-  `PREVIEW_USER` 和 `PREVIEW_PASSWORD`，人工访问与 CI HTTPS 验收使用同一组固定凭据；
+  `PREVIEW_USER` 和 `PREVIEW_PASSWORD`，人工访问与 CI HTTPS 运行检查使用同一组固定凭据；
   解锁后使用 HttpOnly/Secure cookie，不覆盖应用的 Bearer Authorization。
   不公开 Server gRPC、数据库、RustFS 控制台或 Agent 注册管理端点。
 
@@ -107,14 +105,14 @@ namespace，也不要求创建或修改 ClusterRole/ClusterRoleBinding，或取�
 拒绝部署，不再生成随机入口口令，也不回退到集群中保存的旧凭据。维护者通过私密渠道
 向审阅者提供账号和口令，不在 PR 评论、Actions Summary、日志或 artifact 中输出。
 
-每个 PR 的 `kq-pr-<编号>-secrets` 保存固定账号、口令及对应 htpasswd，供 CI 验收使用；
+每个 PR 的 `kq-pr-<编号>-secrets` 保存固定账号、口令及对应 htpasswd，供 CI 运行检查使用；
 数据库、JWT、对象存储密钥和入口 Cookie 仍按 PR 独立生成，不在 PR 之间共享。
 同一组凭据重复部署时保留 hash 和 Cookie；用户名或口令变更，以及旧格式 Secret 首次
 迁移时，重新生成 htpasswd 并轮换 Cookie，触发 gateway rollout，使旧解锁会话失效。
 修改 GitHub Secrets 不会立即更新已运行环境，须重新部署所有仍开放的 PR 才能完成轮换。
 demo seed 的内容和幂等策略见 [seed 指南](../deploy/seed/README.md)。
 该环境只用于虚构数据。单容器调度器不启用高权限 Apptainer managed Spack runtime；
-完整受管安装继续由独立 runner 验收，不代表远端预览已覆盖 15 个科学工作流。
+完整受管安装继续由独立 runner 运行检查，不代表远端预览已覆盖 15 个科学工作流。
 
 ## 首次启用
 
@@ -149,7 +147,7 @@ gh workflow run preview.yml --ref main \
 该选项仅对默认分支的 `workflow_dispatch` 生效，默认关闭，不绕过信任或完整测试门禁。
 Helm 仍等待工作负载与初始化 Job，超时仍为 15 分钟，但不使用 `--atomic`；
 失败不会自动回滚，资源、PVC、凭据和本次镜像 tag 保留供检查。成功后输出
-`KQ_PREVIEW_HELM code=READY` 和 `code=RETAINED_FOR_INSPECTION`，不执行自动 HTTPS 验收。
+`KQ_PREVIEW_HELM code=READY` 和 `code=RETAINED_FOR_INSPECTION`，不执行自动 HTTPS 运行检查。
 PR 评论提供待检查地址，明确区分 Helm 成功与失败现场，不宣称 HTTPS 已通过；
 Helm 成功或失败由 Actions 和 PR 评论区分，检查模式不创建 GitHub Deployment。
 runner 的临时凭据文件和 SSH 隧道仍正常销毁，这不删除 k3s 环境。
@@ -157,15 +155,15 @@ runner 的临时凭据文件和 SSH 隧道仍正常销毁，这不删除 k3s 环
 检查期间不要关闭 PR、转为草稿、撤销信任标签或添加 `preview-paused`，
 也不要触发新的正常部署覆盖现场。上述安全撤销清理仍然有效，模式不提供永久保留锁。
 最终资格查询异常时保留现场并使 Actions 失败；明确失去资格时仍清理自有资源。
-人工检查完成后可重新按默认模式部署并运行完整 HTTPS 验收，或显式撤销预览资格后清理。
+人工检查完成后可重新按默认模式部署并运行完整 HTTPS 运行检查，或显式撤销预览资格后清理。
 
 ## 升级与清理
 
 同一 PR 的部署、清理串行执行，不中途取消 Helm。构建前和部署前后均重新检查 PR 状态，
 旧 run 不得覆盖新 SHA 的环境或发布错误地址。失败时不发布新的成功链接；
 默认模式的 Helm 使用 atomic/wait/wait-for-jobs，原始日志和 Secret 文件不会上传。
-Helm 已应用但 HTTPS 验收或最终授权检查失败时，会补偿删除本 PR 的专用环境；
-这同样会删除该环境的演示数据，不保留一个未经验收的新版本对外提供服务。
+Helm 已应用但 HTTPS 运行检查或最终授权检查失败时，会补偿删除本 PR 的专用环境；
+这同样会删除该环境的演示数据，不保留一个未经运行检查的新版本对外提供服务。
 当前版本的 migration、seed 和 RustFS bootstrap 完成 Job 不设置 TTL，
 避免 Pod 重建时等待已被自动回收的初始化屏障；由对应 release 的 Helm 升级或卸载回收。
 
@@ -189,13 +187,13 @@ Helm 部署期间，独立只读采样器在 `preview` 内按本 PR 的 release 
 消息、日志或 Secret。采样在 `--atomic` 可能清除失败工作负载之前开始，
 不改变 Helm 的等待、回滚或成功判定；部署结束或取消时随 SSH 隧道一同停止。
 Helm 失败只输出 `KQ_PREVIEW_HELM_ERROR` 固定分类，未知错误仍保持脱敏。
-HTTPS 验收使用 `KQ_PREVIEW_HTTPS` 固定阶段与错误分类，区分匿名入口、
+HTTPS 运行检查使用 `KQ_PREVIEW_HTTPS` 固定阶段与错误分类，区分匿名入口、
 认证挑战、解锁响应、cookie、Web 页面和 Server health。网络异常仅按白名单
 分类为 DNS、TLS、连接或超时等问题；HTTP 响应仅记录合法状态码，不输出
 URL、响应正文、header、证书、凭据或原始异常。未知错误不会原样透传。
 诊断不关闭 TLS 校验、不跟随重定向、不放宽认证条件，也不改变既有重试
-和失败补偿；Helm 成功不代表 HTTPS 验收成功。定位后按对应阶段修复，
-不能通过跳过验收宣称地址已验收可用。显式手动检查模式只发布待检查地址。
+和失败补偿；Helm 成功不代表 HTTPS 运行检查成功。定位后按对应阶段修复，
+不能通过跳过运行检查宣称地址已确认可用。显式手动检查模式只发布待检查地址。
 即使后续 GHCR 回收失败，评论仍如实标记站点不可用，旧预览 Deployment 标为 inactive；
 cleanup job 保持失败状态，修复权限等问题后可重复执行清理。
 
@@ -239,5 +237,5 @@ PR 仍打开时保留历史版本，便于现有 Pod 重启和失败升级回滚
 若旧环境已在运行，启用新版自动清理前必须先完成迁移或下线；新版身份无法核验旧
 namespace 内是否还有 Pod 使用同一 PR 的历史镜像，不应在旧环境仍依赖镜像时触发回收。
 
-所有测试、镜像构建、Helm 渲染与在线验收仅在 GitHub Actions 执行。
-代码存在不等于运行验证通过，应以对应 SHA 的 Actions 和 HTTPS 验收结果为准。
+所有测试、镜像构建、Helm 渲染与在线运行检查仅在 GitHub Actions 执行。
+代码存在不等于运行验证通过，应以对应 SHA 的 Actions 和 HTTPS 运行检查结果为准。

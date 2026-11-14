@@ -11,11 +11,17 @@ import { type ReactNode, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import {
+  FederationRefreshNotice,
+  FederationSectionTitle,
+  useFederationAuthRevision,
+} from "../federation/FederationLayout";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Card, CardContent, CardHeader } from "../ui/card";
 import {
   Dialog,
   DialogBody,
@@ -31,6 +37,11 @@ const root = "/admin/federation/input-reconciliation";
 const queryKey = ["federation", "input-reconciliation"] as const;
 
 export function FederationStoragePanel() {
+  const authRevision = useFederationAuthRevision();
+  return <StoragePanel key={authRevision ?? "anonymous"} />;
+}
+function StoragePanel() {
+  const authRevision = useFederationAuthRevision();
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
   const mobileReadOnly = useMobileMutationBlocked(root);
@@ -39,7 +50,7 @@ export function FederationStoragePanel() {
   const [invalidLookup, setInvalidLookup] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const list = useQuery({
-    queryKey,
+    queryKey: [...queryKey, "list", authRevision],
     queryFn: async () =>
       z
         .array(FederationInputReconciliationCandidateSchema)
@@ -47,7 +58,7 @@ export function FederationStoragePanel() {
     gcTime: 0,
   });
   const detail = useQuery({
-    queryKey: [...queryKey, selected],
+    queryKey: [...queryKey, selected, authRevision],
     enabled: !!selected,
     queryFn: async () =>
       FederationInputReconciliationPlanSchema.parse(
@@ -61,9 +72,9 @@ export function FederationStoragePanel() {
   const plan = detail.data;
   const date = (value: string) => new Date(value).toLocaleString(i18n.language);
   return (
-    <Card data-testid="federation-storage-panel">
+    <Card data-testid="federation-storage-panel" aria-label={t("federation.storage.title")}>
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
-        <CardTitle>{t("federation.storage.title")}</CardTitle>
+        <FederationSectionTitle title={t("federation.storage.title")} />
         <Button
           variant="outline"
           size="sm"
@@ -75,7 +86,11 @@ export function FederationStoragePanel() {
         </Button>
       </CardHeader>
       <CardContent className="space-y-5">
-        {selected ? (
+        <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
+        <FederationRefreshNotice query={detail} onRetry={() => void detail.refetch()} />
+        {federationReadFailed(list) ? (
+          <p role="alert">{t("federation.loadFailed")}</p>
+        ) : selected ? (
           <>
             <Button variant="ghost" size="sm" disabled={busy} onClick={() => setSelected(null)}>
               <ArrowLeft className="h-4 w-4" />
@@ -83,7 +98,7 @@ export function FederationStoragePanel() {
             </Button>
             {detail.isPending ? (
               <p role="status">{t("federation.loading")}</p>
-            ) : detail.isError ? (
+            ) : federationReadFailed(detail) || !detail.data ? (
               <p role="alert" className="text-sm text-status-failed">
                 {toUserFacingError(detail.error, t("federation.loadFailed"))}
               </p>
@@ -175,7 +190,7 @@ export function FederationStoragePanel() {
                   <ReconciliationForm
                     key={`${plan.generation}:${plan.snapshotDigest}`}
                     plan={plan}
-                    disabled={detail.isFetching}
+                    disabled={detail.isFetching || detail.isError || list.isError}
                     onBusy={setBusy}
                     onSaved={() => client.invalidateQueries({ queryKey })}
                   />
@@ -214,7 +229,7 @@ export function FederationStoragePanel() {
             ) : null}
             {list.isPending ? (
               <p role="status">{t("federation.loading")}</p>
-            ) : list.isError ? (
+            ) : federationReadFailed(list) || !list.data ? (
               <p role="alert" className="text-sm text-status-failed">
                 {toUserFacingError(list.error, t("federation.loadFailed"))}
               </p>

@@ -69,15 +69,16 @@
     "retryCapabilities": "Try again",
     "domain": {
       "consumer": "My workspace",
-      "provider": "Compute provider",
+      "provider": "Compute center",
       "platform": "Platform management",
       "ecosystem": "Software ecosystem",
-      "personal": "Personal center"
+      "personal": "Personal center",
+      "federation": "Federation Collaboration"
     },
     "identity": {
       "consumer": "My workspace",
-      "providerOperations": "Compute provider · Operations",
-      "providerTechnical": "Compute provider · Technical operations",
+      "providerOperations": "Compute center · Operations",
+      "providerTechnical": "Compute center · Technical operations",
       "platformOperations": "Platform management · Operations",
       "platformAudit": "Platform management · Audit and metering",
       "platformTechnical": "Platform management · Technical operations",
@@ -100,7 +101,9 @@
       "platformAudit": "Global audit records and usage reports",
       "platformTechnical": "Security, identity, and infrastructure",
       "softwareDeveloper": "Usecases, templates, and software assets",
-      "personal": "Account, preferences, and mapping requests"
+      "personal": "Account, preferences, and mapping requests",
+      "federation": "Cross-institution tasks, data delivery, and agreements",
+      "federationAdministration": "Federation permissions, trust, and storage"
     },
     "section": {
       "work": "Compute and orchestration",
@@ -114,7 +117,9 @@
       "platformTechnical": "Platform technical operations",
       "softwareAssets": "Software assets",
       "personal": "Account and preferences",
-      "computeResources": "Resources"
+      "computeResources": "Resources",
+      "federationCollaboration": "Collaboration",
+      "federationAdministration": "Administration"
     },
     "nav": {
       "operationsOverview": "Operations overview",
@@ -255,9 +260,9 @@
       "automationCredentialCreated": "Created an automation credential",
       "automationCredentialRevoked": "Revoked an automation credential",
       "categoryCompute": "Compute",
-      "provider_create": "Created compute provider",
-      "provider_update": "Updated compute provider",
-      "provider_delete": "Deleted compute provider",
+      "provider_create": "Created compute center",
+      "provider_update": "Updated compute center",
+      "provider_delete": "Deleted compute center",
       "center_create": "Created compute center",
       "center_update": "Updated compute center",
       "center_delete": "Deleted compute center",
@@ -300,7 +305,7 @@
       "all": "All visible",
       "owner": "Submitted by me",
       "consumer_admin": "Consumer admin",
-      "provider_operator": "Provider operations",
+      "provider_operator": "Compute Center operations",
       "platform": "Platform",
       "authorization_service": "Authorization service"
     },
@@ -356,7 +361,7 @@
       "warning": "This target has a queue-observation warning and will be checked again before submit.",
       "blocked": "This target cannot be submitted right now."
     },
-    "queueEmptyDiagnostic": "No enabled and visible queues are available. Auto placement remains available; disabled or unauthorized queues stay hidden until a compute provider administrator enables or shares them.",
+    "queueEmptyDiagnostic": "No enabled and visible queues are available. Auto placement remains available; disabled or unauthorized queues stay hidden until a compute center administrator enables or shares them.",
     "queueLabel": "Queue",
     "queueLoadFailed": "Queue list unavailable",
     "queueVisibilityHint": "Only enabled queues visible to your organization are listed. Disabled or unauthorized queues are rejected by the Server.",
@@ -945,16 +950,16 @@
       "offlineTelemetry": "Offline site telemetry is stale or invalid and cannot establish installation readiness.",
       "offline": "This agent's control channel is offline. Wait for it to recover or choose another agent.",
       "usePermission": "Your account cannot use this software yet. Request access before running it.",
-      "providerDenyList": "The compute provider's deny-list policy blocks this software.",
-      "usecaseDenyList": "The compute provider's policy blocks this scientific use case.",
+      "providerDenyList": "The compute center's deny-list policy blocks this software.",
+      "usecaseDenyList": "The compute center's policy blocks this scientific use case.",
       "installNotRequested": "This preview did not allow installing software on demand.",
-      "providerAllowList": "This software is not in the provider's locked allow list.",
+      "providerAllowList": "This software is not in the compute center's locked allow list.",
       "installPermission": "Your account cannot install software on this agent.",
       "preinstalledOnly": "This agent only permits software that is already installed.",
-      "usecasePolicy": "The compute provider has not enabled this scientific use case.",
+      "usecasePolicy": "The compute center has not enabled this scientific use case.",
       "lifecycle": "The software's current publication state does not allow new compute runs.",
       "governance": "A license or runtime prerequisite is not satisfied. Request access or complete the runtime setup from the software details.",
-      "generic": "This agent does not currently meet the software requirements. Choose another agent or contact the compute provider."
+      "generic": "This agent does not currently meet the software requirements. Choose another agent or contact the compute center."
     },
     "title": "Software Center",
     "subtitle": "Manage data-processing scripts, workflow templates, software usecases, and Spack package recipes for orchestration, installation, and HPC software reuse.",
@@ -993,7 +998,7 @@
     },
     "governance": {
       "title": "Software asset review",
-      "subtitle": "Review software provider and compute provider submissions, official forks, lifecycle changes, and downstream use grants.",
+      "subtitle": "Review software provider and compute center submissions, official forks, lifecycle changes, and downstream use grants.",
       "pending": "{{count}} pending",
       "trusted": "Trusted",
       "untrusted": "Untrusted",
@@ -1018,8 +1023,8 @@
       "source": {
         "official-upstream": "upstream",
         "platform-fork": "platform fork",
-        "cp-private": "Compute provider private",
-        "cp-shared": "Compute provider shared",
+        "cp-private": "Compute center private",
+        "cp-shared": "Compute center shared",
         "sp-draft": "SP draft",
         "sp-published": "SP published"
       },
@@ -1268,7 +1273,7 @@
       "licenseInheritance": "These conditions are inherited by bound usecases and workflows and are checked again at submission.",
       "provenance": "Provenance",
       "acceptanceRequired": "Terms acceptance required",
-      "providerEntitlementRequired": "Provider install entitlement required",
+      "providerEntitlementRequired": "Compute Center install entitlement required",
       "consumerEntitlementRequired": "Consumer use entitlement required",
       "redistribution": "Redistribution",
       "autoInstall": "Auto-install",
@@ -1297,7 +1302,7 @@
       "claimantPlaceholder": "Organization UUID or authorized subject ID",
       "entitlement": "Entitlement scope",
       "consumerUse": "Consumer use entitlement",
-      "providerSourceInstall": "Provider source/install entitlement",
+      "providerSourceInstall": "Compute Center source/install entitlement",
       "evidenceReference": "Evidence reference (URL, ticket, or internal ID)",
       "evidenceSummary": "Non-sensitive evidence summary",
       "submitClaim": "Submit entitlement claim",
@@ -1308,9 +1313,9 @@
       "revoke": "Revoke",
       "runtimeMaterialTitle": "Managed runtime and restricted materials",
       "runtimeMaterialDescription": "Bindings must target a signed runtime profile. VASP POTCAR registers only a local selector and fingerprint; bytes never reach Server, Registry, or NetDrive.",
-      "providerOrg": "Provider organization",
-      "providerOrgPlaceholder": "Provider organization UUID",
-      "providerOrgOptional": "Provider organization UUID (if applicable)",
+      "providerOrg": "Compute Center organization",
+      "providerOrgPlaceholder": "Compute Center organization UUID",
+      "providerOrgOptional": "Compute Center organization UUID (if applicable)",
       "runtimeBinding": "Sandbox runtime binding",
       "agent": "Agent ID",
       "agentPlaceholder": "Agent ID",
@@ -1318,7 +1323,7 @@
       "runtimeProfilePlaceholder": "Signed runtime profile ID",
       "runtimeDigest": "Runtime digest",
       "bindRuntime": "Bind python-3.12-stdlib-v1",
-      "noRuntimeBindings": "No runtime binding is configured for this provider. Unbound scripts remain browsable but cannot be submitted.",
+      "noRuntimeBindings": "No runtime binding is configured for this compute center. Unbound scripts remain browsable but cannot be submitted.",
       "materialSoftware": "Linked software",
       "selectMaterialSoftware": "Select published software",
       "noMaterialSoftware": "Import and activate a release containing VASP first.",
@@ -1433,7 +1438,7 @@
       "title": "Sandbox execution account mappings",
       "subtitle": "Inline scripts, drafts, and test runs require a CP-approved mapped account. Keep mappings for multiple clusters and select a default.",
       "candidate": "Execution account candidate",
-      "selectCandidate": "Select a compute provider cluster account",
+      "selectCandidate": "Select a compute center cluster account",
       "request": "Request mapping",
       "requested": "Account mapping request submitted",
       "loadingCandidates": "Loading execution account candidates…",
@@ -1442,13 +1447,13 @@
       "defaultFailed": "Could not update the default execution account. Try again shortly.",
       "mappingLoadFailed": "Account mappings could not be loaded. Try again shortly.",
       "noPublishedTitle": "No requestable accounts have been published",
-      "noPublishedDescription": "A compute provider must publish an account in its cluster account catalog before users can request a mapping. Approved mappings can then run jobs and Sandbox scripts.",
+      "noPublishedDescription": "A compute center must publish an account in its cluster account catalog before users can request a mapping. Approved mappings can then run jobs and Sandbox scripts.",
       "manageCatalog": "Manage account catalog",
       "noMoreCandidates": "Every published account already has an active or pending mapping. Rejected, revoked, and expired mappings can still be requested again.",
       "lifecycle": {
         "title": "Execution account request flow",
         "publish": {
-          "title": "Provider publishes",
+          "title": "Compute Center publishes",
           "description": "Registers requestable accounts"
         },
         "request": {
@@ -1456,15 +1461,15 @@
           "description": "Selects a site and mapping"
         },
         "approve": {
-          "title": "Provider approves",
+          "title": "Compute Center approves",
           "description": "Enables job execution"
         }
       },
       "defaultUpdated": "Default execution account updated",
-      "empty": "No account mappings yet. Select a compute provider cluster account to request one.",
+      "empty": "No account mappings yet. Select a compute center cluster account to request one.",
       "default": "Default",
       "setDefault": "Set as default",
-      "delegationRequired": "You do not have approval access for this provider",
+      "delegationRequired": "You do not have approval access for this compute center",
       "status": {
         "pending": "Pending",
         "approved": "Approved",
@@ -1473,7 +1478,7 @@
         "expired": "Expired"
       },
       "reviewTitle": "Sandbox account mapping review",
-      "reviewSubtitle": "Providers review their own cluster accounts. Platform operators can review across providers.",
+      "reviewSubtitle": "Compute Centers review their own cluster accounts. Platform operators can review across compute centers.",
       "reviewEmpty": "No account mappings are waiting for review.",
       "reviewed": "Account mapping reviewed",
       "approve": "Approve",
@@ -1481,7 +1486,7 @@
     },
     "security": {
       "title": "Sandbox platform security ceiling",
-      "subtitle": "The platform ceiling disables impersonation, degraded impersonation, and shared accounts by default. Compute provider policies may only tighten it. The table shows agent privilege and readiness facts with the effective policy.",
+      "subtitle": "The platform ceiling disables impersonation, degraded impersonation, and shared accounts by default. Compute center policies may only tighten it. The table shows agent privilege and readiness facts with the effective policy.",
       "sandboxEnabled": "Allow Sandbox",
       "impersonation": "Allow root impersonation",
       "degraded": "Allow degraded impersonation",
@@ -1591,7 +1596,7 @@
       "summary": {
         "coverage": "Visible entries for this role",
         "platformOps": "Platform security ops",
-        "providerOps": "Compute provider operations",
+        "providerOps": "Compute center operations",
         "costOps": "Global cost policy",
         "enabled": "Enabled",
         "locked": "Locked"
@@ -1667,7 +1672,7 @@
         },
         "desensitize": {
           "title": "Data desensitization policy",
-          "description": "Manage global, provider, and cluster rules and export short-lived reverse-alias envelopes."
+          "description": "Manage global, compute center, and cluster rules and export short-lived reverse-alias envelopes."
         },
         "sshVault": {
           "title": "SSH credential vault",
@@ -1698,24 +1703,24 @@
           "description": "Review global platform operations with authorization and desensitization applied."
         },
         "cpAudit": {
-          "title": "Compute provider audit search",
-          "description": "Search provider operations by time range, actor, action, and target."
+          "title": "Compute center audit search",
+          "description": "Search compute center operations by time range, actor, action, and target."
         },
         "agents": {
           "title": "Node runtime status",
           "description": "Inspect registered Agents, heartbeat state, resources, and SSH entry points."
         },
         "cpAgents": {
-          "title": "Compute provider agent inventory",
-          "description": "Manage site Agents, health, and registration state from the provider view."
+          "title": "Compute center agent inventory",
+          "description": "Manage site Agents, health, and registration state from the compute center view."
         },
         "clusterFileRoots": {
           "title": "Cluster file roots",
           "description": "Configure real cluster paths allowed by Files and transfer preflight."
         },
         "softwarePolicy": {
-          "title": "Compute provider software policy",
-          "description": "Manage preinstalled software, Spack policy, allow/deny lists, and provider overlays."
+          "title": "Compute center software policy",
+          "description": "Manage preinstalled software, Spack policy, allow/deny lists, and compute center overlays."
         },
         "registry": {
           "title": "Registry",
@@ -1801,15 +1806,15 @@
     },
     "desensitize": {
       "title": "Data desensitization and alias export",
-      "description": "Maintain field rules at global, provider, and cluster scope. Child rules can only tighten parent constraints.",
+      "description": "Maintain field rules at global, compute center, and cluster scope. Child rules can only tighten parent constraints.",
       "globalEnabled": "Enable global desensitization",
       "scope": "Scope",
-      "scopeId": "Provider / cluster ID",
+      "scopeId": "Compute Center / cluster ID",
       "fieldPath": "Field name",
       "action": "Action",
       "scopes": {
         "global": "Global",
-        "provider": "Provider",
+        "provider": "Compute Center",
         "cluster": "Cluster"
       },
       "empty": "No field rules configured.",
@@ -1846,7 +1851,7 @@
       "title": "Cluster file roots",
       "description": "Restrict cluster browsing, downloads, and transfer preflight to authorized paths. Configure writable roots for real clusters so users do not hand-enter paths like `/scratch` that may not exist or be writable.",
       "label": "Label",
-      "providerOrgId": "Provider organization",
+      "providerOrgId": "Compute Center organization",
       "agentId": "Agent",
       "capacityGb": "Capacity (GB)",
       "allAgents": "All Agents",
@@ -1874,7 +1879,7 @@
         "not_writable": "Not writable",
         "unavailable": "Agent offline"
       },
-      "selectProvider": "Select a provider organization",
+      "selectProvider": "Select a compute center organization",
       "directoryFailed": "Could not load organizations or agents. Please retry.",
       "sharedWith": "Shared with",
       "noSharing": "No additional organizations",
@@ -2306,8 +2311,8 @@
     }
   },
   "providers": {
-    "title": "Compute Providers",
-    "selfTitle": "Provider Profile",
+    "title": "Compute Centers",
+    "selfTitle": "Operations profile",
     "name": "Name",
     "description": "Description",
     "contactName": "Contact",
@@ -2319,30 +2324,30 @@
     "agents": "Agents",
     "members": "Members",
     "actions": "Actions",
-    "search": "Search providers",
+    "search": "Search compute centers",
     "searchButton": "Search",
     "refresh": "Refresh",
-    "create": "Add provider",
+    "create": "Add compute center",
     "edit": "Edit profile",
     "delete": "Delete",
     "confirmDelete": "Confirm deletion",
-    "deleteWarning": "Delete “{{name}}”? Providers with members, resources or business history cannot be deleted.",
+    "deleteWarning": "Delete “{{name}}”? Compute Centers with members, resources or business history cannot be deleted.",
     "cancel": "Cancel",
     "save": "Save",
     "saving": "Saving…",
     "saveFailed": "Save failed",
     "retry": "Retry",
     "loading": "Loading…",
-    "denied": "You cannot access provider profiles",
-    "empty": "No matching providers",
-    "total": "{{count}} providers",
+    "denied": "You cannot access compute center profiles",
+    "empty": "No matching compute centers",
+    "total": "{{count}} compute centers",
     "previous": "Previous",
     "next": "Next",
     "updatedAt": "Updated",
-    "desktopEdit": "Use a desktop to edit provider profiles.",
-    "loadFailed": "Unable to load provider information. Please try again.",
-    "inUse": "This provider still has members, resources, or historical records and cannot be deleted.",
-    "deleteFailed": "Unable to delete the provider. Please try again.",
+    "desktopEdit": "Use a desktop to edit compute center profiles.",
+    "loadFailed": "Unable to load compute center information. Please try again.",
+    "inUse": "This compute center still has members, resources, or historical records and cannot be deleted.",
+    "deleteFailed": "Unable to delete the compute center. Please try again.",
     "invalidFields": "Check these fields: {{fields}}"
   },
   "agentSoftware": {
@@ -2561,7 +2566,7 @@
     "optionsFailed": "Could not load users and organizations.",
     "retry": "Retry",
     "orgRole": "Organization role",
-    "independentPermissions": "This user also has platform or provider permissions. Changing their organization role does not revoke those permissions.",
+    "independentPermissions": "This user also has platform or compute center permissions. Changing their organization role does not revoke those permissions.",
     "alreadyMember": "This user is already a member. Edit their permissions from the member list.",
     "saveFailed": "Could not save permissions. Try again.",
     "cancel": "Cancel",
@@ -2652,7 +2657,7 @@
       "clusters": "Clusters & agents",
       "accounts": "Execution accounts",
       "users": "Platform users",
-      "provider": "Compute provider"
+      "provider": "Compute center"
     },
     "users": {
       "status": "Status",

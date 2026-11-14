@@ -54,7 +54,7 @@ Workflow 使用控制流 DSL，Web 编辑器提供 YAML 与 React Flow 双向编
 以下情况会影响运行：
 
 - ACL：缺少软件资产的 `use` 或 `install` 权限。
-- CP policy：目标算力提供者禁止安装、命中 deny list 或 lock。
+- 算力中心策略：目标算力中心禁止安装、命中 deny list 或 lock。
 - Lifecycle：资产被 `revoked` 或 `hidden` 会阻断；`deprecated` 只提示风险。
 
 ## 文件与数据
@@ -63,7 +63,7 @@ Workflow 使用控制流 DSL，Web 编辑器提供 YAML 与 React Flow 双向编
 
 - NetDrive 是平台对象存储视图，适合跨站点输入输出。
 - 集群文件走 Agent/Server 权限边界，只允许浏览管理员配置的安全 root。
-- 大文件上传和任务输出优先走 multipart 或 Range-resume 路径。
+- 当前 Web 文件页串行上传，按单次 PUT 提交，计算摘要时读取完整文件；大文件需关注浏览器内存及网络。后端支持 multipart 不表示该页面具备分段续传。
 
 当 workflow 输入文件有 mirror 记录时，调度器会把数据站点作为 locality hint 使用。
 
@@ -96,10 +96,10 @@ curl -i -X POST http://localhost:15173/api/auth/login \
 打开 placement preview 或软件详情页的 availability 区域，按阻断类型处理：
 
 - `acl`：申请软件权限。
-- `cp-policy`：联系算力提供者调整 allow/deny、install mode 或 lock。
+- `cp-policy`：联系算力中心调整 allow/deny、install mode 或 lock。
 - `agent-status`：等待节点在线，或选择其他队列。
 - `lifecycle`：改用 official fork 或更新 workflow template。
 
 ### SSH 连接失败
 
-确认目标 Agent 在线，且平台或 CP 管理员已配置 SSH credential vault。生产环境还应确认 host-key pinning 和并发会话限制。
+确认目标 Agent 在线，且平台或算力中心管理员已配置 SSH credential vault。生产环境还应确认 host-key pinning 和并发会话限制。

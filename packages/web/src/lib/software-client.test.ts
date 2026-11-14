@@ -6,6 +6,7 @@ import {
   deleteSpackCatalogPackage,
   getWorkflowTemplate,
   listSpackCatalog,
+  listUsecasePackages,
   listWorkflowTemplatePage,
   listWorkflowTemplates,
   PENDING_TEMPLATE_KEY,
@@ -24,6 +25,100 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("listUsecasePackages", () => {
+  function response(body: unknown, status = 200) {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  test("loads later pages for selectors and preserves organization scope", async () => {
+    const packages = Array.from({ length: 101 }, (_, i) => ({
+      id: `u-${i}`,
+      name: `Usecase ${i}`,
+    }));
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const params = new URL(url, "https://example.test").searchParams;
+      expect(params.get("orgId")).toBe("org-a");
+      expect(params.get("pageSize")).toBe("100");
+      const page = Number(params.get("page"));
+      return Promise.resolve(
+        response({
+          usecasePackages: packages.slice((page - 1) * 100, page * 100),
+          total: 101,
+          page,
+          pageSize: 100,
+          totalPages: 2,
+          hasNext: page === 1,
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await listUsecasePackages({ orgId: "org-a" })).toEqual(packages);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("accepts the legacy response without pagination fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(response({ usecasePackages: [{ id: "u-1" }] })),
+    );
+    expect(await listUsecasePackages()).toEqual([{ id: "u-1" }]);
+  });
+
+  test("does not return partial results when the next page is denied", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          response({ usecasePackages: [{ id: "u-1" }], total: 2, hasNext: true }),
+        )
+        .mockResolvedValueOnce(response({ error: "Forbidden" }, 403)),
+    );
+    await expect(listUsecasePackages()).rejects.toMatchObject({ status: 403 });
+  });
+
+  test("requires refresh when the catalog changes between pages", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          response({ usecasePackages: [{ id: "u-1" }], total: 2, hasNext: true }),
+        )
+        .mockResolvedValueOnce(
+          response({ usecasePackages: [{ id: "u-2" }], total: 3, hasNext: false }),
+        ),
+    );
+    await expect(listUsecasePackages()).rejects.toMatchObject({ status: 409 });
+  });
+
+  test("rejects repeated page rows instead of silently omitting a usecase", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          response({ usecasePackages: [{ id: "u-1" }], total: 2, hasNext: false }),
+        ),
+    );
+    await expect(listUsecasePackages()).rejects.toMatchObject({ status: 409 });
+  });
+
+  test("bounds full catalog loading", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(response({ usecasePackages: [], total: 1001, hasNext: true })),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(listUsecasePackages()).rejects.toMatchObject({ status: 413 });
+    expect(fetchMock).toHaveBeenCalledTimes(10);
+  });
 });
 
 describe("pending-template handoff", () => {

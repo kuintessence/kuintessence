@@ -10,11 +10,17 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 import { api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import {
+  FederationRefreshNotice,
+  FederationSectionTitle,
+  useFederationAuthRevision,
+} from "../federation/FederationLayout";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Card, CardContent, CardHeader } from "../ui/card";
 import {
   Dialog,
   DialogBody,
@@ -41,6 +47,11 @@ type Confirmation = {
 };
 
 export function FederationTrustPanel() {
+  const authRevision = useFederationAuthRevision();
+  return <TrustPanel key={authRevision ?? "anonymous"} />;
+}
+function TrustPanel() {
+  const authRevision = useFederationAuthRevision();
   const { t } = useTranslation();
   const client = useQueryClient();
   const mobileReadOnly = useMobileMutationBlocked(path);
@@ -49,7 +60,7 @@ export function FederationTrustPanel() {
   const [editor, setEditor] = useState<"new-site" | "site" | "key" | "certificate" | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const list = useQuery({
-    queryKey: [...queryKey, "list", page],
+    queryKey: [...queryKey, "list", page, authRevision],
     queryFn: async () => {
       const result = await api.get<{ data: unknown }>(
         `${path}?limit=${pageSize}&offset=${page * pageSize}`,
@@ -58,7 +69,7 @@ export function FederationTrustPanel() {
     },
   });
   const detail = useQuery({
-    queryKey: [...queryKey, "detail", selected],
+    queryKey: [...queryKey, "detail", selected, authRevision],
     enabled: !!selected,
     queryFn: async () => {
       const result = await api.get<{ data: unknown }>(`${path}/${selected}`);
@@ -83,7 +94,7 @@ export function FederationTrustPanel() {
     }
   }, [mobileReadOnly]);
   const save = (input: Change) => {
-    if (mobileReadOnly || change.isPending) return;
+    if (mobileReadOnly || change.isPending || list.isError || (selected && detail.isError)) return;
     change.reset();
     change.mutate(input);
   };
@@ -111,14 +122,19 @@ export function FederationTrustPanel() {
     </p>
   ) : null;
   return (
-    <Card data-testid="federation-trust-panel">
+    <Card data-testid="federation-trust-panel" aria-label={t("federation.title")}>
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
-        <CardTitle>{t("federation.title")}</CardTitle>
+        <FederationSectionTitle title={t("federation.title")} />
         <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
             size="sm"
-            disabled={change.isPending || editor !== null || list.isFetching || detail.isFetching}
+            disabled={
+              change.isPending ||
+              (editor !== null && !list.isError && !detail.isError) ||
+              list.isFetching ||
+              detail.isFetching
+            }
             onClick={() => void client.invalidateQueries({ queryKey })}
           >
             <RefreshCw className="h-4 w-4" />
@@ -138,6 +154,13 @@ export function FederationTrustPanel() {
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
+        <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
+        <FederationRefreshNotice query={detail} onRetry={() => void detail.refetch()} />
+        {editor && (federationReadFailed(list) || federationReadFailed(detail)) ? (
+          <Button variant="ghost" disabled={change.isPending} onClick={() => open(null)}>
+            {t("federation.cancel")}
+          </Button>
+        ) : null}
         {mobileReadOnly && (
           <p className="text-sm text-muted-foreground">{t("federation.desktopOnly")}</p>
         )}
@@ -145,7 +168,7 @@ export function FederationTrustPanel() {
           <p role="status" className="text-sm text-muted-foreground">
             {t("federation.loading")}
           </p>
-        ) : list.isError ? (
+        ) : federationReadFailed(list) || !list.data ? (
           <p role="alert" className="text-sm text-status-failed">
             {toUserFacingError(list.error, t("federation.loadFailed"))}
           </p>
@@ -153,6 +176,7 @@ export function FederationTrustPanel() {
           <div className="max-w-3xl space-y-4">
             <FederationSiteForm
               busy={change.isPending}
+              blocked={list.isError || detail.isError}
               onCancel={() => open(null)}
               onSubmit={(input) => save({ path, body: input, selectId: input.id })}
             />
@@ -173,7 +197,7 @@ export function FederationTrustPanel() {
               <p role="status" className="text-sm text-muted-foreground">
                 {t("federation.loading")}
               </p>
-            ) : detail.isError ? (
+            ) : federationReadFailed(detail) || !detail.data ? (
               <p role="alert" className="text-sm text-status-failed">
                 {toUserFacingError(detail.error, t("federation.loadFailed"))}
               </p>
@@ -240,6 +264,7 @@ export function FederationTrustPanel() {
                         key={site.id}
                         site={site}
                         busy={change.isPending}
+                        blocked={list.isError || detail.isError}
                         onCancel={() => open(null)}
                         onSubmit={({ name, endpoint }) =>
                           save({
@@ -252,12 +277,14 @@ export function FederationTrustPanel() {
                     ) : editor === "key" ? (
                       <FederationKeyForm
                         busy={change.isPending}
+                        blocked={list.isError || detail.isError}
                         onCancel={() => open(null)}
                         onSubmit={(body) => save({ path: `${path}/${site.id}/keys`, body })}
                       />
                     ) : (
                       <FederationCertificateForm
                         busy={change.isPending}
+                        blocked={list.isError || detail.isError}
                         onCancel={() => open(null)}
                         onSubmit={(body) => save({ path: `${path}/${site.id}/certificates`, body })}
                       />
@@ -390,7 +417,7 @@ export function FederationTrustPanel() {
           </>
         )}
         <Dialog
-          open={!!confirmation}
+          open={!!confirmation && !federationReadFailed(list) && !federationReadFailed(detail)}
           onOpenChange={(value) => {
             if (!value && !change.isPending) setConfirmation(null);
           }}

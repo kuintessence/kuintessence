@@ -1,14 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  BriefcaseBusiness,
-  ClipboardList,
-  FileCheck2,
-  FolderSync,
-  Handshake,
-  Package,
-  Scale,
-  Truck,
-} from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -19,33 +9,28 @@ import {
   useActiveOrganizationId,
 } from "../../lib/active-organization";
 import { getAuthState, subscribeAuthState } from "../../lib/auth";
+import { FEDERATION_SECTIONS, type FederationSection } from "../../lib/federation-navigation";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { refreshOrganizationScope } from "../../lib/organization-query-scope";
-import { useMediaQuery } from "../../lib/use-media-query";
 import { Button } from "../ui/button";
 import { PageHeader, PageShell } from "../ui/page";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { AgreementPanel } from "./AgreementPanel";
 import { CommercialPanel } from "./CommercialPanel";
 import { FederationAssetsPanel } from "./FederationAssetsPanel";
 import { FederationEvidencePanel } from "./FederationEvidencePanel";
-import { FederationEmpty } from "./FederationLayout";
+import { FederationEmpty, FederationPageTitle, FederationRefreshNotice } from "./FederationLayout";
 import { FederationMarketPanel } from "./FederationMarketPanel";
 import { FederationTasksPanel } from "./FederationTasksPanel";
 import { MediaDeliveryPanel, type MediaWorkflowExport } from "./MediaDeliveryPanel";
 import { MediaLogisticsPanel } from "./MediaLogisticsPanel";
 
-const sections = [
-  { value: "tasks", label: "federation.tasks.title", icon: ClipboardList },
-  { value: "market", label: "federation.market.title", icon: BriefcaseBusiness },
-  { value: "execution", label: "federation.agreements.agreements", icon: Handshake },
-  { value: "assets", label: "federation.assets.title", icon: FolderSync },
-  { value: "commercial", label: "federation.commercial.title", icon: Scale },
-  { value: "delivery", label: "federation.delivery.title", icon: Package },
-  { value: "evidence", label: "federation.evidence.title", icon: FileCheck2 },
-  { value: "media", label: "federation.logistics.title", icon: Truck },
-] as const;
-
-export function FederationPage({ mediaExport }: { mediaExport?: MediaWorkflowExport } = {}) {
+export function FederationPage({
+  mediaExport,
+  section = mediaExport ? "delivery" : "agreements",
+}: {
+  mediaExport?: MediaWorkflowExport;
+  section?: FederationSection;
+} = {}) {
   const revision = useSyncExternalStore(
     subscribeAuthState,
     () => getAuthState().revision,
@@ -57,6 +42,7 @@ export function FederationPage({ mediaExport }: { mediaExport?: MediaWorkflowExp
         key={`${revision}:${mediaExport?.workflowRunId ?? ""}:${mediaExport?.taskKind ?? ""}`}
         revision={revision}
         mediaExport={mediaExport}
+        section={section}
       />
     </PageShell>
   );
@@ -65,12 +51,17 @@ export function FederationPage({ mediaExport }: { mediaExport?: MediaWorkflowExp
 function OrganizationAgreements({
   revision,
   mediaExport,
+  section,
 }: {
   revision: string | null;
   mediaExport?: MediaWorkflowExport;
+  section: FederationSection;
 }) {
   const { t } = useTranslation();
-  const desktopNavigation = useMediaQuery("(min-width: 1280px)");
+  const pageTitle = t(
+    FEDERATION_SECTIONS.find((item) => item.id === section)?.labelKey ??
+      "federation.agreements.agreements",
+  );
   const client = useQueryClient();
   const organizationId = useActiveOrganizationId();
   useEffect(() => {
@@ -95,17 +86,17 @@ function OrganizationAgreements({
       await client.invalidateQueries({ queryKey: ["federation"] });
     },
   });
-  if (context.isPending)
+  if (context.isPending || (!context.isError && !context.data))
     return (
       <>
-        <PageHeader title={t("federation.agreements.title")} />
+        <PageHeader title={pageTitle} />
         <p role="status">{t("federation.loading")}</p>
       </>
     );
-  if (context.isError)
+  if (federationReadFailed(context) || !context.data)
     return (
       <div role="alert">
-        <PageHeader title={t("federation.agreements.title")} />
+        <PageHeader title={pageTitle} />
         <p>{t("federation.loadFailed")}</p>
         <Button variant="outline" onClick={() => void context.refetch()}>
           {t("federation.refresh")}
@@ -115,7 +106,7 @@ function OrganizationAgreements({
   return (
     <>
       <PageHeader
-        title={t("federation.agreements.title")}
+        title={pageTitle}
         actions={
           <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
             <label htmlFor="federation-organization" className="text-sm font-medium">
@@ -150,73 +141,61 @@ function OrganizationAgreements({
           </div>
         }
       />
+      <FederationRefreshNotice query={context} onRetry={() => void context.refetch()} />
       {organizationId && context.data.organizations.some((org) => org.orgId === organizationId) ? (
-        <Tabs
-          key={`${organizationId}:${revision}`}
-          defaultValue={mediaExport ? "delivery" : "execution"}
-          orientation={desktopNavigation ? "vertical" : "horizontal"}
-          className="federation-layout"
-        >
-          <TabsList aria-label={t("federation.agreements.title")} className="federation-nav">
-            {sections.map(({ value, label, icon: Icon }) => (
-              <TabsTrigger key={value} value={value} className="federation-nav-item">
-                <Icon aria-hidden="true" className="size-4 shrink-0" />
-                {t(label)}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-          <div className="federation-content">
-            <TabsContent value="tasks">
+        <FederationPageTitle value={pageTitle}>
+          <div key={`${organizationId}:${revision}:${section}`} className="federation-content">
+            {section === "tasks" ? (
               <FederationTasksPanel
                 scope={{ organizationId, authRevision: revision }}
                 switching={change.isPending || context.isFetching}
               />
-            </TabsContent>
-            <TabsContent value="market">
+            ) : null}
+            {section === "market" ? (
               <FederationMarketPanel
                 scope={{ organizationId, authRevision: revision }}
                 switching={change.isPending || context.isFetching}
               />
-            </TabsContent>
-            <TabsContent value="execution">
+            ) : null}
+            {section === "agreements" ? (
               <AgreementPanel
                 scope={{ organizationId, authRevision: revision }}
                 switching={change.isPending || context.isFetching}
               />
-            </TabsContent>
-            <TabsContent value="commercial">
+            ) : null}
+            {section === "commercial" ? (
               <CommercialPanel
                 scope={{ organizationId, authRevision: revision }}
                 switching={change.isPending || context.isFetching}
               />
-            </TabsContent>
-            <TabsContent value="assets">
+            ) : null}
+            {section === "assets" ? (
               <FederationAssetsPanel
                 scope={{ organizationId, authRevision: revision }}
                 switching={change.isPending || context.isFetching}
               />
-            </TabsContent>
-            <TabsContent value="delivery">
+            ) : null}
+            {section === "delivery" ? (
               <MediaDeliveryPanel
                 exportFrom={mediaExport}
                 scope={{ organizationId, authRevision: revision }}
                 switching={change.isPending || context.isFetching}
               />
-            </TabsContent>
-            <TabsContent value="evidence">
+            ) : null}
+            {section === "cases" ? (
               <FederationEvidencePanel
                 scope={{ organizationId, authRevision: revision }}
                 switching={change.isPending || context.isFetching}
               />
-            </TabsContent>
-            <TabsContent value="media">
+            ) : null}
+            {section === "logistics" ? (
               <MediaLogisticsPanel
                 scope={{ organizationId, authRevision: revision }}
                 switching={change.isPending || context.isFetching}
               />
-            </TabsContent>
+            ) : null}
           </div>
-        </Tabs>
+        </FederationPageTitle>
       ) : (
         <FederationEmpty>{t("federation.agreements.chooseOrganization")}</FederationEmpty>
       )}

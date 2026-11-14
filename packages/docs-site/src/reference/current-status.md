@@ -1,6 +1,6 @@
 # 当前功能与使用边界
 
-Kuintessence 当前为 pre-release，包含 Server、Agent、Registry、Web、CLI、TUI 和本地 GUI。
+Kuintessence 包含 Server、Agent、Registry、Web、CLI、TUI 和本地 GUI。
 
 ## 部署前核对
 

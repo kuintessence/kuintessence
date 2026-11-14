@@ -32,6 +32,11 @@ import {
   UsersRound,
   Wrench,
 } from "lucide-react";
+import {
+  FEDERATION_SECTIONS,
+  isFederationSettings,
+  resolveFederationSection,
+} from "../lib/federation-navigation";
 import type { LocalCapabilities } from "../lib/local-mode";
 import { resolveSoftwareSection, SOFTWARE_SECTION_HASH } from "../lib/software-navigation";
 
@@ -63,7 +68,13 @@ export type WorkspaceRoute =
   | "/operations"
   | "/settings";
 
-export type WorkspaceDomainId = "consumer" | "provider" | "platform" | "ecosystem" | "personal";
+export type WorkspaceDomainId =
+  | "consumer"
+  | "provider"
+  | "platform"
+  | "federation"
+  | "ecosystem"
+  | "personal";
 
 export type WorkspaceIdentityId =
   | "consumer"
@@ -72,6 +83,8 @@ export type WorkspaceIdentityId =
   | "platform-operations"
   | "platform-audit"
   | "platform-technical"
+  | "federation-collaboration"
+  | "federation-administration"
   | "software-developer"
   | "personal";
 
@@ -116,6 +129,7 @@ export const WORKSPACE_DOMAINS: ReadonlyArray<WorkspaceDomain> = [
   { id: "consumer", labelKey: "workspace.domain.consumer", icon: LayoutDashboard },
   { id: "provider", labelKey: "workspace.domain.provider", icon: Building2 },
   { id: "platform", labelKey: "workspace.domain.platform", icon: RadioTower },
+  { id: "federation", labelKey: "workspace.domain.federation", icon: Network },
   { id: "ecosystem", labelKey: "workspace.domain.ecosystem", icon: Boxes },
   { id: "personal", labelKey: "workspace.domain.personal", icon: UserRound },
 ];
@@ -157,12 +171,6 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
         items: [
           { to: "/files", labelKey: "nav.files", icon: FolderTree, serverOnly: true },
           { to: "/data-market", labelKey: "nav.dataMarket", icon: Database, serverOnly: true },
-          {
-            to: "/federation",
-            labelKey: "federation.agreements.title",
-            icon: Network,
-            serverOnly: true,
-          },
           { to: "/agents", labelKey: "nav.agents", icon: Server, localCapability: "agents" },
         ],
       },
@@ -382,6 +390,64 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
     ],
   },
   {
+    id: "federation-collaboration",
+    domain: "federation",
+    labelKey: "workspace.domain.federation",
+    shortLabelKey: "workspace.domain.federation",
+    descriptionKey: "workspace.identityDescription.federation",
+    icon: Network,
+    entry: { to: "/federation", hash: "tasks" },
+    serverOnly: true,
+    sections: [
+      {
+        labelKey: "workspace.section.federationCollaboration",
+        items: FEDERATION_SECTIONS.map(({ id, labelKey, icon }) => ({
+          to: "/federation",
+          hash: id,
+          labelKey,
+          icon,
+        })),
+      },
+    ],
+  },
+  {
+    id: "federation-administration",
+    domain: "federation",
+    labelKey: "workspace.section.federationAdministration",
+    shortLabelKey: "workspace.section.federationAdministration",
+    descriptionKey: "workspace.identityDescription.federationAdministration",
+    icon: ShieldCheck,
+    entry: { to: "/settings", hash: "security/federation-permissions" },
+    requires: Role.PLATFORM_ADMIN,
+    serverOnly: true,
+    serverCapability: "workspace.platform.manage",
+    sections: [
+      {
+        labelKey: "workspace.section.federationAdministration",
+        items: [
+          {
+            to: "/settings",
+            hash: "security/federation-permissions",
+            labelKey: "settings.sections.federation-permissions",
+            icon: UsersRound,
+          },
+          {
+            to: "/settings",
+            hash: "security/federation-trust",
+            labelKey: "settings.sections.federation-trust",
+            icon: ShieldCheck,
+          },
+          {
+            to: "/settings",
+            hash: "security/federation-storage",
+            labelKey: "settings.sections.federation-storage",
+            icon: HardDrive,
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: "software-developer",
     domain: "ecosystem",
     labelKey: "workspace.identity.softwareDeveloper",
@@ -489,6 +555,8 @@ const PROVIDER_TECHNICAL_PATHS = new Set([
 ]);
 
 export function inferWorkspaceIdentity(pathname: string, hash: string): WorkspaceIdentityId {
+  if (pathname === "/federation") return "federation-collaboration";
+  if (pathname === "/settings" && isFederationSettings(hash)) return "federation-administration";
   if (pathname === "/cp" || pathname.startsWith("/cp/")) {
     return PROVIDER_TECHNICAL_PATHS.has(pathname) ? "provider-technical" : "provider-operations";
   }
@@ -522,6 +590,7 @@ export function isWorkspaceNavItemActive(
       : pathname === item.to || pathname.startsWith(`${item.to}/`);
   if (!pathMatches) return false;
   if (!item.hash) return true;
+  if (item.to === "/federation") return resolveFederationSection(hash) === item.hash;
   if (item.to === "/software") {
     const section = resolveSoftwareSection(pathname, hash);
     return section !== null && SOFTWARE_SECTION_HASH[section] === item.hash;

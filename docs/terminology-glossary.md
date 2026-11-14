@@ -10,8 +10,8 @@
 3. 面向用户的中文文案使用“作业、工作流、调度系统、接入代理、用量计量”等业务术语，不直接显示 `Job`、`Workflow`、`Scheduler`、`Agent`、`Metering`。
 4. `Agent ID`、`Job ID`、API、OIDC、SSH、mTLS、CPU、GPU、Spack spec 等技术字段保留英文标识，中文说明补充其用途。
 5. 状态值在界面中翻译，在日志、API 响应和故障工单中保留原始枚举值，便于检索。
-6. `NetDrive` 中文称“平台文件空间”；`Server` 称“平台服务”，`Registry` 称“软件仓库”。“软件中心”是 Web 中浏览和管理软件、用例与模板的功能入口，不是后端服务名称。
-7. 角色名称区分“人”和“组织”：`Compute Provider` 指“算力提供方”，具体操作人员称“算力提供方运营人员”或“算力提供方管理员”。
+6. `NetDrive` 中文称“平台文件空间”；`Server` 称“平台服务”，`Registry` 称“软件仓库”。“软件生态”是 Web 中浏览和管理软件、用例与模板的功能入口，不是后端服务名称。
+7. 运营主体与地理资源统一称“算力中心”（Compute Center），用“运营资料”“所属算力中心”和资源归属区分；组织、中心和集群的数据关系保持独立。
 
 ## 2. 平台与角色
 
@@ -19,20 +19,20 @@
 |---|---|---|
 | 算力网络平台 | Computing Network Platform | 统一接入异构算力、数据和软件并提供调度与编排能力的平台。 |
 | 平台服务 | Kuintessence Server | 提供 API、身份与权限、调度、工作流、文件服务和审计的中央服务；组件简称 Server。 |
-| 算力提供方 | Compute Provider | 提供集群、队列、软件环境或数据服务的组织。中文不使用“CP”代替正式名称。 |
+| 算力中心 | Compute Center | 提供集群、队列、软件环境或数据服务的组织。界面使用正式名称，技术字段沿用现有标识。 |
 | 算力使用方 | Compute Consumer | 使用平台算力、软件和数据的组织；具体个人通常称“科研计算用户”。 |
 | 科研计算用户 | Research Computing User | 提交作业、编排工作流和管理科研数据的最终用户。 |
-| 算力提供方运营人员 | Compute Provider Operator | 查看本组织运行状态、用量和待办，并执行获授权的日常运营操作。 |
-| 算力提供方管理员 | Compute Provider Administrator | 管理本组织用户、执行账号、队列、软件策略和接入代理。 |
+| 算力中心运营人员 | Compute Center Operator | 查看本组织运行状态、用量和待办，并执行获授权的日常运营操作。 |
+| 算力中心管理员 | Compute Center Administrator | 管理本组织用户、执行账号、队列、软件策略和接入代理。 |
 | 平台运营人员 | Platform Operator | 查看跨组织运营、审计、用量和告警，默认不修改技术配置。 |
 | 平台管理员 | Platform Administrator | 管理平台级身份、授权、安全和基础设施配置。 |
 | 系统运维人员 | System Operator | 负责部署、升级、备份、监控、故障恢复和基础服务维护的人员。 |
 | 超级管理员 | Super Administrator | 管理全局成本、偏好和紧急管理能力的最高技术角色。 |
 | 组织管理员 | Organization Administrator | 在授权组织范围内管理成员和业务资源的技术角色。 |
 | 访客 | Guest | 仅可访问公开目录或待授权页面的用户。 |
-| 业务身份 | Business Identity | 用户在具体组织中的业务职责，如算力使用方、算力提供方或软件提供方。 |
+| 业务身份 | Business Identity | 用户在具体组织中的业务职责，如算力使用方、算力中心或软件提供方。 |
 | 技术角色 | Technical Role | 决定平台级访问能力的角色，如 `user`、`org_admin`、`operator`、`platform_admin`。 |
-| 联邦协同 | Federation Collaboration | 独立平台间的任务委派、合作授权、交付和对账功能；原导航名称“机构合作”。 |
+| 联邦协同 | Federation Collaboration | 独立平台间的任务委派、合作授权、交付和对账功能，从一级导航进入。 |
 | 当前组织 | Active Organization | 用户当前操作所绑定的组织范围，决定列表、审批和写操作的数据边界。 |
 
 ## 3. 计算与调度
@@ -81,9 +81,9 @@
 | 数据版本 | Data Version | 数据资产在特定时间发布的不可变版本记录。 |
 | 访问申请 | Access Request | 用户请求使用受限数据、软件或存储额度的审批记录。 |
 | 软件仓库 | Kuintessence Registry | 存储和分发软件目录、发布版本、工作流模板、OCI 制品与 Spack buildcache 的服务；组件简称 Registry。 |
-| 软件中心 | Software Center | Web 中浏览、发布和管理软件、用例与工作流模板的功能入口。 |
+| 软件生态 | Software Ecosystem | Web 中浏览、发布和管理软件、用例与工作流模板的功能入口。 |
 | 软件用例 | Software Use Case | 对软件版本、命令、参数、输入输出和资源要求的业务封装。 |
-| 软件策略 | Software Policy | 算力提供方在组织、集群和接入代理层设置的软件安装和使用规则。 |
+| 软件策略 | Software Policy | 算力中心在组织、集群和接入代理层设置的软件安装和使用规则。 |
 | 可用性预览 | Availability Preview | 保存策略或提交任务前查看哪些候选算力可运行所选软件。 |
 | 预装软件识别 | Preinstalled Software Discovery | 接入代理识别站点已有软件并提交管理员确认的过程。 |
 | 构建缓存 | Build Cache | Spack 用于分发已构建软件包的缓存。 |
@@ -117,7 +117,7 @@
 | 多域名模式 | Multi-Domain Mode | 身份、软件和对象存储等服务分别使用不同域名的部署方式。 |
 | 发布候选版本 | Release Candidate, RC | 供发布前验证使用的候选版本。 |
 | 回滚 | Rollback | 发布失败时恢复到上一个已知可用版本的操作。 |
-| 运行手册 | Runbook | 面向运维或验收人员的可执行操作文档。 |
+| 运行手册 | Runbook | 面向运维或运维人员的可执行操作文档。 |
 
 ## 6. 保留原文的名称
 
@@ -134,8 +134,8 @@
 
 | 场景 | 中文 | English |
 |---|---|---|
-| 导航 | 算力提供方 → 用量计量 | Compute Provider → Metering |
+| 导航 | 算力中心 → 用量计量 | Compute Center → Metering |
 | 状态 | 接入代理在线，计算健康状态为“就绪” | The agent is online and compute health is Ready. |
-| 提交失败 | 未找到可用的执行账号映射，请联系算力提供方管理员。 | No eligible execution-account mapping is available. Contact your compute provider administrator. |
+| 提交失败 | 未找到可用的执行账号映射，请联系算力中心管理员。 | No eligible execution-account mapping is available. Contact your compute center administrator. |
 | 软件不可用 | 目标算力节点尚未提供所需软件，请选择其他节点或提交安装申请。 | The required software is unavailable on the selected compute resource. Choose another resource or request installation. |
 | 运维告警 | 授权同步存在死信，请检查失败原因后重新处理。 | Authorization synchronization has dead letters. Review the failure and retry the records. |

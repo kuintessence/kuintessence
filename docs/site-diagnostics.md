@@ -22,7 +22,7 @@ kq site doctor --url "$SERVER_HTTP_URL" --grpc-url "$SERVER_GRPC_URL" \
 | multipart | 上传两片（首片 5 MiB），取实际 ETag，通过固定会话 complete，再下载核对完整摘要 |
 | fixture cleanup | 删除本次测试对象；失败明确记录 |
 
-材料诊断仅证明这条 HTTPS 下载链路，不证明真实 Registry 材料授权、Spack 闭包或软件可安装。Slurm/module、真实材料安装、断线恢复及科学结果仍需各自现场验收。
+材料诊断仅证明这条 HTTPS 下载链路，不证明真实 Registry 材料授权、Spack 闭包或软件可安装。Slurm/module、真实材料安装、断线恢复及科学结果仍需各自现场运行检查。
 
 Server 公开机器路由 `POST /api/agent/site-diagnostics` 自验签，不使用用户 JWT。其返回材料、complete 和 cleanup 的相对 API 路径；CLI 根据已配置的 `SERVER_HTTP_URL/api/` 解析，保留 `/platform` 等部署前缀，不使用代理转发头推断公网地址。对象预签名 URL 保持原样；所有请求继续受站点 allowlist、TLS SNI、证书和隧道/CONNECT 策略约束，无重定向或公网直连回退。
 

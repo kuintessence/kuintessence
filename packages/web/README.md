@@ -42,11 +42,11 @@ bun run --filter @kuintessence/web test
 
 ## 当前界面
 
-- Dashboard、Jobs、Agents、Workflows、Software、Files、Terminal、CP Console、Settings、Auth。
+- Dashboard、Jobs、Agents、Workflows、Software、Files、Terminal、算力中心控制台、Settings、Auth。
 - 首页快速开始可提交示例计算作业，或运行无需软件依赖的两节点编排示例；成功后
   打开作业/工作流详情。编排示例仅演示节点依赖与运行状态，不执行科学计算。
 - 内置 Logo 在深色主题下保持可见；自定义品牌图片保留原始颜色。
-- 窄屏侧栏默认关闭，桌面展开偏好独立保存；软件中心的授权/发布、Recipe/材料管理可按需展开。
+- 窄屏侧栏默认关闭，桌面展开偏好独立保存；软件生态的授权/发布、Recipe/材料管理可按需展开。
 - 作业列表首次加载有状态提示，失败可原地重试；作业和工作流名称支持键盘操作。主要运行状态及相对时间支持中英文。
 - 标签页和管理区域使用短淡入反馈，系统减少动态效果设置会关闭这些动画。
 - 工作流创建页使用 YAML/React Flow 双向编辑器；草稿删除需确认，失败保留草稿并支持重试。
@@ -59,12 +59,12 @@ bun run --filter @kuintessence/web test
 - 作业实时通知触发完整详情读取，完成时间、退出码等诊断字段与终态一起更新；服务端关闭 WebSocket 时触发 REST 刷新。
 - SSH 走 Server gateway 与 Agent relay；通用 `/terminal` shell 执行是独立的 HTTP polling 界面。
 - 登录页支持 SSO/OIDC，非生产模式另提供开发登录。平台管理员可在 Settings/Operations 的 Security 区域配置中英文品牌文案、Logo 与 favicon；空值使用内置默认，图片支持随 Web 镜像发布的 `/branding/logo.svg`、`/branding/favicon.svg` 或安全 HTTPS URL。
-- CP Console 包含 Agent registration token 签发、metering 查询、导出和 webhook 管理界面。
-- 平台与 CP 材料面板共用 [Spack 安装绑定编辑器](docs/spack-install-bindings.md)，支持精确 spec 的查询、绑定、停用与审计；不代表真实安装验收已完成。
+- 算力中心控制台 包含 Agent registration token 签发、metering 查询、导出和 webhook 管理界面。
+- 平台与算力中心 材料面板共用 [Spack 安装绑定编辑器](docs/spack-install-bindings.md)，支持精确 spec 的查询、绑定、停用与审计；实际安装需由目标 Agent 完成。
 - 本地 GUI 模式可通过 `kq gui serve` 注入 `window.__KQ_LOCAL__` 复用同一 SPA。
 - 作业日志避免请求重叠，切换主题或错误恢复后保留完整日志，切换作业时清空旧终端；失败可重试。
 - 作业与工作流取消响应绑定发起时的记录，详情读取失败隐藏旧名称和取消入口。文件页读取完整分页结果，状态变化时刷新，也支持手动刷新和重试；验证失败隐藏旧下载链接。
-- 切换算力提供方组织时清除作业日志与文件缓存。
+- 切换算力中心组织时清除作业日志与文件缓存。
 
 文件页与路径选择器按 Agent 区分集群目录缓存；当前 Agent 离线后需显式重新选择，避免将旧目录带到其他 Agent。
 目录读取或 Agent 列表刷新失败时禁止确认目录和使用旧目标传输。文件与目录名称支持键盘操作及选中语义，
@@ -82,7 +82,7 @@ bun run --filter @kuintessence/web test
 ## 已知缺口
 
 - 浏览器会话、CSRF 与 CSP 的部署要求见[认证与浏览器安全指南](../../docs/security.md#authentication)。
-- NetDrive UI 行为依赖 Server 侧 `NETDRIVE_ENABLED` 以及相关 S3/MinIO 配置。
-- CP Console 提供治理界面，完整租户委派模型尚未确定。
+- NetDrive UI 行为依赖 Server 侧 `NETDRIVE_ENABLED` 以及相关 S3 配置。
+- 算力中心控制台 提供治理界面，完整租户委派模型尚未确定。
 
 组件功能见[当前状态](../../docs/status/current-state.md)。

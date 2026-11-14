@@ -7,7 +7,7 @@ OpenPBS 23 缓存及核对时的上游官方 cgroups hook 仍使用 v1；此 hoo
 ## 节点配置
 
 要求 Linux cgroup v2、`cgroup.kill`（Linux 5.14+）、CPU/memory 控制器及 Python 3.8+。
-CP 管理员预先提供一个专用、由 root 管理的 cgroup 子树，在其 `jobid` 目录开启 `cpu memory` 控制器；
+算力中心管理员预先提供一个专用、由 root 管理的 cgroup 子树，在其 `jobid` 目录开启 `cpu memory` 控制器；
 该子树须由 systemd 或节点容器运行时正确委派，父级保留节点总上限。不要复用其他工作负载的分组。
 MOM 及其控制进程留在作业分组之外；任务启动 hook 只迁移 PBS 原生 launch parent 或 attach PID。
 
@@ -31,7 +31,7 @@ import hook kq_sandbox_cgroup_v2 application/x-python default /opt/kq/hooks/kq-c
 set hook kq_sandbox_cgroup_v2 enabled=true
 ```
 
-这些是 `qmgr` 命令。配置文件须在每台 MOM 本地部署，hook 须完成向目标 MOM 的分发后再提交验收任务。
+这些是 `qmgr` 命令。配置文件须在每台 MOM 本地部署，hook 须完成向目标 MOM 的分发后再提交运行任务。
 平台的队列映射和本地账号授权须指向配置中的队列；当前尚未增加自动读取此配置的 Agent 能力发布或平台队列能力标记。
 
 ## 执行与恢复边界
@@ -61,10 +61,3 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/federation-media-hpc.py
 缓存版本、来源和摘要要求沿用[真实调度器实验](../../federation/media-slurm-lab.md)。
 `cgroup` 分支复用一次性 PBS Pod，运行[内核作业脚本](../../../scripts/pbs-cgroup-lab.sh)，不运行科学编译或介质导入。
 实验只调整该临时 Pod 内的 cgroup 子树，结束后删除 namespace。
-
-2026-11-09 的真实 OpenPBS 23 作业通过：申请 1 CPU/64 MiB，非 root 检查器读到相同内核上限，
-两个短循环使本作业 CPU 限流计数增加 19；128 MiB 分配被内核杀死，`oom_kill=1`；尝试迁出分组被拒绝。
-PBS 历史记录退出 0，结束 hook 清理原 cgroup，实验 namespace 已删除。
-这次命令先在既有运行器的临时副本中执行，随后整理为公开 `cgroup` 分支；公开入口做了静态检查，没有为改入口重复部署。
-初次接入时核对并修正 PBS hook 的 `builtins` 加载入口，同时补充作业/MOM 诊断采集。
-未据此认定 Slurm、Torque、完整签名 Sandbox 或跨站撤权链路已通过资源限额联合验收。

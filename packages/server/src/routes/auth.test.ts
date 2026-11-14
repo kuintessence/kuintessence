@@ -116,9 +116,41 @@ describe("POST /auth/login", () => {
     const [developmentOrg] = await testDb
       .select()
       .from(orgs)
-      .where(eq(orgs.name, "Development Compute Provider"));
+      .where(eq(orgs.name, "Development Compute Center"));
     expect(developmentOrg).toBeDefined();
     expect(memberships.some(({ orgId }) => orgId === developmentOrg?.id)).toBe(true);
+  });
+
+  test("keeps the development organization's identity when its display name changes", async () => {
+    const [original] = await testDb
+      .select()
+      .from(orgs)
+      .where(eq(orgs.name, "Development Compute Center"));
+    if (!original) throw new Error("Expected development organization");
+    await testDb
+      .update(orgs)
+      .set({ name: "Development Compute Provider" })
+      .where(eq(orgs.id, original.id));
+    try {
+      const response = await makeApp().request("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "user@authtest.example" }),
+      });
+      expect(response.status).toBe(200);
+      const [renamed] = await testDb.select().from(orgs).where(eq(orgs.id, original.id));
+      expect(renamed?.name).toBe("Development Compute Center");
+      const matching = await testDb
+        .select()
+        .from(orgs)
+        .where(eq(orgs.name, "Development Compute Center"));
+      expect(matching.map((org) => org.id)).toEqual([original.id]);
+    } finally {
+      await testDb
+        .update(orgs)
+        .set({ name: "Development Compute Center" })
+        .where(eq(orgs.id, original.id));
+    }
   });
 
   test("rejects invalid email", async () => {

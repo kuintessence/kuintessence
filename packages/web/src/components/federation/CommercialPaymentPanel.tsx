@@ -748,9 +748,6 @@ function PaymentPanel({
                       <span className="block break-all font-medium tabular-nums">
                         {row.payment.payload.amount} {row.payment.payload.unit}
                       </span>
-                      <span className="block break-all text-xs text-muted-foreground">
-                        {row.payment.receiptId}
-                      </span>
                     </span>
                     <span className="text-sm">
                       <span className="block">{state(row.payment)}</span>

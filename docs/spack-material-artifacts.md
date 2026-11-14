@@ -12,9 +12,9 @@ recipe bundle、不改写原生 lock、不重打源码归档。导出的材料�
 
 此导出工作流验证**导出、初始化导入、真实 Web 导入和持久化回读**，不执行受管安装或
 科学作业。独立的 PR scheduler artifact-bootstrap 与 Web managed 模式以同一
-delivery 分别衔接初始化/Web 导入与受管安装，见下文；各路径的验收范围不能互相替代。
+delivery 分别衔接初始化/Web 导入与受管安装，见下文；各路径的适用范围不能互相替代。
 既有 Hello/samtools 受管安装案例的通过，不能替代另一份新生成材料的
-安装验收，更不能证明 15 个科学工作流或生产目标站点可用。
+安装运行检查，更不能证明 15 个科学工作流或生产目标站点可用。
 
 ## 发布前提
 
@@ -30,7 +30,7 @@ delivery 分别衔接初始化/Web 导入与受管安装，见下文；各路径
 ## 触发参数
 
 在 GitHub Actions 选择 `Spack material artifacts`，使用已审阅的 `main`。
-专用开发分支 `feat/spack-material-artifacts` 仅用于本功能的隔离验收。
+专用开发分支 `feat/spack-material-artifacts` 仅用于本功能的隔离运行检查。
 `feat/spack-artifact-managed`、`feat/spack-web-managed`、
 `feat/spack-workflow-execution` 和 `feat/spack-file-workflow`
 仅允许 `publish_artifact=false` 的隔离验证，即使确认再分发也不能在这些分支上传；
@@ -55,7 +55,7 @@ namespace 决定导入位置，recipe repository ID 由其完整规范名称的 
 默认保留 7 天，名称包含 case、代码 SHA 与 run ID。验证失败、输出缺失或仅开启
 验证时没有可下载材料，不能把 workflow 存在视为已产生 artifact。
 
-新工作流尚未进入主线时，通过已有 `CI` 的 `run_runtime_checks=true` 验证两个案例。
+通过 `CI` 的 `run_runtime_checks=true` 验证两个案例。
 该调用强制 `publish_artifact=false`，不会在 PR 验证中发布源码下载。
 
 ## 下载与校验
@@ -105,8 +105,8 @@ shasum -a 256 -c checksums.txt
 3. 仅在授权部署窗口启动，逐项检查 bootstrap 报告与实际 release；health 成功
    不代表后台导入完成。路径链由管理员控制，服务 UID 可读，文件和目录不可被
    group/other 写入，读取期间不能在宿主修改。
-4. 已有任意 snapshot 的 recipe 仓库会跳过初始化，不会替换成包中快照。
-   后续新快照通过 Web/API 显式导入，或使用新的版本化仓库名。
+4. 仓库已有相同 bundle SHA-256 的快照时跳过该项；新 bundle 追加快照，
+   不覆盖 active 指针。导入与激活是两个独立步骤。
 
 批量导入不是跨包原子事务，部分失败不会自动撤销已导入内容。
 具体部署选项见[Recipe 仓库](spack-recipe-repositories.md)及
@@ -114,7 +114,7 @@ shasum -a 256 -c checksums.txt
 
 ## 后续 Web 导入
 
-1. 在软件中心 Spack 页或 CP 软件页，选择 `recipe-pack/recipes.bundle`，
+1. 在软件生态 Spack 页或 算力中心 软件页，选择 `recipe-pack/recipes.bundle`，
    填入 recipe manifest 中的精确仓库名，导入并检查 commit/roots 和诊断。
 2. 选择 `material-pack/manifest.json`，再选择整个 `material-pack` 目录。
    不选择 artifact 顶层目录；它包含不属于材料 manifest 的 recipe 和说明文件。
@@ -142,12 +142,12 @@ shasum -a 256 -c checksums.txt
 
 测试栈只绑定 runner 的 loopback，不启动 Agent、scheduler、公网 preview 或生产部署。
 Server/Registry 额外连接本次项目的非 internal bridge，供 Docker 发布 loopback 端口；
-数据库仍只连接 internal backend。该 bridge 允许服务出站，不是网络断网验收；
+数据库仍只连接 internal backend。该 bridge 允许服务出站，不是网络断网运行检查；
 Registry 上游导入保持关闭，导出容器使用 `network_mode: none`。
 失败只输出固定阶段标记，不上传临时认证状态。所有通过结论须核对对应提交的 Actions，
 不以配置、单元测试或文件存在代替真实导入结果。
 
-## 同一交付的受管安装验收
+## 同一交付的受管安装运行检查
 
 独立的 `PR scheduler tests` 新增 Hello/samtools 两条 `artifact bootstrap`
 managed job，保留原有两条直接发布材料的 managed job、Hello native 和 Slurm/PBS
@@ -175,19 +175,11 @@ bash deploy/pr-test/run.sh slurm --spack-artifact-samtools
    掩盖持久化失败。
 
 此模式不启动 Web、不部署 preview/production，也不上传 delivery、安装树或原始日志。
-独立导出工作流的许可确认与可选上传规则保持不变，不因增加安装验收自动发布材料。
+独立导出工作流的许可确认与可选上传规则保持不变，不因增加安装运行检查自动发布材料。
 完整 CI 另接入 `scripts/spack-artifact-managed.test.ts` 合同检查及 harness 类型检查；
 这些静态或 fixture 检查不能替代真实 scheduler job。
 
-PR #9 的提交 `e8b50b7b6834a2937bb1a8858cf9067f232212db` 已通过完整 CI
-`35685693358`（9 个实际 job）及 scheduler matrix `35685693281`（7 个 job），
-包括上述 Hello/samtools 链路。此历史证据只证明该 SHA 的 delivery 经
-**Registry bootstrap 后**完成固定案例的受管安装链路，
-不证明 Web 导入后安装，不覆盖任意 spec、15 个工作流、跨节点共享存储/ABI
-或生产目标集群。固定工具链、site profile 和隔离边界见
-[PR 调度器测试](../deploy/pr-test/README.md#同一交付的-artifact-bootstrap-受管案例)。
-
-## 同一交付的 Web 受管安装验收
+## 同一交付的 Web 受管安装运行检查
 
 PR scheduler matrix 另增两条 Web managed job，入口仅供临时 GitHub Actions runner 使用：
 
@@ -204,7 +196,7 @@ bash deploy/pr-test/run.sh slurm --spack-web-samtools
    recipe snapshot/archive、原生 lock 与全部 blob，不以推算值代替导入回执。
 3. 撤掉导入阶段的 host loopback 端口和非 internal endpoint，保留数据库与材料卷，
    force-recreate Server/Registry；只读 handoff verify 成功后才启动 scheduler。
-   导入阶段的出站网络不属于断网验收，不能带入后续安装拓扑。
+   导入阶段的出站网络不属于断网运行检查，不能带入后续安装拓扑。
 4. Server 加载已核验 binding，Agent 仍仅从 Server 拉取材料，不能访问 Registry
    backend 或挂载 delivery。继续既有 managed install/job/restart/uninstall、
    完整性负例及恢复、引用账本与 rollout 检查；重启继续禁用 bootstrap，
@@ -216,8 +208,6 @@ protobuf generate 和 `packages/web` 的 `e2e:install`（Patchright Chromium）�
 旧 managed/native/scheduler 路径不增加 host 依赖。AppArmor、总超时、清理和无上传
 门禁沿用 managed job；不部署 preview/production，不上传材料、原始日志或认证 trace。
 完整 CI 增加 `scripts/spack-web-managed.test.ts` 合同检查，不能代替真实 browser
-导入和 scheduler 验收。
+导入和 scheduler 运行检查。
 
-**新增 Web 链路待新 HEAD 的 Actions 验证**，不继承上述 PR #9 的历史通过结论。
-即使通过，也仅覆盖当次固定 Hello/samtools delivery，不代表任意 spec、15 个工作流、
-PBS managed 安装、跨节点共享存储/ABI 或生产站点验收。
+Web 导入案例只覆盖对应的固定 Hello/samtools delivery，不覆盖任意 spec、完整科学工作流、PBS managed 安装或其他站点的共享存储与 ABI。

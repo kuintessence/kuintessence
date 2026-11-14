@@ -1,6 +1,5 @@
 # 存储、传输与计量
 
-本文介绍 NetDrive、集群文件根、Data Market 对象上传、配额和传输审计。
 RustFS/S3 存储对象内容，PostgreSQL 保存文件 metadata、授权、传输记录与配额。
 部署身份与代理要求见[安全指南](security.md)，数据资产与受限材料见[软件生态](software.md)。
 
@@ -99,8 +98,7 @@ Agent 不接收 RustFS 凭据。`AGENT_FILE_TRANSFER_CONNECT_TO` 用于 Agent �
 commit token 绑定 owner、对象和上传声明；对象不存在、大小或 SHA-256 不符时不能提交。
 Server 不代理上传字节；客户端保留恢复所需的 upload ID、commit token 和 part 信息。
 分片大小至少 5 MiB，最后一片除外；URL 与 token 有有效期。
-`NETDRIVE_MULTIPART_THRESHOLD_MB` 只影响浏览器/REST 上传面的选择，
-Agent 的集群到云端路径始终使用 multipart。
+REST 提供单段和分片两套接口，由客户端选择；当前 Web 文件页使用单段 PUT，不会根据 `NETDRIVE_MULTIPART_THRESHOLD_MB` 自动切换分片。Agent 的集群到云端路径始终使用 multipart。
 
 提交后通过 `GET /api/netdrive/files?prefix=...`、
 `GET /api/netdrive/files/:fileId` 和 `GET /api/netdrive/files/:fileId/download-url`
@@ -179,7 +177,7 @@ PUT、非 staging copy 和 immutable delete。以下为 delete-deny 片段，部
 ```
 
 metadata commit 后删除 staging；清理失败可重试，遗留对象由 lifecycle 清理。
-CP strict import 的后续 worker 和 NetDrive promote copy backend 未配置时返回
+算力中心 strict import 的后续 worker 和 NetDrive promote copy backend 未配置时返回
 `503 DATA_IMPORT_UNAVAILABLE`，导入不会完成。
 生态 bundle 由 Registry 管理；POTCAR 与其他受限材料不得进入公共对象上传链路。
 
@@ -203,7 +201,7 @@ commit 超额时拒绝，返回 `STORAGE_QUOTA_EXCEEDED`。
 
 申请模式为 `auto`、`manual`、`disabled`。自动审批受两类上限约束；人工批准会重查
 当前策略。每个用户每个范围只能保留一条待审批申请。
-云盘申请由平台管理员处理，集群申请由拥有该 root 管理权的 CP 处理。
+云盘申请由平台管理员处理，集群申请由拥有该 root 管理权的算力中心处理。
 
 | 入口 | 用途 |
 |---|---|
@@ -218,7 +216,7 @@ commit 超额时拒绝，返回 `STORAGE_QUOTA_EXCEEDED`。
 | `POST /api/admin/storage/quota-requests/:id/decision` | 审批 |
 | `POST /api/admin/storage/grants` | 分配 |
 
-Cluster File Root 的 `capacityBytes` 是 CP 声明容量，不是 Agent 实时磁盘采样。
+Cluster File Root 的 `capacityBytes` 是算力中心声明容量，不是 Agent 实时磁盘采样。
 当前未提供高并发 durable reservation ledger；URL 签发和 commit 会校验额度，但不预留额度。
 
 <a id="metering"></a>
@@ -283,4 +281,4 @@ WORM、备份到期与恢复后清理由基础设施执行，页面不能关闭�
 | attribution 为空 | tenant scope 与 transfer 上下文 |
 
 运行态检查会创建文件、作业或传输，必须单独授权并使用隔离环境。
-对象存储与调度器需在部署环境中验收，静态链接、类型和 lint 检查不覆盖这些运行行为。
+对象存储与调度器需在部署环境中运行检查，静态链接、类型和 lint 检查不覆盖这些运行行为。

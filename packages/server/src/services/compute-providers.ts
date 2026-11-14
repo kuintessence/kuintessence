@@ -18,10 +18,10 @@ import type { OrganizationResourceScope } from "../middleware/organization-resou
 
 function allowed(scope: OrganizationResourceScope, id: string) {
   if (scope.orgIds !== null && !scope.orgIds.includes(id))
-    throw new AppError(ErrorCode.FORBIDDEN, "无权访问该提供者", 403);
+    throw new AppError(ErrorCode.FORBIDDEN, "无权访问该算力中心", 403);
 }
 function missing(): never {
-  throw new AppError(ErrorCode.NOT_FOUND, "提供者不存在", 404);
+  throw new AppError(ErrorCode.NOT_FOUND, "算力中心不存在", 404);
 }
 export class ComputeProviderService {
   constructor(private db: PgDb) {}
@@ -68,7 +68,7 @@ export class ComputeProviderService {
 
   async save(scope: OrganizationResourceScope, id: string | null, input: ComputeProviderInput) {
     if (!scope.canManage || (!id && scope.orgIds !== null))
-      throw new AppError(ErrorCode.FORBIDDEN, "无权维护提供者", 403);
+      throw new AppError(ErrorCode.FORBIDDEN, "无权维护算力中心", 403);
     if (id) allowed(scope, id);
     return this.db.transaction(async (tx) => {
       const [before] = id ? await tx.select().from(orgs).where(eq(orgs.id, id)).for("update") : [];
@@ -93,7 +93,7 @@ export class ComputeProviderService {
 
   async remove(scope: OrganizationResourceScope, id: string) {
     if (!scope.canManage || scope.orgIds !== null)
-      throw new AppError(ErrorCode.FORBIDDEN, "仅平台管理员可以删除提供者", 403);
+      throw new AppError(ErrorCode.FORBIDDEN, "仅平台管理员可以删除算力中心", 403);
     return this.db.transaction(async (tx) => {
       const [before] = await tx.select().from(orgs).where(eq(orgs.id, id)).for("update");
       if (!before) missing();
@@ -113,7 +113,7 @@ export class ComputeProviderService {
         if (found.length)
           throw new AppError(
             ErrorCode.VALIDATION_ERROR,
-            "该提供者仍有关联成员、资源或历史业务记录，不能删除",
+            "该算力中心仍有关联成员、资源或历史业务记录，不能删除",
             409,
           );
       }

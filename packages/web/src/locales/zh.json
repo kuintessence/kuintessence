@@ -69,15 +69,16 @@
     "retryCapabilities": "重新加载",
     "domain": {
       "consumer": "我的工作台",
-      "provider": "算力提供方",
+      "provider": "算力中心",
       "platform": "平台管理",
       "ecosystem": "软件生态",
-      "personal": "个人中心"
+      "personal": "个人中心",
+      "federation": "联邦协同"
     },
     "identity": {
       "consumer": "我的工作台",
-      "providerOperations": "算力提供方 · 业务运营",
-      "providerTechnical": "算力提供方 · 技术运维",
+      "providerOperations": "算力中心 · 业务运营",
+      "providerTechnical": "算力中心 · 技术运维",
       "platformOperations": "平台管理 · 业务运营",
       "platformAudit": "平台管理 · 审计与计量",
       "platformTechnical": "平台管理 · 技术运维",
@@ -100,7 +101,9 @@
       "platformAudit": "全局审计记录与用量报表",
       "platformTechnical": "安全、身份与基础设施",
       "softwareDeveloper": "用例、模板与软件资产",
-      "personal": "账号、偏好与映射申请"
+      "personal": "账号、偏好与映射申请",
+      "federation": "跨机构任务、数据交付与合作结算",
+      "federationAdministration": "联邦授权、信任与存储管理"
     },
     "section": {
       "work": "计算与编排",
@@ -114,7 +117,9 @@
       "platformTechnical": "平台运维",
       "softwareAssets": "软件资产",
       "personal": "账号与偏好",
-      "computeResources": "资源管理"
+      "computeResources": "资源管理",
+      "federationCollaboration": "协同业务",
+      "federationAdministration": "管理设置"
     },
     "nav": {
       "operationsOverview": "运营总览",
@@ -255,9 +260,9 @@
       "automationCredentialCreated": "创建了自动化凭据",
       "automationCredentialRevoked": "撤销了自动化凭据",
       "categoryCompute": "算力",
-      "provider_create": "新增算力提供者",
-      "provider_update": "修改算力提供者",
-      "provider_delete": "删除算力提供者",
+      "provider_create": "新增算力中心",
+      "provider_update": "修改算力中心",
+      "provider_delete": "删除算力中心",
       "center_create": "新增算力中心",
       "center_update": "修改算力中心",
       "center_delete": "删除算力中心",
@@ -300,7 +305,7 @@
       "all": "全部可见",
       "owner": "本人提交",
       "consumer_admin": "消费组织管理",
-      "provider_operator": "算力提供方运营",
+      "provider_operator": "算力中心运营",
       "platform": "平台范围",
       "authorization_service": "授权服务"
     },
@@ -356,7 +361,7 @@
       "warning": "该目标存在队列观测告警，提交前将再次校验。",
       "blocked": "该目标当前不可提交。"
     },
-    "queueEmptyDiagnostic": "当前没有已启用且对你可见的队列。仍可使用自动选址；禁用或未授权队列会保持隐藏，直到算力提供方管理员启用或共享。",
+    "queueEmptyDiagnostic": "当前没有已启用且对你可见的队列。仍可使用自动选址；禁用或未授权队列会保持隐藏，直到算力中心管理员启用或共享。",
     "queueLabel": "队列",
     "queueLoadFailed": "队列列表不可用",
     "queueVisibilityHint": "这里只列出已启用且对你所在组织可见的队列。平台服务会拒绝使用禁用或未授权的队列。",
@@ -946,16 +951,16 @@
       "offlineTelemetry": "离线站点状态已过期或无效，不能据此确认可安装。",
       "offline": "该节点的控制通道离线，请等待恢复或选择其他节点。",
       "usePermission": "当前账号没有使用该软件的权限，请先申请授权。",
-      "providerDenyList": "该软件被算力提供方的黑名单策略阻止。",
-      "usecaseDenyList": "该科学用例被算力提供方策略阻止。",
+      "providerDenyList": "该软件被算力中心的黑名单策略阻止。",
+      "usecaseDenyList": "该科学用例被算力中心策略阻止。",
       "installNotRequested": "本次预览未允许现场安装软件。",
       "providerAllowList": "该软件不在当前已锁定的白名单中。",
       "installPermission": "当前账号没有在该节点安装软件的权限。",
       "preinstalledOnly": "该节点只允许使用已预装软件。",
-      "usecasePolicy": "该科学用例尚未被当前算力提供方放行。",
+      "usecasePolicy": "该科学用例尚未被当前算力中心放行。",
       "lifecycle": "该软件当前的发布状态不允许新的计算任务。",
       "governance": "当前 license 或 runtime 前置条件未满足，请按软件详情申请授权或补齐运行环境。",
-      "generic": "该节点当前不满足软件运行条件，请选择其他节点或联系算力提供方。"
+      "generic": "该节点当前不满足软件运行条件，请选择其他节点或联系算力中心。"
     },
     "title": "软件中心",
     "subtitle": "统一管理数据处理脚本、工作流模板、软件用例和 Spack package recipe，用于编排、安装和复用 HPC 软件能力。",
@@ -994,7 +999,7 @@
     },
     "governance": {
       "title": "软件资产审核",
-      "subtitle": "处理软件提供方和算力提供方提交、官方派生、生命周期和下游使用授权。",
+      "subtitle": "处理软件提供方和算力中心提交、官方派生、生命周期和下游使用授权。",
       "pending": "{{count}} 个待审核",
       "trusted": "可信",
       "untrusted": "未可信",
@@ -1019,8 +1024,8 @@
       "source": {
         "official-upstream": "upstream",
         "platform-fork": "platform fork",
-        "cp-private": "算力提供方私有",
-        "cp-shared": "算力提供方共享",
+        "cp-private": "算力中心私有",
+        "cp-shared": "算力中心共享",
         "sp-draft": "SP draft",
         "sp-published": "SP published"
       },
@@ -1269,7 +1274,7 @@
       "licenseInheritance": "此条件会继承至绑定的软件用例和工作流；提交时将再次校验。",
       "provenance": "来源",
       "acceptanceRequired": "需要接受条款",
-      "providerEntitlementRequired": "需要提供方安装授权",
+      "providerEntitlementRequired": "需要算力中心安装授权",
       "consumerEntitlementRequired": "需要使用方授权",
       "redistribution": "再分发",
       "autoInstall": "自动安装",
@@ -1298,7 +1303,7 @@
       "claimantPlaceholder": "组织 UUID 或已授权的主体 ID",
       "entitlement": "授权范围",
       "consumerUse": "使用方运行授权",
-      "providerSourceInstall": "提供方源码/安装授权",
+      "providerSourceInstall": "算力中心源码/安装授权",
       "evidenceReference": "证据引用（URL、工单或内部编号）",
       "evidenceSummary": "不含敏感内容的证据摘要",
       "submitClaim": "提交授权声明",
@@ -1309,9 +1314,9 @@
       "revoke": "撤销",
       "runtimeMaterialTitle": "受管 Runtime 与受限材料",
       "runtimeMaterialDescription": "绑定必须指向已签名运行环境配置。VASP POTCAR 仅登记本地选择器与指纹，内容不会上传至平台服务、软件仓库或平台文件空间。",
-      "providerOrg": "提供方组织",
-      "providerOrgPlaceholder": "提供方组织 UUID",
-      "providerOrgOptional": "提供方组织 UUID（如适用）",
+      "providerOrg": "算力中心组织",
+      "providerOrgPlaceholder": "算力中心组织 UUID",
+      "providerOrgOptional": "算力中心组织 UUID（如适用）",
       "runtimeBinding": "隔离运行环境绑定",
       "agent": "Agent ID",
       "agentPlaceholder": "Agent ID",
@@ -1319,7 +1324,7 @@
       "runtimeProfilePlaceholder": "已签名的 runtime profile ID",
       "runtimeDigest": "Runtime digest",
       "bindRuntime": "绑定 python-3.12-stdlib-v1",
-      "noRuntimeBindings": "此提供方尚未配置 runtime binding。未绑定的脚本只能浏览，不能提交。",
+      "noRuntimeBindings": "此算力中心尚未配置 runtime binding。未绑定的脚本只能浏览，不能提交。",
       "materialSoftware": "关联软件",
       "selectMaterialSoftware": "选择已发布的软件",
       "noMaterialSoftware": "请先导入并激活包含 VASP 的软件发布包。",
@@ -1432,9 +1437,9 @@
     },
     "accounts": {
       "title": "隔离运行执行账号映射",
-      "subtitle": "内联、草稿和测试运行必须使用算力提供方审批的映射账号；可为不同集群保留多个映射并选择默认项。",
+      "subtitle": "内联、草稿和测试运行必须使用算力中心审批的映射账号；可为不同集群保留多个映射并选择默认项。",
       "candidate": "可申请执行账号",
-      "selectCandidate": "选择算力提供方集群账号",
+      "selectCandidate": "选择算力中心集群账号",
       "request": "发起申请",
       "requested": "账号映射申请已提交",
       "loadingCandidates": "正在查询可申请的执行账号…",
@@ -1442,8 +1447,8 @@
       "requestFailed": "提交账号映射申请失败，请稍后重试。",
       "defaultFailed": "更新默认执行账号失败，请稍后重试。",
       "mappingLoadFailed": "暂时无法加载账号映射，请稍后重试。",
-      "noPublishedTitle": "算力提供方尚未发布可申请账号",
-      "noPublishedDescription": "需要算力提供方先在集群账号目录中发布账号，用户才能发起映射申请；申请通过后才能用于作业和隔离运行。",
+      "noPublishedTitle": "算力中心尚未发布可申请账号",
+      "noPublishedDescription": "需要算力中心先在集群账号目录中发布账号，用户才能发起映射申请；申请通过后才能用于作业和隔离运行。",
       "manageCatalog": "管理集群账号目录",
       "noMoreCandidates": "所有已发布账号都已有生效中或待审批的映射。被拒绝、撤销或过期的映射仍可重新申请。",
       "lifecycle": {
@@ -1462,10 +1467,10 @@
         }
       },
       "defaultUpdated": "默认执行账号已更新",
-      "empty": "尚无账号映射，请选择一个算力提供方集群账号发起申请。",
+      "empty": "尚无账号映射，请选择一个算力中心集群账号发起申请。",
       "default": "默认",
       "setDefault": "设为默认",
-      "delegationRequired": "当前账号没有此提供者的审批权限",
+      "delegationRequired": "当前账号没有此算力中心的审批权限",
       "status": {
         "pending": "待审批",
         "approved": "已批准",
@@ -1474,7 +1479,7 @@
         "expired": "已过期"
       },
       "reviewTitle": "隔离运行账号映射审批",
-      "reviewSubtitle": "提供者审批所属集群账号，平台运营者可跨提供者审批。",
+      "reviewSubtitle": "算力中心审批所属集群账号，平台运营者可跨算力中心审批。",
       "reviewEmpty": "当前没有待审批的账号映射。",
       "reviewed": "账号映射已处理",
       "approve": "批准",
@@ -1482,7 +1487,7 @@
     },
     "security": {
       "title": "隔离运行环境平台安全上限",
-      "subtitle": "平台上限默认禁止身份模拟、降级身份模拟和公共账号；算力提供方策略只能继续收紧。下表展示每个接入代理的特权模式、就绪状态与最终生效策略。",
+      "subtitle": "平台上限默认禁止身份模拟、降级身份模拟和公共账号；算力中心策略只能继续收紧。下表展示每个接入代理的特权模式、就绪状态与最终生效策略。",
       "sandboxEnabled": "允许隔离运行环境",
       "impersonation": "允许特权身份模拟",
       "degraded": "允许 degraded impersonation",
@@ -1592,7 +1597,7 @@
       "summary": {
         "coverage": "当前角色可见入口",
         "platformOps": "平台级安全运维",
-        "providerOps": "算力提供方运营",
+        "providerOps": "算力中心运营",
         "costOps": "全局成本策略",
         "enabled": "可用",
         "locked": "受限"
@@ -1668,7 +1673,7 @@
         },
         "desensitize": {
           "title": "数据脱敏策略",
-          "description": "管理全局、算力提供方和集群规则，并导出短时反向别名签名包。"
+          "description": "管理全局、算力中心和集群规则，并导出短时反向别名签名包。"
         },
         "sshVault": {
           "title": "SSH 凭据保管库",
@@ -1699,24 +1704,24 @@
           "description": "查看经过权限控制和脱敏处理的全局平台操作记录。"
         },
         "cpAudit": {
-          "title": "算力提供方审计搜索",
-          "description": "按时间、操作者、动作和目标检索算力提供方运营审计。"
+          "title": "算力中心审计搜索",
+          "description": "按时间、操作者、动作和目标检索算力中心运营审计。"
         },
         "agents": {
           "title": "节点运行状态",
           "description": "查看已注册接入代理的在线状态、资源心跳和 SSH 入口。"
         },
         "cpAgents": {
-          "title": "算力提供方节点清单",
-          "description": "从算力提供方视角管理站点接入代理、健康状态和接入状态。"
+          "title": "算力中心节点清单",
+          "description": "从算力中心视角管理站点接入代理、健康状态和接入状态。"
         },
         "clusterFileRoots": {
           "title": "集群文件根目录",
           "description": "配置文件页面和传输预检查允许访问的真实集群路径。"
         },
         "softwarePolicy": {
-          "title": "算力提供方软件策略",
-          "description": "管理预装软件、Spack 策略、允许/禁止列表和算力提供方级覆盖。"
+          "title": "算力中心软件策略",
+          "description": "管理预装软件、Spack 策略、允许/禁止列表和算力中心级覆盖。"
         },
         "registry": {
           "title": "软件仓库",
@@ -1730,7 +1735,10 @@
           "title": "联邦权限",
           "description": "按组织为成员授予联邦业务权限"
         },
-        "federationStorage": { "title": "输入存储核对", "description": "核对未知请求与存储清理" },
+        "federationStorage": {
+          "title": "输入存储核对",
+          "description": "核对未知请求与存储清理"
+        },
         "federationTrust": {
           "title": "联邦信任",
           "description": "机构、公钥和客户端证书"
@@ -1799,15 +1807,15 @@
     },
     "desensitize": {
       "title": "数据脱敏与别名导出",
-      "description": "按全局、算力提供方和集群维护字段规则。下级规则只能收紧上级约束。",
+      "description": "按全局、算力中心和集群维护字段规则。下级规则只能收紧上级约束。",
       "globalEnabled": "启用全局脱敏",
       "scope": "作用域",
-      "scopeId": "算力提供方/集群 ID",
+      "scopeId": "算力中心/集群 ID",
       "fieldPath": "字段名",
       "action": "处理方式",
       "scopes": {
         "global": "全局",
-        "provider": "算力提供方",
+        "provider": "算力中心",
         "cluster": "集群"
       },
       "empty": "尚未配置字段规则。",
@@ -2304,8 +2312,8 @@
     }
   },
   "providers": {
-    "title": "算力提供者",
-    "selfTitle": "提供方资料",
+    "title": "算力中心",
+    "selfTitle": "运营资料",
     "name": "名称",
     "description": "简介",
     "contactName": "联系人",
@@ -2317,29 +2325,29 @@
     "agents": "Agent",
     "members": "成员",
     "actions": "操作",
-    "search": "搜索提供者",
+    "search": "搜索算力中心",
     "searchButton": "搜索",
     "refresh": "刷新",
-    "create": "新增提供者",
+    "create": "新增算力中心",
     "edit": "编辑资料",
     "delete": "删除",
     "confirmDelete": "确认删除",
-    "deleteWarning": "确认删除“{{name}}”？有关联成员、资源或历史业务记录的提供者不能删除。",
+    "deleteWarning": "确认删除“{{name}}”？有关联成员、资源或历史业务记录的算力中心不能删除。",
     "cancel": "取消",
     "save": "保存",
     "saving": "保存中…",
     "saveFailed": "保存失败",
     "retry": "重试",
     "loading": "加载中…",
-    "denied": "无权访问提供者资料",
-    "empty": "没有符合条件的提供者",
-    "total": "共 {{count}} 个提供者",
+    "denied": "无权访问算力中心资料",
+    "empty": "没有符合条件的算力中心",
+    "total": "共 {{count}} 个算力中心",
     "previous": "上一页",
     "next": "下一页",
     "updatedAt": "更新时间",
-    "desktopEdit": "请在电脑端编辑提供者资料。",
-    "loadFailed": "无法加载提供者资料，请重试。",
-    "inUse": "该提供者仍有关联成员、资源或历史业务记录，不能删除",
+    "desktopEdit": "请在电脑端编辑算力中心资料。",
+    "loadFailed": "无法加载算力中心资料，请重试。",
+    "inUse": "该算力中心仍有关联成员、资源或历史业务记录，不能删除",
     "deleteFailed": "删除失败，请重试。",
     "invalidFields": "请检查以下字段：{{fields}}"
   },
@@ -2650,7 +2658,7 @@
       "clusters": "集群与代理",
       "accounts": "执行账号",
       "users": "平台用户",
-      "provider": "算力提供者"
+      "provider": "算力中心"
     },
     "users": {
       "status": "状态",

@@ -102,7 +102,7 @@ export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
     try {
       await api.post(`/admin/storage/quota-requests/${id}/decision`, {
         decision,
-        note: decision === "approved" ? "算力提供方批准" : "算力提供方拒绝",
+        note: decision === "approved" ? "算力中心批准" : "算力中心拒绝",
       });
       await queryClient.invalidateQueries({
         queryKey: ["cluster-storage-quota-requests", rootId],

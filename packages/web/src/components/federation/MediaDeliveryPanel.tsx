@@ -9,10 +9,15 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
-import { FederationEmpty } from "./FederationLayout";
+import {
+  FederationEmpty,
+  FederationRefreshNotice,
+  FederationSectionTitle,
+} from "./FederationLayout";
 import { MediaDeliveryDetail } from "./MediaDeliveryDetail";
 import {
   type MediaDeliveryAction,
@@ -45,7 +50,7 @@ function MediaAccess({ scope, switching, exportFrom }: MediaDeliveryProps) {
       ),
   });
   const allowed =
-    !capabilities.isError &&
+    !federationReadFailed(capabilities) &&
     capabilities.data?.orgId === scope.organizationId &&
     capabilities.data.effectiveCapabilities.includes("asset.read");
   const context = useQuery({
@@ -70,7 +75,7 @@ function MediaAccess({ scope, switching, exportFrom }: MediaDeliveryProps) {
     },
     refetchOnWindowFocus: false,
   });
-  if (capabilities.isError || (allowed && context.isError))
+  if (federationReadFailed(capabilities) || (allowed && federationReadFailed(context)))
     return (
       <div role="alert" className="space-y-2">
         <p>{t("federation.loadFailed")}</p>
@@ -89,12 +94,22 @@ function MediaAccess({ scope, switching, exportFrom }: MediaDeliveryProps) {
   if (!allowed) return <p>{t("federation.delivery.denied")}</p>;
   if (!context.data) return <p role="status">{t("federation.loading")}</p>;
   return (
-    <MediaInventory
-      scope={{ ...scope, localSiteId: context.data.localSiteId }}
-      capabilities={capabilities.data?.effectiveCapabilities ?? []}
-      exportFrom={exportFrom}
-      busy={switching || capabilities.isFetching || context.isFetching}
-    />
+    <>
+      <FederationRefreshNotice query={capabilities} onRetry={() => void capabilities.refetch()} />
+      <FederationRefreshNotice query={context} onRetry={() => void context.refetch()} />
+      <MediaInventory
+        scope={{ ...scope, localSiteId: context.data.localSiteId }}
+        capabilities={capabilities.data?.effectiveCapabilities ?? []}
+        exportFrom={exportFrom}
+        busy={
+          switching ||
+          capabilities.isFetching ||
+          context.isFetching ||
+          capabilities.isError ||
+          context.isError
+        }
+      />
+    </>
   );
 }
 function MediaInventory({
@@ -145,7 +160,8 @@ function MediaInventory({
       : { kind: "register", workflowRunId: exportFrom?.workflowRunId };
   return (
     <section className="space-y-5" aria-label={t("federation.delivery.title")}>
-      <h2 className="text-lg font-semibold tracking-tight">{t("federation.delivery.title")}</h2>
+      <FederationRefreshNotice query={list} onRetry={reload} />
+      <FederationSectionTitle title={t("federation.delivery.title")} />
       {exportFrom ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="font-semibold">{t("federation.delivery.workflowMaterials")}</h3>
@@ -194,7 +210,9 @@ function MediaInventory({
           ) : null}
         </div>
       </div>
-      {action ? (
+      {federationReadFailed(list) ? (
+        <p role="alert">{t("federation.loadFailed")}</p>
+      ) : action ? (
         <MediaDeliveryForm
           scope={scope}
           action={action}
@@ -226,9 +244,7 @@ function MediaInventory({
             onSaved={reload}
           />
         </>
-      ) : list.isError ? (
-        <p role="alert">{t("federation.loadFailed")}</p>
-      ) : list.isPending ? (
+      ) : list.isPending || !list.data ? (
         <p role="status">{t("federation.loading")}</p>
       ) : (
         <>
@@ -259,7 +275,9 @@ function MediaInventory({
                         <span className="block font-medium">
                           {t(`federation.delivery.kinds.${subject}`)}
                         </span>
-                        <code className="block break-all text-xs">{row.packageId}</code>
+                        <span className="block text-xs text-muted-foreground">
+                          {row.packageId.slice(0, 8)}
+                        </span>
                         <span className="block text-sm text-muted-foreground">
                           {new Date(outgoing ? row.approvedAt : row.registeredAt).toLocaleString(
                             i18n.language,

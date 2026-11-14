@@ -1,6 +1,6 @@
 # 安全与访问运维指南
 
-本文供平台运维与 Compute Provider 管理员配置认证、授权、软件仓库、
+本文供平台运维与 Compute Center 管理员配置认证、授权、软件仓库、
 Agent 身份和 SSH 接入。功能范围见[当前状态](status/current-state.md)。
 API 路径默认指 Server 内部路径；统一网关下 `/api/*` 通常对应 `/platform/api/*`。
 
@@ -331,11 +331,10 @@ OCI 和共享 principal middleware 的拒绝使用 Distribution v2 envelope，�
 删除使用产品 API，不直接删 BlobStore 或 metadata：
 
 - `DELETE /v2/<namespace>/<repo>/manifests/<tag>` 只移除该 tag。
-- 同一路径用 `<digest>` 时，移除该 repository 中指向该 digest 的所有 tag。
-- manifest 不再被任何 repository tag 引用后才删除，并回收无引用 config/layer blob。
-- `latest` 改指新 manifest 后也回收旧的无引用内容；其他 tag/repository 引用保持有效。
-- blob 还需确认没有 OCI manifest 或 buildcache row 引用才可回收。
-- repository 没有 tag 且没有进行中的 upload session 时，可从 catalog 清除。
+- 同一路径用 `<digest>` 时，移除该 repository 中指向该 digest 的 tag 及 manifest 归属；其他仓库不受影响。
+- digest-only 发布保存独立归属，不能仅因没有 tag 而删除。`latest` 改指新版本也不撤销独立发布归属。
+- 物理回收前须确认所有 repository 的 manifest、blob、buildcache 引用均已解除；未完成旧仓库归属回填时保守保留。
+- repository 仍有归属内容或进行中的 upload session 时保留。仓库级权限与回填规则见[OCI 仓库隔离](security/oci-repository-isolation.md)。
 - `DELETE /buildcache/<namespace>/build_cache/<filename>` 删除对应 index entry；
   `.spack` 与配套 `.spec.json` 是同一 entry 的两个视图，删除任一即删除该 entry。
 
@@ -396,7 +395,7 @@ CA 私钥、服务端 TLS key 和 Agent key 均须受控保存，不能随示例
 ### 一次性 Enrollment
 
 Provider 事实源是 `agent_registration_intents` 和 `agents.provider_org_id`，不信任 Agent 自报组织。
-CP Console `/cp/agent-registration` 按 scope 提供 Provider；平台管理员可跨 Provider，但须明确 `providerOrgId`。
+算力中心控制台 `/cp/agent-registration` 按作用域管理算力中心；平台管理员可跨算力中心，但须明确 `providerOrgId`。
 
 | 接口 | 用途 |
 |---|---|
@@ -405,7 +404,7 @@ CP Console `/cp/agent-registration` 按 scope 提供 Provider；平台管理员�
 | `POST /api/cp/agent-registration-tokens` | 签发指定 Agent/Provider 的一次性 token |
 | `DELETE /api/cp/agent-registration-tokens/:id` | 撤销未使用 token |
 | `POST /api/agent-registration/metadata` | 以 token 读取 enrollment metadata |
-| `POST /api/agent-registration/complete` | 以 token 和 CSR 完成签发、登记及 Provider 绑定 |
+| `POST /api/agent-registration/complete` | 以 token 和 CSR 完成签发、登记及算力中心绑定 |
 
 token 只存 hash，明文仅在创建响应和 Web 本次签发区域显示一次。
 metadata/complete 接口使用 token 授权，登记必须提供有效 token。
@@ -442,8 +441,8 @@ Server 还会检查 Agent 是否已登记；即使 mTLS 验证通过，缺少 Se
 | `POST /api/admin/agents/:id/cert` | `platform#manage`；提交 `csrPem` 签发或轮换 |
 | `POST /api/admin/agents/:id/cert/:fingerprint/revoke` | `platform#manage`；可提交 `reason` |
 
-CP 在 `off/shadow` 下仍受本地 scope 限制；`enforce` 按表中资源权限判断。
-CP Agent 聚合列表要求 `agent#operate`，普通 Agent 列表要求 `agent#view`。
+算力中心在 `off/shadow` 下仍受本地 scope 限制；`enforce` 按表中资源权限判断。
+算力中心 Agent 聚合列表要求 `agent#operate`，普通 Agent 列表要求 `agent#view`。
 证书列表只返回 fingerprint、CN、issuedAt、expiresAt、revokedAt、issuedBy，不返回 PEM 或私钥。
 签发接口返回 certificate/CA PEM，不返回节点私钥。
 
@@ -459,11 +458,11 @@ POST revoke 的 `reason` 进入 audit diff；兼容 DELETE 撤销接口不携带
 
 | 现象 | 核对与处理 |
 |---|---|
-| 创建 token 返回 400/403 | 核对 CP scope、Provider、重复 active intent 或已有 Agent row |
+| 创建 token 返回 400/403 | 核对 算力中心作用域、Provider、重复 active intent 或已有 Agent row |
 | token 无效 | 检查过期、撤销、已消费和 Server URL；不要盲目重复 complete |
 | complete 报错但 Agent 已登记 | 检查 ledger、intent 和节点文件；DB 提交后仍有投影/审计步骤，先判断实际落点 |
-| Agent 在线但 CP 不可见 | 检查 Provider 绑定、membership、`agent#operate` 和 outbox |
-| 证书列表拒绝 | CP 检查 `operate`，平台入口检查 `platform#manage` |
+| Agent 在线但 算力中心不可见 | 检查 算力中心绑定、membership、`agent#operate` 和 outbox |
+| 证书列表拒绝 | 算力中心检查 `operate`，平台入口检查 `platform#manage` |
 | 撤销失败 | 核对权限、完整 fingerprint 及目标 ledger，使用 POST 记录 reason |
 | `401 MTLS_REJECTED` | 检查 peer CIDR、header 名、证书校验与 ledger 未知/撤销状态 |
 | HTTP/2 反复断连 | 检查代理协议、buffering、超时和 transport 重建，不能降级 HTTP/1.1 |

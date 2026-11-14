@@ -18,7 +18,7 @@ bash deploy/pr-test/run.sh slurm --spack-workflow-samtools
 
 仅在授权 GitHub Actions 环境执行，不在本地或生产集群运行。沿用当前已验证的
 Ubuntu 20.04 scheduler userspace 和 Ubuntu 24.04 hosted runner；CentOS 7、
-Ubuntu 24/26 原生 Agent 兼容性另行验证，不属于本轮通过条件。
+Ubuntu 24/26 原生 Agent 兼容性另行验证，不在此环境的兼容范围内。
 
 这两个入口继承 artifact-bootstrap 的同一材料导出、导入、禁用 bootstrap 后
 持久化回读、Server 授权交付、Agent source audit、隔离安装、独立 readonly verify、
@@ -40,19 +40,19 @@ Ubuntu 24/26 原生 Agent 兼容性另行验证，不属于本轮通过条件。
 5. Registry/Server/Agent 重启后读取原 workflow 结果，并创建新的 workflow 再执行。
    最后沿用卸载、引用对账、rollout 和资源清理。
 
-验收保留显式 `WORKFLOW_RUN_BASE`，同时要求普通 Slurm 日志使用持久共享目录，
+运行检查保留显式 `WORKFLOW_RUN_BASE`，同时要求普通 Slurm 日志使用持久共享目录，
 不通过清空工作目录配置或跳过旧日志检查规避重启回读。合同测试还覆盖脚本参数中的
 `$'`、`` $` ``、`$&` 和 `$$` 原样物化，以及 Sandbox 日志路径不受影响。
 
 日志只输出固定阶段与枚举状态，不上传运行原始日志或签名材料。合同与类型检查、
-真实闭环均须核对当前提交的 Actions；**实现存在不等于验收已通过**。
+真实闭环均须核对当前提交的 Actions；**实现存在不等于运行检查已通过**。
 这是 Hello/samtools 的两节点编排切片，不是完整变异检测流程，也不代表全部
 15 个科学工作流、跨节点共享存储、PBS 或生产站点通过。
 
 这是可销毁的测试环境，不是公网 preview，也不复用现有 scheduler 开发栈。
 专用配置：[docker-compose.pr-test.yml](../compose/docker-compose.pr-test.yml)。
 
-### 文件型三节点验收
+### 文件型三节点运行检查
 
 Actions 增加独立入口，保留上述两个标量工作流回归：
 
@@ -83,25 +83,25 @@ stage-in 路径；原两个入口仍覆盖显式 cwd。Recipe/source 仍只从 S
 计算输入输出访问 RustFS 不意味着允许 Agent 直连 Registry 或上游。
 
 签名 URL、认证信息、原始运行日志和材料不进入 receipt 或 Actions artifact。
-长时间验收按登录响应的 `expiresIn` 提前重新认证，凭据只保存在内存，
+长时间运行检查按登录响应的 `expiresIn` 提前重新认证，凭据只保存在内存，
 不延长 Server 的 access token TTL，也不自动重放认证失败的写请求。
-这是单 Agent 三节点文件传递验收，不代表跨集群存储、完整变异检测或 15 个科学
+这是单 Agent 三节点文件传递运行检查，不代表跨集群存储、完整变异检测或 15 个科学
 workflow 已完成；运行结果须核对相应提交的 Actions，不能仅凭新增脚本认定通过。
 
-## CP Web 手动安装验收
+## 算力中心 Web 手动安装运行检查
 
 `--spack-web-hello` 在原有真实浏览器材料导入之后，复用同一份固定 Hello binding，
-由 CP 软件页面选择 Agent、填写 spec 并提交一次 install，等待页面操作终态和库存回显。
+由 算力中心软件页面选择 Agent、填写 spec 并提交一次 install，等待页面操作终态和库存回显。
 开始前要求安装 store、库存和操作历史为空；测试不改策略、不创建自动安装授权，
 也不使用 API helper 代替浏览器提交。
-CP 概览在挂载且页面位于前台时每 15 秒刷新，覆盖 operation 先到终态、
-安装库存稍后写入的时序；验收不通过手动 reload 掩盖库存刷新问题。
+算力中心概览在挂载且页面位于前台时每 15 秒刷新，覆盖 operation 先到终态、
+安装库存稍后写入的时序；运行检查不通过手动 reload 掩盖库存刷新问题。
 
 浏览器只输出不含凭据的最小 operation/binding 回执。Agent 侧通过 Server 只读查询
 核对唯一安装、operation ID、spec 和成功状态，然后继续原有 report/缓存/prefix 校验、
 load/Slurm 作业、完整性负例、重启复验和卸载。不会为了后续验证再提交一次 install。
 浏览器临时访问 runner loopback 上的 Server，Registry 不开放端口，Agent 仍只从
-Server 拉取材料；进入后续验收前恢复 Server 内部网络。samtools 的 Web 导入后安装
+Server 拉取材料；进入后续运行检查前恢复 Server 内部网络。samtools 的 Web 导入后安装
 仍由 API helper 驱动，不将 Hello 的浏览器证据扩大到其他软件或生产环境。
 页面安装使用受管案例既有的测试管理员，保持后续 rollout 的请求人核对不变。
 引用账本的原始摘要保存在仅 Server 挂载的 `case-references` 卷；
@@ -109,7 +109,7 @@ Server 拉取材料；进入后续验收前恢复 Server 内部网络。samtools
 
 此入口复用既有 `Spack GNU Hello Web import managed installation` job；
 是否通过以对应提交 Actions 为准。它不实现 Web 自助 binding、不更改生产安装能力，
-也不替代 CP 策略编辑、权限拒绝及其他角色的专项验收。
+也不替代 算力中心策略编辑、权限拒绝及其他角色的专项运行检查。
 
 ## 镜像和网络
 
@@ -184,10 +184,10 @@ bash deploy/pr-test/run.sh pbs
 Recipe bundle 导入和快照导出使用 base 镜像自带的 Git 验证，覆盖实际运行环境的
 命令兼容性；快照按明确的 commit/ref 读取，不依赖 `FETCH_HEAD`。
 
-第 6 项使用 fixture/替身；不是真实 Registry → Server → Agent 的网络材料交付验收。
+第 6 项使用 fixture/替身；不是真实 Registry → Server → Agent 的网络材料交付运行检查。
 这套测试未配置 mTLS 材料票据、Apptainer/SIF/site profile 或真实材料包，
 `SPACK_MATERIAL_DELIVERY_ENABLED` 和 `AGENT_SPACK_INSTALL_ENABLED` 保持关闭。
-**通过本套测试也不能宣称受管离线安装、15 个科学工作流或生产部署已验收。**
+**通过本套测试也不能宣称受管离线安装、15 个科学工作流或生产部署已运行检查。**
 
 ## GitHub Actions
 
@@ -206,9 +206,6 @@ Bun 1.4.2、frozen 依赖、生成 protobuf 并调用 `packages/web` 的 `e2e:in
 安装 Patchright Chromium；其余条目不增加 host 依赖。
 所有 managed 条目沿用 AppArmor profile 安装/清理、70 分钟 job 总超时、
 65 分钟入口 timeout 和无 artifact 上传门禁。
-PR #9 的 `e8b50b7b6834a2937bb1a8858cf9067f232212db` 已通过完整 CI
-`35685693358` 和当时七项 scheduler matrix `35685693281`；
-新增 Web 两项不在该历史范围内，须等待新 HEAD 的 Actions 验证。
 
 现有 `Preview` 工作流保持独立；`preview-paused` 只暂停公网预览，不暂停本测试工作流。
 实际构建与运行结果以对应提交的 GitHub Actions 或上述命令结果为准。
@@ -281,7 +278,7 @@ workspace 内运行，要求 `KQ_PR_TEST=1`、无 `AGENT_ID`、材料分发开�
 在 ready epoch 重建后的验证阶段，还会通过 Registry 的材料 lifecycle API
 检查真实 Hello release 为 available/revision 0，尝试下架必须返回
 `MATERIAL_RELEASE_REFERENCED`，随后状态与 manifest 均保持不变。
-这验证实际服务接线及有效绑定保护，不代表成功下架/恢复或生产环境验收；
+这验证实际服务接线及有效绑定保护，不代表成功下架/恢复或生产环境运行检查；
 成功转换、权限和并发由独立的 PostgreSQL/HTTP 回归覆盖。
 
 1. `activate` 使用现有 API helper 登录仍在运行的 Server，并从 DB 获取已播种的
@@ -313,15 +310,15 @@ operation/reference 和持久 journal。新 epoch 后的检查只读 Registry ma
 本次 evidence 的确认值（退役另含配置移除确认）仅声明 `run.sh` 创建的全新、隔离、只运行当前 checkout
 镜像且无 legacy 部署或凭据的临时拓扑；**脚本不是生产 legacy drain 或凭据撤销的
 attestation verifier**。这项回归不证明生产 legacy 凭据已撤销，不提供 drain 机制，
-也不代表 15 个科学工作流验收。通过范围只以对应当前提交的 Actions 结果为准，
+也不代表 15 个科学工作流运行检查。通过范围只以对应当前提交的 Actions 结果为准，
 不能由旧提交的成功记录或新增脚本本身推断。
 
-**这是材料交付 + 手动 native 离线编译 + 单步作业验收，不是自动受管安装验收。**
+**这是材料交付 + 手动 native 离线编译 + 单步作业运行检查，不是自动受管安装运行检查。**
 Agent 的 audit/install 开关仍关闭，不跳过或放松产品安装器的任何安全门槛。
 native 测试使用 Docker 隔离网络及已审核 recipe，不调用 Apptainer/SIF 安装 worker，
 不写 managed installation 账本，不把返回的 `rejected` 改成 `succeeded`。
 通过此案例不能宣称 Apptainer/cgroup/site profile、计算节点共享存储/ABI、15 个工作流
-或生产安装功能已经验收。测试输出只报告实际完成的阶段；缺件或构建失败即非零退出。
+或生产安装功能已经运行检查。测试输出只报告实际完成的阶段；缺件或构建失败即非零退出。
 
 ## 实验性受管安装案例
 
@@ -346,9 +343,9 @@ Ubuntu 24.04 Actions 宿主为固定路径的非 setuid Apptainer starter 临时
 Apptainer 固定为 1.4.3，下载 deb 校验固定 SHA-256；SIF 从同一 Ubuntu 20.04
 scheduler 工具链构建，不携带 recipe、源码或 Agent 凭据。实际生成的 SIF 和 site profile
 按字节固定 digest。安装 store 位于独立 2 GiB ext4 文件系统，backing file 使用临时
-named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，不代表跨节点 ABI 验收。
+named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，不代表跨节点 ABI 运行检查。
 独立 source audit 使用生产的 2 GiB 内存预算，managed worker 默认使用独立 4 GiB
-内存硬上限，可由 Agent 启动配置 `AGENT_SPACK_MANAGED_MEMORY_MIB` 调为整数 1024..4096 MiB，
+内存硬上限，可由 Agent 启动配置 `AGENT_SPACK_MANAGED_MEMORY_MIB` 调为整数 1024..1048576 MiB，
 宿主总量与可用内存须均达到预算 + 512 MiB；移除该配置或设为 4096 后重启 Agent 即恢复默认。
 低额度不承诺大型真实软件可用，也没有实测 1 GiB 安装成功。两种 worker 均禁止 swap，不改变 CPU/PID、网络或挂载隔离。
 
@@ -360,16 +357,6 @@ named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，
 为 `succeeded` 且存在精确材料引用；Server、Registry、scheduler 重启后以及
 `uninstall` 阶段完成后，重复检查原配置 binding 与安装历史引用仍保留且没有重复，
 active/orphaned operation count 均为零。卸载安装产物不等于下架材料 release。
-
-2026-09-20，提交 `c4987cf` 的
-[PR scheduler tests](https://github.com/kuintessence/kuintessence/actions/runs/35514084225)
-通过 Slurm、PBS、native Hello 和此受管案例；同一提交的
-[完整 CI](https://github.com/kuintessence/kuintessence/actions/runs/35514099810)
-五项检查均通过。受管日志分别确认 `missing-source`、`corrupt-source` 负例与恢复成功，
-以及 `install`、`restart`、`uninstall` 三阶段成功。失败的 load 是完整性负例的预期结果，
-恢复材料后必须显式复验，不会仅凭恢复文件重新发布可用库存。
-该记录证明此提交在临时单节点 Slurm 环境完成上述检查链，不证明后续提交、跨节点共享
-存储、compute ABI、生产站点或 15 个工作流通过验收。
 
 等待测试队列时最多记录八次状态变化，仅输出 schema 校验后的枚举和布尔值；
 失败后用现有 Slurm adapter 查询一次原生队列对照，不输出原始 CLI 内容或队列清单，
@@ -397,9 +384,9 @@ load 失败诊断改为只读复验匹配本次 release/site profile 的原安�
 完整性负例失败时仅报告固定 `substage`、最后观测的 schema-validated 安装状态
 以及白名单错误分类，区分 HTTP 状态、请求/操作超时、断言与结构校验失败；
 不输出 spec、异常消息或原始响应，不改变原等待时限和失败结果。
-长时间受管验收按登录响应的 `expiresIn` 提前重新认证，凭据只保存在内存，
+长时间受管运行检查按登录响应的 `expiresIn` 提前重新认证，凭据只保存在内存，
 不延长 Server 的 access token TTL，也不自动重放认证失败的写请求。
-实际通过范围必须以当前提交的 Actions 结果为准；新增测试定义本身不构成验收通过，
+实际通过范围必须以当前提交的 Actions 结果为准；新增测试定义本身不构成运行成功，
 也不覆盖生产环境、PBS 受管安装或 15 个科学工作流。
 
 ## samtools 单软件垂直切片
@@ -440,12 +427,12 @@ BAM quickcheck、BAI 索引、区域计数以及非法输入非零退出。完�
 
 samtools 只是 15 个工作流中变异检测链路的一个软件，不包含 fastp、BWA-MEM2、
 bcftools、Python 分析或完整 VCF truth 校验，不代表 MPI、PBS 受管安装、跨节点
-共享存储或生产站点验收。后续软件各自使用独立单 root lock/release，按步骤隔离
+共享存储或生产站点运行检查。后续软件各自使用独立单 root lock/release，按步骤隔离
 环境，不能把多个 load shell 堆叠为一个未经验证的运行环境。
 
 15 项候选包、外部数据、许可自审、target/MPI 风险及 macOS 文件交付步骤见
 [科学工作流材料指南](../../docs/spack-workflow-materials.md)。
-此安装验收入口不自动提供材料下载。独立的[固定案例材料导出](../../docs/spack-material-artifacts.md)
+此安装运行检查入口不自动提供材料下载。独立的[固定案例材料导出](../../docs/spack-material-artifacts.md)
 手动工作流可生成 Hello/samtools 的 bootstrap/Web 导入目录，默认仅验证，
 经审核并明确上传后才有该 run 的 artifact；它不提供任意 spec 或 15 项通用材料生成。
 macOS 仅用于获取、校验和搬运，不能用本机 lock 替代目标 Linux lock。
@@ -481,18 +468,12 @@ Server 使用校验后的真实 binding，Agent 保持仅从 Server 获取材料
 所有阶段须针对同一份 delivery，不以另一套已通过安装的材料替代。
 合同测试 `scripts/spack-artifact-managed.test.ts` 由手动完整 CI 执行，
 handoff 测试由 `deploy/pr-test/spack-artifacts/*.test.ts` 覆盖；
-两者及 harness 类型检查都不能代替真实安装验收。
+两者及 harness 类型检查都不能代替真实安装运行检查。
 
 该模式不运行 Web、不部署 preview/production、不上传材料、安装树或原始服务日志。
 独立[导出与 Web 导入工作流](../../docs/spack-material-artifacts.md)仍保留自己的
 许可确认和上传门禁；开发分支 `feat/spack-artifact-managed` 调用该工作流时
 只允许 `publish_artifact=false`。
-
-PR #9 的提交 `e8b50b7b6834a2937bb1a8858cf9067f232212db` 已通过完整 CI
-`35685693358`（9 个实际 job）和 scheduler matrix `35685693281`（7 个 job），
-包括 Hello/samtools 的 artifact-bootstrap 受管案例。此记录只覆盖该 SHA
-及其 delivery 的 bootstrap 后安装，不代表 Web 后安装、
-任意 spec、15 个工作流、PBS managed 安装或目标生产集群/共享存储/ABI 验收。
 
 失败诊断不输出原始 Agent 日志、注册响应或任意安装路径。基础 PR 镜像的 PBS
 入口观察器仅报告失败行号和退出码，未修改生产 scheduler 入口；受管安装的
@@ -530,6 +511,5 @@ Web 导入阶段使用 runner host loopback 与临时非 internal endpoint；这
 完整 CI 接入 `scripts/spack-web-managed.test.ts` 合同检查，harness 类型检查继续保留；
 它们不能代替真实 browser 与 scheduler 的运行结果。材料导出 workflow 仅新增
 `feat/spack-web-managed` 的 `publish_artifact=false` 白名单，旧分支及许可/上传门禁不放宽。
-**本新增路径仍待新 HEAD 的 Actions 验证**；PR #9 的历史通过记录不能作为 Web
-后安装证据，也不能据此宣称任意 spec、15 个工作流、PBS managed 安装、跨节点
-共享存储/ABI 或生产站点通过验收。
+Web 后安装须使用当前提交运行。此场景不覆盖任意 spec、15 个工作流、PBS managed 安装、跨节点
+共享存储/ABI 或生产站点通过运行检查。

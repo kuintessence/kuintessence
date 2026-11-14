@@ -509,9 +509,6 @@ function BillingPanel({
                       <span className="block break-all font-medium tabular-nums">
                         {row.bill.payload.calculation.dueAmount} {row.bill.payload.request.unit}
                       </span>
-                      <span className="block break-all text-xs text-muted-foreground">
-                        {row.bill.billId}
-                      </span>
                     </span>
                     <span className="text-sm">
                       <span className="block">

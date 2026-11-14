@@ -14,7 +14,7 @@ workflows:
   - id: "03"
     name: 生物分子最小化
     packages: [gromacs, gnuplot, python]
-    inputs: [RCSB 1AKI 结构, 力场, 水模型]
+    inputs: [合成二丙氨酸结构, AMBER99SB-ILDN 力场, TIP3P 水模型]
   - id: "04"
     name: 原子分子动力学
     packages: [py-ase, lammps, paraview, python]
@@ -46,7 +46,7 @@ workflows:
   - id: "11"
     name: 稀疏特征值
     packages: [petsc, slepc, py-petsc4py, py-slepc4py, py-scipy, python]
-    inputs: [合成 5x5 Matrix Market 矩阵]
+    inputs: [合成 16x16 Matrix Market 矩阵]
   - id: "12"
     name: 粒子输运
     packages: [geant4, root, cmake, python]
@@ -62,4 +62,4 @@ workflows:
   - id: "15"
     name: 量子化学
     packages: [nwchem, py-ase, gnuplot, python]
-    inputs: [合成水分子, 匹配基组库]
+    inputs: [合成水分子, 原创教学基组]

@@ -12,12 +12,14 @@ import { Input, Textarea } from "../ui/input";
 
 interface FormProps<T> {
   busy: boolean;
+  blocked?: boolean;
   onCancel: () => void;
   onSubmit: (input: T) => void;
 }
 export function FederationSiteForm({
   site,
   busy,
+  blocked = false,
   onCancel,
   onSubmit,
 }: FormProps<z.infer<typeof FederationSiteInput>> & { site?: FederationSiteView }) {
@@ -48,7 +50,7 @@ export function FederationSiteForm({
       <h3 className="text-base font-semibold">
         {t(site ? "federation.editSite" : "federation.addSite")}
       </h3>
-      <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">
+      <fieldset disabled={busy || blocked} className="grid gap-4 sm:grid-cols-2">
         <label className="space-y-1 text-sm" htmlFor={`${fieldId}-siteName`}>
           {t("federation.siteName")}
           <Input
@@ -88,16 +90,20 @@ export function FederationSiteForm({
           {t("federation.invalidSite")}
         </p>
       )}
-      <FormActions busy={busy} onCancel={onCancel} />
+      <FormActions busy={busy} blocked={blocked} onCancel={onCancel} />
     </form>
   );
 }
 
-function FormActions({ busy, onCancel }: Pick<FormProps<unknown>, "busy" | "onCancel">) {
+function FormActions({
+  busy,
+  blocked,
+  onCancel,
+}: Pick<FormProps<unknown>, "busy" | "blocked" | "onCancel">) {
   const { t } = useTranslation();
   return (
     <div className="flex flex-wrap gap-2">
-      <Button type="submit" disabled={busy}>
+      <Button type="submit" disabled={busy || blocked}>
         {t(busy ? "federation.saving" : "federation.save")}
       </Button>
       <Button type="button" variant="outline" disabled={busy} onClick={onCancel}>
@@ -109,6 +115,7 @@ function FormActions({ busy, onCancel }: Pick<FormProps<unknown>, "busy" | "onCa
 
 export function FederationKeyForm({
   busy,
+  blocked = false,
   onCancel,
   onSubmit,
 }: FormProps<z.infer<typeof FederationKeyInput>>) {
@@ -145,7 +152,7 @@ export function FederationKeyForm({
       }}
     >
       <h3 className="text-base font-semibold">{t("federation.addKey")}</h3>
-      <fieldset disabled={busy} className="space-y-4">
+      <fieldset disabled={busy || blocked} className="space-y-4">
         <label className="block space-y-1 text-sm" htmlFor={`${fieldId}-keyId`}>
           {t("federation.keyId")}
           <Input
@@ -214,13 +221,14 @@ export function FederationKeyForm({
           {t("federation.invalidKey")}
         </p>
       )}
-      <FormActions busy={busy} onCancel={onCancel} />
+      <FormActions busy={busy} blocked={blocked} onCancel={onCancel} />
     </form>
   );
 }
 
 export function FederationCertificateForm({
   busy,
+  blocked = false,
   onCancel,
   onSubmit,
 }: FormProps<z.infer<typeof FederationCertificateInput>>) {
@@ -250,7 +258,7 @@ export function FederationCertificateForm({
           required
           rows={8}
           maxLength={16384}
-          disabled={busy}
+          disabled={busy || blocked}
           value={pem}
           onChange={(e) => setPem(e.target.value)}
           className="font-mono"
@@ -262,7 +270,7 @@ export function FederationCertificateForm({
           {t("federation.invalidCertificate")}
         </p>
       )}
-      <FormActions busy={busy} onCancel={onCancel} />
+      <FormActions busy={busy} blocked={blocked} onCancel={onCancel} />
     </form>
   );
 }

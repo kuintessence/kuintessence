@@ -31,7 +31,7 @@ Software Provider、领域软件维护者和 workflow template 作者可按以�
 5. 发起 submit。
 6. 等待平台 review 或 official fork。
 
-CP 私有 package 默认 `source=cp-private`，只在 provider org 和自有 agent/cluster 内可信。跨平台共享必须走平台审核和 official fork。
+算力中心私有 package 默认 `source=cp-private`，只在 provider org 和自有 agent/cluster 内可信。跨平台共享必须走平台审核和 official fork。
 
 ## 创建软件用例
 

@@ -1,7 +1,7 @@
 // Test isolation: test agent ID prefix `sg-policy-test-agent`.
 // Each suite touching software_policies / agents must use a distinct prefix
 // so parallel runs don't collide.
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { agents, createPgDb, type PgDb, softwarePolicies } from "@kuintessence/db";
 import { eq } from "drizzle-orm";
 import { PolicyStore } from "./policy-store";
@@ -67,23 +67,28 @@ describe("PolicyStore", () => {
     expect(stored.version.length).toBeGreaterThan(0);
   });
 
-  test("upsertForAgent twice produces a distinct version stamp", async () => {
-    const previousPolicy = await store.upsertForAgent(AGENT_A, {
-      allowList: [],
-      denyList: [],
-      lockEnabled: false,
-      mirrors: [],
-      preinstallList: [],
-    });
-    const updatedPolicy = await store.upsertForAgent(AGENT_A, {
-      allowList: ["gromacs@*"],
-      denyList: [],
-      lockEnabled: false,
-      mirrors: [],
-      preinstallList: [],
-    });
-    expect(updatedPolicy.version).not.toBe(previousPolicy.version);
-    expect(updatedPolicy.allowList).toEqual(["gromacs@*"]);
+  test("upsertForAgent produces distinct versions when the clock does not advance", async () => {
+    const clock = spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    try {
+      const previousPolicy = await store.upsertForAgent(AGENT_A, {
+        allowList: [],
+        denyList: [],
+        lockEnabled: false,
+        mirrors: [],
+        preinstallList: [],
+      });
+      const updatedPolicy = await store.upsertForAgent(AGENT_A, {
+        allowList: ["gromacs@*"],
+        denyList: [],
+        lockEnabled: false,
+        mirrors: [],
+        preinstallList: [],
+      });
+      expect(updatedPolicy.version).not.toBe(previousPolicy.version);
+      expect(updatedPolicy.allowList).toEqual(["gromacs@*"]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   test("listAll returns rows for all agents", async () => {

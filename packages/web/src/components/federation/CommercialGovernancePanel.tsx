@@ -5,6 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -17,7 +18,7 @@ import {
 } from "../ui/dialog";
 import { Textarea } from "../ui/input";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
-import { FederationEmpty } from "./FederationLayout";
+import { FederationEmpty, FederationRefreshNotice } from "./FederationLayout";
 import { GovernanceForm } from "./GovernanceForm";
 import { GovernanceProgress } from "./GovernanceProgress";
 import {
@@ -144,6 +145,7 @@ function PolicyPanel({
       return { ...raw, data: raw.data.map(check) };
     },
   });
+  allowed.current = allowed.current && !list.isError;
   const generate = useMutation({
     retry: false,
     mutationFn: async (input: unknown) => {
@@ -220,7 +222,7 @@ function PolicyPanel({
     },
     onError: () => setUnknown(true),
   });
-  const blocked = busy || mutation.isPending || generate.isPending;
+  const blocked = busy || mutation.isPending || generate.isPending || list.isError;
   const previewImport = () => {
     try {
       assertAllowed();
@@ -243,8 +245,13 @@ function PolicyPanel({
   const detail = selected?.payload;
   return (
     <section className="space-y-5" aria-label={t(`federation.governance.kinds.${kind}`)}>
+      <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" disabled={blocked} onClick={() => void list.refetch()}>
+        <Button
+          variant="outline"
+          disabled={busy || mutation.isPending || generate.isPending || list.isFetching}
+          onClick={() => void list.refetch()}
+        >
           {t("federation.refresh")}
         </Button>
         {allowed.current ? (
@@ -261,9 +268,9 @@ function PolicyPanel({
       </div>
       {!approval.counterpartyJws ? (
         <p role="status">{t("federation.governance.contractRequired")}</p>
-      ) : list.isError ? (
+      ) : federationReadFailed(list) ? (
         <p role="alert">{t("federation.loadFailed")}</p>
-      ) : list.isPending ? (
+      ) : list.isPending || !list.data ? (
         <p role="status">{t("federation.loading")}</p>
       ) : list.data.data.length ? (
         <ul className="divide-y divide-border rounded-md border border-border">
@@ -348,7 +355,7 @@ function PolicyPanel({
           </details>
         </>
       ) : null}
-      {detail && selected ? (
+      {detail && selected && !federationReadFailed(list) ? (
         <div className="space-y-4">
           <PolicyTerms payload={detail} />
           <p className="text-sm">
@@ -432,7 +439,7 @@ function PolicyPanel({
         </p>
       ) : null}
       <Dialog
-        open={!!intent}
+        open={!!intent && !federationReadFailed(list)}
         onOpenChange={(open) => {
           if (!open && !mutation.isPending && !unknown) setIntent(null);
         }}

@@ -1,6 +1,6 @@
 # 两种 Docker Compose 部署
 
-三台新增虚拟机的独立平台、容器测试集群、本机构建与离线传输使用 [AIO 离线入口](aio/README.md)。支持东京 containerd 构建机的 nerdctl/BuildKit；下文原在线入口保持原行为，不用于本轮腾讯云离线交付。
+三台新增虚拟机的独立平台、容器测试集群、本机构建与离线传输使用 [AIO 离线入口](aio/README.md)。
 
 共用 [基础平台](../main/compose.yml)，通过 [compose.sh](compose.sh) 选择部署。镜像由 [production images](../../.github/workflows/build-images.yml) 发布；PR 的 [Compose delivery](../../.github/workflows/federation-compose.yml) 检查配置并实际启动新增镜像入口。
 
@@ -35,7 +35,7 @@ Gateway、四个 Adapter 和链码从 GHCR 拉取，使用与 Server、Registry�
 
 Agent 仍部署在真实调度器所在主机；这两个入口不会把 Slurm/PBS 伪装成平台容器。云盘和数据搬运继续使用现有 [存储配置](compose.storage.yml) 及 [Agent 配置](README.md#接收端输入凭据)，按实际网络配置 HTTPS origin；仅启动联邦服务不会自动开启云盘或取得数据权限。介质导出需要额外挂载受控 age 工具和独立 wrapping key，见 [介质包](../../docs/design/federation/media-package.md)。
 
-首次 Fabric 部署时，Peer/Orderer 进程可先于通道运行，Adapter 的健康只表示配置、身份及 Unix listener 可用，不表示通道、链码或交易可用。完成以下初始化、查询已提交定义并执行受权交易后，才可把链能力标为就绪。不要将 `up --wait` 当成业务联合验收。
+首次 Fabric 部署时，Peer/Orderer 进程可先于通道运行，Adapter 的健康只表示配置、身份及 Unix listener 可用，不表示通道、链码或交易可用。完成以下初始化、查询已提交定义并执行受权交易后，才可把链能力标为就绪。`up --wait` 只反映服务自身健康。
 
 ## 无链机构身份
 
@@ -143,7 +143,6 @@ bash deploy/federation/compose.sh fabric --profile fabric-admin run --rm fabric-
 
 常规更新只拉取固定版本并重建容器。链码升级另行批准新定义，验证 PDC 和信任代际后操作；不删除账本、不重建密钥、不自动改变组织策略。只有受治理允许的组织签名才可推进通道或定义。此交付不提供证书颁发机构、跨机构治理批准或多 Orderer 容灾的自动安装。
 
-
 ### 商业链同代际信任追加
 
 商业链增加显式 `UpdateTrust(previousDigest,nextDigest)`。它只允许在同一 `generationId` 下追加业务公钥或签署用途；机构的 site/MSP 归属、domain/PDC 成员与名称保持原样，原公钥内容、有效期和用途不能删除或改写。旧 key 的 `revoked` 链状态保留，追加用途不会将其重新激活。成员、PDC 或代际变更仍走联盟原治理流程，不能借此入口完成。
@@ -179,8 +178,7 @@ python3 deploy/federation/offline.py admin --bundle /交付目录 --manifest-sha
   --config /本站私有配置.json --operation trust-update --kind commercial
 ```
 
-工具核对原 CCAAS package ID、next 文件 SHA-256 和预期前后摘要，不替机构生成批准或自动改动链码定义。链端独立核对进程实际 next 配置、已存前驱及追加约束，缺少原生背书不会成为 VALID。配置切换期间普通业务入口保持拒绝，不做无链降级；确认回执后再按经批准的 next 配置恢复 Adapter 与新提交。新功能的真实多 Peer 更新和故障恢复仍须现场验收，命令夹具与内存账本测试不能替代该证据。
-
+工具核对原 CCAAS package ID、next 文件 SHA-256 和预期前后摘要，不替机构生成批准或自动改动链码定义。链端独立核对进程实际 next 配置、已存前驱及追加约束，缺少原生背书不会成为 VALID。配置切换期间普通业务入口保持拒绝，不做无链降级；确认回执后再按经批准的 next 配置恢复 Adapter 与新提交。新功能的真实多 Peer 更新和故障恢复仍须现场运行，命令合成场景配置与内存账本测试不能替代该证据。
 
 ## CI/CD 与现有腾讯云部署
 
@@ -190,16 +188,10 @@ python3 deploy/federation/offline.py admin --bundle /交付目录 --manifest-sha
 
 - `FEDERATION_SSH_HOST`、`FEDERATION_SSH_PORT`、`FEDERATION_SSH_USER`、`FEDERATION_SSH_KEY`。
 - `FEDERATION_SSH_KNOWN_HOSTS`：预先核对的主机公钥，强制 StrictHostKeyChecking。
-- 目标机器预置 Docker/Compose、`/etc/kuintessence/deployment.env`、私钥和 Fabric 治理材料；私有 GHCR 时预先配置目标机器的只读拉取权限。SSH 用户须能管理 `/opt/kuintessence-federation`、文件锁及 Docker，不由脚本临时提权。
+- 目标机器预置 Docker/Compose、`/etc/kuintessence/deployment.env`、私钥和 Fabric 治理材料；私有 GHCR 时预先配置目标机器的只读拉取权限。SSH 用户须能管理 `/opt/kuintessence-federation`、文件锁及 Docker，不由脚本临时提权。启动成功后切换 `current`。不复制密钥、不运行治理初始化、不自动转换 direct/fabric 模式。失败保留发布目录用于排查；数据库迁移可能已经运行，不能声称自动回滚，须按备份兼容性处理。历史发布目录由运维确认后清理。
 
-CD 部署到独立 `/opt/kuintessence-federation`，持有部署锁；第一次启动前记录模式，即使启动失败也不能用另一模式覆盖在途状态。启动成功后切换 `current`。不复制密钥、不运行治理初始化、不自动转换 direct/fabric 模式。失败保留发布目录用于排查；数据库迁移可能已经运行，不能声称自动回滚，须按备份兼容性处理。历史发布目录由运维确认后清理。
+腾讯云当前 `/opt/deploy` 的历史部署适配器只认识四类旧镜像，会丢弃额外服务，因此保留其 main 自动发布行为，不向它静默叠加 Fabric，也不在同一站点另启一套服务。要迁移该现网，须先安排维护窗口、保留原数据库/卷/身份、适配原发布管理器或迁移到本入口，确认 SSO/端口/代理后再切换。新增手动 CD 是独立部署入口，不表示腾讯云已启用联盟链。
 
-腾讯云当前 `/opt/deploy` 的历史部署适配器只认识四类旧镜像，会丢弃额外服务，因此本次保留其 main 自动发布行为，不向它静默叠加 Fabric，也不在同一站点另启一套服务。要迁移该现网，须先安排维护窗口、保留原数据库/卷/身份、适配原发布管理器或迁移到本入口，确认 SSO/端口/代理后再切换。新增手动 CD 是独立部署入口，不表示腾讯云已启用联盟链。
-
-## 数据与验收边界
+## 数据与备份
 
 `down` 保留卷；不要执行 `down -v`、删除 Peer 区块文件或只备份容器文件系统。至少备份 PostgreSQL、Peer/Orderer 卷、Registry/对象数据、原 MSP/TLS/JWS/恢复密钥、批准的通道/PDC/链码定义及应用信任配置。Peer 空间不足按 [容量蓝图](../../docs/design/federation/blueprint.md) 做监控、受控快照与归档，不能把 `blockToLive` 或删区块当通用扩容。
-
-两种入口已在一次性 Docker 引擎中完成完整平台启动。另以一个完整平台、A/B/C 三个独立 MSP/Peer 及一个 Orderer 验证四类链码批准、提交和初始化；通过 Server 内生产 Unix 客户端与 Adapter 提交一笔私有存证，A/B 查询摘要一致，C 读取被拒绝，重启后原存证仍可读取。重复本站 Peer 加入及相同包安装也已验证，见[完整启动验收](../../docs/design/federation/acceptance.md#两种-compose-完整启动与私有存证)。
-
-上述测试使用同一主机上的临时机构身份，只有一个完整 Server/数据库；存证由受控客户端调用，没有经过人员 API 或真实作业。它不替代正式多机构治理、跨主机网络、三个独立平台、故障恢复、多 Orderer 容灾、真实作业与金额联合验收。其余范围仍按[验收清单](../../docs/design/federation/acceptance.md)执行。

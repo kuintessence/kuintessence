@@ -57,7 +57,7 @@ bash deploy/schedulers/verify-recognition.sh deploy/compose/docker-compose.sched
 - `scheduler-pbs` online，类型为 `pbs-pro`。
 - `scheduler-k3s` online，类型为 `kubernetes`。
 
-## Scheduler 深度验收
+## Scheduler 深度运行检查
 
 调度器栈启动后，可按风险从低到高执行：
 

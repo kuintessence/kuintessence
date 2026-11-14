@@ -145,7 +145,11 @@ beforeEach(async () => {
   vi.mocked(api.post).mockResolvedValue({ data: saved });
 });
 async function openPayment() {
-  fireEvent.click(await screen.findByRole("button", { name: new RegExp(receiptId) }));
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: new RegExp(`${saved.payload.amount} ${saved.payload.unit}`),
+    }),
+  );
 }
 async function importPayment(value: unknown = payment) {
   fireEvent.click(await screen.findByRole("button", { name: "Record payment" }));
@@ -195,7 +199,7 @@ test.each([
   contract.terms.agreement.mode = mode;
   mount({ approval: contract });
   await openPayment();
-  expect(screen.getByText("Provider submits evidence; status not synchronized")).toBeTruthy();
+  expect(screen.getByText("Compute Center submits evidence; status not synchronized")).toBeTruthy();
   expect(screen.getByText("Current confirmed amount", { exact: true })).toBeTruthy();
 });
 test("history keeps superseded amount distinct and retains bill filter", async () => {

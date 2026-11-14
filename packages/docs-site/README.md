@@ -1,6 +1,6 @@
 # Kuintessence 文档站
 
-文档站面向用户、算力提供者、平台运营和软件发布者，使用 VitePress 将 Markdown 生成为静态页面。
+文档站面向用户、算力中心、平台运营和软件发布者，使用 VitePress 将 Markdown 生成为静态页面。
 
 ## 本地命令
 

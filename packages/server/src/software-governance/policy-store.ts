@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { type PgDb, softwarePolicies } from "@kuintessence/db";
 import { and, eq } from "drizzle-orm";
 
@@ -28,10 +29,8 @@ export interface StoredPolicy extends PolicyBundle {
  * future extension but the push path treats agent scope as
  * authoritative.
  *
- * Version stamping uses millisecond-precision `Date.now()` so an
- * upsert always produces a strictly increasing version under reasonable
- * traffic. The agent uses string equality for the idempotency check so
- * "increasing" isn't a hard requirement — uniqueness per upsert is.
+ * Each upsert gets a unique version, including writes in the same millisecond
+ * or from different Server instances. Agents compare versions for equality.
  */
 export class PolicyStore {
   constructor(private readonly db: PgDb) {}
@@ -47,7 +46,7 @@ export class PolicyStore {
   }
 
   async upsertForAgent(agentId: string, bundle: PolicyBundle): Promise<StoredPolicy> {
-    const version = `v${Date.now()}`;
+    const version = `v${randomUUID()}`;
     const values = {
       agentId,
       scope: "agent",

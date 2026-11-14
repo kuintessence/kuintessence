@@ -14,6 +14,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { ApiError, type ApiOrganizationScope, api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { Button } from "../ui/button";
 import {
@@ -42,7 +43,11 @@ import { CommercialRefundPanel } from "./CommercialRefundPanel";
 import { CommercialSettlementPanel } from "./CommercialSettlementPanel";
 import { CommercialTerms } from "./CommercialTerms";
 import { CommercialUsagePanel } from "./CommercialUsagePanel";
-import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
+import {
+  FederationEmpty,
+  FederationPanelHeader,
+  FederationRefreshNotice,
+} from "./FederationLayout";
 
 const path = "/federation/commercial-agreements";
 type Action =
@@ -229,6 +234,7 @@ export function CommercialPanel({
     );
   return (
     <div className="space-y-5">
+      <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
       <FederationPanelHeader title={t("federation.commercial.title")}>
         <Button
           variant="outline"
@@ -293,35 +299,114 @@ export function CommercialPanel({
               }}
             >
               <TabsList
-                className="federation-subnav"
+                className="grid w-full max-w-full grid-cols-1 items-start gap-4 rounded-none border-b border-border bg-transparent p-0 pb-4 sm:grid sm:w-full sm:grid-cols-3"
                 aria-label={t("federation.usage.contractSections")}
               >
-                <TabsTrigger value="terms">{t("federation.commercial.terms")}</TabsTrigger>
-                <TabsTrigger value="usage">{t("federation.usage.title")}</TabsTrigger>
-                <TabsTrigger value="bills">{t("federation.billing.title")}</TabsTrigger>
-                <TabsTrigger value="settlements">{t("federation.settlement.title")}</TabsTrigger>
-                {detail.data.terms.agreement.mode !== "ledger_coordinated" ? (
-                  <TabsTrigger value="refunds">{t("federation.refund.title")}</TabsTrigger>
-                ) : null}
-                <TabsTrigger value="adjustments">{t("federation.adjustment.title")}</TabsTrigger>
-                {detail.data.terms.consideration === "paid" ? (
-                  <TabsTrigger value="payments">{t("federation.payment.title")}</TabsTrigger>
-                ) : null}
-                {grants.includes("dispute.read") ||
-                grants.includes("dispute.open") ||
-                grants.includes("dispute.resolve") ? (
-                  <TabsTrigger value="disputes">{t("federation.dispute.title")}</TabsTrigger>
-                ) : null}
-                <TabsTrigger value="governance">{t("federation.governance.title")}</TabsTrigger>
-                <TabsTrigger value="closing">{t("federation.closing.title")}</TabsTrigger>
-                {detail.data.terms.agreement.mode === "ledger_coordinated" ? (
-                  <>
-                    <TabsTrigger value="automation">{t("federation.automation.title")}</TabsTrigger>
-                    <TabsTrigger value="market-requests">
-                      {t("federation.marketRequest.title")}
+                <fieldset className="min-w-0">
+                  <legend className="mb-2 text-xs font-medium text-muted-foreground">
+                    {t("federation.commercial.sectionGroups.contract")}
+                  </legend>
+                  <div className="flex flex-wrap gap-1">
+                    <TabsTrigger
+                      value="terms"
+                      className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                    >
+                      {t("federation.commercial.terms")}
                     </TabsTrigger>
-                  </>
-                ) : null}
+                    <TabsTrigger
+                      value="governance"
+                      className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                    >
+                      {t("federation.governance.title")}
+                    </TabsTrigger>
+                    {detail.data.terms.agreement.mode === "ledger_coordinated" ? (
+                      <>
+                        <TabsTrigger
+                          value="automation"
+                          className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                        >
+                          {t("federation.automation.title")}
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="market-requests"
+                          className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                        >
+                          {t("federation.marketRequest.title")}
+                        </TabsTrigger>
+                      </>
+                    ) : null}
+                  </div>
+                </fieldset>
+                <fieldset className="min-w-0">
+                  <legend className="mb-2 text-xs font-medium text-muted-foreground">
+                    {t("federation.commercial.sectionGroups.accounts")}
+                  </legend>
+                  <div className="flex flex-wrap gap-1">
+                    <TabsTrigger
+                      value="usage"
+                      className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                    >
+                      {t("federation.usage.title")}
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="bills"
+                      className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                    >
+                      {t("federation.billing.title")}
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="settlements"
+                      className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                    >
+                      {t("federation.settlement.title")}
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="adjustments"
+                      className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                    >
+                      {t("federation.adjustment.title")}
+                    </TabsTrigger>
+                    {detail.data.terms.consideration === "paid" ? (
+                      <TabsTrigger
+                        value="payments"
+                        className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                      >
+                        {t("federation.payment.title")}
+                      </TabsTrigger>
+                    ) : null}
+                    {detail.data.terms.agreement.mode !== "ledger_coordinated" ? (
+                      <TabsTrigger
+                        value="refunds"
+                        className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                      >
+                        {t("federation.refund.title")}
+                      </TabsTrigger>
+                    ) : null}
+                  </div>
+                </fieldset>
+                <fieldset className="min-w-0">
+                  <legend className="mb-2 text-xs font-medium text-muted-foreground">
+                    {t("federation.commercial.sectionGroups.resolution")}
+                  </legend>
+                  <div className="flex flex-wrap gap-1">
+                    {grants.includes("dispute.read") ||
+                    grants.includes("dispute.open") ||
+                    grants.includes("dispute.resolve") ? (
+                      <TabsTrigger
+                        value="disputes"
+                        className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                      >
+                        {t("federation.dispute.title")}
+                      </TabsTrigger>
+                    ) : null}
+                    <TabsTrigger
+                      value="closing"
+                      className="min-h-10 whitespace-normal px-3 py-2 text-sm"
+                    >
+                      {t("federation.closing.title")}
+                    </TabsTrigger>
+                  </div>
+                </fieldset>
               </TabsList>
               <TabsContent value="terms">
                 <CommercialDetail
@@ -549,9 +634,9 @@ export function CommercialPanel({
             </Tabs>
           )}
         </>
-      ) : list.isError ? (
+      ) : federationReadFailed(list) ? (
         <p role="alert">{t("federation.loadFailed")}</p>
-      ) : list.isPending ? (
+      ) : list.isPending || !list.data ? (
         <p role="status">{t("federation.loading")}</p>
       ) : (
         <>
@@ -577,9 +662,12 @@ export function CommercialPanel({
                       <span className="block break-words font-medium">
                         {row.sourceName || row.sourceSiteId} → {row.targetName || row.targetSiteId}
                       </span>
-                      <span className="block break-all text-xs text-muted-foreground">
-                        {row.revisionId}
-                      </span>
+                      <time
+                        dateTime={row.createdAt}
+                        className="block text-xs text-muted-foreground"
+                      >
+                        {new Date(row.createdAt).toLocaleDateString()}
+                      </time>
                     </span>
                     <span className="shrink-0 text-sm">
                       <span className="block">

@@ -121,6 +121,9 @@ jobs:
       - name: Check scientific workflow handoff templates
         run: bun test scripts/spack-workflow-handoff.test.ts
 
+      - name: Check business catalog metadata revisions
+        run: python3 tests/test_ecosystem_business_catalog.py
+
       - name: Type check workflow handoff contracts
         run: >-
           bun node_modules/typescript/bin/tsc --noEmit --strict

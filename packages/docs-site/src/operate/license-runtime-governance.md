@@ -19,13 +19,13 @@ License 要求从 software 继承到 usecase，再继承到 workflow。`unknown`
 
 ## Sandbox runtime binding
 
-首个逻辑 contract 为 `python-3.12-stdlib-v1`。CP 在 `/cp/software` 的“受管 Runtime 与受限材料”填写 provider org、Agent、已签名 runtime profile ID 和 digest。
+首个逻辑 contract 为 `python-3.12-stdlib-v1`。算力中心在 `/cp/software` 的“受管 Runtime 与受限材料”填写 provider org、Agent、已签名 runtime profile ID 和 digest。
 
 未绑定时脚本仍可浏览，提交会返回 `RUNTIME_CONTRACT_UNBOUND`。绑定被撤销或签名不匹配时也会拒绝提交。
 
 ## VASP POTCAR 映射
 
-CP 将 POTCAR 文件保存在 Agent 的受限本地目录，在 `/cp/software` 登记 selector、版本、元素集合和 fingerprint。界面和数据库只保存这些 metadata。
+算力中心将 POTCAR 文件保存在 Agent 的受限本地目录，在 `/cp/software` 登记 selector、版本、元素集合和 fingerprint。界面和数据库只保存这些 metadata。
 
 VASP placement 同时要求：
 

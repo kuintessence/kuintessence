@@ -1,10 +1,10 @@
 # Spack 配置绑定退役
 
-这是材料生命周期的第三批前置能力，仅向可信离线 DB 运维提供 `retire`。
+绑定退役仅向可信离线 DB 运维提供 `retire`。
 它终止一个精确的 `(spec, repositoryId, manifestDigest)` 配置绑定的后续使用，
 **不是下架材料、撤回 recipe、删除源码、卸载软件或修改可见范围**。
 同一 release 的其他 spec 绑定不受影响；直接 Registry 材料读取仍按现有授权规则处理。
-本批没有退役恢复接口、HTTP 管理接口或 CP/Web 写入口。
+当前没有退役恢复接口、HTTP 管理接口或 算力中心/Web 写入口。
 
 ## 不可逆与保留
 
@@ -31,7 +31,7 @@ bun packages/db/src/spack-material-rollout-cli.ts <absolute-command-json-path>
 
 执行权限来自可信 shell 的 DB 凭据；`operatorId` 是归属记录而非登录证明。
 退役只接受数据库中当前未停用的 `super_admin` / `platform_admin`。
-CP 对材料的发布权不意味着具有全平台配置退役权。
+算力中心对材料的发布权不意味着具有全平台配置退役权。
 
 退役只允许处于 `paused`、最近动作是 `reconcile` 的状态。
 必须使用最新 revision、当前 epoch，以及同时匹配最近 reconcile journal 和当前库存的 digest。
@@ -107,5 +107,5 @@ CLI 不输出原因、绑定列表、凭据或 DB 异常。
 跨页批次回滚、退役库存分页摘要、已有引用重试及旧配置拒绝。
 native/managed GNU Hello 的隔离 Actions 案例追加一条不曾实际部署的历史测试绑定，
 在维护窗口内退役，再重建 Server/Registry，核对 tombstone、旧配置拒绝和实际 Hello
-绑定仍可用。该案例不代表生产隔离已完成，不替代真实业务部署及 15 个工作流验收。
+绑定仍可用。该案例不代表生产隔离已完成，不替代真实业务部署及 15 个工作流运行检查。
 测试结果只以当前提交的 GitHub Actions 为准，不在本地运行测试或容器。

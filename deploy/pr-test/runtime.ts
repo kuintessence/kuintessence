@@ -108,7 +108,7 @@ async function main() {
   const context = z
     .object({ providerOrgs: z.array(z.object({ id: z.string().uuid(), name: z.string() })) })
     .parse(await request("/cp/agent-registration-context"));
-  const provider = context.providerOrgs.find((org) => org.name === "Development Compute Provider");
+  const provider = context.providerOrgs.find((org) => org.name === "Development Compute Center");
   assert(provider, "Development provider was not initialized");
   const queueName = scheduler === "pbs" ? "workq" : "debug";
   let inventoryState = "";

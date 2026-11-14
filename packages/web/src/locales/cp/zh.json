@@ -1,11 +1,11 @@
 {
   "cp": {
     "access": {
-      "viewRequired": "当前账号无法进入算力提供方控制台。请切换到具备算力提供方运营或管理权限的账号，或联系组织管理员开通访问权限。",
+      "viewRequired": "当前账号无法进入算力中心控制台。请切换到具备算力中心运营或管理权限的账号，或联系组织管理员开通访问权限。",
       "manageRequired": "当前账号只能查看此页面，不能执行管理操作。请联系算力组织所有者或管理员开通管理权限。"
     },
     "nav": {
-      "label": "算力提供方控制台",
+      "label": "算力中心控制台",
       "dashboard": "概览",
       "software": "软件",
       "queues": "队列",
@@ -18,8 +18,8 @@
       "metering": "用量计量",
       "data": "数据"
     },
-    "title": "算力提供方控制台",
-    "subtitle": "面向集群运维的算力提供方工具。当前范围限定为你管理的组织。",
+    "title": "算力中心控制台",
+    "subtitle": "面向集群运维的算力中心工具。当前范围限定为你管理的组织。",
     "organizationSelector": {
       "label": "算力组织",
       "ariaLabel": "当前算力组织",
@@ -79,11 +79,11 @@
         "noAgents": "未接入节点"
       },
       "attention": {
-        "label": "算力提供方审批与告警",
+        "label": "算力中心审批与告警",
         "partialFailure": "部分来源暂不可用，已显示当前可获取的数据。",
         "approvals": {
           "title": "审批待办",
-          "description": "汇总需要算力提供方确认的集群账号与软件发现结果。",
+          "description": "汇总需要算力中心确认的集群账号与软件发现结果。",
           "empty": "当前没有待处理的审批申请。",
           "accounts": "集群账号映射申请",
           "software": "预装软件识别审核"
@@ -149,7 +149,7 @@
       "manageFact": "纳管",
       "managedTableCaption": "已纳管的队列目标",
       "inventoryTableCaption": "{{hostname}} 的调度器队列观测",
-      "allProviderUsers": "算力提供方内可见",
+      "allProviderUsers": "算力中心内可见",
       "noPolicyTags": "无策略标签",
       "inventoryStatus": {
         "available": "可用",
@@ -186,7 +186,7 @@
       "field": {
         "queueId": "队列 ID",
         "name": "显示名称",
-        "providerOrgId": "算力提供方组织 ID",
+        "providerOrgId": "算力中心组织 ID",
         "visibleOrgIds": "可见组织 ID",
         "agentId": "Agent ID",
         "chooseAgent": "选择已注册接入代理",
@@ -198,7 +198,7 @@
         "qos": "QoS",
         "enabled": "启用",
         "policyTags": "策略标签",
-        "visibleOrgHint": "选择可以使用此队列的组织；不选择时仅算力提供方内部用户可见。",
+        "visibleOrgHint": "选择可以使用此队列的组织；不选择时仅算力中心内部用户可见。",
         "policyTagsPlaceholder": "例如 gpu, high-memory, teaching"
       },
       "inventoryCol": {
@@ -216,7 +216,7 @@
       "dialog": {
         "create": "新建队列",
         "edit": "编辑队列",
-        "description": "将已注册接入代理上的调度队列开放给指定组织，并设置队列能力标签。算力提供方组织由当前管理范围自动确定。"
+        "description": "将已注册接入代理上的调度队列开放给指定组织，并设置队列能力标签。算力中心组织由当前管理范围自动确定。"
       },
       "toast": {
         "created": "队列已创建",
@@ -228,7 +228,7 @@
     },
     "software": {
       "title": "软件治理",
-      "subtitle": "按算力提供方、集群和接入代理管理安装模式、允许/禁止列表、镜像源和预装软件映射。",
+      "subtitle": "按算力中心、集群和接入代理管理安装模式、允许/禁止列表、镜像源和预装软件映射。",
       "refresh": "刷新",
       "summary": {
         "clusters": "集群",
@@ -243,8 +243,8 @@
         "description": "当前 {{count}} 个接入代理只有历史心跳记录，平台服务没有可下发软件操作的实时连接。安装、删除、加载和导入会保持禁用；请先确认调度系统和接入代理服务已启动并重新连接平台服务。"
       },
       "provider": {
-        "title": "算力提供方默认策略",
-        "noProvider": "暂无算力提供方组织"
+        "title": "算力中心默认策略",
+        "noProvider": "暂无算力中心组织"
       },
       "cluster": {
         "meta": "{{agents}} 节点 · {{installed}} 已安装 · {{mirrors}} 个镜像源",
@@ -301,7 +301,7 @@
       },
       "preview": {
         "title": "可用性预览",
-        "subtitle": "输入原始 Spack spec，并可附带软件用例上下文，查看当前算力提供方范围内的已安装、可安装和阻断节点。",
+        "subtitle": "输入原始 Spack spec，并可附带软件用例上下文，查看当前算力中心范围内的已安装、可安装和阻断节点。",
         "spec": "Spack spec",
         "placeholder": "abacus@3.8.0 +mpi",
         "usecase": "Usecase",
@@ -443,7 +443,7 @@
       },
       "usecase": {
         "title": "软件用例策略",
-        "description": "控制工作流和软件用例对本算力提供方软件能力的运营准入。",
+        "description": "控制工作流和软件用例对本算力中心软件能力的运营准入。",
         "strategy": "用例策略",
         "defaultAllow": "默认允许",
         "authorization": "授权/白名单",
@@ -465,12 +465,12 @@
       },
       "edit": {
         "title": "编辑软件策略",
-        "providerTitle": "编辑算力提供方默认策略",
+        "providerTitle": "编辑算力中心默认策略",
         "clusterTitle": "编辑 {{cluster}} 集群覆盖策略",
         "agentTitle": "编辑 {{agentId}} 覆盖策略",
         "description": "每行一个 Spack spec；mirror 每行使用 name url priority。",
-        "providerOrg": "算力提供方组织",
-        "allProviders": "全部算力提供方",
+        "providerOrg": "算力中心组织",
+        "allProviders": "全部算力中心",
         "listLabel": "名单",
         "listWhitelist": "白名单",
         "listBlacklist": "黑名单",
@@ -729,10 +729,10 @@
     },
     "agentRegistration": {
       "title": "节点注册",
-      "subtitle": "为算力提供方组织签发单次使用的接入凭证。",
+      "subtitle": "为算力中心组织签发单次使用的接入凭证。",
       "form": {
         "title": "创建 registration token",
-        "providerOrgId": "算力提供方组织 ID",
+        "providerOrgId": "算力中心组织 ID",
         "agentId": "Agent ID",
         "siteName": "站点名称",
         "ttlSec": "有效期（秒）",
@@ -740,7 +740,7 @@
         "serverGrpcUrl": "平台服务 gRPC URL",
         "detectedUrls": "识别到的注册地址",
         "scheduler": "调度系统",
-        "noProviderOrgs": "无可用算力提供方组织",
+        "noProviderOrgs": "无可用算力中心组织",
         "selectedProviderOrgId": "已选组织 ID",
         "submit": "签发 token",
         "creating": "签发中…",
@@ -769,7 +769,7 @@
     "data": {
       "title": "数据管理",
       "subtitle": "导入受管目录中的数据、管理版本，并审查数据访问策略。",
-      "createAsset": "创建算力提供方数据资产",
+      "createAsset": "创建算力中心数据资产",
       "create": "创建",
       "created": "已创建数据资产",
       "import": "导入版本",
@@ -793,7 +793,7 @@
       "managedRootEmpty": "该节点尚未登记可导入的数据集根目录。请配置 Agent 的 AGENT_DATASET_ROOTS_JSON 并重新连接；文件传输目录不能直接用于数据集导入。",
       "relativePath": "根目录内相对路径",
       "managedRootRequired": "CP-local 导入必须使用已登记的托管根目录和相对路径。",
-      "cpLocalHint": "不要填写任意绝对路径；算力提供方本地数据的事实来源是受管根目录加相对路径。",
+      "cpLocalHint": "不要填写任意绝对路径；算力中心本地数据的事实来源是受管根目录加相对路径。",
       "replica": "副本与中心投递",
       "runnableCenter": "可运行中心：{{center}}（{{status}}）",
       "versionEmpty": "当前资产尚无数据版本。",

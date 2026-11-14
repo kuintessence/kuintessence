@@ -2,7 +2,7 @@
 
 平台通过同一个 `OfflineDeliveryService` 接收运行时上传和部署只读目录。
 导入 recipe/material、生态 stage、安装映射 bind、生态 activate 分项记录；
-这些结果均不代表真实软件安装或作业验收成功。
+这些结果均不代表真实软件安装或作业运行检查成功。
 
 运行时预检会校验完整 recipe，大型目录可能超过一分钟。Web、AIO、Preview、Helm
 及单域名/多域名反向代理为 `/software/api/offline-deliveries/` 保留 1800 秒响应等待和
@@ -27,7 +27,7 @@ bun deploy/offline-delivery/create-fixture.ts /tmp/kq-contract-fixture
 
 最后一条生成可预检/导入的最小合同 fixture，含真实 Git bundle、**合成** native-format
 lock、合成源码和通知、签名生态清单，以及仅供本 fixture 的公钥；私钥不落盘。
-它不是材料制造或安装验收。不要将 fixture 公钥加入生产信任集。
+它不是材料制造或安装运行检查。不要将 fixture 公钥加入生产信任集。
 JSON Schema 表达结构；引用、摘要、权限、签名和 native lock 语义以平台预检为准。
 
 目录示例：
@@ -112,7 +112,7 @@ Agent Python source audit 与 managed install/verify/load 共用的校验器支�
 v2 严格检查源码与证据的一一关联，并在加载 recipe 前校验 original/evidence/attachment
 全部引用的大小与 SHA-256；证据缺失或篡改会拒绝执行。保留原始 manifest 摘要及许可证状态，
 不会降级为 v1。此兼容性已由模拟 native API 的离线 fixture 覆盖，仍需部署修复版 Agent
-后完成真实 v2 安装及作业验收。
+后完成真实 v2 安装及作业运行检查。
 Web 材料详情展示逐材料 license/provenance，可下载并校验附件（浏览器下载上限 32 MiB）；
 较大附件用带鉴权的 blob API 流式保存。
 
@@ -156,7 +156,7 @@ HTTP 200 仅表示返回了报告，必须检查报告状态和逐项结果。
 真正的站点安装映射仍通过现有精确 spec、材料 target 与 revision 控制，不把站点 UUID 写入通用包。
 生态 active 与材料可安装、站点可运行是独立状态。
 
-已激活且公开发布的生态 Spack 软件显示在软件中心的“Spack 软件 → official”目录，
+已激活且公开发布的生态 Spack 软件显示在软件生态的“Spack 软件 → official”目录，
 与内置上游目录一起参与搜索和分页。目录保留资产身份、版本、许可证与声明的精确
 安装 spec；签名导入项不提供手工目录的编辑、删除入口，更新仍通过生态发布完成。
 重新部署保留数据库和 Registry 数据卷时无需重新导入。用例和正式工作流模板分别
@@ -195,7 +195,7 @@ main 与普通 Compose 的 Registry healthcheck 使用 readiness，Web 依赖它
 需要重启重新完成必需 seed，避免错误宣告部署成功。
 
 Helm 的既有 `seed.enabled` 是 minimal/demo 身份数据库 seed，**不是本离线交付开关**，
-本次不改变其行为。完整离线挂载接线由两个 Compose 入口提供；Helm 操作者需另行提供只读 PVC、
+完整离线挂载接线由两个 Compose 入口提供；Helm 操作者需另行提供只读 PVC、
 上述 Registry 环境变量和 `/api/ready` readinessProbe；liveness 保持 `/api/health`。
 现有 Helm recipe 本地存储仍限定单 Registry writer，不因 seed 并发锁宣称支持共享卷水平扩容。
 
@@ -217,7 +217,7 @@ PostgreSQL advisory lock 串行化交付执行；专用锁连接避免小连接�
 新入口与任一 legacy recipe/material/OCI bootstrap 同时配置时，配置验证明确拒绝，
 操作员需将输入合并为一份交付计划；旧入口单独配置保持兼容。
 
-## 签名与验收边界
+## 签名与适用范围
 
 签名算法继续使用原生态算法，已提取为共享 `ecosystemCanonicalJson`：对象键按 JS UTF-16
 顺序排序，JSON.stringify 字符串/数值，UTF-8 编码后 Ed25519；与 localeCompare 排序的通用
@@ -226,10 +226,10 @@ canonicalJson 不可混用。Python 导出器必须对照
 公钥为 base64 DER/SPKI，signature 为 base64。32 MiB 签名层上限不因大源码包扩大。
 
 本功能的合同 fixture/模拟生态持久化测试不等于真实 native solve 或安装。
-真实 samtools@1.23.1 验收仍需材料端交付完整 recipe、真实单 root lock、依赖源码和目标环境，
+真实 samtools@1.23.1 运行检查仍需材料端交付完整 recipe、真实单 root lock、依赖源码和目标环境，
 并指定已授权的隔离 Agent（managed installation 的 host spawner、固定 runtime/site profile；
 不支持 Kubernetes adapter）。禁止以旧 samtools@1.19.2 lock 替代。
 应在空 store、禁止公网且无隐式 cache/upstream/bootstrap 的环境完成安装，再由 KQ 提交
 view → sort → index → quickcheck 的 3 条 SAM 记录作业，断言总数 3、mapped 2，
 记录 job/run ID、退出码和 BAM/BAI 摘要；隔离副本移除必需源码必须失败且不联网补件。
-本次未指定这样的材料及测试站点，真实安装/作业/缺源码负例均保持 **not-run**。
+这些步骤由具备匹配材料和隔离能力的目标站点执行，并保留原作业及文件摘要；材料缺失时应停止准备，不改用其他版本的锁或预装软件替代。

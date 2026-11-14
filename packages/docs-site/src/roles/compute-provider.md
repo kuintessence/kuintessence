@@ -1,10 +1,10 @@
-# 算力提供者手册
+# 算力中心手册
 
-Compute Provider、集群管理员和现场运维可在此查找 Agent 接入、集群软件策略、节点可用性和计量审计操作。
+Compute Center、集群管理员和现场运维可在此查找 Agent 接入、集群软件策略、节点可用性和计量审计操作。
 
 ## 入口
 
-- CP 控制台：`/cp`
+- 算力中心工作区：`/cp`
 - 软件治理：`/cp/software`
 - 节点与 Agent：`/cp/agents`
 - 用户与授权：`/cp/users`
@@ -30,7 +30,7 @@ bash deploy/schedulers/verify-recognition.sh deploy/compose/docker-compose.sched
 
 ## 软件策略
 
-`/cp/software` 是 CP 运行侧策略控制台。策略按三层合并：
+`/cp/software` 是算力中心运行侧策略控制台。策略按三层合并：
 
 `provider -> cluster -> agent`
 
@@ -50,7 +50,7 @@ bash deploy/schedulers/verify-recognition.sh deploy/compose/docker-compose.sched
 
 ## 预装软件上报与映射
 
-Agent 会上报预装 Spack/module 软件。CP 可以声明映射到 official package 或 usecase：
+Agent 会上报预装 Spack/module 软件。算力中心可以声明映射到 official package 或 usecase：
 
 - 用于让 resolver 识别“已安装可用”。
 - 平台可对高风险映射进行审核、锁定或驳回。
@@ -71,7 +71,7 @@ hdf5+mpi %gcc@13.2.0
 
 - `installedAvailable`：已安装可运行节点。
 - `installableAvailable`：可按策略安装后运行的节点。
-- `blocked`：被 ACL、CP policy、Agent 状态或 lifecycle 阻断的节点。
+- `blocked`：被 ACL、算力中心策略、Agent 状态或 lifecycle 阻断的节点。
 
 该结果与调度 software stage 使用同一 resolver。`agent_software` 中的 `name@version` 不能单独作为可运行依据。
 
@@ -93,7 +93,7 @@ import 只接受以下三种 source：
 
 为已完成版本创建 replica 时，记录 `agentId/siteId/clusterId` 和 location。多个 `available` replica 可提高不同中心的调度候选并形成 data affinity，但不能绕过数据权限或跨中心复制策略。访问申请可在该页查看详情并 approve/reject；审批会产生可审计的授权投影。
 
-`AGENT_DATASET_ROOT` 必须指向 Agent 受管数据集根，`AGENT_JOB_WORK_ROOT` 用于 Agent 宿主机上的作业临时工作目录；两者不得指向任意用户路径、Registry bundle 或 POTCAR 存储目录。Server 只保存 `managedRootId + relativePath`，不保存或传输 CP 的绝对路径。
+`AGENT_DATASET_ROOT` 必须指向 Agent 受管数据集根，`AGENT_JOB_WORK_ROOT` 用于 Agent 宿主机上的作业临时工作目录；两者不得指向任意用户路径、Registry bundle 或 POTCAR 存储目录。Server 只保存 `managedRootId + relativePath`，不保存或传输算力中心的绝对路径。
 
 受限数据派发需要配置 `AGENT_RESTRICTED_DATA_ISOLATION=true` 与 `AGENT_DATA_READONLY_MOUNT_DRIVER=linux-bind`。`linux-bind` 在 Agent 宿主机上建立 readonly mount，容器化 scheduler 使用 Agent 已准备的工作目录视图。只读挂载本身不能提供受限执行隔离，Agent 还需验证签名运行环境。
 
@@ -101,7 +101,7 @@ import 只接受以下三种 source：
 
 ## 计量与审计
 
-CP 计量入口位于 `/cp/metering`：
+算力中心计量入口位于 `/cp/metering`：
 
 - 支持 raw/hourly/daily/monthly rollup 查询。
 - 支持 CSV/JSON export。

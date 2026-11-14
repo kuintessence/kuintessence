@@ -207,7 +207,7 @@ test("source attestation state remains unknown independently of local accounting
   first().adjustment.localSiteId = source;
   mount({ approval: { ...approval, localSiteId: source } });
   await openAdjustment();
-  expect(screen.getByText("Provider submits evidence; status not synchronized")).toBeTruthy();
+  expect(screen.getByText("Compute Center submits evidence; status not synchronized")).toBeTruthy();
 });
 test("coordinated source waits for its own VALID and never describes evidence as remote", async () => {
   const coordinated = structuredClone(approval);
@@ -221,7 +221,7 @@ test("coordinated source waits for its own VALID and never describes evidence as
   await openAdjustment();
   expect(screen.getByText("Not applied")).toBeTruthy();
   expect(screen.getByText("Evidence pending")).toBeTruthy();
-  expect(screen.queryByText("Provider submits evidence; status not synchronized")).toBeNull();
+  expect(screen.queryByText("Compute Center submits evidence; status not synchronized")).toBeNull();
 });
 test("draft binds the original bill and explicit confirmation sends the exact adjustment", async () => {
   vi.mocked(api.post)

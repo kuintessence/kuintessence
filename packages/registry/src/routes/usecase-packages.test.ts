@@ -163,6 +163,33 @@ describe("Usecase package routes", () => {
     expect(old.status).toBe(200);
   });
 
+  test("hidden packages leave discovery while historical IDs remain readable", async () => {
+    const create = await app.request("/api/usecase-packages", {
+      method: "POST",
+      headers: W,
+      body: JSON.stringify({ name: "usecaseroute-test-hidden", version: "1.0.0", spec }),
+    });
+    expect(create.status).toBe(201);
+    const row = (await create.json()) as { id: string; name: string };
+    const [asset] = await db.select().from(softwareAssets).where(eq(softwareAssets.name, row.name));
+    if (!asset) throw new Error("missing synchronized asset");
+    await db
+      .update(softwareAssets)
+      .set({ lifecycle: "hidden", visibility: "hidden" })
+      .where(eq(softwareAssets.id, asset.id));
+    const list = await app.request(`/api/usecase-packages?q=${row.name}`);
+    expect(await list.json()).toMatchObject({ total: 0, packages: [] });
+    const detail = await app.request(`/api/usecase-packages/${row.id}`);
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({ id: row.id, spec });
+    await db
+      .update(softwareAssets)
+      .set({ lifecycle: "published", visibility: "platform-public" })
+      .where(eq(softwareAssets.id, asset.id));
+    const restored = await app.request(`/api/usecase-packages?q=${row.name}`);
+    expect(await restored.json()).toMatchObject({ total: 1 });
+  });
+
   test("GET /api/usecase-packages exposes the matching published immutable software revision", async () => {
     await new SoftwareAssetService(db).upsertAsset({
       kind: "spack-package",

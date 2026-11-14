@@ -41,7 +41,7 @@ afterAll(async () => {
   await db.delete(auditLog).where(eq(auditLog.actor, userId));
   if (ids.length) await db.delete(orgs).where(inArray(orgs.id, ids));
 });
-describe("persistent compute providers", () => {
+describe("persistent compute centers", () => {
   test("CRUD, legacy defaults, scoped reads, ID tampering and safe cascade deletion", async () => {
     const a = await service.save(globalScope, null, input(`${prefix} A`));
     ids.push(a.id);

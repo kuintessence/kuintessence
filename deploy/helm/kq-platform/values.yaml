@@ -161,7 +161,7 @@ scheduler:
   agentId: preview-slurm
   siteName: Preview Slurm
   registrationEmail: scheduler-compose-seed@kuintessence.test
-  providerName: Development Compute Provider
+  providerName: Development Compute Center
   registration:
     # User deployments require an already registered client certificate bundle.
     # Keys: client.crt, client.key, ca.crt. Preview alone may auto-register.

@@ -391,7 +391,7 @@
       "until": "Available until {{value}}",
       "templates": "Allowed execution templates",
       "targets": "Allowed execution resources",
-      "providerOrgId": "Compute provider institution",
+      "providerOrgId": "Compute center institution",
       "clusterId": "Cluster",
       "agentId": "Agent",
       "queueId": "Queue",
@@ -512,6 +512,11 @@
       "removePrice": "Remove",
       "addPrice": "Add price",
       "terms": "Contract terms",
+      "sectionGroups": {
+        "contract": "Contract and delivery",
+        "accounts": "Accounts",
+        "resolution": "Disputes and closure"
+      },
       "executionScope": "Execution scope and limits",
       "identifiers": "Contract identifiers",
       "priceVersion": "Price version",
@@ -557,7 +562,7 @@
       "contractSections": "Contract sections",
       "issued": "Issued reports",
       "received": "Received reports",
-      "assertion": "Provider usage assertions. Bills are not confirmed.",
+      "assertion": "Compute Center usage assertions. Bills are not confirmed.",
       "meter": "Meter",
       "customMeter": "Custom meter",
       "customMeterNotice": "Custom meters remain in the contract. Automatic reports currently support only the three standard meters listed.",
@@ -591,7 +596,7 @@
         "NO_JOB_EVIDENCE": "Job evidence missing"
       },
       "retry": "Recheck accounting",
-      "sync": "Sync provider reports",
+      "sync": "Sync compute center reports",
       "correct": "Add technical correction",
       "correctedQuantity": "Corrected usage",
       "supportingDigest": "Supporting SHA-256 digest",
@@ -613,7 +618,7 @@
       "syncDisabled": "Institution transport is not configured. Saved reports remain available.",
       "lastSync": "Last synchronized",
       "errorCode": "Error code",
-      "correctionNotice": "The original report stays intact. This signs a provider technical assertion; it does not confirm a bill or initiate payment. Your institution must verify and retain the supporting material.",
+      "correctionNotice": "The original report stays intact. This signs a compute center technical assertion; it does not confirm a bill or initiate payment. Your institution must verify and retain the supporting material.",
       "retryNotice": "Recheck the existing record. Saved reports, accounting and signatures remain intact.",
       "actionFailed": "The action is unconfirmed. Retry the same request; if someone else corrected the report, refresh and review the latest record.",
       "ledgerPending": "Awaiting ledger submission",
@@ -666,7 +671,7 @@
         "committed": "Evidence committed",
         "needs_review": "Evidence needs review",
         "awaitingSignatures": "Awaiting both signatures",
-        "remoteLedger": "Provider submits evidence; status not synchronized"
+        "remoteLedger": "Compute Center submits evidence; status not synchronized"
       }
     },
     "settlement": {
@@ -900,6 +905,7 @@
       "agents": "Execution Agent",
       "roots": "Managed directory",
       "choose": "Choose an option",
+      "selectedIdentifier": "Object identifier",
       "noOptions": "No available options",
       "subject": "Material purpose",
       "versionId": "Dataset version ID",
@@ -1048,7 +1054,7 @@
       "confirm": "Confirm action",
       "confirmation": "The signed proposal is fixed for this case. Both parties must approve the same content.",
       "financialConfirmation": "Apply the reviewed financial terms using your separate financial approval authority.",
-      "withdrawConfirmation": "This commitment cannot be executed again after the provider confirms non-execution. Existing charges are preserved.",
+      "withdrawConfirmation": "This commitment cannot be executed again after the compute center confirms non-execution. Existing charges are preserved.",
       "failed": "The action was not confirmed. Check the current record and retry the same proposal.",
       "states": {
         "FREEZE_PENDING": "Freeze pending",
@@ -1409,7 +1415,7 @@
         "gpus": "GPUs",
         "wallTimeSec": "Time limit (seconds)",
         "source": "Source site",
-        "provider": "Provider site",
+        "provider": "Compute Center site",
         "id": "Demand ID",
         "contract": "Commercial contract",
         "reservation": "Original reservation"
@@ -1610,7 +1616,8 @@
         "sourceSiteId": "Requesting site ID",
         "targetSiteId": "Executing site ID",
         "evidenceRecipientSiteId": "Arbitrator site ID"
-      }
+      },
+      "case": "Arbitration case"
     },
     "historyRecovery": {
       "title": "Recover historical attestation",
@@ -1643,6 +1650,7 @@
       },
       "reauthorize": "Reapprove original recovery",
       "reauthorizeEffect": "Preserve the original text and prior signatures, then approve with current local authority. The counterpart must approve again. Transactions with an unknown result must be recovered first."
-    }
+    },
+    "refreshFailed": "Refresh failed. Showing the previously loaded data."
   }
 }

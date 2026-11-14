@@ -9,7 +9,7 @@ Registry 提供空内容 recipe 仓库，由运维导入官方或自定义 Git b
 现有 Spack catalog 继续兼容保留。目录中的 metadata 不证明 recipe、源码或安装环境已存在。
 本功能与现有软件资产授权并行：recipe namespace 不会自动授予软件使用权或创建 trusted asset。
 
-本阶段支持：
+支持：
 
 - 含 `HEAD`、自包含的 SHA-1 Git bundle，不支持增量 bundle 或 Web 指定服务端路径。
   原上传入口不接受 URL；可选 [受控上游导入](spack-upstream-import.md) 使用单独的 JSON
@@ -24,10 +24,10 @@ Registry 提供空内容 recipe 仓库，由运维导入官方或自定义 Git b
 尚未完成：
 
 - 跨 recipe 仓库组合、目标环境的实际依赖 concretize，以及完整 Python 语义验证。
-- 下载和校验已接入 [材料发布与 Agent 下载](spack-material-delivery.md)，但尚不解包或执行安装。
+- Recipe 仓库本身不执行安装；材料下载、源码审计和实验性受管安装分别见[材料发布与 Agent 下载](spack-material-delivery.md)。
 - 源码/厂商二进制/buildcache 的统一手动导入与恢复上传。
   新增 Spack 专用代理只用于上述受控导入，真实代理与部署验证以对应提交的 CI 为准。
-- 按具体用户授权或在 namespace 间迁移；本阶段沿用 Registry public/org/user 的权限矩阵。
+- 按具体用户授权或在 namespace 间迁移；沿用 Registry public/org/user 的权限矩阵。
 - 物理删除 Git 历史和垃圾回收。停用不删历史，不自动卸载已安装软件。
 
 ## 存储与持久卷
@@ -160,14 +160,14 @@ git -C /srv/recipe-snapshot -c pack.window=0 \
 具体只读挂载示例见 [Compose](../deploy/compose/README.md) 和 [Helm](../deploy/helm/kq-platform/README.md)。
 
 首次导入成功后仍为未激活，需要运维查看诊断并确认信任。
-重启时已存在且具有快照的仓库会跳过，不追加新版，不更改当前 active commit。
-后续更新通过 Web/API 导入；不要依赖修改 bootstrap 文件自动更新运行中的仓库。
+重启时仅跳过已有相同 bundle SHA-256 的条目；新 bundle 可追加快照，不更改当前 active commit。
+Bootstrap 仅在启动时读取清单；运行中的仓库可通过 Web/API 导入新版，激活仍须单独确认。
 一个条目失败时停止当前初始化批次，日志记录失败；此前成功的条目保留，重启重试时跳过它们。
 
 ## Web 与权限
 
-平台 Spack 软件视图和 CP 软件页提供 recipe 管理面板。
-平台管理员可维护 `public/<name>`，CP 组织管理员维护 `org/<org-id>/<name>`。
+平台 Spack 软件视图和算力中心软件页提供 recipe 管理面板。
+平台管理员可维护 `public/<name>`，算力中心组织管理员维护 `org/<org-id>/<name>`。
 身份、publisher role 和 namespace 权限在每个请求中重新检查；
 不可见的历史、诊断和 tar 下载同样受到保护，不只是隐藏列表。
 

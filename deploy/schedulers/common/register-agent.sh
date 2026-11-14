@@ -80,7 +80,7 @@ provider_org_id="${KQ_AGENT_REGISTRATION_PROVIDER_ORG_ID:-}"
 if [[ -z "${provider_org_id}" ]]; then
   provider_org_id="$(
     KQ_JSON="${context_json}" \
-    KQ_PROVIDER_NAME="${KQ_AGENT_REGISTRATION_PROVIDER_NAME:-Development Compute Provider}" \
+    KQ_PROVIDER_NAME="${KQ_AGENT_REGISTRATION_PROVIDER_NAME:-Development Compute Center}" \
     bun -e '
       const data = JSON.parse(process.env.KQ_JSON ?? "{}");
       const orgs = Array.isArray(data.providerOrgs) ? data.providerOrgs : [];

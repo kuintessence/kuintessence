@@ -7,9 +7,9 @@
 | 平台服务（Server） | 提供 API、权限、调度、工作流、软件治理和接入代理控制通道的中央服务。 |
 | 接入代理（Agent） | 部署在集群或站点侧的守护进程，适配 Slurm、PBS、Torque、Kubernetes 等调度器。 |
 | 软件仓库（Registry） | 存储和分发软件目录、发布版本、工作流模板、OCI 制品与 Spack buildcache 的服务。 |
-| 软件中心（Software Center） | Web 中浏览、发布和管理软件、用例与工作流模板的功能入口。 |
-| 联邦协同（Federation Collaboration） | 独立平台间的委派、授权、交付和对账入口，原名“机构合作”；使用方法见[联邦协同](/guide/federation-collaboration)。 |
-| CP | Compute Provider，算力提供者或集群管理员。 |
+| 软件生态（Software Ecosystem） | Web 中浏览、发布和管理软件、用例与工作流模板的功能入口。 |
+| 联邦协同（Federation Collaboration） | 独立平台间的委派、授权、交付和对账入口，使用方法见[联邦协同](/guide/federation-collaboration)。 |
+| 算力中心（Compute Center） | 提供集群、队列、软件及数据服务的组织；运营资料与地理资源按所属关系区分。 |
 | CC | Compute Consumer，普通计算用户。 |
 | SP | Software Provider，软件资产发布者。 |
 | Platform Operator | 平台运营或平台管理员。 |
@@ -25,9 +25,9 @@
 | Official Fork | 平台审核后生成的可信 fork，运行默认引用该内容。 |
 | Lifecycle | `draft/submitted/published/deprecated/revoked/archived` 等状态。 |
 | Resolver | `resolve-availability` 服务，负责解释软件在节点上的可运行性。 |
-| CP Policy Overlay | provider、cluster、agent 三层软件策略覆盖。 |
+| 算力中心软件策略覆盖 | provider、cluster、agent 三层软件策略覆盖。 |
 | Buildcache | Spack 二进制缓存。 |
-| Air-gap Bundle | 面向离线环境的签名镜像包，导入与导出执行器尚未实现。 |
+| Air-gap Bundle | 旧 signed air-gap bundle 格式，执行器未开放；现有离线交付按 recipe、材料清单和签名 Ecosystem Release 分别导入。 |
 
 ## 调度与运行
 
@@ -38,7 +38,7 @@
 | Locality Hint | 输入数据所在站点对调度评分的提示。 |
 | Workflow DSL | 工作流控制流语言，支持条件、循环、聚合和子 workflow。 |
 | NetDrive | 平台的对象存储文件服务。 |
-| Cluster File Root | CP 配置的集群文件浏览安全根路径。 |
+| Cluster File Root | 算力中心配置的集群文件浏览安全根路径。 |
 
 ## 安全与运维
 

@@ -6,7 +6,7 @@
 
 需要：
 
-- Bun `>=1.1.0`
+- Bun `>=1.4.2`，固定版本见仓库 `packageManager`
 - Docker 与 Docker Compose
 - Git
 
@@ -71,6 +71,6 @@ bun run typecheck
 ## 5. 下一步
 
 - 科研用户阅读 [用户手册](../roles/user.md)。
-- 集群管理员阅读 [算力提供者手册](../roles/compute-provider.md)。
+- 集群管理员阅读 [算力中心手册](../roles/compute-provider.md)。
 - 平台运营阅读 [平台运营手册](../roles/platform-operator.md)。
 - 软件发布者阅读 [软件开发者手册](../roles/software-provider.md)。

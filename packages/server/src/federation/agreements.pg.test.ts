@@ -675,6 +675,19 @@ test("activation audit failure rolls back the peer signature, agreement and budg
   ).rejects.toThrow("AGREEMENT_UNAVAILABLE");
 });
 
+test("agreement summaries show registered counterparties within the authorized organization", async () => {
+  const value = terms();
+  const approval = await aService.approve(aActor, { terms: value });
+  const rows = await aService.list(aActor);
+  const row = rows.find((entry) => entry.revisionId === approval.revisionId);
+  expect(row?.sourceName).toBe("Agreement test");
+  expect(row?.targetName).toBe("Agreement test");
+  expect(row?.termsDigest).toBe(approval.termsDigest);
+  await expect(aService.list({ orgId: bActor.orgId, userId: aActor.userId })).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+});
+
 test("approval HTTP routes use the session organization and explicit grants, including the list path", async () => {
   function app(actor: typeof aActor, role = "user", automation = false) {
     const r = new Hono();

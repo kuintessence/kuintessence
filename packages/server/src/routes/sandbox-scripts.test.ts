@@ -155,6 +155,31 @@ describe("sandbox script routes", () => {
     expect(detail.data.revisions).toHaveLength(2);
   });
 
+  test("catalog omits retired scripts while owners retain historical access and drafts", async () => {
+    const app = makeApp(db);
+    const ids: string[] = [];
+    for (const name of ["current", "historical"]) {
+      const response = await app.request("/api/sandbox/scripts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(scriptBody(`${NAME_PREFIX}${name}`)),
+      });
+      expect(response.status).toBe(201);
+      const body = (await response.json()) as { data: { asset: { id: string } } };
+      ids.push(body.data.asset.id);
+    }
+    const [current, historical] = ids as [string, string];
+    for (const lifecycle of ["hidden", "deprecated", "revoked", "archived"]) {
+      await db.update(softwareAssets).set({ lifecycle }).where(eq(softwareAssets.id, historical));
+      const response = await app.request("/api/sandbox/scripts");
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { data: Array<{ id: string }> };
+      expect(body.data.map((row) => row.id)).toContain(current);
+      expect(body.data.map((row) => row.id)).not.toContain(historical);
+      expect((await app.request(`/api/sandbox/scripts/${historical}`)).status).toBe(200);
+    }
+  });
+
   test("owner can read a newly created script while its Authz relationship is pending", async () => {
     let permissionChecks = 0;
     const authz = {

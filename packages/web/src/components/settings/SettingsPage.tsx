@@ -14,6 +14,7 @@ import {
 } from "../../lib/auth";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
+import { FederationPageTitle } from "../federation/FederationLayout";
 import { type ThemePreference, useTheme } from "../ThemeProvider";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -311,8 +312,10 @@ export function SettingsPage() {
   const selectedSection = sections.includes(requestedSection ?? "")
     ? requestedSection
     : sections[0];
-  const pageTitle =
-    activeTab === "personal"
+  const federationSection = selectedSection?.startsWith("federation-") ?? false;
+  const pageTitle = federationSection
+    ? t(`settings.sections.${selectedSection}`)
+    : activeTab === "personal"
       ? t(`settings.personalSections.${personalSection}.title`)
       : t(`settings.tabs.${activeTab}`);
   useEffect(() => subscribeAuthState(() => setAuthRevision((value) => value + 1)), []);
@@ -408,41 +411,55 @@ export function SettingsPage() {
             </div>
           ) : null}
 
-          {activeTab !== "personal" ? (
+          {activeTab !== "personal" && !federationSection ? (
             <nav
               aria-label={pageTitle}
               className="flex flex-wrap gap-1.5"
               data-testid="settings-section-navigation"
             >
-              {sections.map((section) => (
-                <Button
-                  key={section}
-                  variant={selectedSection === section ? "secondary" : "ghost"}
-                  size="sm"
-                  aria-current={selectedSection === section ? "page" : undefined}
-                  onClick={() => navigate({ to: "/settings", hash: `${activeTab}/${section}` })}
-                >
-                  {t(`settings.sections.${section}`)}
-                </Button>
-              ))}
+              {sections
+                .filter((section) => !section.startsWith("federation-"))
+                .map((section) => (
+                  <Button
+                    key={section}
+                    variant={selectedSection === section ? "secondary" : "ghost"}
+                    size="sm"
+                    aria-current={selectedSection === section ? "page" : undefined}
+                    onClick={() => navigate({ to: "/settings", hash: `${activeTab}/${section}` })}
+                  >
+                    {t(`settings.sections.${section}`)}
+                  </Button>
+                ))}
             </nav>
           ) : null}
 
           {activeTab === "security" ? (
             <div className="space-y-4">
               {selectedSection === "federation-permissions" ? (
-                <section id="federation-permissions" className="min-w-0 scroll-mt-4">
-                  <FederationPermissionsPanel />
+                <section
+                  id="federation-permissions"
+                  className="federation-settings min-w-0 scroll-mt-4"
+                >
+                  <FederationPageTitle value={pageTitle}>
+                    <FederationPermissionsPanel />
+                  </FederationPageTitle>
                 </section>
               ) : null}
               {selectedSection === "federation-storage" ? (
-                <section id="federation-storage" className="min-w-0 scroll-mt-4">
-                  <FederationStoragePanel />
+                <section
+                  id="federation-storage"
+                  className="federation-settings min-w-0 scroll-mt-4"
+                >
+                  <FederationPageTitle value={pageTitle}>
+                    <FederationStoragePanel />
+                  </FederationPageTitle>
                 </section>
               ) : null}
               {selectedSection === "federation-trust" ? (
-                <section id="federation-trust" className="min-w-0 scroll-mt-4">
-                  <FederationTrustPanel />
+                <section id="federation-trust" className="federation-settings min-w-0 scroll-mt-4">
+                  <FederationPageTitle value={pageTitle}>
+                    <FederationTrustPanel />
+                  </FederationPageTitle>
                 </section>
               ) : null}
               {canManagePlatform ? (

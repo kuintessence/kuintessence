@@ -11,11 +11,17 @@ import { type ReactNode, useDeferredValue, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import {
+  FederationRefreshNotice,
+  FederationSectionTitle,
+  useFederationAuthRevision,
+} from "../federation/FederationLayout";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Card, CardContent, CardHeader } from "../ui/card";
 import {
   Dialog,
   DialogBody,
@@ -37,12 +43,17 @@ const DirectorySchema = z.object({
 });
 
 export function FederationPermissionsPanel() {
+  const authRevision = useFederationAuthRevision();
+  return <PermissionsPanel key={authRevision ?? "anonymous"} />;
+}
+function PermissionsPanel() {
+  const authRevision = useFederationAuthRevision();
   const { t } = useTranslation();
   const [organization, setOrganization] = useState<Organization | null>(null);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
   const directory = useQuery({
-    queryKey: [...key, "organizations", deferredSearch],
+    queryKey: [...key, "organizations", deferredSearch, authRevision],
     queryFn: async () =>
       DirectorySchema.parse(
         await api.get<unknown>(
@@ -59,9 +70,9 @@ export function FederationPermissionsPanel() {
       onBack={() => setOrganization(null)}
     />
   ) : (
-    <Card data-testid="federation-permissions-panel">
+    <Card data-testid="federation-permissions-panel" aria-label={t("federation.permissions.title")}>
       <CardHeader className="flex flex-row items-center justify-between gap-3">
-        <CardTitle>{t("federation.permissions.title")}</CardTitle>
+        <FederationSectionTitle title={t("federation.permissions.title")} />
         <Button
           size="sm"
           variant="outline"
@@ -73,6 +84,7 @@ export function FederationPermissionsPanel() {
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
+        <FederationRefreshNotice query={directory} onRetry={() => void directory.refetch()} />
         <Input
           aria-label={t("federation.permissions.organizationSearch")}
           placeholder={t("federation.permissions.organizationSearch")}
@@ -82,7 +94,7 @@ export function FederationPermissionsPanel() {
         />
         {directory.isPending ? (
           <p role="status">{t("federation.loading")}</p>
-        ) : directory.isError ? (
+        ) : federationReadFailed(directory) || !directory.data ? (
           <p role="alert" className="text-sm text-status-failed">
             {toUserFacingError(directory.error, t("federation.loadFailed"))}
           </p>
@@ -114,7 +126,7 @@ export function FederationPermissionsPanel() {
             {t("federation.permissions.noOrganizations")}
           </p>
         )}
-        {directory.data?.moreOrganizations ? (
+        {!federationReadFailed(directory) && directory.data?.moreOrganizations ? (
           <p className="text-sm text-muted-foreground">
             {t("federation.permissions.refineSearch")}
           </p>
@@ -132,13 +144,14 @@ function OrganizationGrants({
   onBack: () => void;
 }) {
   const { t, i18n } = useTranslation();
+  const authRevision = useFederationAuthRevision();
   const client = useQueryClient();
   const mobileReadOnly = useMobileMutationBlocked(root);
   const [page, setPage] = useState(0);
   const [adding, setAdding] = useState(false);
   const [revoking, setRevoking] = useState<FederationCapabilityGrant | null>(null);
   const grants = useQuery({
-    queryKey: [...key, organization.id, page],
+    queryKey: [...key, organization.id, page, authRevision],
     queryFn: async () =>
       z
         .array(FederationCapabilityGrantSchema)
@@ -170,9 +183,9 @@ function OrganizationGrants({
     </p>
   ) : null;
   return (
-    <Card data-testid="federation-permissions-panel">
+    <Card data-testid="federation-permissions-panel" aria-label={t("federation.permissions.title")}>
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
-        <CardTitle>{t("federation.permissions.title")}</CardTitle>
+        <FederationSectionTitle title={t("federation.permissions.title")} />
         <div className="flex gap-2">
           <Button
             variant="outline"
@@ -197,6 +210,7 @@ function OrganizationGrants({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        <FederationRefreshNotice query={grants} onRetry={() => void grants.refetch()} />
         <Button size="sm" variant="ghost" disabled={mutation.isPending || adding} onClick={onBack}>
           <ArrowLeft className="h-4 w-4" />
           {t("federation.permissions.back")}
@@ -208,7 +222,7 @@ function OrganizationGrants({
         {mobileReadOnly ? (
           <p className="text-sm text-muted-foreground">{t("federation.permissions.desktopOnly")}</p>
         ) : null}
-        {adding && !mobileReadOnly ? (
+        {adding && !mobileReadOnly && !federationReadFailed(grants) ? (
           <GrantForm
             organization={organization}
             busy={mutation.isPending}
@@ -221,9 +235,14 @@ function OrganizationGrants({
             error={failure}
           />
         ) : null}
+        {adding && federationReadFailed(grants) ? (
+          <Button variant="ghost" disabled={mutation.isPending} onClick={() => setAdding(false)}>
+            {t("federation.cancel")}
+          </Button>
+        ) : null}
         {grants.isPending ? (
           <p role="status">{t("federation.loading")}</p>
-        ) : grants.isError ? (
+        ) : federationReadFailed(grants) || !grants.data ? (
           <p role="alert" className="text-sm text-status-failed">
             {toUserFacingError(grants.error, t("federation.loadFailed"))}
           </p>
@@ -271,7 +290,9 @@ function OrganizationGrants({
           <p className="text-sm text-muted-foreground">{t("federation.permissions.noGrants")}</p>
         )}
         {!adding && !revoking ? failure : null}
-        {grants.data && (page > 0 || grants.data.length === pageSize) ? (
+        {!federationReadFailed(grants) &&
+        grants.data &&
+        (page > 0 || grants.data.length === pageSize) ? (
           <nav
             aria-label={t("federation.permissions.pagination")}
             className="flex items-center justify-end gap-3"
@@ -298,7 +319,7 @@ function OrganizationGrants({
           </nav>
         ) : null}
         <Dialog
-          open={!!revoking}
+          open={!!revoking && !federationReadFailed(grants)}
           onOpenChange={(open) => {
             if (!open && !mutation.isPending) setRevoking(null);
           }}
@@ -378,8 +399,9 @@ function GrantForm({
     displayName: string | null;
   } | null>(null);
   const [capability, setCapability] = useState("");
+  const authRevision = useFederationAuthRevision();
   const members = useQuery({
-    queryKey: [...key, organization.id, "members", deferredSearch, page],
+    queryKey: [...key, organization.id, "members", deferredSearch, page, authRevision],
     queryFn: async () =>
       FederationMemberOptionsSchema.parse(
         await api.get<unknown>(
@@ -425,9 +447,10 @@ function GrantForm({
                 setPage(0);
               }}
             />
+            <FederationRefreshNotice query={members} onRetry={() => void members.refetch()} />
             {members.isPending ? (
               <p role="status">{t("federation.loading")}</p>
-            ) : members.isError ? (
+            ) : federationReadFailed(members) || !members.data ? (
               <p role="alert" className="text-sm text-status-failed">
                 {toUserFacingError(members.error, t("federation.loadFailed"))}
               </p>
@@ -455,7 +478,9 @@ function GrantForm({
                 {t("federation.permissions.noMembers")}
               </p>
             )}
-            {members.data && (page > 0 || members.data.hasMore) ? (
+            {!federationReadFailed(members) &&
+            members.data &&
+            (page > 0 || members.data.hasMore) ? (
               <div className="flex justify-end gap-2">
                 <Button
                   type="button"

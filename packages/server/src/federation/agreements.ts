@@ -4,6 +4,7 @@ import {
   federationAgreements,
   federationPreparations,
   federationReservations,
+  federationSites,
   federationWorkflowBindings,
   type PgDb,
   type PgTransaction,
@@ -16,7 +17,8 @@ import {
   FederationAgreementSchema,
   FederationError,
 } from "@kuintessence/shared/federation";
-import { and, asc, desc, eq, ilike, or } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, ilike, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { FederationAdmission } from "./admission";
 import { readAttestationBacklog } from "./attestation-backlog";
 import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
@@ -44,11 +46,25 @@ export class FederationAgreementService {
   }
 
   async list(actor: FederationActor, limit = 50, offset = 0) {
+    const source = alias(federationSites, "agreement_source");
+    const target = alias(federationSites, "agreement_target");
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
       return tx
-        .select()
+        .select({
+          ...getTableColumns(federationAgreementApprovals),
+          sourceName: source.name,
+          targetName: target.name,
+        })
         .from(federationAgreementApprovals)
+        .leftJoin(
+          source,
+          sql`${source.id} = (${federationAgreementApprovals.terms}->>'sourceSiteId')::uuid`,
+        )
+        .leftJoin(
+          target,
+          sql`${target.id} = (${federationAgreementApprovals.terms}->>'targetSiteId')::uuid`,
+        )
         .where(
           and(
             eq(federationAgreementApprovals.localSiteId, this.signingKey.siteId),
