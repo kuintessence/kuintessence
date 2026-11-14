@@ -32,11 +32,9 @@ Server 启动时及每 30 秒扫描待发布记录，同时最多处理 4 个恢
 
 ## 当前边界
 
-- 本次只生成 migration `0075_workflow_output_publications.sql`、待处理记录局部索引 `0076_workflow_output_publication_pending_index.sql` 及 `0077_workflow_output_publication_intents.sql`，没有执行数据库迁移；部署前需要走现有迁移流程。
+- 部署前须应用 migration `0075_workflow_output_publications.sql`、待处理记录局部索引 `0076_workflow_output_publication_pending_index.sql` 及 `0077_workflow_output_publication_intents.sql`，沿用站点正常迁移流程。
 - 新版普通 Workflow 的恢复保证从 job 与 intent 原子提交开始。升级前没有 intent 的旧作业不能自动获得此保证；没有 publication 时需保留目录并人工对账，不能推断或补造原 run 绑定。
 - Workflow DAG 重启续跑不在此机制内。DAG 可能因输出上传异常或 Server 重启而失败；publication 后台仍可补传并供查询，但不会自动推进后续节点。
 - Agent 尚未成功采集并上报的输出，不由 Server publication outbox 证明完成。它仍依赖 Agent 的调度器恢复和输出采集路径。
 - Sandbox artifact service 的独立持久化路径不经过此普通 Workflow 文件输出 outbox；两者共用先持久传输行、再上传、最后持久完成回执的 helper。Sandbox 按 artifact/replica 固定传输 ID，另校验实际文件大小和摘要。
 - 已被外部管理员删除的工作目录、被外部删除的对象或撤销的权限不能通过重新计算自动补救。
-
-本地统一验证已通过磁盘 fake store、纯 publisher/input/intent 测试，覆盖重建 publisher 后恢复、部分成功复用、续租与失租、无回调超时、取消/撤权、路径边界、脱敏查询，以及 intent 重启、重复 enqueue、坏记录退避、同步 Workflow 和批量上限。真实 PG 原子提交/回滚与 completed 后恢复用例已编写，尚未执行。没有执行真实 Slurm、对象存储上传、PG 运行检查或数据库迁移。

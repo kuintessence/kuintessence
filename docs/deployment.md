@@ -1,7 +1,7 @@
 # 部署、调度器与队列
 
 本指南介绍本地 Compose、生产入口与调度队列配置。命令示例从仓库根目录执行；
-启动、重建、迁移和运行态运行检查会改变环境，执行前应确认目标与维护窗口。
+启动、重建、迁移和运行状态检查会改变环境，执行前应确认目标与维护窗口。
 Server 当前只支持单实例部署，尚未通过 Redis 实现多实例协调。
 
 自托管对象存储使用 RustFS，旧 MinIO 数据不自动迁移；升级前先阅读
@@ -90,7 +90,7 @@ Server `13000`、Registry `13100`。Casdoor issuer 默认
 
 ### 初始化与持久化
 
-- scheduler CLI ready 后，`common/register-agent.sh` 通过 CP registration token API
+- scheduler CLI ready 后，`common/register-agent.sh` 通过算力中心注册 token API
   调用 `kq agent register`，不通过 register body 自报 provider。
 - 私钥、证书和 `agent.env` 写入 scheduler state volume；
   `common/start-agent.sh` 重启时复用它们，并把相同的注册环境交给 Agent 与独立看守。
@@ -169,9 +169,9 @@ bun run compose -- aio down
 <a id="spack-material-rollout"></a>
 ## Spack 材料升级屏障
 
-材料生命周期第二批提供离线 `SpackMaterialRollout.execute` 的
+材料生命周期提供离线 `SpackMaterialRollout.execute` 的
 `inspect/pause/reconcile/activate`，不是下架、恢复、ACL 或 GC。
-第三批另有[离线绑定退役](spack-binding-retirement.md) 的 `retire`：
+另有[离线绑定退役](spack-binding-retirement.md) 的 `retire`：
 要求维护窗口、额外的旧配置移除确认及重新 reconcile，不提供恢复或 Web 入口。
 完整步骤与命令 JSON 见 [Spack 材料 Rollout](spack-material-rollout.md)。
 CLI 约定为 `bun packages/db/src/spack-material-rollout-cli.ts <absolute-command-json-path>`；
@@ -191,8 +191,8 @@ epoch 不能 fence 不检查它的旧代码；门禁只控制准入，不中断�
 只有无 journal 且无 epoch 时保留 observe 兼容模式；paused、DB 失败或
 ready 时 epoch 缺失/不匹配均拒绝材料 runtime。新的 pause 更换 epoch，不自动回退。
 保留 append-only journal，删除历史可能不安全地重置 observe，禁止以清表解除屏障。
-部署静态测试只覆盖接线、配置和文档；测试与运行态运行检查仅在 GitHub Actions
-隔离环境执行，以对应提交结果为准，部署接线不代表运行态运行成功。
+部署静态测试只覆盖接线、配置和文档；测试与运行状态检查仅在 GitHub Actions
+隔离环境执行，以对应提交结果为准，部署接线不代表运行成功。
 
 <a id="actions"></a>
 ## GitHub Actions
@@ -524,7 +524,7 @@ gateway bind-mounted 配置经原子 rename 更新后，单纯 reload 可能仍�
 
 ### Registry 与观测
 
-Server 不修改 scheduler 的 queue 配置。CP Queue Registry 保存纳管配置，
+Server 不修改 scheduler 的 queue 配置。算力中心 Queue Registry 保存纳管配置，
 Agent Queue Inventory 保存调度器观测结果。
 `target.mode=default` 表示使用调度器默认目标，不应改写成具名队列。
 
@@ -553,7 +553,7 @@ Kubernetes 不纳入 HPC queue enforce。
 Agent 无法从本地配置获知 Server 的自定义 freshness，不对其硬编码跨服务约束。
 这不会跳过 stale/no-go，也不会立即清除既有 no-go；仍须满足后述连续健康恢复条件。
 
-CP `/cp/queues` 分别展示“已纳管目标”和“调度器观测”：
+算力中心 `/cp/queues` 分别展示“已纳管目标”和“调度器观测”：
 
 - named target 固定一个发现的 `queueName`；default target 不发送 queueName。
 - fresh 可用 observation 才能启用目标；stale last-known named fact 可预建，

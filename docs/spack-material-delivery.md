@@ -65,26 +65,26 @@ Server 在启用材料下载时，启动阶段先将 `SPACK_MATERIAL_RELEASES` �
 
 **引用账本本身不是材料下架授权。** 引用计数是诊断快照，计数为零不证明所有旧 Server、
 旧配置或升级前安装任务都已登记，也不能用作先查询再下架的授权依据。
-第二批通过[离线 Rollout](spack-material-rollout.md) 提供 pause、旧配置绑定追加对账和
+通过[离线 Rollout](spack-material-rollout.md) 提供 pause、旧配置绑定追加对账和
 activate 屏障；activate 要求所有非终态安装（包括未登记引用的任务）及孤儿引用为零。
 运维仍须在外部停止并排空所有 Server/Registry（包括离线回滚副本），撤销/轮换旧
 DB、Registry、ticket 凭据并更新访问与网络策略；epoch 无法隔离不检查它的旧代码。
 门禁只控制准入，不中断在途流；这一步不开放材料下架、恢复、ACL、绑定退役或 GC。
 后续生命周期操作仍须将引用检查与状态变更放在同一事务内。
-第三批新增[离线绑定退役](spack-binding-retirement.md)：只在暂停、对账、
+另有[离线绑定退役](spack-binding-retirement.md)：只在暂停、对账、
 外部隔离及移除全部旧配置后追加审计 tombstone，不删除原绑定或历史引用。
 旧配置登记和安装引用获取都会拒绝已退役的精确绑定；重新导入或 reconcile 不会恢复。
-此操作没有 HTTP/CP/Web 入口，且不影响其他 spec 对同一 release 的合法使用。
+此操作没有 HTTP 管理或 Web 写 入口，且不影响其他 spec 对同一 release 的合法使用。
 rollout journal 必须 append-only，删除历史可能不安全地重置 observe。
 不要手动清表、删除绑定或直接改材料卷；
 数据库与 Git/material 卷须一起备份和恢复。
-第四批增加[材料下架与恢复 API](spack-material-lifecycle.md)，要求 ready epoch、
+另有[材料下架与恢复 API](spack-material-lifecycle.md)，要求 ready epoch、
 事务内 canonical 权限与引用检查。状态单独保存在追加式 PostgreSQL journal，
 目录、直接下载及 Server 安装准入均检查；同内容重导入不会恢复已下架发布。
-平台/CP 的材料面板已接入精确 binding 生命周期查询、原因与 revision 确认、
+平台与算力中心的材料面板已接入精确 binding 生命周期查询、原因与 revision 确认、
 下架/恢复和分页审计。普通目录仍隐藏下架项，恢复通过管理查询进行；
 网络响应丢失显示结果待确认，不自动重试状态变更。
-管理 API 不提供在线绑定退役、可见范围调整、Web 状态控件或物理回收。
+生命周期 API 不提供在线绑定退役或物理回收。额外的读取限制通过独立的材料可见策略管理，使用自己的 revision 与审计。
 
 ## 初始化与本地批量导入
 
@@ -194,7 +194,7 @@ HTTP API 不接受服务器本地路径，此入口仅由管理员环境配置�
 
 ## Web 材料导入与查阅
 
-入口为软件中心的 Spack 页、CP 门户的软件页，使用同一个 **Spack 材料** 面板。
+入口为软件生态的 Spack 页、算力中心门户的软件页，使用同一个 **Spack 材料** 面板。
 登录用户可以按 `{repositoryId, manifestDigest}` 查询自己可读的发布清单；
 也可从 **材料目录** 打开已发布条目，按完整 namespace 仓库名称筛选并刷新结果。
 上传同时受门户管理权限、`software.publish`、当前已验证组织及 Registry namespace
@@ -234,7 +234,7 @@ HTTP API 不接受服务器本地路径，此入口仅由管理员环境配置�
 成功导入仍不自动修改 `SPACK_MATERIAL_RELEASES`、激活 recipe、部署软件或执行 recipe。
 可随后使用[安装绑定管理](spack-install-bindings.md)设置平台默认或组织精确 spec 映射。
 启动配置只初始化尚不存在的平台默认，后续改绑以持久化的 Web/API revision 为准。
-持久化导入任务、删除、可见范围调整和引用回收尚未实现；
+持久化导入任务、物理删除和引用回收尚未实现；可见范围通过独立策略管理。
 不要直接删持久化卷上的 blob/receipt/manifest 来代替维护 API。
 
 ### 材料目录
@@ -411,7 +411,7 @@ Server：
 需要启用 `MTLS_MODE=direct` 或可信代理 mTLS；配置存在不替代握手验证。
 Agent stream 必须实际验证证书，并声明 `spack_material_delivery_v1`。旧 Agent 或无
 已验证身份的连接收不到材料 ticket。多 Server 部署须使用一致的 ticket key 与 Registry 配置。
-Server 重新检查 operation 状态、用户是否停用、CP scope/SpiceDB 权限、软件策略、
+Server 重新检查 operation 状态、用户是否停用、算力中心作用域/SpiceDB 权限、软件策略、
 Agent 当前 provider 和证书有效期/撤销状态；每个下载请求再检查一次。
 任务结束、权限撤销或证书撤销后拒绝新请求；已开始的流不会实时查询撤销，最长 5 分钟。
 
@@ -434,13 +434,12 @@ Agent 拒绝重定向，按大小和 SHA-256 流式校验，临时文件完成�
 复用缓存前重新校验内容与权限。cache 根目录和 digest 目录禁止 group/other 权限，
 新文件发布为 `0400`；已有 `0755` 缓存目录会被拒绝，不自动修改运维目录的权限。
 网络超时、缺件、篡改或版本不符均失败，保留之前已校验缓存，不会回退公网。
-请求建立及响应读取采用最长 60 秒无进度超时，收到非空数据会刷新该时限；整个准备过程
-仍最多 10 分钟。慢链路的大文件仍可能达到总时限，Range/续传和可配置长传输窗口尚待实现。
+请求建立及响应读取有 60 秒无进度超时，收到非空数据会刷新该时限；整个准备过程最多 24 小时，断线续传见下文。
 
 联邦安装的材料准备现在持续续租短期授权，并在后续 manifest/blob 请求中使用最新 operation ticket。
 原操作、作业、spec 和 manifest 摘要保持不变；当前 HTTP 连接不在中途更换请求头。
 授权服务暂时不可达至许可到期时，中止读取及缓存校验、删除未完成文件，原操作记录等待授权，
-随后按原操作重投恢复；已经完成校验的缓存仍可复用，未完成 blob 从头下载。
+随后按原操作重投恢复；已经完成校验的缓存仍可复用。许可到期时删除尚未完成的私有文件，普通网络中断则按下文保留 partial 续传。
 明确撤权、非法续租响应、损坏内容和普通传输失败不转成授权等待。
 
 Server 通过 `federation_installation_material_lease_v1` 拒绝不支持材料持续授权的 Agent 接收或续期
@@ -524,7 +523,7 @@ recipe 是可执行 Python，可以影响同进程的审计逻辑和输出，因
 | Agent 配置 | 说明 |
 |---|---|
 | `AGENT_SPACK_INSTALL_ENABLED` | 默认 `false`；实验性 opt-in，同时要求 `AGENT_SPACK_ENABLED=true`、`AGENT_SPACK_AUDIT_ENABLED=true` 和完整固定 runtime 配置 |
-| `AGENT_SPACK_MANAGED_MEMORY_MIB` | install/verify/load 共用，默认 `4096`；仅允许 `1024..4096` 的整数 MiB，启动时校验 |
+| `AGENT_SPACK_MANAGED_MEMORY_MIB` | install/verify/load 共用，默认 `4096`；仅允许 `1024..1048576` 的整数 MiB，启动时校验 |
 | `AGENT_SPACK_INSTALL_TIMEOUT_MS` | 仅 install 使用，默认 `21600000`（6 小时），最大 `86400000`（24 小时），必须为正安全整数（毫秒） |
 | `AGENT_SPACK_INSTALL_SITE_PROFILE_PATH` | 启用时必填；运维预置 site profile JSON 的绝对路径 |
 | `AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256` | 启用时必填；profile 原始文件字节的 SHA-256，64 位小写 hex，不含 `sha256:` |
@@ -533,7 +532,7 @@ recipe 是可执行 Python，可以影响同进程的审计逻辑和输出，因
 不因此允许 recipe 在宿主直接执行。仍要求 Linux 非 root 专用 Agent UID，
 并继承 source audit 的固定 Apptainer/SIF、namespace、cgroup 与输出预算。
 独立 source audit 保持内存 2 GiB/30 分钟，不受此配置影响。managed install/verify/load
-默认内存 4 GiB；`AGENT_SPACK_MANAGED_MEMORY_MIB` 可设为整数 `1024..4096`。
+默认内存 4 GiB；`AGENT_SPACK_MANAGED_MEMORY_MIB` 可设为整数 `1024..1048576`。
 systemd 单元的 `MemoryMax` 等于配置预算，`MemorySwapMax=0`，即不允许 swap。Agent 将同一预算
 写入私有目录中的只读 `managed-memory.json`；worker 只读取该输入，不从环境或材料取值，
 缺失、非法类型（含布尔、字符串、小数）或越界均拒绝。worker 核验实际 cgroup 的
@@ -716,31 +715,13 @@ Agent 的软件请求从执行到 inventory 发布串行处理，避免较旧成
 卸载清理、legacy 刷新或写锁收尾失败也保留已确定的撤回信息。
 `ready` 仅表示此受管事务满足当前编排的发布条件，不表示生产就绪或集群运行确认通过。
 
-## 验证边界
+## 运行条件与限制
 
-材料链路单元测试使用 Hono 内存请求、临时目录、模拟 Agent channel 与材料 fixture，
-不依赖容器、真实 Server listener、数据库服务、Spack 安装或集群作业。
-引用账本另有真实 PostgreSQL 集成测试，验证重启/并发登记、不可变任务绑定、
-终态计数和孤儿引用；它不属于上述纯内存材料测试。
-source audit 测试使用模拟 Spack 模块、归档 fixture、模拟 runtime metadata 和无害子进程，
-不能验证真实 Spack Python、Apptainer 或 SIF。Linux namespace/cgroup/镜像配置需站点联调；
-通过单元测试不代表 runtime 已在真实集群运行检查。
+实验性受管安装要求目标 Linux、Spack、Apptainer、固定 SIF 与 site profile 相互匹配，计算节点能访问同一持久化 prefix，并具备所需 quota、namespace 与 cgroup 条件。安装成功不代表其他节点具有兼容 ABI；启用前分别确认共享存储、编译器和调度执行环境。
 
-安装事务、策略、故障清理、mount 参数和报告绑定采用临时文件、模拟 native Spack 模块及
-TypeScript fixture 验证。提交 `c4987cf` 已在 GitHub Actions 的临时单节点 Slurm 环境
-通过 GNU Hello 的真实隔离 build、独立 readonly verify、load/作业运行、
-源码缺失与篡改后的库存撤回/显式恢复、重启复验及卸载，见
-[受管安装案例](../deploy/pr-test/README.md#实验性受管安装案例)。
-跨节点共享持久化 prefix、compute ABI、站点 quota 和生产环境仍须独立运行检查；
-该单包案例不替代 15 个工作流的目标 Linux 安装与运行确认。
-初始化导入测试使用临时文件与合成 lock/source fixture 验证顺序、校验、权限、
-部分失败、重试和读取期间文件变更，不替代真实部署卷及工作流材料包的导入运行检查。
-Web 导入采用 mock HTTP/临时 File 的组件与队列测试，不替代真实网关、大文件上传、
-生产浏览器兼容性和目标 Linux 安装运行检查。
-受控上游导入及代理的独立配置与验证边界见 [上游导入](spack-upstream-import.md)。
-受限包及许可证授权、材料删除/授权调整和 15 个工作流的完整材料准备及
-端到端安装/运行确认仍未完成，不能将实验性 opt-in 描述为生产可用或安装功能已恢复。
+初始化和 Web 上传只保存材料。运行任务仍需完整 recipe、真实依赖锁、全部源码与补丁、输入数据以及许可。可用的轻量操作入口见[受管安装案例](../deploy/pr-test/README.md#实验性受管安装案例)，其固定软件与单节点范围不能替代其他科学任务的运行要求。
 
+受控上游代理见[上游导入](spack-upstream-import.md)，额外读取范围见[材料可见策略](spack-material-visibility.md)。受限厂商包授权与材料物理回收不在这些入口的支持范围内。
 
 ### 安装中断与持久写锁
 

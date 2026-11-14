@@ -30,7 +30,7 @@ await waitFor(
 const context = z.object({
   providerOrgs: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
 }).parse(await jsonRequest(origin, token, "/cp/agent-registration-context"));
-const provider = context.providerOrgs.find((org) => org.name === "Development Compute Provider");
+const provider = context.providerOrgs.find((org) => org.name === "Development Compute Center");
 assert(provider);
 const queueId = randomUUID();
 await jsonRequest(origin, token, "/admin/queues", {

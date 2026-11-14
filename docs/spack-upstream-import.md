@@ -10,12 +10,12 @@ HTTP/HTTPS/SOCKS5 代理取得自包含 Git bundle 或源码材料，核验声�
 既有 [手动 recipe 导入](spack-recipe-repositories.md)、
 [材料包初始化与 Web 上传](spack-material-delivery.md) 保留。
 
-- Web 入口为平台软件中心与 CP 软件页已有 recipe / 材料面板中的在线导入。
+- Web 入口为平台软件生态与 算力中心软件页已有 recipe / 材料面板中的在线导入。
   浏览器选择并提交 JSON manifest，不从浏览器下载上游文件，也不接收代理凭据。
 - 请求固定为 `POST /software/api/spack/upstream-imports`，网关转发到
   Registry `POST /api/spack/upstream-imports`，`Content-Type: application/json`。
   不接受 API query 参数。鉴权及 public/org/user namespace 读写权限沿用原发布流程；
-  CP 不能因启用代理而写入其他组织的仓库。
+  算力中心不能因启用代理而写入其他组织的仓库。
 - recipe 不执行、不自动激活；材料发布不自动修改 Server 的 `SPACK_MATERIAL_RELEASES`，
   不自动绑定、部署或开启安装。导入成功不证明 recipe 可信、依赖完整或目标 Linux 可安装。
 - **Agent 仍只从 Server 授权下载 recipe 和源码**；Registry 上游导入不改变 Agent 网络边界。

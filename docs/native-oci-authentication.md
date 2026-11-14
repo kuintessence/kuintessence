@@ -38,5 +38,4 @@ Docker 标准登录附带的 `offline_token=true` 是可选提示，本入口忽
 每个 repository scope 均按 subject、组织成员和 publisher role 校验，pull 不能转换为 push，跨仓库 mount 另需源仓库 pull。
 不提供匿名公共 token，也不授予通配 catalog/delete scope。
 
-
 登录失败时检查平台会话、TLS 和统一 origin。拉取或推送被拒绝时检查目标 namespace、实时角色和 repository scope；不要通过重写 Forwarded host、关闭证书验证或复用另一仓库的 token 绕过授权。

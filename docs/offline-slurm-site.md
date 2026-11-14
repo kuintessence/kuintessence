@@ -1,6 +1,6 @@
 # 离线 Slurm 普通用户站点
 
-本页描述源码能力与部署契约。现场基线：普通用户、HOME 共享、分区 `cn`、SSH Host `kq-service`、预置 Python 3 和 Apptainer modules。平台和站点均须升级后才能使用新增契约。集群操作由现场用户执行；本文未代表真实集群运行检查。
+普通用户可通过 SSH 隧道连接平台，在 Slurm 集群提交作业并准备离线软件。本页以 HOME 共享、分区 `cn`、SSH Host `kq-service`、预置 Python 3 和 Apptainer modules 的站点为例；实际部署须替换分区、地址和运行环境。平台与站点应使用相互兼容的版本，集群操作由现场授权用户执行。
 
 现场源码、配置模板和先 inventory 后发行的操作步骤见[普通用户站点工具包](../examples/slurm-user-site/README.md)，初始化见[SSH 接入手册](../examples/slurm-user-site/SSH-TUNNEL.md)。不要将云端 Ubuntu 测试发行直接用于未知 HPC。
 
@@ -26,7 +26,7 @@
 
 ## 云端准备
 
-1. 按正常发布流程构建修改后的 Server、CLI 和 Agent。先执行数据库迁移，再启用 Server。新增迁移 `0073_classy_dagger.sql` 为 `file_transfers` 增加 nullable `resume_session`，`0074_neat_zarda.sql` 为 `agents` 增加 nullable `site_operations`，`0075_workflow_output_publications.sql` 增加普通 Workflow 输出发布 outbox，`0076_workflow_output_publication_pending_index.sql` 增加待处理记录局部索引，`0077_workflow_output_publication_intents.sql` 保存与 Workflow job 同事务创建的输出发布意图。先升级 Server，再升级 Agent：新版分片 URL 响应关联字段需要 Server 回显；旧 Server 不能为新 Agent 提供该保证。本次没有运行远端迁移。
+1. 按正常发布流程构建修改后的 Server、CLI 和 Agent。先执行数据库迁移，再启用 Server。新增迁移 `0073_classy_dagger.sql` 为 `file_transfers` 增加 nullable `resume_session`，`0074_neat_zarda.sql` 为 `agents` 增加 nullable `site_operations`，`0075_workflow_output_publications.sql` 增加普通 Workflow 输出发布 outbox，`0076_workflow_output_publication_pending_index.sql` 增加待处理记录局部索引，`0077_workflow_output_publication_intents.sql` 保存与 Workflow job 同事务创建的输出发布意图。先升级 Server，再升级 Agent：新版分片 URL 响应关联字段需要 Server 回显；旧 Server 不能为新 Agent 提供该保证。
 2. 在既有 platform Docker network 上配置 `deploy/site-gateway/compose.yml`：`PLATFORM_HOST`、`AGENT_HOST`、`HTTP_GATEWAY_UPSTREAM`、`AGENT_MTLS_UPSTREAM` 均填实际值，两个主机名必须不同。`KQ_SITE_BIND` 默认 `127.0.0.1:18443`，供 SSH Host 转发。已有 HTTP 网关继续提供 TLS；Agent upstream 配置 `MTLS_MODE=direct` 及真实服务端证书。模板默认拒绝未知 SNI。
 3. 校验 OCI `/v2/`、材料 API、对象 bucket 路径和认证挑战。对象 URL 由 Server 按统一入口签名，客户端不修改签名 authority；不能添加额外 S3 path prefix。普通 HTTP 网关的大文件路由关闭缓冲，设置适合大文件的超时。平台域名 DNS 从云端解析；集群通过连接映射无需解析该域名。
 4. 正向代理模式可使用现有合规 HTTP CONNECT 代理。新增 `deploy/site-gateway/squid.conf.example` 提供只允许两个平台域名和 TCP 443 的配置样例；监听仅开放给 SSH 可达的内部地址，不做 TLS 解密。
@@ -46,7 +46,7 @@ docker compose -f deploy/site-gateway/compose.yml config
 # 审阅渲染配置、证书、上游后，由部署方执行 up -d。
 ```
 
-Nginx 模板依赖 stream/ssl_preread 模块；固定的 `nginx:1.27-alpine` 镜像已静态编译这些模块，无需 `load_module` 加载 `.so`。云端容器未在此次本地验证中启动，部署方须执行 `nginx -t`，并实际测试 HTTP/2 双向流；仅访问 HTTP health 不算运行检查。
+Nginx 模板依赖 stream/ssl_preread 模块；固定的 `nginx:1.27-alpine` 镜像已静态编译这些模块，无需 `load_module` 加载 `.so`。部署方须执行 `nginx -t`，并实际测试 HTTP/2 双向流；仅访问 HTTP health 不算运行检查。
 
 ## 签名站点发行包
 
@@ -59,7 +59,7 @@ Web path 部署在上述地址前加 `/platform`。这些接口与既有 Agent �
 
 manifest v1 必须包括 `sequence`（单调递增）、`serverRevision`（真实 40 位构建提交）、`stateFormat`、`architecture`、`minGlibc`、`cpuFlags`、`redistribution: unrestricted`，以及文件数组。每项包含 `name/role/size/sha256/executable`；必须各有一个 `agent` 和 `cli`。Spack 接入再提供 `runtime-sif`、`site-profile` 和可执行 `spack` 入口。
 
-本版新增失败安装依赖复用的严格记录、旧 worker 停止证明及恢复验证证据，正式发行使用 `slurm-site-v5`。旧 `slurm-site-v4` 已包含作业提交中标记、持久终态快照和 Slurm worker generation，但不能读取新增安装记录。初始化继续拒绝 v4→v5 原地激活及 v5→v4 普通回滚；旧站点须另行审查迁移，新站点可首次安装 v5。此字段是发行契约，不能为了允许切换而伪造相同值。
+失败安装依赖复用、旧 worker 停止证明及恢复验证证据使用 `slurm-site-v5`。旧 `slurm-site-v4` 已包含作业提交中标记、持久终态快照和 Slurm worker generation，但不能读取新增安装记录。初始化继续拒绝 v4→v5 原地激活及 v5→v4 普通回滚；旧站点须另行审查迁移，新站点可首次安装 v5。此字段是发行契约，不能为了允许切换而伪造相同值。
 
 `spack` 入口可作为与同目录 SIF 配套的可移植启动脚本，支持平台现有 `SpackManager` 的版本/查询调用。其自身也需摘要校验。SIF 内的固定 `/opt/spack` 必须包含离线 solver/bootstrap 依赖；仅提供 Spack 源码压缩包不足以初始化受管运行环境。
 
@@ -78,7 +78,7 @@ bun deploy/site-release/publish.ts /tmp/kq-release-review/manifest.json /tmp/kq-
 
 准备工具与签名发布独立，显式记录目标架构、Bun target、glibc/CPU、状态格式和源码是否含未提交修改；可绑定计算节点 inventory 的原始摘要，并在 `requireSpack=true` 时拒绝缺失或不匹配的 SIF/profile/Spack 入口。具体输入与审核步骤见[发行准备手册](site-release-preparation.md)。已构建 CLI 可以执行 `--help`，不通过启动 Agent main 验证产物。
 
-Forge OCI 源码布局不等于 runtime SIF。科学软件的 recipe、lock、源码、resource、patch 及编译依赖继续通过现有离线交付导入、绑定和 material preflight。未完成闭包或未匹配本站 OS/CPU/MPI 的包不会因此变成可安装。匹配本站的 SIF、site profile 与材料需由平台准备和发布，本次没有制造虚假的现场构建产物。明确启用离线传输的站点，在尚未安装且缺少可信闭包证明时不会显示“可安装”；仍可显式发起隔离安装审计，成功 build/verify 后才成为已安装。材料证明边界及原生 OCI 认证限制见[材料就绪说明](offline-slurm-material-readiness.md)。
+Forge OCI 源码布局不等于 runtime SIF。科学软件的 recipe、lock、源码、resource、patch 及编译依赖继续通过现有离线交付导入、绑定和 material preflight。未完成闭包或未匹配本站 OS/CPU/MPI 的包不会因此变成可安装。匹配本站的 SIF、site profile 与材料需由平台准备和发布。明确启用离线传输的站点，在尚未安装且缺少可信闭包证明时不会显示“可安装”；仍可显式发起隔离安装审计，成功 build/verify 后才成为已安装。材料证明边界及原生 OCI 认证限制见[材料就绪说明](offline-slurm-material-readiness.md)。
 
 受管软件的Workflow还须声明与已安装记录一致的完整Spack spec。解析器优先使用冻结软件revision的`spack.defaultSpec`，缺省为`package@version`；用例的`software.argumentList`可声明编译器、依赖和变体后缀，由执行器拼接后进行正常激活。已安装记录包含额外依赖约束时，只有`package@version`的简写不等于该完整spec。遇到`Workflow Spack activation failed`，先核对冻结revision及用例参数与本站安装记录，不重新编译、不修改ready记录，也不把PATH写入命令绕过激活。参数修正必须作为新的受治理用例版本发布，已冻结的失败Workflow不自动换版本续跑。
 
@@ -96,7 +96,7 @@ Slurm 构建先 `sbatch --hold`，保存带唯一 job name 的 `slurm.json`，�
 
 rootless Apptainer 的 cgroup 管理由**计算节点**的用户 systemd 提供；该管理器必须在整个作业期间存活，不能仅由 Slurm prolog 的短暂 PAM 会话启动。否则会话退出后的清理可能向 Apptainer scope 发送 SIGTERM，表现为退出 143。站点可通过正确的 Slurm/PAM 生命周期集成或管理员维护的用户管理器实现；登录节点的 linger 不证明计算节点已具备该能力，普通用户初始化不会自动更改系统策略。
 
-managed install 当前保持容器本地 tmpfs scratch，并由 worker 检查其边界。Apptainer 的 `sessiondir max size` 默认可能只有 64 MiB，无法承载真实源码、solver 和构建临时文件；站点需提供足够容量并结合 worker cgroup 内存预算。腾讯云运行检查将此容量设为 2048 MiB；源码审计保持 2048 MiB cgroup，managed worker 在 2048 MiB 预算下触发 OOM 后改用 2816 MiB 预算，保留 cgroup 限额；这是测试节点的管理员配置，不表示普通用户可覆盖任意站点策略。source audit 使用独立私有磁盘 scratch；失败保留目录会占共享盘配额，应确认没有活动 worker 后再归档清理。
+managed install 当前保持容器本地 tmpfs scratch，并由 worker 检查其边界。Apptainer 的 `sessiondir max size` 默认可能只有 64 MiB，无法承载真实源码、solver 和构建临时文件；站点需提供足够容量并结合 worker cgroup 内存预算。例如，站点管理员可将 sessiondir 容量设为 2048 MiB，并为 managed worker 配置 2816 MiB 内存；source audit 仍使用独立 2048 MiB cgroup。容量需结合实际 DAG 和节点余量确定，普通用户不能覆盖站点策略。source audit 使用独立私有磁盘 scratch；失败保留目录会占共享盘配额，应确认没有活动 worker 后再归档清理。
 
 worker 优先查询 Slurm controller，核验精确 JobId、JobName、JobState、ExitCode 与 `Requeue=0`；controller 明确报告作业 ID 已不存在时才回退 accounting。accounting 未启用不妨碍仍由 controller 证明的等待、终态收集或显式恢复；没有记录或身份冲突仍保留现场，不视为已停止。丢失提交响应时，唯一的实时 squeue 记录可用于接管原作业，不重复 sbatch。
 
@@ -124,7 +124,7 @@ Slurm 内存请求为 `max(2048, AGENT_SPACK_MANAGED_MEMORY_MIB) + 512` MiB，�
 
 ## 更新、诊断与现场运行检查
 
-初始化工具支持 `check/doctor/install/stage/prepare-capabilities/activate/rollback/services/maintain`。首次注册可用终端隐藏输入，或 `KQ_REGISTRATION_TOKEN_FILE` 指定私密文件/标准输入；复用身份前验证完整配置与证书，注册结果不明时保留证据、不重复注册。默认更新 timer 每六小时检查、随机延迟最多 30 分钟，只暂存。暂存检查签名、摘要及profile绑定，不因旧计算能力报告过期而阻止拉取；启用新Spack配置仍要求新鲜且匹配的能力报告。激活或回滚须显式设置 `KQ_MAINTENANCE_WINDOW=1`，停止 Agent，并成功取得同一状态锁；仍有 Slurm 构建或其状态不明时拒绝激活。stateFormat 不同会拒绝切换。版本序号和发行摘要作为一条原子反降级记录写入，再发布暂存指针；普通激活也检查该记录，只有显式 rollback 能回退且不会降低已接受序号。完整命令见现场工具包说明，完整实施覆盖及运行检查顺序见[交付清单](offline-slurm-acceptance.md)。
+初始化工具支持 `check/doctor/install/stage/prepare-capabilities/activate/rollback/services/maintain`。首次注册可用终端隐藏输入，或 `KQ_REGISTRATION_TOKEN_FILE` 指定私密文件/标准输入；复用身份前验证完整配置与证书，注册结果不明时保留证据、不重复注册。默认更新 timer 每六小时检查、随机延迟最多 30 分钟，只暂存。暂存检查签名、摘要及profile绑定，不因旧计算能力报告过期而阻止拉取；启用新Spack配置仍要求新鲜且匹配的能力报告。激活或回滚须显式设置 `KQ_MAINTENANCE_WINDOW=1`，停止 Agent，并成功取得同一状态锁；仍有 Slurm 构建或其状态不明时拒绝激活。stateFormat 不同会拒绝切换。版本序号和发行摘要作为一条原子反降级记录写入，再发布暂存指针；普通激活也检查该记录，只有显式 rollback 能回退且不会降低已接受序号。完整命令见现场工具包说明，完整部署清单与运行顺序见[交付清单](offline-slurm-acceptance.md)。
 
 平台 Agent 卡片新增可展开的站点运行状态，分别展示连接方式、单用户/管理员信任边界、安装执行位置、材料、安装、作业、传输和更新。报告只包含枚举、计数、时间与摘要；不上传本机路径、URL、token 或自由文本错误。报告过期或 Agent 离线时明确标为最后观测；旧 Agent 显示未上报。诊断证据为 `doctor.json`、`status.json`、systemd journal 和 Slurm `slurm.json`。
 
@@ -132,16 +132,12 @@ Slurm 内存请求为 `max(2048, AGENT_SPACK_MANAGED_MEMORY_MIB) + 512` MiB，�
 
 平台须启用 `NETDRIVE_ENABLED`，正确配置 `NETDRIVE_PUBLIC_URL` 为无 path 的可达 origin。显式出口配置无效时启动失败，不回退内部地址。诊断对象使用独立 `site-diagnostics/` 前缀、五分钟会话，客户端结束时清理，服务定时清理失败会重试。Server 重启会失去内存中的探针会话，因此部署方还须为该前缀配置对象生命周期和未完成分片清理；不要把该策略应用到用户数据。
 
-本地 bootstrap 测试已分别覆盖 SSH-forward 与真实回环 HTTP CONNECT 代理，检查原始 Host/SNI、签名下载、注册请求和代理失败不直连。测试中的 CLI/Agent 和注册 API 为受控 fixture，不能替代真实 CSR 注册及 OpenSSH 认证运行检查。
-
-Agent 真实回环 mTLS/HTTP2 测试还覆盖两种模式的 GOAWAY、重连 TLS 失败及随后并发重连：原有流保留，新的并发请求共用一个新会话。此行为适用于网关平滑排空；TCP 已断开的流仍按既有消息回执与持久作业账本恢复。
+网关平滑排空发送 GOAWAY 后，原有流继续完成，新请求共用重新校验 TLS 的新会话；TCP 已断开的流按消息回执与持久作业账本恢复。
 
 现场运行检查顺序：两种网络模式的注册与 mTLS 双向流 → modules 作业 → 空缓存离线材料安装与真实软件作业 → SSH 中断 → Agent SIGKILL → 材料续传/票据过期 → 上传失败与 Server 重启恢复 → 更新损坏/不兼容和回滚。每项核对 jobId、uploadId、digest 与文件内容；未进行真实现场运行检查前不标记生产就绪。
 
 ## 现场发布与适用范围
 
-代码和本地测试不代替现场运行。部署前仍须准备本站 OS/CPU/glibc、编译器与 MPI 匹配的签名 CLI/Agent、SIF、Spack 入口、site profile、lock 与完整离线材料。`module avail` 不是计算节点可运行证据；先执行 modules 小作业，再验真实软件。工具包的 `result.json` 提供版本化、脱敏的计算节点 inventory；编译器/MPI 只对明确选择的 module 做版本探测。该报告用于准备本站发行物，不证明整个异构分区或 Apptainer 隔离能力。
+部署前仍须准备本站 OS/CPU/glibc、编译器与 MPI 匹配的签名 CLI/Agent、SIF、Spack 入口、site profile、lock 与完整离线材料。`module avail` 不是计算节点可运行证据；先执行 modules 小作业，再验真实软件。工具包的 `result.json` 提供版本化、脱敏的计算节点 inventory；编译器/MPI 只对明确选择的 module 做版本探测。该报告用于准备本站发行物，不证明整个异构分区或 Apptainer 隔离能力。
 
 构建恢复先确认旧 Slurm worker 已停止且不会重新排队，并私密保留失败 attempt。相同 spec、材料、profile、runtime 下可在原 record/prefix 恢复：独立只读 Slurm 验证已完成依赖的安装清单、依赖闭包与文件内容；安装前后重查摘要、权限和 mtime，未完成根包重新构建，最后另起完整验证才发布 ready。不承诺从任意编译指令继续。无法证明原 owner 停止、缺少 staging 绑定、依赖损坏或 Slurm 记账不明确时拒绝，保留现场给站点调查。更新自动下载与维护激活分开，回滚必须满足相同 stateFormat 与停止 Agent/构建的条件。
-
-本地已覆盖核心恢复分支、真实回环 TLS/HTTP2、真实 Ed25519 签名的双文件初始化全流程和界面状态。隔离 PostgreSQL 运行检查入口为 `bun run test:unit --suite offline-slurm-pg`，复用已有 CI PostgreSQL service，见[执行范围与数据库隔离说明](offline-slurm-pg-acceptance.md)。2026-11-11 已在授权的腾讯云环境完成独立 PostgreSQL、材料导入、两种真实 SSH 接入、普通用户初始化和真实 Slurm 作业恢复；冷安装与更新结果按独立证据记录，见[当前状态](status/current-state.md)。用户真实集群的 Slurm/Apptainer 权限、计算节点 ABI 及持久本地盘仍须现场运行检查。

@@ -16,7 +16,7 @@ SSH secrets、`.env` 和依赖配置见 [main SSH 部署](../../docs/deployment.
 | `docker-compose.watch.yml` | 叠加主配置，容器内热更新 | `watch` |
 | `docker-compose.schedulers.yml` | 平台及 Slurm、PBS、K3s 本地调度器栈 | `scheduler` / `scheduler-watch` |
 | `docker-compose.aio.yml` | 单容器 all-in-one 演示 | `aio` |
-| `docker-compose.preview.yml` | GitHub-hosted runner 限时 PR/main 预览 | Actions 专用，不经 CLI |
+| `docker-compose.preview.yml` | 兼容旧临时预览的独立配置 | Actions 专用，不经 CLI |
 | `docker-compose.pr-test.yml` | 隔离的 Slurm/PBS PR 测试与 Spack 材料回归 | `deploy/pr-test/run.sh`，不经 CLI |
 | `docker-compose.casdoor-external.yml` | 非 scheduler 栈使用外部 Casdoor | `--casdoor-external` |
 | `docker-compose.spicedb-external.yml` | 非 scheduler 栈使用外部 SpiceDB | `--spicedb-external` |
@@ -84,10 +84,10 @@ services:
 
 将该覆盖文件叠加到所用配置上；AIO 将服务名 `registry` 改为 `kq`。
 仅设置环境变量不会自动挂载文件；manifest 及其引用的所有 bundle 都必须在容器内可读。
-Bootstrap 不重导入已有仓库，也不覆盖激活状态；新快照仍须显式确认并激活。
+Bootstrap 仅跳过已保存相同 bundle SHA-256 的快照；新 bundle 追加快照，不覆盖激活状态。新快照仍须显式确认并激活。
 只读输入挂载不能覆盖可写的 recipe 存储目录。
 
-#### 原需求源码材料文件包
+#### 源码材料初始化
 
 四个上述 Registry/AIO Compose 变体均将 `SPACK_MATERIAL_BOOTSTRAP_MANIFEST` 默认空透传；
 空字符串视为未设置。启用时必须填写容器内 manifest 的绝对本地路径，并配置
@@ -139,7 +139,7 @@ CA bundle 若配置，需运维额外只读挂载；仅设置绝对容器路径�
 Web 请求仅上传最多 2 MiB 的 JSON manifest，Nginx 为精确路径配置 30 分钟代理超时，
 其他 API 限额不变。配置、Secret 边界、请求示例及部分失败语义见
 [Spack 受控上游导入](../../docs/spack-upstream-import.md)。
-此接线与新增回归用例尚待 GitHub Actions 验证，不能据此声称真实代理或镜像已运行检查。
+启用前检查渲染后的 Secret、代理连通和目标 origin 白名单。
 
 ## 直接调用
 
@@ -167,11 +167,10 @@ CLI profile 会选择对应文件并设置路径基准。
 Registry 的 Spack source/material 存储已放入现有 Registry 数据卷的 `materials` 子目录，
 与 recipe Git 和 OCI blobs 分离。材料发布、Server 的 mTLS/下载配置与 Agent 缓存见
 [Spack 材料交付](../../docs/spack-material-delivery.md)。
-默认 Compose 不自动启用 Server 材料分发；平台未受管安装已被阻断，当前阶段只准备材料，
-尚未接入离线执行器，不应作为恢复安装能力的生产升级。
+默认 Compose 不自动启用 Server 材料分发或受管安装。安装需单独配置材料绑定、固定 runtime/site profile、隔离执行器和资源预算；实验性 opt-in 与站点限制见材料交付说明。
 
 - [`docker-compose.preview.yml`](docker-compose.preview.yml) 使用独立临时数据库与带认证的
-  Quick Tunnel 入口，配置与暂停操作见[预览部署](../../docs/deployment.md#preview)。
+  Quick Tunnel 入口，当前 CI 使用 k3s 预览，见[预览部署](../../docs/deployment.md#preview)。
   使用独立凭据，不沿用开发栈的固定口令。该配置仅用于临时预览，不连接业务集群或用于生产部署。
 
 - [`examples/docker-compose.demo.yml`](../../examples/docker-compose.demo.yml) 与示例说明放在一起，

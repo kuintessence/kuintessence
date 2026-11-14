@@ -55,7 +55,7 @@ namespace 决定导入位置，recipe repository ID 由其完整规范名称的 
 默认保留 7 天，名称包含 case、代码 SHA 与 run ID。验证失败、输出缺失或仅开启
 验证时没有可下载材料，不能把 workflow 存在视为已产生 artifact。
 
-新工作流尚未进入主线时，通过已有 `CI` 的 `run_runtime_checks=true` 验证两个案例。
+通过 `CI` 的 `run_runtime_checks=true` 验证两个案例。
 该调用强制 `publish_artifact=false`，不会在 PR 验证中发布源码下载。
 
 ## 下载与校验
@@ -105,8 +105,8 @@ shasum -a 256 -c checksums.txt
 3. 仅在授权部署窗口启动，逐项检查 bootstrap 报告与实际 release；health 成功
    不代表后台导入完成。路径链由管理员控制，服务 UID 可读，文件和目录不可被
    group/other 写入，读取期间不能在宿主修改。
-4. 已有任意 snapshot 的 recipe 仓库会跳过初始化，不会替换成包中快照。
-   后续新快照通过 Web/API 显式导入，或使用新的版本化仓库名。
+4. 仓库已有相同 bundle SHA-256 的快照时跳过该项；新 bundle 追加快照，
+   不覆盖 active 指针。导入与激活是两个独立步骤。
 
 批量导入不是跨包原子事务，部分失败不会自动撤销已导入内容。
 具体部署选项见[Recipe 仓库](spack-recipe-repositories.md)及
@@ -114,7 +114,7 @@ shasum -a 256 -c checksums.txt
 
 ## 后续 Web 导入
 
-1. 在软件中心 Spack 页或 CP 软件页，选择 `recipe-pack/recipes.bundle`，
+1. 在软件生态 Spack 页或 算力中心 软件页，选择 `recipe-pack/recipes.bundle`，
    填入 recipe manifest 中的精确仓库名，导入并检查 commit/roots 和诊断。
 2. 选择 `material-pack/manifest.json`，再选择整个 `material-pack` 目录。
    不选择 artifact 顶层目录；它包含不属于材料 manifest 的 recipe 和说明文件。
@@ -179,14 +179,6 @@ bash deploy/pr-test/run.sh slurm --spack-artifact-samtools
 完整 CI 另接入 `scripts/spack-artifact-managed.test.ts` 合同检查及 harness 类型检查；
 这些静态或 fixture 检查不能替代真实 scheduler job。
 
-PR #9 的提交 `e8b50b7b6834a2937bb1a8858cf9067f232212db` 已通过完整 CI
-`35685693358`（9 个实际 job）及 scheduler matrix `35685693281`（7 个 job），
-包括上述 Hello/samtools 链路。此历史证据只证明该 SHA 的 delivery 经
-**Registry bootstrap 后**完成固定案例的受管安装链路，
-不证明 Web 导入后安装，不覆盖任意 spec、15 个工作流、跨节点共享存储/ABI
-或生产目标集群。固定工具链、site profile 和隔离边界见
-[PR 调度器测试](../deploy/pr-test/README.md#同一交付的-artifact-bootstrap-受管案例)。
-
 ## 同一交付的 Web 受管安装运行检查
 
 PR scheduler matrix 另增两条 Web managed job，入口仅供临时 GitHub Actions runner 使用：
@@ -218,6 +210,4 @@ protobuf generate 和 `packages/web` 的 `e2e:install`（Patchright Chromium）�
 完整 CI 增加 `scripts/spack-web-managed.test.ts` 合同检查，不能代替真实 browser
 导入和 scheduler 运行检查。
 
-**新增 Web 链路待新 HEAD 的 Actions 验证**，不继承上述 PR #9 的历史通过结论。
-即使通过，也仅覆盖当次固定 Hello/samtools delivery，不代表任意 spec、15 个工作流、
-PBS managed 安装、跨节点共享存储/ABI 或生产站点运行检查。
+Web 导入案例只覆盖对应的固定 Hello/samtools delivery，不覆盖任意 spec、完整科学工作流、PBS managed 安装或其他站点的共享存储与 ABI。

@@ -96,13 +96,13 @@ provider_org_id="$(
     const fs = require("fs");
     const context = JSON.parse(fs.readFileSync(0, "utf8"));
     const orgs = context.providerOrgs ?? [];
-    const selected = orgs.find((org) => org.name === "Development Compute Provider") ?? orgs[0];
+    const selected = orgs.find((org) => org.name === "Development Compute Center") ?? orgs[0];
     if (!selected?.id) process.exit(1);
     process.stdout.write(selected.id);
   '
 )"
 if [[ -z "${provider_org_id}" ]]; then
-  echo "failed to resolve Development Compute Provider org from CP API" >&2
+  echo "failed to resolve Development Compute Center org from CP API" >&2
   exit 1
 fi
 

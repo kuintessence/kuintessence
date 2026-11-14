@@ -1,10 +1,10 @@
 # Spack 配置绑定退役
 
-这是材料生命周期的第三批前置能力，仅向可信离线 DB 运维提供 `retire`。
+绑定退役仅向可信离线 DB 运维提供 `retire`。
 它终止一个精确的 `(spec, repositoryId, manifestDigest)` 配置绑定的后续使用，
 **不是下架材料、撤回 recipe、删除源码、卸载软件或修改可见范围**。
 同一 release 的其他 spec 绑定不受影响；直接 Registry 材料读取仍按现有授权规则处理。
-本批没有退役恢复接口、HTTP 管理接口或 CP/Web 写入口。
+当前没有退役恢复接口、HTTP 管理接口或 算力中心/Web 写入口。
 
 ## 不可逆与保留
 
@@ -31,7 +31,7 @@ bun packages/db/src/spack-material-rollout-cli.ts <absolute-command-json-path>
 
 执行权限来自可信 shell 的 DB 凭据；`operatorId` 是归属记录而非登录证明。
 退役只接受数据库中当前未停用的 `super_admin` / `platform_admin`。
-CP 对材料的发布权不意味着具有全平台配置退役权。
+算力中心对材料的发布权不意味着具有全平台配置退役权。
 
 退役只允许处于 `paused`、最近动作是 `reconcile` 的状态。
 必须使用最新 revision、当前 epoch，以及同时匹配最近 reconcile journal 和当前库存的 digest。

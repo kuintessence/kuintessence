@@ -95,7 +95,7 @@ BAM quickcheck、BAI 索引、区域计数及非法输入非零退出，不能�
 不证明工作流 10 全链路、PBS、MPI、跨节点存储或生产站点兼容。
 install 默认 6 小时、最多 24 小时；verify/load 和独立 source audit 保持 30 分钟。
 source audit 内存固定 2 GiB；managed worker 默认 4 GiB，可通过
-`AGENT_SPACK_MANAGED_MEMORY_MIB` 设为整数 1024..4096 MiB，禁止 swap，CPU 2、PID 128 不变。
+`AGENT_SPACK_MANAGED_MEMORY_MIB` 设为整数 1024..1048576 MiB，禁止 swap，CPU 2、PID 128 不变。
 低额度不承诺大型真实软件可用，尚未实测 1 GiB 安装；实际 DAG 是否适合预算仍须验证，
 失败不能靠绕过隔离通过。移除该配置或设为 4096 后重启 Agent 即恢复默认预算。
 
@@ -264,8 +264,7 @@ manifest 摘要使用 `sha256:` 前缀。保留原始 lock 和源码字节，不
    和 `/imports/materials`；服务 UID 必须能读取。
 3. 配置 `SPACK_RECIPE_BOOTSTRAP_MANIFEST=/imports/recipes/manifest.json` 与
    `SPACK_MATERIAL_BOOTSTRAP_MANIFEST=/imports/materials/manifest.json`，
-   在授权部署窗口启动。recipe 导入成功后才进行材料导入；已有快照的 recipe 仓库
-   会跳过初始化，新版本应通过 Web/API 导入。
+   在授权部署窗口启动。recipe 导入成功后才进行材料导入；仅当仓库已保存相同 bundle SHA-256 的快照时跳过该项。新 bundle 可追加快照，不覆盖 active 指针；激活仍须单独确认。
 4. 检查 bootstrap 分类报告、逐 release 结果及成功 binding，不能以 health/readiness
    成功代替后台导入完成。批次不是原子事务，部分失败不撤销已成功项。
 
@@ -274,7 +273,7 @@ manifest 摘要使用 `sha256:` 前缀。保留原始 lock 和源码字节，不
 
 ### Web
 
-1. 登录软件中心 Spack 页或 CP 软件页，确认当前组织及发布权限。在 recipe 面板
+1. 登录软件生态 Spack 页或 算力中心软件页，确认当前组织及发布权限。在 recipe 面板
    上传 bundle，核对实际 snapshot commit、roots 和静态诊断；必要的激活由运维
    明确审核后执行，不是上传自动完成。
 2. 在 Spack 材料面板选择材料 `manifest.json`，再选择整个 `material-pack` 目录，

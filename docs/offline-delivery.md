@@ -156,7 +156,7 @@ HTTP 200 仅表示返回了报告，必须检查报告状态和逐项结果。
 真正的站点安装映射仍通过现有精确 spec、材料 target 与 revision 控制，不把站点 UUID 写入通用包。
 生态 active 与材料可安装、站点可运行是独立状态。
 
-已激活且公开发布的生态 Spack 软件显示在软件中心的“Spack 软件 → official”目录，
+已激活且公开发布的生态 Spack 软件显示在软件生态的“Spack 软件 → official”目录，
 与内置上游目录一起参与搜索和分页。目录保留资产身份、版本、许可证与声明的精确
 安装 spec；签名导入项不提供手工目录的编辑、删除入口，更新仍通过生态发布完成。
 重新部署保留数据库和 Registry 数据卷时无需重新导入。用例和正式工作流模板分别
@@ -195,7 +195,7 @@ main 与普通 Compose 的 Registry healthcheck 使用 readiness，Web 依赖它
 需要重启重新完成必需 seed，避免错误宣告部署成功。
 
 Helm 的既有 `seed.enabled` 是 minimal/demo 身份数据库 seed，**不是本离线交付开关**，
-本次不改变其行为。完整离线挂载接线由两个 Compose 入口提供；Helm 操作者需另行提供只读 PVC、
+完整离线挂载接线由两个 Compose 入口提供；Helm 操作者需另行提供只读 PVC、
 上述 Registry 环境变量和 `/api/ready` readinessProbe；liveness 保持 `/api/health`。
 现有 Helm recipe 本地存储仍限定单 Registry writer，不因 seed 并发锁宣称支持共享卷水平扩容。
 
@@ -232,4 +232,4 @@ canonicalJson 不可混用。Python 导出器必须对照
 应在空 store、禁止公网且无隐式 cache/upstream/bootstrap 的环境完成安装，再由 KQ 提交
 view → sort → index → quickcheck 的 3 条 SAM 记录作业，断言总数 3、mapped 2，
 记录 job/run ID、退出码和 BAM/BAI 摘要；隔离副本移除必需源码必须失败且不联网补件。
-本次未指定这样的材料及测试站点，真实安装/作业/缺源码负例均保持 **not-run**。
+这些步骤由具备匹配材料和隔离能力的目标站点执行，并保留原作业及文件摘要；材料缺失时应停止准备，不改用其他版本的锁或预装软件替代。

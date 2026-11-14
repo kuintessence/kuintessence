@@ -182,7 +182,7 @@ export function managedApi(token: CaseToken) {
         providerOrgs: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
       })
       .parse(await request("/cp/agent-registration-context"));
-    const provider = context.providerOrgs.find((org) => org.name === "Development Compute Provider");
+    const provider = context.providerOrgs.find((org) => org.name === "Development Compute Center");
     assert(provider, "Development provider was not initialized");
     const queueId = randomUUID();
     await request("/admin/queues", {

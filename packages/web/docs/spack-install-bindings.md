@@ -1,6 +1,6 @@
 # Spack 安装绑定编辑器
 
-平台与 CP 共用 `SpackMaterialsPanel` 内的独立编辑器，不增加页面路由。
+平台与算力中心共用 `SpackMaterialsPanel` 内的独立编辑器，不增加页面路由。
 编辑器维护“作用域 + 精确 spec → 固定材料发布项”，不是安装执行入口。
 绑定保存成功不代表材料已完成真实安装、科学运行或目标平台兼容性运行检查。
 
@@ -10,8 +10,8 @@
   只有 capability 响应确认的 `platform_admin` / `super_admin` 可选择平台默认。
   组织管理员只能选择当前且经 capability context 验证的组织，不能输入任意组织。
 - 绑定管理独立于材料发布及生命周期管理，不要求 `software.publish`。
-  Panel 的独立 `canManageBindings` 开关默认跟随 `canManage`，因此原有只读及 CP
-  降权行为不变。软件中心显式开启绑定检查，不再让 `canPublish` 阻止其 capability
+  Panel 的独立 `canManageBindings` 开关默认跟随 `canManage`，因此原有只读及算力中心
+  降权行为不变。软件生态显式开启绑定检查，不再让 `canPublish` 阻止其 capability
   查询；材料和 recipe 发布仍使用原有 `canManage`。开关不授予权限，
   还须通过 session guard；平台管理按真实 capability 响应中的
   平台管理员角色判断。组织入口要求当前组织的已验证 context：
@@ -68,6 +68,4 @@ client 校验共享 strict schema、请求 scope/spec 回显、状态与 binding
 中止/超时、重复提交、身份/组织/能力切换、选中材料预填和移动端限制。
 页面级回归渲染实际 SoftwarePage、Panel、发布权限及 capability hooks，
 验证无 `software.publish` 时的绑定入口、发布入口隔离、canonical 角色门禁，
-以及默认 `canManage=false` 和 CP 页面独立门禁。
-本次仅编写测试及进行文本审阅，未在本机运行 tests、lint、typecheck、
-formatter、build、安装、浏览器或脚本。实际验证留给 GitHub Actions。
+以及默认 `canManage=false` 和算力中心页面独立门禁。

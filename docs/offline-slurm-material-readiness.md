@@ -12,7 +12,7 @@
 现有证据分为三个阶段：
 
 - Registry 发布验证已声明 blob 的 digest/大小、recipe 身份与授权及 lock 静态结构。报告明确为 `static-only`，不证明实际 recipe 的源码、resource、patch 或 bootstrap 依赖齐全。
-- Agent 的隔离 source audit 在固定运行时中验证 recipe、native DAG、`pkg.stage` 包含的 source/resource staging，以及独立的 `spack.patch.UrlPatch.stage`；各下载 stage 均使用 `mirror_only=True` fetch 后执行 checksum check，并触发 native FilePatch 检查。未知 patch 类型、缺失 stage 或不支持的 fetcher 均拒绝通过，不调用可能回退上游的 `patch.fetch()`。审计禁用 bootstrap，在无网络命名空间执行；安装 worker 同样强制镜像 fetch，材料缺失不得回退上游。独立 patch stage 的成功、材料缺失和禁止上游路径已通过纯 fixture 测试，但尚未执行真实 Spack 1.0/runtime 运行检查，真实运行时运行检查仍待执行；通过审计后可走下述持久凭据通道。
+- Agent 的隔离 source audit 在固定运行时中验证 recipe、native DAG、`pkg.stage` 包含的 source/resource staging，以及独立的 `spack.patch.UrlPatch.stage`；各下载 stage 均使用 `mirror_only=True` fetch 后执行 checksum check，并触发 native FilePatch 检查。未知 patch 类型、缺失 stage 或不支持的 fetcher 均拒绝通过，不调用可能回退上游的 `patch.fetch()`。审计禁用 bootstrap，在无网络命名空间执行；安装 worker 同样强制镜像 fetch，材料缺失不得回退上游。审计必须在目标 Spack/runtime 中完成，成功后可走下述持久凭据通道。
 - 启用实验性持久安装后，只有隔离 build 和独立只读 verify 都通过，才保存并发布 installed/ready 安装记录。下载成功或 source audit 通过不能替代安装验证。
 
 Server 复用 `software_operations` 和 append-only `audit_log` 保存 source-audit proof，不新增由客户端任填的 ready 字段。
@@ -37,13 +37,13 @@ binding revision、release 生命周期、新鲜 site-profile/runtime digest 及
 操作列表显示“材料审计 / 审计通过，尚未安装”，不刷新 installed 账本。凭据当前是否仍有效以 proof API 为准。
 普通显式 install 仍在成功审计后继续 build/verify；新安装失败会阻止复用旧审计结果作为 availability 依据。
 
-有权操作 Agent 的 CP 用户可查询 `GET /api/cp/software/operations/:operationId/source-audit-proof`，
+有权操作 Agent 的 算力中心用户可查询 `GET /api/cp/software/operations/:operationId/source-audit-proof`，
 返回完整绑定、签发/到期时间、`revoked` 与实时 `valid`；从未产生凭据时为 404。
 拥有 Agent manage 权限的用户可调用
 `POST /api/cp/software/operations/:operationId/source-audit-proof/revoke`，请求体 `{"reason":"材料隔离原因"}`。
 撤销追加审计事件；重新审计必须发起新操作，不通过更新旧凭据恢复。
 
-需要继续验证材料时，由有权操作目标 Agent 的用户进入 **CP 门户 → 软件 → 软件操作**，
+需要继续验证材料时，由有权操作目标 Agent 的用户进入 **算力中心门户 → 软件 → 软件操作**，
 为准确 spec 发起显式 `install`。对应现有 API 是 `POST /api/cp/software/operations`，
 请求体为 `{"agentId":"目标Agent","action":"install","spec":"准确spec"}`，
 沿用登录授权与 `Idempotency-Key`。该入口仍执行现有材料绑定、权限、策略、隔离审计和运行时检查；
@@ -57,12 +57,7 @@ binding revision、release 生命周期、新鲜 site-profile/runtime digest 及
 
 原生 OCI 已补充标准 Bearer challenge 与 Server token exchange，统一 HTTPS 公共 origin、
 Basic 登录凭据复用现有人类 access JWT，并按 repository/subject 限定 pull/push。
-配置、Docker/Apptainer 用法及待运行检查场景见 [原生 OCI 登录](native-oci-authentication.md)。
-本轮未运行测试及真实客户端运行检查，不能据实现完成宣称原生 OCI 已通过现场运行检查。
-
-本次新增了纯假依赖回归测试（派发绑定、身份、撤销、时效及变化后失效），按要求暂未执行；
-没有执行实际安装、访问 Registry/对象存储/上游、连接数据库或部署云服务。统一测试及真实运行时运行检查仍待完成。
-
+配置及 Docker/Apptainer 用法见 [原生 OCI 登录](native-oci-authentication.md)。
 
 材料下载 ticket 默认有效期为 900 秒；隔离运行环境可将 Server 的
 `SPACK_MATERIAL_TICKET_TTL_SEC` 设为 30..900 秒（例如 60），真实等待签名 `exp` 过期后验证原有证书续票流程。

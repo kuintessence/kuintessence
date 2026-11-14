@@ -8,7 +8,7 @@ Server 在调用对象存储 complete 前，将 Agent 的最终 size、sha256、
 
 对象 complete 已成功但响应丢失或数据库事务回滚时，恢复通过 head 和流式 sha256 校验对象，再提交元数据；仅 size 相同不足以认定成功。提交成功仍保留 completion，覆盖传输最终状态落库前崩溃的窗口。sha256 不匹配、绑定变化会明确失败；底层 SDK/数据库异常向用户返回 `MULTIPART_FINALIZATION_RETRY_REQUIRED`，不会显示底层 URL。
 
-不保证 best-effort 流量审计在进程崩溃时必达。已有旧 multipart token 未绑定 path，需经授权恢复换发新 token。真实 PostgreSQL 并发及事务恢复测试已补入 `netdrive.test.ts`，本次仅执行假依赖单元测试，未连接数据库或对象存储。
+不保证 best-effort 流量审计在进程崩溃时必达。已有旧 multipart token 未绑定 path，需经授权恢复换发新 token。部署前须完成数据库迁移，并保留对象存储的未完成分片会话；恢复仍会重新检查授权和原内容绑定。
 
 ## 登录节点对象下载恢复
 
@@ -29,12 +29,10 @@ Server 对 NetDrive 下载下发已授权文件的真实大小和 `expected_sha2
 此增强适用于带可信内容绑定的主机下载。旧发送端未提供摘要时及 Docker 容器分支保留原有curl行为，
 不能据此宣称这些兼容路径已有跨重启断点和整件摘要运行检查。失败部分文件尚无自动GC，确认没有在途操作后再人工清理。
 
-
 工作流输入的两条路径也传递已授权 NetDrive 文件的 SHA-256 与大小：Server 直接触发的 `createFileStager`，
 以及 Agent 管理工作目录时的 `InputStaging.total_bytes/expected_sha256`。主机 Agent 使用同一下载器保留摘要绑定部分文件、
 按 Range 恢复并在整文件校验后发布；任务输入下载使用 Agent 生命周期取消信号，退出时保留部分文件。
 授权仍先于下载 URL 和内容绑定下发。旧消息、未提供可信摘要的特殊输入，以及容器下载继续走兼容路径。
-
 
 容器来源的 multipart 上传现在与主机上传使用相同的持久 checkpoint（需配置 Agent 的 transfer state 目录），
 绑定 requestId/uploadId、对象大小、partSize 和每个完成 part 的 SHA-256/ETag。
@@ -47,10 +45,9 @@ part PUT 每次尝试有 5 分钟总期限，网络停滞或取消后保留已�
 对新建上传生效。已有会话固定 partSize，须另建传输才能采用新值；同时保持总片数不超过 10000。
 未配置持久 state 目录时仍不承诺跨重启恢复；legacy single PUT 保留整件重传行为，checkpoint 尚无自动 GC。
 
-
 每次 multipart part URL 申请现在独立生成 `correlation_id`，同时提交固定 `upload_id`；
 `request_id` 继续表示 Server 管理的 transfer，不能由关联 ID 替代。
-Server 核对登录 Agent、当前 pending uploadId 后回显关联 ID 和 uploadId，Agent 仅接受三者均匹配的本轮响应。
+Server 核对登录 Agent、当前 pending uploadId 后回显关联 ID 和 uploadId，Agent 仅接受三者均匹配的当前请求的响应。
 同一 transfer 超时重试、URL 续签或重派后的迟到响应不会消费新 pending；超时和取消只清理自身请求及监听器。
 Server 仍兼容未提供新增字段的旧 Agent，按原有 transfer 查表授权；旧 Agent 不具备此响应隔离保证。
 新 Agent 连接未支持回显字段的旧 Server 时会拒绝不带关联 ID 的响应并超时失败，升级时应先部署 Server，
@@ -60,7 +57,7 @@ Sandbox artifact 持久化与普通工作流结果发布现在共用持久传输
 再启动上传，使 `PgTransferSessionStore` 能保存 multipart session。Sandbox 使用 artifact/replica 派生的独立稳定
 transfer UUID，重试复用同一行与 uploadId；成功回执需保存后才返回，并继续按实际 NetDrive 对象比对路径、大小与 SHA-256。
 取消等待只结束当前等待者，不主动销毁可恢复上传；已取消的行或改变的 owner/source/target/Agent/job/run 绑定拒绝复用。
-这些操作不重新提交计算任务；未在本轮执行真实 PostgreSQL 或 Sandbox 运行环境运行检查。
+这些操作只恢复原文件传输，不重新提交计算任务。
 
 普通 Workflow 的逐文件传输由[输出发布 outbox](workflow-output-recovery.md)持久关联；后台恢复已入库的 publication，不要求用户另起手动传输。文件提交与计算完成分别观察，文件恢复不会续跑已失败的 DAG。
 

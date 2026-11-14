@@ -92,7 +92,7 @@ if [[ -z "${smoke_user_id}" ]]; then
 fi
 if [[ -z "${provider_org_id}" ]]; then
   provider_org_id="$(
-    psql -Atc "select id from orgs where name = 'Development Compute Provider' limit 1;" | tr -d '[:space:]'
+    psql -Atc "select id from orgs where name = 'Development Compute Center' limit 1;" | tr -d '[:space:]'
   )"
   if [[ -z "${provider_org_id}" ]]; then
     echo "failed to resolve default provider org" >&2

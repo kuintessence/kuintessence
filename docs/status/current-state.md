@@ -1,6 +1,6 @@
 # 功能与运行要求
 
-Kuintessence 管理科研作业、工作流、软件环境、文件和跨联邦协同。Server、Registry、Web 与 CLI 使用同一套业务契约，Agent 连接 Slurm、PBS、Torque 或 Kubernetes。每个机构可以独立部署平台，保留自己的身份、数据库、对象存储和本地调度权。
+Kuintessence 管理科研作业、工作流、软件环境、文件和跨机构联邦协同。Server、Registry、Web 与 CLI 使用同一套业务契约，Agent 连接 Slurm、PBS、Torque 或 Kubernetes。每个机构可以独立部署平台，保留自己的身份、数据库、对象存储和本地调度权。
 
 ## 工作区
 

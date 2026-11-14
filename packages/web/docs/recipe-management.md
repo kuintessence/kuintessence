@@ -1,6 +1,6 @@
 # Spack recipe 管理面板
 
-平台软件中心的 Spack 视图与 CP software 页面复用同一面板，不增加路由。
+平台软件生态的 Spack 视图与 算力中心软件 页面复用同一面板，不增加路由。
 此面板只管理 Registry 的 recipe 快照和激活指针：不执行 concretization，
 也不代表 Agent 已同步或消费 recipe。
 
@@ -25,7 +25,7 @@
 - 激活和回滚使用相同 PUT API，并携带用户确认时的 `expectedActiveCommit`。
 - 停用使用 DELETE active API，携带当前 commit，仅清空激活指针，保留全部历史。
 - 写失败后重新读取详情；冲突不会自动重试，必须重新发起操作和确认。
-- 平台入口沿用 `software.publish`，CP 入口沿用 `workspace.provider.manage`。
+- 平台入口沿用 `software.publish`，算力中心入口沿用 `workspace.provider.manage`。
   两个入口还会校验 capability 响应中的 `software.publish`、角色和组织成员信息；
   加载中或加载失败时不显示写操作，不使用浏览器缓存的角色授予权限。
 - `public` 仅对 `platform_admin` / `super_admin` 显示写操作；非 `super_admin`
@@ -49,4 +49,4 @@
 Vitest/Testing Library 使用独立 recipe client mock，不需要启动服务。
 网络层测试检查鉴权、raw File、CAS、错误结构和共享 schema 响应校验；
 面板测试覆盖逐项队列、部分失败、重复导入、只读、信任确认、回滚、停用、
-组织切换、缓存竞态及中英文文案。既有软件中心和 CP 页面测试覆盖复用接入。
+组织切换、缓存竞态及中英文文案。既有软件生态和算力中心页面测试覆盖复用接入。

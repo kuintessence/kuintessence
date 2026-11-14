@@ -19,7 +19,7 @@ export const baseOrganization: SeedOrganization = {
 
 export const demoProvider: SeedOrganization = {
   id: "9e5d7e00-3bf8-4f49-9aa1-000000000002",
-  name: "Development Compute Provider",
+  name: "Development Compute Center",
 };
 
 export const demoUsers: readonly SeedUser[] = [
@@ -32,7 +32,7 @@ export const demoUsers: readonly SeedUser[] = [
   {
     id: "9e5d7e00-3bf8-4f49-9aa1-000000000012",
     email: "demo-provider@kuintessence.test",
-    displayName: "Demo Compute Provider",
+    displayName: "Demo Compute Center",
     role: "org_admin",
   },
   {

@@ -1,14 +1,14 @@
-# Spack 材料第二批 Rollout
+# Spack 材料升级屏障
 
 ## 范围与前提
 
-这是材料生命周期的**第二批升级屏障**，承接[持久化引用账本](spack-material-delivery.md)：
+升级屏障衔接[持久化引用账本](spack-material-delivery.md)：
 通过离线 DB API `SpackMaterialRollout.execute(command)` 执行
 `inspect`、`pause`、`reconcile`、`activate`，将历史配置对账后显式启用 runtime。
 不是完整生命周期管理：尚无 rollout HTTP API 或 GC。
 下架和恢复见[材料生命周期](spack-material-lifecycle.md)；
 附加可见限制需要进一步启用[材料可见策略](spack-material-visibility.md)。
-第三批另提供[离线配置绑定退役](spack-binding-retirement.md)，
+另提供[离线配置绑定退役](spack-binding-retirement.md)，
 复用本入口的 `retire` 动作，不删除历史或材料。`activate` 不执行安装、不激活 recipe，
 不代表材料或安装器生产就绪。
 
@@ -20,9 +20,9 @@
 
 部署静态测试 `scripts/spack-material-rollout-deployment.test.ts` 只检查配置接线、
 持久化与 Secret 引用、命令示例和本地文档链接，不证明 DB 屏障或进程重建正确。
-测试与运行态运行检查仅在 GitHub Actions 的隔离环境执行，须核对对应提交的结果，
+测试与运行状态检查仅在 GitHub Actions 的隔离环境执行，须核对对应提交的结果，
 包括 DB/CLI 门禁及 native/managed CI 的 pause、ready、recreate epoch 检查。
-静态检查通过不等于运行态运行成功，旧提交结果也不能替代当前提交运行检查；
+静态检查通过不等于运行成功，旧提交结果也不能替代当前提交运行检查；
 这些检查不代表生产站点运行检查。
 
 ## 离线入口与身份

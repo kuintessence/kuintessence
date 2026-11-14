@@ -245,7 +245,7 @@ window.__KQ_LOCAL__ = { baseUrl: "/api", token: "<本地会话 token>" };
 
 - SPA 按 capability 展示 jobs、workflows、软件、个人设置和 dashboard 等可用子集；没有完整 Agent 注册表，Agents 页面可能为空。
 - 隐藏算力中心、平台管理、联邦协同、Terminal 与 Files；dashboard 不请求 audit-log，不显示 SSO。
-- NetDrive/文件浏览、Web PTY、CP 控制台与审计等 Server-only 路由返回 404 `not available in local mode`。
+- NetDrive/文件浏览、Web PTY、算力中心控制台与审计等 Server-only 路由返回 404 `not available in local mode`。
 - 本地 Job API 仅执行 `name`、`command`、`resources`、`workingDir`、`envVars`；携带 `inputStaging`、software/data/usecase 和 placement 等 Server-only 字段时返回 501。
 - Job 详情保留 scheduler 提供的执行节点、失败原因、exit code 和日志，活跃作业可确认后取消。
 - 不提供 Server 的 8 阶段 placement 轨迹和实时 Agent 遥测；缺失字段为 `null` 或省略，表示数据不可用，而非资源为零。

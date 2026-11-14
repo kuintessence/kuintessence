@@ -18,7 +18,7 @@ bash deploy/pr-test/run.sh slurm --spack-workflow-samtools
 
 仅在授权 GitHub Actions 环境执行，不在本地或生产集群运行。沿用当前已验证的
 Ubuntu 20.04 scheduler userspace 和 Ubuntu 24.04 hosted runner；CentOS 7、
-Ubuntu 24/26 原生 Agent 兼容性另行验证，不属于本轮通过条件。
+Ubuntu 24/26 原生 Agent 兼容性另行验证，不在此环境的兼容范围内。
 
 这两个入口继承 artifact-bootstrap 的同一材料导出、导入、禁用 bootstrap 后
 持久化回读、Server 授权交付、Agent source audit、隔离安装、独立 readonly verify、
@@ -88,13 +88,13 @@ stage-in 路径；原两个入口仍覆盖显式 cwd。Recipe/source 仍只从 S
 这是单 Agent 三节点文件传递运行检查，不代表跨集群存储、完整变异检测或 15 个科学
 workflow 已完成；运行结果须核对相应提交的 Actions，不能仅凭新增脚本认定通过。
 
-## CP Web 手动安装运行检查
+## 算力中心 Web 手动安装运行检查
 
 `--spack-web-hello` 在原有真实浏览器材料导入之后，复用同一份固定 Hello binding，
-由 CP 软件页面选择 Agent、填写 spec 并提交一次 install，等待页面操作终态和库存回显。
+由 算力中心软件页面选择 Agent、填写 spec 并提交一次 install，等待页面操作终态和库存回显。
 开始前要求安装 store、库存和操作历史为空；测试不改策略、不创建自动安装授权，
 也不使用 API helper 代替浏览器提交。
-CP 概览在挂载且页面位于前台时每 15 秒刷新，覆盖 operation 先到终态、
+算力中心概览在挂载且页面位于前台时每 15 秒刷新，覆盖 operation 先到终态、
 安装库存稍后写入的时序；运行检查不通过手动 reload 掩盖库存刷新问题。
 
 浏览器只输出不含凭据的最小 operation/binding 回执。Agent 侧通过 Server 只读查询
@@ -109,7 +109,7 @@ Server 拉取材料；进入后续运行检查前恢复 Server 内部网络。sa
 
 此入口复用既有 `Spack GNU Hello Web import managed installation` job；
 是否通过以对应提交 Actions 为准。它不实现 Web 自助 binding、不更改生产安装能力，
-也不替代 CP 策略编辑、权限拒绝及其他角色的专项运行检查。
+也不替代 算力中心策略编辑、权限拒绝及其他角色的专项运行检查。
 
 ## 镜像和网络
 
@@ -206,9 +206,6 @@ Bun 1.4.2、frozen 依赖、生成 protobuf 并调用 `packages/web` 的 `e2e:in
 安装 Patchright Chromium；其余条目不增加 host 依赖。
 所有 managed 条目沿用 AppArmor profile 安装/清理、70 分钟 job 总超时、
 65 分钟入口 timeout 和无 artifact 上传门禁。
-PR #9 的 `e8b50b7b6834a2937bb1a8858cf9067f232212db` 已通过完整 CI
-`35685693358` 和当时七项 scheduler matrix `35685693281`；
-新增 Web 两项不在该历史范围内，须等待新 HEAD 的 Actions 验证。
 
 现有 `Preview` 工作流保持独立；`preview-paused` 只暂停公网预览，不暂停本测试工作流。
 实际构建与运行结果以对应提交的 GitHub Actions 或上述命令结果为准。
@@ -348,7 +345,7 @@ scheduler 工具链构建，不携带 recipe、源码或 Agent 凭据。实际�
 按字节固定 digest。安装 store 位于独立 2 GiB ext4 文件系统，backing file 使用临时
 named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，不代表跨节点 ABI 运行检查。
 独立 source audit 使用生产的 2 GiB 内存预算，managed worker 默认使用独立 4 GiB
-内存硬上限，可由 Agent 启动配置 `AGENT_SPACK_MANAGED_MEMORY_MIB` 调为整数 1024..4096 MiB，
+内存硬上限，可由 Agent 启动配置 `AGENT_SPACK_MANAGED_MEMORY_MIB` 调为整数 1024..1048576 MiB，
 宿主总量与可用内存须均达到预算 + 512 MiB；移除该配置或设为 4096 后重启 Agent 即恢复默认。
 低额度不承诺大型真实软件可用，也没有实测 1 GiB 安装成功。两种 worker 均禁止 swap，不改变 CPU/PID、网络或挂载隔离。
 
@@ -360,16 +357,6 @@ named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，
 为 `succeeded` 且存在精确材料引用；Server、Registry、scheduler 重启后以及
 `uninstall` 阶段完成后，重复检查原配置 binding 与安装历史引用仍保留且没有重复，
 active/orphaned operation count 均为零。卸载安装产物不等于下架材料 release。
-
-2026-09-20，提交 `c4987cf` 的
-[PR scheduler tests](https://github.com/kuintessence/kuintessence/actions/runs/35514084225)
-通过 Slurm、PBS、native Hello 和此受管案例；同一提交的
-[完整 CI](https://github.com/kuintessence/kuintessence/actions/runs/35514099810)
-五项检查均通过。受管日志分别确认 `missing-source`、`corrupt-source` 负例与恢复成功，
-以及 `install`、`restart`、`uninstall` 三阶段成功。失败的 load 是完整性负例的预期结果，
-恢复材料后必须显式复验，不会仅凭恢复文件重新发布可用库存。
-该记录证明此提交在临时单节点 Slurm 环境完成上述检查链，不证明后续提交、跨节点共享
-存储、compute ABI、生产站点或 15 个工作流通过运行检查。
 
 等待测试队列时最多记录八次状态变化，仅输出 schema 校验后的枚举和布尔值；
 失败后用现有 Slurm adapter 查询一次原生队列对照，不输出原始 CLI 内容或队列清单，
@@ -488,12 +475,6 @@ handoff 测试由 `deploy/pr-test/spack-artifacts/*.test.ts` 覆盖；
 许可确认和上传门禁；开发分支 `feat/spack-artifact-managed` 调用该工作流时
 只允许 `publish_artifact=false`。
 
-PR #9 的提交 `e8b50b7b6834a2937bb1a8858cf9067f232212db` 已通过完整 CI
-`35685693358`（9 个实际 job）和 scheduler matrix `35685693281`（7 个 job），
-包括 Hello/samtools 的 artifact-bootstrap 受管案例。此记录只覆盖该 SHA
-及其 delivery 的 bootstrap 后安装，不代表 Web 后安装、
-任意 spec、15 个工作流、PBS managed 安装或目标生产集群/共享存储/ABI 运行检查。
-
 失败诊断不输出原始 Agent 日志、注册响应或任意安装路径。基础 PR 镜像的 PBS
 入口观察器仅报告失败行号和退出码，未修改生产 scheduler 入口；受管安装的
 输出树诊断仅报告文件类型、受限 link count 和固定文件名枚举。诊断不得替代
@@ -530,6 +511,5 @@ Web 导入阶段使用 runner host loopback 与临时非 internal endpoint；这
 完整 CI 接入 `scripts/spack-web-managed.test.ts` 合同检查，harness 类型检查继续保留；
 它们不能代替真实 browser 与 scheduler 的运行结果。材料导出 workflow 仅新增
 `feat/spack-web-managed` 的 `publish_artifact=false` 白名单，旧分支及许可/上传门禁不放宽。
-**本新增路径仍待新 HEAD 的 Actions 验证**；PR #9 的历史通过记录不能作为 Web
-后安装证据，也不能据此宣称任意 spec、15 个工作流、PBS managed 安装、跨节点
+Web 后安装须使用当前提交运行。此场景不覆盖任意 spec、15 个工作流、PBS managed 安装、跨节点
 共享存储/ABI 或生产站点通过运行检查。

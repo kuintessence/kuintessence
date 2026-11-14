@@ -5,7 +5,7 @@ OCI 与 Spack buildcache；Agent 执行已授权的软件操作和计算。
 目录条目记录软件信息；目标环境的安装状态和软件、数据许可需分别确认。
 
 - [资产与发布](#governance)
-- [CP 软件操作](#spack)
+- [算力中心软件操作](#spack)
 - [签名生态与数据](#ecosystem)
 - [Sandbox 脚本](#sandbox)
 - [Kubernetes 隔离](#kubernetes)
@@ -89,7 +89,7 @@ canonical snapshot 和审计。旧 ID、payload、revision 与 provenance 保留
 生命周期为 `draft → submitted → approved/forked → published`，
 随后可 hidden、deprecated、revoked 或 archived。
 approve 仅表示审核通过；全平台可信 revision 由 official fork 创建并公开。
-deprecated 通常只提示，revoked、hidden、缺 use grant 或 CP 拒绝会阻断运行。
+deprecated 通常只提示，revoked、hidden、缺 use grant 或 算力中心拒绝会阻断运行。
 
 | API | 用途 |
 |---|---|
@@ -108,11 +108,11 @@ deprecated 通常只提示，revoked、hidden、缺 use grant 或 CP 拒绝会�
 
 普通 owner 提交自己的 draft 需要 `software_provider` capability；
 平台管理员可维护所有资产。审核、fork、发布和撤销属于平台管理员。
-运行时逐项检查 root asset、usecase、package、CP policy、Agent 和安装能力。
+运行时逐项检查 root asset、usecase、package、算力中心 policy、Agent 和安装能力。
 分享根资产后，下游依赖仍需分别授权。
 
 <a id="spack"></a>
-## CP 软件操作
+## 算力中心软件操作
 
 `software_policy_overlays` 按 provider → cluster → agent 合并：
 
@@ -126,7 +126,7 @@ deprecated 通常只提示，revoked、hidden、缺 use grant 或 CP 拒绝会�
 保存后生成 Agent effective policy，重连补推最新策略。
 Server 与 Web 的 availability、preview、operation precheck，以及 Agent 守卫使用一致语义。
 
-| CP API | 用途 |
+| 算力中心 API | 用途 |
 |---|---|
 | `GET /api/cp/software/overview` | policy、installed ledger、心跳与实时控制通道 |
 | `PUT /api/cp/software/policies/provider` | provider 默认策略 |
@@ -138,14 +138,14 @@ Server 与 Web 的 availability、preview、operation precheck，以及 Agent �
 
 | Action | 语义 |
 |---|---|
-| `install` | 默认材料准备/预检及可选 source audit 后仍 `rejected`；实验性 `AGENT_SPACK_INSTALL_ENABLED` opt-in 才进入持久化安装编排，未完成真实运行检查 |
+| `install` | 默认材料准备/预检及可选 source audit 后仍 `rejected`；实验性 `AGENT_SPACK_INSTALL_ENABLED` opt-in 才进入持久化安装编排；需满足本站运行时与资源要求 |
 | `uninstall` | 策略通过并确认后删除；受管安装以 DAG root 为单位清理独占 store 及其私有依赖 |
 | `load` | 返回一次性 shell fragment，不改变未来作业环境；受管 root 须为当前 site profile 的 `ready` 记录，并经 readonly runtime 复验 |
 | `import_preinstalled` | 验证现存 spec 并刷新 ledger，不安装 |
 
 批量请求最多 2000 条原始行，trim/去空/去重后最多 200 个唯一 spec。
 响应摘要包含 input、nonEmpty、unique、ignoredEmpty、ignoredDuplicate 计数。
-先验证 Agent 存在及 CP scope，再逐 item 返回结果；批量请求可能部分成功、部分失败。
+先验证 Agent 存在及算力中心作用域，再逐 item 返回结果；批量请求可能部分成功、部分失败。
 Web 保留失败输入，重试只回填待确认表单，不自动重放非幂等操作。
 
 operation 使用 `queued → running → succeeded/failed/rejected` 单调状态机。
@@ -158,13 +158,13 @@ result 必须匹配 operation、Agent 与 action；已终态不被乱序消息�
 
 Agent 断线期间的结果写 SQLite outbound queue，重连回放；Server 已 push 却未收到 running
 时保持 queued，不自动判为失败或重发。离线时新操作直接 failed。
-CP 页面应同时观察 DB 心跳与 live stream；“投递状态不确定”时先恢复连接、核对历史。
+算力中心页面应同时观察 DB 心跳与 live stream；“投递状态不确定”时先恢复连接、核对历史。
 操作详情保留 error/stderr/stdout 和退出码。
 
 Recipe 仓库支持本地 Git 持久化、初始化与 Web 导入 Git bundle、静态诊断、快照激活/回滚
 和鉴权导出，见 [Spack Recipe 仓库](spack-recipe-repositories.md)。
 源码/lock 支持本地材料 manifest 初始化及批量导入，先完成 recipe bootstrap，再复用
-上传/发布校验。平台与 CP 门户可使用同一材料包 Web 上传，支持未完成项重试、
+上传/发布校验。平台与算力中心门户可使用同一材料包 Web 上传，支持未完成项重试、
 取消及按 binding 查阅；发布响应丢失显示结果待确认，不当作回滚。
 材料目录支持按当前权限发现已有发布、精确仓库筛选、刷新和分页查阅；
 单次最多返回 200 项，超限明确失败并提示缩小查询，不静默截断。
@@ -181,14 +181,11 @@ managed inventory/load/uninstall 为 root-only，这里的 root 是 DAG root，�
 依赖不独立列出或管理，卸载清理该 root 的整个事务 store。
 site profile 固定 target、runtime、宿主文件和 external 绑定；
 shared storage、compute ABI、quota、recipe trust 的人工声明不等于自动验证。
-Python install worker 已实现并通过模拟 native API 的 fixture 测试；
-真实 Linux/Spack/Apptainer/SIF 与集群运行检查未执行，
-`ready` 不等于生产就绪。配置与限制详见 [材料发布与 Agent 下载](spack-material-delivery.md)。
+Python install worker 在固定 SIF 中执行；`ready` 表示当前 site profile 下验证通过，不覆盖其他集群的 ABI、共享存储或许可条件。配置与限制详见 [材料发布与 Agent 下载](spack-material-delivery.md)。
 
-升级后平台的未受管 install/buildcache 导入被阻断；不能将这一阶段视为部署故障已修复。
+平台阻断未受管 install/buildcache 导入；安装须经过受管材料与隔离执行链路。
 Recipe 激活尚不自动应用到 Agent；静态诊断不等于实际 concretize 或安装成功。
-受限厂商安装包/许可证授权、HTTP/SOCKS 上游代理、大规模材料索引/删除/可见范围变更及 15 个工作流的
-目标 Linux 材料、lock 和端到端安装/运行确认仍未完成。
+受控 HTTP/SOCKS 上游代理见[上游导入](spack-upstream-import.md)，额外读取限制见[材料可见策略](spack-material-visibility.md)。受限厂商安装包授权、大规模材料索引与物理删除不由这些入口提供；每个科学工作流仍须独立准备目标 Linux 材料、lock 和运行输入。
 源码镜像同步、buildcache 后台 worker、signed air-gap bundle 导入导出及完整在线
 `package.py` 编辑/构建执行器尚未全部具备，使用前需确认所需执行器已部署。
 
@@ -227,11 +224,11 @@ data-product 只生成 metadata 与 immutable version placeholder，不携带数
 Server 冻结 asset/version/digest、selected entries、delivery policy 和 location，
 历史 run 不重新解析浮动版本。
 
-CP-local replica 必须 available、digest 一致且 `verifiedAt` 未超过 24 小时；
+算力中心本地副本 必须 available、digest 一致且 `verifiedAt` 未超过 24 小时；
 调度器取全部输入可用中心的交集。
 
 Agent 使用 `AGENT_DATASET_ROOT/AGENT_JOB_WORK_ROOT` 受管根；
-CP import 传 `agentId + managedRootId + relativePath`，不把 CP 绝对路径写入 Server。
+算力中心 import 传 `agentId + managedRootId + relativePath`，不把算力中心绝对路径写入 Server。
 非受限对象走短时 URL object-download，非受限本地数据走 stage-copy，
 受限本地数据只走可信 readonly-mount。
 
@@ -281,7 +278,7 @@ stdout/stderr 有容量上限；受限 no-egress 路径不返回日志。
 
 Inline/draft/AI 生成内容及实际 test run 只能使用 MappedAuto/MappedAccount。
 published revision 仅在 source hash、runtime digest、扫描和有效 platform/provider
-attestation 都匹配时可用 SharedService；attestation 不跨 revision 或 CP 继承。
+attestation 都匹配时可用 SharedService；attestation 不跨 revision 或算力中心继承。
 原始 command 与 terminal 只用映射账号，执行前核对 username/uid/gid，拒绝 root 身份。
 
 SelfAccount 默认关闭，支持 Slurm 和 PBS Pro；映射的 Unix 用户名、UID、GID 必须精确匹配 Agent 自身非 root 身份。
@@ -399,9 +396,7 @@ wrapper 在执行前使用 `/usr/bin/python3 -I` 调用固定摘要的检查器�
 
 升级须暂停受限派发，在 Agent 和计算节点部署新 wrapper/策略/检查器、配置原生逐作业 cgroup、更新配置中的 wrapper
 摘要及 `AGENT_RESTRICTED_EXECUTION_WRAPPER_SHA256`，再重启 Agent；不得省略策略恢复执行。
-本约束适用于 signed `executionProfile` 的受限 HPC 任务；普通非受限 root 代运行路径
-尚未强制加载这份本地 seccomp 策略，整套运行时证明仍需补齐，
-不能只凭 `AGENT_SANDBOX_SECCOMP=true` 宣称已运行检查。
+本约束适用于带签名 `executionProfile` 的受限 HPC 任务。其他执行路径须按各自的 wrapper、seccomp 与运行时证明要求配置，不能只凭 `AGENT_SANDBOX_SECCOMP=true` 推断节点已具备隔离能力。
 
 相关 Agent 配置为 `AGENT_RESTRICTED_EXECUTION_PROFILE_ID`、
 `AGENT_RESTRICTED_EXECUTION_APPTAINER_PATH`、`AGENT_RESTRICTED_EXECUTION_SIF_DIGEST`、
@@ -500,7 +495,7 @@ BindReadOnlyPaths=/var/lib/kubelet/seccomp:/opt/kuintessence-agent-seccomp
 Registry 普通 API 写入资产时，在同一事务内更新权限 outbox；须由既有 outbox worker
 处理后才能在 enforce 模式使用，新建、替换与归档均不需要手工补资产关系。
 
-缺包需求经资产 use/install 权限、提供方策略和许可证判断后，调度器选择节点并复用
+缺包需求经资产 use/install 权限、算力中心策略和许可证判断后，调度器选择节点并复用
 现有 software operation 和精确 spec 的材料 binding。作业保持 `pending`，
 `softwareRequirements[].operationId` 关联安装；同一 Agent/spec 的并发需求复用在途操作。
 安装成功且库存确认后重新调度，Agent 按受控 `spackExecution` 激活并执行。
@@ -511,12 +506,12 @@ Registry 普通 API 写入资产时，在同一事务内更新权限 outbox；�
 `NOASSERTION`/unknown 不默认允许自动安装。签名 LicensePolicy 的 `autoInstall` 必须是
 `review-required`，并且同一资产同时具备以下未过期、未撤销的平台审批：
 
-- 提供方组织的 `provider-source-install` claim；
+- 算力中心组织的 `provider-source-install` claim；
 - 使用者用户或其当前组织的 `consumer-use` claim。
 
 Registry 正式入口为 `POST /api/license-entitlement-claims`（经 Server 代理时加 `/software`），
 请求包含 `assetId`、`entitlement`、`claimantKind`、`claimantId`、证据引用和说明，建议设置
-`expiresAt`。提供方 claim 还应填写 `providerOrgId`，并由对应组织管理员提交。
+`expiresAt`。算力中心 claim 还应填写 `providerOrgId`，并由对应组织管理员提交。
 平台管理员通过 `POST /api/license-entitlement-claims/<id>/approved` 审批，body 可含 `reason`；
 撤销用同一路径的 `/revoked`。审批按资产和主体匹配，不改变 signed policy；
 `autoInstall: denied` 不能通过 entitlement 绕过。
