@@ -54,6 +54,7 @@ export class FederationResultReader {
     );
     if (!ownKey.allowedKinds.includes("result-query"))
       throw new FederationError("UNTRUSTED_IDENTITY");
+    const issuedAt = this.clock();
     const query = FederationResultQuerySchema.parse({
       protocolVersion: 1,
       kind: "result-query",
@@ -66,8 +67,8 @@ export class FederationResultReader {
       attempt: row.attempt,
       reservationId: receipt.reservationId,
       requestDigest: row.requestDigest,
-      issuedAt: this.clock().toISOString(),
-      expiresAt: new Date(this.clock().getTime() + 60_000).toISOString(),
+      issuedAt: issuedAt.toISOString(),
+      expiresAt: new Date(issuedAt.getTime() + 60_000).toISOString(),
     });
     const jws = await signFederationMessage(FederationResultQuerySchema, query, this.signingKey);
     const verified = await verifyFederationMessage(

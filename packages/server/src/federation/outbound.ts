@@ -1179,6 +1179,7 @@ export class FederationOutboundService {
       this.signingKey.keyId,
       this.clock(),
     );
+    const issuedAt = this.clock();
     const query = FederationStatusQuerySchema.parse({
       protocolVersion: 1,
       kind: "status-query",
@@ -1191,8 +1192,8 @@ export class FederationOutboundService {
       attempt: row.attempt,
       reservationId: receipt.reservationId,
       requestDigest: row.requestDigest,
-      issuedAt: this.clock().toISOString(),
-      expiresAt: new Date(this.clock().getTime() + 60_000).toISOString(),
+      issuedAt: issuedAt.toISOString(),
+      expiresAt: new Date(issuedAt.getTime() + 60_000).toISOString(),
     });
     if (!ownKey.allowedKinds.includes("status-query"))
       throw new FederationError("UNTRUSTED_IDENTITY");

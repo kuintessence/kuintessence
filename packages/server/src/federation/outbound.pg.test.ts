@@ -1544,6 +1544,25 @@ test("a stale sender cannot replace the newer worker's accepted receipt", async 
   expect(await row(f.request.operationId)).toMatchObject({ state: "accepted", lastError: null });
 });
 
+test("remote status query windows stay within one minute while the clock advances", async () => {
+  const f = await fixture();
+  const admitted = f.service();
+  await admitted.enqueue(actor, f.request);
+  await admitted.deliverNext();
+  const responder = new FederationStatusResponder(db, b.signing, clock);
+  let ticks = 0;
+  const reader = new FederationOutboundService(
+    db,
+    a.signing,
+    (_endpoint, jws) => responder.receive(jws, sourceFingerprint),
+    assets,
+    () => new Date(clock().getTime() + ticks++),
+  );
+  expect((await reader.remoteStatus(actor, f.request.operationId)).report.requestDigest).toBe(
+    (await row(f.request.operationId)).requestDigest,
+  );
+});
+
 test("remote status is scoped, signed and read-only after admission and agreement expiry", async () => {
   const f = await fixture();
   const responder = new FederationStatusResponder(db, b.signing, clock);
