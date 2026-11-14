@@ -26,6 +26,7 @@ import {
 import { AgreementFact } from "./AgreementTerms";
 import {
   FederationEmpty,
+  FederationLoadError,
   FederationPanelHeader,
   FederationRefreshNotice,
 } from "./FederationLayout";
@@ -140,28 +141,22 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
     list.isError;
   allowed.current = allowed.current && !busy;
   if (capabilities.isPending) return <p role="status">{t("federation.loading")}</p>;
-  if (federationReadFailed(capabilities) || (canRead && federationReadFailed(context)) || !canRead)
+  if (federationReadFailed(capabilities) || (canRead && federationReadFailed(context)))
     return (
-      <p role={capabilities.isError ? "alert" : "status"}>
-        {t(capabilities.isError ? "federation.loadFailed" : "federation.tasks.noPermission")}
-      </p>
+      <FederationLoadError
+        onRetry={() => {
+          void capabilities.refetch();
+          void client.invalidateQueries({ queryKey: key });
+        }}
+      />
     );
+  if (!canRead) return <p role="status">{t("federation.tasks.noPermission")}</p>;
   return (
     <div className="space-y-5">
       <FederationRefreshNotice query={capabilities} onRetry={() => void capabilities.refetch()} />
       <FederationRefreshNotice query={context} onRetry={() => void context.refetch()} />
       <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
       <FederationPanelHeader title={t("federation.tasks.title")}>
-        <Button
-          variant="outline"
-          disabled={busy}
-          onClick={() => {
-            void capabilities.refetch();
-            void client.invalidateQueries({ queryKey: key });
-          }}
-        >
-          {t("federation.refresh")}
-        </Button>
         {canPrepare && !creating && !selected ? (
           <Button
             disabled={busy || !context.data || context.isError}
@@ -240,7 +235,7 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
           onBack={() => setSelected(null)}
         />
       ) : federationReadFailed(list) ? (
-        <p role="alert">{t("federation.loadFailed")}</p>
+        <FederationLoadError onRetry={() => void list.refetch()} />
       ) : list.isPending || !list.data ? (
         <p role="status">{t("federation.loading")}</p>
       ) : (

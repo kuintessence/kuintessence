@@ -341,10 +341,12 @@ test.each([
   device.readOnly = condition === "mobile";
   if (condition === "read") grants = ["agreement.read"];
   mount(condition === "switching");
+  if (condition === "switching") {
+    const createButton = await screen.findByRole("button", { name: "New contract" });
+    expect((createButton as HTMLButtonElement).disabled).toBe(true);
+  }
   await openDetail();
-  const createButton = screen.queryByRole("button", { name: "New contract" });
-  if (condition === "switching") expect((createButton as HTMLButtonElement).disabled).toBe(true);
-  else expect(createButton).toBeNull();
+  expect(screen.queryByRole("button", { name: "New contract" })).toBeNull();
   const attach = screen.queryByRole("button", { name: "Verify counterparty signature" });
   if (condition === "switching") expect((attach as HTMLButtonElement).disabled).toBe(true);
   else expect(attach).toBeNull();

@@ -3,6 +3,7 @@ import {
   federationMarketAttempts as attempts,
   auditLog,
   federationCompletionClaims as completionClaims,
+  federationSites,
   type PgDb,
   type PgTransaction,
   federationMarketSubmissions as submissions,
@@ -21,7 +22,7 @@ import {
   MarketQueryResultSchema,
   type MarketUnreservedClosure,
 } from "@kuintessence/shared/federation/market";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
 import { allocateMarketCompletion } from "./completion-capacity";
@@ -485,8 +486,26 @@ export class FederationMarketService {
     )
       throw new FabricClientFailure("INVALID_ADAPTER_RESPONSE", true);
     // No database lock during network I/O; a revoked reader cannot receive a late response.
-    await this.db.transaction((tx) => requireFederationCapability(tx, actor, "market.read"));
-    return { ...result, observedAt: new Date().toISOString() };
+    const siteNames = await this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "market.read");
+      const demands =
+        result.operation === "list-demands" ? result.demands : result.demand ? [result.demand] : [];
+      const ids = [
+        ...new Set(
+          demands.flatMap((row) => [
+            row.demand.sourceSiteId,
+            ...(row.claim ? [row.claim.providerSiteId] : []),
+          ]),
+        ),
+      ];
+      if (!ids.length) return {};
+      const sites = await tx
+        .select({ id: federationSites.id, name: federationSites.name })
+        .from(federationSites)
+        .where(inArray(federationSites.id, ids));
+      return Object.fromEntries(sites.map((site) => [site.id, site.name]));
+    });
+    return { ...result, siteNames, observedAt: new Date().toISOString() };
   }
   async list(actor: FederationActor, limit: number, offset: number) {
     return this.db.transaction(async (tx) => {

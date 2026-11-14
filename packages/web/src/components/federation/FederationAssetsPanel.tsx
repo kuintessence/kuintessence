@@ -32,9 +32,11 @@ import {
 import { FederationAssetImport } from "./FederationAssetImport";
 import {
   FederationEmpty,
+  FederationLoadError,
   FederationPanelHeader,
   FederationRefreshNotice,
 } from "./FederationLayout";
+import { FederationSiteIdentity } from "./FederationSiteIdentity";
 
 type MaterialOption = z.infer<typeof FederationMaterialOptionSchema>;
 const path = "/federation/assets";
@@ -55,8 +57,8 @@ export function FederationAssetsPanel({
   const [confirming, setConfirming] = useState(false);
   const [selected, setSelected] = useState<MaterialOption | null>(null);
   const [saved, setSaved] = useState(false);
-  const refreshFocus = useRef<HTMLButtonElement>(null);
   const reviewFocus = useRef<HTMLButtonElement>(null);
+  const addFocus = useRef<HTMLButtonElement>(null);
   const readOnly = useMobileMutationBlocked(path);
   const key = ["federation", "assets", scope.organizationId, scope.authRevision];
   const capabilities = useQuery({
@@ -234,7 +236,7 @@ export function FederationAssetsPanel({
     );
   const inventory = tab === "material" ? materials : mappings;
   const failed = federationReadFailed(inventory);
-  const fetching = tab === "material" ? materials.isFetching : mappings.isFetching;
+  const fetching = inventory.isFetching;
   const pending = inventory.isPending || !inventory.data;
   const hasMore = tab === "material" ? materials.data?.hasMore : mappings.data?.length === 20;
   const title = draft
@@ -243,19 +245,9 @@ export function FederationAssetsPanel({
   return (
     <div className="min-w-0 space-y-5">
       <FederationPanelHeader title={t("federation.assets.title")}>
-        <Button
-          ref={refreshFocus}
-          variant="outline"
-          disabled={switching || capabilities.isFetching || mutation.isPending || fetching}
-          onClick={() => {
-            void capabilities.refetch();
-            void client.invalidateQueries({ queryKey: key });
-          }}
-        >
-          {t("federation.refresh")}
-        </Button>
         {canWrite && !creating && !draft && !selected ? (
           <Button
+            ref={addFocus}
             disabled={busy}
             onClick={() => {
               setSaved(false);
@@ -279,7 +271,7 @@ export function FederationAssetsPanel({
         <p className="text-sm text-muted-foreground">{t("federation.agreements.desktopOnly")}</p>
       ) : null}
       {failed ? (
-        <p role="alert">{t("federation.loadFailed")}</p>
+        <FederationLoadError onRetry={() => void inventory.refetch()} />
       ) : creating && !draft ? (
         <FederationAssetImport
           kind={tab}
@@ -321,14 +313,17 @@ export function FederationAssetsPanel({
             {t("federation.assets.back")}
           </Button>
           {federationReadFailed(detail) ? (
-            <p role="alert">{t("federation.assets.detailFailed")}</p>
+            <FederationLoadError
+              message={t("federation.assets.detailFailed")}
+              onRetry={() => void detail.refetch()}
+            />
           ) : detail.isPending || !detail.data ? (
             <p role="status">{t("federation.loading")}</p>
           ) : (
             <>
               <dl className="grid gap-4 text-sm sm:grid-cols-2">
                 <AgreementFact label={t("federation.assets.origin")}>
-                  {selected.originSiteId}
+                  <FederationSiteIdentity id={selected.originSiteId} name={selected.originName} />
                 </AgreementFact>
                 <AgreementFact label={t("federation.assets.digest")}>
                   {selected.digest}
@@ -376,7 +371,7 @@ export function FederationAssetsPanel({
             </TabsList>
           </Tabs>
           {failed ? (
-            <p role="alert">{t("federation.loadFailed")}</p>
+            <FederationLoadError onRetry={() => void inventory.refetch()} />
           ) : pending ? (
             <p role="status">{t("federation.loading")}</p>
           ) : (
@@ -395,8 +390,8 @@ export function FederationAssetsPanel({
                         <span className="block break-all font-mono text-xs">
                           {row.digest.slice(0, 19)}…
                         </span>
-                        <span className="block break-all text-xs text-muted-foreground">
-                          {t("federation.assets.origin")}: {row.originSiteId.slice(0, 8)} ·{" "}
+                        <FederationSiteIdentity id={row.originSiteId} name={row.originName} />
+                        <span className="block text-xs text-muted-foreground">
                           {new Date(row.createdAt).toLocaleString(i18n.language)}
                         </span>
                       </button>
@@ -475,7 +470,7 @@ export function FederationAssetsPanel({
           outsideDismissPolicy="never"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            (reviewFocus.current ?? refreshFocus.current)?.focus();
+            (reviewFocus.current ?? addFocus.current)?.focus();
           }}
         >
           <DialogHeader>

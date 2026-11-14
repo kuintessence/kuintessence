@@ -78,6 +78,7 @@ export type FederationResultImportView = z.infer<typeof FederationResultImportVi
 export const FederationMaterialOptionSchema = z.object({
   localOrgId: z.uuid(),
   originSiteId: z.uuid(),
+  originName: z.string().nullable().optional(),
   digest: FederationDigestSchema,
   kind: z.enum(["inputs", "environment-lock"]),
   createdAt: z.iso.datetime(),

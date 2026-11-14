@@ -37,7 +37,7 @@ export function FederationPage({
     () => null,
   );
   return (
-    <PageShell className="federation-workspace">
+    <PageShell className="federation-workspace flex flex-1 flex-col">
       <OrganizationAgreements
         key={`${revision}:${mediaExport?.workflowRunId ?? ""}:${mediaExport?.taskKind ?? ""}`}
         revision={revision}

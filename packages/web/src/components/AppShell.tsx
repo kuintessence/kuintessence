@@ -269,8 +269,8 @@ export function AppShell() {
             navigate({ to: "/login" });
           }}
         />
-        <main className="flex-1 px-4 py-5 sm:px-6 md:px-8 md:py-6">
-          <div className="mx-auto max-w-7xl">
+        <main className="flex flex-1 flex-col px-4 py-5 sm:px-6 md:px-8 md:py-6">
+          <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col">
             <Outlet />
           </div>
         </main>

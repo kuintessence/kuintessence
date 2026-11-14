@@ -17,6 +17,7 @@ import { EvidenceCaseDetail } from "./EvidenceCaseDetail";
 import { type EvidenceCase, EvidenceCaseSchema } from "./evidence-case-view";
 import {
   FederationEmpty,
+  FederationLoadError,
   FederationPanelHeader,
   FederationRefreshNotice,
 } from "./FederationLayout";
@@ -121,16 +122,6 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
       <FederationRefreshNotice query={capabilities} onRetry={() => void capabilities.refetch()} />
       <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
       <FederationPanelHeader title={t("federation.evidence.title")}>
-        <Button
-          variant="outline"
-          disabled={switching || register.isPending}
-          onClick={() => {
-            void capabilities.refetch();
-            void list.refetch();
-          }}
-        >
-          {t("federation.refresh")}
-        </Button>
         {selected ? (
           <Button variant="outline" onClick={() => setSelected(null)}>
             {t("federation.evidence.back")}
@@ -187,7 +178,7 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
         </form>
       ) : null}
       {federationReadFailed(list) ? (
-        <p role="alert">{t("federation.loadFailed")}</p>
+        <FederationLoadError onRetry={() => void list.refetch()} />
       ) : selected ? (
         <EvidenceCaseDetail
           key={selected.caseId}

@@ -635,6 +635,10 @@ test("asset API takes organization from the session, refuses automation and vali
   expect(text).not.toContain("must-not-leak");
   expect(text).not.toContain("content");
   expect(JSON.parse(text).data.data).toHaveLength(1);
+  expect(JSON.parse(text).data.data[0]).toMatchObject({
+    originSiteId: scriptRef.originSiteId,
+    originName: "Test institution",
+  });
   expect((await app(true).request("/api/federation/assets/materials")).status).toBe(403);
 
   expect((await app(true).request("/api/federation/assets/mappings")).status).toBe(403);

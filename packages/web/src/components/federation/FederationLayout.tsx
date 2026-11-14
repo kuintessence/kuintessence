@@ -1,5 +1,5 @@
 import { Inbox } from "lucide-react";
-import { createContext, type ReactNode, useContext, useSyncExternalStore } from "react";
+import { Children, createContext, type ReactNode, useContext, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { getAuthState, subscribeAuthState } from "../../lib/auth";
 import { federationReadFailed } from "../../lib/federation-query-state";
@@ -16,10 +16,13 @@ export function FederationSectionTitle({ title }: { title: string }) {
 }
 
 export function FederationPanelHeader({ title, children }: { title: string; children: ReactNode }) {
+  const pageTitle = useContext(PageTitle);
+  const actions = Children.toArray(children);
+  if (pageTitle === title && actions.length === 0) return null;
   return (
     <section className="federation-toolbar" aria-label={title}>
       <FederationSectionTitle title={title} />
-      <div className="flex min-w-0 flex-wrap items-center gap-2">{children}</div>
+      <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">{actions}</div>
     </section>
   );
 }
@@ -29,6 +32,24 @@ export function FederationEmpty({ children }: { children: ReactNode }) {
     <div className="federation-empty" role="status">
       <Inbox aria-hidden="true" className="size-6 text-muted-foreground" />
       <p className="text-sm text-muted-foreground">{children}</p>
+    </div>
+  );
+}
+
+export function FederationLoadError({
+  onRetry,
+  message,
+}: {
+  onRetry: () => void;
+  message?: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">
+      <p>{message ?? t("federation.loadFailed")}</p>
+      <Button variant="outline" size="sm" onClick={onRetry}>
+        {t("federation.refresh")}
+      </Button>
     </div>
   );
 }

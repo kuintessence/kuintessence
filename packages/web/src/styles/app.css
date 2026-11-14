@@ -132,7 +132,11 @@
 
 /* Federation workspace styles stay scoped to this module, including nested tabs. */
 .federation-content {
-  @apply min-w-0 rounded-xl border border-border bg-card p-4 text-card-foreground sm:p-6;
+  @apply flex min-w-0 flex-1 flex-col rounded-xl border border-border bg-card p-4 text-card-foreground sm:p-6;
+}
+
+.federation-content > :is(div, section):only-child {
+  @apply flex flex-1 flex-col;
 }
 
 .federation-content > [role="tabpanel"] {
@@ -146,11 +150,11 @@
 }
 
 .federation-toolbar {
-  @apply flex min-w-0 flex-wrap items-center justify-between gap-3 border-b border-border pb-4;
+  @apply flex min-w-0 flex-wrap items-center justify-between gap-3;
 }
 
 .federation-content .federation-subnav {
-  @apply flex h-auto w-full max-w-full flex-nowrap justify-start gap-1 overflow-x-auto rounded-none border-b border-border bg-transparent p-0 pb-2 md:flex-wrap;
+  @apply flex h-auto w-full max-w-full flex-nowrap justify-start gap-2 overflow-x-auto rounded-none bg-transparent p-0 pb-1 md:flex-wrap;
 }
 
 .federation-subnav > [role="tab"] {
@@ -158,7 +162,11 @@
 }
 
 .federation-list {
-  @apply overflow-hidden rounded-lg border border-border;
+  @apply min-w-0 flex-1;
+}
+
+.federation-content .federation-list {
+  @apply rounded-none border-0;
 }
 
 .federation-list:empty {
@@ -170,7 +178,7 @@
 }
 
 .federation-empty {
-  @apply flex min-h-40 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border px-6 py-10 text-center;
+  @apply flex min-h-40 flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center;
 }
 
 :is(.federation-content, .federation-settings) :where(dl) {

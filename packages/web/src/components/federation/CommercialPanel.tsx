@@ -45,6 +45,7 @@ import { CommercialTerms } from "./CommercialTerms";
 import { CommercialUsagePanel } from "./CommercialUsagePanel";
 import {
   FederationEmpty,
+  FederationLoadError,
   FederationPanelHeader,
   FederationRefreshNotice,
 } from "./FederationLayout";
@@ -236,14 +237,7 @@ export function CommercialPanel({
     <div className="space-y-5">
       <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
       <FederationPanelHeader title={t("federation.commercial.title")}>
-        <Button
-          variant="outline"
-          disabled={switching || mutation.isPending || capabilities.isFetching || list.isFetching}
-          onClick={refresh}
-        >
-          {t("federation.refresh")}
-        </Button>
-        {canApprove && !creating ? (
+        {canApprove && !creating && !selected ? (
           <Button
             disabled={busy}
             onClick={() => {
@@ -259,13 +253,14 @@ export function CommercialPanel({
         <p className="text-sm text-muted-foreground">{t("federation.agreements.desktopOnly")}</p>
       ) : null}
       {context.isError ? (
-        <p role="alert" className="text-sm text-status-failed">
-          {t(
+        <FederationLoadError
+          onRetry={() => void context.refetch()}
+          message={t(
             context.error instanceof ApiError && context.error.status === 404
               ? "federation.agreements.notConfigured"
               : "federation.loadFailed",
           )}
-        </p>
+        />
       ) : null}
       {creating && context.data && canApprove ? (
         <CommercialEditor
@@ -277,11 +272,16 @@ export function CommercialPanel({
         />
       ) : selected ? (
         <>
-          <Button variant="ghost" disabled={mutation.isPending} onClick={() => setSelected(null)}>
+          <Button
+            className="self-start"
+            variant="ghost"
+            disabled={mutation.isPending}
+            onClick={() => setSelected(null)}
+          >
             {t("federation.commercial.back")}
           </Button>
           {detail.isError ? (
-            <p role="alert">{t("federation.loadFailed")}</p>
+            <FederationLoadError onRetry={() => void detail.refetch()} />
           ) : detail.isPending ? (
             <p role="status">{t("federation.loading")}</p>
           ) : (
@@ -635,13 +635,13 @@ export function CommercialPanel({
           )}
         </>
       ) : federationReadFailed(list) ? (
-        <p role="alert">{t("federation.loadFailed")}</p>
+        <FederationLoadError onRetry={() => void list.refetch()} />
       ) : list.isPending || !list.data ? (
         <p role="status">{t("federation.loading")}</p>
       ) : (
         <>
           {list.data.length ? (
-            <ul className="federation-list divide-y divide-border rounded-md border border-border">
+            <ul className="federation-list divide-y divide-border">
               {list.data.map((row) => (
                 <li key={row.revisionId}>
                   <button

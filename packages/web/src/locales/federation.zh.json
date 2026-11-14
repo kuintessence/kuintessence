@@ -1,5 +1,6 @@
 {
   "federation": {
+    "siteNameUnavailable": "站点名称不可用",
     "title": "联邦信任",
     "addSite": "登记机构",
     "editSite": "修改机构",
@@ -1283,7 +1284,7 @@
         "material": "导入材料",
         "mapping": "登记映射"
       },
-      "origin": "来源站点 ID",
+      "origin": "来源站点",
       "file": "JSON 文件",
       "content": "材料原件",
       "kind": "类型",

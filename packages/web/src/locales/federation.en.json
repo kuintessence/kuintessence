@@ -1,5 +1,6 @@
 {
   "federation": {
+    "siteNameUnavailable": "Site name unavailable",
     "title": "Federation trust",
     "addSite": "Register institution",
     "editSite": "Edit institution",
@@ -1283,7 +1284,7 @@
         "material": "Import material",
         "mapping": "Register mapping"
       },
-      "origin": "Origin site ID",
+      "origin": "Origin site",
       "file": "JSON file",
       "content": "Original material",
       "kind": "Type",

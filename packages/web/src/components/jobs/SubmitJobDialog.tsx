@@ -1212,10 +1212,8 @@ export function SubmitJobDialog({
                         {selectedUsecase.description}
                       </p>
                     ) : null}
-                  </div>
-                  <div className="min-w-0 space-y-3 rounded-md border border-border bg-card p-3">
                     {selectedUsecase ? (
-                      <div className="grid gap-3">
+                      <div className="mt-3 grid gap-3 border-t border-border pt-3">
                         {visibleInputSlots(selectedUsecase).map((slot) => {
                           const value = usecaseInputs[slot.descriptor];
                           const batch = isBatchFileSlot(selectedUsecase, slot.descriptor);
@@ -1350,11 +1348,7 @@ export function SubmitJobDialog({
                           </div>
                         ))}
                       </div>
-                    ) : (
-                      <div className="rounded-md border border-border p-4 text-sm text-muted-foreground">
-                        {t("jobs.usecase.empty", { defaultValue: "No usecase selected" })}
-                      </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
                 <UsecasePickerDialog

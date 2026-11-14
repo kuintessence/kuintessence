@@ -124,7 +124,19 @@ function TrustPanel() {
   return (
     <Card data-testid="federation-trust-panel" aria-label={t("federation.title")}>
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
-        <FederationSectionTitle title={t("federation.title")} />
+        {selected ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={change.isPending || editor !== null}
+            onClick={() => select(null)}
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {t("federation.back")}
+          </Button>
+        ) : (
+          <FederationSectionTitle title={t("federation.title")} />
+        )}
         <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
@@ -184,15 +196,6 @@ function TrustPanel() {
           </div>
         ) : selected ? (
           <div className="space-y-5">
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={change.isPending || editor !== null}
-              onClick={() => select(null)}
-            >
-              <ArrowLeft className="h-4 w-4" />
-              {t("federation.back")}
-            </Button>
             {detail.isPending ? (
               <p role="status" className="text-sm text-muted-foreground">
                 {t("federation.loading")}
