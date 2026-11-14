@@ -24,7 +24,9 @@ export function federationExecutionSnapshot(prepared: FederationExecutionPrepara
       ...prepared.projection,
       ...prepared.material,
       mappings: prepared.mappings,
-      executionTargets: prepared.saved.agreement.terms.executionTargets ?? [],
+      executionTargets: prepared.request.executionTarget
+        ? [prepared.request.executionTarget]
+        : (prepared.saved.agreement.terms.executionTargets ?? []),
     }),
   );
   return snapshot;

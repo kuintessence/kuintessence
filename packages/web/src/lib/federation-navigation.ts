@@ -29,5 +29,5 @@ export function resolveFederationSection(hash: string, mediaExport = false): Fed
 }
 
 export function isFederationSettings(hash: string): boolean {
-  return /^#?security\/federation-(permissions|trust|storage)$/.test(hash);
+  return /^#?security\/federation-(permissions|trust|storage|clusters)$/.test(hash);
 }

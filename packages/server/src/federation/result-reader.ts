@@ -19,7 +19,11 @@ import { and, eq } from "drizzle-orm";
 import { federationMaterialDigest } from "./assets";
 import { signedDownloadExpiry } from "./download-credential";
 import type { FederationSend } from "./outbound-client";
-import { type FederationActor, requireFederationCapability } from "./permissions";
+import {
+  type FederationActor,
+  hasExplicitFederationCapability,
+  requireFederationCapability,
+} from "./permissions";
 import { requireFederationResultPolicy } from "./result-policy";
 import {
   type FederationSigningKey,
@@ -238,7 +242,12 @@ export class FederationResultReader {
           eq(federationOutbound.operationId, operationId),
         ),
       );
-    if (!row) throw new FederationError("POLICY_DENIED");
+    if (
+      !row ||
+      ((row.submittedBy !== actor.userId || !row.request.managedPlacement) &&
+        !(await hasExplicitFederationCapability(tx, actor, "result.read")))
+    )
+      throw new FederationError("POLICY_DENIED");
     if (row.state !== "accepted" || !row.receipt) throw new FederationError("OPERATION_CONFLICT");
     const [approval] = await tx
       .select()

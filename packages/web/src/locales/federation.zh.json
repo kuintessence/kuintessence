@@ -284,7 +284,9 @@
           "decide": "签署仲裁裁决",
           "execute": "执行已授权仲裁结案"
         },
-        "attestation.recover": "批准历史存证恢复"
+        "attestation.recover": "批准历史存证恢复",
+        "cluster.use": "使用已授权联盟集群",
+        "cluster.manage": "管理联盟集群"
       },
       "effects": {
         "attestation": {
@@ -350,7 +352,9 @@
           "approve": "批准或撤销本机构的仲裁预授权政策，包含合同查看；不授予裁决、任务接单、扣款或付款权限。",
           "decide": "独立签署本站仲裁裁决；新签署另需查询与材料权限，不授予扣款或解冻权限。",
           "execute": "重新核对原事前授权和当前冻结后，执行已收到的无财务变更裁决。不授予结算、调整或付款权。"
-        }
+        },
+        "cluster.use": "仅使用管理员开放的联盟集群，并查看和取消自己的任务。",
+        "cluster.manage": "维护远端集群、执行映射及可用成员；管理入口同时要求平台管理权限。"
       }
     },
     "agreements": {
@@ -1652,6 +1656,50 @@
       "reauthorize": "重新批准原恢复",
       "reauthorizeEffect": "保留原文和历次签名，用当前本站权限重新批准；需重新取得对方当前批准。结果未知的链交易必须先恢复原交易。"
     },
-    "refreshFailed": "更新失败，正在显示上次加载的内容。"
+    "refreshFailed": "更新失败，正在显示上次加载的内容。",
+    "clusters": {
+      "title": "联盟集群",
+      "add": "添加联盟集群",
+      "empty": "尚未开放联盟集群",
+      "clusterName": "集群名称",
+      "agreement": "合作协议",
+      "executionQueue": "授权执行队列",
+      "queueName": "队列名称",
+      "scheduler": "调度器",
+      "budget": "合作额度",
+      "taskLimit": "单任务额度",
+      "concurrency": "并发上限",
+      "members": "可用成员",
+      "allMembers": "本组织全部成员",
+      "showPartner": "显示联盟链标识",
+      "executionProfiles": "执行映射",
+      "profilesHelp": "配置已授权的模板、软件环境锁及输入输出映射。",
+      "invalidJson": "执行映射的 JSON 格式不正确，请修改后保存。",
+      "disable": "停用集群",
+      "moreMembers": "请搜索姓名或邮箱定位其他成员。",
+      "searchMembers": "搜索组织成员",
+      "addProfile": "添加执行映射",
+      "profileName": "映射名称",
+      "sourceKind": "任务类型",
+      "sourceKinds": {
+        "command": "命令作业",
+        "usecase": "软件用例",
+        "script": "工作流脚本"
+      },
+      "commandParameter": "命令输入参数",
+      "sourceRevision": "本平台资产版本 ID",
+      "template": "已授权执行模板",
+      "inputManifestDigest": "输入材料",
+      "environmentLockDigest": "软件环境锁",
+      "profileAllowance": "单次预留额度",
+      "jobPackage": "作业用例绑定",
+      "packageId": "用例包 ID",
+      "packageDigest": "用例包摘要",
+      "marketPolicy": "自动认领策略 ID",
+      "marketTitle": "任务市场公开名称",
+      "outputMappings": "结果映射",
+      "removeProfile": "移除执行映射",
+      "placementNotice": "提交后由合作方确认执行授权、额度及队列状态。"
+    }
   }
 }

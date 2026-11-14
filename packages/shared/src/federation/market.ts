@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { FederationResourcesSchema } from "./index";
+import { FederationResourcesSchema } from "./execution-target";
 import { FabricEvidenceAdvanceResultSchema, FabricProposalCheckpointSchema } from "./ledger";
 import { FederationDigestSchema } from "./references";
 

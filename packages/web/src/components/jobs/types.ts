@@ -11,6 +11,11 @@ export interface JobRow {
 }
 
 export interface JobDetail extends JobRow {
+  federationRunId?: string | null;
+  federationOutputs?: Record<
+    string,
+    Array<{ fileMetadataId: string; fileMetadataName: string }>
+  > | null;
   command?: string | null;
   schedulerJobId?: string | null;
   agentId?: string | null;

@@ -9,6 +9,7 @@ import type {
 } from "@kuintessence/shared";
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   bigint,
   bigserial,
   boolean,
@@ -557,6 +558,12 @@ export const jobs = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     name: varchar("name", { length: 255 }).notNull(),
     command: text("command").notNull(),
+    federationQueueId: uuid("federation_queue_id"),
+    federationOutputs:
+      jsonb("federation_outputs").$type<
+        Record<string, Array<{ fileMetadataId: string; fileMetadataName: string }>>
+      >(),
+    federationRunId: uuid("federation_run_id").references((): AnyPgColumn => workflowRuns.id),
     status: varchar("status", { length: 20 }).notNull().default("pending"),
     dispatchEpoch: integer("dispatch_epoch").notNull().default(0),
     revokedEpoch: integer("revoked_epoch").notNull().default(0),

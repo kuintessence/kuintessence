@@ -48,6 +48,7 @@ import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import type { FederationAssetService } from "./assets";
 import { cancellationSummary, FederationCancellationSender } from "./cancellation-outbound";
+import { assertManagedClusterRequest } from "./cluster-queues";
 import { allocateTaskCompletion } from "./completion-capacity";
 import { type FederationDownloadStorage, signedDownloadExpiry } from "./download-credential";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
@@ -57,7 +58,11 @@ import { FederationWorkflowInputExports } from "./input-exports";
 import type { FederationMarketRequestService } from "./market-requests";
 import type { FederationMediaImportOperations } from "./media-import-operations";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
-import { type FederationActor, requireFederationCapability } from "./permissions";
+import {
+  type FederationActor,
+  hasExplicitFederationCapability,
+  requireFederationCapability,
+} from "./permissions";
 import { FederationResultImports } from "./result-imports";
 import { FederationResultReader } from "./result-reader";
 import { FederationResultReceiptSender } from "./result-receipts";
@@ -213,6 +218,7 @@ export class FederationOutboundService {
         throw new FederationError("OPERATION_CONFLICT");
     }
     await requireFederationCapability(tx, actor, "delegation.submit");
+    await assertManagedClusterRequest(tx, actor, request, this.assets);
     for (const material of materials)
       await this.assets.assertResolved(tx, actor, material.reference, material.mappingId);
     if (request.senderSiteId !== this.signingKey.siteId) throw new FederationError("POLICY_DENIED");
@@ -381,6 +387,9 @@ export class FederationOutboundService {
         : this.db.transaction(operation);
     const prior = await transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "delegation.submit");
+      await assertManagedClusterRequest(tx, actor, request, this.assets, market);
+      if (request.managedPlacement && request.mode === "ledger_coordinated" && (!lease || !market))
+        throw new FederationError("POLICY_DENIED");
       if (!lease) {
         const [binding] = await tx
           .select({ runId: workflowExecutionDelegations.runId })
@@ -651,6 +660,7 @@ export class FederationOutboundService {
   async list(actor: FederationActor, limit = 50, offset = 0) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "delegation.read");
+      const organizationScope = await hasExplicitFederationCapability(tx, actor, "delegation.read");
       const rows = await tx
         .select()
         .from(federationOutbound)
@@ -658,6 +668,10 @@ export class FederationOutboundService {
           and(
             eq(federationOutbound.localSiteId, this.signingKey.siteId),
             eq(federationOutbound.localOrgId, actor.orgId),
+            organizationScope ? undefined : eq(federationOutbound.submittedBy, actor.userId),
+            organizationScope
+              ? undefined
+              : sql`${federationOutbound.request}->'managedPlacement' IS NOT NULL`,
           ),
         )
         .orderBy(desc(federationOutbound.createdAt), desc(federationOutbound.operationId))
@@ -674,7 +688,12 @@ export class FederationOutboundService {
         .select()
         .from(federationOutbound)
         .where(and(this.key(operationId), eq(federationOutbound.localOrgId, actor.orgId)));
-      if (!row) throw new FederationError("POLICY_DENIED");
+      if (
+        !row ||
+        ((row.submittedBy !== actor.userId || !row.request.managedPlacement) &&
+          !(await hasExplicitFederationCapability(tx, actor, "delegation.read")))
+      )
+        throw new FederationError("POLICY_DENIED");
       return summary(row);
     });
   }
@@ -687,7 +706,12 @@ export class FederationOutboundService {
         .from(federationOutbound)
         .where(and(this.key(operationId), eq(federationOutbound.localOrgId, actor.orgId)))
         .for("update");
-      if (!row) throw new FederationError("POLICY_DENIED");
+      if (
+        !row ||
+        ((row.submittedBy !== actor.userId || !row.request.managedPlacement) &&
+          !(await hasExplicitFederationCapability(tx, actor, "delegation.submit")))
+      )
+        throw new FederationError("POLICY_DENIED");
       if (row.cancelState || row.state === "accepted" || row.state === "sending")
         throw new FederationError("OPERATION_CONFLICT");
       const [target] = await tx
@@ -1132,7 +1156,12 @@ export class FederationOutboundService {
         .select()
         .from(federationOutbound)
         .where(and(this.key(operationId), eq(federationOutbound.localOrgId, actor.orgId)));
-      if (!row) throw new FederationError("POLICY_DENIED");
+      if (
+        !row ||
+        ((row.submittedBy !== actor.userId || !row.request.managedPlacement) &&
+          !(await hasExplicitFederationCapability(tx, actor, "delegation.read")))
+      )
+        throw new FederationError("POLICY_DENIED");
       if (row.state !== "accepted" || !row.receipt) throw new FederationError("OPERATION_CONFLICT");
       const [target] = await tx
         .select()

@@ -61,9 +61,11 @@ export function PlacementPreviewPanel({
             {t("scheduler.placement.preview.title", { defaultValue: "Placement preview" })}
           </div>
           <div className="text-xs text-muted-foreground">
-            {t("scheduler.placement.preview.subtitle", {
-              defaultValue: "Run the queue-aware placement pipeline against this draft.",
-            })}
+            {trace?.federation
+              ? t("federation.clusters.placementNotice")
+              : t("scheduler.placement.preview.subtitle", {
+                  defaultValue: "Run the queue-aware placement pipeline against this draft.",
+                })}
           </div>
         </div>
         <Button
@@ -96,7 +98,20 @@ export function PlacementPreviewPanel({
         </div>
       ) : null}
 
-      <PlacementPipelineView trace={trace} onAgentPick={onAgentPick} />
+      {trace?.federation ? (
+        <dl className="grid gap-3 py-2 text-sm sm:grid-cols-2">
+          <div>
+            <dt className="text-muted-foreground">{t("federation.clusters.clusterName")}</dt>
+            <dd className="mt-1 break-words font-medium">{trace.federation.clusterName}</dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">{t("federation.clusters.profileName")}</dt>
+            <dd className="mt-1 break-words">{trace.federation.profileName}</dd>
+          </div>
+        </dl>
+      ) : (
+        <PlacementPipelineView trace={trace} onAgentPick={onAgentPick} />
+      )}
     </div>
   );
 }

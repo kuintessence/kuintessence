@@ -10,6 +10,7 @@ import {
 import { type Context, Hono } from "hono";
 import { requirePlatformPermission } from "../authz/platform-guard";
 import type { AuthzService } from "../authz/service";
+import type { FederationClusterQueueService } from "../federation/cluster-queues";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { assertRole } from "../middleware/rbac";
 import { kqValidator } from "../middleware/validator";
@@ -59,6 +60,7 @@ async function resolveQueueContext(
 
 export interface QueueRouteOptions {
   authz?: AuthzService;
+  federationClusters?: FederationClusterQueueService;
 }
 
 export function createQueueRoutes(
@@ -74,7 +76,11 @@ export function createQueueRoutes(
       c.get("principal" as never) as BoundPrincipal | undefined,
       c.req.header("x-kq-active-organization"),
     );
-    const queues = await service.listVisible(ctx);
+    const [local, remote] = await Promise.all([
+      service.listVisible(ctx),
+      options.federationClusters?.listVisible(ctx) ?? [],
+    ]);
+    const queues = [...local, ...remote];
     return c.json({ queues });
   });
 

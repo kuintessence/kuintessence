@@ -87,6 +87,8 @@ export class FederationWorkflowExecutor {
           epoch: terms.epoch,
           unit: terms.unit,
           template: node.template,
+          ...(node.executionTarget ? { executionTarget: node.executionTarget } : {}),
+          ...(node.managedPlacement ? { managedPlacement: node.managedPlacement } : {}),
           inputManifestDigest: node.inputManifestDigest,
           ...(node.inputDelivery ? { inputDelivery: node.inputDelivery } : {}),
           ...(node.resultDelivery ? { resultDelivery: node.resultDelivery } : {}),

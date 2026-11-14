@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 export const FederationCapabilitySchema = z.enum([
+  "cluster.use",
+  "cluster.manage",
   "agreement.read",
   "agreement.approve",
   "attestation.recover",
@@ -38,6 +40,19 @@ export type FederationCapability = z.infer<typeof FederationCapabilitySchema>;
 export function federationCapabilitySources(
   capability: FederationCapability,
 ): readonly FederationCapability[] {
+  if (
+    ["delegation.read", "delegation.submit", "delegation.cancel", "result.read"].includes(
+      capability,
+    )
+  ) {
+    const base: FederationCapability[] =
+      capability === "delegation.read"
+        ? ["delegation.read", "delegation.submit", "delegation.cancel"]
+        : capability === "delegation.cancel"
+          ? ["delegation.cancel", "delegation.submit"]
+          : [capability];
+    return [...base, "cluster.use"];
+  }
   if (capability === "dispute.read") return ["dispute.read", "dispute.open", "dispute.resolve"];
   return capability === "market.read"
     ? ["market.read", "market.publish", "market.claim"]
@@ -53,13 +68,9 @@ export function federationCapabilitySources(
           "arbitration.approve",
           "disclosure.approve",
         ]
-      : capability === "delegation.read"
-        ? ["delegation.read", "delegation.submit", "delegation.cancel"]
-        : capability === "delegation.cancel"
-          ? ["delegation.cancel", "delegation.submit"]
-          : capability === "asset.read"
-            ? ["asset.read", "asset.map"]
-            : [capability];
+      : capability === "asset.read"
+        ? ["asset.read", "asset.map"]
+        : [capability];
 }
 
 export const FederationCapabilityChangeSchema = z.strictObject({

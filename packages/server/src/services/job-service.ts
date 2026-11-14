@@ -1076,7 +1076,11 @@ export class JobService {
       });
     }
 
-    if (isTerminal && this.meteringRecorder) {
+    if (
+      isTerminal &&
+      this.meteringRecorder &&
+      !("federationRunId" in updated && updated.federationRunId)
+    ) {
       await this.recordUsage(updated);
     }
   }

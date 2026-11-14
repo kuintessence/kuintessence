@@ -36,7 +36,11 @@ import { allocateTaskCompletion } from "./completion-capacity";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
-import { type FederationActor, requireFederationCapability } from "./permissions";
+import {
+  type FederationActor,
+  hasExplicitFederationCapability,
+  requireFederationCapability,
+} from "./permissions";
 import { assertReservationCapacity } from "./reservation-capacity";
 import {
   assertReservationPolicyActive,
@@ -169,7 +173,11 @@ export class FederationMarketRequestService {
           eq(workflowExecutionDelegations.operationId, payload.proposal.request.operationId),
         ),
       );
-    if (binding && !workflow) throw new FederationError("POLICY_DENIED");
+    if (
+      (binding && !workflow) ||
+      (!workflow && !(await hasExplicitFederationCapability(tx, actor, "delegation.submit")))
+    )
+      throw new FederationError("POLICY_DENIED");
     await requireFederationCapability(tx, actor, "delegation.submit");
     await this.contract(tx, revisionId, actor.orgId);
     const existing = async () => {

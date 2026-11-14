@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { CircleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { relativeFromNow } from "../../lib/format";
@@ -50,6 +51,15 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
     : null;
   return (
     <div className="space-y-3" data-testid="job-overview-tab">
+      {job.federationRunId ? (
+        <Link
+          to="/workflows/$runId"
+          params={{ runId: job.federationRunId }}
+          className="inline-flex rounded-md border px-3 py-2 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {t("jobs.executionDetails")}
+        </Link>
+      ) : null}
       {failed ? (
         <section
           className="space-y-2 rounded-md border border-status-failed/30 bg-[color-mix(in_oklab,var(--status-failed)_8%,transparent)] px-3 py-3"

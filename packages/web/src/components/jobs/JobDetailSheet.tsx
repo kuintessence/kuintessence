@@ -185,9 +185,11 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
                 <TabsTrigger value="overview" data-testid="tab-overview">
                   {t("jobs.tab.overview")}
                 </TabsTrigger>
-                <TabsTrigger value="logs" data-testid="tab-logs">
-                  {t("jobs.tab.logs")}
-                </TabsTrigger>
+                {!visibleJob?.federationRunId ? (
+                  <TabsTrigger value="logs" data-testid="tab-logs">
+                    {t("jobs.tab.logs")}
+                  </TabsTrigger>
+                ) : null}
                 <TabsTrigger value="resources" data-testid="tab-resources">
                   {t("jobs.tab.resources")}
                 </TabsTrigger>

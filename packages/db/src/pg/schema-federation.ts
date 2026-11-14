@@ -6,6 +6,7 @@ import type {
   FederationAssetRef,
   FederationCancellation,
   FederationCancellationReceipt,
+  FederationClusterQueueConfig,
   FederationDatasetUseLease,
   FederationDelegation,
   FederationEnvironmentLock,
@@ -127,6 +128,7 @@ import {
   jobs,
   orgs,
   softwareAssetRevisions,
+  userOrgMemberships,
   users,
   workflowRuns,
 } from "./schema";
@@ -287,7 +289,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'arbitration.decide', 'arbitration.execute', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'dispute.resolve', 'attestation.recover', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'arbitration.decide', 'arbitration.execute', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'dispute.resolve', 'attestation.recover', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim', 'cluster.use', 'cluster.manage')`,
     ),
   ],
 );
@@ -4377,3 +4379,36 @@ export const federationArbitrationResolutions = pgTable(
     ),
   ],
 );
+
+/** Local admission and presentation policy; the signed agreement remains authoritative. */
+export const federationClusterQueues = pgTable(
+  "federation_cluster_queues",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    config: jsonb("config").$type<FederationClusterQueueConfig>().notNull(),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    updatedBy: uuid("updated_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("federation_cluster_queues_org").on(t.localSiteId, t.localOrgId)],
+);
+
+/** Seed once per membership: removing a grant must not make the next request restore it. */
+export const federationPermissionPresets = pgTable("federation_permission_presets", {
+  membershipId: uuid("membership_id")
+    .primaryKey()
+    .references(() => userOrgMemberships.id, { onDelete: "cascade" }),
+  preset: text("preset").notNull(),
+  appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
+});
