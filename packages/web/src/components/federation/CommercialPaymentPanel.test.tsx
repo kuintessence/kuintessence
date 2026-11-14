@@ -199,7 +199,7 @@ test.each([
   contract.terms.agreement.mode = mode;
   mount({ approval: contract });
   await openPayment();
-  expect(screen.getByText("Provider submits evidence; status not synchronized")).toBeTruthy();
+  expect(screen.getByText("Compute Center submits evidence; status not synchronized")).toBeTruthy();
   expect(screen.getByText("Current confirmed amount", { exact: true })).toBeTruthy();
 });
 test("history keeps superseded amount distinct and retains bill filter", async () => {

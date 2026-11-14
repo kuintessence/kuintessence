@@ -194,7 +194,7 @@ test("source evidence remains unsynchronized", async () => {
   first().localSiteId = source;
   mount({ approval: { ...approval, localSiteId: source } });
   await openRefund();
-  expect(screen.getByText("Provider submits evidence; status not synchronized")).toBeTruthy();
+  expect(screen.getByText("Compute Center submits evidence; status not synchronized")).toBeTruthy();
 });
 test("direct cooperation has no ledger wait", async () => {
   const direct = structuredClone(approval);

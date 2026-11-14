@@ -234,7 +234,7 @@ test("source shows unsynchronized provider evidence, never a false commitment", 
   first().bill.counterpartyJws = "peer.bill.signature";
   mount({ approval: local });
   await openBill();
-  expect(screen.getByText("Provider submits evidence; status not synchronized")).toBeTruthy();
+  expect(screen.getByText("Compute Center submits evidence; status not synchronized")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Import bill" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Create bill" })).toBeNull();
 });

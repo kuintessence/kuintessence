@@ -551,7 +551,7 @@ test("received usage can request synchronization but cannot correct the provider
   await openUsage(false);
   expect(await screen.findByText("Received and signature verified")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Add technical correction" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Sync provider reports" }));
+  fireEvent.click(screen.getByRole("button", { name: "Sync compute center reports" }));
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" }));
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(`${f.path}/${orgId}/refresh`, {}, scope),
@@ -647,7 +647,7 @@ test("usage received history stays readable with transport disabled and no misle
     ),
   ).toBeTruthy();
   expect(screen.getByText("Received and signature verified")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Sync provider reports" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Sync compute center reports" })).toBeNull();
   expect(api.post).not.toHaveBeenCalled();
 });
 
