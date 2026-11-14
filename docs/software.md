@@ -124,6 +124,7 @@ deprecated 通常只提示，revoked、hidden、缺 use grant 或 算力中心�
 - 裸包名和 `name@version` 通配均可匹配；variant/compiler 不改变 name/version head 判定。
 
 保存后生成 Agent effective policy，重连补推最新策略。
+每次保存使用独立版本号；即使同一毫秒内连续修改，也不会因版本重复而被 Agent 忽略。同版本的重复推送仍只应用一次。
 Server 与 Web 的 availability、preview、operation precheck，以及 Agent 守卫使用一致语义。
 
 | 算力中心 API | 用途 |

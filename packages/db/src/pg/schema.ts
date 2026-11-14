@@ -1722,7 +1722,7 @@ export const softwarePolicies = pgTable(
       .notNull()
       .default([]),
     preinstallList: jsonb("preinstall_list").$type<string[]>().notNull().default([]),
-    /** Monotonic version stamp; agent skip-applies same-version pushes. */
+    /** Unique version stamp; agent skip-applies same-version pushes. */
     version: varchar("version", { length: 64 }).notNull().default("v0"),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
