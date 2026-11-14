@@ -562,7 +562,7 @@
       "contractSections": "合同内容",
       "issued": "本方出具",
       "received": "收到的报告",
-      "assertion": "提供方用量声明，不代表账单已确认。",
+      "assertion": "算力中心用量声明，不代表账单已确认。",
       "meter": "计量口径",
       "customMeter": "自定义口径",
       "customMeterNotice": "自定义口径可保留在合同中；当前自动报告仅支持列表内的三种标准口径。",
@@ -618,7 +618,7 @@
       "syncDisabled": "机构间通信未配置，历史报告仍可查看。",
       "lastSync": "最近同步",
       "errorCode": "错误代码",
-      "correctionNotice": "原报告会保留。本次签署的是提供方技术更正声明，不确认账单，也不发起付款。佐证原件须由本机构核验并保存。",
+      "correctionNotice": "原报告会保留。本次签署的是算力中心技术更正声明，不确认账单，也不发起付款。佐证原件须由本机构核验并保存。",
       "retryNotice": "重新检查原记录。已保存的报告、计量和签名不会被覆盖。",
       "actionFailed": "操作未确认。可重试同一请求；如报告已被其他人更正，请刷新后核对最新记录。",
       "ledgerPending": "等待存证",
@@ -671,7 +671,7 @@
         "committed": "已存证",
         "needs_review": "存证需复核",
         "awaitingSignatures": "等待双方签名",
-        "remoteLedger": "由提供方存证，状态尚未同步"
+        "remoteLedger": "由算力中心存证，状态尚未同步"
       }
     },
     "settlement": {
@@ -1054,7 +1054,7 @@
       "confirm": "确认操作",
       "confirmation": "签署后，本案方案固定。双方须分别批准同一内容。",
       "financialConfirmation": "使用独立财务权限，批准当前核对的准确金额与原件。",
-      "withdrawConfirmation": "提供方确认未执行后，此承诺不能再次执行；原已结账目保留。",
+      "withdrawConfirmation": "算力中心确认未执行后，此承诺不能再次执行；原已结账目保留。",
       "failed": "操作未确认，请检查当前记录后重试同一方案。",
       "states": {
         "FREEZE_PENDING": "等待冻结",
@@ -1415,7 +1415,7 @@
         "gpus": "GPU 数量",
         "wallTimeSec": "时限（秒）",
         "source": "来源站点",
-        "provider": "提供方站点",
+        "provider": "算力中心站点",
         "id": "需求编号",
         "contract": "商业合同",
         "reservation": "原预约编号"

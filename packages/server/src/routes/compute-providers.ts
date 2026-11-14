@@ -19,7 +19,7 @@ export function createComputeProviderRoutes(service: ComputeProviderService, aut
   const id = kqValidator("param", z.object({ id: z.string().uuid() }));
   function platformOnly(view: string) {
     if (view !== "operator")
-      throw new AppError(ErrorCode.FORBIDDEN, "仅平台管理员可以新增或删除提供者", 403);
+      throw new AppError(ErrorCode.FORBIDDEN, "仅平台管理员可以新增或删除算力中心", 403);
   }
   r.get("/:view/list", kqValidator("query", query), async (c) => {
     const { search, page } = c.req.valid("query");

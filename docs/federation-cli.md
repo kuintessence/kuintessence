@@ -46,7 +46,7 @@ kq federation --org "$ORG_ID" closing tasks retry "$REVISION_ID" settlement "$BI
 
 结算授权使用另一个 `kind: "settlement"` 文件独立授予。`grant` 是实际操作，不是预览；CLI 不额外询问确认。每种类型先撤销旧的未撤销政策，再授予新政策；撤销停止新的批准，保留原签名。列表显示单笔上限、允许结果、累计金额、次数与到期状态，零金额政策仍可批准零收费记录。
 
-待办仅在提供方产生。bill 待办的 reference 是原 reservationId，settlement 待办的 reference 是原 billId；它们不是账单草稿的 reportId。retry 只请求处理原记录，需要对应独立能力；完成状态只表示双方签署，继续查询原账单/结算核对记账和存证。
+待办仅在执行算力中心产生。bill 待办的 reference 是原 reservationId，settlement 待办的 reference 是原 billId；它们不是账单草稿的 reportId。retry 只请求处理原记录，需要对应独立能力；完成状态只表示双方签署，继续查询原账单/结算核对记账和存证。
 
 ## 原文草稿、批准与附签
 
@@ -103,9 +103,9 @@ kq federation --org "$ORG_ID" refunds attach "$REVISION_ID" "$REFUND_ID" peer-re
 kq federation --org "$ORG_ID" refunds list "$REVISION_ID" --record "$REFUND_ID"
 ```
 
-`OPERATION_ID` 是原委派编号，不是 taskId 或 reservationId。`--reason` 必填；源方生成的完整原文包含提供方签名取消回执，不应手工拼装或为同一委派换编号。提供方导入源方原文后独立批准。后台交换已批准签名，`attach` 是手动收尾入口；草稿文件以 0600 新建，不覆盖已有文件。
+`OPERATION_ID` 是原委派编号，不是 taskId 或 reservationId。`--reason` 必填；源方生成的完整原文包含执行算力中心签名取消回执，不应手工拼装或为同一委派换编号。执行算力中心导入源方原文后独立批准。后台交换已批准签名，`attach` 是手动收尾入口；草稿文件以 0600 新建，不覆盖已有文件。
 
-直接模式双签后归还本站额度，不依赖链；异步模式提供方同事务保存退款及私有存证待办，列表将本站记账与存证分开显示。源方没有本站链待办时明确显示未同步，不推断对端已经上链。链协调任务使用原释放/终态结算，不允许通过本入口绕过锁额。
+直接模式双签后归还本站额度，不依赖链；异步模式执行算力中心同事务保存退款及私有存证待办，列表将本站记账与存证分开显示。源方没有本站链待办时明确显示未同步，不推断对端已经上链。链协调任务使用原释放/终态结算，不允许通过本入口绕过锁额。
 
 `list` 支持分页、原编号筛选和 `--json`，金额保持整数字符串；原文及响应会核对机构、合同、任务和编号。结果未知时先查原退款，不重新生成。CLI 提供草稿、批准、附签和查询；存证重试可通过合同退款页面或现有商业提交 API 操作。
 

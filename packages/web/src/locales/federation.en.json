@@ -562,7 +562,7 @@
       "contractSections": "Contract sections",
       "issued": "Issued reports",
       "received": "Received reports",
-      "assertion": "Provider usage assertions. Bills are not confirmed.",
+      "assertion": "Compute Center usage assertions. Bills are not confirmed.",
       "meter": "Meter",
       "customMeter": "Custom meter",
       "customMeterNotice": "Custom meters remain in the contract. Automatic reports currently support only the three standard meters listed.",
@@ -596,7 +596,7 @@
         "NO_JOB_EVIDENCE": "Job evidence missing"
       },
       "retry": "Recheck accounting",
-      "sync": "Sync provider reports",
+      "sync": "Sync compute center reports",
       "correct": "Add technical correction",
       "correctedQuantity": "Corrected usage",
       "supportingDigest": "Supporting SHA-256 digest",
@@ -618,7 +618,7 @@
       "syncDisabled": "Institution transport is not configured. Saved reports remain available.",
       "lastSync": "Last synchronized",
       "errorCode": "Error code",
-      "correctionNotice": "The original report stays intact. This signs a provider technical assertion; it does not confirm a bill or initiate payment. Your institution must verify and retain the supporting material.",
+      "correctionNotice": "The original report stays intact. This signs a compute center technical assertion; it does not confirm a bill or initiate payment. Your institution must verify and retain the supporting material.",
       "retryNotice": "Recheck the existing record. Saved reports, accounting and signatures remain intact.",
       "actionFailed": "The action is unconfirmed. Retry the same request; if someone else corrected the report, refresh and review the latest record.",
       "ledgerPending": "Awaiting ledger submission",
@@ -671,7 +671,7 @@
         "committed": "Evidence committed",
         "needs_review": "Evidence needs review",
         "awaitingSignatures": "Awaiting both signatures",
-        "remoteLedger": "Provider submits evidence; status not synchronized"
+        "remoteLedger": "Compute Center submits evidence; status not synchronized"
       }
     },
     "settlement": {
@@ -1054,7 +1054,7 @@
       "confirm": "Confirm action",
       "confirmation": "The signed proposal is fixed for this case. Both parties must approve the same content.",
       "financialConfirmation": "Apply the reviewed financial terms using your separate financial approval authority.",
-      "withdrawConfirmation": "This commitment cannot be executed again after the provider confirms non-execution. Existing charges are preserved.",
+      "withdrawConfirmation": "This commitment cannot be executed again after the compute center confirms non-execution. Existing charges are preserved.",
       "failed": "The action was not confirmed. Check the current record and retry the same proposal.",
       "states": {
         "FREEZE_PENDING": "Freeze pending",
@@ -1415,7 +1415,7 @@
         "gpus": "GPUs",
         "wallTimeSec": "Time limit (seconds)",
         "source": "Source site",
-        "provider": "Provider site",
+        "provider": "Compute Center site",
         "id": "Demand ID",
         "contract": "Commercial contract",
         "reservation": "Original reservation"
