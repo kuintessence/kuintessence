@@ -662,9 +662,12 @@ export function CommercialPanel({
                       <span className="block break-words font-medium">
                         {row.sourceName || row.sourceSiteId} → {row.targetName || row.targetSiteId}
                       </span>
-                      <span className="block break-all text-xs text-muted-foreground">
-                        {row.revisionId}
-                      </span>
+                      <time
+                        dateTime={row.createdAt}
+                        className="block text-xs text-muted-foreground"
+                      >
+                        {new Date(row.createdAt).toLocaleDateString()}
+                      </time>
                     </span>
                     <span className="shrink-0 text-sm">
                       <span className="block">

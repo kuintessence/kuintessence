@@ -168,9 +168,6 @@ function Disputes(props: Props) {
                   >
                     <span className="min-w-0 flex-1">
                       <span className="block break-words font-medium">{row.payload.reason}</span>
-                      <span className="block break-all text-xs text-muted-foreground">
-                        {row.caseId}
-                      </span>
                     </span>
                     <span className="text-sm">{t(`${prefix}.states.${row.state}`)}</span>
                   </button>

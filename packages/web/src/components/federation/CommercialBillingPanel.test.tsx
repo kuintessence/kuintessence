@@ -174,7 +174,11 @@ beforeEach(async () => {
   vi.mocked(api.post).mockResolvedValue({ data: saved });
 });
 async function openBill() {
-  fireEvent.click(await screen.findByRole("button", { name: new RegExp(billId) }));
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: new RegExp(`${saved.payload.calculation.dueAmount} ${saved.payload.request.unit}`),
+    }),
+  );
 }
 async function importBill(value: unknown = bill) {
   fireEvent.click(await screen.findByRole("button", { name: "Create bill" }));
