@@ -247,7 +247,17 @@ export function AgreementPanel({
                   >
                     <span className="min-w-0 space-y-1">
                       <span className="block break-all font-medium">
-                        {t("federation.agreements.agreements")} · {approval.revisionId.slice(0, 8)}
+                        {approval.sourceName || approval.targetName ? (
+                          <>
+                            {approval.sourceName || approval.terms.sourceSiteId.slice(0, 8)} →{" "}
+                            {approval.targetName || approval.terms.targetSiteId.slice(0, 8)}
+                          </>
+                        ) : (
+                          <>
+                            {t("federation.agreements.agreements")} ·{" "}
+                            {approval.revisionId.slice(0, 8)}
+                          </>
+                        )}
                       </span>
                       <span className="block break-all text-xs text-muted-foreground">
                         {new Date(approval.createdAt).toLocaleDateString()}

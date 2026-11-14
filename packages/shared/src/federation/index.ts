@@ -117,6 +117,8 @@ export const FederationAttestationBacklogSchema = z.strictObject({
 });
 
 export const FederationAgreementApprovalSchema = z.object({
+  sourceName: z.string().nullable().optional(),
+  targetName: z.string().nullable().optional(),
   localSiteId: Id,
   revisionId: Id,
   localOrgId: Id,

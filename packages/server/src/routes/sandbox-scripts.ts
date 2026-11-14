@@ -14,7 +14,7 @@ import {
   SoftwareAssetPayloadSchema,
   workflowDsl,
 } from "@kuintessence/shared";
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import {
@@ -258,7 +258,12 @@ export function createSandboxScriptRoutes(deps: SandboxScriptRoutesDeps): Hono {
     const rows = await db
       .select()
       .from(softwareAssets)
-      .where(eq(softwareAssets.kind, "sandbox-script"))
+      .where(
+        and(
+          eq(softwareAssets.kind, "sandbox-script"),
+          notInArray(softwareAssets.lifecycle, ["hidden", "deprecated", "revoked", "archived"]),
+        ),
+      )
       .orderBy(desc(softwareAssets.updatedAt));
     const grants = await loadGrants(
       db,

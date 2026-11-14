@@ -482,3 +482,13 @@ test("provider agreement detail loads its own backlog but the source never guess
   await openDetail();
   expect(api.get).not.toHaveBeenCalledWith(`/federation/agreements/${revisionId}/backlog`, scope);
 });
+
+test("agreement list uses authorized institution names while retaining revision details", async () => {
+  rows = [{ ...approval, sourceName: "Institution A", targetName: "Institution B" }];
+  mount();
+  const button = await screen.findByRole("button", { name: /Institution A → Institution B/ });
+  expect(button.textContent).not.toContain(approval.revisionId);
+  fireEvent.click(button);
+  await screen.findByRole("heading", { name: "Our signature" });
+  expect(screen.getAllByText(approval.revisionId).length).toBeGreaterThan(0);
+});
