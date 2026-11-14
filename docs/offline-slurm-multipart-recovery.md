@@ -27,7 +27,7 @@ Server 对 NetDrive 下载下发已授权文件的真实大小和 `expected_sha2
 这沿用单用户信任边界，不隔离同一 Unix 账号下的恶意进程。
 
 此增强适用于带可信内容绑定的主机下载。旧发送端未提供摘要时及 Docker 容器分支保留原有curl行为，
-不能据此宣称这些兼容路径已有跨重启断点和整件摘要验收。失败部分文件尚无自动GC，确认没有在途操作后再人工清理。
+不能据此宣称这些兼容路径已有跨重启断点和整件摘要运行检查。失败部分文件尚无自动GC，确认没有在途操作后再人工清理。
 
 
 工作流输入的两条路径也传递已授权 NetDrive 文件的 SHA-256 与大小：Server 直接触发的 `createFileStager`，
@@ -60,7 +60,7 @@ Sandbox artifact 持久化与普通工作流结果发布现在共用持久传输
 再启动上传，使 `PgTransferSessionStore` 能保存 multipart session。Sandbox 使用 artifact/replica 派生的独立稳定
 transfer UUID，重试复用同一行与 uploadId；成功回执需保存后才返回，并继续按实际 NetDrive 对象比对路径、大小与 SHA-256。
 取消等待只结束当前等待者，不主动销毁可恢复上传；已取消的行或改变的 owner/source/target/Agent/job/run 绑定拒绝复用。
-这些操作不重新提交计算任务；未在本轮执行真实 PostgreSQL 或 Sandbox 运行环境验收。
+这些操作不重新提交计算任务；未在本轮执行真实 PostgreSQL 或 Sandbox 运行环境运行检查。
 
 普通 Workflow 的逐文件传输由[输出发布 outbox](workflow-output-recovery.md)持久关联；后台恢复已入库的 publication，不要求用户另起手动传输。文件提交与计算完成分别观察，文件恢复不会续跑已失败的 DAG。
 

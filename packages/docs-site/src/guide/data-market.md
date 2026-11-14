@@ -39,9 +39,9 @@ Server 提交校验涵盖 selector、格式、schema、tags、大小、access mo
 
 数据市场绑定必须指定版本，不能使用文件名、目录路径或“latest”代替。没有 immutable manifest 的版本会被拒绝。
 
-## CP 本地数据导入
+## 算力中心本地数据导入
 
-CP 管理员在 `/cp/data` 选择 Organization、Agent、已启用的 managed root 和相对路径后，可以发起 `cp-local` 扫描。“等待 Agent 上线”表示请求已保存但尚未送达，导入保持 `pending`；Agent 接收请求后进入 `running`。页面会自动刷新活跃任务，并显示完成、失败、取消状态及错误原因。
+算力中心管理员在 `/cp/data` 选择 Organization、Agent、已启用的 managed root 和相对路径后，可以发起 `cp-local` 扫描。“等待 Agent 上线”表示请求已保存但尚未送达，导入保持 `pending`；Agent 接收请求后进入 `running`。页面会自动刷新活跃任务，并显示完成、失败、取消状态及错误原因。
 
 导入请求使用持久化的 `Idempotency-Key`。网络重试、Server 重启或多实例接收相同 key 与 payload 时返回原任务，不会重复创建版本或派发扫描。若首次请求只创建了 import，pending 请求重放时会补建 scan request 并恢复派发。相同 key 携带不同资产、版本、Agent、managed root 或路径会返回 409。
 
@@ -62,7 +62,7 @@ PUT 未完成、对象不存在、大小或 SHA-256 不一致时，commit 不会
 
 页面通过 `GET /api/data-market/access-requests/mine?assetIds=...` 批量读取目录资产的最新申请与 effective use；刷新或重新登录后仍会显示 pending、active 或 inactive 状态。access-state 加载中或加载失败时，申请入口禁用。grant 被撤销或申请被拒绝后，提交和 dispatch 会被阻止；用户可以补充许可依据后再次申请。
 
-创建 `licensed-material` 时，asset metadata 必须提供所需元素集合（`elements`）。该集合与 immutable manifest digest 用于 VASP 等 usecase 的元素、版本匹配和完整性校验。Server 只保存 metadata、不可变 manifest 和审批记录，不保存 POTCAR 文件内容、license key、合同或 CP 本地路径。
+创建 `licensed-material` 时，asset metadata 必须提供所需元素集合（`elements`）。该集合与 immutable manifest digest 用于 VASP 等 usecase 的元素、版本匹配和完整性校验。Server 只保存 metadata、不可变 manifest 和审批记录，不保存 POTCAR 文件内容、license key、合同或算力中心本地路径。
 
 ## 权限与下载
 

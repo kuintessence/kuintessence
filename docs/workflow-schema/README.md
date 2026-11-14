@@ -449,7 +449,7 @@ Agent 恢复 Job 轮询后，已经 interrupted 的 Server 工作流仍按上一
 | 提交失败但已有 run | 检查 run 的 `WORKFLOW_AUTHORIZATION_FAILED` 或 `WORKFLOW_PLACEMENT_FAILED` |
 | Job 未派发 | queue 可见性/启用状态、授权、软件可用性、Agent stream、stage-in 错误 |
 | run 长期 cancelling | stepJobs、cancellation outbox acknowledgement、Agent 连接与 scheduler cancel/清理错误 |
-| Server Job cancelled 但远端仍运行 | 撤销下发与确认是否完成；由站点管理员核查，必要时按站点流程人工取消 |
+| Server Job cancelled 但远端仍运行 | 撤销下发与确认是否完成；由站点管理员检查，必要时按站点流程人工取消 |
 | Server 重启后未成为 failed | running run 可能仍在取消清理；先看 errorCode 和待确认撤销 |
 | Agent 重启后无法恢复 | SQLite active records、cleanup intents、revocation 状态与 scheduler 查询权限 |
 | scheduler completed 但节点 Failed | output collection、artifact metadata、value extractor、必需输出及类型错误 |

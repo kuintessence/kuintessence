@@ -2,7 +2,7 @@
 
 平台通过同一个 `OfflineDeliveryService` 接收运行时上传和部署只读目录。
 导入 recipe/material、生态 stage、安装映射 bind、生态 activate 分项记录；
-这些结果均不代表真实软件安装或作业验收成功。
+这些结果均不代表真实软件安装或作业运行检查成功。
 
 运行时预检会校验完整 recipe，大型目录可能超过一分钟。Web、AIO、Preview、Helm
 及单域名/多域名反向代理为 `/software/api/offline-deliveries/` 保留 1800 秒响应等待和
@@ -27,7 +27,7 @@ bun deploy/offline-delivery/create-fixture.ts /tmp/kq-contract-fixture
 
 最后一条生成可预检/导入的最小合同 fixture，含真实 Git bundle、**合成** native-format
 lock、合成源码和通知、签名生态清单，以及仅供本 fixture 的公钥；私钥不落盘。
-它不是材料制造或安装验收。不要将 fixture 公钥加入生产信任集。
+它不是材料制造或安装运行检查。不要将 fixture 公钥加入生产信任集。
 JSON Schema 表达结构；引用、摘要、权限、签名和 native lock 语义以平台预检为准。
 
 目录示例：
@@ -112,7 +112,7 @@ Agent Python source audit 与 managed install/verify/load 共用的校验器支�
 v2 严格检查源码与证据的一一关联，并在加载 recipe 前校验 original/evidence/attachment
 全部引用的大小与 SHA-256；证据缺失或篡改会拒绝执行。保留原始 manifest 摘要及许可证状态，
 不会降级为 v1。此兼容性已由模拟 native API 的离线 fixture 覆盖，仍需部署修复版 Agent
-后完成真实 v2 安装及作业验收。
+后完成真实 v2 安装及作业运行检查。
 Web 材料详情展示逐材料 license/provenance，可下载并校验附件（浏览器下载上限 32 MiB）；
 较大附件用带鉴权的 blob API 流式保存。
 
@@ -217,7 +217,7 @@ PostgreSQL advisory lock 串行化交付执行；专用锁连接避免小连接�
 新入口与任一 legacy recipe/material/OCI bootstrap 同时配置时，配置验证明确拒绝，
 操作员需将输入合并为一份交付计划；旧入口单独配置保持兼容。
 
-## 签名与验收边界
+## 签名与适用范围
 
 签名算法继续使用原生态算法，已提取为共享 `ecosystemCanonicalJson`：对象键按 JS UTF-16
 顺序排序，JSON.stringify 字符串/数值，UTF-8 编码后 Ed25519；与 localeCompare 排序的通用
@@ -226,7 +226,7 @@ canonicalJson 不可混用。Python 导出器必须对照
 公钥为 base64 DER/SPKI，signature 为 base64。32 MiB 签名层上限不因大源码包扩大。
 
 本功能的合同 fixture/模拟生态持久化测试不等于真实 native solve 或安装。
-真实 samtools@1.23.1 验收仍需材料端交付完整 recipe、真实单 root lock、依赖源码和目标环境，
+真实 samtools@1.23.1 运行检查仍需材料端交付完整 recipe、真实单 root lock、依赖源码和目标环境，
 并指定已授权的隔离 Agent（managed installation 的 host spawner、固定 runtime/site profile；
 不支持 Kubernetes adapter）。禁止以旧 samtools@1.19.2 lock 替代。
 应在空 store、禁止公网且无隐式 cache/upstream/bootstrap 的环境完成安装，再由 KQ 提交

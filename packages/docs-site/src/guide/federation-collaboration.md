@@ -1,10 +1,8 @@
 # 联邦协同
 
-联邦协同（Federation Collaboration，原“机构合作”）连接独立平台，提供任务委派、合作授权、数据交付和对账入口。
+联邦协同（Federation Collaboration）连接独立平台，提供任务委派、合作授权、数据交付和对账入口。
 
-> 本指南对应“联邦协同”新版界面，较早的部署版本可能仍显示“机构合作”。页面可用性以部署版本、当前机构权限及实际执行条件为准。
-
-从侧栏进入“联邦协同”，在页首选择当前机构。切换机构会清理页面草稿。宽屏为左侧模块导航，窄屏为横向导航；手机端部分管理操作只读。
+从一级领域栏进入“联邦协同”（`/federation#tasks`），在页首选择当前机构。切换机构会清理页面草稿。宽屏为左侧模块导航，手机使用抽屉导航；手机端部分管理操作只读。
 
 | 你要做什么 | 入口 |
 |---|---|
@@ -23,4 +21,4 @@
 
 - [完整操作指南与权限](https://github.com/kuintessence/kuintessence/blob/main/docs/federation-collaboration.md)
 - [角色手册](/operate/manuals)
-- [当前功能与验收边界](https://github.com/kuintessence/kuintessence/blob/main/docs/status/current-state.md)
+- [功能与运行要求](https://github.com/kuintessence/kuintessence/blob/main/docs/status/current-state.md)

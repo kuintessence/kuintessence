@@ -77,7 +77,7 @@ export function registerAgentCommand(program: Command): void {
 
   token
     .command("create")
-    .description("Create a one-time Agent registration token for a compute provider")
+    .description("Create a one-time Agent registration token for a compute center")
     .requiredOption("--provider-org <uuid>", "Provider organization id")
     .requiredOption("--agent-id <id>", "Pre-allocated Agent id")
     .requiredOption("--site-name <name>", "Human-readable site name")

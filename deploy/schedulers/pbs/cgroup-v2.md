@@ -31,7 +31,7 @@ import hook kq_sandbox_cgroup_v2 application/x-python default /opt/kq/hooks/kq-c
 set hook kq_sandbox_cgroup_v2 enabled=true
 ```
 
-这些是 `qmgr` 命令。配置文件须在每台 MOM 本地部署，hook 须完成向目标 MOM 的分发后再提交验收任务。
+这些是 `qmgr` 命令。配置文件须在每台 MOM 本地部署，hook 须完成向目标 MOM 的分发后再提交运行任务。
 平台的队列映射和本地账号授权须指向配置中的队列；当前尚未增加自动读取此配置的 Agent 能力发布或平台队列能力标记。
 
 ## 执行与恢复边界
@@ -67,4 +67,4 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/federation-media-hpc.py
 PBS 历史记录退出 0，结束 hook 清理原 cgroup，实验 namespace 已删除。
 这次命令先在既有运行器的临时副本中执行，随后整理为公开 `cgroup` 分支；公开入口做了静态检查，没有为改入口重复部署。
 初次接入时核对并修正 PBS hook 的 `builtins` 加载入口，同时补充作业/MOM 诊断采集。
-未据此认定 Slurm、Torque、完整签名 Sandbox 或跨站撤权链路已通过资源限额联合验收。
+未据此认定 Slurm、Torque、完整签名 Sandbox 或跨站撤权链路已通过资源限额联合运行检查。

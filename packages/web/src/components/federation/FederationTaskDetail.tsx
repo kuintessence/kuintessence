@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { ApiError, type ApiOrganizationScope, api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -22,6 +23,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { AgreementFact } from "./AgreementTerms";
+import { FederationRefreshNotice } from "./FederationLayout";
 
 type Action =
   | { kind: "retry" | "cancel" | "cancel-retry" }
@@ -73,7 +75,7 @@ export function FederationTaskDetail({
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
   });
-  const row = !detail.isError ? detail.data : null;
+  const row = !federationReadFailed(detail) ? detail.data : null;
   const canReadResults = grants.includes("result.read");
   const imports = useQuery({
     queryKey: [...key, operationId, "imports", importPage],
@@ -205,7 +207,19 @@ export function FederationTaskDetail({
       link.click();
     },
   });
-  const pending = busy || mutation.isPending || remote.isPending || detail.isFetching;
+  const pending =
+    busy ||
+    mutation.isPending ||
+    remote.isPending ||
+    detail.isFetching ||
+    detail.isError ||
+    imports.isError ||
+    (showResults && results.isError);
+  allowed.current.writable =
+    allowed.current.writable &&
+    !detail.isError &&
+    !imports.isError &&
+    !(showResults && results.isError);
   const state = row?.cancellation
     ? `cancel_${row.cancellation.state}`
     : row?.remoteStatus.workflow
@@ -218,7 +232,8 @@ export function FederationTaskDetail({
           {t("federation.tasks.back")}
         </Button>
       </div>
-      {detail.isError ? (
+      <FederationRefreshNotice query={detail} onRetry={() => void detail.refetch()} />
+      {federationReadFailed(detail) ? (
         <p role="alert">{t("federation.loadFailed")}</p>
       ) : !row ? (
         <p role="status">{t("federation.loading")}</p>
@@ -305,12 +320,15 @@ export function FederationTaskDetail({
               </Button>
             ) : null}
           </div>
-          {remote.isError || results.isError || download.isError ? (
+          {remote.isError || federationReadFailed(results) || download.isError ? (
             <p role="alert" className="text-sm text-status-failed">
               {t("federation.tasks.failed")}
             </p>
           ) : null}
-          {showResults && canReadResults && !results.isError && results.data ? (
+          {showResults && canReadResults ? (
+            <FederationRefreshNotice query={results} onRetry={() => void results.refetch()} />
+          ) : null}
+          {showResults && canReadResults && !federationReadFailed(results) && results.data ? (
             <section className="space-y-3 border-t border-border pt-5">
               <h4 className="font-semibold">{t("federation.tasks.results")}</h4>
               <p className="text-xs text-muted-foreground">
@@ -354,9 +372,10 @@ export function FederationTaskDetail({
           {canReadResults ? (
             <section className="space-y-3 border-t border-border pt-5">
               <h4 className="font-semibold">{t("federation.tasks.transfers")}</h4>
-              {imports.isError ? (
+              <FederationRefreshNotice query={imports} onRetry={() => void imports.refetch()} />
+              {federationReadFailed(imports) ? (
                 <p role="alert">{t("federation.loadFailed")}</p>
-              ) : imports.isPending ? (
+              ) : imports.isPending || !imports.data ? (
                 <p role="status">{t("federation.loading")}</p>
               ) : (
                 <>
@@ -414,7 +433,9 @@ export function FederationTaskDetail({
                                 {value.state === "available" && file.fileId ? (
                                   <Button
                                     variant="ghost"
-                                    disabled={download.isPending}
+                                    disabled={
+                                      download.isPending || imports.isError || detail.isError
+                                    }
                                     onClick={() =>
                                       file.fileId &&
                                       download.mutate({

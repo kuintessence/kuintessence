@@ -7,12 +7,12 @@
 
 保留已有 Agent 的站点应在私有 `/opt/deploy/settings.json` 设置
 `"deployment_mode": "platform-only"`。只接受 `full` 和 `platform-only`；
-省略时为 `full`，沿用平台加已有 Agent 更新及部署后验收流程。
+省略时为 `full`，沿用平台加已有 Agent 更新及部署后运行流程。
 设置前须备份工具与配置，并验证站点工具已实现此契约；此设置不属于仓库 Compose 环境变量。
 
 `platform-only` 保留节点和 worker 预检、部署锁、精确镜像版本校验、Agent
 bundle 校验、数据库备份、迁移、平台启动和健康检查；不向已有 Agent
-stage、安装或重启，不提交跨调度器验收任务。发布记录保存已有 Agent 的
+stage、安装或重启，不提交跨调度器运行任务。发布记录保存已有 Agent 的
 `MainPID`、`ExecStart`、`NRestarts`、`ActiveState` 部署前状态，完成前必须逐项一致。
 同 revision 重试只核对完成状态和 Agent 状态；显式 `acceptance` 也拒绝执行。
 数据库迁移失败后的阻断及人工恢复要求保持不变，不保证自动回滚数据库。

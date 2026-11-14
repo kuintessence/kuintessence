@@ -10,10 +10,15 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
-import { FederationEmpty } from "./FederationLayout";
+import {
+  FederationEmpty,
+  FederationRefreshNotice,
+  FederationSectionTitle,
+} from "./FederationLayout";
 import { type MediaFormAction, MediaLogisticsForm } from "./MediaLogisticsForm";
 import { checkMediaScope, MediaPagination, type MediaScope } from "./MediaLogisticsShared";
 
@@ -32,7 +37,7 @@ function MediaAccess({ scope, switching }: { scope: ApiOrganizationScope; switch
       ),
   });
   const allowed =
-    !capabilities.isError &&
+    !federationReadFailed(capabilities) &&
     capabilities.data?.orgId === scope.organizationId &&
     capabilities.data.effectiveCapabilities.includes("media.logistics");
   const context = useQuery({
@@ -46,7 +51,7 @@ function MediaAccess({ scope, switching }: { scope: ApiOrganizationScope; switch
       return value;
     },
   });
-  if (capabilities.isError || (allowed && context.isError))
+  if (federationReadFailed(capabilities) || (allowed && federationReadFailed(context)))
     return (
       <div role="alert">
         <p>{t("federation.loadFailed")}</p>
@@ -65,10 +70,20 @@ function MediaAccess({ scope, switching }: { scope: ApiOrganizationScope; switch
   if (!allowed) return <p>{t("federation.logistics.denied")}</p>;
   if (!context.data) return <p role="status">{t("federation.loading")}</p>;
   return (
-    <MediaInventory
-      scope={{ ...scope, localSiteId: context.data.localSiteId }}
-      busy={switching || capabilities.isFetching || context.isFetching}
-    />
+    <>
+      <FederationRefreshNotice query={capabilities} onRetry={() => void capabilities.refetch()} />
+      <FederationRefreshNotice query={context} onRetry={() => void context.refetch()} />
+      <MediaInventory
+        scope={{ ...scope, localSiteId: context.data.localSiteId }}
+        busy={
+          switching ||
+          capabilities.isFetching ||
+          context.isFetching ||
+          capabilities.isError ||
+          context.isError
+        }
+      />
+    </>
   );
 }
 function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
@@ -113,13 +128,15 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
     },
     refetchOnWindowFocus: false,
   });
-  const current = !detail.isError ? detail.data : undefined;
+  const current = !federationReadFailed(detail) ? detail.data : undefined;
   const reload = () => {
     void client.invalidateQueries({ queryKey: key });
   };
   return (
     <section className="space-y-5" aria-label={t("federation.logistics.title")}>
-      <h2 className="text-lg font-semibold tracking-tight">{t("federation.logistics.title")}</h2>
+      <FederationRefreshNotice query={list} onRetry={reload} />
+      <FederationRefreshNotice query={detail} onRetry={() => void detail.refetch()} />
+      <FederationSectionTitle title={t("federation.logistics.title")} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Tabs
           value={view}
@@ -157,7 +174,9 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
           ) : null}
         </div>
       </div>
-      {action ? (
+      {federationReadFailed(list) ? (
+        <p role="alert">{t("federation.loadFailed")}</p>
+      ) : action ? (
         <MediaLogisticsForm
           scope={scope}
           action={action}
@@ -177,7 +196,7 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
           <Button variant="ghost" onClick={() => setSelected(null)}>
             {t("federation.logistics.back")}
           </Button>
-          {detail.isError ? (
+          {federationReadFailed(detail) ? (
             <p role="alert">{t("federation.loadFailed")}</p>
           ) : !current ? (
             <p role="status">{t("federation.loading")}</p>
@@ -225,7 +244,10 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
                 <Button
                   variant="outline"
                   disabled={
-                    busy || detail.isFetching || mediaShipmentTerminal(current.shipment.state)
+                    busy ||
+                    detail.isFetching ||
+                    detail.isError ||
+                    mediaShipmentTerminal(current.shipment.state)
                   }
                   onClick={() => setAction({ kind: "handoff", shipment: current.shipment })}
                 >
@@ -265,9 +287,7 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
             </>
           )}
         </>
-      ) : list.isError ? (
-        <p role="alert">{t("federation.loadFailed")}</p>
-      ) : list.isPending ? (
+      ) : list.isPending || !list.data ? (
         <p role="status">{t("federation.loading")}</p>
       ) : (
         <>
@@ -318,7 +338,9 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
                       </div>
                       <Button
                         variant="outline"
-                        disabled={busy || !!activeShipmentId || device.state === "destroyed"}
+                        disabled={
+                          busy || list.isError || !!activeShipmentId || device.state === "destroyed"
+                        }
                         onClick={() => setAction({ kind: "update", device })}
                       >
                         {t("federation.logistics.edit")}

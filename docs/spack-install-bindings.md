@@ -2,7 +2,7 @@
 
 安装绑定决定“给定精确 spec 的新安装使用哪一个 immutable release”。
 材料上传、发布与绑定是两次独立操作：导入成功不会自动替换任何安装映射。
-本功能不启用 Agent 安装开关、不部署软件，也不代表材料已经通过目标站点验收。
+本功能不启用 Agent 安装开关、不部署软件，也不代表材料已经通过目标站点运行检查。
 
 ## 使用范围
 
@@ -85,7 +85,7 @@ Rollout inventory digest 纳入安装选择及其审计历史。不要通过清�
 新增合同、真实 PostgreSQL 并发/历史引用、Registry 权限和 Web 状态测试；
 结果以对应提交的 GitHub Actions 为准。数据库 migration 仅由 Actions 的
 `Generate database migrations` job 生成，审阅 artifact 后原样纳入版本控制。
-不在本机执行生成、测试、格式化、构建或浏览器验收。
+不在本机执行生成、测试、格式化、构建或浏览器运行检查。
 
 该切片不包含 Server-only buildcache 二进制安装、Agent OS/真实站点兼容性，
-也不代表 15 项科学工作流已全部验收。
+也不代表 15 项科学工作流已全部运行检查。

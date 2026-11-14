@@ -37,7 +37,7 @@ vi.mock("./FederationAssetsPanel", () => ({
 }));
 const orgA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const orgB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-function mount() {
+function mount(section?: "commercial") {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -45,7 +45,7 @@ function mount() {
   client.setQueryData(["unrelated", "theme"], "dark");
   render(
     <QueryClientProvider client={client}>
-      <FederationPage />
+      <FederationPage section={section} />
     </QueryClientProvider>,
   );
   return client;
@@ -81,21 +81,11 @@ test("ordinary members can select their institutions and switching discards the 
   expect(client.getQueryData(["unrelated", "theme"])).toBe("dark");
 });
 
-test("the renamed workspace exposes all eight sections with keyboard navigation", async () => {
+test("the module heading replaces duplicate in-page navigation", async () => {
   mount();
   await screen.findByLabelText("Draft");
-  expect(screen.getByRole("heading", { level: 1, name: "Federation Collaboration" })).toBeTruthy();
-  const navigation = screen.getByRole("tablist", { name: "Federation Collaboration" });
-  expect(navigation.querySelectorAll('[role="tab"]')).toHaveLength(8);
-  const agreements = screen.getByRole("tab", { name: "Agreements" });
-  expect(agreements.getAttribute("aria-selected")).toBe("true");
-  agreements.focus();
-  fireEvent.keyDown(agreements, { key: "ArrowRight" });
-  await waitFor(() =>
-    expect(
-      screen.getByRole("tab", { name: "Federation assets" }).getAttribute("aria-selected"),
-    ).toBe("true"),
-  );
+  expect(screen.getByRole("heading", { level: 1, name: "Agreements" })).toBeTruthy();
+  expect(screen.queryByRole("tablist")).toBeNull();
 });
 
 test("no organization retains the workspace heading without exposing institution panels", async () => {
@@ -106,7 +96,7 @@ test("no organization retains the workspace heading without exposing institution
   });
   mount();
   await screen.findByLabelText("Current institution");
-  expect(screen.getByRole("heading", { name: "Federation Collaboration" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Agreements" })).toBeTruthy();
   expect(screen.queryByRole("tablist")).toBeNull();
   expect(screen.getByRole("status").textContent).toBe("Choose institution");
 });
@@ -149,21 +139,15 @@ test("another tab's institution selection also replaces the draft and clears res
 });
 
 test("commercial drafts are discarded with an institution change", async () => {
-  mount();
+  mount("commercial");
   const selector = await screen.findByLabelText("Current institution");
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "Commercial contracts" }), {
-    button: 0,
-    ctrlKey: false,
-  });
   const draft = await screen.findByLabelText("Commercial draft");
   fireEvent.change(draft, { target: { value: "private contract" } });
   fireEvent.change(selector, { target: { value: orgB } });
-  await waitFor(() => expect(screen.queryByLabelText("Commercial draft")).toBeNull());
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "Commercial contracts" }), {
-    button: 0,
-    ctrlKey: false,
-  });
-  expect(((await screen.findByLabelText("Commercial draft")) as HTMLInputElement).value).toBe("");
+  await waitFor(() =>
+    expect((screen.getByLabelText("Commercial draft") as HTMLInputElement).value).toBe(""),
+  );
+  expect(screen.getByRole("heading", { level: 1, name: "Commercial contracts" })).toBeTruthy();
 });
 
 vi.mock("./MediaDeliveryPanel", () => ({
@@ -190,9 +174,8 @@ test("workflow navigation opens scoped delivery and replaces drafts on the next 
   );
   const rendered = render(view(orgA));
   await screen.findByLabelText("Workflow selection");
-  expect(screen.getByRole("tab", { name: "Media delivery" }).getAttribute("data-state")).toBe(
-    "active",
-  );
+  expect(screen.getByRole("heading", { level: 1, name: "Media delivery" })).toBeTruthy();
+  expect(screen.queryByRole("tablist")).toBeNull();
   expect(screen.getByLabelText("Workflow selection").textContent).toBe(`${orgA}:task-input`);
   fireEvent.change(screen.getByLabelText("Media draft"), { target: { value: "old draft" } });
   rendered.rerender(view(orgB));

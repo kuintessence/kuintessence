@@ -12,7 +12,7 @@
 现有证据分为三个阶段：
 
 - Registry 发布验证已声明 blob 的 digest/大小、recipe 身份与授权及 lock 静态结构。报告明确为 `static-only`，不证明实际 recipe 的源码、resource、patch 或 bootstrap 依赖齐全。
-- Agent 的隔离 source audit 在固定运行时中验证 recipe、native DAG、`pkg.stage` 包含的 source/resource staging，以及独立的 `spack.patch.UrlPatch.stage`；各下载 stage 均使用 `mirror_only=True` fetch 后执行 checksum check，并触发 native FilePatch 检查。未知 patch 类型、缺失 stage 或不支持的 fetcher 均拒绝通过，不调用可能回退上游的 `patch.fetch()`。审计禁用 bootstrap，在无网络命名空间执行；安装 worker 同样强制镜像 fetch，材料缺失不得回退上游。独立 patch stage 的成功、材料缺失和禁止上游路径已通过纯 fixture 测试，但尚未执行真实 Spack 1.0/runtime 验收，真实运行时验收仍待执行；通过审计后可走下述持久凭据通道。
+- Agent 的隔离 source audit 在固定运行时中验证 recipe、native DAG、`pkg.stage` 包含的 source/resource staging，以及独立的 `spack.patch.UrlPatch.stage`；各下载 stage 均使用 `mirror_only=True` fetch 后执行 checksum check，并触发 native FilePatch 检查。未知 patch 类型、缺失 stage 或不支持的 fetcher 均拒绝通过，不调用可能回退上游的 `patch.fetch()`。审计禁用 bootstrap，在无网络命名空间执行；安装 worker 同样强制镜像 fetch，材料缺失不得回退上游。独立 patch stage 的成功、材料缺失和禁止上游路径已通过纯 fixture 测试，但尚未执行真实 Spack 1.0/runtime 运行检查，真实运行时运行检查仍待执行；通过审计后可走下述持久凭据通道。
 - 启用实验性持久安装后，只有隔离 build 和独立只读 verify 都通过，才保存并发布 installed/ready 安装记录。下载成功或 source audit 通过不能替代安装验证。
 
 Server 复用 `software_operations` 和 append-only `audit_log` 保存 source-audit proof，不新增由客户端任填的 ready 字段。
@@ -57,13 +57,13 @@ binding revision、release 生命周期、新鲜 site-profile/runtime digest 及
 
 原生 OCI 已补充标准 Bearer challenge 与 Server token exchange，统一 HTTPS 公共 origin、
 Basic 登录凭据复用现有人类 access JWT，并按 repository/subject 限定 pull/push。
-配置、Docker/Apptainer 用法及待验收场景见 [原生 OCI 登录](native-oci-authentication.md)。
-本轮未运行测试及真实客户端验收，不能据实现完成宣称原生 OCI 已通过现场验收。
+配置、Docker/Apptainer 用法及待运行检查场景见 [原生 OCI 登录](native-oci-authentication.md)。
+本轮未运行测试及真实客户端运行检查，不能据实现完成宣称原生 OCI 已通过现场运行检查。
 
 本次新增了纯假依赖回归测试（派发绑定、身份、撤销、时效及变化后失效），按要求暂未执行；
-没有执行实际安装、访问 Registry/对象存储/上游、连接数据库或部署云服务。统一测试及真实运行时验收仍待完成。
+没有执行实际安装、访问 Registry/对象存储/上游、连接数据库或部署云服务。统一测试及真实运行时运行检查仍待完成。
 
 
-材料下载 ticket 默认有效期为 900 秒；验收环境可将 Server 的
+材料下载 ticket 默认有效期为 900 秒；隔离运行环境可将 Server 的
 `SPACK_MATERIAL_TICKET_TTL_SEC` 设为 30..900 秒（例如 60），真实等待签名 `exp` 过期后验证原有证书续票流程。
 该配置不改变 source-audit proof 的 24 小时有效期，也不放宽 ticket 的 15 分钟最大年龄检查。

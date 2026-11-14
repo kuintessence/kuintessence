@@ -131,26 +131,6 @@
 }
 
 /* Federation workspace styles stay scoped to this module, including nested tabs. */
-.federation-layout {
-  @apply grid min-w-0 gap-5 xl:grid-cols-[11rem_minmax(0,1fr)] xl:items-start;
-}
-
-.federation-nav {
-  @apply flex w-full max-w-full flex-nowrap justify-start gap-1 overflow-x-auto rounded-lg border border-border bg-card p-1.5 xl:sticky xl:top-20 xl:max-h-[calc(100dvh-6rem)] xl:flex-col xl:items-stretch xl:overflow-y-auto;
-}
-
-.federation-nav > .federation-nav-item {
-  @apply min-h-10 flex-none justify-start gap-2.5 rounded-md px-3 text-sm xl:whitespace-normal xl:py-2.5;
-}
-
-.federation-nav-item[data-state="active"] {
-  @apply border-transparent bg-brand-soft text-foreground shadow-none;
-}
-
-.federation-nav-item[data-state="inactive"]:hover {
-  @apply bg-muted text-foreground;
-}
-
 .federation-content {
   @apply min-w-0 rounded-xl border border-border bg-card p-4 text-card-foreground sm:p-6;
 }
@@ -170,7 +150,7 @@
 }
 
 .federation-content .federation-subnav {
-  @apply flex w-full max-w-full flex-nowrap justify-start gap-1 overflow-x-auto rounded-none border-b border-border bg-transparent p-0 pb-2;
+  @apply flex h-auto w-full max-w-full flex-nowrap justify-start gap-1 overflow-x-auto rounded-none border-b border-border bg-transparent p-0 pb-2 md:flex-wrap;
 }
 
 .federation-subnav > [role="tab"] {
@@ -193,33 +173,33 @@
   @apply flex min-h-40 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border px-6 py-10 text-center;
 }
 
-.federation-content :where(dl) {
+:is(.federation-content, .federation-settings) :where(dl) {
   @apply min-w-0;
 }
 
-.federation-content :where(dt) {
+:is(.federation-content, .federation-settings) :where(dt) {
   @apply text-xs leading-5;
 }
 
-.federation-content :where(dd) {
+:is(.federation-content, .federation-settings) :where(dd) {
   @apply leading-6;
   overflow-wrap: anywhere;
   word-break: normal;
 }
 
-.federation-content :where(summary) {
+:is(.federation-content, .federation-settings) :where(summary) {
   @apply rounded-md py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
 }
 
-.federation-content :where(form, fieldset, label) {
+:is(.federation-content, .federation-settings) :where(form, fieldset, label) {
   min-width: 0;
 }
 
-.federation-content :where(select) {
+:is(.federation-content, .federation-settings) :where(select) {
   max-width: 100%;
 }
 
-.federation-content :where(pre) {
+:is(.federation-content, .federation-settings) :where(pre) {
   max-width: 100%;
 }
 

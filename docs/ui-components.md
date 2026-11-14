@@ -1,6 +1,6 @@
 # Web 组件库与接入约定
 
-采用 **Radix UI 交互基元 + 现有 shadcn/ui 风格公共组件 + TanStack Table**。
+Web 使用 Radix UI 交互基元、shadcn/ui 风格公共组件和 TanStack Table。
 组件放在 `packages/web/src/components/ui/`，业务页面组合这些组件，颜色与明暗主题仍由 `app.css` 的语义 token 控制。
 
 ## 选型
@@ -9,9 +9,9 @@
 | --- | --- | --- |
 | Ant Design | 希望直接使用完整后台表格、复杂表单和日期选择器的新项目 | 能减少复杂业务控件实现，但当前需要迁移已有 Tailwind、Radix 的样式与交互，或长期维护两套系统 |
 | MUI | 采用 Material Design 的产品 | 组件丰富，当前 KQ 的界面语言与其不同，主题适配和迁移成本较高 |
-| Radix UI + shadcn/ui 组合方式 | 已有 Tailwind 主题，按需组合无障碍交互组件 | 与当前结构一致，本次采用；焦点、键盘与弹层行为由 Radix 实现 |
+| Radix UI + shadcn/ui 组合方式 | 已有 Tailwind 主题，按需组合无障碍交互组件 | 与现有 Tailwind 主题兼容；Radix 处理焦点、键盘与弹层 |
 
-shadcn/ui 是源码分发模式，不是安装后就完全免维护的运行时组件库。本项目已有相同架构的定制组件，本次沿用其接口，并不声称全部文件来自官方生成器。公共层只负责样式与产品约束；不要在页面重新实现菜单、焦点陷阱或方向键导航。
+shadcn/ui 通过源码分发，公共组件由项目维护，沿用已有接口。公共层只负责样式与产品约束；不要在页面重新实现菜单、焦点陷阱或方向键导航。
 
 ## 使用现成组件
 
@@ -28,7 +28,7 @@ shadcn/ui 是源码分发模式，不是安装后就完全免维护的运行时�
 | 客户端表格 | TanStack `DataTable` | 库负责排序、过滤和分页；排序按钮显示方向；多页时可调整每页条数；服务端列表仍由页面的服务端分页管理 |
 | 工作流、图表、编辑器、终端 | React Flow、ECharts、Monaco、xterm | 继续使用现有专用库，不另造通用 UI 替代品 |
 
-现有 94 个下拉框和 13 个原生多行文本框已迁入公共组件，覆盖登录、作业、工作流、文件、软件、算网、提供者控制台和设置。复选框、单选框、文件上传及画布内特殊输入保留既有语义；没有把所有原生 HTML 都包装一层。
+公共选择框和多行文本框覆盖登录、作业、工作流、文件、软件、算网、算力中心控制台和设置。复选框、单选框、文件上传及画布内特殊输入保留既有语义。
 
 `NativeSelect` 不实现搜索、多选标签或远端分页。业务确实需要此类交互时，再引入对应成熟组件；不要给普通下拉框编写自定义浮层。
 
@@ -36,7 +36,7 @@ Biome 的 `noLabelWithoutControl` 将 `Input`、`Textarea`、`NativeSelect` 识�
 
 ## 复用约定
 
-14 处带图标搜索框使用 `SearchInput`，11 处列表翻页使用 `PaginationControls`，覆盖作业、工作流、软件目录、提供者和审计／成员列表。工作流与文件传输状态筛选使用现有 `ToggleGroup`，软件标签操作使用现有 `Button`；不要复制选中态、焦点样式和按钮尺寸。
+带图标搜索框使用 `SearchInput`，列表翻页使用 `PaginationControls`，覆盖作业、工作流、软件目录、算力中心和审计／成员列表。工作流与文件传输状态筛选使用现有 `ToggleGroup`，软件标签操作使用现有 `Button`；不要复制选中态、焦点样式和按钮尺寸。
 
 搜索框必须提供可见 label、`aria-label` 或 `aria-labelledby`。公共组件不添加防抖、不转换搜索词、不发起请求；清空搜索和重置页码仍由业务处理。分页按钮固定为 `type="button"`，避免嵌在表单中意外提交；总数、页码、每页条数等通过组合展示，公共控件不推断能否翻页。
 
@@ -71,10 +71,10 @@ bunx --no-install patchright test --config=e2e/ui-components.config.ts
 ## 业务组合与响应式页面
 
 - `ListToolbar` 组合现有 `SearchInput`、筛选内容和操作区，已用于作业、工作流及软件目录。通过 `search` 传输入框属性，筛选传 `children`，按钮传 `actions`；查询、清空、重置页码和权限判断由页面负责。
-- `FormField` 统一 label、说明和错误布局，已替换软件创建／版本表单中 32 处重复字段。子函数接收自动生成的 `id`、`aria-describedby`、`aria-invalid`，展开到已有 `Input`、`Textarea` 或 `NativeSelect`；需要稳定 ID 时传 `id`。校验规则仍在业务表单中。
+- `FormField` 统一 label、说明和错误布局，用于软件创建和版本表单。子函数接收自动生成的 `id`、`aria-describedby`、`aria-invalid`，展开到已有 `Input`、`Textarea` 或 `NativeSelect`；需要稳定 ID 时传 `id`。校验规则仍在业务表单中。
 - `LoadingState`、`ErrorState`、`EmptyState` 统一列表状态，分别提供 status、alert 和空状态标题／说明／操作组合。`CatalogEmptyState` 只保留软件目录的创建链接语义，视觉复用公共空状态。
 - `SoftwareCardGrid` 按实际内容区宽度排列卡片，每列至少 20rem；窄于 20rem 时占满容器。模板、Spack 目录、脚本目录共用，不根据整个视口盲目增加列数。
-- 手机只读策略生效时，提供者软件页优先显示策略、Agent 状态和配置摘要。运行环境及材料映射保留 Agent 筛选和现有记录，省去禁用的编辑表单；材料管理区默认折叠，仍可展开查询。允许写入的桌面视图保留编辑流程。
+- 手机只读策略生效时，算力中心软件页优先显示策略、Agent 状态和配置摘要。运行环境及材料映射保留 Agent 筛选和现有记录，省去禁用的编辑表单；材料管理区默认折叠，仍可展开查询。允许写入的桌面视图保留编辑流程。
 
 ```tsx
 <FormField label={t("software.manage.templateName")} description={help} error={error}>
@@ -84,17 +84,17 @@ bunx --no-install patchright test --config=e2e/ui-components.config.ts
 
 ## 换行后的比例布局
 
-公共 `kq-fill-row` 样式用于筛选、状态选项和操作组：每行控件按内容基础宽度分摊剩余空间，最后一行同样填满容器。不是单纯增加 `flex-wrap`，也不强制全部控件等宽。`Button size="icon"` 保持固定宽度；需要独立尺寸的子项可用 `flex-none`，组内搜索可用 `basis-full` 独占一行。
+公共 `kq-fill-row` 样式用于筛选、状态选项和操作组：每行控件按内容基础宽度分摊剩余空间，最后一行同样填满容器。组内控件按内容分配宽度。`Button size="icon"` 保持固定宽度；需要独立尺寸的子项可用 `flex-none`，组内搜索可用 `basis-full` 独占一行。
 
-`ListToolbar`、`PageHeader` 按实际容器宽度决定筛选和操作区何时换行；不再依赖桌面断点挤成一排。`PaginationControls` 在手机上占满宽度，状态组和标签页逐行平铺。软件目录与版本／编译器／来源筛选、提供者搜索、文件传输按钮、终端审计筛选、互联筛选、卡片操作和弹窗／侧栏底部按钮共用该样式。静态徽章、正文、表格和图标内部布局保持各自语义，不应用伸展规则。
+`ListToolbar`、`PageHeader` 按实际容器宽度决定筛选和操作区何时换行。`PaginationControls` 在手机上占满宽度，状态组和标签页逐行平铺。软件目录与版本／编译器／来源筛选、算力中心搜索、文件传输按钮、终端审计筛选、互联筛选、卡片操作和弹窗／侧栏底部按钮共用该样式。静态徽章、正文、表格和图标内部布局保持各自语义，不应用伸展规则。
 
 浏览器检查在 320 / 360 / 390 / 480 / 640 / 768 / 1024 / 1280px 测量换行后每行的左右边界，同时验证菜单点击与键盘选择；作业空列表截图覆盖搜索、筛选、主操作及分页。
 
 ## CI 截图回归
 
-CI 的 Static checks 在每个 PR 上构建真实 Web 样式并执行 `e2e/ui-components.config.ts`，共 37 项浏览器检查。已有组件交互测试与关键页面截图一起执行；作业、软件、工作流页面覆盖 320 / 768 / 1280px 和明暗主题，提供者运行环境摘要覆盖手机明暗主题。
+CI 的 Static checks 在每个 PR 上构建真实 Web 样式并执行 `e2e/ui-components.config.ts`。已有组件交互测试与关键页面截图一起执行；作业、软件、工作流页面覆盖 320 / 768 / 1280px 和明暗主题，算力中心运行环境摘要覆盖手机明暗主题。
 
-页面夹具挂载真实页面组件，查询缓存预填固定演示数据，不连接业务服务。左侧仅模拟导航占用的宽度，导航本身由预览验收覆盖。固定时间、时区和测试字体，截图基线保存在 `packages/web/e2e/snapshots/ui/`；字体约束只用于测试。CI 上传截图差异及失败 trace，保留 7 天。没有基线或像素差异超过 1% 时检查失败。
+页面夹具挂载真实页面组件，查询缓存预填固定演示数据，不连接业务服务。左侧仅模拟导航占用的宽度，导航本身由预览运行检查覆盖。固定时间、时区和测试字体，截图基线保存在 `packages/web/e2e/snapshots/ui/`；字体约束只用于测试。CI 上传截图差异及失败 trace，保留 7 天。没有基线或像素差异超过 1% 时检查失败。
 
 布局／主题有意修改后，在 Linux、对应版本 Chromium 和 `fonts-noto-cjk` / `fonts-liberation` 环境更新基线，并人工审阅图片：
 

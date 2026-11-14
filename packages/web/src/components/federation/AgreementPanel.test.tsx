@@ -102,7 +102,11 @@ async function importTerms(input: unknown = terms) {
   fireEvent.click(screen.getByRole("button", { name: "Review terms" }));
 }
 async function openDetail() {
-  fireEvent.click(await screen.findByRole("button", { name: new RegExp(`${source}.*${target}`) }));
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: new RegExp(`Agreements.*${revisionId.slice(0, 8)}`),
+    }),
+  );
   await screen.findByRole("heading", { name: "Our signature" });
 }
 beforeEach(async () => {
@@ -415,9 +419,7 @@ test("a failed context load leaves refresh usable and blocks signing", async () 
   });
   mount();
   await screen.findByRole("alert");
-  expect(
-    (screen.getByRole("button", { name: "Import agreement terms" }) as HTMLButtonElement).disabled,
-  ).toBe(true);
+  expect(screen.queryByRole("button", { name: "Import agreement terms" })).toBeNull();
   const refresh = screen.getByRole("button", { name: "Refresh" });
   expect((refresh as HTMLButtonElement).disabled).toBe(false);
   failure = false;

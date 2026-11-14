@@ -1,7 +1,7 @@
 # Spack 安装中断与写锁恢复
 
 此机制适用于启用 persistent managed installation 的 Agent，不自动重新编译软件。
-本地测试通过不代表共享 NFS、Apptainer 或远端安装流程已验收。
+本地测试通过不代表共享 NFS、Apptainer 或远端安装流程已运行检查。
 
 ## 身份与互斥
 
@@ -89,7 +89,7 @@ KQ_TEST_SYSTEMD_USER=1 bun test packages/agent/src/spack/supervised-process.inte
 ```
 
 该测试创建独立随机命名单元，使用轻量 Python 进程验证 cgroup 停止、晚到启动封锁、
-Agent SIGKILL 后的恢复与 SQLite 重开。它不是 Apptainer/Spack 编译或真实集群联合验收。
+Agent SIGKILL 后的恢复与 SQLite 重开。它不是 Apptainer/Spack 编译或真实集群联合运行检查。
 监督命令对美元符号使用 systemd 的 `$$` 转义，兼容 systemd 245 起的用户管理器，
 不依赖 254 才引入的 `--expand-environment`。托管安装 CI 在实际管理器中验证命令参数与
 环境变量保持原值，并核对内存、swap 与进程数限制。
@@ -180,7 +180,7 @@ ACK 后才能安全回收。不要直接删除账本，尤其不要将“已经�
 验证仅使用临时 store、SQLite、轻量进程及 stub。普通用户身份读取、真实 Agent
 子进程 SIGKILL、活孤儿 worker 不可抢、模拟 boot 变化/PID 复用、克隆 machine-id 不同主机名、并发恢复、恢复中
 再次崩溃、在线结果丢失重报、等待者退出均有针对性检查；没有实际重启主机、运行
-科学软件、验证目标 NFS 或执行远端 kqagent 验收。
+科学软件、验证目标 NFS 或执行远端 kqagent 运行检查。
 
 
 ## 人工收尾旧 operation
@@ -215,7 +215,7 @@ Server 不持久化下载票据，只保存材料摘要并在重发前重新授�
 
 必须持久保存 Agent 数据库。删除或替换数据库会丢失去重证据，不保证随后重发不会重新执行。
 此功能恢复的是指令投递和结果读取，不自动重启已中断的 Spack 编译、不抢占安装写锁。
-联邦预留到真实工作流的连接及完整进程故障注入仍待验收，详见[分支进展](design/federation/progress.md)。
+联邦预留到真实工作流的连接及完整进程故障注入仍待运行检查，详见[分支进展](design/federation/progress.md)。
 
 
 ## 联邦安装的授权等待
@@ -241,7 +241,7 @@ Agent SQLite 保存等待标记和不可变请求指纹，不保存票据。仅�
 
 升级会幂等添加 `authorization_waiting` 列，旧收据默认为 false。store 记录增加两个状态和
 可选编译报告，旧版 Agent 的严格解析器不认识这些记录；同一共享 store 的写入者须一致升级，
-不要直接降级读取已经写入新字段的 store。真实 Apptainer 编译及跨实例联合验收仍见分支进展。
+不要直接降级读取已经写入新字段的 store。真实 Apptainer 编译及跨实例联合运行检查仍见分支进展。
 
 
 ## 联邦安装运行中的许可续期与本地到期停止

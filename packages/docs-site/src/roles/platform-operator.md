@@ -1,27 +1,29 @@
 # 平台运营手册
 
-平台管理员、运营团队和安全管理员可在此查找租户、SSO、软件治理、审计、发布与排障操作。
+平台运营人员在授权范围内管理资源、协调审批、查询审计和处理事件。SSO、安全与基础服务配置由平台管理员负责，部署发布由系统运维负责。
 
 ## 入口
 
 - 设置：`/settings`
 - 软件治理：`/software` 的 Governance 区域
-- CP 控制台：`/cp`
-- 审计日志：`/audit` 或 CP 审计入口
+- 平台业务运营：`/operations`；算力中心工作区：`/cp`（需组织管理权限）
+- 平台审计：`/audit`；组织审计：`/cp/audit`
 - 作业与 workflow：`/jobs`、`/workflows`
+
+业务运营使用 `operator` 角色及 `workspace.platform.operate` 能力；平台技术配置使用独立权限，平台角色不自动授予联邦签署、财务或仲裁权限。
 
 ## 日常职责
 
-- 管理组织、角色和用户能力。
-- 配置 OIDC/SSO、JWT、cookie 与浏览器安全策略。
-- 审核 Software Provider 或 CP 提交的软件资产。
+- 按权限管理算力中心、集群、队列、软件与执行账号，协调组织成员及角色问题。
+- 将身份认证和安全配置问题交平台管理员处理。
+- 审核 Software Provider 或算力中心提交的软件资产。
 - 生成 trusted official fork。
 - 管理软件 lifecycle：`published`、`deprecated`、`revoked`、`archived`。
 - 处理用户 access request。
 - 监控 Agent 在线状态、计量、审计、SSH 和 NetDrive。
-- 维护部署配置、CI、备份和升级流程。
+- 跟踪维护窗口、备份和升级结果；由系统运维执行变更。
 
-## 登录与 SSO
+## 登录与 SSO（平台管理员）
 
 生产环境应启用 OIDC/SSO。dev login 只允许非生产模式：
 
@@ -55,7 +57,7 @@ curl -i http://localhost:15173/api/auth/oidc/config-public
 
 - 最新 revision 与上一个 revision 的 diff。
 - package/usecase/workflow 的 dependency refs。
-- upstream、SP 或 CP 的 provenance。
+- upstream、SP 或算力中心的 provenance。
 - checksum、license、外部 URL、危险 install hook。
 - 影响面：下游 usecase/workflow、active grants、pending requests、mirror/cache 状态。
 
@@ -67,7 +69,7 @@ curl -i http://localhost:15173/api/auth/oidc/config-public
 
 - `view`：允许看到资产详情。
 - `use`：允许运行依赖该资产的 usecase/workflow。
-- `install`：允许在符合 CP policy 的节点触发安装。
+- `install`：允许在符合算力中心策略 的节点触发安装。
 
 审批通过后，授权写入 `software_asset_grants`；拒绝时必须填写 reason，说明原因和可采取的操作。
 
@@ -89,10 +91,10 @@ curl -i http://localhost:15173/api/auth/oidc/config-public
 - 软件资产 submit/review/fork/lifecycle。
 - access request 审批。
 - SSH credential 和 session 操作。
-- CP policy overlay 修改。
+- 算力中心策略 overlay 修改。
 - NetDrive transfer 和计量导出。
 
-## 发布与 CI
+## 发布与 CI（系统运维）
 
 主项目使用 Bun workspace。基础验证：
 
@@ -110,13 +112,13 @@ bun run docs:build
 
 GitHub workflow 会设置 `DOCS_BASE` 以适配 GitHub Pages project site。
 
-## 生产缺口跟踪
+## 运行条件与限制
 
-以下功能尚未完成，或仍需部署验证：
+执行前确认以下条件：
 
 - sandbox 中的 `spack concretize/install`。
 - source mirror 和 buildcache worker。
 - signed air-gap bundle export/import。
 - Monaco + 结构化 `package.py` 编辑器。
 - 通知执行器。
-- 部署环境中的 IdP、RustFS 和集群 smoke 验证。
+- 正式 OIDC、对象存储和调度资源需按所在环境完成配置。

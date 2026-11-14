@@ -7,8 +7,6 @@ HTTP/HTTPS/SOCKS5 代理取得自包含 Git bundle 或源码材料，核验声�
 精确字节数后，复用现有 recipe 导入、材料上传及 release 发布逻辑。
 它不是通用下载代理，不为 Agent 开放上游网络，也不代理 Git、Spack、OCI 或其他业务流量。
 
-本文说明配置及接口约定；部署接线、代理传输和回归用例的验证结果以对应提交的
-GitHub Actions 为准，不代表生产站点或 15 个工作流已通过验收。
 既有 [手动 recipe 导入](spack-recipe-repositories.md)、
 [材料包初始化与 Web 上传](spack-material-delivery.md) 保留。
 

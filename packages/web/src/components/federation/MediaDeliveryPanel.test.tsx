@@ -1,3 +1,4 @@
+import { ApiError } from "@kuintessence/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -135,7 +136,7 @@ async function incomingTab() {
   fireEvent.click(tab);
 }
 async function openPackage() {
-  fireEvent.click(await screen.findByText(id));
+  fireEvent.click(await screen.findByText(id.slice(0, 8)));
   await screen.findByText("File manifest");
 }
 function form() {
@@ -219,7 +220,7 @@ beforeEach(async () => {
       return { data: path.includes("/exports/") ? null : receivedOperation };
     if (path.includes("/receipt")) return { data: [] };
     if (path.includes(`/exports/${id}`)) {
-      if (failDetail) throw new Error("read revoked");
+      if (failDetail) throw new ApiError(403, "FORBIDDEN", "read revoked");
       return { data: { ...outgoing, expiresAt, manifest, signedManifest: "signature" } };
     }
     if (path.includes(`/packages/${id}`))
@@ -232,7 +233,7 @@ beforeEach(async () => {
           hasMoreAuthorizations: false,
         },
       };
-    if (failList) throw new Error("read revoked");
+    if (failList) throw new ApiError(403, "FORBIDDEN", "read revoked");
     return { data: [path.includes("/exports?") ? { ...outgoing, expiresAt } : incoming] };
   });
 });
@@ -240,7 +241,7 @@ beforeEach(async () => {
 test("delivery read access is independent from logistics and write capabilities", async () => {
   grants = ["asset.read"];
   mount();
-  await screen.findByText(id);
+  await screen.findByText(id.slice(0, 8));
   expect(screen.queryByRole("button", { name: "Approve export" })).toBeNull();
   await openPackage();
   expect(screen.queryByRole("button", { name: "Run" })).toBeNull();
@@ -251,19 +252,38 @@ test("foreign option scope never opens the delivery inventory", async () => {
   foreignOptions = true;
   mount();
   await screen.findByRole("alert");
-  expect(screen.queryByText(id)).toBeNull();
+  expect(screen.queryByText(id.slice(0, 8))).toBeNull();
   expect(vi.mocked(api.get).mock.calls.some(([path]) => path.includes("/exports?"))).toBe(false);
 });
 test("refresh failure removes stale records and disables creation", async () => {
   const { client } = mount();
-  await screen.findByText(id);
+  await screen.findByText(id.slice(0, 8));
   failList = true;
   await client.invalidateQueries({ queryKey: ["federation", "media"] });
   await screen.findByRole("alert");
-  expect(screen.queryByText(id)).toBeNull();
+  expect(screen.queryByText(id.slice(0, 8))).toBeNull();
   expect(
     (screen.getByRole("button", { name: "Approve export" }) as HTMLButtonElement).disabled,
   ).toBe(true);
+});
+test.each([
+  new TypeError("network unavailable"),
+  new ApiError(503, "UNAVAILABLE", "temporarily unavailable"),
+])("transient list refresh keeps cached records read-only: %s", async (failure) => {
+  const { client } = mount();
+  await screen.findByText(id.slice(0, 8));
+  const original = vi.mocked(api.get).getMockImplementation();
+  vi.mocked(api.get).mockImplementation(async (path, ...args) => {
+    if (path.includes("/exports?")) throw failure;
+    return original?.(path, ...args);
+  });
+  await client.invalidateQueries({ queryKey: ["federation", "media"] });
+  await screen.findByText("Refresh failed. Showing the previously loaded data.");
+  expect(screen.getByText(id.slice(0, 8))).toBeTruthy();
+  expect(
+    (screen.getByRole("button", { name: "Approve export" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  expect(api.post).not.toHaveBeenCalled();
 });
 test("export selects the original task and Agent, and preserves original intent after unknown write", async () => {
   mount();
@@ -381,6 +401,26 @@ test("detail refresh failure preserves original request but hides stale resource
   fireEvent.click(screen.getByRole("button", { name: "Retry original request" }));
   await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2));
   expect(vi.mocked(api.post).mock.calls[0]).toEqual(vi.mocked(api.post).mock.calls[1]);
+});
+test("transport refresh retains package details and original intent with writes disabled", async () => {
+  const { client } = mount();
+  await openPackage();
+  fireEvent.click(await screen.findByRole("button", { name: "Run" }));
+  vi.mocked(api.post).mockRejectedValue(new Error("lost response"));
+  fireEvent.submit(form());
+  await screen.findByRole("button", { name: "Retry original request" });
+  const original = vi.mocked(api.get).getMockImplementation();
+  vi.mocked(api.get).mockImplementation(async (path, ...args) => {
+    if (path.includes(`/exports/${id}?`)) throw new TypeError("connection interrupted");
+    return original?.(path, ...args);
+  });
+  await client.invalidateQueries({ queryKey: ["federation", "media"] });
+  await screen.findByText("Refresh failed. Showing the previously loaded data.");
+  expect(screen.getByText("File manifest")).toBeTruthy();
+  expect(
+    (screen.getByRole("button", { name: "Retry original request" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  expect(api.post).toHaveBeenCalledTimes(1);
 });
 test("authentication scope change discards previous package selection and drafts", async () => {
   const view = mount();
@@ -695,7 +735,7 @@ test("workflow history pins both list directions and registration to the origina
   expect(screen.getByRole("link", { name: "Back to workflow" }).getAttribute("href")).toBe(
     `/workflows/${id}`,
   );
-  await screen.findByText(id);
+  await screen.findByText(id.slice(0, 8));
   expect(
     vi
       .mocked(api.get)

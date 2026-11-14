@@ -8,7 +8,7 @@
 |---|---|---|
 | 所有角色 | [标准操作流程（SOP）](/operate/sop) | 前置输入、操作入口、预期结果、失败分支、停止条件、升级和交班 |
 | 科研计算用户 | [用户手册（Markdown 正文）](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/user-manual.md) | 登录、作业、工作流、文件、数据和软件 |
-| 算力提供方 | [算力提供方手册](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/compute-provider-manual.md) | 节点、队列、账号、软件、计量和站点交班 |
+| 算力中心 | [算力中心手册](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/compute-provider-manual.md) | 节点、队列、账号、软件、计量和站点交班 |
 | 平台运营 | [平台运营手册](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/platform-operator-manual.md) | 告警、事件分级、审批、授权、审计和交班 |
 | 系统运维 | [系统运维手册](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/system-operations-manual.md) | 健康检查、备份、发布、回滚和恢复 |
 

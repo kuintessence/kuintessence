@@ -1,6 +1,6 @@
 # 安全与访问运维指南
 
-本文供平台运维与 Compute Provider 管理员配置认证、授权、软件仓库、
+本文供平台运维与 Compute Center 管理员配置认证、授权、软件仓库、
 Agent 身份和 SSH 接入。功能范围见[当前状态](status/current-state.md)。
 API 路径默认指 Server 内部路径；统一网关下 `/api/*` 通常对应 `/platform/api/*`。
 

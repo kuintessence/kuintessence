@@ -8,7 +8,7 @@
 | 读者 | 文档 |
 |---|---|
 | 科研计算用户 | [用户手册](manuals/user-manual.md)：登录、作业、工作流、文件与结果 |
-| 算力提供方 | [CP 手册](manuals/compute-provider-manual.md)：节点、账号、队列和软件运营 |
+| 算力中心 | [算力中心手册](manuals/compute-provider-manual.md)：节点、账号、队列和软件运营 |
 | 平台运营 | [运营手册](manuals/platform-operator-manual.md)：观察、审批、审计和事件处置 |
 | 系统运维 | [运维手册](manuals/system-operations-manual.md)：发布、备份、回滚和恢复 |
 
@@ -42,6 +42,6 @@
 示例使用虚构账号和站点；凭据与内部部署资料保存在仓库外。
 新增内容归入对应手册或专题。运行 `bun scripts/check-doc-links.ts` 检查本地文档链接。
 
-- [算力提供者资料](compute-providers.md)：平台管理与提供方自助维护。
+- [算力中心资料](compute-providers.md)：平台管理与算力中心自助维护。
 - [算网一览](compute-interconnect.md)：资源档案、统计口径、地图与互联状态。
-- [算力联邦 V2](design/federation/README.md)：实现方案、风险评估、验收契约及实现进展；完整功能尚未交付。
+- [算力联邦 V2](design/federation/README.md)：合作模式、协议、商业规则、数据交付及运行要求。

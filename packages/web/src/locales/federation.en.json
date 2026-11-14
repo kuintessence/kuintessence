@@ -391,7 +391,7 @@
       "until": "Available until {{value}}",
       "templates": "Allowed execution templates",
       "targets": "Allowed execution resources",
-      "providerOrgId": "Compute provider institution",
+      "providerOrgId": "Compute center institution",
       "clusterId": "Cluster",
       "agentId": "Agent",
       "queueId": "Queue",
@@ -512,6 +512,11 @@
       "removePrice": "Remove",
       "addPrice": "Add price",
       "terms": "Contract terms",
+      "sectionGroups": {
+        "contract": "Contract and delivery",
+        "accounts": "Accounts",
+        "resolution": "Disputes and closure"
+      },
       "executionScope": "Execution scope and limits",
       "identifiers": "Contract identifiers",
       "priceVersion": "Price version",
@@ -900,6 +905,7 @@
       "agents": "Execution Agent",
       "roots": "Managed directory",
       "choose": "Choose an option",
+      "selectedIdentifier": "Object identifier",
       "noOptions": "No available options",
       "subject": "Material purpose",
       "versionId": "Dataset version ID",
@@ -1610,7 +1616,8 @@
         "sourceSiteId": "Requesting site ID",
         "targetSiteId": "Executing site ID",
         "evidenceRecipientSiteId": "Arbitrator site ID"
-      }
+      },
+      "case": "Arbitration case"
     },
     "historyRecovery": {
       "title": "Recover historical attestation",
@@ -1643,6 +1650,7 @@
       },
       "reauthorize": "Reapprove original recovery",
       "reauthorizeEffect": "Preserve the original text and prior signatures, then approve with current local authority. The counterpart must approve again. Transactions with an unknown result must be recovered first."
-    }
+    },
+    "refreshFailed": "Refresh failed. Showing the previously loaded data."
   }
 }

@@ -10,6 +10,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { ApiError, type ApiOrganizationScope, api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
@@ -27,7 +28,11 @@ import { AgreementBacklog } from "./AgreementBacklog";
 import { AgreementExchangeStatus } from "./AgreementExchangeStatus";
 import { AgreementImport } from "./AgreementImport";
 import { AgreementFact, AgreementTerms } from "./AgreementTerms";
-import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
+import {
+  FederationEmpty,
+  FederationPanelHeader,
+  FederationRefreshNotice,
+} from "./FederationLayout";
 
 const path = "/federation/agreements";
 type Action =
@@ -58,11 +63,12 @@ export function AgreementPanel({
       ),
   });
   const currentCapabilities =
-    !capabilities.isError && capabilities.data?.orgId === scope.organizationId
+    !federationReadFailed(capabilities) && capabilities.data?.orgId === scope.organizationId
       ? capabilities.data.effectiveCapabilities
       : [];
   const canRead = currentCapabilities.includes("agreement.read");
-  const canApprove = currentCapabilities.includes("agreement.approve") && !mobileReadOnly;
+  const canApprove =
+    currentCapabilities.includes("agreement.approve") && !mobileReadOnly && !capabilities.isError;
   const context = useQuery({
     queryKey: [...key, "context"],
     enabled: canRead,
@@ -134,7 +140,7 @@ export function AgreementPanel({
     void client.invalidateQueries({ queryKey: key });
   };
   if (capabilities.isPending) return <p role="status">{t("federation.loading")}</p>;
-  if (capabilities.isError)
+  if (federationReadFailed(capabilities) || (canRead && federationReadFailed(context)))
     return (
       <div role="alert">
         <p>{t("federation.loadFailed")}</p>
@@ -151,6 +157,10 @@ export function AgreementPanel({
     );
   return (
     <div className="space-y-5">
+      <FederationRefreshNotice query={capabilities} onRetry={() => void capabilities.refetch()} />
+      <FederationRefreshNotice query={context} onRetry={() => void context.refetch()} />
+      <FederationRefreshNotice query={detail} onRetry={() => void detail.refetch()} />
+      <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
       <FederationPanelHeader title={t("federation.agreements.agreements")}>
         <Button
           variant="outline"
@@ -189,29 +199,25 @@ export function AgreementPanel({
           )}
         </p>
       ) : null}
-      {importing && context.data && canApprove ? (
-        <Card>
-          <CardContent className="pt-5">
-            <AgreementImport
-              scope={scope}
-              localSiteId={context.data.localSiteId}
-              supportedModes={context.data.supportedModes}
-              disabled={busy}
-              onReview={(terms, executionUserId) =>
-                confirm({ kind: "sign", terms, executionUserId })
-              }
-              onCancel={() => setImporting(false)}
-            />
-          </CardContent>
-        </Card>
+      {importing && context.data && canApprove && !context.isError ? (
+        <section className="border-t border-border pt-5">
+          <AgreementImport
+            scope={scope}
+            localSiteId={context.data.localSiteId}
+            supportedModes={context.data.supportedModes}
+            disabled={busy}
+            onReview={(terms, executionUserId) => confirm({ kind: "sign", terms, executionUserId })}
+            onCancel={() => setImporting(false)}
+          />
+        </section>
       ) : selected ? (
         <>
           <Button variant="ghost" disabled={mutation.isPending} onClick={() => setSelected(null)}>
             {t("federation.agreements.back")}
           </Button>
-          {detail.isError ? (
+          {federationReadFailed(detail) ? (
             <p role="alert">{t("federation.loadFailed")}</p>
-          ) : detail.isPending ? (
+          ) : detail.isPending || !detail.data ? (
             <p role="status">{t("federation.loading")}</p>
           ) : (
             <AgreementDetail
@@ -224,9 +230,9 @@ export function AgreementPanel({
             />
           )}
         </>
-      ) : list.isError ? (
+      ) : federationReadFailed(list) ? (
         <p role="alert">{t("federation.loadFailed")}</p>
-      ) : list.isPending ? (
+      ) : list.isPending || !list.data ? (
         <p role="status">{t("federation.loading")}</p>
       ) : (
         <>
@@ -241,10 +247,10 @@ export function AgreementPanel({
                   >
                     <span className="min-w-0 space-y-1">
                       <span className="block break-all font-medium">
-                        {approval.terms.sourceSiteId} → {approval.terms.targetSiteId}
+                        {t("federation.agreements.agreements")} · {approval.revisionId.slice(0, 8)}
                       </span>
                       <span className="block break-all text-xs text-muted-foreground">
-                        {approval.revisionId}
+                        {new Date(approval.createdAt).toLocaleDateString()}
                       </span>
                     </span>
                     <span className="shrink-0 text-sm">

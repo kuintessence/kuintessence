@@ -215,7 +215,7 @@ test("read-only viewers inspect verified content but cannot import or revoke", a
     { localOrgId: org, originSiteId: site, digest, kind: "inputs", createdAt: mapping.createdAt },
   ];
   mount();
-  const row = await screen.findByRole("button", { name: new RegExp(digest) });
+  const row = await screen.findByRole("button", { name: new RegExp(digest.slice(0, 19)) });
   expect(screen.queryByRole("button", { name: "Import material" })).toBeNull();
   fireEvent.click(row);
   await screen.findByRole("button", { name: "Export material" });
@@ -237,7 +237,7 @@ test("refuses modified material contents and wrong-organization lists", async ()
       : get?.(path, ...args),
   );
   mount();
-  fireEvent.click(await screen.findByRole("button", { name: new RegExp(digest) }));
+  fireEvent.click(await screen.findByRole("button", { name: new RegExp(digest.slice(0, 19)) }));
   await screen.findByRole("alert");
   expect(screen.queryByRole("button", { name: "Export material" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Back to materials" }));

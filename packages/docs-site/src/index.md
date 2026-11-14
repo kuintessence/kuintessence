@@ -4,19 +4,20 @@ Kuintessence 用于管理 Slurm、PBS Pro、Torque、Kubernetes 及云/边缘资
 
 按下方角色入口查找使用与运维说明。通用操作手册与配置说明保存在仓库 `docs/` 目录。
 
-项目目前为 pre-release，部署要求见[当前实现状态与限制](./reference/current-status.md)。
+部署要求见[当前实现状态与限制](./reference/current-status.md)。
 
 ## 按角色阅读
 
 | 角色 | 主要问题 | 入口 |
 |---|---|---|
 | 普通用户 / Compute Consumer | 如何登录、提交作业、运行 workflow、查看文件和软件可用性 | [用户手册](./roles/user.md) |
-| 算力提供者 / 集群管理员 | 如何接入 Agent、管理节点、软件策略、用户和计量 | [算力提供者手册](./roles/compute-provider.md) |
-| 平台运营 | 如何管理租户、SSO、安全、软件审核、审计和发布 | [平台运营手册](./roles/platform-operator.md) |
+| 算力中心 / 集群管理员 | 如何接入 Agent、管理节点、软件策略、用户和计量 | [算力中心手册](./roles/compute-provider.md) |
+| 平台运营 | 如何管理资源、协调审批、查询审计和处理事件 | [平台运营手册](./roles/platform-operator.md) |
 | 软件开发者 / Software Provider | 如何维护 Spack package、用例、workflow template 并提交审核 | [软件开发者手册](./roles/software-provider.md) |
 
 ## 快速入口
 
+- [联邦协同](./guide/federation-collaboration.md)
 - [快速开始](./guide/getting-started.md)
 - [角色地图](./guide/role-map.md)
 - [部署与环境](./operate/deployment.md)

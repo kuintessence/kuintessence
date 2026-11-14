@@ -12,9 +12,9 @@ recipe bundle、不改写原生 lock、不重打源码归档。导出的材料�
 
 此导出工作流验证**导出、初始化导入、真实 Web 导入和持久化回读**，不执行受管安装或
 科学作业。独立的 PR scheduler artifact-bootstrap 与 Web managed 模式以同一
-delivery 分别衔接初始化/Web 导入与受管安装，见下文；各路径的验收范围不能互相替代。
+delivery 分别衔接初始化/Web 导入与受管安装，见下文；各路径的适用范围不能互相替代。
 既有 Hello/samtools 受管安装案例的通过，不能替代另一份新生成材料的
-安装验收，更不能证明 15 个科学工作流或生产目标站点可用。
+安装运行检查，更不能证明 15 个科学工作流或生产目标站点可用。
 
 ## 发布前提
 
@@ -30,7 +30,7 @@ delivery 分别衔接初始化/Web 导入与受管安装，见下文；各路径
 ## 触发参数
 
 在 GitHub Actions 选择 `Spack material artifacts`，使用已审阅的 `main`。
-专用开发分支 `feat/spack-material-artifacts` 仅用于本功能的隔离验收。
+专用开发分支 `feat/spack-material-artifacts` 仅用于本功能的隔离运行检查。
 `feat/spack-artifact-managed`、`feat/spack-web-managed`、
 `feat/spack-workflow-execution` 和 `feat/spack-file-workflow`
 仅允许 `publish_artifact=false` 的隔离验证，即使确认再分发也不能在这些分支上传；
@@ -142,12 +142,12 @@ shasum -a 256 -c checksums.txt
 
 测试栈只绑定 runner 的 loopback，不启动 Agent、scheduler、公网 preview 或生产部署。
 Server/Registry 额外连接本次项目的非 internal bridge，供 Docker 发布 loopback 端口；
-数据库仍只连接 internal backend。该 bridge 允许服务出站，不是网络断网验收；
+数据库仍只连接 internal backend。该 bridge 允许服务出站，不是网络断网运行检查；
 Registry 上游导入保持关闭，导出容器使用 `network_mode: none`。
 失败只输出固定阶段标记，不上传临时认证状态。所有通过结论须核对对应提交的 Actions，
 不以配置、单元测试或文件存在代替真实导入结果。
 
-## 同一交付的受管安装验收
+## 同一交付的受管安装运行检查
 
 独立的 `PR scheduler tests` 新增 Hello/samtools 两条 `artifact bootstrap`
 managed job，保留原有两条直接发布材料的 managed job、Hello native 和 Slurm/PBS
@@ -175,7 +175,7 @@ bash deploy/pr-test/run.sh slurm --spack-artifact-samtools
    掩盖持久化失败。
 
 此模式不启动 Web、不部署 preview/production，也不上传 delivery、安装树或原始日志。
-独立导出工作流的许可确认与可选上传规则保持不变，不因增加安装验收自动发布材料。
+独立导出工作流的许可确认与可选上传规则保持不变，不因增加安装运行检查自动发布材料。
 完整 CI 另接入 `scripts/spack-artifact-managed.test.ts` 合同检查及 harness 类型检查；
 这些静态或 fixture 检查不能替代真实 scheduler job。
 
@@ -187,7 +187,7 @@ PR #9 的提交 `e8b50b7b6834a2937bb1a8858cf9067f232212db` 已通过完整 CI
 或生产目标集群。固定工具链、site profile 和隔离边界见
 [PR 调度器测试](../deploy/pr-test/README.md#同一交付的-artifact-bootstrap-受管案例)。
 
-## 同一交付的 Web 受管安装验收
+## 同一交付的 Web 受管安装运行检查
 
 PR scheduler matrix 另增两条 Web managed job，入口仅供临时 GitHub Actions runner 使用：
 
@@ -204,7 +204,7 @@ bash deploy/pr-test/run.sh slurm --spack-web-samtools
    recipe snapshot/archive、原生 lock 与全部 blob，不以推算值代替导入回执。
 3. 撤掉导入阶段的 host loopback 端口和非 internal endpoint，保留数据库与材料卷，
    force-recreate Server/Registry；只读 handoff verify 成功后才启动 scheduler。
-   导入阶段的出站网络不属于断网验收，不能带入后续安装拓扑。
+   导入阶段的出站网络不属于断网运行检查，不能带入后续安装拓扑。
 4. Server 加载已核验 binding，Agent 仍仅从 Server 拉取材料，不能访问 Registry
    backend 或挂载 delivery。继续既有 managed install/job/restart/uninstall、
    完整性负例及恢复、引用账本与 rollout 检查；重启继续禁用 bootstrap，
@@ -216,8 +216,8 @@ protobuf generate 和 `packages/web` 的 `e2e:install`（Patchright Chromium）�
 旧 managed/native/scheduler 路径不增加 host 依赖。AppArmor、总超时、清理和无上传
 门禁沿用 managed job；不部署 preview/production，不上传材料、原始日志或认证 trace。
 完整 CI 增加 `scripts/spack-web-managed.test.ts` 合同检查，不能代替真实 browser
-导入和 scheduler 验收。
+导入和 scheduler 运行检查。
 
 **新增 Web 链路待新 HEAD 的 Actions 验证**，不继承上述 PR #9 的历史通过结论。
 即使通过，也仅覆盖当次固定 Hello/samtools delivery，不代表任意 spec、15 个工作流、
-PBS managed 安装、跨节点共享存储/ABI 或生产站点验收。
+PBS managed 安装、跨节点共享存储/ABI 或生产站点运行检查。

@@ -56,7 +56,7 @@ function write(
     ...(method !== "DELETE" ? { body: JSON.stringify(body) } : {}),
   });
 }
-describe("compute provider permissions", () => {
+describe("compute center permissions", () => {
   test("ordinary users denied, platform operators and admins manage providers", async () => {
     const user = app("user");
     expect((await user.r.request("/providers/operator/list")).status).toBe(403);

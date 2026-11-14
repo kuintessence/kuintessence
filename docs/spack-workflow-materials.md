@@ -1,24 +1,12 @@
 # 科学工作流 Spack 材料准备
 
-## 适用范围与状态
+## 工作流与目标环境
 
-本文用于盘点 15 个科学工作流的候选材料，并说明运维如何获取、校验、搬运及导入
-recipe 与目标 Linux 材料。候选包名不是固定 recipe 的求解结果，不承诺对应版本、
-variant 或软件组合可用。**15 个工作流均未完成材料、安装及科学运行验收。**
+15 个科学工作流的材料分为 recipe、源码依赖、科学输入和目标运行环境。候选包名用于表达需求，实际安装使用固定 recipe 原生求解出的版本、variants、依赖锁和目标 profile。
 
-首个实现路线为工作流 10 中的 samtools 单软件垂直切片，不是完整变异检测流程。
-该案例提供可重复的 GitHub Actions 验收入口；concretize、完整源码闭包、受管安装
-和 Slurm 运行须分别核对对应提交的执行结果，不能将代码存在视为通过。
-既有 GNU Hello 的通过记录不能用作 samtools 的验收证据。
+Hello 与 samtools 的[材料导出入口](spack-material-artifacts.md)提供固定软件组合；其他软件需要单独准备目标 Linux 的原生 lock 和源码闭包。不能用 macOS 求解结果替代 Linux lock，也不能按包名推断 Python、MPI 或编译器 ABI 兼容。
 
-当前没有面向这 15 个工作流的通用材料自动生成器，也没有可直接下载的完整材料
-artifact。固定 Hello/samtools 新增[手动材料导出](spack-material-artifacts.md)入口，
-默认只验证；完成审核并明确上传后，才会产生该次 run 的可下载材料。
-不提供任意 spec 的通用导出入口，也不代表已生成 15 项材料。
-
-运维可使用[材料交付与目标验收工作表](spack-workflow-acceptance.md)逐项记录
-target/profile、recipe、lock/source、导入 binding 和科学运行证据。其候选 YAML
-与空白记录不是平台导入 manifest，所有条目默认未验收。
+[目标环境工作表](spack-workflow-acceptance.md)用于记录 target/profile、材料 binding 与任务运行条件。候选 YAML 和工作表不属于平台导入 manifest，不参与授权或安装准入判断。
 
 ## 材料分类
 
@@ -40,23 +28,23 @@ target/profile、recipe、lock/source、导入 binding 和科学运行证据。�
 各项均需为实际 Linux target 单独求解；samtools 参考环境也不能推广为其他行的
 适配承诺。许可栏是待完成的自审事项，不是法律结论或授权证明。
 
-| ID / 工作流 | 候选 Spack 包 | 外部数据或输入 | 许可自审重点 | Target / MPI 与接口风险 | 状态 |
-|---|---|---|---|---|---|
-| 01 风道 CFD | `gmsh`、`openfoam`、`paraview`、`python` | 合成风道几何、边界条件和网格 | 软件依赖、教程及网格授权 | Linux；OpenFOAM 发行版及配置差异；MPI provider/ABI；ParaView 无头渲染与 Python 接口 | 未验收 |
-| 02 悬臂梁结构 | `gmsh`、`calculix`、`py-meshio`、`paraview`、`python` | 合成悬臂梁、载荷与材料参数 | 软件、示例和转换代码许可 | Linux；OpenMP、Python/VTK ABI；mm–N–MPa 单位、物理组、FRD→VTU 支持 | 未验收 |
-| 03 生物分子最小化 | `gromacs`、`gnuplot`、`python` | 外部 RCSB 1AKI 结构、力场和水模型 | 结构数据使用条款与力场许可分别核对 | Linux SIMD；MPI+OpenMP 组合；拓扑与坐标原子数一致性 | 未验收 |
-| 04 原子分子动力学 | `py-ase`、`lammps`、`paraview`、`python` | 合成氩晶体和 Lennard-Jones 参数；外部势文件另行取得 | 软件及任何外部势文件许可 | Linux；MPI、LAMMPS 功能包与单位制；dump→VTK 字段契约 | 未验收 |
-| 05 固体电子结构 | `quantum-espresso`、`wannier90`、`gnuplot`、`python` | Si 结构、外部 UPF 赝势 | 每个赝势的来源、版本及再分发条款 | Linux；MPI、BLAS/Fortran ABI；QE/Wannier 接口及 k 点数量、顺序 | 未验收 |
-| 06 分子结构优化 | `cp2k`、`py-ase`、`gnuplot`、`python` | 合成水分子、匹配版本的 `BASIS_MOLOPT` / `GTH_POTENTIALS` | 基组、势文件与软件许可分别核对 | Linux；MPI+OpenMP、Fortran/BLAS；固定数据路径及元素条目 | 未验收 |
-| 07 区域天气模拟 | `wps`、`wrf`、`cdo`、`py-xarray`、`py-netcdf4`、`python` | WPS 地理数据、NOAA GFS GRIB2 | 数据产品、时间范围、地理数据条款与再分发条件 | Linux；MPI、Fortran、HDF5/NetCDF；大文件预算与实际垂直层数；不预设 variant 可用 | 未验收 |
-| 08 全球地震波 | `specfem3d-globe`、`py-obspy`、`python` | 固定版本的官方小型 benchmark、模型、震源和台站 | 模型、算例和观测数据授权 | Linux；MPI rank 与 `NCHUNKS/NPROC_XI/NPROC_ETA` 一致；网格内存与 Python 接口 | 未验收 |
-| 09 AMR 天体物理 | `enzo`、`py-yt`、`hdf5`、`gnuplot`、`python` | 固定 release/commit 的 `ShockPool3D` 输入，不使用浮动分支 | 官方样例与软件许可 | Linux；MPI/HDF5/yt 版本兼容、层次输出和单位转换 | 未验收 |
-| 10 变异检测 | `fastp`、`bwa-mem2`、`samtools`、`bcftools`、`python` | 合成参考序列、read pairs 和 truth；首个切片仅合成 SAM | 软件及依赖许可；真实基因组数据另行治理 | Linux CPU SIMD、线程总预算、BAM/VCF/索引契约；不假定需要 MPI | 全链路未验收；samtools 切片见对应 Actions |
-| 11 稀疏特征值 | `petsc`、`slepc`、`py-petsc4py`、`py-slepc4py`、`py-scipy`、`python` | 合成 5×5 Matrix Market 矩阵 | 软件、示例及替换矩阵的数据许可 | Linux；同一 MPI provider/ABI、Python ABI、scalar/index 宽度和 BLAS；bindings 必须使用一致依赖 DAG | 未验收 |
-| 12 粒子输运 | `geant4`、`root`、`cmake`、`python` | 同版本官方 B4a 示例和 Geant4 物理数据集 | 示例、各物理数据集与软件条款分别核对 | Linux；C++/ROOT/PyROOT ABI、多线程预算、数据集路径；不默认采用 MPI | 未验收 |
-| 13 GIS 水文分析 | `gdal`、`grass`、`cdo`、`py-xarray`、`py-netcdf4`、`py-numpy`、`python` | 默认合成 DEM；SRTM 等真实数据另行取得 | 真实 DEM 的账号、产品和再分发条件 | Linux；GDAL Python bindings、NetCDF/HDF5；CRS、NoData、垂直基准；单节点多核不等于 MPI 验收 | 未验收 |
-| 14 翼型 CFD | `su2`、`gnuplot`、`paraview`、`python` | 同一 release 的官方 NACA0012 配置与网格 | 教程、网格及软件许可 | Linux；MPI 分区、配置版本与 history 列名；可视化接口 | 未验收 |
-| 15 量子化学 | `nwchem`、`py-ase`、`gnuplot`、`python` | 合成水分子、匹配基组库 | 基组、软件及示例许可 | Linux；MPI/ARMCI、Fortran/BLAS、库路径；Bohr/Angstrom 与 D 指数解析 | 未验收 |
+| 工作流 | 候选 Spack 包 | 外部数据或输入 | 许可自审重点 | Target / MPI 与接口风险 |
+|---|---|---|---|---|
+| 01 风道 CFD | `gmsh`、`openfoam`、`paraview`、`python` | 合成风道几何、边界条件和网格 | 软件依赖、教程及网格授权 | Linux；OpenFOAM 发行版及配置差异；MPI provider/ABI；ParaView 无头渲染与 Python 接口 |
+| 02 悬臂梁结构 | `gmsh`、`calculix`、`py-meshio`、`paraview`、`python` | 合成悬臂梁、载荷与材料参数 | 软件、示例和转换代码许可 | Linux；OpenMP、Python/VTK ABI；mm–N–MPa 单位、物理组、FRD→VTU 支持 |
+| 03 生物分子最小化 | `gromacs`、`gnuplot`、`python` | 合成二丙氨酸结构、AMBER99SB-ILDN 力场和 TIP3P 水模型 | 结构数据使用条款与力场许可分别核对 | Linux SIMD；MPI+OpenMP 组合；拓扑与坐标原子数一致性 |
+| 04 原子分子动力学 | `py-ase`、`lammps`、`paraview`、`python` | 合成氩晶体和 Lennard-Jones 参数；外部势文件另行取得 | 软件及任何外部势文件许可 | Linux；MPI、LAMMPS 功能包与单位制；dump→VTK 字段契约 |
+| 05 固体电子结构 | `quantum-espresso`、`wannier90`、`gnuplot`、`python` | Si 结构、外部 UPF 赝势 | 每个赝势的来源、版本及再分发条款 | Linux；MPI、BLAS/Fortran ABI；QE/Wannier 接口及 k 点数量、顺序 |
+| 06 分子结构优化 | `cp2k`、`py-ase`、`gnuplot`、`python` | 合成水分子、匹配版本的 `BASIS_MOLOPT` / `GTH_POTENTIALS` | 基组、势文件与软件许可分别核对 | Linux；MPI+OpenMP、Fortran/BLAS；固定数据路径及元素条目 |
+| 07 区域天气模拟 | `wps`、`wrf`、`cdo`、`py-xarray`、`py-netcdf4`、`python` | WPS 地理数据、NOAA GFS GRIB2 | 数据产品、时间范围、地理数据条款与再分发条件 | Linux；MPI、Fortran、HDF5/NetCDF；大文件预算与实际垂直层数；不预设 variant 可用 |
+| 08 全球地震波 | `specfem3d-globe`、`py-obspy`、`python` | 固定版本的官方小型 benchmark、模型、震源和台站 | 模型、算例和观测数据授权 | Linux；MPI rank 与 `NCHUNKS/NPROC_XI/NPROC_ETA` 一致；网格内存与 Python 接口 |
+| 09 AMR 天体物理 | `enzo`、`py-yt`、`hdf5`、`gnuplot`、`python` | 固定 release/commit 的 `ShockPool3D` 输入，不使用浮动分支 | 官方样例与软件许可 | Linux；MPI/HDF5/yt 版本兼容、层次输出和单位转换 |
+| 10 变异检测 | `fastp`、`bwa-mem2`、`samtools`、`bcftools`、`python` | 合成参考序列、read pairs 和 truth；首个切片仅合成 SAM | 软件及依赖许可；真实基因组数据另行治理 | Linux CPU SIMD、线程总预算、BAM/VCF/索引契约；不假定需要 MPI |
+| 11 稀疏特征值 | `petsc`、`slepc`、`py-petsc4py`、`py-slepc4py`、`py-scipy`、`python` | 合成 16×16 Matrix Market 矩阵 | 软件、示例及替换矩阵的数据许可 | Linux；同一 MPI provider/ABI、Python ABI、scalar/index 宽度和 BLAS；bindings 必须使用一致依赖 DAG |
+| 12 粒子输运 | `geant4`、`root`、`cmake`、`python` | 同版本官方 B4a 示例和 Geant4 物理数据集 | 示例、各物理数据集与软件条款分别核对 | Linux；C++/ROOT/PyROOT ABI、多线程预算、数据集路径；不默认采用 MPI |
+| 13 GIS 水文分析 | `gdal`、`grass`、`cdo`、`py-xarray`、`py-netcdf4`、`py-numpy`、`python` | 默认合成 DEM；SRTM 等真实数据另行取得 | 真实 DEM 的账号、产品和再分发条件 | Linux；GDAL Python bindings、NetCDF/HDF5；CRS、NoData、垂直基准；单节点多核不等于 MPI 运行检查 |
+| 14 翼型 CFD | `su2`、`gnuplot`、`paraview`、`python` | 同一 release 的官方 NACA0012 配置与网格 | 教程、网格及软件许可 | Linux；MPI 分区、配置版本与 history 列名；可视化接口 |
+| 15 量子化学 | `nwchem`、`py-ase`、`gnuplot`、`python` | 合成水分子、原创教学基组 | 基组、软件及示例许可 | Linux；MPI/ARMCI、Fortran/BLAS、库路径；Bohr/Angstrom 与 D 指数解析 |
 
 ## 首个 samtools 切片
 
@@ -85,7 +73,7 @@ worker 从验证通过的 native lock 恢复各包精确版本、variants、comp
 案例显式选择官方 ncurses 的 `+symlinks` 和 `pkgconf` provider，以避免其默认
 替代配置中的硬链接安装产物。这些约束属于双方共同求解的请求 spec，
 不是准备器私有配置，也没有改写上游 recipe。worker 仍拒绝安装树中的硬链接；
-任意软件的硬链接兼容性不在本案例验收范围内。
+任意软件的硬链接兼容性不在本案例适用范围内。
 Spack 1.0 的 `%pkgconf` 在此绑定最近的 `^ncurses` 节点，明确其直接构建依赖；
 不能替换为 root 级 `^pkgconf`，后者不匹配该间接纯构建依赖。
 固定 spec 使用 Spack 原生规范化顺序，在求解前检查其往返表示一致；
@@ -209,7 +197,7 @@ bundle、lock、sources 和元数据，以该 bundle 的实际 HEAD 为准，不
 
 固定案例可使用[手动材料导出工作流](spack-material-artifacts.md)生成成套导入目录，
 须在实际验证成功并授权上传后取得，不预设已经存在可下载成品。
-原 PR 安装验收入口仍不自动导出材料。准备器的 `metadata.json`、`recipes.bundle`、
+PR 安装任务不自动导出材料。准备器的 `metadata.json`、`recipes.bundle`、
 `spack.lock`、`sources/` 原始输出也不等于 Web 材料 manifest，须经导出器或按下节组包。
 
 接收材料前核对：
@@ -295,7 +283,7 @@ manifest 摘要使用 `sha256:` 前缀。保留原始 lock 和源码字节，不
 3. 核对 namespace、spec、Linux target 和再分发声明后导入，逐项检查结果。浏览器
    不执行 Spack、不补齐缺件；schema 和 digest 校验不证明闭包或安装成功。
 4. 保存成功的 `{repositoryId, manifestDigest}` binding，并查阅固定 manifest。
-   取消或发布响应丢失不代表回滚；结果待确认时先核查，不宣称失败项已被删除。
+   取消或发布响应丢失不代表回滚；结果待确认时先检查，不宣称失败项已被删除。
 
 导入完成不会自动设置 Server 的 `SPACK_MATERIAL_RELEASES`、启用安装、恢复下架项、
 执行 recipe 或运行作业。运维须显式配置成功 binding，满足当前 lifecycle、
@@ -303,14 +291,14 @@ visibility 与 rollout 门禁，并按[实验性受管安装要求](spack-materi
 准备可信 runtime/site profile。Agent 始终仅从 Server 获取材料，不直连 Registry
 或上游，不以临时出网补齐缺失源码。
 
-## 验收判定
+## 运行检查判定
 
 材料准备、许可审查、导入、source audit、离线 build、readonly verify、managed load、
 调度器执行与科学结果校验须分别给出结论。静态结构校验、文件存在、作业退出零或
-某一个软件成功，都不能代替后续阶段及整个工作流验收。
+某一个软件成功，都不能代替后续阶段及整个工作流运行检查。
 
 失败应区分求解/recipe、缺件或 checksum、授权/门禁、ABI、构建、内存或磁盘预算、
 runtime 隔离、调度器和科学结果；网络问题须有脱敏后的 DNS/TLS/HTTP/超时分类证据，
 不能统一归因为网络。不得输出凭据、原始环境变量、内部路径或未经脱敏的任务日志。
-新增验收结论须逐项核对对应提交的 GitHub Actions，入口与范围见
+新增运行检查结论须逐项核对对应提交的 GitHub Actions，入口与范围见
 [PR 调度器测试](../deploy/pr-test/README.md)。

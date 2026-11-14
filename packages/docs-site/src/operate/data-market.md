@@ -1,17 +1,17 @@
-# Data Market CP 运维
+# Data Market 算力中心运维
 
-Compute Provider 的数据管理员通过 `/cp/data` 管理 provider 数据资产、导入、版本、副本和 access request 审批。该入口处理 metadata，不传输科学数据或受限材料文件。
+Compute Center 的数据管理员通过 `/cp/data` 管理 provider 数据资产、导入、版本、副本和 access request 审批。该入口处理 metadata，不传输科学数据或受限材料文件。
 
-## CP 数据对象
+## 算力中心数据对象
 
 - `DataAsset` 归属于 provider organization，可为 `organization` 或 `public`；非平台管理员创建 public 资产时 lifecycle 为 `reviewing`。
 - `DataAssetVersion` 由 object commit 或 CP-local scan 产生，状态必须为可用才能投入调度。
 - location/replica 固定绑定 `agentId`、`siteId`、`clusterId`。调度时只选择 digest 一致、`verifiedAt` 距今不超过 24 小时的 `available` replica 所在中心。多个副本可增加候选中心，但仍受数据策略限制。
-- access request 按 capability 和 subject 审批。CP 可在 `/cp/data` 查看详情并 approve/reject；审批会写入 grant 与授权投影。
+- access request 按 capability 和 subject 审批。算力中心可在 `/cp/data` 查看详情并 approve/reject；审批会写入 grant 与授权投影。
 
 ## 三来源严格导入
 
-CP 数据导入使用：
+算力中心数据导入使用：
 
 ```text
 POST /api/cp/data/imports
@@ -87,11 +87,11 @@ POST /api/admin/data-market/owner-entitlements/:grantId/revoke
 重点故障码：
 
 - `DATA_IMPORT_UNAVAILABLE`：NetDrive promote 或 platform-object import worker 未部署，导入未完成。
-- `Authorization denied`：CP scope、manage 或审批权限不足。
+- `Authorization denied`：算力中心 scope、manage 或审批权限不足。
 - `Data asset version not found`：asset/version 归属不匹配，或版本尚未由 commit/scan 产生。
 - 上传 commit 的 blob missing、size/hash mismatch：检查浏览器 PUT、RustFS CORS、presigned URL 与 SHA-256。
 
-生产升级使用 migration `0036`–`0043`。先完成数据库迁移和 Server/Agent 兼容部署，再配置 `AGENT_DATASET_ROOTS_JSON`，启用 CP-local scan。迁移不包含科学数据、POTCAR 或 OCI bundle。
+生产升级使用 migration `0036` 至 `0043`。先完成数据库迁移和 Server/Agent 兼容部署，再配置 `AGENT_DATASET_ROOTS_JSON`，启用 CP-local scan。迁移不包含科学数据、POTCAR 或 OCI bundle。
 
 `bun run db:migrate` 在执行 generated `0043` 的同一 PostgreSQL transaction 内取得 advisory/table lock，预检 `input_descriptor` 的 canonical stage path，并将未经可信验证的 `available` replica 标为 `stale`。随后执行 `0043`，按预检计划为每个既有 binding 回填唯一 `stage_path`，最后写入 migration journal。
 

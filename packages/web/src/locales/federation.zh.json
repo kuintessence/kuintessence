@@ -512,6 +512,11 @@
       "removePrice": "移除",
       "addPrice": "添加价格",
       "terms": "合同条款",
+      "sectionGroups": {
+        "contract": "合同与履约",
+        "accounts": "账务",
+        "resolution": "争议与终止"
+      },
       "executionScope": "执行范围与限制",
       "identifiers": "合同标识",
       "priceVersion": "价格版本",
@@ -900,6 +905,7 @@
       "agents": "执行 Agent",
       "roots": "受管目录",
       "choose": "请选择",
+      "selectedIdentifier": "对象编号",
       "noOptions": "暂无可选项",
       "subject": "材料用途",
       "versionId": "数据集版本编号",
@@ -1610,7 +1616,8 @@
         "sourceSiteId": "需求机构 ID",
         "targetSiteId": "执行机构 ID",
         "evidenceRecipientSiteId": "仲裁机构 ID"
-      }
+      },
+      "case": "仲裁案件"
     },
     "historyRecovery": {
       "title": "恢复历史存证",
@@ -1643,6 +1650,7 @@
       },
       "reauthorize": "重新批准原恢复",
       "reauthorizeEffect": "保留原文和历次签名，用当前本站权限重新批准；需重新取得对方当前批准。结果未知的链交易必须先恢复原交易。"
-    }
+    },
+    "refreshFailed": "更新失败，正在显示上次加载的内容。"
   }
 }

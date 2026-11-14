@@ -9,7 +9,7 @@ Registry 提供空内容 recipe 仓库，由运维导入官方或自定义 Git b
 现有 Spack catalog 继续兼容保留。目录中的 metadata 不证明 recipe、源码或安装环境已存在。
 本功能与现有软件资产授权并行：recipe namespace 不会自动授予软件使用权或创建 trusted asset。
 
-本阶段支持：
+支持：
 
 - 含 `HEAD`、自包含的 SHA-1 Git bundle，不支持增量 bundle 或 Web 指定服务端路径。
   原上传入口不接受 URL；可选 [受控上游导入](spack-upstream-import.md) 使用单独的 JSON
@@ -27,7 +27,7 @@ Registry 提供空内容 recipe 仓库，由运维导入官方或自定义 Git b
 - 下载和校验已接入 [材料发布与 Agent 下载](spack-material-delivery.md)，但尚不解包或执行安装。
 - 源码/厂商二进制/buildcache 的统一手动导入与恢复上传。
   新增 Spack 专用代理只用于上述受控导入，真实代理与部署验证以对应提交的 CI 为准。
-- 按具体用户授权或在 namespace 间迁移；本阶段沿用 Registry public/org/user 的权限矩阵。
+- 按具体用户授权或在 namespace 间迁移；沿用 Registry public/org/user 的权限矩阵。
 - 物理删除 Git 历史和垃圾回收。停用不删历史，不自动卸载已安装软件。
 
 ## 存储与持久卷

@@ -59,13 +59,13 @@ ls packages/registry/src/data/spack-package-metadata.json
 
 官方 upstream package 详情从本地全量缓存读取，无需临时访问外网。若单个 package 缺少 metadata，重新运行生成脚本并更新相关文档。
 
-## CP 软件页面显示范围内暂无集群
+## 算力中心软件页面显示范围内暂无集群
 
 检查 Agent 是否注册，以及 provider org 是否属于当前用户的管理范围。`/cp/software` 也会列出尚无 policy row 的 Agent，并标记为未配置策略；列表为空时，检查：
 
 - 当前登录用户是否属于 provider org。
 - `agents.providerOrgId` 是否为空或不匹配。
-- Server CP overview API 是否返回 clusters/agents。
+- Server 算力中心 overview API 是否返回 clusters/agents。
 
 ```bash
 curl -i http://localhost:15173/api/cp/software/overview
@@ -86,7 +86,7 @@ docker compose --project-directory . -p kq-schedulers --env-file deploy/schedule
 bash deploy/schedulers/verify-recognition.sh deploy/compose/docker-compose.schedulers.yml deploy/schedulers/ports-alt.env
 ```
 
-控制通道恢复后，用 Spack operation smoke 检查软件操作能否从 CP Web 经 Server、Agent 执行到 Spack。脚本默认对第一个在线 Agent 执行单条 `install`、批量 `import_preinstalled` 和单条 `load`：
+控制通道恢复后，用 Spack operation smoke 检查软件操作能否从算力中心 Web 经 Server、Agent 执行到 Spack。脚本默认对第一个在线 Agent 执行单条 `install`、批量 `import_preinstalled` 和单条 `load`：
 
 ```bash
 bash deploy/schedulers/spack-operation-smoke.sh deploy/schedulers/ports-alt.env
@@ -111,7 +111,7 @@ bash deploy/schedulers/spack-operation-smoke.sh deploy/schedulers/ports-alt.env
 
 HTTP 请求默认使用 10 秒连接超时和 30 秒总超时，可通过 `KQ_SPACK_SMOKE_CONNECT_TIMEOUT_SEC` 与 `KQ_SPACK_SMOKE_CURL_TIMEOUT_SEC` 调整。批量 smoke 在本地检查 2000 条原始行、200 个唯一 spec 的上限，再向 Server 提交原始换行列表。Server batch 响应包含 `summary` 时，脚本会打印接收条数、忽略的空项和重复项数量，便于核对输入与创建的 operation 数量。
 
-轮询 operation history 支持旧数组响应与当前 `{items}` 响应。`install`、`import_preinstalled` 和 `uninstall` 成功后，脚本还会读取 CP software overview 检查 installed ledger。只需检查 operation 终态时，可设置 `KQ_SPACK_SMOKE_VERIFY_LEDGER=false`。
+轮询 operation history 支持旧数组响应与当前 `{items}` 响应。`install`、`import_preinstalled` 和 `uninstall` 成功后，脚本还会读取算力中心软件概览 检查 installed ledger。只需检查 operation 终态时，可设置 `KQ_SPACK_SMOKE_VERIFY_LEDGER=false`。
 
 ## Scheduler Agent 周期性重连
 

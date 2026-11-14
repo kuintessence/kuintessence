@@ -18,7 +18,7 @@ NetworkPolicy限定本 release，不放通同 namespace 的其他 PR 后端访�
 RBAC权限；不需要 nodes/namespace 对象查询、namespace创建删除或 cluster-admin。
 基础设施与策略执行由管理员预先配置，namespace权限本身不是每 PR 的权限隔离。
 这些约定只适用于 preview wrapper，不改变用户版 chart的安装 namespace选择。
-共享 namespace实现仍待安全复核和对应提交的 Actions/真实集群验收，不宣称已上线；
+共享 namespace实现仍待安全复核和对应提交的 Actions/真实集群运行检查，不宣称已上线；
 旧独立 PR namespace不会自动迁移或清除。完整契约见
 [k3s PR 预览](../../../docs/preview-k3s.md)。
 
@@ -92,7 +92,7 @@ Server health。seed镜像必须保持 DB-only，不能请求尚在等待它的 
 OIDC、CA生命周期、机构与调度权限仍由用户设置。Slurm root守护进程要求 namespace
 允许非 privileged的 root容器，本模式不提供强作业沙箱或宿主机 cgroup隔离。
 **当前所有该模板部署的 scheduler均设置 `AGENT_SPACK_ENABLED=false`，不宣称支持
-远程 managed Spack安装/审计/激活或完整 Spack工作流。** 相关集群运行验收仍待 Actions。
+远程 managed Spack安装/审计/激活或完整 Spack工作流。** 相关集群运行确认仍待 Actions。
 
 已有 MinIO 部署不能直接原地升级。先阅读 [RustFS 迁移边界](../../rustfs/README.md)，
 迁移数据与固定版本引用后使用 `rustfs.*` values；旧 `minio.*` values 会明确报错。
@@ -242,7 +242,7 @@ chart 不自动创建 CA 卷。外层 Ingress 须对齐精确导入路径的 2 M
 30 分钟超时，不能仅提高 Registry 内部超时。Secret 轮换后按部署流程重建 Registry Pod。
 完整 values 示例、权限和取消边界见
 [Spack 受控上游导入](../../../docs/spack-upstream-import.md)。
-新增接线及静态测试尚待对应提交 CI，不代表渲染、部署或真实代理已验收。
+新增接线及静态测试尚待对应提交 CI，不代表渲染、部署或真实代理已运行检查。
 
 ## 生产 Agent mTLS 边界
 

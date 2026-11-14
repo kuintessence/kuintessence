@@ -69,4 +69,4 @@ staging lifecycle 使用固定 ID 覆盖导入，重复执行不累积规则。
 - `RustFS Compose + AIO` 解析 Compose 配置，并构建、启动一次性 AIO 检查服务健康，
   不发布镜像、不映射宿主端口、不使用已有卷，退出时清理。
 
-这些检查不代表旧数据迁移、真实 Kubernetes 存储或生产集群已验收。
+这些检查不代表旧数据迁移、真实 Kubernetes 存储或生产集群已运行检查。

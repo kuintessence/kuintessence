@@ -1,42 +1,16 @@
 # Spack 材料发布与 Agent 下载
 
-## 当前状态
+## 材料与安装
 
-本站新增的普通用户信任模式、Slurm worker、材料 Range 与签名票据续期见 [离线 Slurm 站点](offline-slurm-site.md)。以下历史范围中的 Range 限制由该实现更新；真实软件闭包与集群验收仍须逐站完成。
+Registry 持久保存源码材料、recipe 快照和原生依赖锁，Server 按当前授权转发，Agent 校验后缓存。recipe 保存在本地 bare Git，源码保存在不可变材料目录。Agent 仅从 Server 获取固定内容，不直接访问上游。
 
-当前实现 **Registry 持久化材料与 lock 预检 → Server 授权转发 → Agent 校验缓存与 lock 预检
-→ 可选的隔离 source audit**。
-recipe 继续保存在本地 bare Git；源码及其他材料不进入 Git。
-平台 Agent 不再接受直接联网的 `spack install` 或 buildcache 导入。
+默认只下载并预检材料。隔离 source audit、持久安装分别显式启用；安装使用固定 SIF 和目标 site profile，经过隔离 build、独立 readonly verify 后进入 ready。Persistent installation 仍为实验性 opt-in，需要目标平台、编译器、存储及隔离条件全部满足。下载成功或源码审计成功不等于软件已安装。
 
-**Persistent installation 为实验性 opt-in，尚非生产就绪的离线安装器。**
-默认只下载和静态预检，不运行 recipe、不解包 recipe archive。
-显式启用 source audit 后才在固定 SIF 内展开 recipe，并调用 Spack native staging；
-未启用 `AGENT_SPACK_INSTALL_ENABLED` 时，即使审计通过，安装操作仍返回 `rejected`，
-不修改宿主 Spack 配置或安装账本。
-现有安装软件的查询、卸载、load 和预装登记保留；独立 CLI/embedded 默认行为不变。
-平台默认仍阻断新安装，不能按“安装功能已恢复”上线。
+运维可在启动时导入材料 manifest，也可通过 Web 导入、重试失败项、取消队列和查阅发布清单。批次中的各个 release 独立处理。默认关闭的[受控上游导入](spack-upstream-import.md)仅由 Registry 经专用代理与白名单获取声明过摘要和大小的文件。
 
-TypeScript 已接入固定 site profile digest、持久化安装账本和
-**隔离 build → 独立 readonly verify → ready** 的编排。
-`worker/install_worker.py` 已实现目标平台/compiler pins、native solver 对照、安装树和 load
-校验，并以模拟 native API 的 fixture 验证；真实 Linux、Spack、Apptainer/SIF 与集群验收均未执行。
-下载或 source audit 成功不等于 recipe 可信或软件已安装。
-初始化材料 manifest 已接入，支持本地文件包批量导入和重启重试；不执行材料内容。
-平台与 CP 门户支持同一材料包的 Web 导入、失败项重试、取消、权限过滤的发布目录及
-按 binding 查阅发布清单。目录支持精确仓库筛选、刷新和本地分页，不要求预先知道 digest。
-新增默认关闭的 [受控上游导入](spack-upstream-import.md)，仅由 Registry 经专用代理
-和白名单下载明确声明 digest/大小的 recipe/material；接线与回归结果以对应提交 CI
-为准，不代表生产验收。Agent 仍只从 Server 获取固定材料。
-材料生命周期第二批增加[离线 Rollout 屏障](spack-material-rollout.md)，通过
-`inspect/pause/reconcile/activate` 对账历史绑定并显式启用统一 epoch；
-不是完整生命周期 API。部署静态测试只覆盖接线、配置和文档；测试与运行态验收
-仅在 GitHub Actions 隔离环境执行，须核对对应提交结果。
-附加[材料可见策略](spack-material-visibility.md)在 policy-ready 阶段提供用户/组织允许列表，
-只收紧 namespace/recipe 权限；安装准备与每次旧 ticket 下载重新检查，不提供跨组织授权。
-受限厂商安装包、许可证授权、buildcache 发布、大规模材料目录索引、
-物理删除和垃圾回收尚未接入；材料下载已支持 open-ended Range，材料发布上传恢复仍未接入；15 个工作流的目标 Linux 材料、
-lock、安装及运行验收仍未完成。
+升级已有材料系统前使用[Rollout 屏障](spack-material-rollout.md)对账历史绑定并设置统一 epoch。[材料可见策略](spack-material-visibility.md)在原有 namespace 和 recipe 权限基础上进一步限制用户与组织；安装准备和旧票据下载均重新判断。
+
+受限厂商安装包、buildcache 发布、材料物理删除与垃圾回收不由此入口管理。材料下载支持 open-ended Range，发布上传不支持恢复未完成的上传会话。每个科学任务需另行准备匹配目标的材料闭包、运行输入和软件许可。
 
 ## 存储与边界
 
@@ -359,7 +333,7 @@ digest 和大小必须替换为真实返回值，不可直接提交：
 
 版本和格式采用[显式兼容表](spack-compatible-versions.md)，当前研发候选列出 Spack 1.0.0、1.0.3 的 lock v6 / spec v5。
 lock 生产者必须与材料 `spackVersion` 完全一致，Agent 再核对实际运行时；表内版本也不能混用。
-静态发布通过不代表新版本已通过原生安装验收。已有不可变 manifest 不改写，未知版本仍拒绝发布安装 release。
+静态发布通过不代表新版本已通过原生安装运行检查。已有不可变 manifest 不改写，未知版本仍拒绝发布安装 release。
 
 - lock 限制为 16 MiB，必须是有效 UTF-8 JSON，重复键拒绝。
 - 只接受一个 root，其 `spec` 字符串须与 release 的 spec 完全一致。
@@ -409,7 +383,7 @@ Registry 拒绝超限请求时返回 413，并关闭未读完请求体的连接�
 兼容性限制：Bun 原生 `Bun.file` 大文件上传在服务端提前拒绝时仍可能报告 `EPIPE`，
 而不是向调用者暴露 413；不能据此认为上传或发布成功，也不应无条件重试。
 HTTP 拒绝回归使用可取消的流式请求，保留真实状态/正文、连续请求及 socket 关闭断言；
-合法大文件上传另行覆盖 `Bun.file` 路径，不宣称所有客户端的提前拒绝行为已经验收。
+合法大文件上传另行覆盖 `Bun.file` 路径，不宣称所有客户端的提前拒绝行为已经运行检查。
 lock 上限单独为 16 MiB，图限制 10,000 个节点与 100,000 条边，报告最多 100 条诊断。
 在 JSON 解析前另行限制嵌套深度 128、容器数 100,000、键数 500,000 和 token 数
 2,000,000（容器、字符串及原始值，不含标点）；这些独立预算也可能拒绝低于图限额的输入。
@@ -541,7 +515,7 @@ recipe 是可执行 Python，可以影响同进程的审计逻辑和输出，因
 
 ## 实验性 Persistent Installation
 
-本节描述当前 TypeScript 编排与 Python worker 的实验性实现，不是部署验收说明。
+本节描述当前 TypeScript 编排与 Python worker 的实验性实现，不是部署运行检查说明。
 安装仍须通过 Server 授权、材料下载校验、lock 静态预检和隔离 source audit；
 任何失败均不得回退宿主直接安装、公网下载或 buildcache 导入。
 
@@ -580,7 +554,7 @@ managed install/verify/load 在 spawn 前读取 Linux `/proc/meminfo`，要求 `
 其他内部异常继续脱敏。默认配置下，总物理内存仅 4 GiB 的节点不能运行此 worker；
 降低预算后仍须满足总量和即时可用内存门槛。低额度可供独立 Spack 模拟包验证链路，
 不承诺大型真实科学软件可用，也没有实测 1 GiB 安装成功。恢复默认只需移除
-`AGENT_SPACK_MANAGED_MEMORY_MIB` 或设为 `4096`，然后重启 Agent；切回真实材料仍须独立验收。
+`AGENT_SPACK_MANAGED_MEMORY_MIB` 或设为 `4096`，然后重启 Agent；切回真实材料仍须独立运行检查。
 这只是宿主瞬时准入，不是全局资源预留，不发现或检查 Agent/worker 的全部祖先 cgroup 额度；
 祖先限额更小或并发内存消耗仍可能导致受控失败。私有 cgroup namespace 不因这项宿主检查
 被拒绝，worker 仍按既有逻辑验证实际硬上限；不需要改用宿主 cgroup namespace。
@@ -625,7 +599,7 @@ profile 文件及宿主文件的解析链须 root 所有，目录和常规文件
 本机文件摘要、容器内平台检查均不能证明远端共享存储、compute ABI 或 quota 已生效。
 recipe 仍是可信任前提下执行的任意 Python；分开 verify 也不构成防恶意 recipe 的信任证明。
 worker 实现固定材料复验、native solver 对照、安装树检查和 load 校验；
-这些检查不能替代真实站点验收，也不能把静态预检报告升级成完整求解证明。
+这些检查不能替代真实站点运行检查，也不能把静态预检报告升级成完整求解证明。
 求解配置从源码审计及 native 绑定通过后的 lock specs 副本生成，无需额外合同字段。
 非 external 包通过 `packages.<name>.require` 恢复精确版本（`@=`）、variants、
 compiler flags 和完整 arch，包含 root 及纯 build 依赖；external 仍使用固定前缀声明。
@@ -740,7 +714,7 @@ load/复验仍依赖固定材料 cache 与 runtime，不能把安装目录视为
 操作失败，不会伪造空库存或把已完成的 build 等同于整项操作成功。
 Agent 的软件请求从执行到 inventory 发布串行处理，避免较旧成功快照覆盖较新撤回；
 卸载清理、legacy 刷新或写锁收尾失败也保留已确定的撤回信息。
-`ready` 仅表示此受管事务满足当前编排的发布条件，不表示生产就绪或集群运行验收通过。
+`ready` 仅表示此受管事务满足当前编排的发布条件，不表示生产就绪或集群运行确认通过。
 
 ## 验证边界
 
@@ -750,22 +724,22 @@ Agent 的软件请求从执行到 inventory 发布串行处理，避免较旧成
 终态计数和孤儿引用；它不属于上述纯内存材料测试。
 source audit 测试使用模拟 Spack 模块、归档 fixture、模拟 runtime metadata 和无害子进程，
 不能验证真实 Spack Python、Apptainer 或 SIF。Linux namespace/cgroup/镜像配置需站点联调；
-通过单元测试不代表 runtime 已在真实集群验收。
+通过单元测试不代表 runtime 已在真实集群运行检查。
 
 安装事务、策略、故障清理、mount 参数和报告绑定采用临时文件、模拟 native Spack 模块及
 TypeScript fixture 验证。提交 `c4987cf` 已在 GitHub Actions 的临时单节点 Slurm 环境
 通过 GNU Hello 的真实隔离 build、独立 readonly verify、load/作业运行、
 源码缺失与篡改后的库存撤回/显式恢复、重启复验及卸载，见
 [受管安装案例](../deploy/pr-test/README.md#实验性受管安装案例)。
-跨节点共享持久化 prefix、compute ABI、站点 quota 和生产环境仍须独立验收；
-该单包案例不替代 15 个工作流的目标 Linux 安装与运行验收。
+跨节点共享持久化 prefix、compute ABI、站点 quota 和生产环境仍须独立运行检查；
+该单包案例不替代 15 个工作流的目标 Linux 安装与运行确认。
 初始化导入测试使用临时文件与合成 lock/source fixture 验证顺序、校验、权限、
-部分失败、重试和读取期间文件变更，不替代真实部署卷及工作流材料包的导入验收。
+部分失败、重试和读取期间文件变更，不替代真实部署卷及工作流材料包的导入运行检查。
 Web 导入采用 mock HTTP/临时 File 的组件与队列测试，不替代真实网关、大文件上传、
-生产浏览器兼容性和目标 Linux 安装验收。
+生产浏览器兼容性和目标 Linux 安装运行检查。
 受控上游导入及代理的独立配置与验证边界见 [上游导入](spack-upstream-import.md)。
 受限包及许可证授权、材料删除/授权调整和 15 个工作流的完整材料准备及
-端到端安装/运行验收仍未完成，不能将实验性 opt-in 描述为生产可用或安装功能已恢复。
+端到端安装/运行确认仍未完成，不能将实验性 opt-in 描述为生产可用或安装功能已恢复。
 
 
 ### 安装中断与持久写锁

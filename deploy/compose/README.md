@@ -139,7 +139,7 @@ CA bundle 若配置，需运维额外只读挂载；仅设置绝对容器路径�
 Web 请求仅上传最多 2 MiB 的 JSON manifest，Nginx 为精确路径配置 30 分钟代理超时，
 其他 API 限额不变。配置、Secret 边界、请求示例及部分失败语义见
 [Spack 受控上游导入](../../docs/spack-upstream-import.md)。
-此接线与新增回归用例尚待 GitHub Actions 验证，不能据此声称真实代理或镜像已验收。
+此接线与新增回归用例尚待 GitHub Actions 验证，不能据此声称真实代理或镜像已运行检查。
 
 ## 直接调用
 
@@ -162,7 +162,7 @@ CLI profile 会选择对应文件并设置路径基准。
 
 - [PR 调度器测试](../pr-test/README.md) 使用独立 Compose，从 scheduler base
   构建含当前代码和依赖的测试镜像，运行后删除本次临时卷。只覆盖 Slurm/PBS 与
-  指定的材料回归，不复用 preview 或开发栈，不代表真实 Spack 离线安装验收。
+  指定的材料回归，不复用 preview 或开发栈，不代表真实 Spack 离线安装运行检查。
 
 Registry 的 Spack source/material 存储已放入现有 Registry 数据卷的 `materials` 子目录，
 与 recipe Git 和 OCI blobs 分离。材料发布、Server 的 mTLS/下载配置与 Agent 缓存见

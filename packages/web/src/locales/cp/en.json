@@ -1,11 +1,11 @@
 {
   "cp": {
     "access": {
-      "viewRequired": "Your account cannot open the Compute Provider Console. Switch to an account with compute provider operations or management access, or contact an organization administrator for access.",
+      "viewRequired": "Your account cannot open the Compute Center Console. Switch to an account with compute center operations or management access, or contact an organization administrator for access.",
       "manageRequired": "Your account can view this page but cannot perform management actions. Contact a compute organization owner or administrator for management access."
     },
     "nav": {
-      "label": "Compute Provider Console",
+      "label": "Compute Center Console",
       "dashboard": "Overview",
       "software": "Software",
       "queues": "Queues",
@@ -18,8 +18,8 @@
       "metering": "Metering",
       "data": "Data"
     },
-    "title": "Compute Provider Console",
-    "subtitle": "Tools for compute provider operations and cluster administration. Scope is limited to organizations you administer.",
+    "title": "Compute Center Console",
+    "subtitle": "Tools for compute center operations and cluster administration. Scope is limited to organizations you administer.",
     "organizationSelector": {
       "label": "Compute organization",
       "ariaLabel": "Current compute organization",
@@ -79,7 +79,7 @@
         "noAgents": "No connected agents"
       },
       "attention": {
-        "label": "Compute provider approvals and alerts",
+        "label": "Compute center approvals and alerts",
         "partialFailure": "Some sources are temporarily unavailable. Available data is still shown.",
         "approvals": {
           "title": "Approvals",
@@ -186,7 +186,7 @@
       "field": {
         "queueId": "Queue ID",
         "name": "Display name",
-        "providerOrgId": "Compute provider organization ID",
+        "providerOrgId": "Compute center organization ID",
         "visibleOrgIds": "Visible org IDs",
         "agentId": "Agent ID",
         "chooseAgent": "Choose a registered agent",
@@ -301,7 +301,7 @@
       },
       "preview": {
         "title": "Availability preview",
-        "subtitle": "Enter a raw Spack spec, optionally with use case context, to see installed, installable, and blocked agents in the current compute provider scope.",
+        "subtitle": "Enter a raw Spack spec, optionally with use case context, to see installed, installable, and blocked agents in the current compute center scope.",
         "spec": "Spack spec",
         "placeholder": "abacus@3.8.0 +mpi",
         "usecase": "Usecase",
@@ -443,7 +443,7 @@
       },
       "usecase": {
         "title": "Software usecase policy",
-        "description": "Controls operational access for workflow and use case packages using this compute provider's software capacity.",
+        "description": "Controls operational access for workflow and use case packages using this compute center's software capacity.",
         "strategy": "Usecase strategy",
         "defaultAllow": "Default allow",
         "authorization": "Authorization / whitelist",
@@ -729,7 +729,7 @@
     },
     "agentRegistration": {
       "title": "Agent registration",
-      "subtitle": "Issue one-time agent registration tokens for compute provider organizations.",
+      "subtitle": "Issue one-time agent registration tokens for compute center organizations.",
       "form": {
         "title": "Create registration token",
         "providerOrgId": "Provider organization ID",
@@ -769,7 +769,7 @@
     "data": {
       "title": "Data management",
       "subtitle": "Import data from managed directories, manage versions, and review access policies.",
-      "createAsset": "Create compute provider data asset",
+      "createAsset": "Create compute center data asset",
       "create": "Create",
       "created": "Data asset created",
       "import": "Import version",

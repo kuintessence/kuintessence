@@ -1,7 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { z } from "zod";
 import { FederationPage } from "../components/federation/FederationPage";
 import { ProtectedRoute } from "../components/ProtectedRoute";
+import { resolveFederationSection } from "../lib/federation-navigation";
 
 const searchSchema = z
   .object({
@@ -14,9 +15,11 @@ const searchSchema = z
   );
 function FederationRoute() {
   const search = Route.useSearch();
+  const hash = useRouterState({ select: (state) => state.location.hash });
   return (
     <ProtectedRoute>
       <FederationPage
+        section={resolveFederationSection(hash, !!search.mediaWorkflow)}
         mediaExport={
           search.mediaWorkflow && search.mediaKind
             ? { workflowRunId: search.mediaWorkflow, taskKind: search.mediaKind }

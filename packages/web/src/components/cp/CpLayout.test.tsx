@@ -13,7 +13,7 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) =>
       key === "cp.access.viewRequired"
-        ? "当前账号无法进入算力提供方控制台，请联系组织管理员开通访问权限。"
+        ? "当前账号无法进入算力中心控制台，请联系组织管理员开通访问权限。"
         : key,
   }),
 }));

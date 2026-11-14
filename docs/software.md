@@ -138,7 +138,7 @@ Server 与 Web 的 availability、preview、operation precheck，以及 Agent �
 
 | Action | 语义 |
 |---|---|
-| `install` | 默认材料准备/预检及可选 source audit 后仍 `rejected`；实验性 `AGENT_SPACK_INSTALL_ENABLED` opt-in 才进入持久化安装编排，未完成真实验收 |
+| `install` | 默认材料准备/预检及可选 source audit 后仍 `rejected`；实验性 `AGENT_SPACK_INSTALL_ENABLED` opt-in 才进入持久化安装编排，未完成真实运行检查 |
 | `uninstall` | 策略通过并确认后删除；受管安装以 DAG root 为单位清理独占 store 及其私有依赖 |
 | `load` | 返回一次性 shell fragment，不改变未来作业环境；受管 root 须为当前 site profile 的 `ready` 记录，并经 readonly runtime 复验 |
 | `import_preinstalled` | 验证现存 spec 并刷新 ledger，不安装 |
@@ -182,13 +182,13 @@ managed inventory/load/uninstall 为 root-only，这里的 root 是 DAG root，�
 site profile 固定 target、runtime、宿主文件和 external 绑定；
 shared storage、compute ABI、quota、recipe trust 的人工声明不等于自动验证。
 Python install worker 已实现并通过模拟 native API 的 fixture 测试；
-真实 Linux/Spack/Apptainer/SIF 与集群验收未执行，
+真实 Linux/Spack/Apptainer/SIF 与集群运行检查未执行，
 `ready` 不等于生产就绪。配置与限制详见 [材料发布与 Agent 下载](spack-material-delivery.md)。
 
 升级后平台的未受管 install/buildcache 导入被阻断；不能将这一阶段视为部署故障已修复。
 Recipe 激活尚不自动应用到 Agent；静态诊断不等于实际 concretize 或安装成功。
 受限厂商安装包/许可证授权、HTTP/SOCKS 上游代理、大规模材料索引/删除/可见范围变更及 15 个工作流的
-目标 Linux 材料、lock 和端到端安装/运行验收仍未完成。
+目标 Linux 材料、lock 和端到端安装/运行确认仍未完成。
 源码镜像同步、buildcache 后台 worker、signed air-gap bundle 导入导出及完整在线
 `package.py` 编辑/构建执行器尚未全部具备，使用前需确认所需执行器已部署。
 
@@ -330,9 +330,7 @@ Slurm 使用 nodelist，PBS Pro 使用 host 资源，Torque 使用 nodes，选�
 PBS host/Torque 节点名须与实际 hostname 一致；别名不一致会拒绝执行，不能去掉节点约束绕过。
 PBS Pro 的 SelfAccount 同样要求已证明的队列／节点、逐作业 cgroup 检查、签名派发和联邦续租约束；不扩大 Torque 或 root 权限。Kubernetes 保持其独立的 OCI/节点策略验证路径。
 
-真实 Slurm 已通过 root 普通账户签名任务执行及输入/输出校验；PBS 双平台链路已通过真实
-启动证明、加密介质交付、DATA_WAITING 自动恢复、受限作业读取数据及来源撤权后确认停机。
-Torque 原生运行、跨节点及掉电恢复仍待验收。
+Slurm 与 PBS 的签名任务需要有效启动证明、受限执行身份及逐作业隔离。Torque、跨节点与掉电后的适用性需按实际站点条件确认。
 
 原生探测通过实际调度器适配器提交 1 CPU/128 MiB、最长运行 120 秒的作业，
 逐次 CLI 调用最多 10 秒，完成观察窗口为 150 秒。只有原作业成功终止且输出合法节点标记，
@@ -348,7 +346,7 @@ Linux Agent 需要 util-linux `flock`；同一 root 的 `.attestation.lock` 持�
 只有唯一匹配原作业且正向确认停止，才能清理并重新运行探测；旧输出不会成为新证明。
 提交响应丢失时也使用原 UUID 查找，查无结果、查询不确定、原生编号不匹配、停止未确认或收据损坏均保留现场，
 不会因等待时间较长而重复提交。旧版无版本收据及其他遗留 `.attest-*` 仍需管理员核对原任务，不能直接删除后重投。
-普通任务仍使用既有持久 inbox。本机制不构成跨主机锁、共享存储故障或实际掉电验收。
+普通任务仍使用既有持久 inbox。本机制不构成跨主机锁、共享存储故障或实际掉电运行检查。
 
 每次 SelfAccount 作业执行均通过系统 Python 的 `-I` 模式读取 root 管理的检查器，
 核对权限与摘要后执行同一份已核验字节，使用已签名 CPU/内存和原生 Slurm Job ID。
@@ -369,7 +367,7 @@ Agent 在消费 nonce、下载输入及清理重试目录前核对派发值，�
 旧清单不补默认资源，也不自动重新签名。Agent 仍可恢复旧运行记录以轮询、收尾或取消，
 但不能据此重新提交；联邦旧清单不能续期，仍按原租约到期停止。
 此约束证明资源需求没有被替换，尚不证明 HPC 节点的逐作业 CPU/内存 cgroup 已强制生效。
-需另行验收实际内核限额，不能使用 Agent 配置开关、cgroup 路径或整个 Pod 的限额代替。
+需另行运行检查实际内核限额，不能使用 Agent 配置开关、cgroup 路径或整个 Pod 的限额代替。
 
 受限 HPC 任务使用 signed `executionProfile` 固定 Apptainer、SIF 和 trusted wrapper 的
 canonical path/SHA-256。compute node 的 root-owned
@@ -389,7 +387,7 @@ JSON 的规范绝对路径和摘要。策略文件及其全部父目录必须由
 其他架构需提供对应策略并实际验证。wrapper 在执行前强制传入
 `--security no-new-privs,seccomp:<本地策略>`，拒绝重复安全参数、可写挂载和附加命令。
 Agent 启动时调用 wrapper 的 `--check-profile`，本地检查失败则不发布可用的受限执行 profile。
-该检查验证文件配置，不替代每台计算节点上的真实调度执行、安全策略或 cgroup 验收。
+该检查验证文件配置，不替代每台计算节点上的真实调度执行、安全策略或 cgroup 运行检查。
 
 同一 profile 还须设置 `KQ_CGROUP_CHECK_PATH`、`KQ_CGROUP_CHECK_SHA256` 和
 `KQ_SCHEDULER`（`slurm`、`pbs-pro` 或 `torque`）。检查器及其父目录须由 root 管理；
@@ -403,7 +401,7 @@ wrapper 在执行前使用 `/usr/bin/python3 -I` 调用固定摘要的检查器�
 摘要及 `AGENT_RESTRICTED_EXECUTION_WRAPPER_SHA256`，再重启 Agent；不得省略策略恢复执行。
 本约束适用于 signed `executionProfile` 的受限 HPC 任务；普通非受限 root 代运行路径
 尚未强制加载这份本地 seccomp 策略，整套运行时证明仍需补齐，
-不能只凭 `AGENT_SANDBOX_SECCOMP=true` 宣称已验收。
+不能只凭 `AGENT_SANDBOX_SECCOMP=true` 宣称已运行检查。
 
 相关 Agent 配置为 `AGENT_RESTRICTED_EXECUTION_PROFILE_ID`、
 `AGENT_RESTRICTED_EXECUTION_APPTAINER_PATH`、`AGENT_RESTRICTED_EXECUTION_SIF_DIGEST`、
@@ -449,7 +447,7 @@ Kubernetes 文件输入或输出另配 `AGENT_SANDBOX_K8S_ARTIFACT_PVC`。PVC �
 
 PVC 内的运行目录尚未接入自动回收，不能将 Agent 本地副本释放当作 PVC 字节已经删除。生产配置应为此卷设置容量与保留管理，清理前确认对应作业已终止且所需产物已发布。
 任何 capability、签名、账号、隔离或 policy 不满足时拒绝，不降级普通 command。
-Git 固化导入与隐式 usecase pre/main/post 编排尚未完成，生产 GA 验收也未完成。
+Git 固化导入与隐式 usecase pre/main/post 编排尚未完成，生产 GA 运行检查也未完成。
 
 <a id="kubernetes"></a>
 ## Kubernetes 网络隔离
@@ -508,7 +506,7 @@ Registry 普通 API 写入资产时，在同一事务内更新权限 outbox；�
 安装成功且库存确认后重新调度，Agent 按受控 `spackExecution` 激活并执行。
 安装失败、拒绝或等待超时会使节点失败；取消作业停止等待，不取消其他作业共享的安装。
 等待超时沿用 `SERVER_JOB_COMPLETION_TIMEOUT_SEC`。Server 重启后的运行恢复仍受现有
-工作流恢复机制限制；本次没有增加独立安装调度器或持久工作流恢复器。
+工作流恢复机制限制，不提供独立安装调度器或持久工作流恢复器。
 
 `NOASSERTION`/unknown 不默认允许自动安装。签名 LicensePolicy 的 `autoInstall` 必须是
 `review-required`，并且同一资产同时具备以下未过期、未撤销的平台审批：

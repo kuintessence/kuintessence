@@ -8,13 +8,18 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { EvidenceCaseDetail } from "./EvidenceCaseDetail";
 import { type EvidenceCase, EvidenceCaseSchema } from "./evidence-case-view";
-import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
+import {
+  FederationEmpty,
+  FederationPanelHeader,
+  FederationRefreshNotice,
+} from "./FederationLayout";
 
 const path = "/federation/evidence-cases";
 export function FederationEvidencePanel({
@@ -58,12 +63,13 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
       ),
   });
   const grants =
-    !capabilities.isError && capabilities.data?.orgId === scope.organizationId
+    !federationReadFailed(capabilities) && capabilities.data?.orgId === scope.organizationId
       ? capabilities.data.effectiveCapabilities
       : [];
   const canRead = grants.includes("disclosure.receive");
   const allowed = useRef(false);
-  allowed.current = canRead && !readOnly && !switching;
+  allowed.current =
+    canRead && !readOnly && !switching && !capabilities.isError && !capabilities.isFetching;
   const check = (raw: unknown) => {
     const row = EvidenceCaseSchema.parse(raw);
     if (row.localOrgId !== scope.organizationId) throw new Error("Evidence organization mismatch");
@@ -80,6 +86,7 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
       return { ...rows, data: rows.data.map(check) };
     },
   });
+  allowed.current = allowed.current && !list.isError;
   const register = useMutation({
     retry: false,
     mutationFn: async (context: z.infer<typeof CommercialEvidenceCaseInputSchema>) => {
@@ -99,7 +106,7 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
     },
   });
   if (capabilities.isPending) return <p role="status">{t("federation.loading")}</p>;
-  if (capabilities.isError)
+  if (federationReadFailed(capabilities))
     return (
       <div role="alert">
         <p>{t("federation.loadFailed")}</p>
@@ -111,6 +118,8 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
   if (!canRead) return <p>{t("federation.agreements.noPermission")}</p>;
   return (
     <section className="space-y-5">
+      <FederationRefreshNotice query={capabilities} onRetry={() => void capabilities.refetch()} />
+      <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
       <FederationPanelHeader title={t("federation.evidence.title")}>
         <Button
           variant="outline"
@@ -177,22 +186,22 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
           ) : null}
         </form>
       ) : null}
-      {selected ? (
+      {federationReadFailed(list) ? (
+        <p role="alert">{t("federation.loadFailed")}</p>
+      ) : selected ? (
         <EvidenceCaseDetail
           key={selected.caseId}
           row={selected}
           scope={scope}
           grants={grants}
           readOnly={readOnly}
-          busy={switching || capabilities.isFetching}
+          busy={switching || capabilities.isFetching || capabilities.isError || list.isError}
           onClosed={(row) => {
             setSelected(row);
             void list.refetch();
           }}
         />
-      ) : list.isError ? (
-        <p role="alert">{t("federation.loadFailed")}</p>
-      ) : list.isPending ? (
+      ) : list.isPending || !list.data ? (
         <p role="status">{t("federation.loading")}</p>
       ) : (
         <>
@@ -204,7 +213,9 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
                   type="button"
                   onClick={() => setSelected(row)}
                 >
-                  <span className="min-w-0 break-all">{row.caseId}</span>
+                  <span className="min-w-0 break-words font-medium">
+                    {t("federation.evidence.case")} · {row.caseId.slice(0, 8)}
+                  </span>
                   <Badge variant="outline">
                     {t(row.closedAt ? "federation.evidence.closed" : "federation.evidence.open")}
                   </Badge>

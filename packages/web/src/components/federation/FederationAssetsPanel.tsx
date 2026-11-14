@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { ApiError, type ApiOrganizationScope, api } from "../../lib/api-client";
+import { federationReadFailed } from "../../lib/federation-query-state";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { Button } from "../ui/button";
 import {
@@ -29,7 +30,11 @@ import {
   materialDigest,
 } from "./asset-material";
 import { FederationAssetImport } from "./FederationAssetImport";
-import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
+import {
+  FederationEmpty,
+  FederationPanelHeader,
+  FederationRefreshNotice,
+} from "./FederationLayout";
 
 type MaterialOption = z.infer<typeof FederationMaterialOptionSchema>;
 const path = "/federation/assets";
@@ -63,11 +68,11 @@ export function FederationAssetsPanel({
     refetchOnWindowFocus: false,
   });
   const grants =
-    !capabilities.isError && capabilities.data?.orgId === scope.organizationId
+    !federationReadFailed(capabilities) && capabilities.data?.orgId === scope.organizationId
       ? capabilities.data.effectiveCapabilities
       : [];
   const canRead = grants.includes("asset.read");
-  const canWrite = grants.includes("asset.map") && !readOnly;
+  const canWrite = grants.includes("asset.map") && !readOnly && !capabilities.isError;
   const allowed = useRef(false);
   allowed.current = canWrite && !switching && !capabilities.isFetching;
   useEffect(() => {
@@ -197,7 +202,13 @@ export function FederationAssetsPanel({
   const uncertain =
     mutation.isError &&
     !(mutation.error instanceof ApiError && [400, 403, 409].includes(mutation.error.status));
-  const busy = switching || capabilities.isFetching || mutation.isPending;
+  const busy =
+    switching ||
+    capabilities.isFetching ||
+    mutation.isPending ||
+    capabilities.isError ||
+    (tab === "material" ? materials.isError : mappings.isError);
+  allowed.current = allowed.current && !busy;
   const review = (action: AssetAction) => {
     if (!allowed.current) return;
     mutation.reset();
@@ -206,7 +217,7 @@ export function FederationAssetsPanel({
     setConfirming(true);
   };
   if (capabilities.isPending) return <p role="status">{t("federation.loading")}</p>;
-  if (capabilities.isError || !canRead)
+  if (federationReadFailed(capabilities) || !canRead)
     return (
       <div className="space-y-3">
         <p role={capabilities.isError ? "alert" : "status"}>
@@ -221,9 +232,10 @@ export function FederationAssetsPanel({
         </Button>
       </div>
     );
-  const failed = tab === "material" ? materials.isError : mappings.isError;
+  const inventory = tab === "material" ? materials : mappings;
+  const failed = federationReadFailed(inventory);
   const fetching = tab === "material" ? materials.isFetching : mappings.isFetching;
-  const pending = tab === "material" ? materials.isPending : mappings.isPending;
+  const pending = inventory.isPending || !inventory.data;
   const hasMore = tab === "material" ? materials.data?.hasMore : mappings.data?.length === 20;
   const title = draft
     ? t(`federation.assets.${draft.kind === "revoke" ? "revoke" : `add.${draft.kind}`}`)
@@ -234,7 +246,7 @@ export function FederationAssetsPanel({
         <Button
           ref={refreshFocus}
           variant="outline"
-          disabled={busy}
+          disabled={switching || capabilities.isFetching || mutation.isPending || fetching}
           onClick={() => {
             void capabilities.refetch();
             void client.invalidateQueries({ queryKey: key });
@@ -255,6 +267,9 @@ export function FederationAssetsPanel({
           </Button>
         ) : null}
       </FederationPanelHeader>
+      <FederationRefreshNotice query={capabilities} onRetry={() => void capabilities.refetch()} />
+      <FederationRefreshNotice query={inventory} onRetry={() => void inventory.refetch()} />
+      <FederationRefreshNotice query={detail} onRetry={() => void detail.refetch()} />
       {saved ? (
         <p role="status" className="text-sm">
           {t("federation.assets.saved")}
@@ -263,7 +278,9 @@ export function FederationAssetsPanel({
       {readOnly ? (
         <p className="text-sm text-muted-foreground">{t("federation.agreements.desktopOnly")}</p>
       ) : null}
-      {creating && !draft ? (
+      {failed ? (
+        <p role="alert">{t("federation.loadFailed")}</p>
+      ) : creating && !draft ? (
         <FederationAssetImport
           kind={tab}
           disabled={busy || !canWrite}
@@ -303,18 +320,20 @@ export function FederationAssetsPanel({
           <Button variant="ghost" onClick={() => setSelected(null)}>
             {t("federation.assets.back")}
           </Button>
-          <dl className="grid gap-4 text-sm sm:grid-cols-2">
-            <AgreementFact label={t("federation.assets.origin")}>
-              {selected.originSiteId}
-            </AgreementFact>
-            <AgreementFact label={t("federation.assets.digest")}>{selected.digest}</AgreementFact>
-          </dl>
-          {detail.isError ? (
+          {federationReadFailed(detail) ? (
             <p role="alert">{t("federation.assets.detailFailed")}</p>
-          ) : detail.isPending ? (
+          ) : detail.isPending || !detail.data ? (
             <p role="status">{t("federation.loading")}</p>
           ) : (
             <>
+              <dl className="grid gap-4 text-sm sm:grid-cols-2">
+                <AgreementFact label={t("federation.assets.origin")}>
+                  {selected.originSiteId}
+                </AgreementFact>
+                <AgreementFact label={t("federation.assets.digest")}>
+                  {selected.digest}
+                </AgreementFact>
+              </dl>
               <MaterialSummary content={detail.data} />
               <Button
                 variant="outline"
@@ -364,7 +383,7 @@ export function FederationAssetsPanel({
             <ul className="federation-list divide-y divide-border">
               {tab === "material"
                 ? materials.data?.data.map((row) => (
-                    <li key={`${row.originSiteId}:${row.digest}`} className="py-4">
+                    <li key={`${row.originSiteId}:${row.digest}`}>
                       <button
                         type="button"
                         className="federation-list-row w-full space-y-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -373,9 +392,11 @@ export function FederationAssetsPanel({
                         <span className="block font-medium text-sm">
                           {t(`federation.assets.kinds.${row.kind}`)}
                         </span>
-                        <span className="block break-all font-mono text-xs">{row.digest}</span>
+                        <span className="block break-all font-mono text-xs">
+                          {row.digest.slice(0, 19)}…
+                        </span>
                         <span className="block break-all text-xs text-muted-foreground">
-                          {t("federation.assets.origin")}: {row.originSiteId} ·{" "}
+                          {t("federation.assets.origin")}: {row.originSiteId.slice(0, 8)} ·{" "}
                           {new Date(row.createdAt).toLocaleString(i18n.language)}
                         </span>
                       </button>

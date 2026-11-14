@@ -209,6 +209,33 @@ describe("WorkflowTemplateService", () => {
     expect((await service.findByNameVersion(catalog.name, catalog.version))?.id).toBe(catalog.id);
   });
 
+  test("withdrawn legacy templates leave discovery but retain historical IDs", async () => {
+    const row = await service.create({
+      name: "wfsvc-test-withdrawn",
+      version: "1.0.0",
+      yamlContent: SAMPLE_YAML,
+      tags: ["withdrawn-only"],
+    });
+    ids.push(row.id);
+    const [asset] = await db.select().from(softwareAssets).where(eq(softwareAssets.name, row.name));
+    if (!asset) throw new Error("missing synchronized asset");
+    await db
+      .update(softwareAssets)
+      .set({ lifecycle: "hidden", visibility: "hidden" })
+      .where(eq(softwareAssets.id, asset.id));
+    const page = await service.listPage({ q: row.name });
+    expect(page.total).toBe(0);
+    expect(page.templates).toEqual([]);
+    expect(page.tags).not.toContain("withdrawn-only");
+    expect(await service.findByNameVersion(row.name, row.version)).toBeNull();
+    expect((await service.getById(row.id))?.yamlContent).toBe(SAMPLE_YAML);
+    await db
+      .update(softwareAssets)
+      .set({ lifecycle: "published", visibility: "platform-public" })
+      .where(eq(softwareAssets.id, asset.id));
+    expect((await service.findByNameVersion(row.name, row.version))?.id).toBe(row.id);
+  });
+
   test("updateById creates a new immutable template row", async () => {
     const t = await service.create({
       name: "wfsvc-test-immutable",

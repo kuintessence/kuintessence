@@ -18,7 +18,7 @@
 ## 四类流程
 
 - [科研用户：提交并取得结果](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/user-manual.md#sop)
-- [算力提供方：巡检、变更与交班](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/compute-provider-manual.md#sop)
+- [算力中心：巡检、变更与交班](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/compute-provider-manual.md#sop)
 - [平台运营：告警与事件处置](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/platform-operator-manual.md#sop)
 - [系统运维：发布、回滚与维护窗口](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/system-operations-manual.md#sop)
 

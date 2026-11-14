@@ -2,6 +2,7 @@ import {
   ecosystemReleaseAssets,
   ecosystemReleases,
   type PgDb,
+  softwareAssets,
   workflowTemplates,
 } from "@kuintessence/db";
 import {
@@ -287,7 +288,13 @@ function workflowCatalogVisibility() {
     INNER JOIN ${ecosystemReleases} ON ${ecosystemReleaseAssets.releaseId} = ${ecosystemReleases.id}
     WHERE ${binding} AND ${ecosystemReleases.status} = 'active'
   )`;
-  return sql`(${anyBinding} = false OR ${activeBinding})`;
+  const withdrawn = sql`EXISTS (
+    SELECT 1 FROM ${softwareAssets}
+    WHERE ${softwareAssets.payload}->>'workflowTemplateId' = ${workflowTemplates.id}::text
+      AND (${softwareAssets.lifecycle} IN ('hidden', 'deprecated', 'revoked', 'archived')
+        OR ${softwareAssets.visibility} = 'hidden')
+  )`;
+  return sql`(${anyBinding} = false OR ${activeBinding}) AND NOT ${withdrawn}`;
 }
 
 function escapeLike(value: string): string {

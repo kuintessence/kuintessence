@@ -23,7 +23,7 @@ Server 启动时及每 30 秒扫描待发布记录，同时最多处理 4 个恢
 先部署 0075/0076/0077 migration 与新版 Server，再升级 Agent。通过已经登录的平台控制端发起带文件输出的 Workflow，保留 run ID、实际 job ID 和 Slurm ID。原生 modules smoke 只返回文本时，不产生文件上传；无文件的 publication 仍可用于安全释放工作目录。
 
 1. 在计算完成、文件仍在上传时，通过当前认证 API 会话读取 `GET /platform/api/jobs/<jobId>/output-publication`。预期 `state=pending`、`publishedFiles <= totalFiles`；保存 transferIds，勿将签名下载 URL 作为诊断证据。
-2. 中断 SSH 后恢复同一隧道，或在受控验收环境重启 Server。让 Agent 重新上线；每 30 秒的后台扫描会重试已入库 publication，无需再次提交 Workflow。
+2. 中断 SSH 后恢复同一隧道，或在受控隔离运行环境重启 Server。让 Agent 重新上线；每 30 秒的后台扫描会重试已入库 publication，无需再次提交 Workflow。
 3. 再查同一接口，确认 transferIds 不变，已发布的文件映射保持相同 file ID，最终 `state=published` 且计数相等。到云盘读取对应 file ID，核对大小、SHA-256 和真实内容，并确认原工作目录随后才被释放。
 4. 对照 `squeue/sacct` 与现场日志，确认恢复期间没有新增该计算的 `sbatch`。DAG 可能仍显示 failed；文件发布成功不改变 DAG 终态。
 5. 若接口返回 404，不能认定上传成功，也不能盲目重提计算。先确认 job ID/授权、数据库迁移和 intent/publication 记录；新作业在 enqueue 前崩溃可等待后台重建，元数据不完整时保留共享工作目录并由运维对账。
@@ -39,4 +39,4 @@ Server 启动时及每 30 秒扫描待发布记录，同时最多处理 4 个恢
 - Sandbox artifact service 的独立持久化路径不经过此普通 Workflow 文件输出 outbox；两者共用先持久传输行、再上传、最后持久完成回执的 helper。Sandbox 按 artifact/replica 固定传输 ID，另校验实际文件大小和摘要。
 - 已被外部管理员删除的工作目录、被外部删除的对象或撤销的权限不能通过重新计算自动补救。
 
-本地统一验证已通过磁盘 fake store、纯 publisher/input/intent 测试，覆盖重建 publisher 后恢复、部分成功复用、续租与失租、无回调超时、取消/撤权、路径边界、脱敏查询，以及 intent 重启、重复 enqueue、坏记录退避、同步 Workflow 和批量上限。真实 PG 原子提交/回滚与 completed 后恢复用例已编写，尚未执行。没有执行真实 Slurm、对象存储上传、PG 验收或数据库迁移。
+本地统一验证已通过磁盘 fake store、纯 publisher/input/intent 测试，覆盖重建 publisher 后恢复、部分成功复用、续租与失租、无回调超时、取消/撤权、路径边界、脱敏查询，以及 intent 重启、重复 enqueue、坏记录退避、同步 Workflow 和批量上限。真实 PG 原子提交/回滚与 completed 后恢复用例已编写，尚未执行。没有执行真实 Slurm、对象存储上传、PG 运行检查或数据库迁移。

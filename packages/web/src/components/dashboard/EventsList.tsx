@@ -72,7 +72,7 @@ function describeEvent(entry: AuditEntry): EventCopy {
   if (resource) {
     const kind = resource[1] === "compute-provider" ? "provider" : resource[2];
     const labels: Record<string, string> = {
-      provider: "算力提供者",
+      provider: "算力中心",
       center: "算力中心",
       cluster: "集群",
       link: "互联链路",

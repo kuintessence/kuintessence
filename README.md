@@ -4,7 +4,7 @@ Kuintessence 是统一算力服务与科学计算工作流平台，将 Slurm、P
 接入同一套作业管理、工作流编排、软件治理与文件服务。
 提供 Web 界面、CLI、TUI 及本地 GUI。
 
-项目目前为 pre-release，已实现的功能和部署要求见[当前状态](docs/status/current-state.md)。
+功能和部署要求见[当前状态](docs/status/current-state.md)。
 
 ## 架构
 
@@ -13,12 +13,12 @@ Kuintessence 是统一算力服务与科学计算工作流平台，将 Slurm、P
 | 平台服务（Server） | Hono API、全局调度、工作流引擎、身份与权限、审计、NetDrive |
 | 接入代理（Agent） | 调度器适配、资源监控、软件环境、文件传输、离线队列和 SSH relay |
 | 软件仓库（Registry） | 软件与工作流模板、OCI artifact、Spack buildcache |
-| Web | 用户工作区、CP Console、平台管理与工作流编辑 |
+| Web | 用户工作区、算力中心 Console、平台管理与工作流编辑 |
 | CLI | `kq` 远程命令、本地调度器 TUI 与 GUI |
 
 Server 使用 PostgreSQL；Agent 使用 SQLite。Server 与 Agent 通过 connectRPC 通信。
 文件服务使用 S3/RustFS。Redis 在部署配置中预留，当前 Server 事件总线仍在进程内。
-Web 中的“软件中心”提供软件、用例和模板入口；Registry 是支撑这些功能的软件仓库服务。
+Web 中的“软件生态”提供软件、用例和模板入口；Registry 是支撑这些功能的软件仓库服务。
 
 ## 快速开始
 
@@ -47,7 +47,7 @@ Agent 需单独部署在能访问调度器命令的主机上。
 ## 使用与部署
 
 - 科研计算用户：[用户手册](docs/manuals/user-manual.md)、[工作流规范](docs/workflow-schema/README.md)。
-- 算力提供方：[CP 手册](docs/manuals/compute-provider-manual.md)、[Agent systemd 部署](deploy/systemd/README.md)。
+- 算力中心：[算力中心手册](docs/manuals/compute-provider-manual.md)、[Agent systemd 部署](deploy/systemd/README.md)。
 - 平台运营：[运营手册](docs/manuals/platform-operator-manual.md)、[系统运维手册](docs/manuals/system-operations-manual.md)。
 - 联邦协同：[使用指南](docs/federation-collaboration.md)、[页面操作与权限](docs/design/federation/web-operations.md)。
 - 本地调度器：[TUI](docs/clients.md#tui)、[GUI](docs/clients.md#gui)。
@@ -114,10 +114,7 @@ bun run docs:dev
 DOCS_BASE="/kuintessence/" bun run docs:build
 ```
 
-完整入口见[文档索引](docs/README.md)。推送 `main` 和提交 PR 默认只运行 CI 静态检查；
-测试、Agent/CLI 构建、调度器镜像验证和文档站发布均须手动触发。
-可信同仓库 PR 的限时预览独立运行，main 预览须手动启停。
-触发条件和操作入口见[GitHub Actions](docs/deployment.md#actions)。
+完整入口见[文档索引](docs/README.md)。CI、PR 预览、镜像发布与主站部署分别由对应工作流管理；触发条件、环境配置和操作入口见[GitHub Actions](docs/deployment.md#actions)。
 
 ## License
 

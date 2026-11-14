@@ -4,7 +4,7 @@
 复用用户 chart，不复制工作负载模板。所有 PR 使用预先创建的共享 `preview`
 namespace，每个 PR 的 Helm release 为 `kq-pr-<编号>`。
 只支持本轮约定的单节点 `linux/amd64`；不部署嵌套 k3s。
-共享 namespace 安全实现仍待复核及对应提交的 Actions/真实集群验收，本文不代表已上线。
+共享 namespace 安全实现仍待复核及对应提交的 Actions/真实集群运行检查，本文不代表已上线。
 
 ## CI 输入
 
@@ -49,7 +49,7 @@ preview 的 `migration.waitImage` 与 `rustfs.bootstrapWaitImage` 暂时统一�
 Legacy 镜像不再获得安全更新，只用于本次短期预览兼容，不推荐用于生产；
 后续应替换为持续维护、固定 digest 的等待镜像。此覆盖不改变用户版 Chart 的配置。
 Actions 显式运行容器契约测试，验证匿名拉取、amd64、`/bin/sh` 和 `kubectl wait`；
-同时验证渲染后的 gateway 配置与启动流程，不能只以 Helm 渲染成功作为运行验收。
+同时验证渲染后的 gateway 配置与启动流程，不能只以 Helm 渲染成功作为运行确认。
 
 ## Namespace 与资源归属
 
@@ -86,7 +86,7 @@ Chart 不创建或读取明文口令，不把 Secret 内容写入 ConfigMap、va
 CI 必须读取仓库 Actions Secrets `PREVIEW_USER` 和 `PREVIEW_PASSWORD`，所有 PR
 使用同一组固定 Basic Auth 凭据；缺失或不合法时拒绝部署，不随机生成或沿用旧入口口令。
 用户名须为 1–64 字符、以字母或数字开头，仅含字母、数字、`_`、`.`、`@`、`-`；
-口令至少 24 字符且不含控制字符。CI 将两者额外保存在同一 Secret，供 HTTPS 验收使用，
+口令至少 24 字符且不含控制字符。CI 将两者额外保存在同一 Secret，供 HTTPS 运行检查使用，
 chart 不挂载或输出这两个字段。数据库、JWT、对象存储凭据和 Cookie 仍按 PR 隔离。
 固定凭据不变时升级保留 hash/cookie；变更账号或口令、迁移旧格式 Secret 时轮换 Cookie。
 修改仓库 Secrets 后须重新部署各开放 PR，运行中环境不会自动同步新凭据。
@@ -126,12 +126,12 @@ Registry 的现有 blob PVC 同时保存 `recipes/`、`materials/`，继续保�
 Agent PVC 的 `state/` 保存 registration bundle、数据库与 managed job work root，
 `scratch/` 挂载到 `/scratch`。Slurm 使用 `proctrack/linuxproc` 和 `task/none`，
 容器以 root 启动守护进程但 `privileged: false`，无 `hostPath`、Docker socket、
-host network或宿主机 cgroup 挂载。不是 managed Spack/Apptainer隔离验收环境；
+host network或宿主机 cgroup 挂载。不是 managed Spack/Apptainer隔离隔离运行环境；
 不能把 Slurm 的资源报告当作 Pod cgroup 配额的精确映射。
 
 **阶段 1边界：`AGENT_SPACK_ENABLED=false`，明确不提供远程 managed Spack安装、
-审计、激活或 Spack全工作流验收。** 本轮仅接线基本 Slurm/Agent运行与 demo
-workflow；镜像内有 Spack不代表这些能力已启用或在远端通过验收。
+审计、激活或 Spack全工作流运行检查。** 本轮仅接线基本 Slurm/Agent运行与 demo
+workflow；镜像内有 Spack不代表这些能力已启用或在远端通过运行检查。
 
 镜像必须内置依赖；initContainer 缺依赖时立即失败，不依赖启动时联网安装。
 本轮镜像仍须在 Actions/真实集群确认非 privileged Slurm 的运行兼容性。
@@ -162,8 +162,8 @@ gateway只预筛 query中存在非空 `X-Amz-Signature`，不把该检查当作�
 RustFS继续验证 SigV4、有效期、方法、对象及 IAM权限。伪造/过期签名必须由
 RustFS拒绝；对象请求清除 Authorization与 Cookie，不支持 AWS header认证绕过。
 原 Host、query和对象路径保持不变，gateway access/error日志不记录 signed URL。
-因此 Agent signed-URL GET/PUT无需浏览器会话；文件工作流的真实验收仍留给 Actions，
-不能把路由接线或浏览器下载验收当作 Agent文件工作流已经通过。
+因此 Agent signed-URL GET/PUT无需浏览器会话；文件工作流的真实运行检查仍留给 Actions，
+不能把路由接线或浏览器下载运行检查当作 Agent文件工作流已经通过。
 
 preview主动使用开发登录和 `AUTHZ_MODE=off`，只适合受信任维护者共享的临时环境，
 不是生产认证方案或不受信任多租户沙箱。公网必须经过 gate；Agent注册/证书路径
@@ -192,6 +192,6 @@ preview NetworkPolicy按 release label 选择受保护 Pod 和允许的同 relea
 
 Actions应执行 `scripts/helm-preview-contract.test.ts` 和
 `scripts/helm-preview-render.test.ts`。后者仅在 Helm可用时运行，使用临时目录构建
-本地 dependency并渲染，不访问集群。真实部署还应验收未解锁访问受阻、解锁后
+本地 dependency并渲染，不访问集群。真实部署还应运行检查未解锁访问受阻、解锁后
 Bearer请求成功、TLS证书、Agent online及实际 demo workflow；这些不由静态合同
 测试替代。

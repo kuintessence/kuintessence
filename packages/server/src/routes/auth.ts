@@ -850,8 +850,15 @@ type AuthzSeedInput = {
 async function ensureLoginAuthzSeed(db: AuthSeedDb, input: AuthzSeedInput): Promise<void> {
   const { userId, role, authzEnabled } = input;
   if (input.seedDevelopmentOrganization) {
-    const orgName = "Development Compute Provider";
-    const [existingOrg] = await db.select().from(orgs).where(eq(orgs.name, orgName)).limit(1);
+    const orgName = "Development Compute Center";
+    const [existingOrg] = await db
+      .select()
+      .from(orgs)
+      .where(or(eq(orgs.name, orgName), eq(orgs.name, "Development Compute Provider")))
+      .limit(1);
+    if (existingOrg && existingOrg.name !== orgName) {
+      await db.update(orgs).set({ name: orgName }).where(eq(orgs.id, existingOrg.id));
+    }
     const org =
       existingOrg ??
       (await db.insert(orgs).values({ name: orgName }).returning({ id: orgs.id }))[0];

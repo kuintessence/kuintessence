@@ -128,4 +128,4 @@ Agent 只经 Server 获取材料，不获得 Registry 凭据或外部下载通�
 
 验证包括真实 PostgreSQL policy/CAS/rollout、Registry 各读取入口、Server 旧 ticket、
 门户状态与隔离 Chromium 交互；仅以对应 commit 的 GitHub Actions 结果为准。
-这些回归不代表目标站点验收，也不代表 15 个科学工作流的材料或运行验收完成。
+这些回归不代表目标站点运行检查，也不代表 15 个科学工作流的材料或运行确认完成。

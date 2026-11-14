@@ -2,10 +2,6 @@
 
 三台新增虚拟机运行独立 A/B/C 平台、Fabric 和容器测试集群，A/B 使用 Slurm，C 使用 PBS；R 按需在 A 主机运行独立项目。现有集群不变，主平台只新增第四个 Orderer。完整范围见[实施清单](../../../docs/design/federation/aio-delivery.md)。
 
-2026-11-13，PR #71 合并的 main `90a4eaa` 已通过 CI 生成 21 镜像 AIO 交付包，经本机中转到云端，并完成三机构的[保留数据升级](main-upgrade.md)。三站各有 21 个常驻服务，真实 SSO、权限就绪、合作协议／联邦任务／联邦资产读取均通过，无新增 OOM。升级后的 Adapter 已完成一笔有效存证及升级前原交易恢复，四个排序节点 active、高度 39，三 Peer 高度与区块摘要一致。早期 `038aa6f` 的私有读取隔离、必需背书拒绝及主排序节点停机恢复证据见[四节点验收](../four-node-acceptance.md)，本轮未重复故障矩阵。现有主平台沿原 CI 完成 platform-only 发布，第四 Orderer 保持原部署。C 站原 CI Runner／DinD 继续停止，数据保留；未启用调度器、Agent 或 R。镜像携带 Spack 1.0.3，兼容规则见[多版本严格绑定](../../../docs/spack-compatible-versions.md)，镜像存在不代表已安装科研软件。正式托管、完整跨机构业务写操作、容量准入及科研验收仍待完成。
-
-后续人工试用准备已完成三站真实签约、原签名自动交换、输入原件导入／导出、市场发布／取消及只读用户越权检查。AB 直接合同无链提交，AC 异步合同原生 VALID；四 Orderer 与三 Peer 最终高度 43。上述为平台／链的试用范围，完整任务、财务、仲裁及 38 项验收没有全部完成。应用层跨站信任、账户权限和科研／恢复边界见[试用准备](trial-readiness.md)。Fabric 通道正常不代表平台网关已经互信；不要用新建业务记录替代原签名或原交易的恢复。
-
 ## 本机构建与导出
 
 东京构建机已有 K3s/containerd，不要求 Docker Engine。预先准备校验过的 nerdctl、BuildKit 和 rsync；工具不自动安装或接管服务。BuildKit 使用独立 root/socket，containerd worker 的 address 和 namespace 必须与 nerdctl 一致，namespace 固定为 `kq-federation-build` 或其带后缀的名称，禁止使用 `k8s.io`。
@@ -27,7 +23,7 @@ root = "/var/lib/kuintessence-buildkit"
   gc = false
 ```
 
-该配置限制 Dockerfile 内部构建并发，不仅限制镜像之间的顺序；不自动回收构建缓存。当前已使用校验过的 nerdctl 2.4.2、BuildKit 0.34.2 完成本机构建／导出；摘要校验不等于已验证发行者签名。
+该配置限制 Dockerfile 内部构建并发，不仅限制镜像之间的顺序；不自动回收构建缓存。
 
 要求干净且已提交的固定 Git revision。默认构建预留 40 GiB 是保守预算，不是实测下限；不足时拒绝且不自动清理。Casdoor 输入必须是经确认的 digest，不能用 latest 代替验证。
 
@@ -45,7 +41,7 @@ python3 deploy/federation/offline.py \
   --output /交付盘/指定版本
 ```
 
-`--spack-version` 默认为 1.0.0，可显式选择表内的 1.0.3 候选；这不代表新版本已通过原生安装验证。最终 Slurm/PBS 镜像版本须一致，导出清单保存 `spackVersion` 和共享兼容表，缺失或混用时拒绝。新版工具需连同表使用，交付包已包含该文件。
+最终 Slurm/PBS 镜像版本须一致，导出清单保存 `spackVersion` 和共享兼容表，缺失或混用时拒绝。新版工具需连同表使用，交付包已包含该文件。
 
 原生 Docker 构建机可省略 engine 等全局选项。镜像串行构建，包含九类 KQ 镜像、两个内置编译 Agent 的调度器、经批准的登录镜像及第三方运行镜像。一个 gzip 归档保存全部镜像；manifest 记录 Git revision、架构、镜像 ID、来源 repo digest、文件大小与 SHA-256。
 
@@ -60,8 +56,7 @@ python3 deploy/federation/offline.py \
 ## CI 构建交付包
 
 本机空间不足时，可在已推送的候选分支手动运行 `Federation Compose delivery`，
-选择 `build_offline_bundle=true` 和精确 `spack_version`（默认 1.0.3）。
-工作流复用同一 `offline.py build/export/verify`，在 GitHub 托管 Runner 串行构建，
+选择 `build_offline_bundle=true` 和精确 `spack_version`（默认 1.0.3）。工作流复用同一 `offline.py build/export/verify`，在 GitHub 托管 Runner 串行构建，
 上传包含 21 个 linux/amd64 镜像、公共配置和逐文件摘要的 artifact，保留 14 天；
 运行摘要记录提交、Spack 版本和 manifest SHA-256。构建仅在一次性 Runner 回收未使用的 SDK，
 不清理本机材料，不发布 main/latest 标签，不部署，也不签署机构材料。
@@ -71,8 +66,7 @@ gh workflow run federation-compose.yml --ref <候选分支> \
   -f build_offline_bundle=true -f spack_version=1.0.3
 ```
 
-下载 artifact 后仍按下文提供可信 manifest 摘要完成校验和加载。
-镜像内含未签名的公共 SIF；科研软件材料、目标 lock、机构签署和现场验收单独准备。
+下载 artifact 后仍按下文提供可信 manifest 摘要完成校验和加载。镜像内含未签名的公共 SIF；科研软件材料、目标 lock、机构签署和现场运行单独准备。
 
 ## 文件搬运、公共 CA 与容量保护
 
@@ -84,15 +78,15 @@ gh workflow run federation-compose.yml --ref <候选分支> \
 
 容量保护在 `config` 时显式添加 `--storage-guard`，适用于 direct／fabric 机构和独立 R，独立 Orderer 不接受此参数。先按[存储容量说明](../storage-capacity.md)在包外提供 Server policy、observer 配置／Ed25519 key、卷 marker 及报告目录，并在私有 env 中配置 `FEDERATION_STORAGE_POLICY_FILE`、`FEDERATION_STORAGE_OBSERVER_CONFIG`、`FEDERATION_STORAGE_OBSERVER_KEY`、`FEDERATION_STORAGE_REPORT_DIRECTORY`、`FEDERATION_STORAGE_OBSERVER_UID` 和 `FEDERATION_STORAGE_REPORT_GID`。启动前检查 owner、权限与只读报告挂载，不制造密钥、政策或健康报告；缺失／过期报告继续由生产 Server 拒绝新接单。
 
-观测服务使用已交付镜像，无现场构建或拉取，另计 128 MiB 内存及 0.25 CPU 预算。上述可选入口补齐部署接线，尚未证明真实文件传输、TLS 登录、容量暂停恢复或现场故障验收通过。
+观测服务使用已交付镜像，无现场构建或拉取，另计 128 MiB 内存及 0.25 CPU 预算。
 
 ## 目标容器运行时材料
 
 Ubuntu 24.04 amd64 新机可使用发行版的 `docker.io`、`docker-compose-v2`、`containerd`、`runc`。先读取目标 `/var/lib/dpkg/status`，在本机用该状态求解缺失依赖；不能按构建机是否已安装依赖决定下载范围。已有 Docker 的主机不使用此包覆盖安装，原 Runner/DinD 等服务预算另计。
 
-当前材料固定 Docker 29.1.3、Compose 2.40.3、containerd 2.2.1、runc 1.3.4，具体 Ubuntu 修订号以交付清单为准。使用 `apt-get download` 在本机下载，保存各包版本、架构、原仓库路径、SHA-256、APT 元数据及包内 copyright；材料不进入源码仓库。两台目标的软件包状态相同，已在本机以空仓库列表、目标状态和 `--simulate --no-download --no-install-recommends` 求解本地四个 deb：四项新增、零升级、零卸载，没有安装或启动服务。
+当前材料固定 Docker 29.1.3、Compose 2.40.3、containerd 2.2.1、runc 1.3.4，具体 Ubuntu 修订号以交付清单为准。使用 `apt-get download` 在本机下载，保存各包版本、架构、原仓库路径、SHA-256、APT 元数据及包内 copyright；材料不进入源码仓库。安装前以目标状态和 `--simulate --no-download --no-install-recommends` 重新求解本地 deb，不能沿用其他主机的依赖结论。
 
-交付时将此运行时包与镜像包分别校验。接收方先独立核对可信清单摘要，再检查所有文件；安装前用本站当前状态重新运行离线求解，状态变化或出现额外下载、升级、卸载时停止。实际安装属于部署操作，会创建或启动 Docker/containerd 服务，须在部署授权后执行；本轮不安装，也不把依赖求解通过当成安装成功。
+交付时将此运行时包与镜像包分别校验。接收方先独立核对可信清单摘要，再检查所有文件；安装前用本站当前状态重新运行离线求解，状态变化或出现额外下载、升级、卸载时停止。
 
 ## 续传、核验和加载
 
@@ -108,13 +102,13 @@ python3 /受信任工具/offline.py verify --bundle /目标交付目录 --manife
 python3 /受信任工具/offline.py load --bundle /目标交付目录 --manifest-sha256 <可信摘要>
 ```
 
-加载前检查全部文件，以及 Docker 数据盘可用空间（镜像展开大小总和的两倍加 1 GiB，不假设共享层能节省空间）；须在目标 Docker 主机本地执行。加载后复核镜像 ID。缺项、摘要不符、链接或错误架构均拒绝。固定候选 `92c31a8` 的 21 个镜像已通过 nerdctl 归档至目标 Docker 29 的实际加载与身份核对；该结果不替代平台、通道或计算验收。
+加载前检查全部文件，以及 Docker 数据盘可用空间（镜像展开大小总和的两倍加 1 GiB，不假设共享层能节省空间）；须在目标 Docker 主机本地执行。加载后复核镜像 ID。缺项、摘要不符、链接或错误架构均拒绝。
 
 Ubuntu Docker 29 的 containerd 镜像存储可能以 manifest digest 作为 inspect ID；工具通过本站 `ctr --namespace moby` 读取内容，核对 manifest／config 的 SHA-256 与平台，再用 config digest 对照交付记录，不放宽身份比对。该路径要求可访问默认 containerd socket 的 `ctr`，已含在上述 Ubuntu 运行时包中；未知多平台清单或内容不匹配仍拒绝，不自动连接其他 socket。
 
 ## 最终镜像的目标信息
 
-镜像完成构建、导出后，在本机运行下面的显式观察命令。它会创建短期容器，不启动 KQ、调度器或 Agent。`b54743b` 的两类正式 target 入口已在相同隔离条件通过；Slurm 版本读取使用 `slurmd --version`，避免 `sinfo` 依赖本站配置。最终选定版本的新候选须重新记录观察结果。
+镜像完成构建、导出后，在本机运行下面的显式观察命令。它会创建短期容器，不启动 KQ、调度器或 Agent。Slurm 版本读取使用 `slurmd --version`，避免 `sinfo` 依赖本站配置；观察记录绑定最终选定版本。
 
 ```sh
 python3 deploy/federation/offline.py \
@@ -128,19 +122,17 @@ PBS 再执行一次并选择 `--scheduler pbs` 和独立输出。目标 Docker �
 
 记录绑定提交和镜像 ID，包含 OS、glibc、Spack 版本/架构，以及 GCC/G++/Fortran/Python 等工具事实。观察实现现补齐 Apptainer、Perl 的 path、canonicalPath、SHA-256 和版本，供验签配置与 profile 使用；新候选中同样要求这些工具存在。`hostTarget` 是运行观察容器那台主机的 CPU 观察值；它不保证其他主机支持同一指令集。按三机共同 CPU 能力选择最终 target，随后通过既有材料生产工具生成 profile 和 native lock，不能把本文件直接当作它们导入。
 
-`runtimeToolsPresent` 保留兼容，只表示镜像内可找到 Apptainer/systemd 命令；不替代工具摘要，也不证明用户服务、cgroup 委派、签名 SIF、受限作业或安装 store 已配置。普通模式的 `AGENT_SPACK_ENABLED=true` 只打开探测。需要托管安装和 SelfAccount 联邦任务时使用下面的显式配置；目标平台原生运行与内核隔离仍须现场验收。
+`runtimeToolsPresent` 保留兼容，只表示镜像内可找到 Apptainer/systemd 命令；不替代工具摘要，也不证明用户服务、cgroup 委派、签名 SIF、受限作业或安装 store 已配置。普通模式的 `AGENT_SPACK_ENABLED=true` 只打开探测。需要托管安装和 SelfAccount 联邦任务时使用下面的显式配置；目标平台原生运行与内核隔离仍须现场运行。
 
 ## 托管安装与联邦任务运行时
 
-AIO 调度器使用 Ubuntu 24.04、显式选择的 Spack 兼容版本、同提交的编译 Agent、Apptainer 1.4.3 和 systemd。AIO 构建显式指定 Spack 版本，普通调度器基础镜像的 Ubuntu 20.04／Spack 1.0.3 默认值不变；旧宿主或旧镜像的 native lock 不能直接套用。公共 SIF 仅包含系统与编译/Spack 工具，不预装待验收的科学软件。提取先用与目标观察相同的限额、禁网、只读、非 root 观察容器读取镜像内 SIF 的字节数／SHA-256 小 JSON，再以受限 create 建立但不启动临时容器，通过 cp 复制文件，并在 finally 删除该容器：
+AIO 调度器使用 Ubuntu 24.04、显式选择的 Spack 兼容版本、同提交的编译 Agent、Apptainer 1.4.3 和 systemd。AIO 构建显式指定 Spack 版本，普通调度器基础镜像的 Ubuntu 20.04／Spack 1.0.3 默认值不变；旧宿主或旧镜像的 native lock 不能直接套用。公共 SIF 仅包含系统与编译/Spack 工具，不预装待运行的科学软件。提取先用与目标观察相同的限额、禁网、只读、非 root 观察容器读取镜像内 SIF 的字节数／SHA-256 小 JSON，再以受限 create 建立但不启动临时容器，通过 cp 复制文件，并在 finally 删除该容器：
 
 ```sh
 python3 deploy/federation/offline.py runtime \
   --bundle /交付盘/指定版本 --manifest-sha256 <可信摘要> \
   --scheduler slurm --output /受控材料/spack-unsigned.sif
 ```
-
-containerd 构建机在 `runtime` 前加前述 nerdctl 全局参数。复制后的字节数和 SHA-256 必须与镜像内记录完全一致，才发布只读 SIF 及旁边的 0600 metadata JSON；记录绑定提交、镜像 ID、字节数和 SHA-256，并明确标记尚未签名、尚未通过软件安装。失败留下 `.creating`，不会覆盖已有文件或盲目重试。先核对失败记录再人工处置；不把残留文件当作可用材料。实际发现过 stdout 命令退出 0 但 SIF 少 57,344 字节，原件留证且不得签名；`b54743b` 两类正式 runtime 入口已通过完整复制校验。新候选 SIF 的摘要与入口结果须重新取得。
 
 各机构在独立受控环境批准签署，先核对原始提取记录，再在已存在的私有签署目录独占创建可写副本。下面只使用机构自行持有的 PEM 密钥，不创建密钥或覆盖原件：
 
@@ -188,7 +180,7 @@ SIF 的 `runtime.pub` 是 PEM 验签公钥；`AGENT_SANDBOX_PUBLIC_KEYS_JSON` �
 
 独立 Docker 卷保存 ext4 store 镜像，默认 2 GiB，可在首次启动前用 `KQ_AIO_MANAGED_STORE_BYTES` 选择 1–16 GiB；现有 store 尺寸变化会停止，绝不重格式化。格式化失败保留独占检查点；删除卷会丢失安装，不能作为修复办法。默认测试容器预算 2560 MiB（`KQ_AIO_MANAGED_MEMORY`），比普通模式多 2176 MiB，安装 worker 默认 1024 MiB、并发 1；还须核对完整主机预算。已有部署不能用换开关、换版本覆盖在途任务，须先停止接单、核对原作业并备份，走维护迁移。
 
-privileged 测试容器不能抵御宿主管理员或容器 root 越权，不能用于不受信任机构共享宿主的生产隔离。此配置只用于用户指定的容器测试集群。目标平台的 SIF 签名、systemd/cgroup 委派、两类调度器签名作业与安装/停止/恢复的实际验收尚未执行，不能用配置检查代替。
+privileged 测试容器不能抵御宿主管理员或容器 root 越权，不能用于不受信任机构共享宿主的生产隔离。此配置只用于用户指定的容器测试集群。目标平台的 SIF 签名、systemd/cgroup 委派、两类调度器签名作业与安装/停止/恢复的实际运行尚未执行，不能用配置检查代替。
 
 ## 托管 Slurm 的原生用量
 
@@ -210,7 +202,7 @@ privileged 测试容器不能抵御宿主管理员或容器 root 越权，不能
 
 启动等待数据库健康，核对私有密码后写入 slurm 所有、0600 的 slurmdbd 配置；记账服务就绪并核对固定 cluster/account/kq 用户关联后，才启动计算调度器和注册 Agent。只补缺失关联，不重写已有不匹配关联；数据库不可用、密码不符或关联异常均阻止注册。该技术账号不授予平台业务权限；本站仍须批准 kq 的映射，调度账号为 `kq-aio`。
 
-托管模式的 Agent 使用 `sacct`，原生累计用量沿现有 `slurm-sacct` 证据路径采集。slurmdbd 与计算/Agent 共同监督，任一退出即停止本次容器运行，避免长期只运行部分服务。普通 AIO Slurm 继续用 scontrol 查询保留终态，不提供 sacct 用量；不据此完成商业计费验收。本轮只完成接线和命令夹具，真实作业的 sacct 数值、数据库恢复及账单对应关系仍待现场验证。
+托管模式的 Agent 使用 `sacct`，原生累计用量沿现有 `slurm-sacct` 证据路径采集。slurmdbd 与计算/Agent 共同监督，任一退出即停止本次容器运行，避免长期只运行部分服务。普通 AIO Slurm 继续用 scontrol 查询保留终态，不提供 sacct 用量；不据此完成商业计费运行。
 
 ## 私有配置与正式身份
 
@@ -218,20 +210,18 @@ privileged 测试容器不能抵御宿主管理员或容器 root 越权，不能
 
 `KQ_AIO_PRIVATE_DIRECTORY` 下准备：
 
-- `casdoor/app.conf`：独立 SSO 数据库连接、origin、初始化数据和客户端。同域名部署使用支持 `basePath` 的 Casdoor：`origin` 为平台 HTTPS origin，`basePath = /sso`，`originFrontend` 和 `staticBaseUrl` 为该 origin 加 `/sso`。原生前缀同时作用于页面、API 和静态资源，避免与 KQ 的 `/assets/` 冲突，也避免把 KQ 回调误认为 Casdoor 自身登录。不依赖国外 CDN，不使用开发免密登录。修改挂载配置后须重启 Casdoor。用户 `groups` 使用完整的 `机构/组名`；应用显式设置 `tokenGroupFormat: "Name"`，使令牌的组名与 KQ 的 SSO 映射一致。已有库的 `initDataNewOnly` 不会修复旧组关系，须由 SSO 管理员通过正常接口更新后重新登录。平台角色不隐含联邦业务权限，机构成员仍须在“设置 → 安全 → 联邦权限”独立授权。
+- `casdoor/app.conf`：独立 SSO 数据库连接、origin、初始化数据和客户端。同域名部署使用支持 `basePath` 的 Casdoor：`origin` 为平台 HTTPS origin，`basePath = /sso`，`originFrontend` 和 `staticBaseUrl` 为该 origin 加 `/sso`。原生前缀同时作用于页面、API 和静态资源，避免与 KQ 的 `/assets/` 冲突，也避免把 KQ 回调误认为 Casdoor 自身登录。不依赖国外 CDN，不使用开发免密登录。修改挂载配置后须重启 Casdoor。用户 `groups` 使用完整的 `机构/组名`；应用显式设置 `tokenGroupFormat: "Name"`，使令牌的组名与 KQ 的 SSO 映射一致。已有库的 `initDataNewOnly` 不会修复旧组关系，须由 SSO 管理员通过正常接口更新后重新登录。平台角色不隐含联邦业务权限，机构成员仍须在“联邦协同 → 管理 → 联邦权限”独立授权。
 - `edge/`、`tls/`：参考[HTTPS 示例](edge.conf.example)以本站一个域名分流平台、SSO 和对象存储；SAN 和 DNS 匹配。`WEB_BASE_URL`、`SSO_BOOTSTRAP_ISSUER_URL`、`KQ_STORAGE_PUBLIC_URL` 与 Casdoor 的 `origin`、`staticBaseUrl` 使用同一 HTTPS origin，回调仍为 `/platform/api/auth/oidc/callback`。Casdoor 前端与管理入口使用 `/sso/`，根路径的 `/.well-known/` 和必要 `/api/` 继续提供 OIDC 发现、令牌及用户信息接口；旧 `/login/oauth/` 保留参数跳转至 `/sso/login/oauth/`；S3 保留原桶路径和 Host，不额外添加 `/storage` 前缀。更换桶名时同步修改代理路径。已有站点须通过管理员 SSO 配置接口更新持久化 issuer，不能只改 bootstrap 环境变量。受控 CA 加入浏览器/Server/Agent 信任，不关闭 TLS 校验。
 - `grpc/server.crt`、`grpc/server.key`：Server direct mTLS 的服务端证书和私钥，只读挂载；SAN 覆盖 Agent 实际连接名，由 Agent 信任的 CA 签发。客户端验证仍使用本站持久 Server CA。即使不启用调度器，Server 启动也需要这两个文件；私钥只供 Server 读取，不把 CA 私钥挂给 Agent。
 - `agent-enrollment/token`：经本站正式 API 签发的单次注册令牌，归容器执行账号所有、0600；Slurm 为 root，PBS 默认为 kq。
 
 登录品牌配置须同时写入现有 SSO 数据库与私有初始化数据：应用 `logo` 使用本站 HTTPS origin 加 `/branding/logo.svg`，机构 `favicon` 使用该 origin 加 `/branding/favicon.svg`。空 Logo 在不同 Casdoor 版本会显示破图或回退至缺失的静态文件；只改 `init_data.json` 不会更新已有数据库。将交付包的 `casdoor-logo.png` 及 `casdoor-logo.LICENSE` 复制到私有部署中的 `edge/` 目录。该目录仅存放公开代理配置与品牌素材，权限设为 `0755`、PNG 为 `0644`，供 Nginx worker 读取；私钥和凭据仍放在独立的受限目录。HTTPS 示例会在 `/sso/img/casdoor-logo_1185x256.png` 提供本地 Casdoor 署名图片，不依赖 CDN。检查应包含浏览器 `naturalWidth > 0` 及图片内容类型，不能只看 HTTP 200，SPA 回退也可能返回 200 HTML。
 
-内网试用三站已按此方式切换，五类人员登录与既有主服务对齐，15 个角色登录／权限和三站同域名文件往返通过。更换人员登录时保留历史审批人和签名，停用旧 SSO 登录并撤销旧会话；人员口令对齐不改变每站的数据库、对象存储、OIDC client secret、业务密钥或 MSP。完整 38 项边界继续见[试用说明](trial-readiness.md)。
-
 机构 mTLS、Fabric 及治理材料沿[部署契约](../deployment.md)配置，端点必须是可达 VPC 地址。调度器预置 Agent 和注册工具，没有源码挂载、Bun 在线安装或开发登录。注册成功持久化；未知结果留下 `registration.attempt`，管理员核对原 Agent/证书后才可再次登记，不能反复生成身份绕过。
 
 Slurm/PBS 按 cgroup 宣告资源，预留 256 MiB 给调度器/Agent；384 MiB 容器只申报 128 MiB 作业内存。真实编译另配足够预算。容器系统与旧 lock 不一致时，按最终镜像重新生成 profile/native lock。
 
-Slurm controller/worker spool 和 Munge 身份分别使用持久卷；构建时移除软件包可能生成的 Munge key，首次启动各自生成，重建沿用本站原 key。已有部署不自动轮换密钥。PBS 使用独立 `PBS_HOME` 卷。容器重建不得删卷或重新初始化已有 PBS 数据库。两类调度器保留 24 小时终态查询窗口，PBS 配置失败会阻止 Agent 注册；窗口外或记录缺失时仍须人工核对原请求，不能推断原作业没有执行。普通 AIO Slurm 显式使用 scontrol，托管 Slurm 按上节使用实际记账数据库和 sacct。保留终态与数据库持久化都不保证运行中的进程在容器被删除后继续运行。实际重建、作业停止证明与历史恢复仍在现场验收中执行。
+Slurm controller/worker spool 和 Munge 身份分别使用持久卷；构建时移除软件包可能生成的 Munge key，首次启动各自生成，重建沿用本站原 key。已有部署不自动轮换密钥。PBS 使用独立 `PBS_HOME` 卷。容器重建不得删卷或重新初始化已有 PBS 数据库。两类调度器保留 24 小时终态查询窗口，PBS 配置失败会阻止 Agent 注册；窗口外或记录缺失时仍须人工核对原请求，不能推断原作业没有执行。普通 AIO Slurm 显式使用 scontrol，托管 Slurm 按上节使用实际记账数据库和 sacct。保留终态与数据库持久化都不保证运行中的进程在容器被删除后继续运行。实际重建、作业停止证明与历史恢复仍在现场运行中执行。
 
 ## 配置与显式启动
 
@@ -245,11 +235,11 @@ python3 /受信任工具/offline.py config \
   --output /etc/kuintessence-aio/site-a.config
 ```
 
-C 使用 `--scheduler pbs`。普通模式只有 PBS 测试容器获得 privilege；托管模式两类测试调度器均需要该权限，按上节准备运行时后为机构配置显式加 `--managed`。独立无链验收使用 `--mode direct`，没有 Fabric 服务/连接。R 使用 `--role arbitrator --mode fabric`，不包含调度器或 Orderer，移除非案件链能力；使用独立项目、私有目录及全部端口。
+C 使用 `--scheduler pbs`。普通模式只有 PBS 测试容器获得 privilege；托管模式两类测试调度器均需要该权限，按上节准备运行时后为机构配置显式加 `--managed`。独立无链运行使用 `--mode direct`，没有 Fabric 服务/连接。R 使用 `--role arbitrator --mode fabric`，不包含调度器或 Orderer，移除非案件链能力；使用独立项目、私有目录及全部端口。
 
-只验收平台与联盟链时，为机构的 `config` 命令增加 `--no-scheduler`。平台、登录、权限、存储、Registry、Peer、Orderer 及四组 Adapter／链码保持启用；生成配置不包含 Slurm/PBS、Agent、记账数据库或调度器专用卷，也不需要 Agent ID、注册令牌、签名 SIF、site profile 或 native lock。该选项不能与 `--managed` 或非机构角色同时使用，`--scheduler` 在此模式不启用任何调度服务。无链模式同样可用。
+只运行平台与联盟链时，为机构的 `config` 命令增加 `--no-scheduler`。平台、登录、权限、存储、Registry、Peer、Orderer 及四组 Adapter／链码保持启用；生成配置不包含 Slurm/PBS、Agent、记账数据库或调度器专用卷，也不需要 Agent ID、注册令牌、签名 SIF、site profile 或 native lock。该选项不能与 `--managed` 或非机构角色同时使用，`--scheduler` 在此模式不启用任何调度服务。无链模式同样可用。
 
-此模式的默认预算为 direct 2848 MiB、fabric 4640 MiB，均含 512 MiB 系统余量，未计同机其他容器及可选 observer。完整 fabric 平台仍超过当前 4 GiB 主机预算；不自动降低限额或裁剪链能力。无 Agent 时不验收任务执行、科研软件安装、实际计算用量或跨机构计算 Workflow。切换已有项目的调度器参与状态须先维护、处理原任务并保留状态卷；启动工具拒绝直接覆盖，不自动停止或删除旧容器／卷。
+此模式的默认预算为 direct 2848 MiB、fabric 4640 MiB，均含 512 MiB 系统余量，未计同机其他容器及可选 observer。完整 fabric 平台仍超过当前 4 GiB 主机预算；不自动降低限额或裁剪链能力。无 Agent 时不运行任务执行、科研软件安装、实际计算用量或跨机构计算 Workflow。切换已有项目的调度器参与状态须先维护、处理原任务并保留状态卷；启动工具拒绝直接覆盖，不自动停止或删除旧容器／卷。
 
 该选项只改变 Compose 渲染，无需重建平台或链镜像。已导出的旧交付包及其摘要保持不变，可用包外另行取得并信任的新版 `offline.py` 读取原包；单独记录工具版本，旧包内的脚本不会自动新增此选项。
 
@@ -274,27 +264,25 @@ python3 /受信任工具/offline.py up \
 AIO 默认 `AUTHZ_OUTBOX_INTERVAL_SEC=1`，可在私有环境文件调整；普通平台的服务默认值仍为 5 秒。首次目录可能产生数万条投影，处理时间仍取决于数据库与 CPU 预算。调整轮询间隔不跳过授权或持久化，也不增加主机资源限额。
 
 1. 完成真实 SSO 登录，检查 `/api/auth/session` 中的角色是否与本站已批准的组映射一致。OIDC 登录只同步平台角色，不自动创建开发机构或赋予机构成员身份；管理员通过平台的机构管理和成员管理建立正式归属，再单独授予所需联邦能力。旧机构和成员不会因升级删除，SSO 登录也不会覆盖其成员角色。开发免密登录仍保留历史默认机构行为，仅在开发环境可用。
-2. 打开“设置”的权限管理面板（`/settings#security/authz`），查看现有就绪结果，或用当前管理员会话请求 `GET /api/admin/authz/readiness`。AIO edge 的 API 前缀是 `/platform/api`。验收要求 `mode=enforce`、`healthy/schemaWritten/schemaMatches=true`、`outbox.pending/processing/dead=0`、`shadowDiffs=0`、`enforceReady=true`；接口的 `externalSmokeRequired=true` 表示还需验证实际授权操作。
-3. 首次软件目录初始化会生成大量权限投影，新管理员的投影可能仍在队列中。若管理接口暂时返回 403，用已有 Compose 配置执行下面的只读队列查询；有积压且持续下降时等待后台处理，不能删除队列或关闭 enforce。队列清空后仍为 403，回查 SSO 角色和管理员授权；有 dead 行时在管理入口核查失败原因并按原记录恢复。
+2. 打开“设置”的权限管理面板（`/settings#security/authz`），查看现有就绪结果，或用当前管理员会话请求 `GET /api/admin/authz/readiness`。AIO edge 的 API 前缀是 `/platform/api`。运行要求 `mode=enforce`、`healthy/schemaWritten/schemaMatches=true`、`outbox.pending/processing/dead=0`、`shadowDiffs=0`、`enforceReady=true`；接口的 `externalSmokeRequired=true` 表示还需验证实际授权操作。
+3. 首次软件目录初始化会生成大量权限投影，新管理员的投影可能仍在队列中。若管理接口暂时返回 403，用已有 Compose 配置执行下面的只读队列查询；有积压且持续下降时等待后台处理，不能删除队列或关闭 enforce。队列清空后仍为 403，回查 SSO 角色和管理员授权；有 dead 行时在管理入口检查失败原因并按原记录恢复。
 
 ```sh
 docker compose --project-name <本站项目> -f /本站私有配置/compose.json \
   exec -T postgres sh -ec 'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT status, count(*) FROM authz_outbox GROUP BY status ORDER BY status"'
 ```
 
-查询不输出连接密码、授权原件或用户资料。随后只验证本站需要的授予／撤销及跨机构拒绝；已有未受影响的验收证据直接引用。权限就绪与 Fabric 通道加入、指定机构背书和 VALID 交易分别验收。
+查询不输出连接密码、授权原件或用户资料。随后确认本站所需能力、授予／撤销和跨机构拒绝。权限就绪、通道加入、指定机构背书和 VALID 交易分别判断。
 
 ## 停止与恢复
 
 Registry 和四种链码服务使用 Compose `init: true`，由运行时转发停止信号并回收子进程，避免未处理信号的 Bun／Node.js 直接作为 PID 1 时一直等待到 SIGKILL。镜像内容不变；应用配置需要重建受影响容器，保留原命名卷、私有文件与镜像 ID。信号退出可能记录为 143，不能仅因退出码非零就认定 OOM；同时检查 `OOMKilled`、停止耗时与日志。这一设置不提供在途交易排空或数据库恢复证明。
 
-Casdoor 同样启用 `init: true`。固定镜像中的 Go runtime 在进程作为 PID 1、无法按默认信号动作终止时会兜底退出 2；该现象不能直接当作应用 panic。已在一个机构平台定向验证：保留同一镜像与挂载，启动后健康，停止约 0.33 秒、退出 143，无 OOM。此项只验证启动健康与停止信号，真实 SSO 使用前次整站恢复证据，不重复计为本次检查。
+Casdoor 同样启用 `init: true`。固定镜像中的 Go runtime 在进程作为 PID 1、无法按默认信号动作终止时会兜底退出 2；该现象不能直接当作应用 panic。
 
-使用原项目的 `docker compose stop` 保留容器和数据，不用 `down -v`。停止后核对挂载时按目标路径比较全部属性，Docker inspect 的列表顺序可能变化。已有初始化容器退出 0 时不重复执行初始化。共享 CI 主机在暂停 Runner 前确认没有活动任务，试验全部停止后才能恢复 Runner；再次启动平台需重新安排资源窗口。
+使用原项目的 `docker compose stop` 保留容器和数据，不用 `down -v`。停止后核对挂载时按目标路径比较全部属性，Docker inspect 的列表顺序可能变化。已有初始化容器退出 0 时不重复执行初始化。共享 CI 主机暂停 Runner 前须确认没有活动任务；恢复须按该主机的当前用途和资源窗口单独决定。
 
-固定候选的一个机构平台已补验整站恢复：21 个常驻服务按依赖顺序启动，原账号真实 SSO、机构和三项读取权限保留，三个读取 API 返回 200，页面无脚本或 HTTP 错误。该站应用 init 后再次停止，Registry／四链码均退出 143，无强杀或 OOM；全部原镜像与挂载保留，结束后恢复原 Runner／DinD。整站检查时 Casdoor 的退出 2 已由上述定向接续修复。原 Runner 反复重启的日志为向 Forgejo Declare 请求返回 HTTP 524；两处网络访问均超时，外部连接原因仍待定位，未改注册凭据或用容器恢复代替新 CI 作业验收。这些结果不覆盖在途业务、备份恢复或联合链交易。
-
-后续用户已明确停用原 Runner／DinD，两者现保持停止，容器、配置、数据和原 `unless-stopped` 策略保留，外部 Forgejo 诊断不再推进。停用期间的试验不得沿用历史收尾步骤自动恢复它们。
+C 站 Runner／DinD 保持停止，保留容器、配置、数据和原 `unless-stopped` 策略。平台维护不得自动恢复它们。
 
 ## 离线机构管理操作
 
@@ -312,6 +300,4 @@ python3 /受信任工具/offline.py admin \
 
 支持现有初始化脚本的 `orderer-join`、`peer-join`、`install`、`approve`、`readiness`、`commit`、`initialize`、`verify`；后六项须指定 `--kind`。参数文件、组织独立批准和未知结果查询仍沿用[初始化契约](../deployment.md#显式初始化与升级)，不会生成或替其他机构批准材料。
 
-direct 拒绝链管理；R 只允许本站 Peer 和 case 链码操作；第四 Orderer 仅允许 `orderer-join`，临时工具只挂载独立 admin 目录，不增加常驻服务。命令校验原部署身份、镜像、容量并持有同一部署锁，执行 `run --rm --no-deps --pull never`，不会连带启动其他服务。未知响应后先查询原状态，不能将重跑批准、提交或 Init 当作恢复机制。这一入口完成了模拟执行和 Compose 配置检查，真实通道操作仍待部署验收。
-
-先一台稳定及测量，再三机构和四节点 SmartBFT。通道/PDC/链码由各方按[初始化流程](../deployment.md#显式初始化与升级)批准，不用健康检查代替有效交易。最后限制国外出口但保留 VPC/DNS/SSH，检查加载、登录、初始化、作业和软件准备无外网依赖。满盘及恢复测试使用专用卷/通道，38 项分别保存证据。
+direct 拒绝链管理；R 只允许本站 Peer 和 case 链码操作；第四 Orderer 仅允许 `orderer-join`，临时工具只挂载独立 admin 目录，不增加常驻服务。命令校验原部署身份、镜像、容量并持有同一部署锁，执行 `run --rm --no-deps --pull never`，不会连带启动其他服务。未知响应后先查询原状态，不能将重跑批准、提交或 Init 当作恢复机制。

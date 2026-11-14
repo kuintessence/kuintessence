@@ -38,7 +38,7 @@ export default defineConfig({
         text: "角色手册",
         items: [
           { text: "用户 / Compute Consumer", link: "/roles/user" },
-          { text: "算力提供者 / 集群管理员", link: "/roles/compute-provider" },
+          { text: "算力中心 / 集群管理员", link: "/roles/compute-provider" },
           { text: "平台运营", link: "/roles/platform-operator" },
           { text: "软件开发者 / Software Provider", link: "/roles/software-provider" },
         ],
