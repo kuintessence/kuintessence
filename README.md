@@ -49,6 +49,7 @@ Agent 需单独部署在能访问调度器命令的主机上。
 - 科研计算用户：[用户手册](docs/manuals/user-manual.md)、[工作流规范](docs/workflow-schema/README.md)。
 - 算力提供方：[CP 手册](docs/manuals/compute-provider-manual.md)、[Agent systemd 部署](deploy/systemd/README.md)。
 - 平台运营：[运营手册](docs/manuals/platform-operator-manual.md)、[系统运维手册](docs/manuals/system-operations-manual.md)。
+- 联邦协同：[使用指南](docs/federation-collaboration.md)、[页面操作与权限](docs/design/federation/web-operations.md)。
 - 本地调度器：[TUI](docs/clients.md#tui)、[GUI](docs/clients.md#gui)。
 - 平台部署：[Helm](deploy/helm/kq-platform/README.md)、[反向代理](docs/deployment.md#proxy)、
   [认证与会话](docs/security.md#authentication)、[NetDrive](docs/storage.md#transfers)。

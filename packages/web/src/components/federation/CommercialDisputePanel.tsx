@@ -181,7 +181,7 @@ function Disputes(props: Props) {
             <p className="py-8 text-sm text-muted-foreground">{t(`${prefix}.empty`)}</p>
           )}
           {page > 0 || list.data.hasMore ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button variant="outline" disabled={page === 0} onClick={() => setPage(page - 1)}>
                 {t("federation.previous")}
               </Button>
@@ -773,7 +773,7 @@ function DisputeDetail({
                 <p role="status">{t(`${prefix}.financialNotReady`)}</p>
               ) : null}
               {generate.isError ? <p role="alert">{error(generate.error)}</p> : null}
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button type="submit" disabled={blocked || !financial.data?.localReady}>
                   {t(`${prefix}.review`)}
                 </Button>
@@ -831,7 +831,7 @@ function DisputeDetail({
                 </dl>
               </details>
               {!resolution.data && canResolve ? (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button disabled={blocked} onClick={() => review({ kind: "approve", value })}>
                     {t(`${prefix}.approve`)}
                   </Button>

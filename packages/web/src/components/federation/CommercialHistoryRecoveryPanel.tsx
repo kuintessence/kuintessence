@@ -252,7 +252,7 @@ function HistoryRecovery({
     <section className="space-y-4 border-t border-border pt-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="font-semibold">{t(`${prefix}.title`)}</h3>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
             disabled={blocked || attach.isPending}

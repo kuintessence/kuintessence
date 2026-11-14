@@ -191,7 +191,7 @@ export function GovernanceProgress({
                 ) : null}
               </div>
             ))}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="outline" disabled={!page || busy} onClick={() => setPage(page - 1)}>
               {t("federation.previous")}
             </Button>
@@ -237,7 +237,7 @@ export function GovernanceProgress({
                   ) : null}
                 </div>
               ))}
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 disabled={!ledgerPage || busy}

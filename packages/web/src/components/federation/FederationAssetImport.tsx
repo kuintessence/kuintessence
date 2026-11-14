@@ -176,7 +176,7 @@ export function FederationAssetImport({
           {error}
         </p>
       ) : null}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button disabled={busy} type="submit">
           {t(working ? "federation.loading" : "federation.assets.review")}
         </Button>

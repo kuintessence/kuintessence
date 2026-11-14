@@ -25,7 +25,7 @@ export function MediaPagination({
   const { t } = useTranslation();
   if (!page && !hasMore) return null;
   return (
-    <div className="flex gap-2">
+    <div className="flex flex-wrap gap-2">
       <Button
         type="button"
         variant="outline"

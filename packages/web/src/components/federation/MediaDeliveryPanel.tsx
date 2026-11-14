@@ -9,8 +9,10 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
+import { FederationEmpty } from "./FederationLayout";
 import { MediaDeliveryDetail } from "./MediaDeliveryDetail";
 import {
   type MediaDeliveryAction,
@@ -143,6 +145,7 @@ function MediaInventory({
       : { kind: "register", workflowRunId: exportFrom?.workflowRunId };
   return (
     <section className="space-y-5" aria-label={t("federation.delivery.title")}>
+      <h2 className="text-lg font-semibold tracking-tight">{t("federation.delivery.title")}</h2>
       {exportFrom ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="font-semibold">{t("federation.delivery.workflowMaterials")}</h3>
@@ -164,7 +167,7 @@ function MediaInventory({
             setAction(null);
           }}
         >
-          <TabsList aria-label={t("federation.delivery.title")}>
+          <TabsList className="federation-subnav" aria-label={t("federation.delivery.title")}>
             <TabsTrigger value="exports" disabled={!!action}>
               {t("federation.delivery.outgoing")}
             </TabsTrigger>
@@ -230,9 +233,9 @@ function MediaInventory({
       ) : (
         <>
           {!list.data?.data.length ? (
-            <p className="py-6 text-sm text-muted-foreground">{t("federation.delivery.empty")}</p>
+            <FederationEmpty>{t("federation.delivery.empty")}</FederationEmpty>
           ) : (
-            <ul className="divide-y divide-border rounded-md border">
+            <ul className="federation-list divide-y divide-border rounded-md border">
               {list.data.data.map((row) => {
                 const outgoing = "taskSelection" in row;
                 const subject = outgoing
@@ -249,7 +252,7 @@ function MediaInventory({
                   <li key={row.packageId}>
                     <button
                       type="button"
-                      className="flex w-full flex-wrap justify-between gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-ring"
+                      className="federation-list-row flex w-full flex-wrap justify-between gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-ring"
                       onClick={() => setSelected(row.packageId)}
                     >
                       <span className="min-w-0 space-y-1">
@@ -263,7 +266,7 @@ function MediaInventory({
                           )}
                         </span>
                       </span>
-                      <span className="text-sm">{t(`federation.delivery.states.${state}`)}</span>
+                      <Badge variant="outline">{t(`federation.delivery.states.${state}`)}</Badge>
                     </button>
                   </li>
                 );

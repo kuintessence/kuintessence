@@ -199,7 +199,7 @@ export function CommercialEditor({
                 </p>
               )}
               {page > 0 || agreements.data?.length === 20 ? (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button
                     variant="outline"
                     disabled={disabled || page === 0 || agreements.isFetching}

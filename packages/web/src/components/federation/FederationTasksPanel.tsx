@@ -11,6 +11,7 @@ import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { ApiError, type ApiOrganizationScope, api } from "../../lib/api-client";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -22,6 +23,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { AgreementFact } from "./AgreementTerms";
+import { FederationEmpty, FederationPanelHeader } from "./FederationLayout";
 import { FederationTaskCreate } from "./FederationTaskCreate";
 import { FederationTaskDetail } from "./FederationTaskDetail";
 
@@ -134,32 +136,29 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
     );
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold">{t("federation.tasks.title")}</h2>
-        <div className="flex gap-2">
+      <FederationPanelHeader title={t("federation.tasks.title")}>
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            void capabilities.refetch();
+            void client.invalidateQueries({ queryKey: key });
+          }}
+        >
+          {t("federation.refresh")}
+        </Button>
+        {canPrepare && !creating && !selected ? (
           <Button
-            variant="outline"
-            disabled={busy}
+            disabled={busy || !context.data || context.isError}
             onClick={() => {
-              void capabilities.refetch();
-              void client.invalidateQueries({ queryKey: key });
+              submit.reset();
+              setCreating(true);
             }}
           >
-            {t("federation.refresh")}
+            {t("federation.tasks.new")}
           </Button>
-          {canPrepare && !creating && !selected ? (
-            <Button
-              disabled={busy || !context.data || context.isError}
-              onClick={() => {
-                submit.reset();
-                setCreating(true);
-              }}
-            >
-              {t("federation.tasks.new")}
-            </Button>
-          ) : null}
-        </div>
-      </div>
+        ) : null}
+      </FederationPanelHeader>
       {readOnly ? (
         <p className="text-sm text-muted-foreground">{t("federation.agreements.desktopOnly")}</p>
       ) : null}
@@ -184,7 +183,7 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
                 {submit.error instanceof ApiError ? ` (${submit.error.code})` : ""}
               </p>
             ) : null}
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button disabled={busy || !canSubmit} onClick={() => setConfirming(true)}>
                 {t(uncertain ? "federation.tasks.retryOriginal" : "federation.tasks.review")}
               </Button>
@@ -232,14 +231,14 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
       ) : (
         <>
           {!list.data.length ? (
-            <p className="py-8 text-sm text-muted-foreground">{t("federation.tasks.empty")}</p>
+            <FederationEmpty>{t("federation.tasks.empty")}</FederationEmpty>
           ) : (
-            <ul className="divide-y divide-border">
+            <ul className="federation-list divide-y divide-border">
               {list.data.map((row) => (
                 <li key={row.operationId}>
                   <button
                     type="button"
-                    className="flex w-full flex-wrap items-center justify-between gap-3 rounded-md px-3 py-4 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="federation-list-row flex w-full flex-wrap items-center justify-between gap-3 rounded-md px-3 py-4 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => setSelected(row.operationId)}
                   >
                     <span className="min-w-0">
@@ -251,17 +250,17 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
                         {new Date(row.createdAt).toLocaleString(i18n.language)}
                       </time>
                     </span>
-                    <span className="text-sm">
+                    <Badge variant="outline" className="max-w-full whitespace-normal">
                       {t(
                         `federation.tasks.states.${row.cancellation ? `cancel_${row.cancellation.state}` : row.remoteStatus.workflow ? `execution_${row.remoteStatus.workflow.status}` : row.state}`,
                       )}
-                    </span>
+                    </Badge>
                   </button>
                 </li>
               ))}
             </ul>
           )}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               disabled={!page || list.isFetching}

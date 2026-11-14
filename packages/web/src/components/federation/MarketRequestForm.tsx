@@ -306,7 +306,7 @@ export function MarketRequestForm({
         </div>
       </fieldset>
       {invalid ? <p role="alert">{t("federation.marketRequest.invalid")}</p> : null}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button
           disabled={
             busy ||

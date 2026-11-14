@@ -8,6 +8,7 @@
 | 接入代理（Agent） | 部署在集群或站点侧的守护进程，适配 Slurm、PBS、Torque、Kubernetes 等调度器。 |
 | 软件仓库（Registry） | 存储和分发软件目录、发布版本、工作流模板、OCI 制品与 Spack buildcache 的服务。 |
 | 软件中心（Software Center） | Web 中浏览、发布和管理软件、用例与工作流模板的功能入口。 |
+| 联邦协同（Federation Collaboration） | 独立平台间的委派、授权、交付和对账入口，原名“机构合作”；使用方法见[联邦协同](/guide/federation-collaboration)。 |
 | CP | Compute Provider，算力提供者或集群管理员。 |
 | CC | Compute Consumer，普通计算用户。 |
 | SP | Software Provider，软件资产发布者。 |

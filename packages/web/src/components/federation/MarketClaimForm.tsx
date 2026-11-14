@@ -210,7 +210,7 @@ export function MarketClaimForm({
             </div>
           ) : null}
           {requestPage > 0 || requests.data.records.length === 20 ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 disabled={disabled || requests.isFetching || requestPage === 0}
@@ -236,7 +236,7 @@ export function MarketClaimForm({
         </>
       ) : null}
       {page > 0 || agreements.data?.length === 20 ? (
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
             disabled={disabled || agreements.isFetching || page === 0}
@@ -259,7 +259,7 @@ export function MarketClaimForm({
           </Button>
         </div>
       ) : null}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button
           disabled={
             disabled ||

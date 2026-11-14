@@ -10,8 +10,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
+import { FederationEmpty } from "./FederationLayout";
 import { type MediaFormAction, MediaLogisticsForm } from "./MediaLogisticsForm";
 import { checkMediaScope, MediaPagination, type MediaScope } from "./MediaLogisticsShared";
 
@@ -117,6 +119,7 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
   };
   return (
     <section className="space-y-5" aria-label={t("federation.logistics.title")}>
+      <h2 className="text-lg font-semibold tracking-tight">{t("federation.logistics.title")}</h2>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Tabs
           value={view}
@@ -127,7 +130,7 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
             setAction(null);
           }}
         >
-          <TabsList aria-label={t("federation.logistics.title")}>
+          <TabsList className="federation-subnav" aria-label={t("federation.logistics.title")}>
             <TabsTrigger value="shipments" disabled={!!action}>
               {t("federation.logistics.shipments")}
             </TabsTrigger>
@@ -136,7 +139,7 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
             </TabsTrigger>
           </TabsList>
         </Tabs>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
             disabled={busy || !!action || list.isFetching || (!!selected && detail.isFetching)}
@@ -269,15 +272,15 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
       ) : (
         <>
           {!list.data?.data.length ? (
-            <p className="py-6 text-sm text-muted-foreground">{t("federation.logistics.empty")}</p>
+            <FederationEmpty>{t("federation.logistics.empty")}</FederationEmpty>
           ) : (
-            <ul className="divide-y divide-border rounded-md border border-border">
+            <ul className="federation-list divide-y divide-border rounded-md border border-border">
               {list.data.kind === "shipments"
                 ? list.data.data.map((row) => (
                     <li key={row.shipmentId}>
                       <button
                         type="button"
-                        className="flex w-full flex-wrap justify-between gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+                        className="federation-list-row flex w-full flex-wrap justify-between gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
                         onClick={() => {
                           setSelected(row.shipmentId);
                           setEventPage(0);
@@ -290,9 +293,9 @@ function MediaInventory({ scope, busy }: { scope: MediaScope; busy: boolean }) {
                             {row.recipientName ?? row.recipientSiteId}
                           </span>
                         </span>
-                        <span className="text-sm">
+                        <Badge variant="outline">
                           {t(`federation.logistics.states.${row.state}`)}
-                        </span>
+                        </Badge>
                       </button>
                     </li>
                   ))

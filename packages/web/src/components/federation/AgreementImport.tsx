@@ -139,7 +139,7 @@ export function AgreementImport({
               {invalid}
             </p>
           ) : null}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button disabled={disabled || !json.trim()} onClick={validate}>
               {t("federation.agreements.review")}
             </Button>
@@ -208,7 +208,7 @@ export function AgreementImport({
                 </p>
               )}
               {accounts.data && (page > 0 || accounts.data.hasMore) ? (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button
                     variant="outline"
                     size="sm"

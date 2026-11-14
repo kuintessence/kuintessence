@@ -17,6 +17,7 @@ import {
 } from "../ui/dialog";
 import { Textarea } from "../ui/input";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
+import { FederationEmpty } from "./FederationLayout";
 import { GovernanceForm } from "./GovernanceForm";
 import { GovernanceProgress } from "./GovernanceProgress";
 import {
@@ -62,7 +63,7 @@ function GovernancePanel(props: Props) {
       : kind;
   return (
     <Tabs value={visibleKind} onValueChange={(value) => setKind(value as GovernanceKind)}>
-      <TabsList aria-label={t("federation.governance.title")}>
+      <TabsList className="federation-subnav" aria-label={t("federation.governance.title")}>
         {governanceKinds
           .filter(
             (k) =>
@@ -292,9 +293,9 @@ function PolicyPanel({
           ))}
         </ul>
       ) : (
-        <p>{t("federation.governance.empty")}</p>
+        <FederationEmpty>{t("federation.governance.empty")}</FederationEmpty>
       )}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button
           variant="outline"
           disabled={page === 0 || blocked}

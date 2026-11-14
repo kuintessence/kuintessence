@@ -32,6 +32,7 @@
 | 访客 | Guest | 仅可访问公开目录或待授权页面的用户。 |
 | 业务身份 | Business Identity | 用户在具体组织中的业务职责，如算力使用方、算力提供方或软件提供方。 |
 | 技术角色 | Technical Role | 决定平台级访问能力的角色，如 `user`、`org_admin`、`operator`、`platform_admin`。 |
+| 联邦协同 | Federation Collaboration | 独立平台间的任务委派、合作授权、交付和对账功能；原导航名称“机构合作”。 |
 | 当前组织 | Active Organization | 用户当前操作所绑定的组织范围，决定列表、审批和写操作的数据边界。 |
 
 ## 3. 计算与调度

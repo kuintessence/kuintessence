@@ -239,7 +239,7 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
     setPage: (page: number) => void,
   ) =>
     page > 0 || length === 20 ? (
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button
           variant="outline"
           disabled={page === 0 || fetching || blocked}
@@ -400,7 +400,7 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
                 {t("federation.closing.invalid")}
               </p>
             ) : null}
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <Button
                 type="button"
                 variant="outline"

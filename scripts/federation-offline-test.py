@@ -104,15 +104,32 @@ class DeliveryTests(unittest.TestCase):
         saved = offline.verify_bundle(output, offline.digest(output / "manifest.json"))
         self.assertEqual(saved["casdoor"], {"source": CASDOOR_IMAGE, "id": "sha256:" + "b" * 64})
         self.assertEqual(saved["spackVersion"], "1.0.0")
+        self.assertEqual(saved["brandingVersion"], 1)
         self.assertIn(offline.SPACK_POLICY_FILE, saved["files"])
         for name in ("deploy/federation/aio/README.md", "deploy/federation/aio/env.example",
-                     "deploy/main/env.example", "deploy/federation/env.example", "deploy/federation/deployment.md"):
+                     "deploy/main/env.example", "deploy/federation/env.example", "deploy/federation/deployment.md",
+                     *offline.BRANDING_FILES):
             self.assertIn(name, saved["files"])
             self.assertEqual((output / name).read_bytes(), (ROOT / name).read_bytes())
         self.assertFalse(any(Path(name).name == ".env" for name in saved["files"]))
         (output / "deploy/federation/aio/env.example").write_text("changed template")
         with self.assertRaisesRegex(ValueError, "checksum"):
             offline.verify_bundle(output, offline.digest(output / "manifest.json"))
+
+    def test_branding_payload_is_versioned_without_rejecting_old_bundles(self):
+        offline.verify_bundle(self.bundle, self.write_manifest())
+        self.manifest["brandingVersion"] = 1
+        with self.assertRaisesRegex(ValueError, "payload"):
+            offline.verify_bundle(self.bundle, self.write_manifest())
+        for name in offline.BRANDING_FILES:
+            path = self.bundle / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((ROOT / name).read_bytes())
+            self.manifest["files"][name] = {"sha256": offline.digest(path), "bytes": path.stat().st_size}
+        offline.verify_bundle(self.bundle, self.write_manifest())
+        self.manifest["brandingVersion"] = 2
+        with self.assertRaisesRegex(ValueError, "branding version"):
+            offline.verify_bundle(self.bundle, self.write_manifest())
 
     def test_versioned_delivery_requires_supported_matching_scheduler_versions(self):
         for name in set(offline.PUBLIC_FILES) - set(offline.LEGACY_PUBLIC_FILES):

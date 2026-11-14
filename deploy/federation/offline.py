@@ -47,6 +47,7 @@ LEGACY_PUBLIC_FILES = ("deploy/main/compose.yml", "deploy/federation/compose.ing
 SPACK_POLICY_FILE = "packages/shared/src/spack-compatibility.json"
 PUBLIC_FILES = (*LEGACY_PUBLIC_FILES, SPACK_POLICY_FILE, "deploy/federation/compose.storage.yml",
                 "deploy/federation/aio/compose.trust.yml")
+BRANDING_FILES = ("deploy/federation/aio/casdoor-logo.png", "deploy/federation/aio/casdoor-logo.LICENSE")
 
 
 def run(args, **kwargs):
@@ -221,7 +222,8 @@ def export(args):
     source_revision(args.revision)
     if any(inspect_image(record["name"])["id"] != record["id"] for record in records):
         raise ValueError("Image changed during export; no ready manifest was published")
-    for name in PUBLIC_FILES:
+    delivery_files = (*PUBLIC_FILES, *BRANDING_FILES)
+    for name in delivery_files:
         source = ROOT / name
         if source.is_symlink() or not source.is_file():
             raise ValueError("Delivery payload must contain regular tracked files")
@@ -229,10 +231,10 @@ def export(args):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
     files = {name: {"sha256": digest(output / name), "bytes": (output / name).stat().st_size}
-             for name in ("images.tar.gz", *PUBLIC_FILES)}
+             for name in ("images.tar.gz", *delivery_files)}
     manifest = {"version": 1, "revision": args.revision, "platform": "linux/amd64",
                 "casdoor": {"source": args.casdoor_image, "id": casdoor["id"]},
-                "images": records, "files": files, "spackVersion": spack_version}
+                "images": records, "files": files, "spackVersion": spack_version, "brandingVersion": 1}
     source_revision(args.revision)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"manifest-sha256: {digest(output / 'manifest.json')}")
@@ -334,6 +336,10 @@ def verify_bundle(bundle, expected_digest):
         raise ValueError("Unsupported delivery version or architecture")
     require_revision(manifest["revision"])
     public_files = PUBLIC_FILES if "spackVersion" in manifest else LEGACY_PUBLIC_FILES
+    if "brandingVersion" in manifest:
+        if type(manifest["brandingVersion"]) is not int or manifest["brandingVersion"] != 1:
+            raise ValueError("Unsupported branding version")
+        public_files = (*public_files, *BRANDING_FILES)
     if set(manifest["files"]) != {"images.tar.gz", *public_files}:
         raise ValueError("Unexpected or missing delivery payload")
     for name, expected in manifest["files"].items():

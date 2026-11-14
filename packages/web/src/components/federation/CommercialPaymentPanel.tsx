@@ -25,6 +25,7 @@ import {
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { CommercialPaymentTerms } from "./CommercialPaymentTerms";
+import { FederationEmpty } from "./FederationLayout";
 
 type Action =
   | { kind: "approve"; payment: CommercialPayment }
@@ -762,10 +763,10 @@ function PaymentPanel({
               ))}
             </ul>
           ) : (
-            <p className="py-6 text-sm text-muted-foreground">{t("federation.payment.empty")}</p>
+            <FederationEmpty>{t("federation.payment.empty")}</FederationEmpty>
           )}
           {page > 0 || list.data?.hasMore ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 disabled={page === 0 || list.isFetching}

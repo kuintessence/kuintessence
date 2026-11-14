@@ -23,6 +23,7 @@ import {
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { CommercialSettlementTerms } from "./CommercialSettlementTerms";
+import { FederationEmpty } from "./FederationLayout";
 
 type Action =
   | { kind: "approve"; settlement: CommercialSettlement }
@@ -565,10 +566,10 @@ function SettlementPanel({
               ))}
             </ul>
           ) : (
-            <p className="py-6 text-sm text-muted-foreground">{t("federation.settlement.empty")}</p>
+            <FederationEmpty>{t("federation.settlement.empty")}</FederationEmpty>
           )}
           {page > 0 || list.data?.hasMore ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 disabled={page === 0 || list.isFetching}

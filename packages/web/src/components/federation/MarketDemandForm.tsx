@@ -98,7 +98,7 @@ export function MarketDemandForm({
         </label>
       </fieldset>
       {invalid ? <p role="alert">{t("federation.market.invalid")}</p> : null}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button disabled={disabled}>{t("federation.market.review")}</Button>
         <Button type="button" variant="outline" disabled={disabled} onClick={onCancel}>
           {t("federation.cancel")}

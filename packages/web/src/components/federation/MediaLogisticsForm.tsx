@@ -20,6 +20,7 @@ import { useTranslation } from "react-i18next";
 import { api } from "../../lib/api-client";
 import { Button } from "../ui/button";
 import { Input, Textarea } from "../ui/input";
+import { FederationEmpty } from "./FederationLayout";
 import { checkMediaScope, MediaPagination, type MediaScope } from "./MediaLogisticsShared";
 
 export type MediaFormAction =
@@ -415,7 +416,7 @@ export function MediaLogisticsForm({
                 ))}
               </ul>
             ) : (
-              <p>{t("federation.logistics.empty")}</p>
+              <FederationEmpty>{t("federation.logistics.empty")}</FederationEmpty>
             )}
             <MediaPagination
               page={devicePage}
@@ -494,7 +495,7 @@ export function MediaLogisticsForm({
                 ))}
               </ul>
             ) : (
-              <p>{t("federation.logistics.empty")}</p>
+              <FederationEmpty>{t("federation.logistics.empty")}</FederationEmpty>
             )}
             <MediaPagination
               page={packagePage}
