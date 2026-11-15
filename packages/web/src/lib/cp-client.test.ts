@@ -369,3 +369,31 @@ describe("error handling", () => {
     });
   });
 });
+
+test("provider reads reject an old organization's response after scope changes", async () => {
+  localStorage.setItem("kq_active_organization_id", "organization-a");
+  let finish: ((response: Response) => void) | undefined;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+    ),
+  );
+  const pending = listAgents();
+  localStorage.setItem("kq_active_organization_id", "organization-b");
+  finish?.(jsonResponse({ items: [{ id: "private-a" }] }));
+  await expect(pending).rejects.toMatchObject({
+    status: 409,
+    code: "ORGANIZATION_CONTEXT_CHANGED",
+  });
+});
+
+test("provider reads carry query cancellation to the existing transport", async () => {
+  const controller = new AbortController();
+  const spy = captureFetch({ items: [] });
+  await listAgents(controller.signal);
+  expect(getCall(spy).init?.signal).toBe(controller.signal);
+});

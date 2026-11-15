@@ -1,11 +1,23 @@
 import type { TFunction } from "i18next";
 import { DatabaseZap, Loader2, RefreshCw, ShieldAlert, Trash2 } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { api } from "../../lib/api-client";
+import { useActiveOrganizationId } from "../../lib/active-organization";
+import { ApiError, api } from "../../lib/api-client";
+import { getAuthState, subscribeAuthState } from "../../lib/auth";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
+import { authorizationRuntime } from "../function-maps/runtime";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -97,7 +109,16 @@ function friendlyAuthzBlocker(blocker: string, t: TFunction): string {
   return t("adminAccess.healthFailed");
 }
 
-export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: boolean }) {
+export function AuthzAdminPanel(props: { showBreakGlass?: boolean }) {
+  const organizationId = useActiveOrganizationId();
+  const revision = useSyncExternalStore(
+    subscribeAuthState,
+    () => getAuthState().revision,
+    () => null,
+  );
+  return <ScopedAuthzAdminPanel key={`${organizationId}:${revision}`} {...props} />;
+}
+function ScopedAuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: boolean }) {
   const { t } = useTranslation();
   const mobileReadOnly = useMobileMutationBlocked("/admin/authz");
   const [health, setHealth] = useState<AuthzHealth | null>(null);
@@ -105,6 +126,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
   const [diffs, setDiffs] = useState<AuthzDiff[]>([]);
   const [outbox, setOutbox] = useState<AuthzOutboxRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadForbidden, setLoadForbidden] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
   const [clearingDiffs, setClearingDiffs] = useState(false);
@@ -123,35 +145,62 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
     ),
   );
 
+  const request = useRef<AbortController | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const refresh = useCallback(async () => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
     setLoading(true);
     try {
       const [healthRes, readinessRes, diffRes, outboxRes] = await Promise.all([
-        api.get<{ success: true; data: AuthzHealth }>("/admin/authz/health"),
-        api.get<{ success: true; data: AuthzReadiness }>("/admin/authz/readiness"),
-        api.get<{ success: true; data: AuthzDiff[] }>("/admin/authz/shadow-diffs?limit=20"),
-        api.get<{ success: true; data: AuthzOutboxRow[] }>("/admin/authz/outbox?limit=20"),
+        api.get<{ success: true; data: AuthzHealth }>(
+          "/admin/authz/health",
+          undefined,
+          controller.signal,
+        ),
+        api.get<{ success: true; data: AuthzReadiness }>(
+          "/admin/authz/readiness",
+          undefined,
+          controller.signal,
+        ),
+        api.get<{ success: true; data: AuthzDiff[] }>(
+          "/admin/authz/shadow-diffs?limit=20",
+          undefined,
+          controller.signal,
+        ),
+        api.get<{ success: true; data: AuthzOutboxRow[] }>(
+          "/admin/authz/outbox?limit=20",
+          undefined,
+          controller.signal,
+        ),
       ]);
+      if (controller.signal.aborted) return;
+      setFetchedAt(new Date().toISOString());
       setHealth(healthRes.data);
       setReadiness(readinessRes.data);
       setDiffs(diffRes.data);
       setOutbox(outboxRes.data);
+      setLoadForbidden(false);
       setLoadError(null);
     } catch (err) {
+      if (controller.signal.aborted) return;
       const message = toUserFacingError(err, t("adminAccess.refreshFailed"));
       setHealth(null);
       setReadiness(null);
       setDiffs([]);
       setOutbox([]);
+      setLoadForbidden(err instanceof ApiError && (err.status === 401 || err.status === 403));
       setLoadError(message);
       toast.error(message);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, [t]);
 
   useEffect(() => {
-    refresh();
+    void refresh();
+    return () => request.current?.abort();
   }, [refresh]);
 
   const healthTone = health?.healthy ? "brand" : health?.mode === "off" ? "outline" : "failed";
@@ -166,7 +215,36 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
   return (
     <div className="space-y-4">
       <OrganizationMembershipPanel />
-      <details className="border-b">
+      <FunctionMaps
+        ids={["T01"]}
+        runtime={{
+          ...authorizationRuntime({
+            health,
+            readiness,
+            state: loading
+              ? "loading"
+              : loadError
+                ? loadForbidden
+                  ? "forbidden"
+                  : "error"
+                : health && readiness
+                  ? "ready"
+                  : "no-data",
+            fetchedAt,
+          }),
+          refresh: () => void refresh(),
+          refreshing: loading,
+        }}
+        onOpen={() => {
+          const details = document.getElementById("authz-existing-controls");
+          if (details instanceof HTMLDetailsElement) {
+            details.open = true;
+            details.scrollIntoView({ block: "start" });
+          }
+          return true;
+        }}
+      />
+      <details className="border-b" id="authz-existing-controls">
         <summary className="cursor-pointer p-4 text-sm font-medium">
           {t("adminAccess.advancedTitle")}
         </summary>
@@ -204,37 +282,57 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
               />
               <Metric
                 label={t("adminAccess.health")}
-                value={health?.healthy ? t("adminAccess.healthy") : t("adminAccess.unhealthy")}
+                value={
+                  health
+                    ? health.healthy
+                      ? t("adminAccess.healthy")
+                      : t("adminAccess.unhealthy")
+                    : t("adminAccess.unknown")
+                }
                 badge={healthTone}
               />
               <Metric
                 label={t("adminAccess.schema")}
                 value={
-                  health?.schemaWritten
-                    ? health.schemaMatches
-                      ? t("adminAccess.loaded")
-                      : t("adminAccess.mismatch")
-                    : t("adminAccess.notLoaded")
+                  health === null
+                    ? t("adminAccess.unknown")
+                    : health.schemaWritten
+                      ? health.schemaMatches
+                        ? t("adminAccess.loaded")
+                        : t("adminAccess.mismatch")
+                      : t("adminAccess.notLoaded")
                 }
                 badge={health?.schemaWritten && health.schemaMatches ? "brand" : "failed"}
               />
               <Metric
                 label={t("adminAccess.enforce")}
-                value={readiness?.enforceReady ? t("adminAccess.ready") : t("adminAccess.notReady")}
+                value={
+                  readiness
+                    ? readiness.enforceReady
+                      ? t("adminAccess.ready")
+                      : t("adminAccess.notReady")
+                    : t("adminAccess.unknown")
+                }
                 badge={readiness?.enforceReady ? "brand" : "failed"}
               />
-              <Metric label={t("adminAccess.diffs")} value={String(readiness?.shadowDiffs ?? 0)} />
+              <Metric
+                label={t("adminAccess.diffs")}
+                value={readiness ? String(readiness.shadowDiffs) : t("adminAccess.unknown")}
+              />
             </div>
             <div className="grid gap-3 md:grid-cols-3">
               <Metric
                 label={t("adminAccess.pending")}
-                value={String(readiness?.outbox.pending ?? 0)}
+                value={readiness ? String(readiness.outbox.pending) : t("adminAccess.unknown")}
               />
               <Metric
                 label={t("adminAccess.processing")}
-                value={String(readiness?.outbox.processing ?? 0)}
+                value={readiness ? String(readiness.outbox.processing) : t("adminAccess.unknown")}
               />
-              <Metric label={t("adminAccess.failed")} value={String(readiness?.outbox.dead ?? 0)} />
+              <Metric
+                label={t("adminAccess.failed")}
+                value={readiness ? String(readiness.outbox.dead) : t("adminAccess.unknown")}
+              />
             </div>
             {readiness?.blockers.length ? (
               <div className=" p-3 text-sm text-status-failed">

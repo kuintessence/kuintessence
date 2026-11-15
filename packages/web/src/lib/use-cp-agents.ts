@@ -1,7 +1,9 @@
 import type { ClusterFileRootView } from "@kuintessence/shared/browser";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
 import { useActiveOrganizationId } from "./active-organization";
 import { api } from "./api-client";
+import { getAuthState, subscribeAuthState } from "./auth";
 import {
   type CpAgent,
   type CpAgentCert,
@@ -15,10 +17,15 @@ interface ClusterFileRootsResponse {
 }
 
 export function useCpAgents() {
+  const revision = useSyncExternalStore(
+    subscribeAuthState,
+    () => getAuthState().revision,
+    () => null,
+  );
   const activeOrganizationId = useActiveOrganizationId();
   return useQuery<CpAgent[]>({
-    queryKey: ["cp", "agents", activeOrganizationId ?? "all"],
-    queryFn: () => listAgents(),
+    queryKey: ["cp", "agents", activeOrganizationId ?? "all", revision],
+    queryFn: ({ signal }) => listAgents(signal),
     refetchInterval: 30_000,
   });
 }

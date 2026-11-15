@@ -154,3 +154,5 @@ test("invalid metadata identifies the field in the selected language", () => {
   expect(screen.getByRole("alert").textContent).toBe("Check these fields: Longitude");
   expect(onSave).not.toHaveBeenCalled();
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

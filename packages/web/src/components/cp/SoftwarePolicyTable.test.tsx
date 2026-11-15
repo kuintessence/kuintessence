@@ -2951,3 +2951,5 @@ test("changing to mobile closes software editors and keeps read-only inspection"
   expect(screen.getByText("cp.software.cluster.editOverride")).toBeTruthy();
   expect(cpClient.saveClusterSoftwarePolicy).not.toHaveBeenCalled();
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

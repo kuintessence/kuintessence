@@ -2,6 +2,7 @@ import { Activity, AlertTriangle, CheckCircle2, HardDrive, Layers, ServerOff } f
 import { useTranslation } from "react-i18next";
 import { useCpDashboard } from "../../lib/use-cp-dashboard";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { PageHeader } from "../ui/page";
 import { CpAttentionCards } from "./CpAttentionCards";
@@ -45,6 +46,7 @@ export function CpDashboard() {
   return (
     <div className="space-y-6" data-testid="cp-dashboard">
       <PageHeader title={t("cp.dashboard.title")} />
+      <FunctionMaps ids={["D02"]} />
 
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
         <KpiTile

@@ -366,3 +366,5 @@ describe("DataMarketPage", () => {
     expect(await screen.findByText("dataMarket.requestAccess")).toBeTruthy();
   });
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

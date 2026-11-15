@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Button } from "../ui/button";
 import { CardContent } from "../ui/card";
 import { ErrorState } from "../ui/content-state";
@@ -221,6 +222,7 @@ export function WorkflowsPage() {
           </>
         }
       />
+      <FunctionMaps ids={["G02"]} />
 
       {!draftsQ.error && (draftsQ.data?.drafts.length ?? 0) > 0 ? (
         <section className=" " data-testid="workflow-drafts">

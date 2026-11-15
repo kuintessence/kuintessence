@@ -2122,3 +2122,5 @@ test("locks upload batches across file selection and drop, reports failures, and
   expect(toastError).toHaveBeenCalledWith("files.uploadFailed");
   expect(toastSuccess).toHaveBeenCalledWith("files.uploadSucceeded");
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

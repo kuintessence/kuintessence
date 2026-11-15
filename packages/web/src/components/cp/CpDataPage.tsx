@@ -12,6 +12,7 @@ import {
 } from "../../lib/data-market-client";
 import { useCpAgentClusterFileRoots, useCpAgents } from "../../lib/use-cp-agents";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -222,6 +223,7 @@ export function CpDataPage() {
   return (
     <PageShell data-testid="cp-data-page">
       <PageHeader title={t("cp.data.title")} subtitle={t("cp.data.subtitle")} />
+      <FunctionMaps ids={["G09"]} />
       {!activeOrganizationId ? (
         <p className="text-sm text-muted-foreground">{t("cp.data.organizationRequired")}</p>
       ) : null}

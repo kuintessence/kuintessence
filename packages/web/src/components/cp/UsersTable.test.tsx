@@ -207,3 +207,5 @@ describe("UsersTable read-only governance", () => {
 vi.mock("../../lib/use-organization-name", () => ({
   useOrganizationName: () => (id: string) => id,
 }));
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

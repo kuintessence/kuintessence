@@ -2701,5 +2701,104 @@
     "resultCount": "{{count}} results",
     "clearFilters": "Clear filters",
     "unavailable": "This option is currently unavailable. Choose another option."
+  },
+  "functionMaps": {
+    "portal": "Function and business maps",
+    "choose": "Choose a map",
+    "permissionFailed": "Cannot verify access. Please retry.",
+    "partialAccess": "Federation access is unverified. Only verified entrances are shown.",
+    "noAccess": "No authorized entrances in the current scope.",
+    "noData": "No data to display.",
+    "template": "Process template: does not show an execution instance.",
+    "designRelations": "Design relationships: only authorized capabilities or object types are shown.",
+    "actualSources": "Runtime data: evaluate individual fields and their timestamps.",
+    "compact": "Compact view",
+    "expand": "Expand map",
+    "canvas": "Scrollable map",
+    "mobile": "Text view of map nodes",
+    "dependencyLegend": "Lines name their relationship; dashed lines mean containment or observation. Only “depends on” means A depends on B. Reachability does not prove fault propagation.",
+    "runtimeLegend": "Lifecycle, progress, health and acquisition are separate. Refresh failure does not mean a resource fault.",
+    "processLegend": "Arrows describe implemented conditions, data or business paths. Inspect nodes for waits, exceptions and recovery.",
+    "relations": "Show all visible relationships and directions",
+    "noRelations": "No confirmed relationship between these objects; no order or dependency is inferred.",
+    "explanation": "Node explanation",
+    "objectType": "Object type",
+    "preconditions": "Preconditions",
+    "input": "Input",
+    "output": "Output / result",
+    "pageSection": "Existing page section",
+    "open": "Open existing entrance",
+    "evidence": "Inspect implementation evidence",
+    "selectHint": "Select a node for its explanation, evidence and entrance. Tab and Enter are supported.",
+    "roles": "Applicable roles",
+    "startEnd": "Start and end conditions",
+    "notProvided": "Not provided by source",
+    "acquisitionLabel": "Data acquisition",
+    "lifecycle": "Resource lifecycle",
+    "progress": "Task progress",
+    "health": "Runtime health",
+    "observedAt": "Observed at",
+    "fetchedAt": "Fetched at",
+    "source": "Field source",
+    "facts": "Evidence / missing data",
+    "types": {
+      "process": "Business process",
+      "dependency": "Resource dependencies",
+      "runtime": "Runtime status"
+    },
+    "kinds": {
+      "capability": "Capability",
+      "service": "Service",
+      "resource-type": "Resource type",
+      "instance": "Resource instance",
+      "action": "Action"
+    },
+    "lanes": {
+      "user": "User",
+      "system": "System",
+      "partner": "Partner"
+    },
+    "relationsKind": {
+      "depends-on": "Depends on",
+      "contains": "Contains",
+      "belongs-to": "Belongs to",
+      "uses": "Uses",
+      "observes": "Observes",
+      "flow": "Business path",
+      "evidence": "Evidence reference",
+      "navigation": "Navigation",
+      "calls": "Calls",
+      "deployed-on": "Deployed on"
+    },
+    "basis": {
+      "design": "Implemented design relationship",
+      "configuration": "Configured relationship",
+      "observation": "Observed relationship"
+    },
+    "acquisition": {
+      "loading": "Loading",
+      "ready": "Fetched",
+      "unknown": "Unknown / not connected",
+      "no-data": "No data",
+      "forbidden": "No permission",
+      "error": "Fetch failed",
+      "stale": "Source reports stale data"
+    },
+    "healthStates": {
+      "unknown": "Unknown; health probe not connected",
+      "confirmed-fault": "Source confirms a fault",
+      "reported-ok": "This check passed"
+    },
+    "symbols": {
+      "task": "Action",
+      "condition": "Condition / branch",
+      "wait": "Wait / inspect",
+      "end": "Verify result"
+    },
+    "healthShort": {
+      "unknown": "Health unknown",
+      "confirmed-fault": "Confirmed fault",
+      "reported-ok": "Probe reports OK"
+    }
   }
 }

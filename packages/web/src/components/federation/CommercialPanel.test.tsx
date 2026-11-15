@@ -933,3 +933,49 @@ test("contract governance grants are independent of contract approval authority"
   expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
   expect(api.post).not.toHaveBeenCalled();
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({
+  FunctionMaps: ({ ids, onOpen }: { ids: string[]; onOpen: (node: { id: string }) => boolean }) => (
+    <div data-testid="contract-function-map" data-map-ids={ids.join(" ")}>
+      <button type="button" onClick={() => onOpen({ id: "g25.n4" })}>
+        Map settlements
+      </button>
+      <button type="button" onClick={() => onOpen({ id: "t03.n4" })}>
+        Map payments
+      </button>
+    </div>
+  ),
+}));
+
+test("map navigation preserves the selected contract revision and opens existing finance tabs without mutation", async () => {
+  listed = true;
+  row.counterpartyJws = "peer.signature";
+  mount();
+  await openDetail();
+  expect(screen.getByTestId("contract-function-map").getAttribute("data-map-ids")).toBe("G25");
+  fireEvent.click(screen.getByRole("button", { name: "Map settlements" }));
+  await waitFor(() =>
+    expect(screen.getByRole("tab", { name: "Settlements" }).getAttribute("aria-selected")).toBe(
+      "true",
+    ),
+  );
+  expect(screen.getByTestId("contract-function-map").getAttribute("data-map-ids")).toBe("T03");
+  fireEvent.click(screen.getByRole("button", { name: "Map payments" }));
+  await waitFor(() =>
+    expect(screen.getByRole("tab", { name: "Payments" }).getAttribute("aria-selected")).toBe(
+      "true",
+    ),
+  );
+  await waitFor(() =>
+    expect(
+      vi
+        .mocked(api.get)
+        .mock.calls.some(
+          ([path, context]) =>
+            path.includes(`/commercial-agreements/${revisionId}/payments?`) &&
+            context?.organizationId === orgId,
+        ),
+    ).toBe(true),
+  );
+  expect(api.post).not.toHaveBeenCalled();
+});

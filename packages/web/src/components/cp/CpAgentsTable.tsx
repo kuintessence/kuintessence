@@ -36,6 +36,16 @@ export function CpAgentsTable() {
   const [rootsAgentId, setRootsAgentId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!q.data || q.error) return;
+    const anchor = window.location.hash.slice(1);
+    const item = q.data.find(
+      (agent) => anchor === `function-map-agent-${encodeURIComponent(agent.id)}`,
+    );
+    if (item)
+      document.getElementById(`function-map-agent-${item.id}`)?.scrollIntoView({ block: "center" });
+  }, [q.data, q.error]);
+
+  useEffect(() => {
     if (!q.error) return;
     setCertAgentId(null);
     setRootsAgentId(null);
@@ -93,6 +103,7 @@ export function CpAgentsTable() {
                 <Fragment key={a.id}>
                   <TableRow
                     className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 p-4 sm:table-row sm:border-border sm:p-0"
+                    id={`function-map-agent-${a.id}`}
                     data-testid={`cp-agents-row-${a.id}`}
                   >
                     <TableCell className="order-3 col-span-2 min-w-0 font-mono text-xs text-muted-foreground sm:table-cell sm:px-3 sm:py-2 sm:text-foreground">

@@ -184,3 +184,5 @@ test("workflow navigation opens scoped delivery and replaces drafts on the next 
   );
   expect((screen.getByLabelText("Media draft") as HTMLInputElement).value).toBe("");
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

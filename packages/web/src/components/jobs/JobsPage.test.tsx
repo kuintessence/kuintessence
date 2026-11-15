@@ -334,3 +334,25 @@ describe("JobsPage pagination", () => {
     expect(screen.getByTestId("jobs-pagination-range").textContent).toBe("26-26 / 26");
   });
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({
+  FunctionMaps: ({ onOpen }: { onOpen: (node: { id: string }) => boolean }) => (
+    <button type="button" onClick={() => onOpen({ id: "g01.n2" })}>
+      Map resource selection
+    </button>
+  ),
+}));
+
+test("the map opens the existing job dialog with the current Agent filter and performs no submission", async () => {
+  const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+    Promise.resolve(Response.json({ jobs: [], total: 0, limit: 25, offset: 0 })),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  render(<JobsPage agentId="agent-a/b" />, { wrapper: makeWrapper() });
+  fireEvent.click(screen.getByRole("button", { name: "Map resource selection" }));
+  expect(await screen.findByTestId("mock-submit-job-dialog")).toBeTruthy();
+  expect(screen.getByTestId("jobs-agent-filter").textContent).toContain("agent-a/b");
+  expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(
+    true,
+  );
+});

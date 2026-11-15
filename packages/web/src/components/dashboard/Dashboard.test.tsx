@@ -259,3 +259,5 @@ describe("Dashboard audit-log gating", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/api/jobs"))).toBe(true);
   });
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

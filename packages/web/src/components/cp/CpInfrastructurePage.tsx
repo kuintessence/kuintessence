@@ -12,6 +12,8 @@ import { useTranslation } from "react-i18next";
 import { getAuthState } from "../../lib/auth";
 import { useCpAgents } from "../../lib/use-cp-agents";
 import { useCpSoftwareOverview } from "../../lib/use-cp-software";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
+import { acquisitionState, infrastructureRuntime } from "../function-maps/runtime";
 import { Button } from "../ui/button";
 
 const LINKS = [
@@ -43,6 +45,24 @@ export function CpInfrastructurePage() {
         <h2 className="text-2xl font-semibold tracking-tight">{t("cp.infrastructure.title")}</h2>
         <p className="text-sm text-muted-foreground">{t("cp.infrastructure.subtitle")}</p>
       </div>
+      <FunctionMaps
+        ids={["G05"]}
+        runtime={{
+          ...infrastructureRuntime({
+            agents: agentsQuery.data,
+            overview: softwareQuery.data,
+            state: acquisitionState(agentsQuery),
+            overviewState: acquisitionState(softwareQuery),
+            fetchedAt: agentsQuery.dataUpdatedAt,
+            overviewFetchedAt: softwareQuery.dataUpdatedAt,
+          }),
+          refresh: () => {
+            void agentsQuery.refetch();
+            void softwareQuery.refetch();
+          },
+          refreshing: agentsQuery.isFetching || softwareQuery.isFetching,
+        }}
+      />
       {hasError ? (
         <div
           className="flex flex-wrap items-center justify-between gap-3 p-4"

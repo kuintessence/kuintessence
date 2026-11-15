@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Button } from "../ui/button";
 import { CardContent } from "../ui/card";
 import { ErrorState, LoadingState } from "../ui/content-state";
@@ -116,6 +117,16 @@ export function JobsPage({ agentId, onClearAgentFilter }: JobsPageProps = {}) {
             {t("jobs.countHint", { visible: jobs.length, total })}
           </span>
         }
+      />
+      <FunctionMaps
+        ids={["G01"]}
+        onOpen={(node) => {
+          if (node.id === "g01.n2" || node.id === "g01.n3") {
+            setSubmitOpen(true);
+            return true;
+          }
+          return false;
+        }}
       />
 
       <section>
