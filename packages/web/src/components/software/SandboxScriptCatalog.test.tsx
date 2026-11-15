@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 import { SandboxScriptCatalog } from "./SandboxScriptCatalog";
 
 const sandboxClient = vi.hoisted(() => ({ listSandboxScripts: vi.fn() }));
@@ -160,12 +161,12 @@ describe("SandboxScriptCatalog", () => {
     expect(await screen.findByText("Normalize JSON")).toBeTruthy();
     expect(screen.getByText("Archive Files")).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText("sandbox.catalog.language"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("sandbox.catalog.language")), {
       target: { value: "python" },
     });
     expect(screen.queryByText("Archive Files")).toBeNull();
 
-    fireEvent.change(screen.getByLabelText("sandbox.catalog.search"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("sandbox.catalog.search")), {
       target: { value: "rows" },
     });
     expect(screen.getByText("Normalize JSON")).toBeTruthy();

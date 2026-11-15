@@ -9,6 +9,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { PaginationControls } from "../ui/pagination-controls";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 function localToIso(local: string): string | null {
   if (!local) return null;
@@ -261,7 +262,7 @@ export function AuditSearchPanel() {
 
       {m.data && !hasSearchError && items.length === 0 ? (
         <div
-          className="flex h-32 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground"
+          className="flex h-32 items-center justify-center border-border text-sm text-muted-foreground"
           data-testid="cp-audit-empty"
         >
           {t("cp.audit.noResults")}
@@ -270,21 +271,23 @@ export function AuditSearchPanel() {
 
       {items.length > 0 ? (
         <div
-          className="overflow-x-auto overscroll-x-contain rounded-md border border-border"
+          className="overflow-x-auto overscroll-x-contain border-border"
           data-testid="cp-audit-table-scroll"
         >
-          <table className="min-w-[72rem] w-full text-sm">
-            <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2 font-medium">{t("cp.audit.col.createdAt")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.audit.col.actor")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.audit.col.action")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.audit.col.target")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.audit.col.summary")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.audit.col.details")}</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table className="min-w-[72rem] w-full text-sm">
+            <TableHeader className=" text-left text-xs uppercase tracking-wide text-muted-foreground">
+              <TableRow>
+                <TableHead className="px-3 py-2 font-medium">
+                  {t("cp.audit.col.createdAt")}
+                </TableHead>
+                <TableHead className="px-3 py-2 font-medium">{t("cp.audit.col.actor")}</TableHead>
+                <TableHead className="px-3 py-2 font-medium">{t("cp.audit.col.action")}</TableHead>
+                <TableHead className="px-3 py-2 font-medium">{t("cp.audit.col.target")}</TableHead>
+                <TableHead className="px-3 py-2 font-medium">{t("cp.audit.col.summary")}</TableHead>
+                <TableHead className="px-3 py-2 font-medium">{t("cp.audit.col.details")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {items.map((row, idx) => {
                 const id = String(row.id ?? idx);
                 const action = String(row.action ?? "");
@@ -294,17 +297,17 @@ export function AuditSearchPanel() {
                 const category = actionCategory(action);
                 return (
                   <Fragment key={id}>
-                    <tr
+                    <TableRow
                       data-testid={`cp-audit-row-${id}`}
-                      className="border-t border-border last:border-b-0"
+                      className=" border-border last:border-b-0"
                     >
-                      <td className="px-3 py-2 font-mono text-xs tabular-nums">
+                      <TableCell className="px-3 py-2 font-mono text-xs tabular-nums">
                         {String(row.createdAt ?? "")}
-                      </td>
-                      <td className="px-3 py-2 text-xs" title={String(row.actor ?? "")}>
+                      </TableCell>
+                      <TableCell className="px-3 py-2 text-xs" title={String(row.actor ?? "")}>
                         {String(row.actorName || row.actorEmail || row.actor || "")}
-                      </td>
-                      <td className="px-3 py-2">
+                      </TableCell>
+                      <TableCell className="px-3 py-2">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <Badge variant={categoryVariant(category)}>
                             {t(`cp.audit.category.${category}`)}
@@ -325,8 +328,8 @@ export function AuditSearchPanel() {
                             </Button>
                           ) : null}
                         </div>
-                      </td>
-                      <td className="px-3 py-2">
+                      </TableCell>
+                      <TableCell className="px-3 py-2">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <code className="text-xs" title={target}>
                             {compactUuid(target)}
@@ -346,11 +349,11 @@ export function AuditSearchPanel() {
                             </Button>
                           ) : null}
                         </div>
-                      </td>
-                      <td className="max-w-[28rem] px-3 py-2 text-xs text-muted-foreground">
+                      </TableCell>
+                      <TableCell className="max-w-[28rem] px-3 py-2 text-xs text-muted-foreground">
                         {summary || "-"}
-                      </td>
-                      <td className="px-3 py-2">
+                      </TableCell>
+                      <TableCell className="px-3 py-2">
                         <Button
                           type="button"
                           variant="ghost"
@@ -366,27 +369,27 @@ export function AuditSearchPanel() {
                           )}
                           {expanded ? t("cp.audit.hideDetails") : t("cp.audit.showDetails")}
                         </Button>
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                     {expanded ? (
-                      <tr className="border-t border-border bg-muted/20">
-                        <td colSpan={6} className="px-3 py-3">
+                      <TableRow className=" border-border ">
+                        <TableCell colSpan={6} className="px-3 py-3">
                           <div className="space-y-2" data-testid={`cp-audit-details-${id}`}>
                             <div className="text-xs font-medium text-muted-foreground">
                               {t("cp.audit.detailsTitle")}
                             </div>
-                            <pre className="max-h-80 overflow-auto rounded-md border border-border bg-card p-3 font-mono text-xs leading-5">
+                            <pre className="max-h-80 overflow-auto border-border p-3 font-mono text-xs leading-5">
                               {auditDiffText(row)}
                             </pre>
                           </div>
-                        </td>
-                      </tr>
+                        </TableCell>
+                      </TableRow>
                     ) : null}
                   </Fragment>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       ) : null}
       {m.data && !hasSearchError && total > PAGE_SIZE ? (

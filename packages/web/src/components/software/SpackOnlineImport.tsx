@@ -123,10 +123,7 @@ export function SpackOnlineImport({
   const visibleStatus = denied ? "denied" : status;
   const error = ["invalid", "denied", "failed", "unknown"].includes(visibleStatus);
   return (
-    <section
-      aria-labelledby={`${id}-title`}
-      className="min-w-0 space-y-2 border-y border-border py-3"
-    >
+    <section aria-labelledby={`${id}-title`} className="min-w-0 space-y-2 border-border py-3">
       <h3 id={`${id}-title`} className="text-xs font-medium">
         {t(`spackOnline.${kind}Title`)}
       </h3>

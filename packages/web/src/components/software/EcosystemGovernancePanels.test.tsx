@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 import { LicenseEntitlementPanel, RuntimeAndMaterialPanel } from "./EcosystemGovernancePanels";
 
 const softwareClient = vi.hoisted(() => ({
@@ -102,13 +103,13 @@ test("submits a metadata-only consumer entitlement claim", async () => {
   render(<LicenseEntitlementPanel canReview={false} canSubmit={true} defaultClaimantId="org-1" />, {
     wrapper: wrapper(),
   });
-  fireEvent.change(screen.getByLabelText("software.license.subject"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("software.license.subject")), {
     target: { value: "VASP-6.5.1" },
   });
-  fireEvent.change(screen.getByLabelText("software.license.evidenceReference"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("software.license.evidenceReference")), {
     target: { value: "ticket-1024" },
   });
-  fireEvent.change(screen.getByLabelText("software.license.evidenceSummary"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("software.license.evidenceSummary")), {
     target: { value: "Institutional entitlement confirmed" },
   });
   fireEvent.click(screen.getByRole("button", { name: "software.license.submitClaim" }));
@@ -129,28 +130,33 @@ test("registers VASP metadata without accepting material bytes", async () => {
   softwareClient.listLicensedMaterialMappings.mockResolvedValue([]);
   softwareClient.registerLicensedMaterialMapping.mockResolvedValue({ id: "mapping-1" });
   render(<RuntimeAndMaterialPanel canManage />, { wrapper: wrapper() });
-  const agentInput = await screen.findByLabelText("cp.accounts.registration.agent");
-  fireEvent.change(agentInput, {
+  const agentInput = await screen.findByRole("combobox", {
+    name: "cp.accounts.registration.agent",
+  });
+  fireEvent.change(nativeControl(agentInput), {
     target: { value: "agent-1" },
   });
-  fireEvent.change(screen.getByLabelText("software.license.materialSelector"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("software.license.materialSelector")), {
     target: { value: "vasp-potcar-paw-pbe-2025" },
   });
-  fireEvent.change(screen.getByLabelText("software.license.materialVersion"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("software.license.materialVersion")), {
     target: { value: "PBE-2025" },
   });
-  fireEvent.change(screen.getByLabelText("software.license.elements"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("software.license.elements")), {
     target: { value: "Si, O" },
   });
-  fireEvent.change(screen.getByLabelText("software.license.fingerprint"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("software.license.fingerprint")), {
     target: { value: "sha256:local" },
   });
   const submit = screen.getByRole("button", { name: "software.license.registerMaterial" });
   expect(submit).toHaveProperty("disabled", true);
-  expect(screen.queryByRole("option", { name: "Unmanaged VASP" })).toBeNull();
-  fireEvent.change(screen.getByLabelText("software.license.materialSoftware"), {
-    target: { value: "vasp-asset" },
-  });
+  expect(screen.queryByRole("option", { hidden: true, name: "Unmanaged VASP" })).toBeNull();
+  fireEvent.change(
+    nativeControl(screen.getByRole("combobox", { name: "software.license.materialSoftware" })),
+    {
+      target: { value: "vasp-asset" },
+    },
+  );
   fireEvent.click(submit);
   await waitFor(() =>
     expect(softwareClient.registerLicensedMaterialMapping).toHaveBeenCalledWith(
@@ -167,13 +173,16 @@ test("registers VASP metadata without accepting material bytes", async () => {
 
 test("runtime selection derives scheduler digest, excludes revoked profiles and resets on scope changes", async () => {
   const view = render(<RuntimeAndMaterialPanel canManage />, { wrapper: wrapper() });
-  const agent = await screen.findByLabelText("cp.accounts.registration.agent");
-  expect(screen.queryByRole("option", { name: /Other organization/ })).toBeNull();
-  fireEvent.change(agent, { target: { value: "agent-1" } });
-  expect(screen.queryByRole("option", { name: /Revoked/ })).toBeNull();
-  fireEvent.change(screen.getByLabelText("software.license.runtimeProfile"), {
-    target: { value: "profile" },
-  });
+  const agent = await screen.findByRole("combobox", { name: "cp.accounts.registration.agent" });
+  expect(screen.queryByRole("option", { hidden: true, name: /Other organization/ })).toBeNull();
+  fireEvent.change(nativeControl(agent), { target: { value: "agent-1" } });
+  expect(screen.queryByRole("option", { hidden: true, name: /Revoked/ })).toBeNull();
+  fireEvent.change(
+    nativeControl(screen.getByRole("combobox", { name: "software.license.runtimeProfile" })),
+    {
+      target: { value: "profile" },
+    },
+  );
   fireEvent.click(screen.getByRole("button", { name: "software.license.bindRuntime" }));
   await waitFor(() =>
     expect(softwareClient.bindRuntimeContract).toHaveBeenCalledWith(
@@ -181,11 +190,16 @@ test("runtime selection derives scheduler digest, excludes revoked profiles and 
       expect.anything(),
     ),
   );
-  fireEvent.change(agent, { target: { value: "agent-2" } });
-  expect(screen.getByLabelText("software.license.runtimeProfile")).toHaveProperty("value", "");
-  fireEvent.change(screen.getByLabelText("software.license.runtimeProfile"), {
-    target: { value: "profile" },
-  });
+  fireEvent.change(nativeControl(agent), { target: { value: "agent-2" } });
+  expect(
+    nativeControl(screen.getByRole("combobox", { name: "software.license.runtimeProfile" })),
+  ).toHaveProperty("value", "");
+  fireEvent.change(
+    nativeControl(screen.getByRole("combobox", { name: "software.license.runtimeProfile" })),
+    {
+      target: { value: "profile" },
+    },
+  );
   fireEvent.click(screen.getByRole("button", { name: "software.license.bindRuntime" }));
   await waitFor(() =>
     expect(softwareClient.bindRuntimeContract).toHaveBeenLastCalledWith(
@@ -196,7 +210,9 @@ test("runtime selection derives scheduler digest, excludes revoked profiles and 
   scope.org = "provider-2";
   view.rerender(<RuntimeAndMaterialPanel canManage />);
   await waitFor(() =>
-    expect(screen.getByLabelText("cp.accounts.registration.agent")).toHaveProperty("value", ""),
+    expect(
+      nativeControl(screen.getByRole("combobox", { name: "cp.accounts.registration.agent" })),
+    ).toHaveProperty("value", ""),
   );
   fireEvent.click(screen.getByRole("button", { name: "software.license.bindRuntime" }));
   expect(softwareClient.bindRuntimeContract).toHaveBeenCalledTimes(2);
@@ -211,9 +227,12 @@ test("runtime read failure is not rendered as an empty configuration", async () 
 test("mobile and revoked management permission block runtime writes", async () => {
   scope.mobile = true;
   const view = render(<RuntimeAndMaterialPanel canManage />, { wrapper: wrapper() });
-  fireEvent.change(await screen.findByLabelText("cp.accounts.registration.agent"), {
-    target: { value: "agent-1" },
-  });
+  fireEvent.change(
+    nativeControl(await screen.findByRole("combobox", { name: "cp.accounts.registration.agent" })),
+    {
+      target: { value: "agent-1" },
+    },
+  );
   expect(screen.getByTestId("runtime-material-readonly-summary")).toBeTruthy();
   expect(screen.queryByLabelText("software.license.runtimeProfile")).toBeNull();
   expect(screen.queryByLabelText("software.license.materialSelector")).toBeNull();
@@ -221,7 +240,10 @@ test("mobile and revoked management permission block runtime writes", async () =
   expect(softwareClient.listSpackCatalog).not.toHaveBeenCalled();
   scope.mobile = false;
   view.rerender(<RuntimeAndMaterialPanel canManage={false} />);
-  expect(screen.getByLabelText("software.license.runtimeProfile")).toHaveProperty("disabled", true);
+  expect(screen.getByRole("combobox", { name: "software.license.runtimeProfile" })).toHaveProperty(
+    "disabled",
+    true,
+  );
   expect(softwareClient.bindRuntimeContract).not.toHaveBeenCalled();
 });
 
@@ -241,9 +263,12 @@ test("mobile runtime summaries keep existing bindings and filter by agent", asyn
   render(<RuntimeAndMaterialPanel canManage />, { wrapper: wrapper() });
   await screen.findByText(/local-pbe/);
   expect(screen.getByText(/other-runtime/)).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("cp.accounts.registration.agent"), {
-    target: { value: "agent-1" },
-  });
+  fireEvent.change(
+    nativeControl(screen.getByRole("combobox", { name: "cp.accounts.registration.agent" })),
+    {
+      target: { value: "agent-1" },
+    },
+  );
   expect(screen.queryByText(/other-runtime/)).toBeNull();
   expect(screen.getByText(/python-3.12-stdlib-v1/)).toBeTruthy();
   expect(softwareClient.bindRuntimeContract).not.toHaveBeenCalled();

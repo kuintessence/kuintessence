@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { setLang } from "../../lib/i18n";
+import { nativeControl } from "../../lib/test-resource-field";
 import { CpAccountsPage } from "./CpAccountsPage";
 
 const api = vi.hoisted(() => ({
@@ -118,7 +119,7 @@ test("queue editor preserves existing names, retries errors, saves through scope
   const input = screen.getByLabelText("允许队列（逗号分隔）");
   expect(input).toHaveProperty("value", "old-queue, batch");
   api.updateSandboxAccountQueues.mockRejectedValueOnce(new Error("temporary failure"));
-  fireEvent.change(input, { target: { value: "batch, debug, batch" } });
+  fireEvent.change(nativeControl(input), { target: { value: "batch, debug, batch" } });
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
   await screen.findByRole("alert");
   expect(input).toHaveProperty("value", "batch, debug, batch");

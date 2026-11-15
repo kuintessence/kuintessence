@@ -9,6 +9,7 @@ import {
   type DataAssetVersion,
   dataMarketClient,
 } from "../../lib/data-market-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { CpDataPage } from "./CpDataPage";
 
 const activeOrganization = vi.hoisted(() => ({ current: "org-a" as string | null }));
@@ -134,11 +135,17 @@ describe("CpDataPage", () => {
     const agent = screen.getByTestId("cp-data-agent-select");
     const root = screen.getByTestId("cp-data-root-select");
     expect((root as HTMLSelectElement).disabled).toBe(true);
-    fireEvent.change(agent, { target: { value: "agent-a" } });
+    fireEvent.change(nativeControl(agent), { target: { value: "agent-a" } });
     expect((root as HTMLSelectElement).disabled).toBe(false);
-    expect(screen.getByRole("option", { name: "Research data - /data/research" })).toBeTruthy();
-    expect(screen.queryByRole("option", { name: "Disabled - /data/disabled" })).toBeNull();
-    expect(screen.queryByRole("option", { name: "Global root - /data/global" })).toBeNull();
+    expect(
+      screen.getByRole("option", { hidden: true, name: "Research data - /data/research" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("option", { hidden: true, name: "Disabled - /data/disabled" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("option", { hidden: true, name: "Global root - /data/global" }),
+    ).toBeNull();
     expect(screen.getByPlaceholderText("cp.data.relativePath")).toBeTruthy();
     expect(screen.getByText("cp.data.cpLocalHint")).toBeTruthy();
   });
@@ -198,13 +205,13 @@ describe("CpDataPage", () => {
     const result = render(<CpDataPage />, { wrapper });
 
     expect(await screen.findByText("Organization A")).toBeTruthy();
-    fireEvent.change(screen.getByTestId("cp-data-agent-select"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-data-agent-select")), {
       target: { value: "agent-a" },
     });
     expect(
       screen.getByTestId("cp-data-root-select").querySelector('option[value="root-transfer-only"]'),
     ).toBeNull();
-    fireEvent.change(screen.getByTestId("cp-data-root-select"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-data-root-select")), {
       target: { value: "root-a" },
     });
     activeOrganization.current = "org-b";
@@ -241,7 +248,7 @@ describe("CpDataPage", () => {
         }),
     );
     render(<CpDataPage />, { wrapper });
-    fireEvent.change(screen.getByPlaceholderText("dataMarket.name"), {
+    fireEvent.change(nativeControl(screen.getByPlaceholderText("dataMarket.name")), {
       target: { value: "Dataset" },
     });
     const button = screen.getByRole("button", { name: "cp.data.create" });
@@ -256,7 +263,7 @@ describe("CpDataPage", () => {
     const deferred = createDeferred<DataAssetSummary>();
     client.createCpAsset.mockImplementation(() => deferred.promise);
     const result = render(<CpDataPage />, { wrapper });
-    fireEvent.change(screen.getByPlaceholderText("dataMarket.name"), {
+    fireEvent.change(nativeControl(screen.getByPlaceholderText("dataMarket.name")), {
       target: { value: "Dataset A" },
     });
     fireEvent.click(screen.getByRole("button", { name: "cp.data.create" }));
@@ -292,11 +299,13 @@ describe("CpDataPage", () => {
     client.startCpImport.mockImplementation(() => deferred.promise);
     const result = render(<CpDataPage />, { wrapper });
     fireEvent.click(await screen.findByTestId("cp-data-asset-asset-a"));
-    fireEvent.change(screen.getByTestId("cp-data-agent-select"), { target: { value: "agent-a" } });
-    fireEvent.change(screen.getByTestId("cp-data-root-select"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-data-agent-select")), {
+      target: { value: "agent-a" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("cp-data-root-select")), {
       target: { value: "root-a" },
     });
-    fireEvent.change(screen.getByPlaceholderText("cp.data.relativePath"), {
+    fireEvent.change(nativeControl(screen.getByPlaceholderText("cp.data.relativePath")), {
       target: { value: "inputs/a" },
     });
     fireEvent.click(screen.getByRole("button", { name: "cp.data.import" }));
@@ -333,11 +342,13 @@ describe("CpDataPage", () => {
 
     render(<CpDataPage />, { wrapper });
     fireEvent.click(await screen.findByTestId("cp-data-asset-asset-a"));
-    fireEvent.change(screen.getByTestId("cp-data-agent-select"), { target: { value: "agent-a" } });
-    fireEvent.change(screen.getByTestId("cp-data-root-select"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-data-agent-select")), {
+      target: { value: "agent-a" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("cp-data-root-select")), {
       target: { value: "root-a" },
     });
-    fireEvent.change(screen.getByPlaceholderText("cp.data.relativePath"), {
+    fireEvent.change(nativeControl(screen.getByPlaceholderText("cp.data.relativePath")), {
       target: { value: "inputs/a" },
     });
     fireEvent.click(screen.getByRole("button", { name: "cp.data.import" }));
@@ -362,11 +373,13 @@ describe("CpDataPage", () => {
 
     render(<CpDataPage />, { wrapper });
     fireEvent.click(await screen.findByTestId("cp-data-asset-asset-a"));
-    fireEvent.change(screen.getByTestId("cp-data-agent-select"), { target: { value: "agent-a" } });
-    fireEvent.change(screen.getByTestId("cp-data-root-select"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-data-agent-select")), {
+      target: { value: "agent-a" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("cp-data-root-select")), {
       target: { value: "root-a" },
     });
-    fireEvent.change(screen.getByPlaceholderText("cp.data.relativePath"), {
+    fireEvent.change(nativeControl(screen.getByPlaceholderText("cp.data.relativePath")), {
       target: { value: "inputs/a" },
     });
     fireEvent.click(screen.getByRole("button", { name: "cp.data.import" }));

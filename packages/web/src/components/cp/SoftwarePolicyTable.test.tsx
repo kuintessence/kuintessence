@@ -7,6 +7,7 @@ import type {
   SoftwareAvailabilityPreview,
   SoftwareOperation,
 } from "../../lib/cp-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { SoftwarePolicyTable } from "./SoftwarePolicyTable";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -258,7 +259,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.cluster.editOverride"));
     expect(await screen.findByTestId("cp-software-policy-editor")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("cp.software.col.whitelist"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("cp.software.col.whitelist")), {
       target: { value: "unsaved-spec" },
     });
     rerender(<SoftwarePolicyTable canManage={false} />);
@@ -267,7 +268,10 @@ describe("SoftwarePolicyTable", () => {
     expect(screen.queryByTestId("cp-software-policy-editor")).toBeNull();
 
     fireEvent.click(screen.getByText("cp.software.cluster.editOverride"));
-    expect(screen.getByLabelText("cp.software.col.whitelist")).toHaveProperty("value", "");
+    expect(nativeControl(screen.getByLabelText("cp.software.col.whitelist"))).toHaveProperty(
+      "value",
+      "",
+    );
     expect(cpClient.saveClusterSoftwarePolicy).not.toHaveBeenCalled();
   });
 
@@ -446,10 +450,10 @@ describe("SoftwarePolicyTable", () => {
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
 
     fireEvent.click(await screen.findByText("cp.software.cluster.editOverride"));
-    fireEvent.change(screen.getByTestId("cp-software-policy-allow"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-policy-allow")), {
       target: { value: "zlib\nopenmpi" },
     });
-    fireEvent.change(screen.getByTestId("cp-software-policy-deny"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-policy-deny")), {
       target: { value: " zlib " },
     });
 
@@ -466,10 +470,10 @@ describe("SoftwarePolicyTable", () => {
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
 
     fireEvent.click(await screen.findByText("cp.software.cluster.editOverride"));
-    fireEvent.change(screen.getByTestId("cp-software-policy-usecase-allow"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-policy-usecase-allow")), {
       target: { value: "usecase:foam\nasset:ok" },
     });
-    fireEvent.change(screen.getByTestId("cp-software-policy-usecase-deny"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-policy-usecase-deny")), {
       target: { value: " usecase:foam " },
     });
 
@@ -550,8 +554,8 @@ describe("SoftwarePolicyTable", () => {
     }
     fireEvent.click(firstInspect);
     const specInput = screen.getByPlaceholderText("cp.software.operations.specPlaceholder");
-    fireEvent.change(specInput, { target: { value: "zlib@1.3" } });
-    fireEvent.change(screen.getByTestId("cp-software-batch-specs"), {
+    fireEvent.change(nativeControl(specInput), { target: { value: "zlib@1.3" } });
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-batch-specs")), {
       target: { value: "openmpi@4.1.6" },
     });
 
@@ -611,7 +615,7 @@ describe("SoftwarePolicyTable", () => {
     }
 
     fireEvent.click(firstInspect);
-    fireEvent.change(screen.getByTestId("cp-software-installed-filter"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-installed-filter")), {
       target: { value: "a-pkg-64" },
     });
     expect(screen.getByText("a-pkg-64@1.0")).toBeTruthy();
@@ -673,7 +677,7 @@ describe("SoftwarePolicyTable", () => {
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
 
     const input = await screen.findByTestId("cp-software-preview-input");
-    fireEvent.change(input, { target: { value: "openmpi@4.1.6" } });
+    fireEvent.change(nativeControl(input), { target: { value: "openmpi@4.1.6" } });
     fireEvent.click(screen.getByText("cp.software.preview.submit"));
 
     await waitFor(() => {
@@ -692,13 +696,13 @@ describe("SoftwarePolicyTable", () => {
     cpClient.previewSoftwareAvailability.mockResolvedValue(preview);
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
 
-    fireEvent.change(await screen.findByTestId("cp-software-preview-input"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-preview-input")), {
       target: { value: "openfoam@11" },
     });
-    fireEvent.change(screen.getByTestId("cp-software-preview-usecase"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-preview-usecase")), {
       target: { value: "usecase:openfoam-cavity" },
     });
-    fireEvent.change(screen.getByTestId("cp-software-preview-usecase-version"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-preview-usecase-version")), {
       target: { value: "v1" },
     });
     fireEvent.click(screen.getByText("cp.software.preview.submit"));
@@ -756,7 +760,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     const textarea = await screen.findByTestId("cp-software-batch-specs");
-    fireEvent.change(textarea, {
+    fireEvent.change(nativeControl(textarea), {
       target: { value: "gromacs@2024.1 +mpi\n\nopenmpi@4.1.6\n openmpi@4.1.6 " },
     });
     expect(screen.getByText("cp.software.operations.batchParsedCount")).toBeTruthy();
@@ -806,7 +810,7 @@ describe("SoftwarePolicyTable", () => {
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
-    fireEvent.change(await screen.findByTestId("cp-software-batch-specs"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-batch-specs")), {
       target: { value: "zlib\n\nzlib" },
     });
     fireEvent.click(screen.getByText("cp.software.operations.batchSubmit"));
@@ -833,7 +837,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     const textarea = await screen.findByTestId("cp-software-batch-specs");
-    fireEvent.change(textarea, { target: { value: "zlib" } });
+    fireEvent.change(nativeControl(textarea), { target: { value: "zlib" } });
     fireEvent.click(screen.getByText("cp.software.operations.batchSubmit"));
 
     await waitFor(() => {
@@ -855,7 +859,7 @@ describe("SoftwarePolicyTable", () => {
       screen.getByPlaceholderText("cp.software.operations.batchInstallPlaceholder"),
     ).toBeTruthy();
 
-    fireEvent.change(await screen.findByTestId("cp-software-batch-action"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-batch-action")), {
       target: { value: "import_preinstalled" },
     });
 
@@ -872,7 +876,7 @@ describe("SoftwarePolicyTable", () => {
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
-    fireEvent.change(await screen.findByTestId("cp-software-batch-specs"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-batch-specs")), {
       target: {
         value: Array.from({ length: 201 }, (_, index) => `pkg-${index}`).join("\n"),
       },
@@ -931,7 +935,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     const textarea = await screen.findByTestId("cp-software-batch-specs");
-    fireEvent.change(textarea, { target: { value: "zlib\nhdf5" } });
+    fireEvent.change(nativeControl(textarea), { target: { value: "zlib\nhdf5" } });
     fireEvent.click(screen.getByText("cp.software.operations.batchSubmit"));
 
     await waitFor(() => {
@@ -957,7 +961,7 @@ describe("SoftwarePolicyTable", () => {
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
-    fireEvent.change(await screen.findByTestId("cp-software-batch-specs"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-batch-specs")), {
       target: {
         value: Array.from({ length: 2001 }, (_, index) => (index === 0 ? "zlib" : "")).join("\n"),
       },
@@ -1081,7 +1085,7 @@ describe("SoftwarePolicyTable", () => {
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
-    fireEvent.change(await screen.findByTestId("cp-software-batch-specs"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-batch-specs")), {
       target: { value: "zlib" },
     });
     fireEvent.click(screen.getByText("cp.software.operations.batchSubmit"));
@@ -1089,9 +1093,12 @@ describe("SoftwarePolicyTable", () => {
     await waitFor(() => {
       expect(cpClient.requestSoftwareOperationsBatch).toHaveBeenCalledTimes(1);
     });
-    fireEvent.change(screen.getByPlaceholderText("cp.software.operations.specPlaceholder"), {
-      target: { value: "openmpi" },
-    });
+    fireEvent.change(
+      nativeControl(screen.getByPlaceholderText("cp.software.operations.specPlaceholder")),
+      {
+        target: { value: "openmpi" },
+      },
+    );
     const singleSubmit = screen
       .getByText("cp.software.operations.submit")
       .closest("button") as HTMLButtonElement | null;
@@ -1194,12 +1201,12 @@ describe("SoftwarePolicyTable", () => {
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
-    fireEvent.change(await screen.findByTestId("cp-software-batch-action"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-batch-action")), {
       target: { value: "import_preinstalled" },
     });
     fireEvent.click(screen.getByText("cp.software.operations.catalogAdd"));
     fireEvent.click(await screen.findByTestId("cp-software-catalog-package-upstream-hdf5"));
-    fireEvent.change(await screen.findByTestId("cp-software-catalog-version"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-catalog-version")), {
       target: { value: "1.14.3" },
     });
     fireEvent.click(screen.getByText("cp.software.operations.catalogUseSpec"));
@@ -1263,10 +1270,10 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     fireEvent.click(screen.getByText("cp.software.operations.catalogOpen"));
     fireEvent.click(await screen.findByTestId("cp-software-catalog-package-upstream-gromacs"));
-    fireEvent.change(await screen.findByTestId("cp-software-catalog-version"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-catalog-version")), {
       target: { value: "2024.1" },
     });
-    fireEvent.change(screen.getByTestId("cp-software-catalog-variant-cuda_arch"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-catalog-variant-cuda_arch")), {
       target: { value: "70 80" },
     });
 
@@ -1276,7 +1283,7 @@ describe("SoftwarePolicyTable", () => {
       .closest("button");
     expect(useSpecButton).toHaveProperty("disabled", true);
 
-    fireEvent.change(screen.getByTestId("cp-software-catalog-variant-cuda_arch"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-catalog-variant-cuda_arch")), {
       target: { value: "80" },
     });
     expect(screen.queryByTestId("cp-software-catalog-spec-validation")).toBeNull();
@@ -1355,12 +1362,12 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     fireEvent.click(screen.getByText("cp.software.operations.catalogOpen"));
     fireEvent.click(await screen.findByTestId("cp-software-catalog-package-upstream-hdf5"));
-    fireEvent.change(await screen.findByTestId("cp-software-catalog-version"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-catalog-version")), {
       target: { value: "1.14.3" },
     });
     expect(screen.getByTestId("cp-software-catalog-spec")).toHaveProperty("value", "hdf5@1.14.3");
 
-    fireEvent.change(screen.getByTestId("cp-software-catalog-search"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-catalog-search")), {
       target: { value: "gromacs" },
     });
 
@@ -1415,13 +1422,13 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(screen.getByText("cp.software.agent.installedShowLess"));
     expect(screen.queryByText("pkg-64@1.0")).toBeNull();
 
-    fireEvent.change(screen.getByTestId("cp-software-installed-filter"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-installed-filter")), {
       target: { value: "pkg-64" },
     });
     expect(screen.queryByText("pkg-0@1.0")).toBeNull();
     expect(screen.getByText("pkg-64@1.0")).toBeTruthy();
 
-    fireEvent.change(screen.getByTestId("cp-software-installed-filter"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-installed-filter")), {
       target: { value: "missing" },
     });
     expect(screen.getByText("cp.software.agent.installedFilterEmpty")).toBeTruthy();
@@ -1828,7 +1835,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     expect(await screen.findByText("zlib")).toBeTruthy();
-    fireEvent.change(screen.getByTestId("cp-software-operation-action-filter"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-operation-action-filter")), {
       target: { value: "import_preinstalled" },
     });
 
@@ -1880,7 +1887,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     expect(await screen.findByText("zlib")).toBeTruthy();
-    fireEvent.change(screen.getByTestId("cp-software-operation-action-filter"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-operation-action-filter")), {
       target: { value: "load" },
     });
 
@@ -2049,15 +2056,18 @@ describe("SoftwarePolicyTable", () => {
     expect(await screen.findByText("pkg-0")).toBeTruthy();
     expect(screen.queryByText("elpa@2024.05")).toBeNull();
 
-    fireEvent.change(await screen.findByTestId("cp-software-operation-history-filter"), {
-      target: { value: "failed" },
-    });
+    fireEvent.change(
+      nativeControl(await screen.findByTestId("cp-software-operation-history-filter")),
+      {
+        target: { value: "failed" },
+      },
+    );
 
     expect(await screen.findByText("elpa@2024.05")).toBeTruthy();
     expect(screen.getByText("cp.software.operations.historyFilterCount")).toBeTruthy();
     expect(screen.queryByText("pkg-0")).toBeNull();
 
-    fireEvent.change(screen.getByTestId("cp-software-operation-history-filter"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-operation-history-filter")), {
       target: { value: "pkg-" },
     });
 
@@ -2065,7 +2075,7 @@ describe("SoftwarePolicyTable", () => {
     expect(screen.getByText("show all 14")).toBeTruthy();
     expect(screen.queryByText("elpa@2024.05")).toBeNull();
 
-    fireEvent.change(screen.getByTestId("cp-software-operation-history-filter"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-operation-history-filter")), {
       target: { value: "missing" },
     });
     expect(await screen.findByText("cp.software.operations.historyFilterEmpty")).toBeTruthy();
@@ -2127,7 +2137,7 @@ describe("SoftwarePolicyTable", () => {
       await screen.findByText("cp.software.operations.controlChannelOfflineHint"),
     ).toBeTruthy();
     const specInput = screen.getByPlaceholderText("cp.software.operations.specPlaceholder");
-    fireEvent.change(specInput, {
+    fireEvent.change(nativeControl(specInput), {
       target: { value: "zlib" },
     });
     fireEvent.click(screen.getByText("cp.software.operations.submit"));
@@ -2181,9 +2191,9 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     const [actionSelect] = screen.getAllByRole("combobox");
     if (!actionSelect) throw new Error("single-operation action select was not rendered");
-    fireEvent.change(actionSelect, { target: { value: "uninstall" } });
+    fireEvent.change(nativeControl(actionSelect), { target: { value: "uninstall" } });
     const specInput = screen.getByPlaceholderText("cp.software.operations.specPlaceholder");
-    fireEvent.change(specInput, { target: { value: "lammps@2024.1" } });
+    fireEvent.change(nativeControl(specInput), { target: { value: "lammps@2024.1" } });
 
     expect(await screen.findByText("cp.software.operations.policyRejected")).toBeTruthy();
     const submitButton = screen.getByText("cp.software.operations.submit").closest("button");
@@ -2231,7 +2241,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     const specInput = screen.getByPlaceholderText("cp.software.operations.specPlaceholder");
-    fireEvent.change(specInput, { target: { value: "gromacs@2024.1 +mpi" } });
+    fireEvent.change(nativeControl(specInput), { target: { value: "gromacs@2024.1 +mpi" } });
     const submitButton = screen.getByText("cp.software.operations.submit").closest("button");
     expect(submitButton).toHaveProperty("disabled", false);
     const form = specInput.closest("form");
@@ -2267,7 +2277,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     const batchText = await screen.findByTestId("cp-software-batch-specs");
-    fireEvent.change(batchText, {
+    fireEvent.change(nativeControl(batchText), {
       target: { value: "gromacs@2024.1\nlammps@2024.1\nzlib@1.3" },
     });
 
@@ -2393,8 +2403,8 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     const batchAction = await screen.findByTestId("cp-software-batch-action");
-    fireEvent.change(batchAction, { target: { value: "import_preinstalled" } });
-    fireEvent.change(screen.getByTestId("cp-software-batch-specs"), {
+    fireEvent.change(nativeControl(batchAction), { target: { value: "import_preinstalled" } });
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-batch-specs")), {
       target: { value: "openmpi@4.1.6" },
     });
     fireEvent.click(screen.getByText("cp.software.operations.batchSubmit"));
@@ -2533,19 +2543,22 @@ describe("SoftwarePolicyTable", () => {
     expect((await screen.findByTestId("cp-software-catalog-grid")).className).toContain(
       "overflow-auto",
     );
-    fireEvent.change(await screen.findByTestId("cp-software-catalog-search"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-catalog-search")), {
       target: { value: "gromacs" },
     });
     fireEvent.click(await screen.findByTestId("cp-software-catalog-package-upstream-gromacs"));
-    fireEvent.change(await screen.findByTestId("cp-software-catalog-version"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-catalog-version")), {
       target: { value: "2024.1" },
     });
-    fireEvent.change(await screen.findByTestId("cp-software-catalog-variant-mpi"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-catalog-variant-mpi")), {
       target: { value: "+" },
     });
-    fireEvent.change(await screen.findByTestId("cp-software-catalog-variant-cuda_arch"), {
-      target: { value: "80" },
-    });
+    fireEvent.change(
+      nativeControl(await screen.findByTestId("cp-software-catalog-variant-cuda_arch")),
+      {
+        target: { value: "80" },
+      },
+    );
     expect(screen.getByDisplayValue("gromacs@2024.1 +mpi cuda_arch=80")).toBeTruthy();
     expect(screen.queryByText("cp.software.operations.catalogUseName")).toBeNull();
     fireEvent.click(screen.getByText("cp.software.operations.catalogUseSpec"));
@@ -2648,7 +2661,7 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(screen.getByText("cp.software.operations.catalogOpen"));
     expect(await screen.findByTestId("cp-software-catalog-package-upstream-hdf5")).toBeTruthy();
 
-    fireEvent.change(screen.getByTestId("cp-software-catalog-search"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-software-catalog-search")), {
       target: { value: "vendor" },
     });
 
@@ -2675,14 +2688,14 @@ describe("SoftwarePolicyTable", () => {
     if (!catalogButton) throw new Error("single-operation catalog button was not rendered");
 
     expect(catalogButton).toHaveProperty("disabled", false);
-    fireEvent.change(actionSelect, { target: { value: "load" } });
+    fireEvent.change(nativeControl(actionSelect), { target: { value: "load" } });
     expect(catalogButton).toHaveProperty("disabled", true);
     expect(catalogButton.getAttribute("title")).toBe(
       "cp.software.operations.catalogUnavailableForAction",
     );
-    fireEvent.change(actionSelect, { target: { value: "uninstall" } });
+    fireEvent.change(nativeControl(actionSelect), { target: { value: "uninstall" } });
     expect(catalogButton).toHaveProperty("disabled", true);
-    fireEvent.change(actionSelect, { target: { value: "import_preinstalled" } });
+    fireEvent.change(nativeControl(actionSelect), { target: { value: "import_preinstalled" } });
     expect(catalogButton).toHaveProperty("disabled", false);
   });
 
@@ -2726,7 +2739,7 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     fireEvent.click(screen.getByText("cp.software.operations.catalogOpen"));
     fireEvent.click(await screen.findByTestId("cp-software-catalog-package-upstream-gromacs"));
-    fireEvent.change(await screen.findByTestId("cp-software-catalog-version"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-catalog-version")), {
       target: { value: "2024.1" },
     });
     fireEvent.click(screen.getByText("cp.software.operations.catalogUseSpec"));
@@ -2734,15 +2747,15 @@ describe("SoftwarePolicyTable", () => {
 
     const [actionSelect] = screen.getAllByRole("combobox");
     if (!actionSelect) throw new Error("single-operation action select was not rendered");
-    fireEvent.change(actionSelect, { target: { value: "load" } });
+    fireEvent.change(nativeControl(actionSelect), { target: { value: "load" } });
     expect(screen.getByPlaceholderText("cp.software.operations.specPlaceholder")).toHaveProperty(
       "value",
       "",
     );
 
     const specInput = screen.getByPlaceholderText("cp.software.operations.specPlaceholder");
-    fireEvent.change(specInput, { target: { value: "openmpi@4.1.6" } });
-    fireEvent.change(actionSelect, { target: { value: "uninstall" } });
+    fireEvent.change(nativeControl(specInput), { target: { value: "openmpi@4.1.6" } });
+    fireEvent.change(nativeControl(actionSelect), { target: { value: "uninstall" } });
     expect(specInput).toHaveProperty("value", "openmpi@4.1.6");
   });
 
@@ -2802,10 +2815,10 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     const [actionSelect] = screen.getAllByRole("combobox");
     if (!actionSelect) throw new Error("single-operation action select was not rendered");
-    fireEvent.change(actionSelect, { target: { value: "import_preinstalled" } });
+    fireEvent.change(nativeControl(actionSelect), { target: { value: "import_preinstalled" } });
     fireEvent.click(screen.getByText("cp.software.operations.catalogOpen"));
     fireEvent.click(await screen.findByTestId("cp-software-catalog-package-upstream-hdf5"));
-    fireEvent.change(await screen.findByTestId("cp-software-catalog-version"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("cp-software-catalog-version")), {
       target: { value: "1.14.3" },
     });
     fireEvent.click(screen.getByText("cp.software.operations.catalogUseSpec"));
@@ -2843,9 +2856,12 @@ describe("SoftwarePolicyTable", () => {
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
-    fireEvent.change(screen.getByPlaceholderText("cp.software.operations.specPlaceholder"), {
-      target: { value: "zlib" },
-    });
+    fireEvent.change(
+      nativeControl(screen.getByPlaceholderText("cp.software.operations.specPlaceholder")),
+      {
+        target: { value: "zlib" },
+      },
+    );
     fireEvent.click(screen.getByText("cp.software.operations.submit"));
 
     await waitFor(() => {
@@ -2883,9 +2899,12 @@ describe("SoftwarePolicyTable", () => {
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
-    fireEvent.change(screen.getByPlaceholderText("cp.software.operations.specPlaceholder"), {
-      target: { value: "zlib" },
-    });
+    fireEvent.change(
+      nativeControl(screen.getByPlaceholderText("cp.software.operations.specPlaceholder")),
+      {
+        target: { value: "zlib" },
+      },
+    );
     fireEvent.click(screen.getByText("cp.software.operations.submit"));
 
     await waitFor(() => {

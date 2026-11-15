@@ -40,10 +40,7 @@ export function MaterialVisibility({
   const { view, busy, notice, locked } = visibility;
   const binding = SpackMaterialBindingSchema.safeParse({ repositoryId, manifestDigest });
   return (
-    <section
-      className="min-w-0 space-y-3 border-t border-border py-3"
-      data-testid="material-visibility"
-    >
+    <section className="min-w-0 space-y-3 border-border py-3" data-testid="material-visibility">
       <h3 className="text-xs font-medium">{t("materials.visibilityTitle")}</h3>
       <form
         className="grid min-w-0 items-end gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"

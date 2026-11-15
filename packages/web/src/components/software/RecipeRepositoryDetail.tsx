@@ -21,6 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { RecipeSnapshotReport } from "./RecipeSnapshotReport";
 
 type Change =
@@ -109,7 +110,7 @@ export function RecipeRepositoryDetail({
   );
   const busy = mutation.isPending || detail.isFetching;
   return (
-    <section className="min-w-0 space-y-3 border-t border-border pt-3">
+    <section className="min-w-0 space-y-3 border-border pt-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="break-all text-sm font-medium">{repository.repository}</h3>
         <div className="flex items-center gap-1">
@@ -149,17 +150,17 @@ export function RecipeRepositoryDetail({
         <p className="text-xs">{t("recipes.noSnapshots")}</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs" aria-label={t("recipes.history")}>
-            <thead className="border-b border-border text-muted-foreground">
-              <tr>
+          <Table className="w-full text-left text-xs" aria-label={t("recipes.history")}>
+            <TableHeader className="border-b border-border text-muted-foreground">
+              <TableRow>
                 {["commit", "importedAt", "importedBy", "actions"].map((key) => (
-                  <th className="p-2 font-medium" key={key}>
+                  <TableHead className="p-2 font-medium" key={key}>
                     {t(`recipes.${key}`)}
-                  </th>
+                  </TableHead>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {snapshots.map((snapshot, index) => {
                 const active = snapshot.commit === repository.activeCommit;
                 const rollback = activeIndex >= 0 && index > activeIndex;
@@ -167,20 +168,20 @@ export function RecipeRepositoryDetail({
                   commit: snapshot.commit,
                 });
                 return (
-                  <tr key={snapshot.commit} className="border-b border-border">
-                    <td className="p-2">
+                  <TableRow key={snapshot.commit} className="border-b border-border">
+                    <TableCell className="p-2">
                       <code className="break-all">{snapshot.commit}</code>
                       {active ? (
                         <Badge className="ml-2" variant="outline">
                           {t("recipes.activeCommit")}
                         </Badge>
                       ) : null}
-                    </td>
-                    <td className="whitespace-nowrap p-2">
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap p-2">
                       <time dateTime={snapshot.importedAt}>{snapshot.importedAt}</time>
-                    </td>
-                    <td className="break-all p-2">{snapshot.importedBy}</td>
-                    <td className="p-2">
+                    </TableCell>
+                    <TableCell className="break-all p-2">{snapshot.importedBy}</TableCell>
+                    <TableCell className="p-2">
                       <div className="flex gap-1">
                         <Button
                           size="icon"
@@ -210,12 +211,12 @@ export function RecipeRepositoryDetail({
                           </Button>
                         ) : null}
                       </div>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
       {inspected ? <RecipeSnapshotReport snapshot={inspected} /> : null}

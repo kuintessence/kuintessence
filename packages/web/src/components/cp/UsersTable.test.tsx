@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -121,7 +122,9 @@ describe("UsersTable read-only governance", () => {
     render(<UsersTable />, { wrapper: makeWrapper() });
     fireEvent.click(await screen.findByText("cp.users.nextPage"));
     await screen.findByText("page-50@example.test");
-    fireEvent.change(screen.getByTestId("cp-users-search"), { target: { value: "Alice" } });
+    fireEvent.change(nativeControl(screen.getByTestId("cp-users-search")), {
+      target: { value: "Alice" },
+    });
     await waitFor(() => expect(urls.at(-1)).toContain("search=Alice&limit=50&offset=0"));
     await screen.findByText("page-0@example.test");
     fireEvent.click(screen.getByText("cp.users.nextPage"));

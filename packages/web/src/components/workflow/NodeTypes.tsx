@@ -31,8 +31,7 @@ export interface NodeRenderProps {
   selected?: boolean;
 }
 
-const baseClasses =
-  "group relative min-w-[200px] max-w-[260px] rounded-md border bg-card p-3 shadow-sm transition-shadow";
+const baseClasses = "group relative min-w-[200px] max-w-[260px] rounded-md border bg-card p-3";
 
 interface ConnectionAssistState {
   activeHandleType: "source" | "target" | null;
@@ -133,7 +132,7 @@ const DESCRIPTORS: Record<GraphNodeKind, NodeDescriptor> = {
   SubWorkflow: {
     icon: Network,
     iconClass: "text-violet-500",
-    borderClass: "border-violet-500/60 bg-violet-500/5",
+    borderClass: "border-violet-500/60",
     badgeKey: "SubWorkflow",
   },
 };
@@ -196,11 +195,8 @@ function NodeShell({ data, selected }: NodeRenderProps) {
     <div
       data-testid={`rf-node-${data.kind}-${data.id}`}
       data-selected={selected ? "true" : "false"}
-      className={cn(
-        baseClasses,
-        desc.borderClass,
-        selected ? "ring-2 ring-ring shadow-md" : "hover:shadow-md",
-      )}
+      data-kq-workflow-node="true"
+      className={cn(baseClasses, desc.borderClass, selected ? "ring-2 ring-ring" : "")}
     >
       <Handle
         id="input"
@@ -215,9 +211,9 @@ function NodeShell({ data, selected }: NodeRenderProps) {
               <div
                 key={slot.descriptor}
                 className={cn(
-                  "pointer-events-auto absolute right-full z-20 mr-3 flex min-w-max items-center whitespace-nowrap rounded-md border border-brand/30 bg-popover px-2.5 py-1.5 text-[10px] text-popover-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100",
+                  "pointer-events-auto absolute right-full z-20 mr-3 flex min-w-max items-center whitespace-nowrap px-2.5 py-1.5 text-[10px] text-popover-foreground opacity-0 transition-opacity group-hover:opacity-100",
                   (keepInputSlotsVisible || revealed) && "opacity-100",
-                  revealed && "border-brand/60 bg-brand-soft/90",
+                  revealed && "text-brand font-semibold",
                 )}
                 style={{
                   top: "50%",
@@ -272,9 +268,9 @@ function NodeShell({ data, selected }: NodeRenderProps) {
               <div
                 key={slot.descriptor}
                 className={cn(
-                  "pointer-events-auto absolute left-full z-20 ml-3 flex min-w-max items-center whitespace-nowrap rounded-md border border-brand/30 bg-popover px-2.5 py-1.5 text-[10px] text-popover-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100",
+                  "pointer-events-auto absolute left-full z-20 ml-3 flex min-w-max items-center whitespace-nowrap px-2.5 py-1.5 text-[10px] text-popover-foreground opacity-0 transition-opacity group-hover:opacity-100",
                   (keepOutputSlotsVisible || revealed) && "opacity-100",
-                  revealed && "border-brand/60 bg-brand-soft/90",
+                  revealed && "text-brand font-semibold",
                 )}
                 style={{
                   top: "50%",

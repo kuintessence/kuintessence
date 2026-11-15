@@ -3,13 +3,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { setLang } from "../../lib/i18n";
+import { nativeControl } from "../../lib/test-resource-field";
 import { InterconnectDashboard } from "./InterconnectDashboard";
 import { MetadataEditor } from "./MetadataEditor";
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock("../../lib/api-client", () => ({ api }));
 vi.mock("../../lib/active-organization", () => ({ useActiveOrganizationId: () => null }));
-vi.mock("../../lib/auth", () => ({ getAuthState: () => ({ revision: "review" }) }));
+vi.mock("../../lib/auth", () => ({
+  subscribeAuthState: () => () => {},
+  getAuthState: () => ({ revision: "review" }),
+}));
 vi.mock("../../lib/platform-capabilities", () => ({
   usePlatformCapability: () => ({ allowed: true, ready: true, error: null }),
 }));
@@ -46,7 +50,9 @@ test.each([
     </QueryClientProvider>,
   );
   fireEvent.click(await screen.findByRole("button", { name: "新增中心" }));
-  fireEvent.change(screen.getByLabelText("名称"), { target: { value: "未保存草稿" } });
+  fireEvent.change(nativeControl(screen.getByLabelText("名称")), {
+    target: { value: "未保存草稿" },
+  });
 
   api.get.mockResolvedValue({ ...snapshot, canManage: false });
   await act(() => client.invalidateQueries({ queryKey: ["interconnect"] }));
@@ -59,7 +65,7 @@ test.each([
   const add = await screen.findByRole("button", { name: "新增中心" });
   expect(screen.queryByRole("dialog")).toBeNull();
   fireEvent.click(add);
-  expect(screen.getByLabelText("名称")).toHaveProperty("value", "");
+  expect(nativeControl(screen.getByLabelText("名称"))).toHaveProperty("value", "");
 
   api.get.mockRejectedValue(new Error("资源读取失败"));
   await act(() => client.invalidateQueries({ queryKey: ["interconnect"] }));
@@ -106,7 +112,9 @@ test("language switching translates the editor without changing persisted comput
     />,
   );
   expect(screen.getByRole("heading", { name: "Add cluster" })).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Cluster A" } });
+  fireEvent.change(nativeControl(screen.getByLabelText("Name")), {
+    target: { value: "Cluster A" },
+  });
   fireEvent.click(screen.getByLabelText("Domestic CPU"));
   fireEvent.click(screen.getByLabelText("Other"));
   await act(async () => setLang("zh"));
@@ -137,9 +145,9 @@ test("invalid metadata identifies the field in the selected language", () => {
       onDelete={vi.fn()}
     />,
   );
-  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Center A" } });
-  fireEvent.change(screen.getByLabelText("Longitude"), { target: { value: "200" } });
-  fireEvent.change(screen.getByLabelText("Latitude"), { target: { value: "40" } });
+  fireEvent.change(nativeControl(screen.getByLabelText("Name")), { target: { value: "Center A" } });
+  fireEvent.change(nativeControl(screen.getByLabelText("Longitude")), { target: { value: "200" } });
+  fireEvent.change(nativeControl(screen.getByLabelText("Latitude")), { target: { value: "40" } });
   const form = screen.getByRole("button", { name: "Save" }).closest("form");
   if (!form) throw new Error("Metadata form is missing");
   fireEvent.submit(form);

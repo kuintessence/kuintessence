@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -99,8 +100,12 @@ describe("SshRecordingPlayer", () => {
   test("fetches a presigned URL, downloads the cast, and replays into xterm", async () => {
     vi.stubGlobal("fetch", recordingsFetch({}));
     render(<SshRecordingPlayer />);
-    fireEvent.change(screen.getByTestId("ssh-rec-agent"), { target: { value: "agent-1" } });
-    fireEvent.change(screen.getByTestId("ssh-rec-session"), { target: { value: "sess-1" } });
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-rec-agent")), {
+      target: { value: "agent-1" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-rec-session")), {
+      target: { value: "sess-1" },
+    });
     fireEvent.click(screen.getByTestId("ssh-rec-play"));
     await waitFor(() => expect(writes.join("")).toContain("welcome"));
   });
@@ -159,8 +164,12 @@ describe("SshRecordingPlayer", () => {
       "Authorization principal is not bound",
     );
     expect(screen.queryByTestId("ssh-rec-list")).toBeNull();
-    fireEvent.change(screen.getByTestId("ssh-rec-agent"), { target: { value: "agent-1" } });
-    fireEvent.change(screen.getByTestId("ssh-rec-session"), { target: { value: "sess-1" } });
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-rec-agent")), {
+      target: { value: "agent-1" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-rec-session")), {
+      target: { value: "sess-1" },
+    });
     fireEvent.click(screen.getByTestId("ssh-rec-play"));
 
     await waitFor(() => expect(writes.join("")).toContain("welcome"));
@@ -177,8 +186,12 @@ describe("SshRecordingPlayer", () => {
     let deleteCalled = false;
     vi.stubGlobal("fetch", recordingsFetch({ onDelete: () => (deleteCalled = true) }));
     render(<SshRecordingPlayer />);
-    fireEvent.change(screen.getByTestId("ssh-rec-agent"), { target: { value: "agent-1" } });
-    fireEvent.change(screen.getByTestId("ssh-rec-session"), { target: { value: "sess-1" } });
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-rec-agent")), {
+      target: { value: "agent-1" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-rec-session")), {
+      target: { value: "sess-1" },
+    });
     fireEvent.click(screen.getByTestId("ssh-rec-play"));
     await waitFor(() => screen.getByTestId("ssh-rec-delete"));
     fireEvent.click(screen.getByTestId("ssh-rec-delete"));
@@ -197,8 +210,12 @@ describe("SshRecordingPlayer", () => {
       ),
     );
     render(<SshRecordingPlayer />);
-    fireEvent.change(screen.getByTestId("ssh-rec-agent"), { target: { value: "a" } });
-    fireEvent.change(screen.getByTestId("ssh-rec-session"), { target: { value: "s" } });
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-rec-agent")), {
+      target: { value: "a" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-rec-session")), {
+      target: { value: "s" },
+    });
     fireEvent.click(screen.getByTestId("ssh-rec-play"));
     await waitFor(() => screen.getByTestId("ssh-rec-error"));
   });

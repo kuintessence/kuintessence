@@ -82,7 +82,7 @@ export function RecipeBundleImport({
   }
 
   return (
-    <div className="space-y-2 border-y border-border py-3">
+    <div className="space-y-2 border-border py-3">
       <label htmlFor={fileInputId} className="block space-y-1 text-xs font-medium">
         <span>{t("recipes.files")}</span>
         <Input

@@ -24,8 +24,8 @@ export function WorkflowCreationStepper({
     <nav
       aria-label={t("workflows.creation.stepsLabel")}
       className={cn(
-        "grid grid-cols-2 overflow-hidden bg-card sm:grid-cols-4",
-        embedded ? "border-t border-border" : "rounded-xl border border-border shadow-sm",
+        "grid grid-cols-2 overflow-hidden sm:grid-cols-4",
+        embedded ? " border-border" : " border-b border-border ",
       )}
       data-testid="workflow-creation-steps"
     >
@@ -40,18 +40,16 @@ export function WorkflowCreationStepper({
             disabled={blocked}
             onClick={() => onChange(step)}
             className={cn(
-              "flex min-w-0 items-center gap-2 border-border px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring sm:gap-3 sm:border-l sm:first:border-l-0",
-              active ? "bg-brand-soft text-brand" : "hover:bg-muted/50",
-              blocked && "cursor-not-allowed opacity-55 hover:bg-transparent",
+              "flex min-w-0 items-center gap-2 border-border px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring sm:gap-3 ",
+              active ? " text-brand" : "",
+              blocked && "cursor-not-allowed opacity-55 ",
             )}
             data-testid={`workflow-step-${step}`}
           >
             <span
               className={cn(
-                "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
-                active || complete
-                  ? "border-brand bg-brand text-white"
-                  : "border-border bg-background text-muted-foreground",
+                "flex h-7 w-7 shrink-0 items-center justify-center text-xs font-semibold",
+                active || complete ? " text-white" : "border-border text-muted-foreground",
               )}
             >
               {complete ? <Check className="h-4 w-4" /> : index + 1}

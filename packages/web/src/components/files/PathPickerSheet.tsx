@@ -21,7 +21,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import type { AgentRow } from "../agents/AgentCard";
 import { Button } from "../ui/button";
-import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import {
   Sheet,
   SheetBody,
@@ -31,6 +31,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "../ui/sheet";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import {
   buildCloudBrowserRows,
@@ -121,7 +122,7 @@ export function PathPickerField({
   const fallbackEmptyValue = emptyValue ?? t("files.pathPicker.emptyValue");
   return (
     <>
-      <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
+      <div className="flex items-center gap-2 border-border px-3 py-2">
         <span
           className="min-w-0 flex-1 truncate font-mono text-xs"
           title={value || fallbackEmptyValue}
@@ -611,8 +612,8 @@ function CloudBrowser({
 }: CloudBrowserProps) {
   const { t } = useTranslation();
   return (
-    <div className="flex min-h-[420px] flex-col overflow-hidden rounded-md border border-border">
-      <div className="flex h-10 items-center justify-between gap-2 border-b border-border bg-card/60 px-3">
+    <div className="flex min-h-[420px] flex-col overflow-hidden border-border">
+      <div className="flex h-10 items-center justify-between gap-2 border-b border-border px-3">
         <div className="flex min-w-0 items-center gap-1">
           {prefix ? (
             <Button
@@ -638,56 +639,58 @@ function CloudBrowser({
         {rows.length === 0 ? (
           <EmptyBrowserState message={t("files.pathPicker.cloudEmpty")} />
         ) : (
-          <table className="w-full table-fixed text-sm">
-            <thead className="bg-muted/40 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
-              <tr>
-                <th className="min-w-0 px-3 py-2 font-medium">{t("files.table.name")}</th>
-                <th className="hidden px-3 py-2 font-medium text-right sm:table-cell">
+          <Table className="w-full table-fixed text-sm">
+            <TableHeader className=" text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+              <TableRow>
+                <TableHead className="min-w-0 px-3 py-2 font-medium">
+                  {t("files.table.name")}
+                </TableHead>
+                <TableHead className="hidden px-3 py-2 font-medium text-right sm:table-cell">
                   {t("files.table.size")}
-                </th>
-                <th className="hidden px-3 py-2 font-medium md:table-cell">
+                </TableHead>
+                <TableHead className="hidden px-3 py-2 font-medium md:table-cell">
                   {t("files.table.modified")}
-                </th>
+                </TableHead>
                 {mode === "directory" ? (
-                  <th
+                  <TableHead
                     className="w-24 px-1 py-2 font-medium"
                     aria-label={t("files.table.actions")}
                   />
                 ) : null}
-              </tr>
-            </thead>
-            <tbody>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {rows.map((row) => {
                 if (row.kind === "dir") {
                   const selected = selectedPath === row.fullPath;
                   return (
-                    <tr
+                    <TableRow
                       key={`cloud-dir:${row.fullPath}`}
                       data-testid={`path-picker-cloud-dir-${row.name}`}
                       onClick={() => onPrefixChange(row.fullPath)}
                       onDoubleClick={() => onPrefixChange(row.fullPath)}
                       className={rowClassName(selected)}
                     >
-                      <td className="min-w-0 px-3 py-2 font-medium">
+                      <TableCell className="min-w-0 px-3 py-2 font-medium">
                         <div className="flex min-w-0 items-center gap-2">
                           <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <button
                             type="button"
-                            className="min-w-0 truncate rounded-sm text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                            className="min-w-0 truncate text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
                             title={`${row.name}/`}
                           >
                             {row.name}/
                           </button>
                         </div>
-                      </td>
-                      <td className="hidden px-3 py-2 text-right font-mono text-xs text-muted-foreground sm:table-cell">
+                      </TableCell>
+                      <TableCell className="hidden px-3 py-2 text-right font-mono text-xs text-muted-foreground sm:table-cell">
                         {fmtBytes(row.totalSize)}
-                      </td>
-                      <td className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground md:table-cell">
+                      </TableCell>
+                      <TableCell className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground md:table-cell">
                         {relativeFromNow(row.latestModifiedAt)}
-                      </td>
+                      </TableCell>
                       {mode === "directory" ? (
-                        <td className="px-3 py-2 text-right">
+                        <TableCell className="px-3 py-2 text-right">
                           <Button
                             type="button"
                             variant="outline"
@@ -706,15 +709,15 @@ function CloudBrowser({
                           >
                             {t("files.pathPicker.choose")}
                           </Button>
-                        </td>
+                        </TableCell>
                       ) : null}
-                    </tr>
+                    </TableRow>
                   );
                 }
                 const selected = selectedPath === row.obj.key;
                 const usable = cloudObjectCanUse(row.obj);
                 return (
-                  <tr
+                  <TableRow
                     key={row.obj.id}
                     data-testid={`path-picker-cloud-file-${row.obj.id}`}
                     onClick={() => {
@@ -732,14 +735,14 @@ function CloudBrowser({
                     title={!usable ? t("files.useUnavailable") : undefined}
                     className={rowClassName(selected, mode === "file" && usable)}
                   >
-                    <td className="min-w-0 px-3 py-2 font-medium">
+                    <TableCell className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
                         <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         <button
                           type="button"
                           disabled={mode !== "file" || !usable}
                           aria-pressed={mode === "file" ? selected : undefined}
-                          className="min-w-0 truncate rounded-sm text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                          className="min-w-0 truncate text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
                           title={row.displayName}
                         >
                           {row.displayName}
@@ -750,19 +753,19 @@ function CloudBrowser({
                           </span>
                         ) : null}
                       </div>
-                    </td>
-                    <td className="hidden px-3 py-2 text-right font-mono text-xs text-muted-foreground sm:table-cell">
+                    </TableCell>
+                    <TableCell className="hidden px-3 py-2 text-right font-mono text-xs text-muted-foreground sm:table-cell">
                       {fmtBytes(row.obj.size)}
-                    </td>
-                    <td className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground md:table-cell">
+                    </TableCell>
+                    <TableCell className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground md:table-cell">
                       {relativeFromNow(row.obj.modifiedAt)}
-                    </td>
-                    {mode === "directory" ? <td className="px-3 py-2" /> : null}
-                  </tr>
+                    </TableCell>
+                    {mode === "directory" ? <TableCell className="px-3 py-2" /> : null}
+                  </TableRow>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         )}
       </BrowserBody>
     </div>
@@ -808,8 +811,8 @@ function ClusterBrowser({
 }: ClusterBrowserProps) {
   const { t } = useTranslation();
   return (
-    <div className="flex min-h-[420px] flex-col overflow-hidden rounded-md border border-border">
-      <div className="flex h-10 items-center justify-between gap-2 border-b border-border bg-card/60 px-3">
+    <div className="flex min-h-[420px] flex-col overflow-hidden border-border">
+      <div className="flex h-10 items-center justify-between gap-2 border-b border-border px-3">
         <div className="flex min-w-0 items-center gap-1">
           <Button
             type="button"
@@ -828,7 +831,10 @@ function ClusterBrowser({
         </div>
         <div className="flex items-center gap-2">
           {agents.length > 0 ? (
-            <NativeSelect
+            <ResourceSelectField
+              resourceType="agents"
+              recent
+              expandable
               data-testid="path-picker-agent-select"
               className="font-mono text-[11px]"
               aria-label={t("files.clusterAgent")}
@@ -845,10 +851,13 @@ function ClusterBrowser({
                   {item.siteName} · {item.schedulerType} {item.schedulerVersion}
                 </option>
               ))}
-            </NativeSelect>
+            </ResourceSelectField>
           ) : null}
           {roots.length > 1 ? (
-            <NativeSelect
+            <ResourceSelectField
+              resourceType="cluster-file-roots"
+              recent
+              expandable
               value={activeRoot}
               onChange={(event) => onRootChange(event.target.value)}
               aria-label={t("files.pathPicker.clusterRoot")}
@@ -860,7 +869,7 @@ function ClusterBrowser({
                   {root}
                 </option>
               ))}
-            </NativeSelect>
+            </ResourceSelectField>
           ) : null}
         </div>
       </div>
@@ -880,30 +889,32 @@ function ClusterBrowser({
             }
           />
         ) : (
-          <table className="w-full table-fixed text-sm">
-            <thead className="bg-muted/40 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
-              <tr>
-                <th className="min-w-0 px-3 py-2 font-medium">{t("files.table.name")}</th>
-                <th className="hidden px-3 py-2 font-medium text-right sm:table-cell">
+          <Table className="w-full table-fixed text-sm">
+            <TableHeader className=" text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+              <TableRow>
+                <TableHead className="min-w-0 px-3 py-2 font-medium">
+                  {t("files.table.name")}
+                </TableHead>
+                <TableHead className="hidden px-3 py-2 font-medium text-right sm:table-cell">
                   {t("files.table.size")}
-                </th>
-                <th className="hidden px-3 py-2 font-medium md:table-cell">
+                </TableHead>
+                <TableHead className="hidden px-3 py-2 font-medium md:table-cell">
                   {t("files.table.modified")}
-                </th>
+                </TableHead>
                 {mode === "directory" ? (
-                  <th
+                  <TableHead
                     className="w-24 px-1 py-2 font-medium"
                     aria-label={t("files.table.actions")}
                   />
                 ) : null}
-              </tr>
-            </thead>
-            <tbody>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {entries.map((entry) => {
                 const fullPath = joinClusterPath(path, entry.name);
                 const selected = selectedPath === fullPath;
                 return (
-                  <tr
+                  <TableRow
                     key={entry.name}
                     data-testid={`path-picker-cluster-${entry.kind}-${entry.name}`}
                     onClick={() => {
@@ -928,7 +939,7 @@ function ClusterBrowser({
                     }}
                     className={rowClassName(selected, entry.kind === "dir" || mode === "file")}
                   >
-                    <td className="min-w-0 px-3 py-2 font-medium">
+                    <TableCell className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
                         {entry.kind === "dir" ? (
                           <Folder className="h-3.5 w-3.5 text-muted-foreground" />
@@ -941,22 +952,22 @@ function ClusterBrowser({
                           aria-pressed={
                             entry.kind === "file" && mode === "file" ? selected : undefined
                           }
-                          className="min-w-0 truncate rounded-sm text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                          className="min-w-0 truncate text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
                           title={entry.name}
                         >
                           {entry.name}
                           {entry.kind === "dir" ? "/" : ""}
                         </button>
                       </div>
-                    </td>
-                    <td className="hidden px-3 py-2 text-right font-mono text-xs text-muted-foreground sm:table-cell">
+                    </TableCell>
+                    <TableCell className="hidden px-3 py-2 text-right font-mono text-xs text-muted-foreground sm:table-cell">
                       {fmtBytes(entry.size)}
-                    </td>
-                    <td className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground md:table-cell">
+                    </TableCell>
+                    <TableCell className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground md:table-cell">
                       {relativeFromNow(entry.modifiedAt)}
-                    </td>
+                    </TableCell>
                     {mode === "directory" ? (
-                      <td className="px-3 py-2 text-right">
+                      <TableCell className="px-3 py-2 text-right">
                         {entry.kind === "dir" && agent ? (
                           <Button
                             type="button"
@@ -980,13 +991,13 @@ function ClusterBrowser({
                             {t("files.pathPicker.choose")}
                           </Button>
                         ) : null}
-                      </td>
+                      </TableCell>
                     ) : null}
-                  </tr>
+                  </TableRow>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         )}
       </BrowserBody>
     </div>

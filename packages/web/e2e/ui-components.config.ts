@@ -2,7 +2,7 @@ import { defineConfig } from "patchright/test";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: ["ui-components.spec.ts", "ui-pages.spec.ts"],
+  testMatch: ["ui-components.spec.ts", "ui-pages.spec.ts", "ui-unification.spec.ts"],
   forbidOnly: !!process.env.CI,
   workers: 1,
   timeout: 30_000,

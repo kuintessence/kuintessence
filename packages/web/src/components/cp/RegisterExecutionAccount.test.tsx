@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { setLang } from "../../lib/i18n";
+import { nativeControl } from "../../lib/test-resource-field";
 import { RegisterExecutionAccount } from "./RegisterExecutionAccount";
 
 const clientApi = vi.hoisted(() => ({
@@ -33,9 +34,11 @@ function setup() {
 }
 test("registers an existing Unix identity, only offers agents in this organization", async () => {
   const { unmount, client, saved } = setup();
-  await screen.findByRole("option", { name: "Slurm Cluster · slurm (slurm)" });
-  expect(screen.queryByRole("option", { name: /Other Cluster/ })).toBeNull();
-  fireEvent.change(screen.getByLabelText("接入代理"), { target: { value: "slurm" } });
+  await screen.findByRole("option", { hidden: true, name: "Slurm Cluster · slurm (slurm)" });
+  expect(screen.queryByRole("option", { hidden: true, name: /Other Cluster/ })).toBeNull();
+  fireEvent.change(nativeControl(screen.getByLabelText("接入代理")), {
+    target: { value: "slurm" },
+  });
   for (const [label, value] of [
     ["账号名称", "Analysis"],
     ["Unix 用户名", "researcher"],
@@ -43,7 +46,7 @@ test("registers an existing Unix identity, only offers agents in this organizati
     ["GID", "2000"],
     ["允许队列（逗号分隔）", "debug, batch, debug"],
   ] as const)
-    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.change(nativeControl(screen.getByLabelText(label)), { target: { value } });
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(saved).toHaveBeenCalledOnce());
   expect(clientApi.createSandboxExecutionAccount).toHaveBeenCalledWith({
@@ -62,22 +65,26 @@ test("registers an existing Unix identity, only offers agents in this organizati
 });
 test("switching scheduler clears incompatible identity fields; failed registration keeps the form", async () => {
   const { unmount, client, saved } = setup();
-  await screen.findByRole("option", { name: /Slurm Cluster/ });
-  fireEvent.change(screen.getByLabelText("接入代理"), { target: { value: "slurm" } });
-  fireEvent.change(screen.getByLabelText("Unix 用户名"), { target: { value: "old-user" } });
-  fireEvent.change(screen.getByLabelText("接入代理"), { target: { value: "kube" } });
+  await screen.findByRole("option", { hidden: true, name: /Slurm Cluster/ });
+  fireEvent.change(nativeControl(screen.getByLabelText("接入代理")), {
+    target: { value: "slurm" },
+  });
+  fireEvent.change(nativeControl(screen.getByLabelText("Unix 用户名")), {
+    target: { value: "old-user" },
+  });
+  fireEvent.change(nativeControl(screen.getByLabelText("接入代理")), { target: { value: "kube" } });
   expect(screen.queryByLabelText("Unix 用户名")).toBeNull();
   for (const [label, value] of [
     ["账号名称", "Pod"],
     ["Namespace", "compute"],
     ["Service Account", "runner"],
   ] as const)
-    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.change(nativeControl(screen.getByLabelText(label)), { target: { value } });
   clientApi.createSandboxExecutionAccount.mockRejectedValueOnce(new Error("Provider denied"));
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
   await screen.findByRole("alert");
   expect(saved).not.toHaveBeenCalled();
-  expect(screen.getByLabelText("Namespace")).toHaveProperty("value", "compute");
+  expect(nativeControl(screen.getByLabelText("Namespace"))).toHaveProperty("value", "compute");
   expect(clientApi.createSandboxExecutionAccount).toHaveBeenCalledWith({
     providerOrgId: "org-a",
     agentId: "kube",

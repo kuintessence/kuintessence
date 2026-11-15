@@ -23,7 +23,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
-import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import { ClusterStoragePolicyEditor } from "./ClusterStoragePolicyEditor";
 
 interface ClusterFileRootsResponse {
@@ -277,10 +277,7 @@ export function ClusterFileRootsPanel() {
           <p role="status">{t("common.loading")}</p>
         ) : null}
         {loadError ? (
-          <div
-            className="rounded-md border border-status-failed/40 p-3 text-sm text-status-failed"
-            data-testid="cluster-file-roots-error"
-          >
+          <div className=" p-3 text-sm text-status-failed" data-testid="cluster-file-roots-error">
             {loadError}
           </div>
         ) : null}
@@ -297,7 +294,7 @@ export function ClusterFileRootsPanel() {
 
             {!mobileReadOnly && (
               <form
-                className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,24rem),1fr))] gap-2 rounded-md border border-border p-3"
+                className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,24rem),1fr))] gap-2 border-b border-border p-3"
                 onSubmit={createRoot}
                 data-testid="cluster-file-root-create-form"
               >
@@ -320,7 +317,8 @@ export function ClusterFileRootsPanel() {
                   id="cluster-file-root-new-provider"
                   label={t("settings.clusterFileRoots.providerOrgId")}
                 >
-                  <NativeSelect
+                  <ResourceSelectField
+                    resourceType="organizations"
                     aria-label={t("settings.clusterFileRoots.providerOrgId")}
                     className="min-w-0"
                     value={newRoot.providerOrgId}
@@ -342,7 +340,7 @@ export function ClusterFileRootsPanel() {
                         {org.name}
                       </option>
                     ))}
-                  </NativeSelect>
+                  </ResourceSelectField>
                 </RootField>
                 <RootAgentSelect
                   agents={agents}
@@ -404,7 +402,7 @@ export function ClusterFileRootsPanel() {
             )}
 
             {roots.length === 0 && !loading ? (
-              <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+              <div className=" p-4 text-sm text-muted-foreground">
                 {t("settings.clusterFileRoots.empty")}
               </div>
             ) : null}
@@ -414,7 +412,7 @@ export function ClusterFileRootsPanel() {
                 return (
                   <div key={root.id} className="space-y-2">
                     <div
-                      className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,24rem),1fr))] gap-2 rounded-md border border-border p-3"
+                      className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,24rem),1fr))] gap-2 border-border p-3"
                       data-testid={`cluster-file-root-row-${root.id}`}
                     >
                       <RootField
@@ -429,10 +427,7 @@ export function ClusterFileRootsPanel() {
                           data-testid={`cluster-file-root-label-${root.id}`}
                         />
                       </RootField>
-                      <div
-                        className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs"
-                        title={root.providerOrgId}
-                      >
+                      <div className=" border-border px-3 py-2 text-xs" title={root.providerOrgId}>
                         {organizationName(root.providerOrgId)}
                       </div>
                       <RootAgentSelect
@@ -593,7 +588,8 @@ function RootAgentSelect({
   const choices = agents.filter((agent) => agent.providerOrgId === providerOrgId);
   return (
     <RootField id={testId} label={t("settings.clusterFileRoots.agentId")}>
-      <NativeSelect
+      <ResourceSelectField
+        resourceType="agents"
         aria-label={t("settings.clusterFileRoots.agentId")}
         id={testId}
         data-testid={testId}
@@ -611,7 +607,7 @@ function RootAgentSelect({
             {agent.siteName} · {agent.agentId}
           </option>
         ))}
-      </NativeSelect>
+      </ResourceSelectField>
     </RootField>
   );
 }
@@ -639,10 +635,7 @@ function RootOrganizationSelection({
       .map((orgId) => ({ orgId, name: orgId, role: "unknown" })),
   ];
   return (
-    <details
-      className="min-w-0 rounded-md border border-input bg-background p-2 text-sm"
-      data-testid={testId}
-    >
+    <details className="min-w-0 border-b border-input p-2 text-sm" data-testid={testId}>
       <summary className="cursor-pointer break-words">
         {t("settings.clusterFileRoots.sharedWith")}:{" "}
         {selected.length

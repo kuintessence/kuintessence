@@ -107,7 +107,7 @@ export function SshActiveSessions() {
             <div
               key={s.sessionId}
               data-testid={`ssh-sess-row-${s.sessionId}`}
-              className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2 text-xs"
+              className="flex items-center justify-between gap-2 border-border px-3 py-2 text-xs"
             >
               <div className="min-w-0">
                 <div className="font-medium text-foreground">

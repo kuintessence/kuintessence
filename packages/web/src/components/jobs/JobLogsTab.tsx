@@ -44,7 +44,7 @@ export function JobLogsTab({ jobId }: { jobId: string }) {
       ) : null}
       {error ? (
         <div
-          className="rounded-md border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground"
+          className=" border-border p-3 text-xs text-muted-foreground"
           data-testid="job-logs-unavailable"
         >
           <p role="alert">{error}</p>
@@ -120,7 +120,7 @@ function LogTerminal({ text, theme }: { text: string; theme: "light" | "dark" })
   return (
     <div
       ref={containerRef}
-      className="h-[50vh] w-full overflow-hidden rounded-md border border-border bg-card"
+      className="h-[50vh] w-full overflow-hidden border-border "
       data-testid="job-logs-terminal"
     />
   );

@@ -36,7 +36,8 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 
 type Translate = ReturnType<typeof useTranslation>["t"];
@@ -270,43 +271,43 @@ function ManagedQueueTable({
   const organizationName = useOrganizationName();
   return (
     <div
-      className="rounded-md border border-border sm:overflow-x-auto sm:overscroll-x-contain"
+      className=" border-border sm:overflow-x-auto sm:overscroll-x-contain"
       data-testid="cp-queues-table-scroll"
     >
-      <table className="w-full text-sm sm:min-w-[76rem]">
+      <Table className="w-full text-sm sm:min-w-[76rem]">
         <caption className="sr-only">{t("cp.queues.managedTableCaption")}</caption>
-        <thead className="sr-only bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground sm:not-sr-only sm:table-header-group">
-          <tr>
-            <th className="px-3 py-2 font-medium" scope="col">
+        <TableHeader className="sr-only text-left text-xs uppercase tracking-wide text-muted-foreground sm:not-sr-only sm:table-header-group">
+          <TableRow>
+            <TableHead className="px-3 py-2 font-medium" scope="col">
               {t("cp.queues.col.queue")}
-            </th>
-            <th className="px-3 py-2 font-medium" scope="col">
+            </TableHead>
+            <TableHead className="px-3 py-2 font-medium" scope="col">
               {t("cp.queues.col.target")}
-            </th>
-            <th className="px-3 py-2 font-medium" scope="col">
+            </TableHead>
+            <TableHead className="px-3 py-2 font-medium" scope="col">
               {t("cp.queues.col.agent")}
-            </th>
-            <th className="px-3 py-2 font-medium" scope="col">
+            </TableHead>
+            <TableHead className="px-3 py-2 font-medium" scope="col">
               {t("cp.queues.col.publication")}
-            </th>
-            <th className="px-3 py-2 font-medium" scope="col">
+            </TableHead>
+            <TableHead className="px-3 py-2 font-medium" scope="col">
               {t("cp.queues.col.observation")}
-            </th>
-            <th className="px-3 py-2 font-medium" scope="col">
+            </TableHead>
+            <TableHead className="px-3 py-2 font-medium" scope="col">
               {t("cp.queues.col.visibility")}
-            </th>
-            <th className="px-3 py-2 font-medium" scope="col">
+            </TableHead>
+            <TableHead className="px-3 py-2 font-medium" scope="col">
               {t("cp.queues.col.policy")}
-            </th>
-            <th
-              className="px-3 py-2 font-medium sm:sticky sm:right-0 sm:z-10 sm:min-w-48 sm:bg-muted"
+            </TableHead>
+            <TableHead
+              className="px-3 py-2 font-medium sm:sticky sm:right-0 sm:z-10 sm:min-w-48 "
               scope="col"
             >
               {t("cp.queues.col.actions")}
-            </th>
-          </tr>
-        </thead>
-        <tbody className="block divide-y divide-border sm:table-row-group sm:divide-y-0">
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody className="block divide-y divide-border sm:table-row-group sm:divide-y-0">
           {queues.map((queue) => {
             const targetMode = queueTargetMode(queue);
             const expanded = expandedQueueId === queue.queueId;
@@ -317,19 +318,19 @@ function ManagedQueueTable({
               queue.availability.state !== "available";
             return (
               <Fragment key={queue.queueId}>
-                <tr
-                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 p-4 sm:table-row sm:border-t sm:border-border sm:p-0"
+                <TableRow
+                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 p-4 sm:table-row sm:border-border sm:p-0"
                   data-testid={`cp-queue-row-${queue.queueId}`}
                 >
-                  <td className="order-1 min-w-0 sm:table-cell sm:px-3 sm:py-2">
+                  <TableCell className="order-1 min-w-0 sm:table-cell sm:px-3 sm:py-2">
                     <div className="break-words font-medium" title={queue.queueId}>
                       {queue.name}
                     </div>
                     <div className="break-words text-xs text-muted-foreground">
                       {organizationName(queue.providerOrgId)}
                     </div>
-                  </td>
-                  <td className="order-2 col-span-2 min-w-0 sm:table-cell sm:px-3 sm:py-2">
+                  </TableCell>
+                  <TableCell className="order-2 col-span-2 min-w-0 sm:table-cell sm:px-3 sm:py-2">
                     {targetMode === "default" ? (
                       <div className="space-y-1">
                         <span className="text-xs font-medium sm:text-sm">
@@ -354,8 +355,8 @@ function ManagedQueueTable({
                     ) : (
                       <Badge variant="cancelled">{t("cp.queues.targetUnknown")}</Badge>
                     )}
-                  </td>
-                  <td className="order-3 col-span-2 min-w-0 sm:table-cell sm:px-3 sm:py-2">
+                  </TableCell>
+                  <TableCell className="order-3 col-span-2 min-w-0 sm:table-cell sm:px-3 sm:py-2">
                     <div className="font-mono text-xs">
                       <span className="mr-2 font-sans text-muted-foreground sm:hidden">
                         {t("cp.queues.col.agent")}
@@ -363,25 +364,25 @@ function ManagedQueueTable({
                       <span className="break-all sm:break-normal">{queue.agentId}</span>
                     </div>
                     <div className="text-xs text-muted-foreground">{queue.schedulerType}</div>
-                  </td>
-                  <td className="order-1 sm:table-cell sm:px-3 sm:py-2">
+                  </TableCell>
+                  <TableCell className="order-1 sm:table-cell sm:px-3 sm:py-2">
                     <PublicationBadge enabled={queue.enabled} t={t} />
-                  </td>
-                  <td className="order-4 col-span-2 sm:table-cell sm:px-3 sm:py-2">
+                  </TableCell>
+                  <TableCell className="order-4 col-span-2 sm:table-cell sm:px-3 sm:py-2">
                     <ObservationBadge queue={queue} t={t} />
-                  </td>
-                  <td
+                  </TableCell>
+                  <TableCell
                     className="hidden px-3 py-2 text-xs sm:table-cell"
                     title={queue.visibleOrgIds.join(", ")}
                   >
                     {queue.visibleOrgIds.length === 0
                       ? t("cp.queues.allProviderUsers")
                       : queue.visibleOrgIds.map(organizationName).join(", ")}
-                  </td>
-                  <td className="hidden px-3 py-2 sm:table-cell">
+                  </TableCell>
+                  <TableCell className="hidden px-3 py-2 sm:table-cell">
                     <QueuePolicyTags queue={queue} />
-                  </td>
-                  <td className="order-5 col-span-2 sm:sticky sm:right-0 sm:z-10 sm:table-cell sm:min-w-48 sm:bg-card sm:px-3 sm:py-2 sm:shadow-sm">
+                  </TableCell>
+                  <TableCell className="order-5 col-span-2 sm:sticky sm:right-0 sm:z-10 sm:table-cell sm:min-w-48 sm:px-3 sm:py-2 ">
                     <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                       <Button
                         type="button"
@@ -436,23 +437,20 @@ function ManagedQueueTable({
                         aria-hidden="true"
                       />
                     </Button>
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
                 {expanded ? (
-                  <tr
-                    id={`cp-queue-detail-${queue.queueId}`}
-                    className="block bg-muted/20 sm:hidden"
-                  >
-                    <td className="block space-y-3 px-4 py-3" colSpan={8}>
+                  <TableRow id={`cp-queue-detail-${queue.queueId}`} className="block sm:hidden">
+                    <TableCell className="block space-y-3 px-4 py-3" colSpan={8}>
                       <ManagedQueueMobileDetails queue={queue} />
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ) : null}
               </Fragment>
             );
           })}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   );
 }
@@ -538,7 +536,7 @@ function QueueInventoryAgentSection({
       className="border-b border-border last:border-b-0"
       data-testid={`cp-queue-inventory-agent-${agent.id}`}
     >
-      <header className="flex flex-col gap-3 border-b border-border bg-muted/20 px-3 py-3 sm:flex-row sm:items-start sm:justify-between">
+      <header className="flex flex-col gap-3 border-b border-border px-3 py-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="break-words font-medium">{agent.hostname}</h3>
@@ -605,39 +603,39 @@ function QueueInventoryAgentSection({
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[48rem] text-sm">
+          <Table className="w-full min-w-[48rem] text-sm">
             <caption className="sr-only">
               {t("cp.queues.inventoryTableCaption", { hostname: agent.hostname })}
             </caption>
-            <thead className="bg-muted/10 text-left text-xs uppercase tracking-wide text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2 font-medium" scope="col">
+            <TableHeader className=" text-left text-xs uppercase tracking-wide text-muted-foreground">
+              <TableRow>
+                <TableHead className="px-3 py-2 font-medium" scope="col">
                   {t("cp.queues.inventoryCol.queue")}
-                </th>
-                <th className="px-3 py-2 font-medium" scope="col">
+                </TableHead>
+                <TableHead className="px-3 py-2 font-medium" scope="col">
                   {t("cp.queues.inventoryCol.discovery")}
-                </th>
-                <th className="px-3 py-2 font-medium" scope="col">
+                </TableHead>
+                <TableHead className="px-3 py-2 font-medium" scope="col">
                   {t("cp.queues.inventoryCol.runtime")}
-                </th>
-                <th className="px-3 py-2 font-medium" scope="col">
+                </TableHead>
+                <TableHead className="px-3 py-2 font-medium" scope="col">
                   {t("cp.queues.inventoryCol.governance")}
-                </th>
-                <th className="px-3 py-2 font-medium" scope="col">
+                </TableHead>
+                <TableHead className="px-3 py-2 font-medium" scope="col">
                   {t("cp.queues.inventoryCol.observedAt")}
-                </th>
-                <th
-                  className="sticky right-0 z-10 min-w-28 bg-muted px-3 py-2 font-medium"
+                </TableHead>
+                <TableHead
+                  className="sticky right-0 z-10 min-w-28 px-3 py-2 font-medium"
                   scope="col"
                 >
                   {t("cp.queues.col.actions")}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {inventory.queues.map((fact) => (
-                <tr key={fact.queueName} className="border-t border-border">
-                  <td className="px-3 py-2">
+                <TableRow key={fact.queueName} className=" border-border">
+                  <TableCell className="px-3 py-2">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="font-mono">{fact.queueName}</span>
                       <Badge variant="outline">{fact.queueType}</Badge>
@@ -645,11 +643,11 @@ function QueueInventoryAgentSection({
                         <Badge variant="brand">{t("cp.queues.schedulerDefault")}</Badge>
                       ) : null}
                     </div>
-                  </td>
-                  <td className="px-3 py-2">
+                  </TableCell>
+                  <TableCell className="px-3 py-2">
                     <Badge variant="running">{t("cp.queues.discovered")}</Badge>
-                  </td>
-                  <td className="px-3 py-2">
+                  </TableCell>
+                  <TableCell className="px-3 py-2">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <Badge
                         variant={
@@ -664,8 +662,8 @@ function QueueInventoryAgentSection({
                         <Badge variant="outline">{t("cp.queues.noComputeTargets")}</Badge>
                       ) : null}
                     </div>
-                  </td>
-                  <td className="px-3 py-2">
+                  </TableCell>
+                  <TableCell className="px-3 py-2">
                     {fact.managed ? (
                       <div className="flex flex-wrap items-center gap-1">
                         <Badge variant="running">{t("cp.queues.managed")}</Badge>
@@ -678,8 +676,8 @@ function QueueInventoryAgentSection({
                     ) : (
                       <Badge variant="outline">{t("cp.queues.unmanaged")}</Badge>
                     )}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">
+                  </TableCell>
+                  <TableCell className="px-3 py-2 text-xs text-muted-foreground">
                     <TimeValue
                       value={fact.observedAt}
                       label={
@@ -690,8 +688,8 @@ function QueueInventoryAgentSection({
                             })
                       }
                     />
-                  </td>
-                  <td className="sticky right-0 z-10 min-w-28 bg-card px-3 py-2 shadow-sm">
+                  </TableCell>
+                  <TableCell className="sticky right-0 z-10 min-w-28 px-3 py-2 ">
                     {!fact.managed &&
                     (canManageFacts || (inventory.status === "stale" && !fact.isDefault)) ? (
                       <Button
@@ -706,15 +704,15 @@ function QueueInventoryAgentSection({
                         {t("cp.queues.manageFact", { defaultValue: "Manage" })}
                       </Button>
                     ) : null}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
       {inventory.managedTargets.some((target) => !target.available) ? (
-        <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+        <div className=" border-border px-3 py-2 text-xs text-muted-foreground">
           {inventory.managedTargets
             .filter((target) => !target.available)
             .map((target) => (
@@ -946,11 +944,7 @@ export function CpQueuesPage() {
       </div>
 
       {loadError ? (
-        <div
-          className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
-          data-testid="cp-queues-error"
-          role="alert"
-        >
+        <div className=" p-3 text-sm" data-testid="cp-queues-error" role="alert">
           {toUserFacingError(loadError, t("cp.queues.toast.failed"))}
         </div>
       ) : null}
@@ -968,7 +962,8 @@ export function CpQueuesPage() {
                 data-testid="cp-queues-search"
               />
             </label>
-            <NativeSelect
+            <ResourceSelectField
+              resourceType="agents"
               value={agentFilter}
               onChange={(event) => setAgentFilter(event.currentTarget.value)}
               aria-label={t("cp.queues.filterAgent")}
@@ -981,8 +976,8 @@ export function CpQueuesPage() {
                   {agent.hostname} · {agent.id}
                 </option>
               ))}
-            </NativeSelect>
-            <label className="flex min-h-11 items-center gap-2 rounded-md border border-border px-3 text-sm sm:min-h-9">
+            </ResourceSelectField>
+            <label className="flex min-h-11 items-center gap-2 border-b border-border px-3 text-sm sm:min-h-9">
               <input
                 type="checkbox"
                 checked={onlyAttention}
@@ -1028,7 +1023,7 @@ export function CpQueuesPage() {
                 </div>
               ) : filteredQueues.length === 0 ? (
                 <div
-                  className="flex h-32 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground"
+                  className="flex h-32 items-center justify-center border-border text-sm text-muted-foreground"
                   data-testid="cp-queues-empty"
                 >
                   {queues.length === 0 ? t("cp.queues.empty") : t("cp.queues.noMatchingQueues")}
@@ -1044,7 +1039,7 @@ export function CpQueuesPage() {
                 />
               )}
             </TabsContent>
-            <TabsContent value="inventory" className="min-w-0 rounded-md border border-border">
+            <TabsContent value="inventory" className="min-w-0 border-b border-border">
               {agentsQuery.isLoading ? (
                 <div
                   className="flex min-h-28 items-center gap-2 px-3 text-sm text-muted-foreground"
@@ -1107,7 +1102,8 @@ export function CpQueuesPage() {
                   htmlFor="cp-queue-field-provider-org-id"
                   label={t("cp.queues.field.providerOrgId")}
                 >
-                  <NativeSelect
+                  <ResourceSelectField
+                    resourceType="organizations"
                     id="cp-queue-field-provider-org-id"
                     value={form.providerOrgId}
                     required
@@ -1122,7 +1118,7 @@ export function CpQueuesPage() {
                         {org.name}
                       </option>
                     ))}
-                  </NativeSelect>
+                  </ResourceSelectField>
                 </Field>
               ) : (
                 <input
@@ -1132,7 +1128,8 @@ export function CpQueuesPage() {
                 />
               )}
               <Field htmlFor="cp-queue-field-agent-id" label={t("cp.queues.field.agentId")}>
-                <NativeSelect
+                <ResourceSelectField
+                  resourceType="agents"
                   id="cp-queue-field-agent-id"
                   value={form.agentId}
                   required
@@ -1148,7 +1145,7 @@ export function CpQueuesPage() {
                       {agent.hostname} · {agent.id}
                     </option>
                   ))}
-                </NativeSelect>
+                </ResourceSelectField>
                 {formErrors.agentId ? (
                   <p id="cp-queue-agent-error" className="text-xs text-status-failed" role="alert">
                     {formErrors.agentId}
@@ -1161,7 +1158,7 @@ export function CpQueuesPage() {
               >
                 <output
                   id="cp-queue-field-scheduler-type"
-                  className="flex min-h-11 items-center rounded-md border border-border bg-muted/30 px-3 font-mono text-sm sm:min-h-9"
+                  className="flex min-h-11 items-center px-3 font-mono text-sm sm:min-h-9"
                   data-testid="cp-queue-field-scheduler-type"
                 >
                   {selectedInventoryQuery.isLoading && form.agentId
@@ -1175,7 +1172,7 @@ export function CpQueuesPage() {
               >
                 <legend className="text-sm font-medium">{t("cp.queues.field.targetMode")}</legend>
                 <div className="grid gap-2 sm:grid-cols-2">
-                  <label className="flex min-h-11 items-center gap-2 rounded-md border border-border px-3 text-sm">
+                  <label className="flex min-h-11 items-center gap-2 border-b border-border px-3 text-sm">
                     <input
                       type="radio"
                       name="queue-target-mode"
@@ -1186,7 +1183,7 @@ export function CpQueuesPage() {
                     />
                     {t("cp.queues.targetDefault")}
                   </label>
-                  <label className="flex min-h-11 items-center gap-2 rounded-md border border-border px-3 text-sm">
+                  <label className="flex min-h-11 items-center gap-2 border-b border-border px-3 text-sm">
                     <input
                       type="radio"
                       name="queue-target-mode"
@@ -1202,7 +1199,7 @@ export function CpQueuesPage() {
               {form.targetMode === "default" ? (
                 <div className="grid gap-1.5 text-sm sm:col-span-2">
                   <span className="font-medium">{t("cp.queues.field.schedulerQueue")}</span>
-                  <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                  <div className=" border-border px-3 py-2 text-sm text-muted-foreground">
                     {selectedInventory?.defaultQueueName ? (
                       <>
                         <span className="font-mono">{selectedInventory.defaultQueueName}</span>
@@ -1225,7 +1222,8 @@ export function CpQueuesPage() {
                   htmlFor="cp-queue-field-queue-name"
                   label={t("cp.queues.field.queueName")}
                 >
-                  <NativeSelect
+                  <ResourceSelectField
+                    resourceType="agents"
                     id="cp-queue-field-queue-name"
                     value={form.queueName}
                     required
@@ -1251,7 +1249,7 @@ export function CpQueuesPage() {
                         {fact.isDefault ? ` · ${t("cp.queues.schedulerDefault")}` : ""}
                       </option>
                     ))}
-                  </NativeSelect>
+                  </ResourceSelectField>
                   {formErrors.queueName ? (
                     <p id="cp-queue-name-error" className="text-xs text-status-failed" role="alert">
                       {formErrors.queueName}
@@ -1262,7 +1260,7 @@ export function CpQueuesPage() {
                 </Field>
               )}
               {staleNamedPrebuild ? (
-                <div className="flex gap-2 rounded-md border border-border bg-muted/20 p-3 text-sm text-muted-foreground sm:col-span-2">
+                <div className="flex gap-2 border-border p-3 text-sm text-muted-foreground sm:col-span-2">
                   <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                   <span>
                     {t("cp.queues.inventoryNotFreshSaveDisabled", {
@@ -1314,7 +1312,7 @@ export function CpQueuesPage() {
                     return (
                       <label
                         key={org.id}
-                        className="flex min-h-11 items-center gap-2 rounded-md border px-3 py-2 text-sm sm:min-h-9"
+                        className="flex min-h-11 items-center gap-2 border-b px-3 py-2 text-sm sm:min-h-9"
                       >
                         <input
                           type="checkbox"

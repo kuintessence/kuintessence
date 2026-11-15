@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ApiError, api } from "../../lib/api-client";
 import { setLang } from "../../lib/i18n";
+import { nativeControl } from "../../lib/test-resource-field";
 import { OrganizationMembershipPanel } from "./OrganizationMembershipPanel";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn() } }));
@@ -57,7 +58,7 @@ test.each([
   const dialog = screen.getByRole("dialog");
   expect(within(dialog).getByText("研究中心")).toBeTruthy();
   fireEvent.change(
-    within(dialog).getByLabelText(lang === "zh" ? "组织角色" : "Organization role"),
+    nativeControl(within(dialog).getByLabelText(lang === "zh" ? "组织角色" : "Organization role")),
     { target: { value: "operator" } },
   );
   fireEvent.click(within(dialog).getByRole("button", { name: lang === "zh" ? "保存" : "Save" }));
@@ -76,9 +77,13 @@ test("adds by names and keeps an existing membership conflict visible without cl
   const { put } = setup();
   put.mockRejectedValue(new ApiError(409, "VALIDATION_ERROR", "already exists"));
   fireEvent.click(screen.getByRole("button", { name: "添加成员" }));
-  await screen.findByRole("option", { name: "Bob · bob@example.test" });
-  fireEvent.change(screen.getByLabelText("用户", { exact: true }), { target: { value: "user-2" } });
-  fireEvent.change(screen.getByLabelText("组织", { exact: true }), { target: { value: "org-1" } });
+  await screen.findByRole("option", { hidden: true, name: "Bob · bob@example.test" });
+  fireEvent.change(nativeControl(screen.getByLabelText("用户", { exact: true })), {
+    target: { value: "user-2" },
+  });
+  fireEvent.change(nativeControl(screen.getByLabelText("组织", { exact: true })), {
+    target: { value: "org-1" },
+  });
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
   await waitFor(() =>
     expect(put).toHaveBeenCalledWith("/admin/authz/memberships", {
@@ -111,7 +116,9 @@ test("paginates beyond the first page and resets the offset when searching", asy
   await waitFor(() =>
     expect(get.mock.calls.some(([path]) => path.includes("offset=20"))).toBe(true),
   );
-  fireEvent.change(screen.getByLabelText("搜索组织成员"), { target: { value: "Alice" } });
+  fireEvent.change(nativeControl(screen.getByLabelText("搜索组织成员")), {
+    target: { value: "Alice" },
+  });
   await waitFor(() =>
     expect(get).toHaveBeenLastCalledWith("/admin/authz/memberships?search=Alice&limit=20&offset=0"),
   );

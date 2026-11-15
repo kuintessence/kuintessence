@@ -21,6 +21,7 @@ import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 
 interface IssuedToken extends AgentRegistrationToken {
   command: string;
@@ -191,7 +192,7 @@ export function AgentRegistrationPage() {
         <div
           role="alert"
           data-testid="agent-registration-revoke-error"
-          className="rounded-md border border-status-failed/40 p-3 text-sm text-status-failed"
+          className=" p-3 text-sm text-status-failed"
         >
           {toUserFacingError(revokeToken.error, t("cp.agentRegistration.tokens.revokeFailed"))}
         </div>
@@ -200,7 +201,7 @@ export function AgentRegistrationPage() {
         <div
           role="alert"
           data-testid="agent-registration-copy-error"
-          className="rounded-md border border-status-failed/40 p-3 text-sm text-status-failed"
+          className=" p-3 text-sm text-status-failed"
         >
           {copyError}
         </div>
@@ -220,7 +221,10 @@ export function AgentRegistrationPage() {
                   <span className="text-muted-foreground">
                     {t("cp.agentRegistration.form.providerOrgId")}
                   </span>
-                  <NativeSelect
+                  <ResourceSelectField
+                    resourceType="organizations"
+                    recent
+                    expandable
                     id="agent-registration-provider"
                     value={providerOrgId}
                     onChange={(event) => setProviderOrgId(event.target.value)}
@@ -237,10 +241,10 @@ export function AgentRegistrationPage() {
                         {org.name}
                       </option>
                     ))}
-                  </NativeSelect>
+                  </ResourceSelectField>
                   {providerOrgId ? (
                     <code
-                      className="block min-w-0 truncate rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground"
+                      className="block min-w-0 truncate px-2 py-1 text-xs text-muted-foreground"
                       title={providerOrgId}
                     >
                       {t("cp.agentRegistration.form.selectedProviderOrgId")}: {providerOrgId}
@@ -307,7 +311,7 @@ export function AgentRegistrationPage() {
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_220px]">
-                <div className="grid grid-cols-1 gap-2 rounded-md border border-border bg-muted/25 p-3 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-2 border-border p-3 sm:grid-cols-2">
                   <div className="text-sm font-medium">
                     {t("cp.agentRegistration.form.detectedUrls")}
                   </div>
@@ -347,7 +351,7 @@ export function AgentRegistrationPage() {
 
               {context.error ? (
                 <div
-                  className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
+                  className=" p-3 text-sm"
                   role="alert"
                   data-testid="agent-registration-context-error"
                 >
@@ -369,11 +373,7 @@ export function AgentRegistrationPage() {
               ) : null}
 
               {createToken.error ? (
-                <div
-                  className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
-                  role="alert"
-                  data-testid="agent-registration-error"
-                >
+                <div className=" p-3 text-sm" role="alert" data-testid="agent-registration-error">
                   {toUserFacingError(
                     createToken.error,
                     t("cp.agentRegistration.form.createFailed"),
@@ -404,16 +404,13 @@ export function AgentRegistrationPage() {
           <CardContent>
             {activeTokens.isLoading ? (
               <div
-                className="flex min-h-32 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground"
+                className="flex min-h-32 items-center justify-center border-border text-sm text-muted-foreground"
                 data-testid="agent-registration-active-loading"
               >
                 {t("cp.agentRegistration.activeTokens.loading")}
               </div>
             ) : activeTokens.error ? (
-              <div
-                className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
-                data-testid="agent-registration-active-error"
-              >
+              <div className=" p-3 text-sm" data-testid="agent-registration-active-error">
                 {registrationError(
                   activeTokens.error,
                   t("cp.agentRegistration.activeTokens.loadFailed"),
@@ -421,7 +418,7 @@ export function AgentRegistrationPage() {
               </div>
             ) : persistedActiveTokens.length === 0 ? (
               <div
-                className="flex min-h-32 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground"
+                className="flex min-h-32 items-center justify-center border-border text-sm text-muted-foreground"
                 data-testid="agent-registration-active-empty"
               >
                 {t("cp.agentRegistration.activeTokens.empty")}
@@ -448,7 +445,7 @@ export function AgentRegistrationPage() {
           <CardContent>
             {issuedTokens.length === 0 ? (
               <div
-                className="flex min-h-32 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground"
+                className="flex min-h-32 items-center justify-center border-border text-sm text-muted-foreground"
                 data-testid="agent-registration-empty"
               >
                 {t("cp.agentRegistration.tokens.empty")}
@@ -458,7 +455,7 @@ export function AgentRegistrationPage() {
                 {issuedTokens.map((token) => (
                   <div
                     key={token.id}
-                    className="rounded-md border border-border p-3"
+                    className=" border-border p-3"
                     data-testid={`agent-registration-token-${token.id}`}
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -495,7 +492,7 @@ export function AgentRegistrationPage() {
                     </div>
 
                     <pre
-                      className="mt-3 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs"
+                      className="mt-3 max-h-40 overflow-auto p-3 text-xs"
                       data-testid={`agent-registration-command-${token.id}`}
                     >
                       {token.command}
@@ -547,10 +544,7 @@ function ActiveTokenCard({
 }) {
   const { t } = useTranslation();
   return (
-    <div
-      className="rounded-md border border-border p-3"
-      data-testid={`agent-registration-active-token-${token.id}`}
-    >
+    <div className=" border-border p-3" data-testid={`agent-registration-active-token-${token.id}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0 max-w-full break-words">
           <div className="font-mono text-sm">{token.agentId}</div>

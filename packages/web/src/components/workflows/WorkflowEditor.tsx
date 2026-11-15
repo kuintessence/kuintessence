@@ -69,7 +69,7 @@ export function WorkflowEditor({ value, onChange }: WorkflowEditorProps) {
     <div
       ref={containerRef}
       data-testid="workflow-editor"
-      className="h-[60vh] overflow-hidden rounded-md border border-border bg-card"
+      className="h-[60vh] overflow-hidden border-border "
     />
   );
 }

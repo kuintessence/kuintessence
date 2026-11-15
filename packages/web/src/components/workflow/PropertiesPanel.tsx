@@ -1,4 +1,10 @@
+import type { UsecasePackage } from "../../lib/software-client";
 import { NativeSelect } from "../ui/native-select";
+import {
+  type ResourceOption,
+  ResourceSelect,
+  type ResourceSelectProps,
+} from "../ui/resource-picker";
 import { FederationNodeFields } from "./FederationNodeFields";
 /**
  * Right-side panel for the selected workflow node.
@@ -64,6 +70,10 @@ export type NodePatch = Partial<GraphNodeData>;
 
 export interface PropertiesPanelProps {
   selected: GraphNode | null;
+  nodes?: GraphNode[];
+  usecases?: UsecasePackage[];
+  runtimes?: ResourceOption[];
+  catalogState?: Pick<ResourceSelectProps<ResourceOption>, "loading" | "error" | "onRetry">;
   selectedEdge?: GraphEdge | null;
   onPatch: (nodeId: string, patch: NodePatch) => void;
   onEdgePatch?: (edgeId: string, patch: Partial<GraphEdge>) => void;
@@ -105,7 +115,7 @@ function JsonDetails({ value }: { value: unknown }) {
   }
 
   return (
-    <div className="rounded-lg border border-border bg-muted/20" data-testid="rf-prop-json">
+    <div className=" border-border " data-testid="rf-prop-json">
       <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
         <span className="font-medium">{t("workflow.editor.properties.rawJson")}</span>
         <Button
@@ -135,7 +145,7 @@ function ManifestSummary({ raw }: { raw: ScriptNode }) {
   const inputs = Object.entries(raw.inputs);
   const outputs = Object.entries(raw.outputs);
   return (
-    <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-3">
+    <div className="space-y-3 border-border p-3">
       <div>
         <p className="font-medium">{t("workflow.editor.properties.inputs")}</p>
         <div className="mt-1 space-y-1">
@@ -181,6 +191,10 @@ function ManifestSummary({ raw }: { raw: ScriptNode }) {
 export function PropertiesPanel({
   selected,
   selectedEdge = null,
+  nodes,
+  usecases,
+  runtimes,
+  catalogState,
   onPatch,
   onEdgePatch,
   collapsed = false,
@@ -195,7 +209,7 @@ export function PropertiesPanel({
     return (
       <aside
         data-testid="rf-properties-collapsed"
-        className="flex h-9 w-full shrink-0 items-center gap-2 border-t border-border bg-card px-2 lg:h-full lg:w-9 lg:flex-col lg:border-l lg:border-t-0 lg:py-2"
+        className="flex h-9 w-full shrink-0 items-center gap-2 border-border px-2 lg:h-full lg:w-9 lg:flex-col lg:py-2"
       >
         <Button
           variant="ghost"
@@ -234,7 +248,7 @@ export function PropertiesPanel({
     return (
       <aside
         data-testid="rf-properties-empty"
-        className="flex max-h-72 w-full shrink-0 flex-col items-start gap-2 overflow-y-auto border-t border-border bg-card p-4 text-xs text-muted-foreground lg:h-full lg:max-h-none lg:border-t-0"
+        className="flex max-h-72 w-full shrink-0 flex-col items-start gap-2 overflow-y-auto border-border p-4 text-xs text-muted-foreground lg:h-full lg:max-h-none "
       >
         {headerRow}
         <p>
@@ -249,13 +263,21 @@ export function PropertiesPanel({
   return (
     <aside
       data-testid="rf-properties"
-      className="flex max-h-96 w-full shrink-0 flex-col gap-3 overflow-y-auto border-t border-border bg-card p-4 lg:h-full lg:max-h-none lg:border-t-0"
+      className="flex max-h-96 w-full shrink-0 flex-col gap-3 overflow-y-auto border-border p-4 lg:h-full lg:max-h-none "
     >
       {headerRow}
       {selectedEdge ? (
         <EdgePropertiesForm key={selectedEdge.id} selected={selectedEdge} onPatch={onEdgePatch} />
       ) : selected ? (
-        <PropertiesForm key={selected.id} selected={selected} onPatch={onPatch} />
+        <PropertiesForm
+          key={selected.id}
+          selected={selected}
+          onPatch={onPatch}
+          nodes={nodes}
+          usecases={usecases}
+          runtimes={runtimes}
+          catalogState={catalogState}
+        />
       ) : null}
     </aside>
   );
@@ -293,7 +315,7 @@ function EdgePropertiesForm({
       >
         <Input value={when} onChange={(event) => setWhen(event.target.value)} onBlur={commitWhen} />
       </FieldRow>
-      <div className="rounded-lg border border-border bg-muted/20 p-3">
+      <div className=" border-border p-3">
         <p className="font-medium">{t("workflow.editor.properties.slotMappings")}</p>
         {(selected.slotRelations?.length ?? 0) === 0 ? (
           <p className="mt-2 text-muted-foreground">
@@ -304,7 +326,7 @@ function EdgePropertiesForm({
             {selected.slotRelations?.map((relation) => (
               <div
                 key={`${relation.fromSlot}:${relation.toSlot}`}
-                className="flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-2"
+                className="flex items-center gap-2 border-border px-2.5 py-2"
               >
                 <code className="min-w-0 flex-1 truncate">{relation.fromSlot}</code>
                 <span className="text-muted-foreground">→</span>
@@ -322,7 +344,7 @@ function EdgePropertiesForm({
 function ReadOnlyValue({ value, mono = false }: { value: string; mono?: boolean }) {
   return (
     <div
-      className={`min-h-9 rounded-md border border-border bg-muted/50 px-3 py-2 text-muted-foreground shadow-none ${mono ? "font-mono text-[11px]" : "text-xs"}`}
+      className={`min-h-9 border-border px-3 py-2 text-muted-foreground ${mono ? "font-mono text-[11px]" : "text-xs"}`}
     >
       {value}
     </div>
@@ -330,11 +352,22 @@ function ReadOnlyValue({ value, mono = false }: { value: string; mono?: boolean 
 }
 
 interface PropertiesFormProps {
+  nodes?: GraphNode[];
+  usecases?: UsecasePackage[];
+  runtimes?: ResourceOption[];
+  catalogState?: Pick<ResourceSelectProps<ResourceOption>, "loading" | "error" | "onRetry">;
   selected: GraphNode;
   onPatch: (id: string, patch: NodePatch) => void;
 }
 
-function PropertiesForm({ selected, onPatch }: PropertiesFormProps) {
+function PropertiesForm({
+  selected,
+  onPatch,
+  nodes,
+  usecases,
+  runtimes,
+  catalogState,
+}: PropertiesFormProps) {
   const { t } = useTranslation();
   const { id, data } = selected;
   const raw = data.raw;
@@ -407,17 +440,29 @@ function PropertiesForm({ selected, onPatch }: PropertiesFormProps) {
       {raw.type === "Federation" ? (
         <FederationNodeFields id={id} raw={raw} onPatch={onPatch} />
       ) : raw.type === "SoftwareUsecaseComputing" ? (
-        <UsecaseFields id={id} raw={raw} onPatch={onPatch} />
+        <UsecaseFields
+          id={id}
+          raw={raw}
+          onPatch={onPatch}
+          usecases={usecases}
+          catalogState={catalogState}
+        />
       ) : raw.type === "Script" ? (
-        <ScriptFields id={id} raw={raw} onPatch={onPatch} />
+        <ScriptFields
+          id={id}
+          raw={raw}
+          onPatch={onPatch}
+          runtimes={runtimes}
+          catalogState={catalogState}
+        />
       ) : raw.type === "Milestone" ? (
         <MilestoneFields id={id} raw={raw} onPatch={onPatch} />
       ) : raw.type === "Switch" ? (
-        <SwitchFields id={id} raw={raw} onPatch={onPatch} />
+        <SwitchFields id={id} raw={raw} onPatch={onPatch} nodes={nodes} />
       ) : raw.type === "Loop" ? (
         <LoopFields id={id} raw={raw} onPatch={onPatch} />
       ) : raw.type === "Reduce" ? (
-        <ReduceFields id={id} raw={raw} onPatch={onPatch} />
+        <ReduceFields id={id} raw={raw} onPatch={onPatch} nodes={nodes} />
       ) : raw.type === "SubWorkflow" ? (
         <SubWorkflowFields id={id} raw={raw} onPatch={onPatch} />
       ) : raw.type === "Generate" ? (
@@ -431,7 +476,7 @@ function PropertiesForm({ selected, onPatch }: PropertiesFormProps) {
         >
           <pre
             data-testid="rf-prop-body"
-            className="max-h-48 overflow-auto rounded-md border border-input bg-background px-3 py-1 font-mono text-[11px]"
+            className="max-h-48 overflow-auto px-3 py-1 font-mono text-[11px]"
           >
             {JSON.stringify(raw, null, 2)}
           </pre>
@@ -442,6 +487,8 @@ function PropertiesForm({ selected, onPatch }: PropertiesFormProps) {
 }
 
 interface UsecaseFieldsProps {
+  catalogState?: Pick<ResourceSelectProps<ResourceOption>, "loading" | "error" | "onRetry">;
+  usecases?: UsecasePackage[];
   id: string;
   raw: UsecaseNode;
   onPatch: (id: string, patch: NodePatch) => void;
@@ -458,7 +505,7 @@ function reqStrings(req: Requirements | null | undefined): Record<RequirementFie
 }
 
 /** Structured form for the `SoftwareUsecaseComputing` leaf execution node. */
-function UsecaseFields({ id, raw, onPatch }: UsecaseFieldsProps) {
+function UsecaseFields({ id, raw, onPatch, usecases, catalogState }: UsecaseFieldsProps) {
   const { t } = useTranslation();
   const namedReference = raw.usecaseRef !== undefined || raw.softwareRef !== undefined;
   const [usecaseVersionId, setUsecaseVersionId] = useState(raw.usecaseVersionId ?? "");
@@ -512,14 +559,46 @@ function UsecaseFields({ id, raw, onPatch }: UsecaseFieldsProps) {
         })}
         testId="rf-prop-usecase-version"
       >
-        <Input
-          data-testid="rf-prop-usecase-version-id"
-          value={usecaseVersionId}
-          disabled={namedReference}
-          className="font-mono text-[11px]"
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setUsecaseVersionId(e.target.value)}
-          onBlur={commitUsecaseVersionId}
-        />
+        {usecases ? (
+          <ResourceSelect
+            label={t("workflow.editor.properties.usecaseVersionId")}
+            data-testid="rf-prop-usecase-version-select"
+            {...catalogState}
+            value={raw.usecaseVersionId ?? ""}
+            disabled={namedReference}
+            options={usecases.map((pkg) => ({
+              value: pkg.id,
+              label: `${pkg.name} · ${pkg.version}`,
+              description: pkg.description ?? undefined,
+              disabled: !pkg.publishedSoftwareRevisionId,
+            }))}
+            recent
+            resourceType="workflow-usecase-version"
+            expandable
+            onValueChange={(value) => {
+              const pkg = usecases.find((candidate) => candidate.id === value);
+              if (!pkg?.publishedSoftwareRevisionId) return;
+              setUsecaseVersionId(pkg.id);
+              setSoftwareVersionId(pkg.publishedSoftwareRevisionId);
+              onPatch(id, {
+                raw: {
+                  ...raw,
+                  usecaseVersionId: pkg.id,
+                  softwareVersionId: pkg.publishedSoftwareRevisionId,
+                },
+              });
+            }}
+          />
+        ) : (
+          <Input
+            data-testid="rf-prop-usecase-version-id"
+            value={usecaseVersionId}
+            disabled={namedReference}
+            className="font-mono text-[11px]"
+            onChange={(event) => setUsecaseVersionId(event.target.value)}
+            onBlur={commitUsecaseVersionId}
+          />
+        )}
       </FieldRow>
       <FieldRow
         label={t("workflow.editor.properties.softwareVersionId", {
@@ -530,7 +609,7 @@ function UsecaseFields({ id, raw, onPatch }: UsecaseFieldsProps) {
         <Input
           data-testid="rf-prop-software-version-id"
           value={softwareVersionId}
-          disabled={namedReference}
+          disabled={namedReference || usecases !== undefined}
           className="font-mono text-[11px]"
           onChange={(e: ChangeEvent<HTMLInputElement>) => setSoftwareVersionId(e.target.value)}
           onBlur={commitSoftwareVersionId}
@@ -567,7 +646,7 @@ function UsecaseFields({ id, raw, onPatch }: UsecaseFieldsProps) {
       >
         <pre
           data-testid="rf-prop-input-slots"
-          className="max-h-40 overflow-auto rounded-md border border-input bg-background px-3 py-1 font-mono text-[11px]"
+          className="max-h-40 overflow-auto px-3 py-1 font-mono text-[11px]"
         >
           {inputSlotCount === 0
             ? t("workflow.editor.properties.inputSlotsEmpty", { defaultValue: "(none)" })
@@ -582,7 +661,7 @@ function UsecaseFields({ id, raw, onPatch }: UsecaseFieldsProps) {
       >
         <pre
           data-testid="rf-prop-body"
-          className="max-h-48 overflow-auto rounded-md border border-input bg-background px-3 py-1 font-mono text-[11px]"
+          className="max-h-48 overflow-auto px-3 py-1 font-mono text-[11px]"
         >
           {JSON.stringify(raw, null, 2)}
         </pre>
@@ -592,13 +671,15 @@ function UsecaseFields({ id, raw, onPatch }: UsecaseFieldsProps) {
 }
 
 interface ScriptFieldsProps {
+  runtimes?: ResourceOption[];
+  catalogState?: Pick<ResourceSelectProps<ResourceOption>, "loading" | "error" | "onRetry">;
   id: string;
   raw: ScriptNode;
   onPatch: (id: string, patch: NodePatch) => void;
 }
 
 /** Structured form for the `Script` inline-script authoring node. */
-function ScriptFields({ id, raw, onPatch }: ScriptFieldsProps) {
+function ScriptFields({ id, raw, onPatch, runtimes, catalogState }: ScriptFieldsProps) {
   const { t } = useTranslation();
   const source = raw.source;
   const inline = source?.type === "Inline" ? source : undefined;
@@ -645,14 +726,32 @@ function ScriptFields({ id, raw, onPatch }: ScriptFieldsProps) {
           defaultValue: "Platform-managed, digest-pinned runtime profile",
         })}
       >
-        <Input
-          data-testid="rf-prop-script-runtime"
-          value={runtimeProfileId}
-          disabled={raw.runtimeContractRef !== undefined}
-          className="font-mono text-[11px]"
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setRuntimeProfileId(e.target.value)}
-          onBlur={commitRuntimeProfileId}
-        />
+        {runtimes ? (
+          <ResourceSelect
+            label={t("workflow.editor.properties.scriptRuntime")}
+            data-testid="rf-prop-script-runtime-select"
+            {...catalogState}
+            options={runtimes}
+            value={runtimeProfileId}
+            disabled={raw.runtimeContractRef !== undefined}
+            recent
+            resourceType="workflow-runtime"
+            expandable
+            onValueChange={(value) => {
+              setRuntimeProfileId(value);
+              onPatch(id, { raw: { ...raw, runtimeProfileId: value } });
+            }}
+          />
+        ) : (
+          <Input
+            data-testid="rf-prop-script-runtime"
+            value={runtimeProfileId}
+            disabled={raw.runtimeContractRef !== undefined}
+            className="font-mono text-[11px]"
+            onChange={(event) => setRuntimeProfileId(event.target.value)}
+            onBlur={commitRuntimeProfileId}
+          />
+        )}
       </FieldRow>
       <FieldRow
         label={t("workflow.editor.properties.scriptIdentity", {
@@ -768,8 +867,7 @@ function MilestoneFields({ id, raw, onPatch }: MilestoneFieldsProps) {
   );
 }
 
-const PRE_CLASS =
-  "max-h-48 overflow-auto rounded-md border border-input bg-background px-3 py-1 font-mono text-[11px]";
+const PRE_CLASS = "max-h-48 overflow-auto px-3 py-1 font-mono text-[11px]";
 
 /** Read-only block for nested sub-graph bodies / complex rules authored in YAML. */
 function ReadOnlyBody({ value }: { value: unknown }) {
@@ -789,13 +887,14 @@ function ReadOnlyBody({ value }: { value: unknown }) {
 }
 
 interface SwitchFieldsProps {
+  nodes?: GraphNode[];
   id: string;
   raw: SwitchNode;
   onPatch: (id: string, patch: NodePatch) => void;
 }
 
 /** Structured form for the `Switch` node — an editable case list plus a default slug. */
-function SwitchFields({ id, raw, onPatch }: SwitchFieldsProps) {
+function SwitchFields({ id, raw, onPatch, nodes }: SwitchFieldsProps) {
   const { t } = useTranslation();
   const [cases, setCases] = useState<SwitchCase[]>(raw.cases);
   const [defaultTo, setDefaultTo] = useState(raw.default ?? "");
@@ -860,7 +959,7 @@ function SwitchFields({ id, raw, onPatch }: SwitchFieldsProps) {
         <div className="flex flex-col gap-2">
           {cases.map((c, index) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: cases are positional, no stable id
-            <div key={index} className="flex flex-col gap-1 rounded-md border border-input p-2">
+            <div key={index} className="flex flex-col gap-1 p-2">
               <Input
                 data-testid={`rf-prop-switch-case-when-${index}`}
                 value={c.when.expr}
@@ -870,14 +969,36 @@ function SwitchFields({ id, raw, onPatch }: SwitchFieldsProps) {
                 onBlur={() => commitCaseField(index)}
               />
               <div className="flex items-center gap-2">
-                <Input
-                  data-testid={`rf-prop-switch-case-to-${index}`}
-                  value={c.to}
-                  placeholder="to (node id)"
-                  className="font-mono text-[11px]"
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setCaseTo(index, e.target.value)}
-                  onBlur={() => commitCaseField(index)}
-                />
+                {nodes ? (
+                  <ResourceSelect
+                    label={t("workflow.editor.properties.switchCases")}
+                    data-testid={`rf-prop-switch-case-to-select-${index}`}
+                    options={nodes
+                      .filter((node) => node.id !== id)
+                      .map((node) => ({
+                        value: node.id,
+                        label: node.data.name,
+                        description: node.id,
+                      }))}
+                    value={c.to}
+                    onValueChange={(value) => {
+                      const next = cases.map((item, i) =>
+                        i === index ? { ...item, to: value } : item,
+                      );
+                      setCases(next);
+                      onPatch(id, { raw: { ...raw, cases: next } });
+                    }}
+                  />
+                ) : (
+                  <Input
+                    data-testid={`rf-prop-switch-case-to-${index}`}
+                    value={c.to}
+                    placeholder="to (node id)"
+                    className="font-mono text-[11px]"
+                    onChange={(event) => setCaseTo(index, event.target.value)}
+                    onBlur={() => commitCaseField(index)}
+                  />
+                )}
                 {cases.length > 1 ? (
                   <Button
                     type="button"
@@ -909,13 +1030,29 @@ function SwitchFields({ id, raw, onPatch }: SwitchFieldsProps) {
           defaultValue: "Node id taken when no case matches: leave blank to omit",
         })}
       >
-        <Input
-          data-testid="rf-prop-switch-default"
-          value={defaultTo}
-          className="font-mono text-[11px]"
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setDefaultTo(e.target.value)}
-          onBlur={commitDefault}
-        />
+        {nodes ? (
+          <ResourceSelect
+            label={t("workflow.editor.properties.switchDefault")}
+            clearable
+            options={nodes
+              .filter((node) => node.id !== id)
+              .map((node) => ({ value: node.id, label: node.data.name, description: node.id }))}
+            value={defaultTo}
+            onValueChange={(value) => {
+              setDefaultTo(value);
+              const { default: _previous, ...rest } = raw;
+              onPatch(id, { raw: value ? { ...raw, default: value } : rest });
+            }}
+          />
+        ) : (
+          <Input
+            data-testid="rf-prop-switch-default"
+            value={defaultTo}
+            className="font-mono text-[11px]"
+            onChange={(event) => setDefaultTo(event.target.value)}
+            onBlur={commitDefault}
+          />
+        )}
       </FieldRow>
     </>
   );
@@ -1088,13 +1225,14 @@ function LoopFields({ id, raw, onPatch }: LoopFieldsProps) {
 }
 
 interface ReduceFieldsProps {
+  nodes?: GraphNode[];
   id: string;
   raw: ReduceNode;
   onPatch: (id: string, patch: NodePatch) => void;
 }
 
 /** Structured form for the `Reduce` node — source ref + ordering + output descriptor. */
-function ReduceFields({ id, raw, onPatch }: ReduceFieldsProps) {
+function ReduceFields({ id, raw, onPatch, nodes }: ReduceFieldsProps) {
   const { t } = useTranslation();
   const [fromLoop, setFromLoop] = useState(raw.from.loop);
   const [fromOutput, setFromOutput] = useState(raw.from.output);
@@ -1147,24 +1285,59 @@ function ReduceFields({ id, raw, onPatch }: ReduceFieldsProps) {
           defaultValue: "Loop node id whose aggregated output feeds this reduce",
         })}
       >
-        <Input
-          data-testid="rf-prop-reduce-from-loop"
-          value={fromLoop}
-          className="font-mono text-[11px]"
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setFromLoop(e.target.value)}
-          onBlur={commitFromLoop}
-        />
+        {nodes ? (
+          <ResourceSelect
+            label={t("workflow.editor.properties.reduceFromLoop")}
+            options={nodes
+              .filter((node) => node.data.kind === "Loop" && node.id !== id)
+              .map((node) => ({ value: node.id, label: node.data.name, description: node.id }))}
+            value={fromLoop}
+            onValueChange={(value) => {
+              setFromLoop(value);
+              setFromOutput("");
+              onPatch(id, { raw: { ...raw, from: { loop: value, output: "" } } });
+            }}
+          />
+        ) : (
+          <Input
+            data-testid="rf-prop-reduce-from-loop"
+            value={fromLoop}
+            className="font-mono text-[11px]"
+            onChange={(event) => setFromLoop(event.target.value)}
+            onBlur={commitFromLoop}
+          />
+        )}
       </FieldRow>
       <FieldRow
         label={t("workflow.editor.properties.reduceFromOutput", { defaultValue: "From output" })}
       >
-        <Input
-          data-testid="rf-prop-reduce-from-output"
-          value={fromOutput}
-          className="font-mono text-[11px]"
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setFromOutput(e.target.value)}
-          onBlur={commitFromOutput}
-        />
+        {nodes ? (
+          <ResourceSelect
+            label={t("workflow.editor.properties.reduceFromOutput")}
+            options={nodes.flatMap((node) =>
+              node.id === fromLoop && node.data.raw.type === "Loop"
+                ? (node.data.raw.outputs ?? []).map((slot) => ({
+                    value: slot.descriptor,
+                    label: slot.descriptor,
+                    description: slot.aggregate,
+                  }))
+                : [],
+            )}
+            value={fromOutput}
+            onValueChange={(value) => {
+              setFromOutput(value);
+              onPatch(id, { raw: { ...raw, from: { ...raw.from, output: value } } });
+            }}
+          />
+        ) : (
+          <Input
+            data-testid="rf-prop-reduce-from-output"
+            value={fromOutput}
+            className="font-mono text-[11px]"
+            onChange={(event) => setFromOutput(event.target.value)}
+            onBlur={commitFromOutput}
+          />
+        )}
       </FieldRow>
       <FieldRow
         label={t("workflow.editor.properties.reduceOrdering", { defaultValue: "Ordering" })}

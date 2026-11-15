@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -153,7 +154,7 @@ describe("MeteringPage", () => {
       expect(screen.getByTestId("metering-row-0")).toBeTruthy();
     });
 
-    fireEvent.change(screen.getByTestId("metering-grouping"), {
+    fireEvent.change(nativeControl(screen.getByTestId("metering-grouping")), {
       target: { value: "cluster" },
     });
 
@@ -217,7 +218,7 @@ describe("MeteringPage", () => {
       wrapper: makeWrapper(),
     });
     await screen.findByTestId("metering-error");
-    fireEvent.change(screen.getByTestId("metering-grouping"), {
+    fireEvent.change(nativeControl(screen.getByTestId("metering-grouping")), {
       target: { value: "cluster" },
     });
     await screen.findByTestId("metering-error");
@@ -312,7 +313,9 @@ describe("MeteringPage", () => {
     await waitFor(() => expect(screen.getByTestId("metering-row-0")).toBeTruthy());
     const callsBeforeInvalidInput = fetchMock.mock.calls.length;
 
-    fireEvent.change(screen.getByTestId("metering-from"), { target: { value: "not-a-date" } });
+    fireEvent.change(nativeControl(screen.getByTestId("metering-from")), {
+      target: { value: "not-a-date" },
+    });
 
     expect(screen.getByTestId("metering-range-error").textContent).toContain(
       "cp.metering.invalidRange",
@@ -330,8 +333,8 @@ describe("MeteringPage", () => {
     const from = screen.getByTestId("metering-from") as HTMLInputElement;
     const to = screen.getByTestId("metering-to") as HTMLInputElement;
 
-    fireEvent.change(from, { target: { value: "2026-09-02T12:00" } });
-    fireEvent.change(to, { target: { value: "2026-09-01T12:00" } });
+    fireEvent.change(nativeControl(from), { target: { value: "2026-09-02T12:00" } });
+    fireEvent.change(nativeControl(to), { target: { value: "2026-09-01T12:00" } });
 
     expect(screen.getByTestId("metering-range-error").textContent).toContain(
       "cp.metering.fromAfterTo",

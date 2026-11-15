@@ -19,6 +19,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { PageHeader, PageShell } from "../ui/page";
 import { PaginationControls } from "../ui/pagination-controls";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 const fields = ["description", "contactName", "email", "phone", "address", "website"] as const;
 type Mode = "provider" | "operator";
@@ -127,21 +128,21 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
         <p role="status">{t("providers.loading")}</p>
       ) : (
         <>
-          <div className="overflow-x-auto rounded-xl border border-border">
-            <table className="w-full text-left text-sm">
-              <thead className="border-b border-border bg-muted/40">
-                <tr>
+          <div className="overflow-x-auto border-border">
+            <Table className="w-full text-left text-sm">
+              <TableHeader className="border-b border-border ">
+                <TableRow>
                   {["name", "contactName", "centers", "agents", "members", "actions"].map((key) => (
-                    <th key={key} className="whitespace-nowrap px-4 py-3 font-medium">
+                    <TableHead key={key} className="whitespace-nowrap px-4 py-3 font-medium">
                       {t(`providers.${key}`)}
-                    </th>
+                    </TableHead>
                   ))}
-                </tr>
-              </thead>
-              <tbody>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {data.items.map((provider) => (
-                  <tr key={provider.id} className="border-b border-border last:border-0">
-                    <td className="min-w-44 px-4 py-3">
+                  <TableRow key={provider.id} className="border-b border-border ">
+                    <TableCell className="min-w-44 px-4 py-3">
                       <button
                         type="button"
                         className="break-words text-left text-brand hover:underline"
@@ -152,12 +153,14 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                       >
                         {provider.name}
                       </button>
-                    </td>
-                    <td className="px-4 py-3">{provider.profile.contactName || "—"}</td>
-                    <td className="px-4 py-3 tabular-nums">{provider.centerCount}</td>
-                    <td className="px-4 py-3 tabular-nums">{provider.agentCount}</td>
-                    <td className="px-4 py-3 tabular-nums">{provider.memberCount}</td>
-                    <td className="px-4 py-3">
+                    </TableCell>
+                    <TableCell className="px-4 py-3">
+                      {provider.profile.contactName || "—"}
+                    </TableCell>
+                    <TableCell className="px-4 py-3 tabular-nums">{provider.centerCount}</TableCell>
+                    <TableCell className="px-4 py-3 tabular-nums">{provider.agentCount}</TableCell>
+                    <TableCell className="px-4 py-3 tabular-nums">{provider.memberCount}</TableCell>
+                    <TableCell className="px-4 py-3">
                       {canEdit && (
                         <Button
                           variant="ghost"
@@ -170,11 +173,11 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                           {t("providers.edit")}
                         </Button>
                       )}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
             {!data.items.length && (
               <p className="p-8 text-center text-muted-foreground">{t("providers.empty")}</p>
             )}
@@ -396,7 +399,7 @@ function ProviderEditor({
               </p>
             )}
           </div>
-          <div className="flex shrink-0 flex-wrap gap-2 border-t border-border px-5 py-4">
+          <div className="flex shrink-0 flex-wrap gap-2 border-border px-5 py-4">
             {item && allowDelete && (
               <Button type="button" variant="destructive" disabled={busy} onClick={remove}>
                 {t(confirmDelete ? "providers.confirmDelete" : "providers.delete")}

@@ -19,7 +19,7 @@ import {
 import { isLocalMode, useLocalCapabilities } from "../../lib/local-mode";
 import { usePlatformCapability } from "../../lib/platform-capabilities";
 import { toUserFacingError } from "../../lib/user-facing-error";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { CardContent, CardHeader, CardTitle } from "../ui/card";
 import { PageHeader, PageShell } from "../ui/page";
 import { AgentsTable } from "./AgentsTable";
 import { EventsList } from "./EventsList";
@@ -127,7 +127,7 @@ export function Dashboard() {
 
       {dashboardError ? (
         <div
-          className="rounded-md border border-status-failed/40 bg-status-failed/5 p-3 text-sm text-status-failed"
+          className=" p-3 text-sm text-status-failed"
           data-testid="dashboard-load-error"
           role="alert"
         >
@@ -188,7 +188,7 @@ export function Dashboard() {
         }
       >
         {showThroughput ? (
-          <Card className="lg:col-span-2" data-testid="throughput-card">
+          <section className="lg:col-span-2" data-testid="throughput-card">
             <CardHeader>
               <CardTitle>{t("dashboard.submissionsLast24h")}</CardTitle>
             </CardHeader>
@@ -201,10 +201,10 @@ export function Dashboard() {
                 <ThroughputChart data={buckets} />
               )}
             </CardContent>
-          </Card>
+          </section>
         ) : null}
 
-        <Card data-testid="agents-card">
+        <section data-testid="agents-card">
           <CardHeader>
             <CardTitle>{t("dashboard.agents")}</CardTitle>
           </CardHeader>
@@ -217,11 +217,11 @@ export function Dashboard() {
               <AgentsTable agents={agents} />
             )}
           </CardContent>
-        </Card>
+        </section>
       </div>
 
       {canViewAuditLog ? (
-        <Card data-testid="events-card">
+        <section data-testid="events-card">
           <CardHeader>
             <CardTitle>{t("dashboard.recentActivity")}</CardTitle>
           </CardHeader>
@@ -233,7 +233,7 @@ export function Dashboard() {
               }
             />
           </CardContent>
-        </Card>
+        </section>
       ) : null}
     </PageShell>
   );

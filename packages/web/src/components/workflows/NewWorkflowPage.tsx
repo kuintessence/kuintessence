@@ -645,7 +645,7 @@ export function NewWorkflowPage() {
   if (draftLoading || draftLoadError) {
     return (
       <div
-        className="space-y-4 rounded-xl border border-border bg-card p-5"
+        className="space-y-4 border-border p-5"
         data-testid="workflow-draft-load-state"
         aria-busy={draftLoading}
       >
@@ -676,7 +676,7 @@ export function NewWorkflowPage() {
 
   return (
     <div className="space-y-5" data-testid="new-workflow-page">
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+      <div className="overflow-hidden border-border ">
         <div className="p-4 sm:p-5">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0">

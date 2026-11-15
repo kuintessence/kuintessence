@@ -246,7 +246,7 @@ function OperationLink({ item, role, capabilities }: OperationLinkProps) {
   const Icon = item.icon;
   const content = (
     <>
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-background">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center ">
         <Icon className="h-4 w-4" />
       </div>
       <div className="min-w-0 flex-1">
@@ -267,11 +267,7 @@ function OperationLink({ item, role, capabilities }: OperationLinkProps) {
   );
 
   if (!allowed) {
-    return (
-      <div className="flex min-h-20 items-center gap-3 rounded-md border border-dashed p-3 opacity-70">
-        {content}
-      </div>
-    );
+    return <div className="flex min-h-20 items-center gap-3 p-3 opacity-70">{content}</div>;
   }
 
   return (
@@ -279,7 +275,7 @@ function OperationLink({ item, role, capabilities }: OperationLinkProps) {
       href={operationsHrefForRole(role, item, capabilities)}
       target="_blank"
       rel="noreferrer"
-      className="flex min-h-20 items-center gap-3 rounded-md border p-3 transition-colors hover:bg-muted/55"
+      className="flex min-h-20 items-center gap-3 border-b border-border p-3 transition-colors hover:text-brand"
       data-testid={`settings-ops-link-${item.key}`}
     >
       {content}
@@ -336,7 +332,7 @@ export function SettingsPage() {
             title={t("settings.restrictedDeepLink.title")}
             subtitle={t("settings.restrictedDeepLink.description")}
           />
-          <Card>
+          <section>
             <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
               <p className="text-sm text-muted-foreground">
                 {t("settings.restrictedDeepLink.guidance")}
@@ -345,7 +341,7 @@ export function SettingsPage() {
                 {t("settings.restrictedDeepLink.returnToAccessible")}
               </Button>
             </CardContent>
-          </Card>
+          </section>
         </div>
       ) : (
         <>
@@ -354,7 +350,7 @@ export function SettingsPage() {
           {activeTab === "personal" ? (
             <div className="space-y-4">
               {personalSection === "account" ? (
-                <Card>
+                <section>
                   <CardHeader>
                     <CardTitle>{t("settings.account")}</CardTitle>
                   </CardHeader>
@@ -380,24 +376,24 @@ export function SettingsPage() {
                       {t("common.signOut")}
                     </Button>
                   </CardContent>
-                </Card>
+                </section>
               ) : null}
 
               {personalSection === "execution-accounts" ? <SandboxAccountMappingsPanel /> : null}
 
               {personalSection === "appearance" ? (
-                <Card>
+                <section>
                   <CardHeader>
                     <CardTitle>{t("settings.appearance")}</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-2">
                     <ThemeRow />
                   </CardContent>
-                </Card>
+                </section>
               ) : null}
 
               {personalSection === "account" && import.meta.env.DEV ? (
-                <Card data-testid="settings-developer-card">
+                <section data-testid="settings-developer-card">
                   <CardHeader>
                     <CardTitle>{t("settings.developer")}</CardTitle>
                   </CardHeader>
@@ -408,7 +404,7 @@ export function SettingsPage() {
                       <code>{import.meta.env.VITE_SERVER_URL ?? window.location.origin}</code>
                     </div>
                   </CardContent>
-                </Card>
+                </section>
               ) : null}
             </div>
           ) : null}

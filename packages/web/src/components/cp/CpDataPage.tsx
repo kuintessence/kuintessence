@@ -14,10 +14,10 @@ import { useCpAgentClusterFileRoots, useCpAgents } from "../../lib/use-cp-agents
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
-import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import { DataDisclosurePolicyPanel } from "./DataDisclosurePolicyPanel";
 
 export function CpDataPage() {
@@ -226,7 +226,7 @@ export function CpDataPage() {
         <p className="text-sm text-muted-foreground">{t("cp.data.organizationRequired")}</p>
       ) : null}
       <div className="grid gap-5 xl:grid-cols-2">
-        <Card>
+        <section>
           <CardHeader>
             <CardTitle>
               <Database /> {t("cp.data.createAsset")}
@@ -256,8 +256,8 @@ export function CpDataPage() {
               />
             ) : null}
           </CardContent>
-        </Card>
-        <Card>
+        </section>
+        <section>
           <CardHeader>
             <CardTitle>
               <HardDriveDownload /> {t("cp.data.import")}
@@ -272,7 +272,8 @@ export function CpDataPage() {
             <p className="text-xs text-muted-foreground">{t("cp.data.cpLocalOnly")}</p>
             <label className="space-y-1 text-sm">
               <span className="font-medium">{t("cp.data.agent")}</span>
-              <NativeSelect
+              <ResourceSelectField
+                resourceType="organizations"
                 className="h-10 w-full"
                 value={agentId}
                 onChange={(event) => {
@@ -288,7 +289,7 @@ export function CpDataPage() {
                     {agent.hostname} ({agent.siteId})
                   </option>
                 ))}
-              </NativeSelect>
+              </ResourceSelectField>
             </label>
             <QueryFeedback query={agents} onRetry={() => void agents.refetch()} />
             {!agents.isLoading && !agents.isError && (agents.data?.length ?? 0) === 0 ? (
@@ -296,7 +297,8 @@ export function CpDataPage() {
             ) : null}
             <label className="space-y-1 text-sm">
               <span className="font-medium">{t("cp.data.managedRoot")}</span>
-              <NativeSelect
+              <ResourceSelectField
+                resourceType="cluster-file-roots"
                 className="h-10 w-full"
                 value={managedRootId}
                 onChange={(event) => setManagedRootId(event.target.value)}
@@ -309,7 +311,7 @@ export function CpDataPage() {
                     {root.label} - {root.path}
                   </option>
                 ))}
-              </NativeSelect>
+              </ResourceSelectField>
             </label>
             {agentId ? <QueryFeedback query={roots} onRetry={() => void roots.refetch()} /> : null}
             {agentId && !roots.isLoading && !roots.isError && enabledRoots.length === 0 ? (
@@ -336,8 +338,8 @@ export function CpDataPage() {
               {t("cp.data.import")}
             </Button>
           </CardContent>
-        </Card>
-        <Card>
+        </section>
+        <section>
           <CardHeader>
             <CardTitle>
               <Network /> {t("cp.data.replica")}
@@ -371,8 +373,8 @@ export function CpDataPage() {
               />
             ) : null}
           </CardContent>
-        </Card>
-        <Card>
+        </section>
+        <section>
           <CardHeader>
             <CardTitle>
               <ShieldCheck /> {t("cp.data.permissions")}
@@ -398,9 +400,9 @@ export function CpDataPage() {
               <AccessRequestDetail request={accessRequestDetail.data} />
             ) : null}
           </CardContent>
-        </Card>
+        </section>
       </div>
-      <Card>
+      <section>
         <CardHeader>
           <CardTitle>{t("cp.data.imports")}</CardTitle>
         </CardHeader>
@@ -408,7 +410,7 @@ export function CpDataPage() {
           <QueryFeedback query={imports} onRetry={() => void imports.refetch()} />
           {!imports.isError ? <ImportList imports={imports.data?.imports ?? []} /> : null}
         </CardContent>
-      </Card>
+      </section>
     </PageShell>
   );
 }
@@ -451,7 +453,7 @@ function AssetList({
     <div className="space-y-1">
       {assets.map((asset) => (
         <button
-          className="flex w-full items-center justify-between gap-2 rounded border p-2 text-left text-xs"
+          className="flex w-full items-center justify-between gap-2 border-b p-2 text-left text-xs"
           data-testid={`cp-data-asset-${asset.id}`}
           key={asset.id}
           onClick={() => onSelect(asset)}
@@ -488,8 +490,8 @@ function VersionList({
       ) : null}
       {versions.map((version) => (
         <button
-          className={`flex w-full items-center justify-between gap-2 rounded border p-2 text-left text-xs ${
-            selected === version.id ? "border-brand bg-brand-soft" : ""
+          className={`flex w-full items-center justify-between gap-2 border-b p-2 text-left text-xs ${
+            selected === version.id ? "border-brand text-brand font-semibold" : ""
           }`}
           data-testid={`cp-data-version-${version.id}`}
           key={version.id}
@@ -523,7 +525,7 @@ function ReplicaList({
         <p className="text-xs text-muted-foreground">{t("cp.data.replicaEmpty")}</p>
       ) : null}
       {replicas.map((replica) => (
-        <p className="rounded bg-muted p-2 text-xs" key={replica.id}>
+        <p className=" p-2 text-xs" key={replica.id}>
           {t("cp.data.runnableCenter", {
             center: `${replica.siteId}/${replica.clusterId}`,
             status: replica.status,
@@ -557,7 +559,7 @@ function ImportList({
                   ? "cp.data.importWaiting"
                   : "cp.data.importCanceled";
         return (
-          <div className="rounded bg-muted p-2 text-xs" key={item.id}>
+          <div className=" p-2 text-xs" key={item.id}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span>
                 {item.version} · {item.sourceKind}
@@ -595,7 +597,7 @@ function AccessRequestList({
   return (
     <div className="space-y-2">
       {requests.map((request) => (
-        <div className="rounded border p-2 text-xs" key={request.id}>
+        <div className=" p-2 text-xs" key={request.id}>
           <button className="w-full text-left" onClick={() => onSelect(request.id)} type="button">
             <p>
               {request.capability} · {request.status}
@@ -630,7 +632,7 @@ function AccessRequestList({
 function AccessRequestDetail({ request }: { request: DataAccessRequest }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded bg-muted p-2 text-xs" data-testid="cp-data-access-request-detail">
+    <div className=" p-2 text-xs" data-testid="cp-data-access-request-detail">
       <p>{t("cp.data.requestSubject", { subject: request.subjectId })}</p>
       <p>{t("cp.data.requestDecision", { decision: request.decisionReason ?? request.status })}</p>
     </div>

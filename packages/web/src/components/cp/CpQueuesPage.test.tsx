@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -457,26 +458,26 @@ describe("CpQueuesPage", () => {
 
     await waitFor(() => screen.getByTestId("cp-queue-row-queue-1"));
     fireEvent.click(screen.getByTestId("cp-queues-create"));
-    fireEvent.change(screen.getByTestId("cp-queue-field-queue-id"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-queue-id")), {
       target: { value: "queue-gpu" },
     });
-    fireEvent.change(screen.getByTestId("cp-queue-field-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-name")), {
       target: { value: "GPU batch" },
     });
-    fireEvent.change(screen.getByTestId("cp-queue-field-agent-id"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-agent-id")), {
       target: { value: "agent-gpu" },
     });
     await waitFor(() =>
       expect(screen.getByTestId("cp-queue-field-scheduler-type").textContent).toBe("pbs-pro"),
     );
-    fireEvent.change(screen.getByTestId("cp-queue-field-queue-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-queue-name")), {
       target: { value: "gpu" },
     });
-    fireEvent.change(screen.getByTestId("cp-queue-field-qos"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-qos")), {
       target: { value: "gold" },
     });
     fireEvent.click(screen.getByLabelText("Consumer"));
-    fireEvent.change(screen.getByTestId("cp-queue-field-policy-tags"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-policy-tags")), {
       target: { value: "gpu, paid" },
     });
     fireEvent.click(screen.getByTestId("cp-queue-submit"));
@@ -798,19 +799,19 @@ describe("CpQueuesPage", () => {
     render(<CpQueuesPage />, { wrapper: makeWrapper() });
     await waitFor(() => screen.getByTestId("cp-queues-create"));
     fireEvent.click(screen.getByTestId("cp-queues-create"));
-    fireEvent.change(screen.getByTestId("cp-queue-field-queue-id"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-queue-id")), {
       target: { value: "queue-stale" },
     });
-    fireEvent.change(screen.getByTestId("cp-queue-field-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-name")), {
       target: { value: "Stale workq" },
     });
-    fireEvent.change(screen.getByTestId("cp-queue-field-agent-id"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-agent-id")), {
       target: { value: "agent-stale" },
     });
     await waitFor(() =>
       expect(screen.getByTestId("cp-queue-field-queue-name")).toHaveProperty("disabled", false),
     );
-    fireEvent.change(screen.getByTestId("cp-queue-field-queue-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-queue-name")), {
       target: { value: "workq" },
     });
 
@@ -838,10 +839,10 @@ describe("CpQueuesPage", () => {
     const inventoryTab = await screen.findByTestId("cp-queues-tab-inventory");
     fireEvent.mouseDown(inventoryTab, { button: 0, ctrlKey: false });
     fireEvent.click(await screen.findByTestId("cp-queue-manage-agent-gpu-gpu"));
-    fireEvent.change(screen.getByTestId("cp-queue-field-queue-id"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-queue-id")), {
       target: { value: "queue-pbs-default" },
     });
-    fireEvent.change(screen.getByTestId("cp-queue-field-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-queue-field-name")), {
       target: { value: "PBS scheduler default" },
     });
     expect(screen.getByTestId("cp-queue-target-default")).toHaveProperty("checked", true);

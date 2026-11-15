@@ -709,3 +709,29 @@ describe("PropertiesPanel", () => {
     });
   });
 });
+
+test("graph references follow current nodes and Loop output contracts", () => {
+  const reduce = reduceNode("gather");
+  const loop = loopNode("sweep");
+  if (loop.data.raw.type !== "Loop") throw new Error("Expected loop fixture");
+  loop.data.raw.outputs = [{ descriptor: "results", from: { node: "inner", output: "value" } }];
+  const second = loopNode("second");
+  const patch = vi.fn();
+  const view = render(
+    <PropertiesPanel selected={reduce} nodes={[loop, second, reduce]} onPatch={patch} />,
+  );
+  fireEvent.click(
+    screen.getByRole("combobox", { name: "workflow.editor.properties.reduceFromOutput" }),
+  );
+  expect(screen.getByRole("option", { name: "results" })).toBeTruthy();
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "ui.search" }), { key: "Escape" });
+  view.rerender(<PropertiesPanel selected={reduce} nodes={[second, reduce]} onPatch={patch} />);
+  expect(screen.getAllByRole("alert").length).toBeGreaterThan(0);
+  fireEvent.click(
+    screen.getByRole("combobox", { name: "workflow.editor.properties.reduceFromLoop" }),
+  );
+  fireEvent.click(screen.getByRole("option", { name: /Sweep/ }));
+  expect(patch).toHaveBeenCalledWith("gather", {
+    raw: expect.objectContaining({ from: { loop: "second", output: "" } }),
+  });
+});

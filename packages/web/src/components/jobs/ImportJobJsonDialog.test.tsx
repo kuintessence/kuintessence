@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 import { ImportJobJsonDialog } from "./ImportJobJsonDialog";
 
 const apiClient = vi.hoisted(() => ({
@@ -51,7 +52,9 @@ function jsonFile(content: string, name = "analysis.json") {
 }
 
 function chooseFile(file: File) {
-  fireEvent.change(screen.getByTestId("import-job-json-file"), { target: { files: [file] } });
+  fireEvent.change(nativeControl(screen.getByTestId("import-job-json-file")), {
+    target: { files: [file] },
+  });
 }
 
 function deferred<T>() {

@@ -48,11 +48,11 @@ for (const width of [320, 768, 1280]) {
       const account = page.getByRole("combobox", { name: "执行账号" });
       expect(await account.evaluate((node) => getComputedStyle(node).colorScheme)).toBe(theme);
       if (width === 320) {
-        expect(
-          await page
-            .getByTestId("jobs-search")
-            .evaluate((node) => node.getBoundingClientRect().width),
-        ).toBeGreaterThanOrEqual(280);
+        const search = await page.getByTestId("jobs-search").boundingBox();
+        const toolbar = await page.getByTestId("jobs-search").locator("..").boundingBox();
+        if (!search || !toolbar) throw new Error("Missing search control");
+        expect(search.width).toBeGreaterThanOrEqual(toolbar.width - 1);
+        expect(search.x + search.width).toBeLessThanOrEqual(width);
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
         true,

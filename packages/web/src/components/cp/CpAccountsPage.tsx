@@ -137,16 +137,14 @@ export function CpAccountsPage() {
           ) : accountsQuery.isLoading ? (
             <div className="text-sm text-muted-foreground">{t("cp.common.loading")}</div>
           ) : accounts.length === 0 ? (
-            <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-              {t("cp.accounts.empty")}
-            </div>
+            <div className=" p-4 text-sm text-muted-foreground">{t("cp.accounts.empty")}</div>
           ) : (
             <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
               {accounts.map((account) => (
                 <div
                   key={account.id}
                   data-testid={`cp-execution-account-${account.id}`}
-                  className="rounded-md border border-border bg-background p-3"
+                  className=" border-border p-3"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -300,7 +298,7 @@ function Summary({
   value: number | string;
 }) {
   return (
-    <div className="flex items-center justify-between rounded-lg border bg-card p-3">
+    <div className="flex items-center justify-between p-3">
       <div>
         <div className="text-xs text-muted-foreground">{label}</div>
         <div className="mt-1 text-xl font-semibold tabular-nums">{value}</div>

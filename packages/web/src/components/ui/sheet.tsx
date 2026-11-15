@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import type { OverlayDismissPolicy } from "./dialog";
+import { SurfaceBoundary } from "./surface";
 
 export const Sheet = DialogPrimitive.Root;
 export const SheetTrigger = DialogPrimitive.Trigger;
@@ -59,6 +60,7 @@ export const SheetContent = React.forwardRef<
         <SheetOverlay />
         <DialogPrimitive.Content
           ref={ref}
+          data-kq-surface="region"
           className={cn(
             "fixed top-0 z-50 flex h-full w-[calc(100vw-0.75rem)] flex-col border-l border-border bg-card/98 p-0 text-card-foreground shadow-2xl shadow-black/10 outline-none transition ease-out sm:w-full",
             "kq-motion kq-motion--sheet",
@@ -89,7 +91,7 @@ export const SheetContent = React.forwardRef<
           {...props}
           data-side={side}
         >
-          {children}
+          <SurfaceBoundary>{children}</SurfaceBoundary>
           <DialogPrimitive.Close
             aria-label={t("common.close")}
             disabled={!dismissible}
@@ -108,7 +110,7 @@ export function SheetHeader({ className, ...props }: React.HTMLAttributes<HTMLDi
   return (
     <div
       className={cn(
-        "shrink-0 border-b border-border bg-card/95 py-4 pl-4 pr-[3.75rem] sm:pl-5 sm:pr-16",
+        "shrink-0 border-b border-border py-4 pl-4 pr-[3.75rem] sm:pl-5 sm:pr-16",
         className,
       )}
       {...props}

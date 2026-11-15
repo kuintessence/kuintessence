@@ -116,10 +116,7 @@ export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
   const failed = queries.filter((query) => query.error);
   if (failed.length || queries.some((query) => query.isPending)) {
     return (
-      <div
-        className="space-y-3 rounded-md border border-dashed bg-muted/20 p-3"
-        data-testid="cluster-storage-policy"
-      >
+      <div className="space-y-3 p-3" data-testid="cluster-storage-policy">
         <h3 className="text-xs font-semibold">用户配额申请策略</h3>
         {failed.length ? (
           <div role="alert" className="space-y-2 text-sm">
@@ -142,10 +139,7 @@ export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
 
   const pending = (requestsQ.data?.requests ?? []).filter((item) => item.status === "pending");
   return (
-    <div
-      className="space-y-3 rounded-md border border-dashed bg-muted/20 p-3"
-      data-testid="cluster-storage-policy"
-    >
+    <div className="space-y-3 p-3" data-testid="cluster-storage-policy">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-xs font-semibold">用户配额申请策略</div>
@@ -186,10 +180,7 @@ export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
         {pending.length > 0 ? (
           <div className="grid gap-2 md:grid-cols-2">
             {pending.map((request) => (
-              <div
-                key={request.id}
-                className="flex items-center gap-2 rounded-md border bg-background p-2 text-xs"
-              >
+              <div key={request.id} className="flex items-center gap-2 p-2 text-xs">
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-mono">{request.userId}</div>
                   <div className="font-medium">{bytesToGb(request.requestedQuotaBytes)} GB</div>

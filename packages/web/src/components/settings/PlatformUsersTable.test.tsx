@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { setLang } from "../../lib/i18n";
+import { nativeControl } from "../../lib/test-resource-field";
 import { PlatformUsersTable } from "./PlatformUsersTable";
 
 const api = vi.hoisted(() => ({ get: vi.fn(), patch: vi.fn() }));
@@ -45,7 +46,9 @@ test("shows provider ownership and requires a reason before changing a user's st
   expect(screen.getAllByRole("button", { name: "停用账号" })).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "停用账号" }));
   expect(screen.getByRole("button", { name: "确认" }).hasAttribute("disabled")).toBe(true);
-  fireEvent.change(screen.getByLabelText("操作原因"), { target: { value: "账号访问审查" } });
+  fireEvent.change(nativeControl(screen.getByLabelText("操作原因")), {
+    target: { value: "账号访问审查" },
+  });
   fireEvent.click(screen.getByRole("button", { name: "确认" }));
   await waitFor(() =>
     expect(api.patch).toHaveBeenCalledWith("/platform/users/user/status", {
@@ -54,7 +57,7 @@ test("shows provider ownership and requires a reason before changing a user's st
     }),
   );
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  fireEvent.change(screen.getByRole("textbox", { name: "搜索成员" }), {
+  fireEvent.change(nativeControl(screen.getByRole("textbox", { name: "搜索成员" })), {
     target: { value: "researcher" },
   });
   await waitFor(() =>

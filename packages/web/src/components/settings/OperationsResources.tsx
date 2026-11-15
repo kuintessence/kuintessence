@@ -79,7 +79,7 @@ function OperationsOverview() {
           </Button>
         </div>
       ) : null}
-      <dl className="grid grid-cols-2 gap-5 border-y border-border py-5 md:grid-cols-4">
+      <dl className="grid grid-cols-2 gap-5 border-border py-5 md:grid-cols-4">
         {counts.map((item) => (
           <div key={item.label}>
             <dt className="text-sm text-muted-foreground">{t(item.label)}</dt>

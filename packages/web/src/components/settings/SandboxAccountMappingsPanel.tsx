@@ -14,7 +14,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 
 function statusVariant(status: string) {
   if (status === "approved") return "succeeded" as const;
@@ -90,8 +90,8 @@ export function SandboxAccountMappingsPanel() {
           aria-label={t("sandbox.accounts.lifecycle.title")}
         >
           {["publish", "request", "approve"].map((step, index) => (
-            <li key={step} className="flex items-center gap-2 rounded-md border bg-muted/25 p-2.5">
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand">
+            <li key={step} className="flex items-center gap-2 p-2.5">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center text-xs font-semibold text-brand">
                 {index + 1}
               </span>
               <span className="min-w-0 text-xs">
@@ -106,7 +106,10 @@ export function SandboxAccountMappingsPanel() {
           ))}
         </ol>
         <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
-          <NativeSelect
+          <ResourceSelectField
+            resourceType="execution-account-mappings"
+            recent
+            expandable
             value={candidateId}
             onChange={(event) => setCandidateId(event.target.value)}
             aria-label={t("sandbox.accounts.candidate")}
@@ -119,7 +122,7 @@ export function SandboxAccountMappingsPanel() {
                 {candidate.siteName} · {candidate.displayName} · {candidate.schedulerType}
               </option>
             ))}
-          </NativeSelect>
+          </ResourceSelectField>
           <Button
             size="sm"
             onClick={() => requestMutation.mutate(candidateId)}
@@ -133,16 +136,16 @@ export function SandboxAccountMappingsPanel() {
           </Button>
         </div>
         {candidatesQuery.isLoading ? (
-          <div className="flex items-center gap-2 rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             {t("sandbox.accounts.loadingCandidates")}
           </div>
         ) : candidatesQuery.error instanceof Error ? (
-          <div className="rounded-md border border-[var(--status-failed)]/30 bg-[var(--status-failed)]/5 p-3 text-sm text-[var(--status-failed)]">
+          <div className=" p-3 text-sm text-[var(--status-failed)]">
             {toUserFacingError(candidatesQuery.error, t("sandbox.accounts.candidateLoadFailed"))}
           </div>
         ) : allCandidates.length === 0 ? (
-          <div className="flex flex-col gap-3 rounded-md border border-dashed p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="font-medium">{t("sandbox.accounts.noPublishedTitle")}</div>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
@@ -159,7 +162,7 @@ export function SandboxAccountMappingsPanel() {
             ) : null}
           </div>
         ) : candidates.length === 0 ? (
-          <div className="flex items-center gap-2 rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
             <CheckCircle2 className="h-4 w-4 text-[var(--status-succeeded)]" />
             {t("sandbox.accounts.noMoreCandidates")}
           </div>
@@ -171,7 +174,7 @@ export function SandboxAccountMappingsPanel() {
         ) : mappingsQuery.isLoading ? (
           <div className="text-sm text-muted-foreground">{t("common.loading")}</div>
         ) : mappings.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+          <div className=" border-border p-4 text-sm text-muted-foreground">
             {t("sandbox.accounts.empty")}
           </div>
         ) : (
@@ -179,7 +182,7 @@ export function SandboxAccountMappingsPanel() {
             {mappings.map(({ account, mapping }) => (
               <div
                 key={mapping.id}
-                className="flex flex-col gap-3 rounded-md border border-border bg-background p-3 sm:flex-row sm:items-center sm:justify-between"
+                className="flex flex-col gap-3 border-border p-3 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2 text-sm font-medium">

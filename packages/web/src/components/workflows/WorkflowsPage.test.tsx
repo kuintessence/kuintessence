@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "../../lib/api-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { isActiveWorkflowStatus, WorkflowsPage } from "./WorkflowsPage";
 
 const navigate = vi.fn();
@@ -158,7 +159,9 @@ describe("WorkflowsPage", () => {
     expect(screen.getByTestId("workflows-summary-failed").textContent).toBe("1");
     expect(screen.getByTestId("workflows-summary-cancelled").textContent).toBe("1");
 
-    fireEvent.change(screen.getByTestId("workflows-search"), { target: { value: "alpha" } });
+    fireEvent.change(nativeControl(screen.getByTestId("workflows-search")), {
+      target: { value: "alpha" },
+    });
     await waitFor(() =>
       expect(screen.getByTestId("workflows-count").textContent).toBe("1 visible · 1 total"),
     );

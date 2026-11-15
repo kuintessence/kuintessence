@@ -89,7 +89,7 @@ function DetailShell({ children, description, icon, section, title }: DetailShel
 
 function DetailInfoTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 rounded-md border border-border bg-card px-3 py-2">
+    <div className="min-w-0 border-border px-3 py-2">
       <div className="text-[11px] text-muted-foreground">{label}</div>
       <div className="mt-1 break-words font-mono text-xs text-foreground">{value}</div>
     </div>
@@ -106,7 +106,7 @@ function DetailMetricTile({
   value: number | string;
 }) {
   return (
-    <div className="min-w-0 rounded-md border border-border bg-card p-3">
+    <div className="min-w-0 border-border p-3">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className="[&_svg]:h-3.5 [&_svg]:w-3.5">{icon}</span>
         <span className="truncate">{label}</span>
@@ -127,7 +127,7 @@ function DetailSection({ children, title }: { children: React.ReactNode; title: 
 
 function DetailEmpty({ text }: { text: string }) {
   return (
-    <div className="flex min-h-32 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground">
+    <div className="flex min-h-32 items-center justify-center border-border text-sm text-muted-foreground">
       {text}
     </div>
   );
@@ -155,7 +155,7 @@ function LicensePolicyPanel({ policy }: { policy?: LicensePolicy }) {
   ].filter((item): item is string => item !== null);
   return (
     <DetailSection title={t("software.detail.license")}>
-      <div className="grid gap-3 rounded-md border border-border bg-card p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <div className="grid gap-3 border-border p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={policy.classification === "proprietary" ? "failed" : "outline"}>
@@ -212,10 +212,7 @@ function LicensePolicyPanel({ policy }: { policy?: LicensePolicy }) {
 function DetailError({ error }: { error: Error }) {
   const { t } = useTranslation();
   return (
-    <div
-      className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
-      data-testid="software-detail-error"
-    >
+    <div className=" p-3 text-sm" data-testid="software-detail-error">
       {toUserFacingError(error, t("software.unreachable"))}
     </div>
   );
@@ -238,7 +235,7 @@ const TEMPLATE_NODE_HEIGHT = 68;
 function TemplateGraphNode({ data }: { data: TemplateGraphNodeData }) {
   return (
     <div
-      className="relative grid gap-1 rounded-md border border-border bg-card p-2 shadow-sm"
+      className="relative grid gap-1 border-border p-2 "
       style={{ width: TEMPLATE_NODE_WIDTH, height: TEMPLATE_NODE_HEIGHT }}
     >
       <Handle
@@ -317,10 +314,7 @@ function WorkflowTemplateFlow({ template }: { template: WorkflowTemplate }) {
   }
 
   return (
-    <div
-      className="h-[520px] overflow-hidden rounded-md border border-border bg-background"
-      data-testid="software-template-flow"
-    >
+    <div className="h-[520px] overflow-hidden border-border " data-testid="software-template-flow">
       <ReactFlow
         colorMode={resolved}
         nodes={graph.nodes satisfies Node<TemplateGraphNodeData>[]}
@@ -377,7 +371,7 @@ export function SoftwareWorkflowTemplateDetailPage({ templateId }: { templateId:
       ) : (
         <div className="grid gap-5">
           <section className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_420px]">
-            <div className="min-w-0 rounded-md border border-border bg-card p-4">
+            <div className="min-w-0 border-border p-4">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant={templateSummary?.isValid ? "succeeded" : "failed"}>
                   {templateSummary?.isValid
@@ -434,7 +428,7 @@ export function SoftwareWorkflowTemplateDetailPage({ templateId }: { templateId:
               <WorkflowTemplateFlow template={template} />
             </DetailSection>
             <DetailSection title={t("software.detail.yamlSource")}>
-              <pre className="max-h-[520px] overflow-auto rounded-md border border-border bg-card p-3 text-xs">
+              <pre className="max-h-[520px] overflow-auto border-border p-3 text-xs">
                 {template.yamlContent}
               </pre>
             </DetailSection>
@@ -485,7 +479,7 @@ function UsecasePackageHero({
   const { t } = useTranslation();
   return (
     <section className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_420px]">
-      <div className="min-w-0 rounded-md border border-border bg-card p-4">
+      <div className="min-w-0 border-border p-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="brand">{pkg.spec.software.kind}</Badge>
           <Badge variant="outline">v{pkg.version}</Badge>
@@ -623,7 +617,7 @@ export function SoftwareUsecaseDetailPage({ usecaseId }: { usecaseId: string }) 
             </DetailSection>
             <aside className="grid content-start gap-3">
               <DetailSection title={t("software.detail.runtime")}>
-                <div className="grid gap-3 rounded-md border border-border bg-card p-4">
+                <div className="grid gap-3 border-border p-4">
                   <DetailInfoTile
                     label={t("software.manage.compiler")}
                     value={spack?.compiler ?? "—"}
@@ -657,17 +651,14 @@ export function SoftwareUsecaseDetailPage({ usecaseId }: { usecaseId: string }) 
 function SlotList({ rows, title }: { rows: { name: string; value: string }[]; title: string }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-border bg-card p-3">
+    <div className=" border-border p-3">
       <div className="text-sm font-medium text-foreground">{title}</div>
       {rows.length === 0 ? (
         <div className="mt-2 text-xs text-muted-foreground">{t("software.detail.none")}</div>
       ) : (
         <div className="mt-3 grid gap-2">
           {rows.map((row) => (
-            <div
-              key={`${row.name}:${row.value}`}
-              className="min-w-0 rounded-md border border-border bg-background p-2"
-            >
+            <div key={`${row.name}:${row.value}`} className="min-w-0 border-border p-2">
               <div className="font-mono text-xs font-semibold">{row.name}</div>
               <div className="mt-1 break-words font-mono text-[11px] text-muted-foreground">
                 {row.value}
@@ -744,7 +735,7 @@ function SpackAvailabilityPanel({ installSpec }: { installSpec: string }) {
   const data = availabilityQ.data;
   return (
     <DetailSection title={t("software.detail.availability")}>
-      <div className="grid gap-3 rounded-md border border-border bg-card p-4 lg:grid-cols-3">
+      <div className="grid gap-3 border-border p-4 lg:grid-cols-3">
         <AvailabilityColumn
           items={data?.installedAvailable ?? []}
           loading={availabilityQ.isLoading}
@@ -761,7 +752,7 @@ function SpackAvailabilityPanel({ installSpec }: { installSpec: string }) {
           title={t("software.detail.blockedNodes")}
         />
         {availabilityQ.isError ? (
-          <div className="lg:col-span-3 rounded-md border border-status-failed/30 bg-status-failed/5 px-3 py-2 text-xs text-status-failed">
+          <div className="lg:col-span-3 px-3 py-2 text-xs text-status-failed">
             {t("software.detail.availabilityFailed")}
           </div>
         ) : null}
@@ -781,7 +772,7 @@ function AvailabilityColumn({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="min-w-0 rounded-md border border-border bg-background p-3">
+    <div className="min-w-0 border-border p-3">
       <div className="flex items-center justify-between gap-2">
         <div className="text-sm font-medium text-foreground">{title}</div>
         <Badge variant="outline">{items.length}</Badge>
@@ -793,7 +784,7 @@ function AvailabilityColumn({
       ) : (
         <div className="mt-3 grid gap-2">
           {items.slice(0, 6).map((item) => (
-            <div key={item.agentId} className="rounded-md border border-border bg-card px-3 py-2">
+            <div key={item.agentId} className=" border-border px-3 py-2">
               <div className="truncate font-mono text-xs font-semibold text-foreground">
                 {item.siteName || item.agentId}
               </div>
@@ -844,11 +835,7 @@ function MetadataBadges({
       {items.map((item) => {
         const linkTarget = linkForItem?.(item) ?? null;
         const badge = (
-          <Badge
-            key={item}
-            variant="outline"
-            className={cn(linkTarget && "transition-colors hover:border-brand hover:bg-brand-soft")}
-          >
+          <Badge key={item} variant="outline" className={cn(linkTarget && "transition-colors ")}>
             {item}
           </Badge>
         );
@@ -879,7 +866,7 @@ function SpackPackageHero({
   const { t } = useTranslation();
   return (
     <section className="grid gap-3 md:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="min-w-0 space-y-4 rounded-md border border-border bg-card p-4">
+      <div className="min-w-0 space-y-4 border-border p-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="brand">{pkg.source}</Badge>
           {pkg.ownerOrgId ? <Badge variant="outline">{pkg.ownerOrgId}</Badge> : null}
@@ -894,7 +881,7 @@ function SpackPackageHero({
             {t("software.detail.installSpec")}
           </div>
           <div className="mt-2 flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
-            <code className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 font-mono text-sm text-foreground">
+            <code className="min-w-0 flex-1 border-b border-border px-3 py-2 font-mono text-sm text-foreground">
               {installSpec}
             </code>
             <CopySpecButton value={installSpec} />
@@ -962,7 +949,7 @@ function SpackMetricTile({
   value: number;
 }) {
   return (
-    <div className="min-w-0 rounded-md border border-border bg-background p-3">
+    <div className="min-w-0 border-border p-3">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className="[&_svg]:h-3.5 [&_svg]:w-3.5">{icon}</span>
         <span className="truncate">{label}</span>
@@ -988,7 +975,7 @@ function SpackMetadataDetail({
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
       <div className="grid gap-5">
         <DetailSection title={t("software.detail.versions")}>
-          <div className="rounded-md border border-border bg-card p-4">
+          <div className=" border-border p-4">
             <MetadataBadges items={latestVersions} />
             {hiddenVersionCount > 0 ? (
               <div className="mt-3 text-xs text-muted-foreground">
@@ -1014,7 +1001,7 @@ function SpackMetadataDetail({
       </div>
       <aside className="grid content-start gap-3">
         <DetailSection title={t("software.detail.packageIdentity")}>
-          <div className="grid gap-3 rounded-md border border-border bg-card p-4">
+          <div className="grid gap-3 border-border p-4">
             <DetailInfoTile label={t("software.manage.packageName")} value={pkg.name} />
             <DetailInfoTile label="package.py" value={metadata.name ?? "—"} />
             <DetailInfoTile label={t("software.manage.catalogPackageSource")} value={pkg.source} />
@@ -1022,12 +1009,12 @@ function SpackMetadataDetail({
           </div>
         </DetailSection>
         <DetailSection title={t("software.detail.maintainers")}>
-          <div className="rounded-md border border-border bg-card p-4">
+          <div className=" border-border p-4">
             <MetadataBadges items={metadata.maintainers} />
           </div>
         </DetailSection>
         <DetailSection title={t("software.detail.licenses")}>
-          <div className="rounded-md border border-border bg-card p-4">
+          <div className=" border-border p-4">
             <MetadataBadges items={metadata.licenses} />
           </div>
         </DetailSection>
@@ -1047,17 +1034,14 @@ function SpackMetadataDetail({
 function SpackVariantPanel({ variants }: { variants: SpackPackageMetadata["variants"] }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-border bg-card p-4">
+    <div className=" border-border p-4">
       <div className="text-sm font-medium text-foreground">{t("software.detail.variants")}</div>
       {variants.length === 0 ? (
         <div className="mt-3 text-xs text-muted-foreground">{t("software.detail.none")}</div>
       ) : (
         <div className="mt-3 grid gap-2">
           {variants.map((variant) => (
-            <div
-              key={variant.name}
-              className="grid gap-2 rounded-md border border-border bg-background p-3"
-            >
+            <div key={variant.name} className="grid gap-2 border-border p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-xs font-semibold text-foreground">
                   {variant.name}
@@ -1088,7 +1072,7 @@ function SpackTokenPanel({
   title: string;
 }) {
   return (
-    <div className="rounded-md border border-border bg-card p-4">
+    <div className=" border-border p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="text-sm font-medium text-foreground">{title}</div>
         <Badge variant="default">{items.length}</Badge>

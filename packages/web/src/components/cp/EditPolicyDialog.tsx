@@ -51,12 +51,12 @@ export function EditPolicyDialog(props: EditPolicyDialogProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-[2px]"
       data-testid="edit-policy-dialog"
       role="dialog"
       aria-modal="true"
     >
-      <div className="flex max-h-[calc(100vh-1.5rem)] w-full max-w-lg flex-col overflow-hidden rounded-md border border-border bg-card text-card-foreground shadow-2xl shadow-black/15">
+      <div className="flex max-h-[calc(100vh-1.5rem)] w-full max-w-lg flex-col overflow-hidden border-border text-card-foreground ">
         <div className="flex items-start justify-between gap-2 border-b border-border px-5 py-4">
           <div>
             <h3 className="text-base font-semibold tracking-tight">
@@ -80,11 +80,7 @@ export function EditPolicyDialog(props: EditPolicyDialogProps) {
             <span className="font-mono">{cluster}</span>
           </div>
 
-          {error ? (
-            <div className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-2 text-xs">
-              {error}
-            </div>
-          ) : null}
+          {error ? <div className=" p-2 text-xs">{error}</div> : null}
 
           <div className="flex flex-col gap-1">
             <label htmlFor="edit-policy-list" className="text-xs font-medium">
@@ -117,7 +113,7 @@ export function EditPolicyDialog(props: EditPolicyDialogProps) {
           </div>
         </div>
 
-        <div className="flex flex-col-reverse gap-2 border-t border-border bg-card/95 px-5 py-3 sm:flex-row sm:justify-end">
+        <div className="flex flex-col-reverse gap-2 border-border px-5 py-3 sm:flex-row sm:justify-end">
           <Button variant="outline" onClick={onClose} data-testid="edit-policy-cancel">
             {t("cp.common.cancel")}
           </Button>

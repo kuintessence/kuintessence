@@ -53,6 +53,7 @@ import {
 import { Input, Textarea } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { SandboxCodeEditor } from "./SandboxCodeEditor";
 
@@ -468,7 +469,10 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
             </Field>
             {detailQuery.data?.revisions.length ? (
               <Field label={t("sandbox.studio.revisions")}>
-                <NativeSelect
+                <ResourceSelectField
+                  resourceType="script-revisions"
+                  recent
+                  expandable
                   value={selectedRevision ?? ""}
                   onChange={(event) => loadRevision(Number(event.target.value))}
                   className="w-full"
@@ -479,7 +483,7 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
                       {revision.contentSha256?.slice(0, 10)}
                     </option>
                   ))}
-                </NativeSelect>
+                </ResourceSelectField>
               </Field>
             ) : null}
           </StudioCard>
@@ -550,7 +554,10 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
               </NativeSelect>
             </Field>
             <Field label={t("sandbox.studio.runtimeProfile")}>
-              <NativeSelect
+              <ResourceSelectField
+                resourceType="runtime-profiles"
+                recent
+                expandable
                 value={draft.runtimeProfileId}
                 onChange={(event) =>
                   setDraft((current) => ({ ...current, runtimeProfileId: event.target.value }))
@@ -563,7 +570,7 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
                     {runtime.name} · {runtime.languageVersion}
                   </option>
                 ))}
-              </NativeSelect>
+              </ResourceSelectField>
             </Field>
             <Field label={t("sandbox.studio.entrypoint")}>
               <Input
@@ -574,7 +581,7 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
               />
             </Field>
             {selectedRuntime ? (
-              <div className="grid gap-2 rounded-md border border-border bg-background p-3 text-xs">
+              <div className="grid gap-2 border-border p-3 text-xs">
                 <ManifestLine label="OCI" value={selectedRuntime.ociDigest ?? "—"} mono />
                 <ManifestLine label="SIF" value={selectedRuntime.sifDigest ?? "—"} mono />
                 <ManifestLine
@@ -605,7 +612,7 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
         </aside>
       </div>
 
-      <Card>
+      <section>
         <Tabs defaultValue="validation">
           <CardHeader className="pb-0">
             <TabsList className="flex h-auto flex-wrap">
@@ -657,7 +664,7 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
                   {t("sandbox.studio.runTest")}
                 </Button>
                 {testMutation.data ? (
-                  <div className="rounded-md border border-border bg-background p-3 text-xs">
+                  <div className=" border-border p-3 text-xs">
                     <div className="font-medium">{testMutation.data.status}</div>
                     <div className="mt-1 font-mono text-muted-foreground">
                       {testMutation.data.runId}
@@ -749,7 +756,7 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
             </TabsContent>
           </CardContent>
         </Tabs>
-      </Card>
+      </section>
     </PageShell>
   );
 }
@@ -812,7 +819,7 @@ function SecurityLine({ icon, text }: { icon: React.ReactNode; text: string }) {
 
 function PreviewMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-border bg-background p-3 text-xs">
+    <div className=" border-border p-3 text-xs">
       <div className="text-muted-foreground">{label}</div>
       <div className="mt-1 font-medium">{value}</div>
     </div>

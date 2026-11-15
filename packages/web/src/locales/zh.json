@@ -2687,5 +2687,20 @@
     "accounts": {
       "disableConfirm": "停用执行账号 {{name}}？后续作业将无法使用此身份。"
     }
+  },
+  "ui": {
+    "choose": "请选择",
+    "name": "名称",
+    "search": "搜索选项",
+    "searchPlaceholder": "搜索名称、ID 或相关信息…",
+    "recent": "最近选择",
+    "allOptions": "全部选项",
+    "noMatches": "没有匹配的选项，请更换关键词",
+    "selectedCount": "已选 {{count}} 项",
+    "clear": "清空",
+    "expand": "展开选择",
+    "resultCount": "共 {{count}} 条",
+    "clearFilters": "清空筛选",
+    "unavailable": "该选项当前不可用，请重新选择。"
   }
 }

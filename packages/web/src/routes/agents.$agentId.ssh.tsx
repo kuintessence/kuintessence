@@ -29,7 +29,7 @@ export function SshRoutePage({ agentId }: { agentId: string }) {
     return (
       <PageShell>
         <PageHeader title={t("ssh.terminal.title")} subtitle={agentId} />
-        <div className="space-y-3 rounded-md border border-status-failed/40 p-4" role="alert">
+        <div className="space-y-3 p-4" role="alert">
           <p className="text-sm text-status-failed">
             {t("workspace.capabilitiesFailedDescription")}
           </p>
@@ -65,7 +65,7 @@ export function SshRoutePage({ agentId }: { agentId: string }) {
         <SshTerminal agentId={agentId} />
       ) : (
         <div
-          className="flex items-start gap-2 rounded-md border border-dashed border-border bg-muted/30 p-4 text-sm text-muted-foreground"
+          className="flex items-start gap-2 border-border p-4 text-sm text-muted-foreground"
           data-testid="ssh-rbac-denied"
         >
           <ShieldOff className="mt-0.5 h-4 w-4 shrink-0" />

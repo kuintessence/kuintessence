@@ -120,10 +120,7 @@ export function TransfersTray({
 
   return (
     <aside
-      className={cn(
-        "flex h-full flex-col overflow-hidden bg-card",
-        embedded ? "" : "rounded-md border border-border",
-      )}
+      className={cn("flex h-full flex-col overflow-hidden ", embedded ? "" : " border-border")}
       data-testid="files-transfers-tray"
       aria-label={t("files.transfers.ariaLabel")}
     >
@@ -155,7 +152,7 @@ export function TransfersTray({
 
       {loadError ? (
         <div
-          className="flex items-center gap-2 border-b border-status-failed/30 bg-status-failed/5 px-3 py-2 text-xs text-status-failed"
+          className="flex items-center gap-2 border-b px-3 py-2 text-xs text-status-failed"
           data-testid="files-transfers-load-error"
           role="alert"
           title={loadError}
@@ -204,7 +201,7 @@ export function TransfersTray({
                   className={cn(
                     transfer.id === highlightTransferId ? "kq-motion kq-motion--item" : "",
                     "space-y-1 px-3 py-2 text-xs",
-                    transfer.id === highlightTransferId ? "bg-brand-soft/40" : "",
+                    transfer.id === highlightTransferId ? "" : "",
                   )}
                   data-state={transfer.id === highlightTransferId ? "open" : undefined}
                 >
@@ -213,19 +210,14 @@ export function TransfersTray({
                       {transfer.state === "succeeded" ? (
                         <CheckCircle2 className="h-3 w-3 text-[var(--status-succeeded)]" />
                       ) : (
-                        <span
-                          className={cn(
-                            "h-1.5 w-1.5 shrink-0 rounded-full",
-                            STATE_DOT[transfer.state],
-                          )}
-                        />
+                        <span className={cn("h-1.5 w-1.5 shrink-0 ", STATE_DOT[transfer.state])} />
                       )}
                       <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
                         {t(`files.transfers.state.${transfer.state}`)}
                       </span>
                       {isInterruptedTransfer(transfer) ? (
                         <span
-                          className="rounded-full border border-status-failed/40 px-1.5 py-0.5 text-[10px] text-status-failed"
+                          className=" px-1.5 py-0.5 text-[10px] text-status-failed"
                           data-testid={`files-transfer-badge-interrupted-${transfer.id}`}
                         >
                           {t("files.transfers.badge.interrupted")}
@@ -233,7 +225,7 @@ export function TransfersTray({
                       ) : null}
                       {isRetryableTransfer(transfer) ? (
                         <span
-                          className="rounded-full border border-brand/40 px-1.5 py-0.5 text-[10px] text-brand"
+                          className=" px-1.5 py-0.5 text-[10px] text-brand"
                           data-testid={`files-transfer-badge-retryable-${transfer.id}`}
                         >
                           {t("files.transfers.badge.retryable")}
@@ -241,7 +233,7 @@ export function TransfersTray({
                       ) : null}
                       {transfer.rootPolicyChangedAt ? (
                         <span
-                          className="rounded-full border border-status-warning/40 px-1.5 py-0.5 text-[10px] text-status-warning"
+                          className=" px-1.5 py-0.5 text-[10px] text-status-warning"
                           data-testid={`files-transfer-badge-root-policy-changed-${transfer.id}`}
                         >
                           {t("files.transfers.badge.rootPolicyChanged")}
@@ -305,9 +297,9 @@ export function TransfersTray({
                     {transfer.source} → {transfer.target}
                   </div>
                   {transfer.totalBytes != null ? (
-                    <div className="h-1 overflow-hidden rounded-full bg-muted">
+                    <div className="h-1 overflow-hidden ">
                       <div
-                        className="h-full bg-brand"
+                        className="h-full "
                         style={{
                           width: `${
                             transfer.totalBytes > 0
@@ -358,7 +350,7 @@ export function TransfersTray({
       </div>
 
       {!embedded ? (
-        <div className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
+        <div className=" border-border px-3 py-2 text-[11px] text-muted-foreground">
           <span className="font-mono tabular-nums">
             {t("files.transfers.totalActive", {
               total: verifiedTransfers.length,

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import i18n from "../../lib/i18n";
 import { SoftwareError } from "../../lib/software-client";
 import * as client from "../../lib/spack-material-visibility-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { labels } from "./MaterialLifecycle.test-helpers";
 import { MaterialVisibility } from "./MaterialVisibility";
 import {
@@ -78,7 +79,7 @@ test("requires explicit GET, policy change, valid reason and confirmation", asyn
     "disabled",
     false,
   );
-  fireEvent.change(visibilityUi().getByLabelText(labels.visibilityReason), {
+  fireEvent.change(nativeControl(visibilityUi().getByLabelText(labels.visibilityReason)), {
     target: { value: " leading" },
   });
   expect(visibilityUi().getByRole("checkbox")).toHaveProperty("checked", false);
@@ -108,7 +109,10 @@ test("saves deny-all and inherit using fresh revisions without ordinary manifest
     { policy: denied, expectedRevision: 0, reason: VISIBILITY_REASON },
     expect.any(AbortSignal),
   );
-  expect(visibilityUi().getByLabelText(labels.visibilityReason)).toHaveProperty("value", "");
+  expect(nativeControl(visibilityUi().getByLabelText(labels.visibilityReason))).toHaveProperty(
+    "value",
+    "",
+  );
   expect(visibilityUi().getByLabelText(labels.visibilityReason)).not.toBe(initialReason);
   expect(visibilityUi().getByRole("checkbox")).toHaveProperty("checked", false);
   const previousHistory = screen.getByRole("table", { name: labels.visibilityHistory });
@@ -129,7 +133,10 @@ test("saves deny-all and inherit using fresh revisions without ordinary manifest
   expect(within(history).getAllByRole("row")[1]?.textContent).toContain(
     labels.visibilityMode.inherit,
   );
-  expect(visibilityUi().getByLabelText(labels.visibilityReason)).toHaveProperty("value", "");
+  expect(nativeControl(visibilityUi().getByLabelText(labels.visibilityReason))).toHaveProperty(
+    "value",
+    "",
+  );
   expect(visibilityUi().getByRole("checkbox")).toHaveProperty("checked", false);
   expect(
     diagnostics.mock.calls.filter(([message]) =>
@@ -151,9 +158,12 @@ test.each([
   inspectVisibility();
   await screen.findByTestId("material-visibility-detail");
   confirmVisibility();
-  fireEvent.change(visibilityUi().getByLabelText(labels.visibilityPrincipals.userIds), {
-    target: { value },
-  });
+  fireEvent.change(
+    nativeControl(visibilityUi().getByLabelText(labels.visibilityPrincipals.userIds)),
+    {
+      target: { value },
+    },
+  );
   fireEvent.click(visibilityUi().getByRole("checkbox"));
   submitVisibility();
   expect(visibilityUi().getByText(labels.visibilityInvalidPolicy)).toBeTruthy();
@@ -214,7 +224,7 @@ test.each([
   expect(screen.queryByTestId("material-visibility-detail")).toBeNull();
   const locator = visibilityUi().getByLabelText(labels.visibilityManifestDigest);
   expect(locator).toHaveProperty("disabled", true);
-  fireEvent.change(locator, { target: { value: `sha256:${"9".repeat(64)}` } });
+  fireEvent.change(nativeControl(locator), { target: { value: `sha256:${"9".repeat(64)}` } });
   expect(locator).toHaveProperty("value", f.binding.manifestDigest);
   vi.mocked(client.getSpackMaterialVisibility).mockRejectedValueOnce(
     new SoftwareError(503, "MATERIAL_VISIBILITY_UNAVAILABLE", "Not ready"),
@@ -272,9 +282,12 @@ test.each([
   inspectVisibility();
   const signal = vi.mocked(client.getSpackMaterialVisibility).mock.calls[0]?.[1];
   if (change === "edit") {
-    fireEvent.change(visibilityUi().getByLabelText(labels.visibilityManifestDigest), {
-      target: { value: "" },
-    });
+    fireEvent.change(
+      nativeControl(visibilityUi().getByLabelText(labels.visibilityManifestDigest)),
+      {
+        target: { value: "" },
+      },
+    );
   }
   if (change === "unmount") view.unmount();
   if (change === "session") current = false;

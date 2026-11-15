@@ -212,7 +212,7 @@ export function SshRecordingPlayer() {
                 key={`${rec.agentId}/${rec.sessionId}`}
                 data-testid={`ssh-rec-list-row-${rec.sessionId}`}
                 onClick={() => void play(rec.agentId, rec.sessionId)}
-                className="flex w-full items-center justify-between gap-2 rounded-md border border-border px-3 py-2 text-left text-xs hover:bg-muted/60"
+                className="flex w-full items-center justify-between gap-2 border-b border-border px-3 py-2 text-left text-xs"
               >
                 <span className="min-w-0">
                   <span className="font-medium text-foreground">
@@ -231,7 +231,7 @@ export function SshRecordingPlayer() {
 
         {!enabled ? (
           <div
-            className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+            className=" border-border px-3 py-2 text-sm text-muted-foreground"
             data-testid="ssh-rec-disabled"
           >
             {t("settings.sshRec.disabled", {
@@ -309,7 +309,7 @@ export function SshRecordingPlayer() {
           <div
             ref={containerRef}
             data-testid="ssh-rec-viewport"
-            className="h-[40vh] w-full overflow-hidden rounded-md border border-border bg-card"
+            className="h-[40vh] w-full overflow-hidden border-border "
           />
         ) : null}
       </CardContent>

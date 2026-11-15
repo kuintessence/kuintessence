@@ -112,7 +112,7 @@ export function AgentCard({ agent, canOpenSsh }: { agent: AgentRow; canOpenSsh: 
             </span>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-2 border-t border-border pt-2 text-[11px]">
+        <div className="grid grid-cols-2 gap-2 border-border pt-2 text-[11px]">
           <div className="min-w-0" data-testid={`agent-health-${agent.agentId}`}>
             <div className="flex items-center gap-1 text-muted-foreground">
               <Activity className="h-3 w-3" />

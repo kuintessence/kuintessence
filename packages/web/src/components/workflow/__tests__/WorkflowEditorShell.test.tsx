@@ -18,11 +18,13 @@ vi.mock("../../ThemeProvider", () => ({
   useTheme: () => ({ resolved: "light" }),
 }));
 
-const { getSandboxScript, listSandboxScripts, listUsecasePackages } = vi.hoisted(() => ({
-  getSandboxScript: vi.fn(),
-  listSandboxScripts: vi.fn(),
-  listUsecasePackages: vi.fn(),
-}));
+const { getSandboxScript, listSandboxScripts, listUsecasePackages, listSandboxRuntimeProfiles } =
+  vi.hoisted(() => ({
+    getSandboxScript: vi.fn(),
+    listSandboxRuntimeProfiles: vi.fn(),
+    listSandboxScripts: vi.fn(),
+    listUsecasePackages: vi.fn(),
+  }));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -35,6 +37,7 @@ vi.mock("../../../lib/software-client", () => ({
 }));
 
 vi.mock("../../../lib/sandbox-client", () => ({
+  listSandboxRuntimeProfiles: (...args: unknown[]) => listSandboxRuntimeProfiles(...args),
   getSandboxScript: (...args: unknown[]) => getSandboxScript(...args),
   listSandboxScripts: (...args: unknown[]) => listSandboxScripts(...args),
 }));
@@ -116,6 +119,7 @@ spec:
 `;
 
 beforeEach(() => {
+  listSandboxRuntimeProfiles.mockResolvedValue([]);
   listUsecasePackages.mockResolvedValue([]);
   listSandboxScripts.mockResolvedValue([]);
 });
@@ -449,4 +453,43 @@ spec:
     expect(yaml).not.toContain("outputSlots:");
     expect(parseWorkflowYaml(yaml).ok).toBe(true);
   });
+});
+
+test("changing a managed usecase refreshes input and output contracts in YAML", async () => {
+  const first = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+  const second = "3f2504e0-4f89-41d3-9a0c-0305e82c3302";
+  const revision = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+  const pkg = (id: string, name: string, descriptor: string) => ({
+    id,
+    name,
+    version: "1.0.0",
+    publishedSoftwareRevisionId: revision,
+    spec: {
+      usecase: {
+        commandFile: "run.sh",
+        inputSlots: [{ kind: "Text", descriptor, refMaterials: [] }],
+      },
+      software: { kind: "Spack", name: "demo", argumentList: [] },
+      arguments: [],
+      environments: [],
+      filesomeInputs: [],
+      filesomeOutputs: [],
+      valueOutputs: [],
+    },
+    createdAt: "2026-01-01T00:00:00Z",
+  });
+  listUsecasePackages.mockResolvedValue([
+    pkg(first, "First", "original"),
+    pkg(second, "Second", "replacement"),
+  ]);
+  const changed = vi.fn();
+  renderShell(changed);
+  fireEvent.click(screen.getByTestId("rf-palette-SoftwareUsecaseComputing"));
+  fireEvent.doubleClick(await screen.findByTestId(`workflow-usecase-option-${first}`));
+  fireEvent.click(await screen.findByTestId("rf-prop-usecase-version-select"));
+  fireEvent.click(screen.getByRole("option", { name: /Second/ }));
+  const result = String(changed.mock.calls.at(-1)?.[0]);
+  expect(result).toContain(`usecaseVersionId: ${second}`);
+  expect(result).toContain("descriptor: replacement");
+  expect(result).not.toContain("descriptor: original");
 });

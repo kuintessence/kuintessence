@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import i18n from "../../lib/i18n";
 import { SoftwareError } from "../../lib/software-client";
 import * as client from "../../lib/spack-material-management-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { labels, lifecycleFixture } from "./MaterialLifecycle.test-helpers";
 import { MaterialManagementCatalog } from "./MaterialManagementCatalog";
 import { deferred } from "./SpackMaterials.test-helpers";
@@ -54,7 +55,7 @@ function mount() {
 }
 
 function search() {
-  fireEvent.change(screen.getByLabelText(labels.managementRepository), {
+  fireEvent.change(nativeControl(screen.getByLabelText(labels.managementRepository)), {
     target: { value: repository },
   });
   fireEvent.click(screen.getByRole("button", { name: labels.managementSearch }));
@@ -64,8 +65,8 @@ test("select accessible names stay independent of their selected options", () =>
   mount();
   const state = screen.getByRole("combobox", { name: labels.managementState });
   const limit = screen.getByRole("combobox", { name: labels.managementPageSize });
-  fireEvent.change(state, { target: { value: "withdrawn" } });
-  fireEvent.change(limit, { target: { value: "1" } });
+  fireEvent.change(nativeControl(state), { target: { value: "withdrawn" } });
+  fireEvent.change(nativeControl(limit), { target: { value: "1" } });
   expect(screen.getByRole("combobox", { name: labels.managementState })).toBe(state);
   expect(screen.getByRole("combobox", { name: labels.managementPageSize })).toBe(limit);
   expect(state).toHaveProperty("value", "withdrawn");
@@ -79,8 +80,14 @@ test("requires an explicit manageable repository and search, with all/10 default
     "disabled",
     true,
   );
-  expect(screen.getByLabelText(labels.managementState)).toHaveProperty("value", "all");
-  expect(screen.getByLabelText(labels.managementPageSize)).toHaveProperty("value", "10");
+  expect(nativeControl(screen.getByLabelText(labels.managementState))).toHaveProperty(
+    "value",
+    "all",
+  );
+  expect(nativeControl(screen.getByLabelText(labels.managementPageSize))).toHaveProperty(
+    "value",
+    "10",
+  );
   expect(
     within(screen.getByLabelText(labels.managementPageSize))
       .getAllByRole("option")
@@ -105,7 +112,7 @@ test.each([
 ])("does not request invalid or forbidden repository %s, even on form submission", (name) => {
   mount();
   const input = screen.getByLabelText(labels.managementRepository);
-  fireEvent.change(input, { target: { value: name } });
+  fireEvent.change(nativeControl(input), { target: { value: name } });
   const form = input.closest("form");
   if (!form) throw new Error("Missing management form");
   fireEvent.submit(form);
@@ -120,10 +127,12 @@ test("uses opaque cursor history across empty filtered pages and refetches previ
     .mockResolvedValueOnce({ releases: [], nextCursor: token("a") })
     .mockResolvedValueOnce({ releases: [], nextCursor: token("z") });
   mount();
-  fireEvent.change(screen.getByLabelText(labels.managementState), {
+  fireEvent.change(nativeControl(screen.getByLabelText(labels.managementState)), {
     target: { value: "withdrawn" },
   });
-  fireEvent.change(screen.getByLabelText(labels.managementPageSize), { target: { value: "1" } });
+  fireEvent.change(nativeControl(screen.getByLabelText(labels.managementPageSize)), {
+    target: { value: "1" },
+  });
   search();
   await screen.findByText(labels.managementEmpty);
   const next = () => screen.getByRole("button", { name: labels.managementNext });
@@ -172,7 +181,7 @@ test.each([
   const change = changes[field as keyof typeof changes];
   const [label, value] = change;
   if (!label || !value) throw new Error("Missing filter change");
-  fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  fireEvent.change(nativeControl(screen.getByLabelText(label)), { target: { value } });
   expect(signal?.aborted).toBe(true);
   await act(async () => pending.resolve(catalog()));
   expect(screen.queryByRole("table")).toBeNull();
@@ -269,7 +278,7 @@ test.each([
     expect(button).toHaveProperty("disabled", true);
   }
   if (mode === "edit") {
-    fireEvent.change(screen.getByLabelText(labels.managementState), {
+    fireEvent.change(nativeControl(screen.getByLabelText(labels.managementState)), {
       target: { value: "available" },
     });
   }
@@ -314,6 +323,6 @@ test("language changes retain results without refetching", async () => {
   rerender(<MaterialManagementCatalog {...props} />);
   const table = within(screen.getByRole("table", { name: "维护者材料目录" }));
   expect(table.getByRole("cell", { name: /^已下架$/ })).toBeTruthy();
-  expect(screen.getByLabelText("管理仓库")).toHaveProperty("value", repository);
+  expect(nativeControl(screen.getByLabelText("管理仓库"))).toHaveProperty("value", repository);
   expect(client.listSpackMaterialManagement).toHaveBeenCalledTimes(1);
 });

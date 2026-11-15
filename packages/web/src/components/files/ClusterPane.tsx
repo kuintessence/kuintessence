@@ -8,6 +8,8 @@ import type { AgentRow } from "../agents/AgentCard";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { type FileContextAction, FileContextMenu, type FileContextTarget } from "./FileContextMenu";
 import { fmtBytes, joinClusterPath, parentClusterPath } from "./path-picker-utils";
 
@@ -102,10 +104,10 @@ export function ClusterPane({
 
   return (
     <div
-      className="flex h-full flex-col overflow-hidden rounded-md border border-border"
+      className="flex h-full flex-col overflow-hidden border-border"
       data-testid="files-cluster-pane"
     >
-      <div className="border-b border-border bg-card/60 px-3 py-2">
+      <div className="border-b border-border px-3 py-2">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-1">
             <Button
@@ -127,7 +129,10 @@ export function ClusterPane({
             {agents.length === 0 ? (
               <span className="font-mono text-[11px] text-muted-foreground">{noAgentMessage}</span>
             ) : (
-              <NativeSelect
+              <ResourceSelectField
+                resourceType="agents"
+                recent
+                expandable
                 data-testid="files-cluster-agent-select"
                 className="min-w-0 flex-1 py-0.5 font-mono text-[11px] sm:max-w-80"
                 aria-label={t("files.clusterAgent")}
@@ -144,7 +149,7 @@ export function ClusterPane({
                     {a.siteName} · {a.schedulerType} {a.schedulerVersion}
                   </option>
                 ))}
-              </NativeSelect>
+              </ResourceSelectField>
             )}
             <Button
               type="button"
@@ -162,7 +167,10 @@ export function ClusterPane({
         </div>
         <div className="mt-1 flex min-w-0 items-center gap-2 pl-9">
           {roots.length > 1 ? (
-            <NativeSelect
+            <ResourceSelectField
+              resourceType="cluster-file-roots"
+              recent
+              expandable
               value={activeRoot}
               onChange={(event) => onRootChange(event.target.value)}
               aria-label={t("files.clusterRoot")}
@@ -174,7 +182,7 @@ export function ClusterPane({
                   {root}
                 </option>
               ))}
-            </NativeSelect>
+            </ResourceSelectField>
           ) : null}
           <div
             className="min-w-0 flex-1 break-all font-mono text-[11px] leading-4 text-muted-foreground"
@@ -185,7 +193,7 @@ export function ClusterPane({
           </div>
         </div>
       </div>
-      <div className="flex items-center gap-2 border-b border-border bg-card/30 px-3 py-2">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -213,28 +221,30 @@ export function ClusterPane({
               (agent ? (query ? t("files.emptySearch") : emptyMessage) : noAgentMessage)}
           </div>
         ) : (
-          <table className="w-full table-fixed text-sm">
-            <thead className="sticky top-0 z-10 bg-muted text-left text-[11px] uppercase tracking-wide text-muted-foreground">
-              <tr>
-                <th className="min-w-0 px-3 py-2 font-medium">{t("files.table.name")}</th>
-                <th className="hidden w-20 px-2 py-2 font-medium text-right sm:table-cell">
+          <Table className="w-full table-fixed text-sm">
+            <TableHeader className="sticky top-0 z-10 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+              <TableRow>
+                <TableHead className="min-w-0 px-3 py-2 font-medium">
+                  {t("files.table.name")}
+                </TableHead>
+                <TableHead className="hidden w-20 px-2 py-2 font-medium text-right sm:table-cell">
                   {t("files.table.size")}
-                </th>
-                <th className="hidden w-24 px-2 py-2 font-medium md:table-cell">
+                </TableHead>
+                <TableHead className="hidden w-24 px-2 py-2 font-medium md:table-cell">
                   {t("files.table.modified")}
-                </th>
-                <th
+                </TableHead>
+                <TableHead
                   className="w-[92px] px-1 py-2 font-medium sm:w-[72px]"
                   aria-label={t("files.table.actions")}
                 />
-              </tr>
-            </thead>
-            <tbody>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {visibleEntries.map((e) => {
                 const isSelected = selected === e.name;
                 const isFile = e.kind === "file";
                 return (
-                  <tr
+                  <TableRow
                     key={e.name}
                     data-testid={
                       isFile ? `files-cluster-row-${e.name}` : `files-cluster-dir-${e.name}`
@@ -258,12 +268,9 @@ export function ClusterPane({
                         kind: e.kind,
                       });
                     }}
-                    className={
-                      "cursor-pointer border-t border-border " +
-                      (isSelected ? "bg-brand-soft/40" : "hover:bg-muted/40")
-                    }
+                    className={`cursor-pointer border-b border-border ${isSelected ? "text-brand font-semibold" : ""}`}
                   >
-                    <td className="min-w-0 px-3 py-2 font-medium">
+                    <TableCell className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
                         {e.kind === "dir" ? (
                           <Folder className="h-3.5 w-3.5 text-muted-foreground" />
@@ -272,7 +279,7 @@ export function ClusterPane({
                         )}
                         <button
                           type="button"
-                          className="min-w-0 break-words rounded-sm text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
+                          className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
                           title={e.name}
                           aria-pressed={isFile ? isSelected : undefined}
                           onClick={(event) => {
@@ -287,17 +294,17 @@ export function ClusterPane({
                           {e.name}
                         </button>
                       </div>
-                    </td>
-                    <td className="hidden px-3 py-2 text-right font-mono text-xs tabular-nums text-muted-foreground sm:table-cell">
+                    </TableCell>
+                    <TableCell className="hidden px-3 py-2 text-right font-mono text-xs tabular-nums text-muted-foreground sm:table-cell">
                       {fmtBytes(e.size)}
-                    </td>
-                    <td
+                    </TableCell>
+                    <TableCell
                       className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground tabular-nums md:table-cell"
                       title={e.modifiedAt}
                     >
                       {relativeFromNow(e.modifiedAt, undefined, language)}
-                    </td>
-                    <td className="px-1 py-0 text-right">
+                    </TableCell>
+                    <TableCell className="px-1 py-0 text-right">
                       <div className="flex items-center justify-end">
                         {isFile && onDownload ? (
                           <Button
@@ -328,15 +335,15 @@ export function ClusterPane({
                           <EllipsisVertical />
                         </Button>
                       </div>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         )}
       </div>
-      <div className="flex items-center justify-between border-t border-border bg-card/40 px-3 py-2 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between border-border px-3 py-2 text-[11px] text-muted-foreground">
         <span className="font-mono tabular-nums">
           {t("files.itemCount", { count: entries.length })} · {fmtBytes(total)}
         </span>

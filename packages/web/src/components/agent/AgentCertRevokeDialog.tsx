@@ -61,7 +61,7 @@ export function AgentCertRevokeDialog({
           <div className="space-y-1">
             <div className="text-xs font-medium text-muted-foreground">{copy.fingerprintLabel}</div>
             <code
-              className="block max-w-full overflow-hidden text-ellipsis rounded-md border border-border bg-muted/40 px-2 py-1 text-xs"
+              className="block max-w-full overflow-hidden text-ellipsis border-b border-border px-2 py-1 text-xs"
               title={fingerprintSha256 ?? ""}
               data-testid={`${testIdPrefix}-fingerprint`}
             >

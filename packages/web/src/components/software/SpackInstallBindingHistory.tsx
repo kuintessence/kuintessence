@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 export function SpackInstallBindingHistory({ view }: { view: SpackInstallBindingView }) {
   const { t } = useTranslation();
@@ -12,28 +13,30 @@ export function SpackInstallBindingHistory({ view }: { view: SpackInstallBinding
     <div className="min-w-0 space-y-2">
       <h4 className="text-xs font-medium">{t("materials.installBinding.history")}</h4>
       <div className="max-w-full overflow-x-auto">
-        <table
+        <Table
           className="w-full min-w-[48rem] table-fixed text-left text-xs"
           aria-label={t("materials.installBinding.history")}
         >
-          <thead className="border-b border-border">
-            <tr>
-              <th className="w-20 p-2">{t("materials.lifecycleRevision")}</th>
-              <th className="w-24 p-2">{t("materials.status")}</th>
-              <th className="w-24 p-2">{t("materials.installBinding.source")}</th>
-              <th className="p-2">{t("materials.release")}</th>
-              <th className="p-2">{t("materials.lifecycleOperator")}</th>
-              <th className="p-2">{t("materials.lifecycleTime")}</th>
-              <th className="p-2">{t("materials.lifecycleReason")}</th>
-            </tr>
-          </thead>
-          <tbody>
+          <TableHeader className="border-b border-border">
+            <TableRow>
+              <TableHead className="w-20 p-2">{t("materials.lifecycleRevision")}</TableHead>
+              <TableHead className="w-24 p-2">{t("materials.status")}</TableHead>
+              <TableHead className="w-24 p-2">{t("materials.installBinding.source")}</TableHead>
+              <TableHead className="p-2">{t("materials.release")}</TableHead>
+              <TableHead className="p-2">{t("materials.lifecycleOperator")}</TableHead>
+              <TableHead className="p-2">{t("materials.lifecycleTime")}</TableHead>
+              <TableHead className="p-2">{t("materials.lifecycleReason")}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {view.history.slice(page * 10, (page + 1) * 10).map((event) => (
-              <tr key={event.revision} className="border-b border-border align-top">
-                <td className="p-2 tabular-nums">{event.revision}</td>
-                <td className="p-2">{t(`materials.installBinding.state.${event.state}`)}</td>
-                <td className="p-2">{event.source}</td>
-                <td className="break-all p-2 font-mono">
+              <TableRow key={event.revision} className="border-b border-border align-top">
+                <TableCell className="p-2 tabular-nums">{event.revision}</TableCell>
+                <TableCell className="p-2">
+                  {t(`materials.installBinding.state.${event.state}`)}
+                </TableCell>
+                <TableCell className="p-2">{event.source}</TableCell>
+                <TableCell className="break-all p-2 font-mono">
                   {event.binding ? (
                     <>
                       <div>{event.binding.repositoryId}</div>
@@ -42,16 +45,16 @@ export function SpackInstallBindingHistory({ view }: { view: SpackInstallBinding
                   ) : (
                     "-"
                   )}
-                </td>
-                <td className="break-all p-2 font-mono">{event.operatorId ?? "-"}</td>
-                <td className="break-all p-2">
+                </TableCell>
+                <TableCell className="break-all p-2 font-mono">{event.operatorId ?? "-"}</TableCell>
+                <TableCell className="break-all p-2">
                   <time dateTime={event.createdAt}>{event.createdAt}</time>
-                </td>
-                <td className="break-all p-2">{event.reason}</td>
-              </tr>
+                </TableCell>
+                <TableCell className="break-all p-2">{event.reason}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
       {view.history.length === 0 ? (
         <p className="text-xs">{t("materials.installBinding.historyEmpty")}</p>

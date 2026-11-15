@@ -1,0 +1,1280 @@
+[
+  {
+    "file": "packages/web/src/components/agent/AgentCertRevokeDialog.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/agents/AgentCard.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/AgentRegistrationPage.tsx",
+    "route": false,
+    "controls": 6,
+    "cards": 3,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/AuditSearchPanel.tsx",
+    "route": false,
+    "controls": 3,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/CpAccountsPage.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 1,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/CpDashboard.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 3,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/CpDataPage.tsx",
+    "route": false,
+    "controls": 5,
+    "cards": 5,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/CpQueuesPage.tsx",
+    "route": false,
+    "controls": 16,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 2,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/EditAccountQueues.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/EditPolicyDialog.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/EditQuotaDialog.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/KpiTile.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/MeteringPage.tsx",
+    "route": false,
+    "controls": 4,
+    "cards": 3,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/MeteringWebhooks.tsx",
+    "route": false,
+    "controls": 5,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/ProviderOrganizationSelector.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/RegisterExecutionAccount.tsx",
+    "route": false,
+    "controls": 4,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/SoftwarePolicyTable.tsx",
+    "route": false,
+    "controls": 21,
+    "cards": 3,
+    "overlays": 3,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/cp/UsersTable.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/dashboard/AttentionOverviewCard.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/dashboard/Dashboard.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 3,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/dashboard/QuickStart.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/dashboard/StatCard.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/data-market/DataMarketPage.tsx",
+    "route": false,
+    "controls": 7,
+    "cards": 3,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/files/CloudPane.tsx",
+    "route": false,
+    "controls": 3,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/files/ClusterPane.tsx",
+    "route": false,
+    "controls": 4,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/files/DeleteCloudFileDialog.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/files/NewTransferSheet.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/files/PathPickerSheet.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 2,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/files/StorageQuotaRequestDialog.tsx",
+    "route": false,
+    "controls": 3,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/interconnect/InterconnectDashboard.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/interconnect/InterconnectMap.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/interconnect/MetadataEditor.tsx",
+    "route": false,
+    "controls": 19,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/jobs/CommandWorkdirDialog.tsx",
+    "route": false,
+    "controls": 5,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/jobs/ImportJobJsonDialog.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/jobs/JobDetailSheet.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 5,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/jobs/JobsPage.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/jobs/JobsToolbar.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/jobs/SubmitJobDialog.tsx",
+    "route": false,
+    "controls": 16,
+    "cards": 0,
+    "overlays": 2,
+    "tabs": 2,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/providers/ComputeProvidersPage.tsx",
+    "route": false,
+    "controls": 4,
+    "cards": 0,
+    "overlays": 2,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/AgentCertsPanel.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/AuditCapabilityPanel.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/AuthzAdminPanel.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/CloudStorageGovernancePanel.tsx",
+    "route": false,
+    "controls": 8,
+    "cards": 2,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/ClusterFileRootsPanel.tsx",
+    "route": false,
+    "controls": 11,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/ClusterStoragePolicyEditor.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/CostRatesForm.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 3,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/DesensitizeAdminPanel.tsx",
+    "route": false,
+    "controls": 7,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/FileTransferAuditConfigPanel.tsx",
+    "route": false,
+    "controls": 3,
+    "cards": 3,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/OrganizationMembershipPanel.tsx",
+    "route": false,
+    "controls": 6,
+    "cards": 1,
+    "overlays": 2,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/PlatformBrandingForm.tsx",
+    "route": false,
+    "controls": 3,
+    "cards": 3,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/PlatformUsersTable.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/SSOConfigForm.tsx",
+    "route": false,
+    "controls": 12,
+    "cards": 3,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/SandboxAccountMappingsPanel.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/SandboxSecurityPanel.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/SettingsPage.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 5,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/SshActiveSessions.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/SshCredentialsForm.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/settings/SshRecordingPlayer.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/EcosystemGovernancePanels.tsx",
+    "route": false,
+    "controls": 13,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/MaterialCatalog.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/MaterialLifecycle.tsx",
+    "route": false,
+    "controls": 4,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/MaterialManagementCatalog.tsx",
+    "route": false,
+    "controls": 3,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/MaterialManagementEditors.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 2,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/MaterialPackImport.tsx",
+    "route": false,
+    "controls": 4,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/MaterialReleaseLookup.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/MaterialVisibility.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/MaterialVisibilityForm.tsx",
+    "route": false,
+    "controls": 4,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/OfflineDeliveryImport.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/RecipeBundleImport.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/RecipeRepositoryDetail.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/SandboxScriptCatalog.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/SandboxScriptStudio.tsx",
+    "route": false,
+    "controls": 16,
+    "cards": 2,
+    "overlays": 1,
+    "tabs": 4,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/SoftwareCard.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/SoftwarePage.tsx",
+    "route": false,
+    "controls": 37,
+    "cards": 0,
+    "overlays": 6,
+    "tabs": 4,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/SpackInstallBindingEditor.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/SpackInstallBindingForm.tsx",
+    "route": false,
+    "controls": 4,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/software/SpackOnlineImport.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/terminal/AuditDrawer.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/terminal/NewSessionDialog.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/ui/data-table.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/ui/input.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/ui/list-toolbar.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/ui/native-select.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/ui/search-input.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflow/EdgeTypes.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflow/NodePalette.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflow/NodeTypes.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflow/PropertiesPanel.tsx",
+    "route": false,
+    "controls": 35,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflow/ReactFlowEditor.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflow/WorkflowEditorShell.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflow/WorkflowSlotMappingDialog.tsx",
+    "route": false,
+    "controls": 3,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 2,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflows/DeleteWorkflowDraftDialog.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflows/NewWorkflowPage.tsx",
+    "route": false,
+    "controls": 1,
+    "cards": 0,
+    "overlays": 2,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflows/WorkflowDagView.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 8,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflows/WorkflowInputsStep.tsx",
+    "route": false,
+    "controls": 9,
+    "cards": 3,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflows/WorkflowPickerDialogs.tsx",
+    "route": false,
+    "controls": 5,
+    "cards": 0,
+    "overlays": 2,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflows/WorkflowResourcesStep.tsx",
+    "route": false,
+    "controls": 5,
+    "cards": 2,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflows/WorkflowReviewStep.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 1,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflows/WorkflowScriptPickerDialog.tsx",
+    "route": false,
+    "controls": 2,
+    "cards": 0,
+    "overlays": 1,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/components/workflows/WorkflowsPage.tsx",
+    "route": false,
+    "controls": 0,
+    "cards": 2,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/__root.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/agents.$agentId.software.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/agents.$agentId.ssh.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/agents.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.accounts.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.agent-registration.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.agents.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.audit.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.data.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.index.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.infrastructure.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.interconnect.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.metering.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.profile.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.queues.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.software.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/cp.users.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/data-market.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/files.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/index.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/interconnect.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/jobs.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/jobs_.$jobId.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 5,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/login.tsx",
+    "route": true,
+    "controls": 2,
+    "cards": 2,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/operations.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/providers.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/settings.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/software.scripts.$scriptId.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/software.scripts.new.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/software.scripts.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/software.spack.$source.$name.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/software.spack.new.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/software.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/software.usecases.$usecaseId.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/software.usecases.new.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/software.workflow-templates.$templateId.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/software.workflow-templates.new.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/terminal.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/workflows/$runId.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/workflows/index.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  },
+  {
+    "file": "packages/web/src/routes/workflows/new.tsx",
+    "route": true,
+    "controls": 0,
+    "cards": 0,
+    "overlays": 0,
+    "tabs": 0,
+    "status": "pending"
+  }
+]

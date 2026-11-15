@@ -233,11 +233,11 @@ export function StorageQuotaRequestDialog({
                 </Button>
               </StatusMessage>
             ) : cloudRequests.length === 0 ? (
-              <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+              <div className=" p-4 text-center text-xs text-muted-foreground">
                 {t("files.quota.noRequests")}
               </div>
             ) : (
-              <div className="divide-y overflow-hidden rounded-md border">
+              <div className="divide-y overflow-hidden ">
                 {cloudRequests.slice(0, 5).map((request) => (
                   <div key={request.id} className="flex items-center gap-3 px-3 py-2 text-xs">
                     <Database className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -278,10 +278,8 @@ function StatusMessage({
   return (
     <div
       className={cn(
-        "flex min-h-12 items-center gap-2 rounded-md border px-3 py-2 text-xs",
-        error
-          ? "border-status-failed/30 bg-status-failed/5 text-status-failed"
-          : "border-border text-muted-foreground",
+        "flex min-h-12 items-center gap-2 px-3 py-2 text-xs",
+        error ? " text-status-failed" : "border-border text-muted-foreground",
       )}
       role={error ? "alert" : "status"}
     >
@@ -293,7 +291,7 @@ function StatusMessage({
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border bg-muted/25 p-3">
+    <div className=" p-3">
       <div className="text-[11px] text-muted-foreground">{label}</div>
       <div className="mt-1 font-mono text-sm font-semibold tabular-nums">{value}</div>
     </div>

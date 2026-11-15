@@ -10,6 +10,7 @@ import { getSpackMaterial } from "../../lib/spack-materials-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { MaterialEvidence } from "./MaterialEvidence";
 
 const PAGE_SIZE = 20;
@@ -169,27 +170,31 @@ export function MaterialReleaseLookup({
             )}
           </ul>
           <div className="overflow-x-auto">
-            <table
+            <Table
               className="w-full min-w-[32rem] table-fixed text-left text-xs"
               aria-label={t("materials.sourceFiles")}
             >
-              <thead className="border-b border-border text-muted-foreground">
-                <tr>
-                  <th className="w-[35%] p-2 font-medium">{t("materials.path")}</th>
-                  <th className="p-2 font-medium">SHA-256</th>
-                  <th className="w-24 p-2 font-medium">{t("materials.bytes")}</th>
-                </tr>
-              </thead>
-              <tbody>
+              <TableHeader className="border-b border-border text-muted-foreground">
+                <TableRow>
+                  <TableHead className="w-[35%] p-2 font-medium">{t("materials.path")}</TableHead>
+                  <TableHead className="p-2 font-medium">SHA-256</TableHead>
+                  <TableHead className="w-24 p-2 font-medium">{t("materials.bytes")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {manifest.sources.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((source) => (
-                  <tr key={source.path} className="border-b border-border">
-                    <td className="break-all p-2 align-top font-mono">{source.path}</td>
-                    <td className="break-all p-2 align-top font-mono">{source.blob.digest}</td>
-                    <td className="break-all p-2 align-top">{source.blob.size}</td>
-                  </tr>
+                  <TableRow key={source.path} className="border-b border-border">
+                    <TableCell className="break-all p-2 align-top font-mono">
+                      {source.path}
+                    </TableCell>
+                    <TableCell className="break-all p-2 align-top font-mono">
+                      {source.blob.digest}
+                    </TableCell>
+                    <TableCell className="break-all p-2 align-top">{source.blob.size}</TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
           <div className="flex items-center justify-end gap-2 text-xs">
             <span>

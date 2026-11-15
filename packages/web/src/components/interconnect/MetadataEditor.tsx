@@ -12,6 +12,7 @@ import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import { computeTypeLabel, getStatusLabels } from "./model";
 
 export type EditTarget = { kind: "centers" | "clusters" | "links"; id?: string };
@@ -218,7 +219,8 @@ export function MetadataEditor({
             {target.kind === "centers" && (
               <>
                 <Field label={t("interconnect.organization")}>
-                  <NativeSelect
+                  <ResourceSelectField
+                    resourceType="organizations"
                     name="orgId"
                     className="w-full"
                     defaultValue={center?.orgId ?? snapshot.organizations[0]?.id}
@@ -231,7 +233,7 @@ export function MetadataEditor({
                           {o.name}
                         </option>
                       ))}
-                  </NativeSelect>
+                  </ResourceSelectField>
                 </Field>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   <Field label={t("interconnect.country")}>
@@ -279,7 +281,8 @@ export function MetadataEditor({
             {target.kind === "clusters" && (
               <>
                 <Field label={t("interconnect.parentCenter")}>
-                  <NativeSelect
+                  <ResourceSelectField
+                    resourceType="compute-centers"
                     className="w-full"
                     value={centerId}
                     onChange={(e) => setCenterId(e.target.value)}
@@ -290,7 +293,7 @@ export function MetadataEditor({
                         {c.metadata.name}
                       </option>
                     ))}
-                  </NativeSelect>
+                  </ResourceSelectField>
                 </Field>
                 <fieldset className="space-y-2">
                   <legend className="mb-2 text-sm">{t("interconnect.computeTypes")}</legend>
@@ -350,7 +353,7 @@ export function MetadataEditor({
                 </Field>
                 <fieldset className="space-y-2">
                   <legend className="mb-2 text-sm">{t("interconnect.linkedAgents")}</legend>
-                  <div className="max-h-40 space-y-2 overflow-y-auto rounded-md border border-border p-3">
+                  <div className="max-h-40 space-y-2 overflow-y-auto border-border p-3">
                     {snapshot.agents
                       .filter(
                         (a) =>
@@ -389,7 +392,8 @@ export function MetadataEditor({
                       key={name}
                       label={index === 0 ? t("interconnect.from") : t("interconnect.to")}
                     >
-                      <NativeSelect
+                      <ResourceSelectField
+                        resourceType="compute-centers"
                         className="w-full"
                         name={name}
                         required
@@ -401,7 +405,7 @@ export function MetadataEditor({
                             {c.metadata.name}
                           </option>
                         ))}
-                      </NativeSelect>
+                      </ResourceSelectField>
                     </Field>
                   ))}
                 </div>
@@ -459,7 +463,7 @@ export function MetadataEditor({
               </p>
             )}
           </div>
-          <div className="flex shrink-0 flex-wrap gap-2 border-t border-border px-5 py-4">
+          <div className="flex shrink-0 flex-wrap gap-2 border-border px-5 py-4">
             {target.id && (
               <Button
                 type="button"

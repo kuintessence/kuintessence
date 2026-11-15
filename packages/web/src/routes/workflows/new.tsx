@@ -27,7 +27,7 @@ function WorkflowCreationRoute() {
     return (
       <PageShell data-testid="workflow-create-capability-error">
         <PageHeader title={t("workflows.newWorkflowTitle")} />
-        <div className="space-y-3 rounded-md border border-status-failed/40 p-4" role="alert">
+        <div className="space-y-3 p-4" role="alert">
           <p className="text-sm text-status-failed">
             {t("workspace.capabilitiesFailedDescription")}
           </p>
@@ -49,7 +49,7 @@ function WorkflowCreationRoute() {
           title={t("workflows.newWorkflowTitle")}
           subtitle={t("workflows.creation.accessDenied")}
         />
-        <div className="flex items-start gap-2 rounded-md border border-dashed border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+        <div className="flex items-start gap-2 border-border p-4 text-sm text-muted-foreground">
           <ShieldOff className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="space-y-3">
             <p>{t("workflows.creation.accessGuidance")}</p>

@@ -211,7 +211,7 @@ export function SshTerminal({ agentId }: SshTerminalProps) {
   return (
     <div className="space-y-3" data-testid="ssh-terminal">
       <div
-        className="flex items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2 text-xs"
+        className="flex items-center justify-between gap-3 border-border px-3 py-2 text-xs"
         data-testid="ssh-status"
       >
         <SshStatusBanner state={stream.state} code={stream.lastCode} t={t} />
@@ -231,7 +231,7 @@ export function SshTerminal({ agentId }: SshTerminalProps) {
 
       {isUnauthorized ? (
         <div
-          className="flex items-start gap-2 rounded-md border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground"
+          className="flex items-start gap-2 border-border p-3 text-xs text-muted-foreground"
           data-testid="ssh-unauthorized"
         >
           <ShieldOff className="mt-0.5 h-3 w-3 shrink-0" />
@@ -241,7 +241,7 @@ export function SshTerminal({ agentId }: SshTerminalProps) {
 
       {isOffline && !isUnauthorized ? (
         <div
-          className="flex items-start gap-2 rounded-md border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground"
+          className="flex items-start gap-2 border-border p-3 text-xs text-muted-foreground"
           data-testid="ssh-offline"
         >
           <WifiOff className="mt-0.5 h-3 w-3 shrink-0" />
@@ -251,7 +251,7 @@ export function SshTerminal({ agentId }: SshTerminalProps) {
 
       <div
         ref={containerRef}
-        className="h-[60vh] w-full overflow-hidden rounded-md border border-border bg-card"
+        className="h-[60vh] w-full overflow-hidden border-border "
         data-testid="ssh-viewport"
       />
     </div>

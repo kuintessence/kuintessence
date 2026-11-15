@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -54,10 +55,10 @@ describe("AuditSearchPanel", () => {
 
     render(<AuditSearchPanel />, { wrapper: makeWrapper() });
 
-    fireEvent.change(screen.getByTestId("cp-audit-from"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-audit-from")), {
       target: { value: "2026-05-02T00:00" },
     });
-    fireEvent.change(screen.getByTestId("cp-audit-to"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-audit-to")), {
       target: { value: "2026-05-01T00:00" },
     });
 
@@ -148,10 +149,10 @@ describe("AuditSearchPanel", () => {
 
     render(<AuditSearchPanel />, { wrapper: makeWrapper() });
 
-    fireEvent.change(screen.getByTestId("cp-audit-from"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-audit-from")), {
       target: { value: "2026-04-30T00:00" },
     });
-    fireEvent.change(screen.getByTestId("cp-audit-to"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-audit-to")), {
       target: { value: "2026-05-02T00:00" },
     });
     fireEvent.click(screen.getByTestId("cp-audit-search-submit"));
@@ -264,10 +265,10 @@ describe("AuditSearchPanel", () => {
 
     render(<AuditSearchPanel />, { wrapper: makeWrapper() });
 
-    fireEvent.change(screen.getByTestId("cp-audit-from"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-audit-from")), {
       target: { value: "2026-04-30T00:00" },
     });
-    fireEvent.change(screen.getByTestId("cp-audit-to"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-audit-to")), {
       target: { value: "2026-05-02T00:00" },
     });
     fireEvent.click(screen.getByTestId("cp-audit-search-submit"));
@@ -301,13 +302,17 @@ describe("AuditSearchPanel", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<AuditSearchPanel />, { wrapper: makeWrapper() });
-    fireEvent.change(screen.getByTestId("cp-audit-text"), { target: { value: "original" } });
+    fireEvent.change(nativeControl(screen.getByTestId("cp-audit-text")), {
+      target: { value: "original" },
+    });
     fireEvent.submit(screen.getByTestId("cp-audit-search-form"));
     await waitFor(() => screen.getByTestId("cp-audit-row-page-0"));
     expect((screen.getByTestId("cp-audit-previous") as HTMLButtonElement).disabled).toBe(true);
     const original = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    fireEvent.change(screen.getByTestId("cp-audit-text"), { target: { value: "draft" } });
-    fireEvent.change(screen.getByTestId("cp-audit-from"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-audit-text")), {
+      target: { value: "draft" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("cp-audit-from")), {
       target: { value: "2026-01-01T00:00" },
     });
     fireEvent.click(screen.getByTestId("cp-audit-details-toggle-page-0"));

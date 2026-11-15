@@ -56,6 +56,7 @@ import {
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import { SearchInput } from "../ui/search-input";
 import {
   Sheet,
@@ -386,7 +387,10 @@ function DatasetInputPicker({
         value={query}
       />
       <div className="flex items-center gap-2">
-        <NativeSelect
+        <ResourceSelectField
+          searchable={false}
+          resourceType="dataset-versions"
+          recent
           className="min-w-0 flex-1"
           data-testid={`submit-usecase-dataset-select-${descriptor}`}
           disabled={optionsQ.isLoading || optionsQ.isError || displayedOptions.length === 0}
@@ -412,7 +416,7 @@ function DatasetInputPicker({
               {option.assetName} / {option.version}
             </option>
           ))}
-        </NativeSelect>
+        </ResourceSelectField>
         <Button
           aria-label={t("jobs.usecase.refreshDatasets")}
           data-testid={`submit-usecase-dataset-refresh-${descriptor}`}
@@ -609,7 +613,7 @@ function CommandWorkdirPreviewTree({
           key={`dir:${node.path}`}
         >
           <div
-            className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-muted/30 py-2 pr-3"
+            className="flex min-w-0 items-center gap-2 border-border py-2 pr-3"
             style={{ paddingLeft }}
           >
             <Folder className="h-4 w-4 shrink-0 text-brand" />
@@ -636,7 +640,7 @@ function CommandWorkdirPreviewTree({
     const stagePath = node.entry.stagePath.trim();
     return (
       <div
-        className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-background py-2 pr-3"
+        className="flex min-w-0 items-center gap-2 border-border py-2 pr-3"
         data-testid={`submit-command-workdir-tree-file-${safeStageTestId(stagePath)}`}
         key={`file:${node.entry.id}:${stagePath}`}
         style={{ paddingLeft }}
@@ -668,7 +672,7 @@ function CommandWorkdirPreviewTree({
 
   return (
     <div
-      className="mt-3 max-h-56 space-y-1 overflow-auto rounded-md border border-border bg-muted/10 p-2"
+      className="mt-3 max-h-56 space-y-1 overflow-auto border-border p-2"
       data-testid="submit-command-workdir-preview"
     >
       {nodes.map((node) => renderNode(node, 0))}
@@ -1099,7 +1103,7 @@ export function SubmitJobDialog({
           <form id="submit-job-form" onSubmit={onSubmit} className="space-y-4">
             {draftRestored ? (
               <div
-                className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-brand/40 bg-brand/5 px-3 py-2 text-sm"
+                className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm"
                 data-testid="submit-job-draft-restored"
               >
                 <span>
@@ -1144,7 +1148,10 @@ export function SubmitJobDialog({
               </TabsList>
               <TabsContent value="usecase" className="space-y-4 pt-3">
                 <div className="space-y-3">
-                  <div className="rounded-md border border-border bg-card p-3">
+                  <section
+                    className="border-border p-3"
+                    aria-label={t("jobs.usecase.selected", { defaultValue: "Selected usecase" })}
+                  >
                     <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                       <div className="min-w-0">
                         <div className="text-xs font-medium uppercase text-muted-foreground">
@@ -1291,7 +1298,7 @@ export function SubmitJobDialog({
                                       {files.map((file) => (
                                         <div
                                           key={file.fileMetadataId}
-                                          className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2 py-1"
+                                          className="flex items-center gap-2 border-border px-2 py-1"
                                         >
                                           <span className="min-w-0 flex-1 truncate font-mono text-xs">
                                             {file.fileMetadataName}
@@ -1350,7 +1357,7 @@ export function SubmitJobDialog({
                         ))}
                       </div>
                     ) : null}
-                  </div>
+                  </section>
                 </div>
                 <UsecasePickerDialog
                   error={!!usecasesQ.error}
@@ -1379,7 +1386,7 @@ export function SubmitJobDialog({
                     data-testid="submit-job-command"
                   />
                 </div>
-                <div className="rounded-md border border-border bg-card p-3">
+                <div className=" border-border p-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-xs font-medium uppercase text-muted-foreground">
@@ -1481,7 +1488,7 @@ export function SubmitJobDialog({
                 {t("jobs.queueLabel", { defaultValue: "Queue placement" })}
               </legend>
               <div className="grid gap-2 sm:grid-cols-3" role="radiogroup">
-                <label className="flex min-h-11 min-w-0 items-center gap-2 rounded-md border border-border px-3 text-sm">
+                <label className="flex min-h-11 min-w-0 items-center gap-2 border-b border-border px-3 text-sm">
                   <input
                     type="radio"
                     name="submit-job-placement"
@@ -1495,7 +1502,7 @@ export function SubmitJobDialog({
                   />
                   {t("jobs.queueAuto", { defaultValue: "Auto placement" })}
                 </label>
-                <label className="flex min-h-11 min-w-0 items-center gap-2 rounded-md border border-border px-3 text-sm">
+                <label className="flex min-h-11 min-w-0 items-center gap-2 border-b border-border px-3 text-sm">
                   <input
                     type="radio"
                     name="submit-job-placement"
@@ -1509,7 +1516,7 @@ export function SubmitJobDialog({
                   />
                   {t("jobs.queueSchedulerDefault", { defaultValue: "Scheduler default" })}
                 </label>
-                <label className="flex min-h-11 min-w-0 items-center gap-2 rounded-md border border-border px-3 text-sm">
+                <label className="flex min-h-11 min-w-0 items-center gap-2 border-b border-border px-3 text-sm">
                   <input
                     type="radio"
                     name="submit-job-placement"
@@ -1533,7 +1540,7 @@ export function SubmitJobDialog({
                 </p>
               ) : queuesQ.isLoading ? (
                 <div
-                  className="flex min-h-11 items-center gap-2 rounded-md border border-border px-3 text-sm text-muted-foreground"
+                  className="flex min-h-11 items-center gap-2 border-border px-3 text-sm text-muted-foreground"
                   data-testid="submit-job-queue-loading"
                   role="status"
                 >
@@ -1582,7 +1589,10 @@ export function SubmitJobDialog({
                   })}
                 </p>
               ) : (
-                <NativeSelect
+                <ResourceSelectField
+                  resourceType="agents"
+                  recent
+                  expandable
                   id="submit-job-queue-select"
                   value={placementSelection.queueId}
                   onChange={(event) => {
@@ -1621,7 +1631,7 @@ export function SubmitJobDialog({
                       );
                     },
                   )}
-                </NativeSelect>
+                </ResourceSelectField>
               )}
               {!queuesQ.isLoading && !queuesQ.error && queues.length === 0 ? (
                 <p className="text-xs text-muted-foreground" data-testid="submit-job-queue-empty">
@@ -1681,7 +1691,7 @@ export function SubmitJobDialog({
                 </p>
               ) : null}
             </fieldset>
-            <div className="border-t border-border pt-3">
+            <div className=" border-border pt-3">
               <button
                 type="button"
                 onClick={() => setPreviewOpen((v) => !v)}
@@ -1861,19 +1871,17 @@ function UsecasePickerDialog({
             />
           </div>
           <div
-            className="grid min-h-80 flex-1 auto-rows-max content-start gap-3 overflow-auto rounded-md border border-border bg-background p-2 sm:grid-cols-2 xl:grid-cols-3"
+            className="grid min-h-80 flex-1 auto-rows-max content-start gap-3 overflow-auto border-border p-2 sm:grid-cols-2 xl:grid-cols-3"
             data-testid="submit-usecase-catalog-grid"
           >
             {loading ? (
-              <div className="rounded-md border border-border bg-card p-3 text-sm text-muted-foreground">
+              <div className=" border-border p-3 text-sm text-muted-foreground">
                 {t("common.loading")}
               </div>
             ) : error ? (
-              <div className="rounded-md border border-status-failed/40 bg-card p-3 text-sm text-status-failed">
-                {t("software.unreachable")}
-              </div>
+              <div className=" p-3 text-sm text-status-failed">{t("software.unreachable")}</div>
             ) : filtered.length === 0 ? (
-              <div className="rounded-md border border-border bg-card p-3 text-sm text-muted-foreground">
+              <div className=" border-border p-3 text-sm text-muted-foreground">
                 {t("software.noMatches")}
               </div>
             ) : (
@@ -1886,11 +1894,12 @@ function UsecasePickerDialog({
                   <button
                     key={pkg.id}
                     type="button"
-                    className={`grid min-h-36 min-w-0 content-between gap-3 rounded-md border bg-card p-3 text-left transition-colors hover:border-brand/50 hover:bg-muted/30 ${
-                      selected ? "border-brand ring-1 ring-brand/40" : "border-border"
+                    className={`grid min-h-36 min-w-0 content-between gap-3 p-3 text-left transition-colors ${
+                      selected ? "text-brand font-semibold" : ""
                     }`}
                     onClick={() => choose(pkg)}
                     data-testid={`submit-usecase-option-${pkg.id}`}
+                    aria-pressed={selected}
                   >
                     <div className="min-w-0">
                       <div className="flex min-w-0 items-start justify-between gap-2">

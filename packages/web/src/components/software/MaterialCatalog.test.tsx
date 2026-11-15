@@ -6,6 +6,7 @@ import i18n from "../../lib/i18n";
 import { setMobileManagementPolicy } from "../../lib/mobile-management-policy";
 import { SoftwareError } from "../../lib/software-client";
 import * as client from "../../lib/spack-materials-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import {
   capabilities,
   expectNoWrites,
@@ -65,7 +66,9 @@ function mount(canManage = true) {
 }
 
 function search(repository: string) {
-  fireEvent.change(screen.getByLabelText("Exact repository"), { target: { value: repository } });
+  fireEvent.change(nativeControl(screen.getByLabelText("Exact repository")), {
+    target: { value: repository },
+  });
   fireEvent.click(screen.getByRole("button", { name: "Search materials" }));
 }
 
@@ -144,7 +147,7 @@ test("filter, refresh and reset clear prior rows and reset the page when results
   );
   fireEvent.click(screen.getByRole("button", { name: "Reset material filter" }));
   await screen.findByText("public/materials");
-  expect(screen.getByLabelText("Exact repository")).toHaveProperty("value", "");
+  expect(nativeControl(screen.getByLabelText("Exact repository"))).toHaveProperty("value", "");
   expect(client.listSpackMaterials).toHaveBeenNthCalledWith(4, {}, expect.any(AbortSignal));
 });
 

@@ -115,7 +115,7 @@ export function DataMarketPage() {
         }
       />
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <Card>
+        <section>
           <CardHeader className="gap-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle>{t("dataMarket.catalog")}</CardTitle>
@@ -149,7 +149,7 @@ export function DataMarketPage() {
                 type="button"
                 key={asset.id}
                 data-testid={`data-asset-${asset.id}`}
-                className="w-full rounded-lg border border-border p-3 text-left hover:border-brand/60 hover:bg-muted/30"
+                className="w-full border-border p-3 text-left"
                 onClick={() => setSelected(asset)}
               >
                 <div className="flex items-center justify-between gap-3">
@@ -171,9 +171,9 @@ export function DataMarketPage() {
               </p>
             ) : null}
           </CardContent>
-        </Card>
+        </section>
         <div className="space-y-5">
-          <Card>
+          <section>
             <CardHeader>
               <CardTitle>{t("dataMarket.createPrivate")}</CardTitle>
             </CardHeader>
@@ -210,7 +210,7 @@ export function DataMarketPage() {
                 </NativeSelect>
               </label>
               {privateKind === "licensed-material" ? (
-                <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+                <div className="space-y-2 p-3 text-sm text-amber-950 dark:text-amber-100">
                   <p>{t("dataMarket.licensedRestriction")}</p>
                   <Input
                     value={privateElements}
@@ -237,7 +237,7 @@ export function DataMarketPage() {
                 {t("dataMarket.privateUpload")}
               </Button>
             </CardContent>
-          </Card>
+          </section>
           {selected ? (
             <DataAssetDetail
               key={selected.id}

@@ -231,7 +231,7 @@ export function EventsList({ entries, forbidden, limit = 10 }: EventsListProps) 
   if (forbidden) {
     return (
       <div
-        className="flex items-center gap-2 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground"
+        className="flex items-center gap-2 border-border p-3 text-xs text-muted-foreground"
         data-testid="events-forbidden"
       >
         <Activity className="h-3.5 w-3.5" />
@@ -242,7 +242,7 @@ export function EventsList({ entries, forbidden, limit = 10 }: EventsListProps) 
   if (entries.length === 0) {
     return (
       <div
-        className="flex h-32 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground"
+        className="flex h-32 items-center justify-center border-border text-sm text-muted-foreground"
         data-testid="events-empty"
       >
         {t("dashboard.noRecentEvents")}
@@ -256,7 +256,7 @@ export function EventsList({ entries, forbidden, limit = 10 }: EventsListProps) 
         return (
           <li
             key={e.id}
-            className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-muted/50"
+            className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 px-2 py-1.5 text-sm "
             title={`${t(copy.labelKey, { defaultValue: copy.defaultLabel })}: ${copy.subject}`}
           >
             <span className="text-xs text-muted-foreground tabular-nums" title={e.createdAt}>
@@ -267,7 +267,7 @@ export function EventsList({ entries, forbidden, limit = 10 }: EventsListProps) 
                 <span className="truncate font-medium">
                   {t(copy.labelKey, { defaultValue: copy.defaultLabel })}
                 </span>
-                <span className="rounded-full border border-border px-1.5 py-0.5 text-[11px] leading-none text-muted-foreground">
+                <span className=" border-border px-1.5 py-0.5 text-[11px] leading-none text-muted-foreground">
                   {t(copy.categoryKey, { defaultValue: copy.defaultCategory })}
                 </span>
               </span>

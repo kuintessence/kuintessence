@@ -25,10 +25,7 @@ export function CpDashboard() {
 
   if (q.error) {
     return (
-      <div
-        className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
-        data-testid="cp-dashboard-error"
-      >
+      <div className=" p-3 text-sm" data-testid="cp-dashboard-error">
         {toUserFacingError(q.error, t("cp.dashboard.loadFailed"))}
       </div>
     );
@@ -102,7 +99,7 @@ export function CpDashboard() {
         />
       </div>
 
-      <div className="grid gap-2 rounded-lg border border-border bg-card p-3 sm:grid-cols-3">
+      <div className="grid gap-2 border-border p-3 sm:grid-cols-3">
         <OperationalSummary
           label={t("cp.dashboard.summary.successRate")}
           value={
@@ -216,7 +213,7 @@ export function CpDashboard() {
 
 function OperationalSummary({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md bg-muted/35 px-3 py-2">
+    <div className="flex items-center justify-between gap-3 px-3 py-2">
       <span className="text-xs text-muted-foreground">{label}</span>
       <span className="font-mono text-sm font-semibold tabular-nums">{value}</span>
     </div>
@@ -235,22 +232,10 @@ function AgentsHealthBar({ healthy, sick, offline }: AgentsHealthBarProps) {
   const pct = (n: number) => `${Math.round((n / total) * 100)}%`;
   return (
     <div className="space-y-2 text-xs">
-      <div className="flex h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          data-testid="cp-agents-health-healthy"
-          className="bg-[var(--status-succeeded)]"
-          style={{ width: pct(healthy) }}
-        />
-        <div
-          data-testid="cp-agents-health-sick"
-          className="bg-[var(--status-failed)]"
-          style={{ width: pct(sick) }}
-        />
-        <div
-          data-testid="cp-agents-health-offline"
-          className="bg-[var(--status-cancelled)]"
-          style={{ width: pct(offline) }}
-        />
+      <div className="flex h-2 overflow-hidden ">
+        <div data-testid="cp-agents-health-healthy" className="" style={{ width: pct(healthy) }} />
+        <div data-testid="cp-agents-health-sick" className="" style={{ width: pct(sick) }} />
+        <div data-testid="cp-agents-health-offline" className="" style={{ width: pct(offline) }} />
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground tabular-nums">
         <span data-testid="cp-agents-health-label-healthy">

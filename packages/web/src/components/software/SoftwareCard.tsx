@@ -101,7 +101,7 @@ export function SoftwareCard({
           <p className="line-clamp-2 text-muted-foreground">{template.description}</p>
         ) : null}
         {view.isValidWorkflow && view.nodeCount !== null && view.edgeCount !== null ? (
-          <dl className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-3">
+          <dl className="flex flex-wrap items-center gap-x-4 gap-y-2 border-border pt-3">
             <GraphMetric label={t("software.card.nodes")} value={view.nodeCount} />
             <GraphMetric label={t("software.card.edges")} value={view.edgeCount} />
           </dl>
@@ -121,7 +121,7 @@ export function SoftwareCard({
           </div>
         ) : null}
         {view.usecaseRefs.length > 0 || view.softwareRefs.length > 0 ? (
-          <div className="grid gap-1 rounded-md border border-border bg-background p-2">
+          <div className="grid gap-1 border-border p-2">
             <RefLine label={t("software.card.usecaseRefs")} values={view.usecaseRefs} />
             <RefLine label={t("software.card.softwareRefs")} values={view.softwareRefs} />
           </div>

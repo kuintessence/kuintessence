@@ -7,7 +7,7 @@ import { api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
-import { Card, CardContent } from "../ui/card";
+import { CardContent } from "../ui/card";
 import { ErrorState } from "../ui/content-state";
 import { ListToolbar } from "../ui/list-toolbar";
 import { PageHeader, PageShell } from "../ui/page";
@@ -223,7 +223,7 @@ export function WorkflowsPage() {
       />
 
       {!draftsQ.error && (draftsQ.data?.drafts.length ?? 0) > 0 ? (
-        <Card className="rounded-xl shadow-none" data-testid="workflow-drafts">
+        <section className=" " data-testid="workflow-drafts">
           <CardContent className="space-y-3 p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -235,10 +235,7 @@ export function WorkflowsPage() {
             </div>
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
               {draftsQ.data?.drafts.map((draft) => (
-                <div
-                  key={draft.id}
-                  className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-muted/15 p-3"
-                >
+                <div key={draft.id} className="flex min-w-0 items-center gap-3 border-border p-3">
                   <FilePenLine className="h-4 w-4 shrink-0 text-brand" />
                   <a
                     className="min-w-0 flex-1"
@@ -267,11 +264,11 @@ export function WorkflowsPage() {
               ))}
             </div>
           </CardContent>
-        </Card>
+        </section>
       ) : null}
       {draftsQ.error ? (
         <div
-          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-status-failed/40 bg-status-failed/5 p-3 text-sm text-status-failed"
+          className="flex flex-wrap items-center justify-between gap-3 p-3 text-sm text-status-failed"
           data-testid="workflow-drafts-error"
           role="alert"
         >
@@ -290,7 +287,7 @@ export function WorkflowsPage() {
         </div>
       ) : null}
 
-      <Card className="rounded-xl shadow-none">
+      <section className=" ">
         <CardContent className="space-y-4 p-4">
           <ListToolbar
             search={{
@@ -375,7 +372,7 @@ export function WorkflowsPage() {
           )}
           {!loadError && total > PAGE_SIZE ? (
             <div
-              className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4"
+              className="flex flex-wrap items-center justify-between gap-3 border-border pt-4"
               data-testid="workflows-pagination"
             >
               <span className="text-sm text-muted-foreground">
@@ -398,7 +395,7 @@ export function WorkflowsPage() {
             </div>
           ) : null}
         </CardContent>
-      </Card>
+      </section>
     </PageShell>
   );
 }

@@ -156,7 +156,7 @@ function RunConfiguration({
   value: string;
 }) {
   return (
-    <section className="min-w-0 rounded-lg border border-border bg-muted/20 p-3">
+    <section className="min-w-0 border-border p-3">
       <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
         <Icon className="h-4 w-4 text-brand" />
         {label}
@@ -333,7 +333,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
     );
     return (
       <div className="space-y-4" data-testid="workflow-dag-view">
-        <Card className="rounded-xl shadow-none">
+        <Card className=" ">
           <CardContent className="flex items-start gap-4 p-6">
             <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-status-failed" />
             <div className="min-w-0 space-y-2">
@@ -358,7 +358,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
 
   if (runQ.isPending) {
     return (
-      <Card data-testid="workflow-run-loading" role="status" className="rounded-xl shadow-none">
+      <Card data-testid="workflow-run-loading" role="status" className=" ">
         <CardContent className="p-6 text-sm text-muted-foreground">
           {t("common.loading")}
         </CardContent>
@@ -372,7 +372,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
         <div
           role="alert"
           data-testid="workflow-jobs-error"
-          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-status-failed/40 bg-status-failed/5 p-4 text-sm"
+          className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm"
         >
           <p>{t("workflows.run.jobsLoadFailed", { count: jobsQ.data.failedCount })}</p>
           <Button
@@ -386,11 +386,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
         </div>
       ) : null}
       {runStatus === "awaiting_approval" ? (
-        <div
-          role="status"
-          data-testid="workflow-awaiting-approval"
-          className="rounded-lg border border-brand/30 bg-brand-soft p-4 text-sm"
-        >
+        <div role="status" data-testid="workflow-awaiting-approval" className=" p-4 text-sm">
           {t("workflows.run.awaitingApproval")}
         </div>
       ) : null}
@@ -492,7 +488,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
       </dl>
 
       {localizedError ? (
-        <Card className="rounded-xl border-status-failed/40 bg-status-failed/5 shadow-none">
+        <Card className=" ">
           <CardContent className="flex items-start gap-3 p-4">
             <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-status-failed" />
             <div className="min-w-0">
@@ -508,10 +504,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
       ) : null}
 
       {failedNodes.length > 0 ? (
-        <Card
-          className="rounded-xl border-status-failed/40 bg-status-failed/5 shadow-none"
-          data-testid="workflow-failure-details"
-        >
+        <Card className=" " data-testid="workflow-failure-details">
           <CardHeader>
             <CardTitle>{t("workflows.run.failureDetails")}</CardTitle>
           </CardHeader>
@@ -519,7 +512,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
             {failedNodes.map((failure) => (
               <section
                 key={failure.nodeId}
-                className="space-y-2 rounded-lg border border-status-failed/30 bg-background p-3"
+                className="space-y-2 p-3"
                 data-testid={`workflow-failure-node-${failure.nodeId}`}
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -561,10 +554,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
           </CardContent>
         </Card>
       ) : runStatus === "failed" && !localizedError ? (
-        <Card
-          className="rounded-xl border-status-failed/40 bg-status-failed/5 shadow-none"
-          data-testid="workflow-failure-details"
-        >
+        <Card className=" " data-testid="workflow-failure-details">
           <CardContent className="flex items-start gap-3 p-4">
             <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-status-failed" />
             <div>
@@ -578,7 +568,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
       ) : null}
 
       {runQ.data?.graph && runQ.data.graph.nodes.length > 0 ? (
-        <Card className="rounded-xl shadow-none" data-testid="workflow-graph-card">
+        <Card className=" " data-testid="workflow-graph-card">
           <CardHeader>
             <CardTitle className="text-foreground">{t("workflows.run.graph")}</CardTitle>
           </CardHeader>
@@ -591,7 +581,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
           </CardContent>
         </Card>
       ) : nodeStatuses.length > 0 ? (
-        <Card className="rounded-xl shadow-none" data-testid="workflow-nodes-card">
+        <Card className=" " data-testid="workflow-nodes-card">
           <CardHeader>
             <CardTitle className="text-foreground">{t("workflows.run.nodes")}</CardTitle>
           </CardHeader>
@@ -603,7 +593,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
                 <div
                   key={nodeId}
                   data-testid={`workflow-node-${nodeId}`}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/20 p-3"
+                  className="flex items-center justify-between gap-3 border-border p-3"
                 >
                   <span className="font-mono text-xs">{nodeId}</span>
                   <div className="flex items-center gap-2">
@@ -636,7 +626,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
           </CardContent>
         </Card>
       ) : (
-        <Card className="rounded-xl shadow-none" data-testid="workflow-graph-empty">
+        <Card className=" " data-testid="workflow-graph-empty">
           <CardHeader>
             <CardTitle className="text-foreground">{t("workflows.run.graph")}</CardTitle>
           </CardHeader>
@@ -652,14 +642,11 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
         </Card>
       )}
 
-      <details
-        className="rounded-lg border border-border bg-card"
-        data-testid="workflow-run-configuration"
-      >
+      <details className="border-b border-border" data-testid="workflow-run-configuration">
         <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
           {t("workflows.run.configuration")}
         </summary>
-        <div className="grid gap-3 border-t border-border p-4 md:grid-cols-3">
+        <div className="grid gap-3 border-border p-4 md:grid-cols-3">
           <RunConfiguration
             icon={SlidersHorizontal}
             label={t("workflows.run.parameters")}

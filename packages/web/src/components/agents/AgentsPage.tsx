@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { api } from "../../lib/api-client";
 import { getAuthState } from "../../lib/auth";
 import { isLocalMode } from "../../lib/local-mode";
 import { toCapabilitySet, useMeCapabilities } from "../../lib/platform-capabilities";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { CollectionView } from "../ui/collection-view";
 import { PageHeader, PageShell } from "../ui/page";
 import { AgentCard, type AgentRow } from "./AgentCard";
 
@@ -39,38 +39,26 @@ export function AgentsPage() {
         }
       />
 
-      {loadError ? (
-        <div
-          className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
-          data-testid="agents-list-error"
-        >
-          {toUserFacingError(loadError, t("agents.loadFailed"))}
-        </div>
-      ) : null}
-
-      {loadError ? null : agentsQ.isLoading ? (
-        <div className="text-sm text-muted-foreground">{t("common.loading")}</div>
-      ) : agents.length === 0 ? (
-        <div
-          className="flex h-40 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border text-sm text-muted-foreground"
-          data-testid="agents-empty"
-        >
-          <Server className="h-5 w-5" />
-          {t("agents.empty")}
-          <code className="font-mono text-[12px]">
-            SERVER_GRPC_URL=… AGENT_ID=… AGENT_SITE_NAME=… bun packages/agent/src/index.ts
-          </code>
-        </div>
-      ) : (
-        <div
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
-          data-testid="agents-grid"
-        >
-          {agents.map((a) => (
-            <AgentCard key={a.agentId} agent={a} canOpenSsh={canOpenSsh} />
-          ))}
-        </div>
-      )}
+      <CollectionView
+        errorTestId="agents-list-error"
+        emptyTestId="agents-empty"
+        data={agents}
+        columns={[{ accessorKey: "siteName", header: t("ui.name") }]}
+        table={{ pageSize: 10, tableClassName: "min-w-0" }}
+        getKey={(agent) => agent.agentId}
+        matches={(agent, query) =>
+          [agent.agentId, agent.siteName, agent.schedulerType, agent.status]
+            .join(" ")
+            .toLocaleLowerCase()
+            .includes(query)
+        }
+        renderItem={(agent) => <AgentCard agent={agent} canOpenSsh={canOpenSsh} />}
+        loading={agentsQ.isLoading}
+        error={loadError ? toUserFacingError(loadError, t("agents.loadFailed")) : undefined}
+        onRetry={() => void agentsQ.refetch()}
+        contentClassName="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
+        data-testid="agents-grid"
+      />
     </PageShell>
   );
 }

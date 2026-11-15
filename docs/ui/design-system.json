@@ -1,0 +1,489 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-15T11:02:38.125963+00:00",
+  "title": "Design System: Kuintessence",
+  "extensions": {
+    "colorMeta": {
+      "brand": {
+        "role": "primary",
+        "displayName": "brand",
+        "tonalRamp": [
+          "oklch(0.15 0.06333 255)",
+          "oklch(0.27 0.11400 255)",
+          "oklch(0.39 0.16467 255)",
+          "oklch(0.51 0.19000 255)",
+          "oklch(0.63 0.19000 255)",
+          "oklch(0.75 0.19000 255)",
+          "oklch(0.87 0.11227 255)",
+          "oklch(0.95 0.04318 255)"
+        ]
+      },
+      "brand-foreground": {
+        "role": "primary",
+        "displayName": "brand-foreground",
+        "tonalRamp": [
+          "oklch(0.15 0.00000 0)",
+          "oklch(0.27 0.00000 0)",
+          "oklch(0.39 0.00000 0)",
+          "oklch(0.51 0.00000 0)",
+          "oklch(0.63 0.00000 0)",
+          "oklch(0.75 0.00000 0)",
+          "oklch(0.87 0.00000 0)",
+          "oklch(0.95 0.00000 0)"
+        ]
+      },
+      "brand-soft": {
+        "role": "primary",
+        "displayName": "brand-soft",
+        "tonalRamp": [
+          "oklch(0.15 0.01333 255)",
+          "oklch(0.27 0.02400 255)",
+          "oklch(0.39 0.03467 255)",
+          "oklch(0.51 0.04000 255)",
+          "oklch(0.63 0.04000 255)",
+          "oklch(0.75 0.04000 255)",
+          "oklch(0.87 0.02364 255)",
+          "oklch(0.95 0.00909 255)"
+        ]
+      },
+      "background": {
+        "role": "neutral",
+        "displayName": "background",
+        "tonalRamp": [
+          "oklch(0.15 0.00200 248)",
+          "oklch(0.27 0.00360 248)",
+          "oklch(0.39 0.00520 248)",
+          "oklch(0.51 0.00600 248)",
+          "oklch(0.63 0.00600 248)",
+          "oklch(0.75 0.00600 248)",
+          "oklch(0.87 0.00355 248)",
+          "oklch(0.95 0.00136 248)"
+        ]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "foreground",
+        "tonalRamp": [
+          "oklch(0.15 0.00667 260)",
+          "oklch(0.27 0.01200 260)",
+          "oklch(0.39 0.01733 260)",
+          "oklch(0.51 0.02000 260)",
+          "oklch(0.63 0.02000 260)",
+          "oklch(0.75 0.02000 260)",
+          "oklch(0.87 0.01182 260)",
+          "oklch(0.95 0.00455 260)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "muted",
+        "tonalRamp": [
+          "oklch(0.15 0.00400 252)",
+          "oklch(0.27 0.00720 252)",
+          "oklch(0.39 0.01040 252)",
+          "oklch(0.51 0.01200 252)",
+          "oklch(0.63 0.01200 252)",
+          "oklch(0.75 0.01200 252)",
+          "oklch(0.87 0.00709 252)",
+          "oklch(0.95 0.00273 252)"
+        ]
+      },
+      "muted-foreground": {
+        "role": "neutral",
+        "displayName": "muted-foreground",
+        "tonalRamp": [
+          "oklch(0.15 0.00500 260)",
+          "oklch(0.27 0.00900 260)",
+          "oklch(0.39 0.01300 260)",
+          "oklch(0.51 0.01500 260)",
+          "oklch(0.63 0.01500 260)",
+          "oklch(0.75 0.01500 260)",
+          "oklch(0.87 0.00886 260)",
+          "oklch(0.95 0.00341 260)"
+        ]
+      },
+      "card": {
+        "role": "neutral",
+        "displayName": "card",
+        "tonalRamp": [
+          "oklch(0.15 0.00000 0)",
+          "oklch(0.27 0.00000 0)",
+          "oklch(0.39 0.00000 0)",
+          "oklch(0.51 0.00000 0)",
+          "oklch(0.63 0.00000 0)",
+          "oklch(0.75 0.00000 0)",
+          "oklch(0.87 0.00000 0)",
+          "oklch(0.95 0.00000 0)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "border",
+        "tonalRamp": [
+          "oklch(0.15 0.00333 252)",
+          "oklch(0.27 0.00600 252)",
+          "oklch(0.39 0.00867 252)",
+          "oklch(0.51 0.01000 252)",
+          "oklch(0.63 0.01000 252)",
+          "oklch(0.75 0.01000 252)",
+          "oklch(0.87 0.00591 252)",
+          "oklch(0.95 0.00227 252)"
+        ]
+      },
+      "input": {
+        "role": "neutral",
+        "displayName": "input",
+        "tonalRamp": [
+          "oklch(0.15 0.00167 260)",
+          "oklch(0.27 0.00300 260)",
+          "oklch(0.39 0.00433 260)",
+          "oklch(0.51 0.00500 260)",
+          "oklch(0.63 0.00500 260)",
+          "oklch(0.75 0.00500 260)",
+          "oklch(0.87 0.00295 260)",
+          "oklch(0.95 0.00114 260)"
+        ]
+      },
+      "ring": {
+        "role": "primary",
+        "displayName": "ring",
+        "tonalRamp": [
+          "oklch(0.15 0.06000 255)",
+          "oklch(0.27 0.10800 255)",
+          "oklch(0.39 0.15600 255)",
+          "oklch(0.51 0.18000 255)",
+          "oklch(0.63 0.18000 255)",
+          "oklch(0.75 0.18000 255)",
+          "oklch(0.87 0.10636 255)",
+          "oklch(0.95 0.04091 255)"
+        ]
+      },
+      "status-pending": {
+        "role": "status",
+        "displayName": "status-pending",
+        "tonalRamp": [
+          "oklch(0.15 0.00667 260)",
+          "oklch(0.27 0.01200 260)",
+          "oklch(0.39 0.01733 260)",
+          "oklch(0.51 0.02000 260)",
+          "oklch(0.63 0.02000 260)",
+          "oklch(0.75 0.02000 260)",
+          "oklch(0.87 0.01182 260)",
+          "oklch(0.95 0.00455 260)"
+        ]
+      },
+      "status-running": {
+        "role": "status",
+        "displayName": "status-running",
+        "tonalRamp": [
+          "oklch(0.15 0.05667 255)",
+          "oklch(0.27 0.10200 255)",
+          "oklch(0.39 0.14733 255)",
+          "oklch(0.51 0.17000 255)",
+          "oklch(0.63 0.17000 255)",
+          "oklch(0.75 0.17000 255)",
+          "oklch(0.87 0.10045 255)",
+          "oklch(0.95 0.03864 255)"
+        ]
+      },
+      "status-succeeded": {
+        "role": "status",
+        "displayName": "status-succeeded",
+        "tonalRamp": [
+          "oklch(0.15 0.04333 150)",
+          "oklch(0.27 0.07800 150)",
+          "oklch(0.39 0.11267 150)",
+          "oklch(0.51 0.13000 150)",
+          "oklch(0.63 0.13000 150)",
+          "oklch(0.75 0.13000 150)",
+          "oklch(0.87 0.07682 150)",
+          "oklch(0.95 0.02955 150)"
+        ]
+      },
+      "status-failed": {
+        "role": "status",
+        "displayName": "status-failed",
+        "tonalRamp": [
+          "oklch(0.15 0.06333 25)",
+          "oklch(0.27 0.11400 25)",
+          "oklch(0.39 0.16467 25)",
+          "oklch(0.51 0.19000 25)",
+          "oklch(0.63 0.19000 25)",
+          "oklch(0.75 0.19000 25)",
+          "oklch(0.87 0.11227 25)",
+          "oklch(0.95 0.04318 25)"
+        ]
+      },
+      "status-cancelled": {
+        "role": "status",
+        "displayName": "status-cancelled",
+        "tonalRamp": [
+          "oklch(0.15 0.00333 260)",
+          "oklch(0.27 0.00600 260)",
+          "oklch(0.39 0.00867 260)",
+          "oklch(0.51 0.01000 260)",
+          "oklch(0.63 0.01000 260)",
+          "oklch(0.75 0.01000 260)",
+          "oklch(0.87 0.00591 260)",
+          "oklch(0.95 0.00227 260)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "headline",
+        "purpose": "页面标题"
+      },
+      "title": {
+        "displayName": "title",
+        "purpose": "弹层及区域标题"
+      },
+      "body": {
+        "displayName": "body",
+        "purpose": "正文、控件与表格"
+      },
+      "label": {
+        "displayName": "label",
+        "purpose": "表头、状态与辅助信息"
+      },
+      "mono": {
+        "displayName": "mono",
+        "purpose": "代码、路径与稳定 ID"
+      }
+    },
+    "shadows": [
+      {
+        "name": "region-flat",
+        "value": "none",
+        "purpose": "普通区域及内部 section 不使用装饰阴影。"
+      },
+      {
+        "name": "popover",
+        "value": "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
+        "purpose": "现有 Popover shadow-lg，仅覆盖交互层。"
+      },
+      {
+        "name": "dialog",
+        "value": "0 25px 50px -12px rgb(0 0 0 / 0.15)",
+        "purpose": "现有 Dialog shadow-2xl 与 shadow-black/15，仅覆盖交互层。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "kq-motion-enter",
+        "value": "160ms",
+        "purpose": "复用 app.css；prefers-reduced-motion 下停用相关动画。"
+      },
+      {
+        "name": "kq-motion-exit",
+        "value": "120ms",
+        "purpose": "复用 app.css；prefers-reduced-motion 下停用相关动画。"
+      },
+      {
+        "name": "kq-motion-fast",
+        "value": "100ms",
+        "purpose": "复用 app.css；prefers-reduced-motion 下停用相关动画。"
+      },
+      {
+        "name": "kq-motion-panel-enter",
+        "value": "200ms",
+        "purpose": "复用 app.css；prefers-reduced-motion 下停用相关动画。"
+      },
+      {
+        "name": "kq-motion-panel-exit",
+        "value": "160ms",
+        "purpose": "复用 app.css；prefers-reduced-motion 下停用相关动画。"
+      },
+      {
+        "name": "kq-motion-ease-enter",
+        "value": "cubic-bezier(0.2, 0, 0, 1)",
+        "purpose": "复用 app.css；prefers-reduced-motion 下停用相关动画。"
+      },
+      {
+        "name": "kq-motion-ease-exit",
+        "value": "cubic-bezier(0.4, 0, 1, 1)",
+        "purpose": "复用 app.css；prefers-reduced-motion 下停用相关动画。"
+      },
+      {
+        "name": "kq-motion-distance",
+        "value": "6px",
+        "purpose": "复用 app.css；prefers-reduced-motion 下停用相关动画。"
+      },
+      {
+        "name": "kq-motion-panel-distance",
+        "value": "16px",
+        "purpose": "复用 app.css；prefers-reduced-motion 下停用相关动画。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "40rem"
+      },
+      {
+        "name": "md",
+        "value": "48rem"
+      },
+      {
+        "name": "lg",
+        "value": "64rem"
+      }
+    ],
+    "sources": [
+      "packages/web/src/styles/app.css",
+      "packages/web/src/components/ui/button.tsx",
+      "packages/web/src/components/ui/input.tsx",
+      "packages/web/src/components/ui/tabs.tsx",
+      "packages/web/src/components/ui/badge.tsx",
+      "packages/web/src/components/ui/card.tsx",
+      "packages/web/src/components/ui/surface.tsx",
+      "packages/web/src/components/ui/page.tsx",
+      "packages/web/src/components/ui/dialog.tsx",
+      "packages/web/src/components/ui/popover.tsx",
+      "packages/web/src/components/ui/command.tsx",
+      "packages/web/src/components/ui/collection-view.tsx",
+      "packages/web/src/components/ui/data-table.tsx",
+      "packages/web/src/components/ui/resource-picker.tsx",
+      "packages/web/src/components/ui/resource-select-field.tsx",
+      "packages/web/src/components/workflow/NodeTypes.tsx",
+      "packages/web/src/components/workflows/WorkflowRunGraph.tsx",
+      "packages/web/PRODUCT.md",
+      "packages/web/src/components/ui/table.tsx",
+      "packages/web/src/lib/recent-selections.ts",
+      "packages/web/src/components/workflow/WorkflowSlotMappingDialog.tsx",
+      "packages/web/src/components/workflow/PropertiesPanel.tsx"
+    ],
+    "notes": [
+      "Frontmatter 为亮色 token 快照，运行时 app.css 为唯一来源；CSS 片段通过变量继承亮/暗主题。",
+      "tonalRamp 是面板预览合成色阶，不是新增运行时 token，不应用于业务样式。",
+      "组件片段是无框架视觉预览；真实焦点、浮层、选项与表格行为必须复用对应 primitives。",
+      "延续用户确认的 Operate 设计方向；单层扁平是该方向的实施约束，不建立新设计世界。",
+      "候选集部分加载时保留外部服务器搜索与分页，关闭菜单内搜索和展开；完整候选或已适配远端查询后再启用。",
+      "默认 ResourcePickerDialog 名称/描述表在窄屏取消 640px 最小宽度并换行；自定义多列内容保留局部横向滚动。",
+      "Popover 内容 pointer-events-auto/z60，支持嵌套 Dialog 内的选择与展开；这属于覆盖交互层，不允许内部装饰容器。",
+      "工作流槽位映射按 descriptor、类型与批量属性校验，失效映射禁止确认；Reduce 输出来自当前所选 Loop.raw.outputs。",
+      "本文件与 docs/ui/design-system.json 为相同内容的标准位置和可纳入版本控制的副本；修改后同步两者。",
+      "CollectionView/ResourceSelect/ResourcePickerDialog 默认 queryMode=local；受控 search/onSearchChange 不隐式切换模式。server 模式关闭本地过滤/排序/分页，Picker tableQuery 透传受控查询状态和回调，ResourceSelect 向 Dialog 传递同一契约。"
+    ]
+  },
+  "components": [
+    {
+      "name": "主按钮",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Button 现有 default 变体，保留 hover、键盘焦点与禁用样式。",
+      "html": "<button class=\"ds-button ds-button-primary\" type=\"button\">主按钮</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:0.5rem;height:2.25rem;padding:0.5rem 1rem;border:0;border-radius:var(--radius-md);font-family:var(--font-sans);font-size:0.875rem;font-weight:500;cursor:pointer;transition:color 150ms,background-color 150ms}.ds-button:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.ds-button:disabled{pointer-events:none;opacity:0.5}.ds-button-primary{background:var(--brand);color:var(--brand-foreground)}.ds-button-primary:hover{background:color-mix(in oklab,var(--brand) 90%,transparent)}"
+    },
+    {
+      "name": "次按钮",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Button 现有 secondary 变体，保留 hover、键盘焦点与禁用样式。",
+      "html": "<button class=\"ds-button ds-button-secondary\" type=\"button\">次按钮</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:0.5rem;height:2.25rem;padding:0.5rem 1rem;border:0;border-radius:var(--radius-md);font-family:var(--font-sans);font-size:0.875rem;font-weight:500;cursor:pointer;transition:color 150ms,background-color 150ms}.ds-button:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.ds-button:disabled{pointer-events:none;opacity:0.5}.ds-button-secondary{background:var(--muted);color:var(--foreground)}.ds-button-secondary:hover{background:color-mix(in oklab,var(--muted) 70%,transparent)}"
+    },
+    {
+      "name": "描边按钮",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Button 现有 outline 变体，保留 hover、键盘焦点与禁用样式。",
+      "html": "<button class=\"ds-button ds-button-outline\" type=\"button\">描边按钮</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:0.5rem;height:2.25rem;padding:0.5rem 1rem;border:0;border-radius:var(--radius-md);font-family:var(--font-sans);font-size:0.875rem;font-weight:500;cursor:pointer;transition:color 150ms,background-color 150ms}.ds-button:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.ds-button:disabled{pointer-events:none;opacity:0.5}.ds-button-outline{border:1px solid var(--border);background:var(--card);color:var(--foreground)}.ds-button-outline:hover{background:color-mix(in oklab,var(--muted) 50%,transparent)}"
+    },
+    {
+      "name": "透明按钮",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Button 现有 ghost 变体，保留 hover、键盘焦点与禁用样式。",
+      "html": "<button class=\"ds-button ds-button-ghost\" type=\"button\">透明按钮</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:0.5rem;height:2.25rem;padding:0.5rem 1rem;border:0;border-radius:var(--radius-md);font-family:var(--font-sans);font-size:0.875rem;font-weight:500;cursor:pointer;transition:color 150ms,background-color 150ms}.ds-button:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.ds-button:disabled{pointer-events:none;opacity:0.5}.ds-button-ghost{background:transparent;color:var(--foreground)}.ds-button-ghost:hover{background:color-mix(in oklab,var(--muted) 60%,transparent)}"
+    },
+    {
+      "name": "危险按钮",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "Button 现有 destructive 变体，保留 hover、键盘焦点与禁用样式。",
+      "html": "<button class=\"ds-button ds-button-destructive\" type=\"button\">危险按钮</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:0.5rem;height:2.25rem;padding:0.5rem 1rem;border:0;border-radius:var(--radius-md);font-family:var(--font-sans);font-size:0.875rem;font-weight:500;cursor:pointer;transition:color 150ms,background-color 150ms}.ds-button:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.ds-button:disabled{pointer-events:none;opacity:0.5}.ds-button-destructive{background:var(--status-failed);color:var(--background)}.ds-button-destructive:hover{opacity:0.9}"
+    },
+    {
+      "name": "链接按钮",
+      "kind": "button",
+      "refersTo": "button-link",
+      "description": "Button 现有 link 变体，保留 hover、键盘焦点与禁用样式。",
+      "html": "<button class=\"ds-button ds-button-link\" type=\"button\">链接按钮</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:0.5rem;height:2.25rem;padding:0.5rem 1rem;border:0;border-radius:var(--radius-md);font-family:var(--font-sans);font-size:0.875rem;font-weight:500;cursor:pointer;transition:color 150ms,background-color 150ms}.ds-button:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.ds-button:disabled{pointer-events:none;opacity:0.5}.ds-button-link{background:transparent;color:var(--brand);text-underline-offset:4px}.ds-button-link:hover{text-decoration:underline}"
+    },
+    {
+      "name": "输入字段",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Input 的控件边界与焦点，区别于内容容器。",
+      "html": "<input class=\"ds-input\" aria-label=\"资源名称\" placeholder=\"资源名称\" />",
+      "css": ".ds-input{display:flex;height:2.25rem;width:100%;min-width:0;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--card);color:var(--foreground);padding:0.25rem 0.75rem;font-family:var(--font-sans);font-size:0.875rem}.ds-input::placeholder{color:var(--muted-foreground)}.ds-input:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.ds-input:disabled{cursor:not-allowed;opacity:0.5}.ds-input[aria-invalid=true]{border-color:var(--status-failed)}"
+    },
+    {
+      "name": "底线导航",
+      "kind": "nav",
+      "refersTo": "nav-tab",
+      "description": "Tabs 的透明底线风格；此片段展示视觉，不实现 Radix 的键盘切换。",
+      "html": "<nav class=\"ds-tabs\" aria-label=\"资源视图\"><button class=\"ds-tab ds-tab-active\" type=\"button\" aria-current=\"page\">作业</button><button class=\"ds-tab\" type=\"button\">软件</button></nav>",
+      "css": ".ds-tabs{display:flex;flex-wrap:wrap;gap:0.25rem;border-bottom:1px solid var(--border);padding:0.25rem}.ds-tab{border:0;border-bottom:1px solid transparent;background:transparent;color:var(--muted-foreground);padding:0.25rem 0.75rem;font-family:var(--font-sans);font-size:0.75rem;font-weight:500;cursor:pointer}.ds-tab-active{color:var(--brand);border-bottom-color:var(--brand)}.ds-tab:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.ds-tab:disabled{pointer-events:none;opacity:0.5}"
+    },
+    {
+      "name": "透明状态",
+      "kind": "chip",
+      "refersTo": "status-badge",
+      "description": "Badge 保留语义文字与色彩，背景透明，不绘制胶囊。",
+      "html": "<span class=\"ds-status\">运行中</span>",
+      "css": ".ds-status{display:inline-flex;align-items:center;gap:0.25rem;background:transparent;color:var(--status-running);padding:0.125rem 0;font-family:var(--font-sans);font-size:0.75rem;font-weight:500}"
+    },
+    {
+      "name": "单层区域与透明 section",
+      "kind": "card",
+      "refersTo": "surface-region",
+      "description": "外层 Card 保留边界；SurfaceBoundary 内的 section 无独立背景、轮廓、圆角或阴影。",
+      "html": "<section class=\"ds-region\"><h3 class=\"ds-region-title\">资源</h3><section class=\"ds-section\"><h4 class=\"ds-section-title\">队列</h4><p class=\"ds-section-detail\">内部透明，继承区域底色。</p></section><section class=\"ds-section\"><h4 class=\"ds-section-title\">账号</h4><p class=\"ds-section-detail\">使用标题、留白与分隔线组织。</p></section></section>",
+      "css": ".ds-region{min-width:0;border:1px solid var(--border);border-radius:var(--radius-xl);background:var(--card);color:var(--foreground);padding:1rem;font-family:var(--font-sans)}.ds-region-title{margin:0;padding-bottom:1.25rem;border-bottom:1px solid var(--border);font-size:1rem;font-weight:600}.ds-section{min-width:0;padding:1rem 0;background:transparent;border:0;border-radius:0;box-shadow:none}.ds-section+.ds-section{border-top:1px solid var(--border)}.ds-section-title{margin:0;font-size:0.875rem;font-weight:500}.ds-section-detail{margin:0.5rem 0 0;color:var(--muted-foreground);font-size:0.75rem}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Operate",
+    "overview": "本规范沿用用户已确认的 Operate 方向，记录严格的单层扁平容器约定，继承现有蓝白主题、品牌蓝、系统 sans 字体和 token 尺度。信息以标题、留白、行列和细分隔线组织；页面、弹层或抽屉各保留一个最外层容器，内部模块透明且不再形成独立卡片。\n\n工作流节点是需要独立识别、连线和选择的画布实体，允许必要的轮廓、底色与选中 ring；节点内部透明，继承节点底色。此例外不扩展到节点内部、属性面板或普通业务模块。名称、中英文文案与状态必须保持可辨认，不依赖颜色单独传达意义。",
+    "keyCharacteristics": [
+      "单个区域只保留一层容器，内部依靠标题、间距和单向分隔线组织。",
+      "品牌蓝表达主操作、选中与焦点，状态色表达资源或任务状态。",
+      "复用 shadcn 风格基础组件、Radix、cmdk 与 TanStack，业务定义内容。"
+    ],
+    "rules": [
+      {
+        "name": "The Single Surface Rule",
+        "body": "页面、Dialog 与 Sheet 内只保留一个区域外壳；嵌套模块不得再有完整边框、圆角背景、阴影或装饰 ring。输入控件、交互状态及画布节点的必要边界保留。",
+        "section": "layout"
+      },
+      {
+        "name": "The Functional Node Rule",
+        "body": "工作流节点可保留遮挡连线的外层底色、类型或状态轮廓及选中 ring，内部模块保持透明，不套卡片。",
+        "section": "shapes"
+      },
+      {
+        "name": "The Stable Identity Rule",
+        "body": "显示友好名称与归属，提交稳定 ID；禁选原因可见，真实有效性与权限由业务和服务端校验。",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "**Do** 新页面复用 PageShell、PageHeader、CollectionView 和现有 ui primitives，让业务仅定义列、条目与操作。",
+      "**Do** 在最外层建立 SurfaceBoundary，内部采用透明布局、标题、留白和细分隔线。",
+      "**Do** 为选择字段声明可访问名称、禁用原因、错误与恢复操作，并保留中英文文案。",
+      "**Do** 明确本地或服务端查询模式，数据变化使用稳定 key；权限与失效校验保留在业务和服务端。"
+    ],
+    "donts": [
+      "**Don't** 在区域内部叠加卡片、带底色的小面板、装饰阴影或圆角背景标签。",
+      "**Don't** 手写第二套 combobox、焦点陷阱、浮层定位或表格排序分页逻辑。",
+      "**Don't** 将权限过滤、最近记录或前端选中状态当成服务端授权与资源有效性保证。",
+      "**Don't** 把静态预览片段或旧审核原型当成完整交互实现，也不要为节点内部增加独立卡片。"
+    ]
+  }
+}

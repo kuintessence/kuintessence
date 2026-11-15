@@ -16,6 +16,7 @@ import { relativeFromNow } from "../../lib/format";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { type FileContextAction, FileContextMenu, type FileContextTarget } from "./FileContextMenu";
 import { buildCloudBrowserRows, fmtBytes, parentCloudPrefix } from "./path-picker-utils";
 
@@ -134,10 +135,7 @@ export function CloudPane({
 
   return (
     <section
-      className={
-        "flex h-full flex-col overflow-hidden rounded-md border " +
-        (isDragging ? "border-brand bg-brand-soft/20" : "border-border")
-      }
+      className={`flex h-full flex-col overflow-hidden ${isDragging ? "text-brand" : ""}`}
       data-testid="files-cloud-pane"
       aria-label={title}
       onDragOver={(event) => {
@@ -153,7 +151,7 @@ export function CloudPane({
         if (!uploading && event.dataTransfer.files.length > 0) onUpload(event.dataTransfer.files);
       }}
     >
-      <div className="flex h-10 items-center justify-between gap-2 border-b border-border bg-card/60 px-3">
+      <div className="flex h-10 items-center justify-between gap-2 border-b border-border px-3">
         <div className="flex min-w-0 flex-1 items-center gap-1">
           {canGoUp ? (
             <Button
@@ -218,7 +216,7 @@ export function CloudPane({
           </Button>
         </div>
       </div>
-      <div className="flex flex-col gap-2 border-b border-border bg-card/30 px-3 py-2">
+      <div className="flex flex-col gap-2 border-b border-border px-3 py-2">
         <div className="flex items-center gap-2">
           <Input
             value={query}
@@ -264,27 +262,29 @@ export function CloudPane({
             {disabledMessage ?? (query ? t("files.emptySearch") : emptyMessage)}
           </div>
         ) : (
-          <table className="w-full table-fixed text-sm">
-            <thead className="sticky top-0 z-10 bg-muted text-left text-[11px] uppercase tracking-wide text-muted-foreground">
-              <tr>
-                <th className="min-w-0 px-3 py-2 font-medium">{t("files.table.name")}</th>
-                <th className="hidden w-20 px-2 py-2 font-medium text-right sm:table-cell">
+          <Table className="w-full table-fixed text-sm">
+            <TableHeader className="sticky top-0 z-10 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+              <TableRow>
+                <TableHead className="min-w-0 px-3 py-2 font-medium">
+                  {t("files.table.name")}
+                </TableHead>
+                <TableHead className="hidden w-20 px-2 py-2 font-medium text-right sm:table-cell">
                   {t("files.table.size")}
-                </th>
-                <th className="hidden w-24 px-2 py-2 font-medium md:table-cell">
+                </TableHead>
+                <TableHead className="hidden w-24 px-2 py-2 font-medium md:table-cell">
                   {t("files.table.modified")}
-                </th>
-                <th
+                </TableHead>
+                <TableHead
                   className="w-[92px] px-1 py-2 font-medium sm:w-[72px]"
                   aria-label={t("files.table.actions")}
                 />
-              </tr>
-            </thead>
-            <tbody>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {visibleRows.map((r) => {
                 if (r.kind === "dir") {
                   return (
-                    <tr
+                    <TableRow
                       key={`dir:${r.fullPath}`}
                       data-testid={`files-cloud-dir-${r.name}`}
                       onClick={() => onPrefixChange?.(r.fullPath)}
@@ -299,14 +299,14 @@ export function CloudPane({
                           kind: "dir",
                         });
                       }}
-                      className="cursor-pointer border-t border-border hover:bg-muted/40"
+                      className="cursor-pointer border-border "
                     >
-                      <td className="min-w-0 px-3 py-2 font-medium">
+                      <TableCell className="min-w-0 px-3 py-2 font-medium">
                         <div className="flex min-w-0 items-center gap-2">
                           <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <button
                             type="button"
-                            className="min-w-0 break-words rounded-sm text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
+                            className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
                             title={`${r.name}/`}
                             onClick={(event) => {
                               event.stopPropagation();
@@ -319,17 +319,17 @@ export function CloudPane({
                             {t("files.childCount", { count: r.childCount })}
                           </span>
                         </div>
-                      </td>
-                      <td className="hidden px-3 py-2 text-right font-mono text-xs tabular-nums text-muted-foreground sm:table-cell">
+                      </TableCell>
+                      <TableCell className="hidden px-3 py-2 text-right font-mono text-xs tabular-nums text-muted-foreground sm:table-cell">
                         {fmtBytes(r.totalSize)}
-                      </td>
-                      <td
+                      </TableCell>
+                      <TableCell
                         className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground tabular-nums md:table-cell"
                         title={r.latestModifiedAt}
                       >
                         {relativeFromNow(r.latestModifiedAt, undefined, language)}
-                      </td>
-                      <td className="px-1 py-0 text-right">
+                      </TableCell>
+                      <TableCell className="px-1 py-0 text-right">
                         <Button
                           variant="ghost"
                           size="icon"
@@ -350,14 +350,14 @@ export function CloudPane({
                         >
                           <EllipsisVertical />
                         </Button>
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   );
                 }
                 const isSelected = selected === r.obj.id;
                 const canUse = r.obj.canUse === true;
                 return (
-                  <tr
+                  <TableRow
                     key={r.obj.id}
                     data-testid={`files-cloud-row-${r.obj.id}`}
                     onClick={() => onSelect(isSelected ? null : r.obj.id)}
@@ -375,17 +375,17 @@ export function CloudPane({
                     }}
                     className={
                       (newEntryIds.has(r.obj.id) ? "kq-motion kq-motion--item " : "") +
-                      "cursor-pointer border-t border-border " +
-                      (isSelected ? "bg-brand-soft/40" : "hover:bg-muted/40")
+                      "cursor-pointer border-border " +
+                      (isSelected ? "" : "")
                     }
                     data-state={newEntryIds.has(r.obj.id) ? "open" : undefined}
                   >
-                    <td className="min-w-0 px-3 py-2 font-medium">
+                    <TableCell className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
                         <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         <button
                           type="button"
-                          className="min-w-0 break-words rounded-sm text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
+                          className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
                           title={r.displayName}
                           aria-pressed={isSelected}
                           onClick={(event) => {
@@ -396,17 +396,17 @@ export function CloudPane({
                           {r.displayName}
                         </button>
                       </div>
-                    </td>
-                    <td className="hidden px-3 py-2 text-right font-mono text-xs tabular-nums text-muted-foreground sm:table-cell">
+                    </TableCell>
+                    <TableCell className="hidden px-3 py-2 text-right font-mono text-xs tabular-nums text-muted-foreground sm:table-cell">
                       {fmtBytes(r.obj.size)}
-                    </td>
-                    <td
+                    </TableCell>
+                    <TableCell
                       className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground tabular-nums md:table-cell"
                       title={r.obj.modifiedAt}
                     >
                       {relativeFromNow(r.obj.modifiedAt, undefined, language)}
-                    </td>
-                    <td className="px-1 py-0 text-right">
+                    </TableCell>
+                    <TableCell className="px-1 py-0 text-right">
                       <div className="flex items-center justify-end">
                         {onDownload && canUse ? (
                           <Button
@@ -459,15 +459,15 @@ export function CloudPane({
                           )}
                         </Button>
                       </div>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         )}
       </div>
-      <div className="flex items-center justify-between border-t border-border bg-card/40 px-3 py-2 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between border-border px-3 py-2 text-[11px] text-muted-foreground">
         <span className="font-mono tabular-nums">
           {t("files.itemCount", { count: folderCount + fileCount })} · {fmtBytes(total)}
         </span>

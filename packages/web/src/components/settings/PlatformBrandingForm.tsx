@@ -174,7 +174,7 @@ export function PlatformBrandingForm() {
     <Card data-testid="platform-branding-form">
       <CardHeader>
         <div className="flex items-start gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-muted/35">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center ">
             <Palette className="h-4 w-4 text-muted-foreground" />
           </div>
           <div>
@@ -198,7 +198,7 @@ export function PlatformBrandingForm() {
           <fieldset disabled={mobileReadOnly || saving} className="space-y-6">
             <div className="grid gap-5 lg:grid-cols-2">
               {LANGUAGE_ROWS.map(({ code, labelKey }) => (
-                <section key={code} className="space-y-3 rounded-lg border border-border p-4">
+                <section key={code} className="space-y-3 border-border p-4">
                   <h3 className="text-sm font-semibold">{t(labelKey)}</h3>
                   {LOCALE_FIELDS.map(({ key, labelKey: fieldLabelKey, placeholderKey }) => (
                     <div key={key} className="space-y-1.5">
@@ -222,7 +222,7 @@ export function PlatformBrandingForm() {
               ))}
             </div>
 
-            <section className="space-y-3 rounded-lg border border-border p-4">
+            <section className="space-y-3 border-border p-4">
               <div>
                 <h3 className="text-sm font-semibold">{t("settings.branding.assetsTitle")}</h3>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
@@ -261,9 +261,9 @@ export function PlatformBrandingForm() {
                   />
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-4 rounded-md bg-muted/25 p-3">
+              <div className="flex flex-wrap items-center gap-4 p-3">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="flex h-10 w-10 items-center justify-center rounded-md border bg-background">
+                  <span className="flex h-10 w-10 items-center justify-center ">
                     <img
                       src={previewLogo}
                       alt=""
@@ -273,7 +273,7 @@ export function PlatformBrandingForm() {
                   <span>{t("settings.branding.logoPreview")}</span>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="flex h-10 w-10 items-center justify-center rounded-md border bg-background">
+                  <span className="flex h-10 w-10 items-center justify-center ">
                     <img src={previewFavicon} alt="" className="max-h-5 max-w-5" />
                   </span>
                   <span>{t("settings.branding.faviconPreview")}</span>

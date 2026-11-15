@@ -17,6 +17,7 @@ import {
 } from "../ui/dialog";
 import { NativeSelect } from "../ui/native-select";
 import { PaginationControls } from "../ui/pagination-controls";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import { SearchInput } from "../ui/search-input";
 
 type UsecaseRuntime = "all" | "Spack" | "Singularity" | "Bare";
@@ -117,7 +118,8 @@ export function WorkflowTemplatePickerDialog({
               placeholder={t("workflows.templates.searchPlaceholder")}
               data-testid="workflow-template-search"
             />
-            <NativeSelect
+            <ResourceSelectField
+              resourceType="template-tags"
               value={tag}
               onChange={(event) => {
                 const nextTag = event.target.value;
@@ -133,10 +135,10 @@ export function WorkflowTemplatePickerDialog({
                   {value}
                 </option>
               ))}
-            </NativeSelect>
+            </ResourceSelectField>
           </div>
           <div
-            className="grid min-h-72 flex-1 auto-rows-max content-start gap-3 overflow-auto rounded-md border border-border bg-background p-2 sm:grid-cols-2 lg:grid-cols-3"
+            className="grid min-h-72 flex-1 auto-rows-max content-start gap-3 overflow-auto border-border p-2 sm:grid-cols-2 lg:grid-cols-3"
             data-testid="workflow-template-grid"
           >
             {loading ? (
@@ -155,8 +157,8 @@ export function WorkflowTemplatePickerDialog({
                 return (
                   <article
                     key={template.id}
-                    className={`relative min-h-40 min-w-0 rounded-md border bg-card p-3 text-left transition-colors hover:border-brand/50 hover:bg-muted/30 ${
-                      selected ? "border-brand ring-1 ring-brand/40" : "border-border"
+                    className={`relative min-h-40 min-w-0 p-3 text-left transition-colors ${
+                      selected ? "text-brand" : ""
                     }`}
                   >
                     <button
@@ -356,7 +358,7 @@ export function WorkflowUsecasePickerDialog({
               <option value="File">{t("jobs.usecase.fileInputs")}</option>
             </NativeSelect>
           </div>
-          <div className="grid min-h-72 flex-1 auto-rows-max content-start gap-3 overflow-auto rounded-md border border-border bg-background p-2 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid min-h-72 flex-1 auto-rows-max content-start gap-3 overflow-auto border-border p-2 sm:grid-cols-2 lg:grid-cols-3">
             {loading ? (
               <PickerState text={t("common.loading")} />
             ) : error ? (
@@ -377,8 +379,8 @@ export function WorkflowUsecasePickerDialog({
                     onClick={() => selectable && setDraftId(pkg.id)}
                     onDoubleClick={() => selectable && onApply(pkg)}
                     disabled={!selectable}
-                    className={`min-h-40 min-w-0 rounded-md border bg-card p-3 text-left transition-colors hover:border-brand/50 hover:bg-muted/30 ${
-                      selected ? "border-brand ring-1 ring-brand/40" : "border-border"
+                    className={`min-h-40 min-w-0 p-3 text-left transition-colors ${
+                      selected ? "text-brand" : ""
                     }`}
                     data-testid={`workflow-usecase-option-${pkg.id}`}
                     aria-pressed={selected}
@@ -459,10 +461,10 @@ function PickerState({
     <div
       className={`col-span-full flex min-h-64 items-center justify-center p-4 text-center text-sm ${
         failed
-          ? "rounded-md border border-status-failed/40 bg-card text-status-failed"
+          ? " text-status-failed"
           : seamless
             ? "text-muted-foreground"
-            : "rounded-md border border-border bg-card text-muted-foreground"
+            : " border-border text-muted-foreground"
       }`}
     >
       {text}

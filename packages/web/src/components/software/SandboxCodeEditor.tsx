@@ -78,7 +78,7 @@ export function SandboxCodeEditor({
     <div
       ref={containerRef}
       data-testid="sandbox-code-editor"
-      className="h-[56vh] min-h-[420px] overflow-hidden rounded-md border border-border bg-card"
+      className="h-[56vh] min-h-[420px] overflow-hidden border-border "
     />
   );
 }

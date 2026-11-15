@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import i18n from "../../lib/i18n";
 import { SoftwareError } from "../../lib/software-client";
 import * as client from "../../lib/spack-install-bindings-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import {
   BINDING_ORG,
   bindingUi,
@@ -68,32 +69,34 @@ test("select labels have exact accessible names without option text", async () =
   expect(bindingUi().getByLabelText("Binding action", { exact: true })).toBe(action);
   expect(action).toHaveProperty("value", "bind");
   expect(action.closest("label")).toBeNull();
-  fireEvent.change(action, { target: { value: "disable" } });
+  fireEvent.change(nativeControl(action), { target: { value: "disable" } });
   expect(bindingUi().getByRole("combobox", { name: /^Binding action$/ })).toBe(action);
-  expect(bindingUi().getByLabelText("Binding action", { exact: true })).toHaveProperty(
-    "value",
-    "disable",
-  );
+  expect(
+    nativeControl(bindingUi().getByLabelText("Binding action", { exact: true })),
+  ).toHaveProperty("value", "disable");
   expect(client.changeSpackInstallBinding).not.toHaveBeenCalled();
 });
 
 test("requires explicit exact spec, inspect, reason and confirmation", async () => {
   mount();
   expect(client.inspectSpackInstallBinding).not.toHaveBeenCalled();
-  expect(bindingUi().getByLabelText("Exact installation spec")).toHaveProperty("value", "");
+  expect(nativeControl(bindingUi().getByLabelText("Exact installation spec"))).toHaveProperty(
+    "value",
+    "",
+  );
   await readyBinding();
   expect(client.inspectSpackInstallBinding).toHaveBeenCalledExactlyOnceWith(
     { scope: BINDING_ORG, spec: INSTALL_SPEC },
     expect.any(AbortSignal),
   );
-  expect(bindingUi().getByLabelText("Installation repository ID")).toHaveProperty(
+  expect(nativeControl(bindingUi().getByLabelText("Installation repository ID"))).toHaveProperty(
     "value",
     installBinding.repositoryId,
   );
   submitBinding();
   expect(client.changeSpackInstallBinding).not.toHaveBeenCalled();
   confirmBinding();
-  fireEvent.change(bindingUi().getByLabelText("Installation binding audit reason"), {
+  fireEvent.change(nativeControl(bindingUi().getByLabelText("Installation binding audit reason")), {
     target: { value: " leading" },
   });
   expect(bindingUi().getByRole("checkbox")).toHaveProperty("checked", false);
@@ -120,10 +123,9 @@ test("binds with the inspected revision and clears consent after success", async
     expect.any(AbortSignal),
   );
   expect(bindingUi().getByRole("checkbox")).toHaveProperty("checked", false);
-  expect(bindingUi().getByLabelText("Installation binding audit reason")).toHaveProperty(
-    "value",
-    "",
-  );
+  expect(
+    nativeControl(bindingUi().getByLabelText("Installation binding audit reason")),
+  ).toHaveProperty("value", "");
   expect(
     bindingUi().getByRole("table", { name: "Installation binding audit history" }),
   ).toBeTruthy();
@@ -133,7 +135,9 @@ test("disable sends no binding and changing action clears consent", async () => 
   mount();
   await readyBinding();
   confirmBinding();
-  fireEvent.change(bindingUi().getByLabelText("Binding action"), { target: { value: "disable" } });
+  fireEvent.change(nativeControl(bindingUi().getByLabelText("Binding action")), {
+    target: { value: "disable" },
+  });
   expect(bindingUi().getByRole("checkbox")).toHaveProperty("checked", false);
   expect(bindingUi().queryByLabelText("Installation repository ID")).toBeNull();
   fireEvent.click(bindingUi().getByRole("checkbox"));
@@ -157,12 +161,12 @@ test("a new selection changes the draft only on explicit copy and clears consent
   confirmBinding();
   const next = { ...installBinding, manifestDigest: `sha256:${"c".repeat(64)}` };
   mounted.rerender(<SpackInstallBindingEditor {...mounted.props} selection={next} />);
-  expect(bindingUi().getByLabelText("Installation manifest digest")).toHaveProperty(
+  expect(nativeControl(bindingUi().getByLabelText("Installation manifest digest"))).toHaveProperty(
     "value",
     installBinding.manifestDigest,
   );
   fireEvent.click(bindingUi().getByRole("button", { name: "Use selected material binding" }));
-  expect(bindingUi().getByLabelText("Installation manifest digest")).toHaveProperty(
+  expect(nativeControl(bindingUi().getByLabelText("Installation manifest digest"))).toHaveProperty(
     "value",
     next.manifestDigest,
   );
@@ -193,7 +197,7 @@ test("failed inspection exposes no writable snapshot and never retries", async (
     new SoftwareError(503, "INSTALL_BINDING_UNAVAILABLE", "Private rollout state"),
   );
   mount();
-  fireEvent.change(bindingUi().getByLabelText("Exact installation spec"), {
+  fireEvent.change(nativeControl(bindingUi().getByLabelText("Exact installation spec")), {
     target: { value: INSTALL_SPEC },
   });
   inspectBinding();
@@ -219,7 +223,9 @@ test("409 conflict requires another inspect and fresh confirmation", async () =>
   inspectBinding();
   await screen.findByTestId("spack-install-binding-detail");
   expect(bindingUi().getByRole("checkbox")).toHaveProperty("checked", false);
-  fireEvent.change(bindingUi().getByLabelText("Binding action"), { target: { value: "disable" } });
+  fireEvent.change(nativeControl(bindingUi().getByLabelText("Binding action")), {
+    target: { value: "disable" },
+  });
   confirmBinding();
   submitBinding();
   await waitFor(() => expect(client.changeSpackInstallBinding).toHaveBeenCalledTimes(2));
@@ -251,10 +257,10 @@ test.each([
       selection={{ ...installBinding, manifestDigest: `sha256:${"c".repeat(64)}` }}
     />,
   );
-  fireEvent.change(bindingUi().getByLabelText("Exact installation spec"), {
+  fireEvent.change(nativeControl(bindingUi().getByLabelText("Exact installation spec")), {
     target: { value: "other@1" },
   });
-  expect(bindingUi().getByLabelText("Exact installation spec")).toHaveProperty(
+  expect(nativeControl(bindingUi().getByLabelText("Exact installation spec"))).toHaveProperty(
     "value",
     INSTALL_SPEC,
   );
@@ -322,12 +328,12 @@ test("editing spec aborts the old read and drops its late result", async () => {
   const pending = deferred<SpackInstallBindingView>();
   vi.mocked(client.inspectSpackInstallBinding).mockReturnValueOnce(pending.promise);
   mount();
-  fireEvent.change(bindingUi().getByLabelText("Exact installation spec"), {
+  fireEvent.change(nativeControl(bindingUi().getByLabelText("Exact installation spec")), {
     target: { value: INSTALL_SPEC },
   });
   inspectBinding();
   const signal = vi.mocked(client.inspectSpackInstallBinding).mock.calls[0]?.[1];
-  fireEvent.change(bindingUi().getByLabelText("Exact installation spec"), {
+  fireEvent.change(nativeControl(bindingUi().getByLabelText("Exact installation spec")), {
     target: { value: "other@1" },
   });
   expect(signal?.aborted).toBe(true);

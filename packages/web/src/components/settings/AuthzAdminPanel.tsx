@@ -10,6 +10,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Textarea } from "../ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { OrganizationMembershipPanel } from "./OrganizationMembershipPanel";
 
 interface AuthzHealth {
@@ -165,11 +166,11 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
   return (
     <div className="space-y-4">
       <OrganizationMembershipPanel />
-      <details className="rounded-md border">
+      <details className="border-b">
         <summary className="cursor-pointer p-4 text-sm font-medium">
           {t("adminAccess.advancedTitle")}
         </summary>
-        <Card data-testid="authz-admin-panel" className="border-0">
+        <Card data-testid="authz-admin-panel" className="">
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
               <CardTitle className="flex items-center gap-2">
@@ -236,7 +237,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
               <Metric label={t("adminAccess.failed")} value={String(readiness?.outbox.dead ?? 0)} />
             </div>
             {readiness?.blockers.length ? (
-              <div className="rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed">
+              <div className=" p-3 text-sm text-status-failed">
                 <div className="font-medium">{t("adminAccess.conditions")}</div>
                 <ul className="mt-2 list-disc space-y-1 pl-5">
                   {readiness.blockers.map((blocker) => (
@@ -246,7 +247,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
               </div>
             ) : null}
             {readiness?.externalSmokeRequired ? (
-              <div className="rounded-md border p-3 text-sm text-muted-foreground">
+              <div className=" p-3 text-sm text-muted-foreground">
                 {t("adminAccess.verifyEnforcement")}
               </div>
             ) : null}
@@ -280,15 +281,10 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
               {t("adminAccess.rebuild")}
             </Button>
             {health?.error ? (
-              <div className="rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed">
-                {t("adminAccess.unavailable")}
-              </div>
+              <div className=" p-3 text-sm text-status-failed">{t("adminAccess.unavailable")}</div>
             ) : null}
             {loadError ? (
-              <div
-                className="rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed"
-                data-testid="authz-refresh-error"
-              >
+              <div className=" p-3 text-sm text-status-failed" data-testid="authz-refresh-error">
                 {loadError}
               </div>
             ) : null}
@@ -478,7 +474,7 @@ function Metric({
   badge?: "brand" | "outline" | "failed";
 }) {
   return (
-    <div className="rounded-md border p-3">
+    <div className=" p-3">
       <div className="text-xs text-muted-foreground">{label}</div>
       <Badge variant={badge} className="mt-2">
         {value}
@@ -523,35 +519,35 @@ function SimpleTable({
   if (rows.length === 0) return <p className="py-6 text-sm text-muted-foreground">{empty}</p>;
   const cellKeys = ["primary", "secondary", "tertiary", "quaternary"] as const;
   return (
-    <div className="max-h-[28rem] overflow-auto rounded-md border">
-      <table className="w-full min-w-[32rem] table-fixed text-left text-xs">
-        <thead className="sticky top-0 border-b bg-muted">
-          <tr>
+    <div className="max-h-[28rem] overflow-auto ">
+      <Table className="w-full min-w-[32rem] table-fixed text-left text-xs">
+        <TableHeader className="sticky top-0 border-b ">
+          <TableRow>
             {headers.map((label) => (
-              <th key={label} className="p-3 font-medium">
+              <TableHead key={label} className="p-3 font-medium">
                 {label}
-              </th>
+              </TableHead>
             ))}
-          </tr>
-        </thead>
-        <tbody>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {rows.map((row) => {
             const rowKey = row.map((cell) => (typeof cell === "string" ? cell : "node")).join("|");
             return (
-              <tr key={rowKey} className="border-b last:border-b-0">
+              <TableRow key={rowKey} className="border-b last:border-b-0">
                 {row.map((cell, index) => (
-                  <td
+                  <TableCell
                     key={cellKeys[index] ?? index}
                     className="break-words p-3 align-top [overflow-wrap:anywhere]"
                   >
                     {cell || "—"}
-                  </td>
+                  </TableCell>
                 ))}
-              </tr>
+              </TableRow>
             );
           })}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   );
 }

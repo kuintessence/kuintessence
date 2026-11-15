@@ -12,6 +12,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 export type MaterialManagementFilter = Omit<SpackMaterialManagementQuery, "after">;
 
@@ -120,7 +121,7 @@ export function MaterialManagementCatalog({
 
   return (
     <section
-      className="min-w-0 space-y-3 border-t border-border py-3"
+      className="min-w-0 space-y-3 border-border py-3"
       data-testid="material-management-catalog"
     >
       <h3 className="text-xs font-medium">{t("materials.managementTitle")}</h3>
@@ -231,34 +232,44 @@ export function MaterialManagementCatalog({
       ) : null}
       {visiblePage && visiblePage.catalog.releases.length > 0 ? (
         <div className="max-h-[28rem] overflow-auto">
-          <table
+          <Table
             className="w-full min-w-[48rem] table-fixed text-left text-xs"
             aria-label={t("materials.managementTitle")}
           >
-            <thead className="sticky top-0 z-10 border-b border-border bg-card text-muted-foreground">
-              <tr>
-                <th className="w-[24%] p-2 font-medium">{t("materials.repository")}</th>
-                <th className="p-2 font-medium">Spec / SHA-256</th>
-                <th className="w-[18%] p-2 font-medium">{t("materials.target")}</th>
-                <th className="w-24 p-2 font-medium">{t("materials.status")}</th>
-                <th className="w-20 p-2 font-medium">{t("materials.lifecycleRevision")}</th>
-                <th className="w-16 p-2 font-medium">{t("materials.actions")}</th>
-              </tr>
-            </thead>
-            <tbody>
+            <TableHeader className="sticky top-0 z-10 border-b border-border text-muted-foreground">
+              <TableRow>
+                <TableHead className="w-[24%] p-2 font-medium">
+                  {t("materials.repository")}
+                </TableHead>
+                <TableHead className="p-2 font-medium">Spec / SHA-256</TableHead>
+                <TableHead className="w-[18%] p-2 font-medium">{t("materials.target")}</TableHead>
+                <TableHead className="w-24 p-2 font-medium">{t("materials.status")}</TableHead>
+                <TableHead className="w-20 p-2 font-medium">
+                  {t("materials.lifecycleRevision")}
+                </TableHead>
+                <TableHead className="w-16 p-2 font-medium">{t("materials.actions")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {visiblePage.catalog.releases.map((release) => (
-                <tr key={release.manifestDigest} className="border-b border-border">
-                  <td className="break-all p-2 align-top font-mono">{release.repository}</td>
-                  <td className="break-all p-2 align-top font-mono">
+                <TableRow key={release.manifestDigest} className="border-b border-border">
+                  <TableCell className="break-all p-2 align-top font-mono">
+                    {release.repository}
+                  </TableCell>
+                  <TableCell className="break-all p-2 align-top font-mono">
                     <div>{release.spec}</div>
                     <div className="text-muted-foreground">{release.manifestDigest}</div>
-                  </td>
-                  <td className="break-all p-2 align-top font-mono">{release.target}</td>
-                  <td className="break-words p-2 align-top">
+                  </TableCell>
+                  <TableCell className="break-all p-2 align-top font-mono">
+                    {release.target}
+                  </TableCell>
+                  <TableCell className="break-words p-2 align-top">
                     {t(`materials.lifecycleState.${release.state}`)}
-                  </td>
-                  <td className="break-all p-2 align-top tabular-nums">{release.revision}</td>
-                  <td className="p-2 align-top">
+                  </TableCell>
+                  <TableCell className="break-all p-2 align-top tabular-nums">
+                    {release.revision}
+                  </TableCell>
+                  <TableCell className="p-2 align-top">
                     <Button
                       type="button"
                       size="icon"
@@ -283,11 +294,11 @@ export function MaterialManagementCatalog({
                     >
                       <ClipboardList />
                     </Button>
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       ) : null}
       {visiblePage ? (

@@ -11,6 +11,7 @@
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -260,13 +261,13 @@ describe("SSOConfigForm", () => {
     render(<SSOConfigForm />);
     await waitFor(() => screen.getByTestId("sso-enabled"));
     fireEvent.click(screen.getByTestId("sso-enabled"));
-    fireEvent.change(screen.getByTestId("sso-provider-display-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("sso-provider-display-name")), {
       target: { value: "Platform Identity" },
     });
-    fireEvent.change(screen.getByTestId("sso-login-welcome-zh"), {
+    fireEvent.change(nativeControl(screen.getByTestId("sso-login-welcome-zh")), {
       target: { value: "欢迎访问平台" },
     });
-    fireEvent.change(screen.getByTestId("sso-login-welcome-en"), {
+    fireEvent.change(nativeControl(screen.getByTestId("sso-login-welcome-en")), {
       target: { value: "Welcome to the platform" },
     });
     fireEvent.click(screen.getByTestId("sso-save"));

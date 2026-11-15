@@ -82,6 +82,7 @@
         "configured_one": "{{count}} slot mapping configured",
         "configured_other": "{{count}} slot mappings configured",
         "noSlots": "These nodes have no compatible output or input slots, so a data edge cannot be created.",
+        "invalidMappings": "Some mapped slots are missing or incompatible. Remove those mappings and select valid slots.",
         "dependencyOnly": "Add at least one compatible input-output slot mapping.",
         "create": "Create edge",
         "save": "Save mapping"

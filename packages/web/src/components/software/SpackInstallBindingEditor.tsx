@@ -35,7 +35,7 @@ export function SpackInstallBindingEditor({
   const inspectable = isCurrent() && canInspectScope(scope);
   return (
     <section
-      className="min-w-0 space-y-3 border-t border-border py-3"
+      className="min-w-0 space-y-3 border-border py-3"
       data-testid="spack-install-binding-editor"
       aria-label={t("materials.installBinding.title")}
     >

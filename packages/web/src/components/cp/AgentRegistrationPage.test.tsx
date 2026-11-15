@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -99,10 +100,10 @@ describe("AgentRegistrationPage", () => {
       true,
     );
 
-    fireEvent.change(screen.getByTestId("agent-registration-agent-id"), {
+    fireEvent.change(nativeControl(screen.getByTestId("agent-registration-agent-id")), {
       target: { value: "agent-1" },
     });
-    fireEvent.change(screen.getByTestId("agent-registration-site-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("agent-registration-site-name")), {
       target: { value: "site-a" },
     });
     fireEvent.click(screen.getByTestId("agent-registration-submit"));
@@ -170,10 +171,10 @@ describe("AgentRegistrationPage", () => {
         "org-1",
       );
     });
-    fireEvent.change(screen.getByTestId("agent-registration-agent-id"), {
+    fireEvent.change(nativeControl(screen.getByTestId("agent-registration-agent-id")), {
       target: { value: "agent-1" },
     });
-    fireEvent.change(screen.getByTestId("agent-registration-site-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("agent-registration-site-name")), {
       target: { value: "site-a" },
     });
 
@@ -271,13 +272,13 @@ describe("AgentRegistrationPage", () => {
         "org-1",
       );
     });
-    fireEvent.change(screen.getByTestId("agent-registration-agent-id"), {
+    fireEvent.change(nativeControl(screen.getByTestId("agent-registration-agent-id")), {
       target: { value: "agent-1" },
     });
-    fireEvent.change(screen.getByTestId("agent-registration-site-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("agent-registration-site-name")), {
       target: { value: "site-a" },
     });
-    fireEvent.change(screen.getByTestId("agent-registration-scheduler"), {
+    fireEvent.change(nativeControl(screen.getByTestId("agent-registration-scheduler")), {
       target: { value: "pbs-pro" },
     });
     fireEvent.click(screen.getByTestId("agent-registration-submit"));
@@ -388,10 +389,10 @@ async function fillReviewForm() {
   await waitFor(() =>
     expect(screen.getByTestId("agent-registration-provider")).toHaveProperty("value", "org-review"),
   );
-  fireEvent.change(screen.getByTestId("agent-registration-agent-id"), {
+  fireEvent.change(nativeControl(screen.getByTestId("agent-registration-agent-id")), {
     target: { value: "review-agent" },
   });
-  fireEvent.change(screen.getByTestId("agent-registration-site-name"), {
+  fireEvent.change(nativeControl(screen.getByTestId("agent-registration-site-name")), {
     target: { value: "Review Site" },
   });
 }
@@ -438,11 +439,15 @@ test("matches the server TTL range and does not truncate exponential numeric inp
   render(<AgentRegistrationPage />, { wrapper: makeWrapper() });
   await fillReviewForm();
   for (const value of ["", "1", "59", "60.5", "2592001"]) {
-    fireEvent.change(screen.getByTestId("agent-registration-ttl"), { target: { value } });
+    fireEvent.change(nativeControl(screen.getByTestId("agent-registration-ttl")), {
+      target: { value },
+    });
     expect(screen.getByTestId("agent-registration-submit")).toHaveProperty("disabled", true);
   }
   for (const value of ["60", "2592000", "1e3"]) {
-    fireEvent.change(screen.getByTestId("agent-registration-ttl"), { target: { value } });
+    fireEvent.change(nativeControl(screen.getByTestId("agent-registration-ttl")), {
+      target: { value },
+    });
     expect(screen.getByTestId("agent-registration-submit")).toHaveProperty("disabled", false);
   }
   const form = screen.getByTestId("agent-registration-submit").closest("form");

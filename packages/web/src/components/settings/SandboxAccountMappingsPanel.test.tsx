@@ -2,6 +2,7 @@ import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 const sandboxClient = vi.hoisted(() => ({
   listMappings: vi.fn(),
@@ -110,7 +111,9 @@ describe("SandboxAccountMappingsPanel", () => {
     render(<SandboxAccountMappingsPanel />, { wrapper: Wrapper });
 
     await waitFor(() => {
-      expect(screen.getByRole("option", { name: "示例站点 · 科研队列账号 · slurm" })).toBeTruthy();
+      expect(
+        screen.getByRole("option", { hidden: true, name: "示例站点 · 科研队列账号 · slurm" }),
+      ).toBeTruthy();
     });
     expect(screen.getByLabelText("sandbox.accounts.candidate").hasAttribute("disabled")).toBe(
       false,
@@ -145,8 +148,8 @@ describe("SandboxAccountMappingsPanel", () => {
     sandboxClient.listMappings.mockResolvedValue([]);
     sandboxClient.listCandidates.mockResolvedValue([candidate]);
     render(<SandboxAccountMappingsPanel />, { wrapper: Wrapper });
-    await screen.findByRole("option", { name: "示例站点 · 科研队列账号 · slurm" });
-    fireEvent.change(screen.getByLabelText("sandbox.accounts.candidate"), {
+    await screen.findByRole("option", { hidden: true, name: "示例站点 · 科研队列账号 · slurm" });
+    fireEvent.change(nativeControl(screen.getByLabelText("sandbox.accounts.candidate")), {
       target: { value: candidate.id },
     });
     expect((screen.getByText("sandbox.accounts.request") as HTMLButtonElement).disabled).toBe(

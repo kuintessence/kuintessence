@@ -12,7 +12,7 @@ import {
 import { refreshOrganizationScope } from "../../lib/organization-query-scope";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
-import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 
 const CP_ROLES = new Set(["owner", "admin", "operator", "platform_admin", "super_admin"]);
 export function ProviderOrganizationSelector() {
@@ -75,7 +75,10 @@ export function ProviderOrganizationSelector() {
     >
       <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
       <span className="shrink-0 text-muted-foreground">{t("cp.organizationSelector.label")}</span>
-      <NativeSelect
+      <ResourceSelectField
+        resourceType="organizations"
+        recent
+        expandable
         aria-label={t("cp.organizationSelector.ariaLabel")}
         className="min-w-0 flex-[1_1_12rem]"
         disabled={update.isPending}
@@ -88,7 +91,7 @@ export function ProviderOrganizationSelector() {
             {organization.name}
           </option>
         ))}
-      </NativeSelect>
+      </ResourceSelectField>
       {update.error ? (
         <span
           className="min-w-0 break-words text-xs text-status-failed"

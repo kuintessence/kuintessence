@@ -67,7 +67,7 @@ export function OperationsPage() {
           title={t("settings.operations.accessDenied.title")}
           subtitle={t("settings.operations.accessDenied.description")}
         />
-        <div className="flex items-start gap-3 rounded-lg border border-border bg-muted/35 p-4 text-sm">
+        <div className="flex items-start gap-3 border-border p-4 text-sm">
           <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
           <p className="text-muted-foreground">{t("settings.operations.accessDenied.guidance")}</p>
         </div>
@@ -139,7 +139,7 @@ function OperationsConfiguration({
         {capabilities.has("metering.report.view") && <MeteringPage showWebhooks={false} />}
         {platformAdmin && (
           <details
-            className="rounded-xl border border-border p-4"
+            className="border-b border-border p-4"
             data-testid="operations-metering-configuration"
           >
             <summary className="cursor-pointer font-medium">
@@ -157,10 +157,7 @@ function OperationsConfiguration({
   if (area === "audit" && capabilities.has("audit.view")) {
     return (
       <div className="space-y-4" data-testid="operations-audit-configuration">
-        <details
-          className="rounded-xl border border-border p-4"
-          data-testid="audit-policy-settings"
-        >
+        <details className="border-b border-border p-4" data-testid="audit-policy-settings">
           <summary className="cursor-pointer font-medium">
             {t("settings.operations.auditSettings")}
           </summary>

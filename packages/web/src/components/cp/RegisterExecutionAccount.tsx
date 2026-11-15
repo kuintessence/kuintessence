@@ -9,7 +9,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 
 export function RegisterExecutionAccount({
   providerOrgId,
@@ -130,7 +130,10 @@ export function RegisterExecutionAccount({
           <fieldset disabled={busy || query.isPending || !!query.error} className="space-y-4">
             <div className="grid gap-1.5 text-sm">
               <label htmlFor={`${id}-agent`}>{t("cp.accounts.registration.agent")}</label>
-              <NativeSelect
+              <ResourceSelectField
+                resourceType="agents"
+                recent
+                expandable
                 id={`${id}-agent`}
                 required
                 value={agentId}
@@ -146,7 +149,7 @@ export function RegisterExecutionAccount({
                     {agent.siteName} · {agent.agentId} ({agent.schedulerType})
                   </option>
                 ))}
-              </NativeSelect>
+              </ResourceSelectField>
             </div>
             <label className="grid gap-1.5 text-sm" htmlFor={`${id}-name`}>
               {t("cp.accounts.registration.displayName")}
@@ -189,7 +192,7 @@ export function RegisterExecutionAccount({
               {error}
             </p>
           )}
-          <div className="flex justify-end gap-2 border-t border-border pt-4">
+          <div className="flex justify-end gap-2 border-border pt-4">
             <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
               {t("cp.common.cancel")}
             </Button>

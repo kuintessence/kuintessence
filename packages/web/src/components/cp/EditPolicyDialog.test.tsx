@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -29,7 +30,7 @@ describe("EditPolicyDialog", () => {
     );
 
     const textarea = screen.getByTestId("edit-policy-specs") as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: "x@1.0\ny@2.0\n  z@3.0  " } });
+    fireEvent.change(nativeControl(textarea), { target: { value: "x@1.0\ny@2.0\n  z@3.0  " } });
 
     fireEvent.click(screen.getByTestId("edit-policy-submit"));
 
@@ -55,7 +56,7 @@ describe("EditPolicyDialog", () => {
     );
 
     const textarea = screen.getByTestId("edit-policy-specs") as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: "   \n  \n" } });
+    fireEvent.change(nativeControl(textarea), { target: { value: "   \n  \n" } });
     fireEvent.click(screen.getByTestId("edit-policy-submit"));
     expect(onSubmit).toHaveBeenCalledWith({ cluster: "c", list: "blacklist", specs: [] });
   });

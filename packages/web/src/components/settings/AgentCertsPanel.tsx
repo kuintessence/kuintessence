@@ -147,7 +147,7 @@ export function AgentCertsPanel() {
               return (
                 <div
                   key={cert.fingerprintSha256}
-                  className="flex flex-col gap-2 rounded-md border border-border px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between"
+                  className="flex flex-col gap-2 border-border px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between"
                   data-testid={`agent-cert-row-${cert.fingerprintSha256}`}
                 >
                   <div className="min-w-0 space-y-1">

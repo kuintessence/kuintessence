@@ -45,7 +45,7 @@ export function CpInfrastructurePage() {
       </div>
       {hasError ? (
         <div
-          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-status-failed/40 bg-status-failed/5 p-4"
+          className="flex flex-wrap items-center justify-between gap-3 p-4"
           data-testid="cp-infrastructure-error"
           role="alert"
         >
@@ -83,10 +83,10 @@ export function CpInfrastructurePage() {
           key === "sandbox" && !canManagePlatform ? (
             <div
               key={key}
-              className="group flex min-h-20 items-center gap-3 rounded-lg border border-dashed bg-card p-4"
+              className="group flex min-h-20 items-center gap-3 p-4"
               data-testid="cp-infrastructure-sandbox-restricted"
             >
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-background">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center border-border ">
                 <Icon className="h-4 w-4" />
               </span>
               <span className="min-w-0">
@@ -103,9 +103,9 @@ export function CpInfrastructurePage() {
               key={key}
               to={to}
               hash={key === "sandbox" ? "security/sandbox-security" : undefined}
-              className="group flex min-h-20 items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:bg-muted/45"
+              className="group flex min-h-20 items-center gap-3 border-b border-border p-4 transition-colors"
             >
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-background">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center border-border ">
                 <Icon className="h-4 w-4" />
               </span>
               <span className="min-w-0">
@@ -123,7 +123,7 @@ export function CpInfrastructurePage() {
 
 function Metric({ label, value }: { label: string; value: number | null }) {
   return (
-    <div className="rounded-lg border border-border bg-card px-4 py-3">
+    <div className=" border-border px-4 py-3">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 text-2xl font-semibold tabular-nums">{value ?? "--"}</div>
     </div>

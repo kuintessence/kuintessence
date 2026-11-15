@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import i18n from "../../lib/i18n";
 import { SoftwareError } from "../../lib/software-client";
 import * as client from "../../lib/spack-material-lifecycle-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { MaterialLifecycle } from "./MaterialLifecycle";
 import {
   confirmLifecycle,
@@ -112,10 +113,9 @@ test.each([
   inspectLifecycle();
   await screen.findByTestId("material-lifecycle-detail");
   confirmLifecycle(reason);
-  expect(lifecycleUi().getByLabelText(labels.lifecycleReason, { exact: true })).toHaveProperty(
-    "value",
-    reason,
-  );
+  expect(
+    nativeControl(lifecycleUi().getByLabelText(labels.lifecycleReason, { exact: true })),
+  ).toHaveProperty("value", reason);
   expect(
     lifecycleUi().getByRole("button", { name: labels.lifecycleAction.withdraw }),
   ).toHaveProperty("disabled", true);
@@ -130,7 +130,7 @@ test("withdraws and restores with exact revisions and fresh confirmation", async
   await screen.findByTestId("material-lifecycle-detail");
   confirmLifecycle("First reason");
   expect(lifecycleUi().getByRole("checkbox")).toHaveProperty("checked", true);
-  fireEvent.change(lifecycleUi().getByLabelText(labels.lifecycleReason), {
+  fireEvent.change(nativeControl(lifecycleUi().getByLabelText(labels.lifecycleReason)), {
     target: { value: WITHDRAW_REASON },
   });
   expect(lifecycleUi().getByRole("checkbox")).toHaveProperty("checked", false);
@@ -145,7 +145,10 @@ test("withdraws and restores with exact revisions and fresh confirmation", async
     { action: "withdraw", expectedRevision: 0, reason: WITHDRAW_REASON },
     expect.any(AbortSignal),
   );
-  expect(lifecycleUi().getByLabelText(labels.lifecycleReason)).toHaveProperty("value", "");
+  expect(nativeControl(lifecycleUi().getByLabelText(labels.lifecycleReason))).toHaveProperty(
+    "value",
+    "",
+  );
   expect(
     lifecycleUi().getByRole("checkbox", { name: labels.lifecycleConfirm.restore }),
   ).toHaveProperty("checked", false);
@@ -235,7 +238,10 @@ test.each([
   expectNoView();
   expect(client.changeSpackMaterialLifecycle).toHaveBeenCalledTimes(1);
   await act(async () => recheck.resolve(f.atRevision(2)));
-  expect(lifecycleUi().getByLabelText(labels.lifecycleReason)).toHaveProperty("value", "");
+  expect(nativeControl(lifecycleUi().getByLabelText(labels.lifecycleReason))).toHaveProperty(
+    "value",
+    "",
+  );
   expect(lifecycleUi().getByRole("checkbox")).toHaveProperty("checked", false);
   submitLifecycle();
   expect(client.changeSpackMaterialLifecycle).toHaveBeenCalledTimes(1);
@@ -343,7 +349,7 @@ test.each(["stop", "edit", "timeout"])("%s aborts reads and ignores late state",
     fireEvent.click(lifecycleUi().getByRole("button", { name: labels.lifecycleStop }));
   }
   if (end === "edit") {
-    fireEvent.change(lifecycleUi().getByLabelText(labels.lifecycleManifestDigest), {
+    fireEvent.change(nativeControl(lifecycleUi().getByLabelText(labels.lifecycleManifestDigest)), {
       target: { value: `sha256:${"2".repeat(64)}` },
     });
   }

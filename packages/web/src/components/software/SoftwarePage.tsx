@@ -658,14 +658,11 @@ export function SoftwarePage() {
         <AuxiliaryErrorBanner error={mirrorCacheLoadError} testId="software-mirror-cache-error" />
       ) : null}
 
-      <details
-        className="rounded-lg border border-border bg-card"
-        data-testid="software-management"
-      >
-        <summary className="cursor-pointer rounded-lg px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
+      <details className="border-b border-border" data-testid="software-management">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
           {t("software.management")}
         </summary>
-        <div className="kq-motion--disclosure space-y-4 border-t border-border p-4">
+        <div className="kq-motion--disclosure space-y-4 border-border p-4">
           <SoftwareRoleFlowPanel
             accessRequests={accessRequests}
             canRequestAccess={canRequestAccess}
@@ -689,10 +686,7 @@ export function SoftwarePage() {
       </details>
 
       {isMissing || isUnreachable ? (
-        <div
-          className="rounded-md border border-dashed border-border bg-muted/40 p-4 text-sm"
-          data-testid="software-banner-unreachable"
-        >
+        <div className=" border-border p-4 text-sm" data-testid="software-banner-unreachable">
           <div className="flex items-center gap-2 font-medium">
             <CircleAlert className="h-4 w-4 text-[var(--status-failed)]" />
             {t("software.unreachable")}
@@ -776,13 +770,13 @@ export function SoftwarePage() {
           </TabsContent>
           <TabsContent value="spack">
             <details
-              className="mb-4 rounded-lg border border-border bg-card"
+              className="mb-4 border-b border-border"
               data-testid="software-material-management"
             >
-              <summary className="cursor-pointer rounded-lg px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
+              <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
                 {t("software.materialManagement")}
               </summary>
-              <div className="kq-motion--disclosure space-y-4 border-t border-border p-4">
+              <div className="kq-motion--disclosure space-y-4 border-border p-4">
                 <RecipeRepositoriesPanel canManage={canManageOrganization} />
                 <SpackMaterialsPanel canManage={canManageOrganization} canManageBindings />
               </div>
@@ -903,10 +897,8 @@ function SoftwareStickyControls({
     >
       <div
         className={cn(
-          "space-y-3 bg-background/95 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80",
-          fixedFrame.fixed
-            ? "fixed z-30 border-b border-border px-0 shadow-sm"
-            : "relative z-10 -mx-1 px-1",
+          "space-y-3 py-2 backdrop-blur ",
+          fixedFrame.fixed ? "fixed z-30 border-b border-border px-0 " : "relative z-10 -mx-1 px-1",
         )}
         style={
           fixedFrame.fixed
@@ -995,10 +987,7 @@ function AuxiliaryErrorBanner({ error, testId }: { error: Error | null; testId: 
   const { t } = useTranslation();
   if (!error) return null;
   return (
-    <div
-      className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
-      data-testid={testId}
-    >
+    <div className=" p-3 text-sm" data-testid={testId}>
       {toUserFacingError(error, t("software.governance.actionFailed"))}
     </div>
   );
@@ -1040,7 +1029,7 @@ function SoftwareRoleFlowPanel({
       className={cn("grid gap-3 sm:grid-cols-2", showOperations && "2xl:grid-cols-4")}
       data-testid="software-role-flow-panel"
     >
-      <div className="rounded-md border border-border bg-card p-3">
+      <div className=" border-border p-3">
         <div className="flex items-center justify-between gap-2">
           <h3 className="text-sm font-semibold">{t("software.roles.user")}</h3>
           <Badge variant="outline">{accessRequests.length}</Badge>
@@ -1067,7 +1056,7 @@ function SoftwareRoleFlowPanel({
           </Button>
         ) : null}
       </div>
-      <div className="rounded-md border border-border bg-card p-3">
+      <div className=" border-border p-3">
         <div className="flex items-center justify-between gap-2">
           <h3 className="text-sm font-semibold">{t("software.roles.publisher")}</h3>
           <Badge variant="outline">{publisherAssets.length}</Badge>
@@ -1082,14 +1071,14 @@ function SoftwareRoleFlowPanel({
         </div>
       </div>
       {showOperations ? (
-        <div className="rounded-md border border-border bg-card p-3">
+        <div className=" border-border p-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold">{t("software.roles.operator")}</h3>
             <Badge variant="outline">{reviewAssets.length + pendingAccessRequests.length}</Badge>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">{t("software.roles.operatorDesc")}</p>
           {pendingAccessRequest ? (
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-2">
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-border p-2">
               <span className="truncate text-xs">
                 {pendingAccessRequest.asset.name} · {pendingAccessRequest.capability}
               </span>
@@ -1116,7 +1105,7 @@ function SoftwareRoleFlowPanel({
         </div>
       ) : null}
       {showOperations ? (
-        <div className="rounded-md border border-border bg-card p-3">
+        <div className=" border-border p-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold">{t("software.roles.mirror")}</h3>
             <Badge variant="outline">{mirrorCache.length}</Badge>
@@ -1157,10 +1146,7 @@ function SoftwareGovernancePanel({
   const { t } = useTranslation();
   if (!isLoading && assets.length === 0) return null;
   return (
-    <section
-      className="space-y-3 rounded-md border border-border bg-card p-3"
-      data-testid="software-governance-panel"
-    >
+    <section className="space-y-3 border-border p-3" data-testid="software-governance-panel">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h3 className="text-sm font-semibold text-foreground">
@@ -1179,7 +1165,7 @@ function SoftwareGovernancePanel({
           {assets.slice(0, 6).map((asset) => (
             <div
               key={asset.id}
-              className="grid gap-2 rounded-md border border-border bg-background p-2.5"
+              className="grid gap-2 border-border p-2.5"
               data-testid={`software-review-asset-${asset.id}`}
             >
               <div className="flex min-w-0 items-start justify-between gap-2">
@@ -1197,7 +1183,7 @@ function SoftwareGovernancePanel({
                     : t("software.governance.untrusted")}
                 </Badge>
               </div>
-              <div className="kq-fill-row gap-1 border-t border-border pt-2">
+              <div className="kq-fill-row gap-1 border-border pt-2">
                 <Button
                   type="button"
                   size="sm"
@@ -1324,12 +1310,7 @@ function CatalogToolbar({
 }) {
   const { t } = useTranslation();
   return (
-    <div
-      className={cn(
-        "space-y-3 bg-card p-3",
-        variant === "card" ? "rounded-md border border-border" : "border-0 rounded-none",
-      )}
-    >
+    <div className={cn("space-y-3 p-3", variant === "card" ? " border-border" : " ")}>
       <ListToolbar
         search={{
           "aria-label": searchPlaceholder,
@@ -1531,7 +1512,7 @@ function WorkflowTemplatesPanel({
         </div>
       ) : total > 0 ? (
         <div
-          className="flex h-36 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border text-sm text-muted-foreground"
+          className="flex h-36 flex-col items-center justify-center gap-2 border-border text-sm text-muted-foreground"
           data-testid="software-no-matches"
         >
           <Box className="h-5 w-5" />
@@ -1573,7 +1554,7 @@ export function WorkflowTemplateForm({
   const [yamlContent, setYamlContent] = useState("");
   return (
     <form
-      className="grid grid-cols-1 gap-3 rounded-md border border-border bg-card p-3"
+      className="grid grid-cols-1 gap-3 border-b border-border p-3"
       data-testid="software-template-form"
       onSubmit={(e) => {
         e.preventDefault();
@@ -1888,7 +1869,7 @@ export function UsecasePackageForm({
   }, [catalogUnavailable]);
   return (
     <form
-      className="grid min-w-0 grid-cols-1 content-start gap-3 rounded-md border border-border bg-card p-3"
+      className="grid min-w-0 grid-cols-1 content-start gap-3 border-b border-border p-3"
       data-testid="software-usecase-form"
       onSubmit={(e) => {
         e.preventDefault();
@@ -1923,7 +1904,7 @@ export function UsecasePackageForm({
       <FormHeader icon={<FlaskConical />} title={t("software.manage.createUsecase")} />
       {catalogError ? (
         <div
-          className="flex min-w-0 items-start gap-2 rounded-md border border-status-failed/40 bg-status-failed/10 p-3 text-sm text-status-failed"
+          className="flex min-w-0 items-start gap-2 p-3 text-sm text-status-failed"
           data-testid="software-usecase-catalog-error"
         >
           <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
@@ -2052,7 +2033,7 @@ function CatalogPackagePickerField({
   const { t } = useTranslation();
   return (
     <div
-      className="flex min-w-0 flex-col gap-2 rounded-md border border-border bg-background p-2 sm:flex-row sm:items-center sm:justify-between"
+      className="flex min-w-0 flex-col gap-2 border-border p-2 sm:flex-row sm:items-center sm:justify-between"
       data-testid="software-usecase-package-field"
     >
       <div className="min-w-0">
@@ -2114,7 +2095,7 @@ function SpackSpecPickerField({
     : "";
   return (
     <div
-      className="flex min-w-0 flex-col gap-2 rounded-md border border-border bg-background p-2 sm:flex-row sm:items-center sm:justify-between"
+      className="flex min-w-0 flex-col gap-2 border-border p-2 sm:flex-row sm:items-center sm:justify-between"
       data-testid="software-usecase-spec-field"
     >
       <div className="min-w-0">
@@ -2207,7 +2188,7 @@ function SpackSpecConfigSheet({
           <SheetDescription>{t("software.manage.specPickerDescription")}</SheetDescription>
         </SheetHeader>
         <SheetBody className="grid content-start gap-3">
-          <div className="rounded-md border border-border bg-background p-3">
+          <div className=" border-border p-3">
             <div className="text-[11px] text-muted-foreground">
               {t("software.manage.spackSpec")}
             </div>
@@ -2292,7 +2273,7 @@ function SpackMetadataChoices({
   const { t } = useTranslation();
   const visibleVersions = metadata.versions.slice(0, 10);
   return (
-    <div className="grid gap-3 rounded-md border border-border bg-background p-3">
+    <div className="grid gap-3 border-border p-3">
       <div className="text-xs font-medium text-foreground">
         {t("software.manage.packageMetadata")}
       </div>
@@ -2354,7 +2335,7 @@ function VariantChoice({
 }) {
   const values = variant.values.length > 0 ? variant.values : ["+", "~"];
   return (
-    <div className="rounded-md border border-border bg-card p-2">
+    <div className=" border-border p-2">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <div className="font-mono text-xs font-semibold">{variant.name}</div>
@@ -2399,7 +2380,7 @@ function CompilerParseBox({ onCompilerChange }: { onCompilerChange: (value: stri
     }
   };
   return (
-    <div className="grid gap-2 rounded-md border border-border bg-background p-3">
+    <div className="grid gap-2 border-border p-3">
       <div className="text-xs font-medium text-foreground">
         {t("software.manage.compilerParser")}
       </div>
@@ -2502,7 +2483,7 @@ function SpackCatalogPickerDialog({
           </div>
           <CatalogPickerPagination catalog={catalog} onPageChange={setPage} />
           <div
-            className="grid min-h-80 flex-1 auto-rows-max content-start gap-3 overflow-auto rounded-md border border-border bg-background p-2 sm:grid-cols-2 xl:grid-cols-3"
+            className="grid min-h-80 flex-1 auto-rows-max content-start gap-3 overflow-auto border-border p-2 sm:grid-cols-2 xl:grid-cols-3"
             data-testid="software-usecase-catalog-grid"
           >
             {packages.length === 0 ? (
@@ -2516,8 +2497,8 @@ function SpackCatalogPickerDialog({
                     key={key}
                     type="button"
                     className={cn(
-                      "grid min-h-36 min-w-0 content-between gap-3 rounded-md border bg-card p-3 text-left transition-colors hover:border-brand/50 hover:bg-muted/30",
-                      active ? "border-brand ring-1 ring-brand/40" : "border-border",
+                      "grid min-h-36 min-w-0 content-between gap-3 p-3 text-left transition-colors ",
+                      active ? "text-brand" : "",
                     )}
                     onClick={() => choose(pkg)}
                     data-testid={`software-usecase-catalog-package-${pkg.source}-${pkg.name}`}
@@ -2727,7 +2708,7 @@ function SpackCatalogSummary({ catalog }: { catalog: SpackCatalog | null }) {
   if (!catalog) return null;
   return (
     <div data-testid="software-spack-catalog-summary">
-      <div className="rounded-md border border-border bg-card p-3 text-xs text-muted-foreground">
+      <div className=" border-border p-3 text-xs text-muted-foreground">
         <div className="font-medium text-foreground">{t("software.manage.officialCatalog")}</div>
         <div className="mt-1 leading-5">
           {t("software.manage.catalogStats", {
@@ -2846,7 +2827,7 @@ function SpackCatalogPackageList({
             return (
               <div
                 key={`${pkg.source}:${pkg.id ?? pkg.name}`}
-                className={`grid min-w-0 gap-2 rounded-md border border-border bg-card p-2.5 ${clickableCardClass}`}
+                className={`grid min-w-0 gap-2 border-border p-2.5 ${clickableCardClass}`}
                 data-testid={`software-spack-catalog-package-${pkg.source}-${pkg.name}`}
               >
                 <Link
@@ -2917,9 +2898,7 @@ function SpackCatalogPackageList({
                     ))}
                   </div>
                 </div>
-                <div
-                  className={`kq-fill-row gap-1 border-t border-border pt-2 ${cardActionLayerClass}`}
-                >
+                <div className={`kq-fill-row gap-1 border-border pt-2 ${cardActionLayerClass}`}>
                   <Button
                     asChild
                     type="button"
@@ -3109,7 +3088,7 @@ export function SpackCatalogPackageForm({
   };
   return (
     <form
-      className="mt-3 grid gap-2 rounded-md border border-border bg-background p-2"
+      className="mt-3 grid gap-2 border-b border-border p-2"
       data-testid="software-spack-catalog-create-form"
       onSubmit={(e) => {
         e.preventDefault();
@@ -3196,7 +3175,7 @@ function SpackPackageMetadataSummary({ metadata }: { metadata: SpackPackageMetad
   const { t } = useTranslation();
   return (
     <div
-      className="grid gap-2 rounded-md border border-border bg-card p-2 text-xs"
+      className="grid gap-2 border-border p-2 text-xs"
       data-testid="software-spack-package-metadata"
     >
       <div className="font-medium text-foreground">{t("software.manage.packageMetadata")}</div>
@@ -3326,7 +3305,7 @@ function UsecaseCard({
     pkg.spec.software.kind === "Spack" ? (pkg.spec.software.variantRef ?? "—") : "—";
   return (
     <div
-      className={`rounded-md border border-border bg-card p-3 ${clickableCardClass}`}
+      className={` border-border p-3 ${clickableCardClass}`}
       data-testid={`software-usecase-card-${pkg.id}`}
     >
       <Link
@@ -3555,7 +3534,7 @@ function FormHeader({ icon, title }: { icon: ReactNode; title: string }) {
 
 function InfoTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 rounded-md border border-border bg-background px-2 py-1.5">
+    <div className="min-w-0 border-border px-2 py-1.5">
       <div className="text-[11px] text-muted-foreground">{label}</div>
       <div className="truncate font-mono text-xs" title={value}>
         {value}
@@ -3566,7 +3545,7 @@ function InfoTile({ label, value }: { label: string; value: string }) {
 
 function SmallEmpty({ icon, text }: { icon: ReactNode; text: string }) {
   return (
-    <div className="flex min-h-32 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border text-sm text-muted-foreground">
+    <div className="flex min-h-32 flex-col items-center justify-center gap-2 border-border text-sm text-muted-foreground">
       <span className="[&_svg]:h-5 [&_svg]:w-5">{icon}</span>
       {text}
     </div>
