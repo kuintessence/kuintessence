@@ -104,7 +104,7 @@ export function FileContextMenu({
       aria-label={t("files.context.menuLabel", { name: snapshot.label })}
       aria-hidden={target === null}
       data-state={state}
-      className="kq-motion kq-motion--menu fixed z-50 w-44 overflow-hidden rounded-md border border-border bg-card p-1 text-card-foreground shadow-lg"
+      className="kq-motion kq-motion--menu fixed z-50 w-44 overflow-hidden border-border p-1 text-card-foreground "
       style={{ left, top }}
       data-testid="files-context-menu"
       onPointerDown={(event) => event.stopPropagation()}
@@ -122,10 +122,10 @@ export function FileContextMenu({
             role="menuitem"
             disabled={disabled}
             className={cn(
-              "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm outline-none",
+              "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm outline-none",
               disabled
                 ? "cursor-not-allowed text-muted-foreground opacity-60"
-                : "hover:bg-muted/70 focus:bg-muted/70",
+                : " focus:bg-muted/70",
             )}
             data-testid={`files-context-${item.action}`}
             onClick={() => {

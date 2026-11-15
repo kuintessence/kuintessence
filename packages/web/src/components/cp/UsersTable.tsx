@@ -9,6 +9,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { PaginationControls } from "../ui/pagination-controls";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 export function UsersTable() {
   const { t } = useTranslation();
@@ -78,10 +79,7 @@ export function UsersTable() {
       </div>
 
       {showLegacy ? (
-        <div
-          className="rounded-md border border-border bg-muted/30 p-3 text-sm"
-          data-testid="cp-users-readonly-notice"
-        >
+        <div className=" border-border p-3 text-sm" data-testid="cp-users-readonly-notice">
           <p className="font-medium">{t("cp.users.readonly.title")}</p>
           <p className="mt-1 text-muted-foreground">{t("cp.users.readonly.description")}</p>
         </div>
@@ -113,25 +111,17 @@ export function UsersTable() {
 
       {activeOrganizationId === null ? (
         <div
-          className="rounded-md border border-dashed p-4 text-sm text-muted-foreground"
+          className=" p-4 text-sm text-muted-foreground"
           data-testid="cp-users-organization-required"
         >
           {t("cp.users.organizationRequired")}
         </div>
       ) : isOffline ? (
-        <div
-          className="rounded-md border border-status-failed/40 p-3 text-sm"
-          data-testid="cp-users-offline"
-          role="alert"
-        >
+        <div className=" p-3 text-sm" data-testid="cp-users-offline" role="alert">
           {t("cp.users.offline")}
         </div>
       ) : loadError ? (
-        <div
-          className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
-          data-testid="cp-users-error"
-          role="alert"
-        >
+        <div className=" p-3 text-sm" data-testid="cp-users-error" role="alert">
           <p>{toUserFacingError(loadError, t("cp.users.loadFailed"))}</p>
           <Button
             type="button"
@@ -155,7 +145,7 @@ export function UsersTable() {
         </div>
       ) : items.length === 0 ? (
         <div
-          className="flex h-32 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground"
+          className="flex h-32 items-center justify-center border-border text-sm text-muted-foreground"
           data-testid="cp-users-empty"
         >
           <div className="space-y-3 text-center">
@@ -179,46 +169,50 @@ export function UsersTable() {
         </div>
       ) : (
         <div
-          className="rounded-md border border-border sm:overflow-x-auto sm:overscroll-x-contain"
+          className=" border-border sm:overflow-x-auto sm:overscroll-x-contain"
           data-testid="cp-users-table-scroll"
         >
-          <table className="w-full text-sm">
-            <thead className="sr-only bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground xl:not-sr-only xl:table-header-group">
-              <tr>
-                <th className="px-3 py-2 font-medium">{t("cp.users.col.email")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.users.col.role")}</th>
+          <Table className="w-full text-sm">
+            <TableHeader className="sr-only text-left text-xs uppercase tracking-wide text-muted-foreground xl:not-sr-only xl:table-header-group">
+              <TableRow>
+                <TableHead className="px-3 py-2 font-medium">{t("cp.users.col.email")}</TableHead>
+                <TableHead className="px-3 py-2 font-medium">{t("cp.users.col.role")}</TableHead>
                 {showLegacy ? (
                   <>
-                    <th className="px-3 py-2 font-medium">{t("cp.users.col.suspended")}</th>
-                    <th className="px-3 py-2 font-medium">{t("cp.users.col.quota")}</th>
+                    <TableHead className="px-3 py-2 font-medium">
+                      {t("cp.users.col.suspended")}
+                    </TableHead>
+                    <TableHead className="px-3 py-2 font-medium">
+                      {t("cp.users.col.quota")}
+                    </TableHead>
                   </>
                 ) : null}
-              </tr>
-            </thead>
-            <tbody className="block divide-y divide-border xl:table-row-group xl:divide-y-0">
+              </TableRow>
+            </TableHeader>
+            <TableBody className="block divide-y divide-border xl:table-row-group xl:divide-y-0">
               {items.map((u) => (
-                <tr
+                <TableRow
                   key={u.id}
                   data-testid={`cp-users-row-${u.id}`}
-                  className="grid grid-cols-2 gap-x-3 gap-y-3 p-4 xl:table-row xl:border-t xl:border-border xl:p-0"
+                  className="grid grid-cols-2 gap-x-3 gap-y-3 p-4 xl:table-row xl:border-border xl:p-0"
                 >
-                  <td className="col-span-2 min-w-0 break-all font-medium xl:table-cell xl:px-3 xl:py-2 xl:font-normal">
+                  <TableCell className="col-span-2 min-w-0 break-all font-medium xl:table-cell xl:px-3 xl:py-2 xl:font-normal">
                     {u.displayName || u.email}
                     {u.displayName ? (
                       <span className="mt-1 block text-xs font-normal text-muted-foreground">
                         {u.email}
                       </span>
                     ) : null}
-                  </td>
-                  <td className="xl:table-cell xl:px-3 xl:py-2 xl:font-mono xl:text-xs xl:text-muted-foreground">
+                  </TableCell>
+                  <TableCell className="xl:table-cell xl:px-3 xl:py-2 xl:font-mono xl:text-xs xl:text-muted-foreground">
                     <span className="mr-2 text-xs text-muted-foreground xl:hidden">
                       {t("cp.users.col.role")}
                     </span>
                     {t(`cp.users.roles.${u.role}`, { defaultValue: u.role })}
-                  </td>
+                  </TableCell>
                   {showLegacy ? (
                     <>
-                      <td className="xl:table-cell xl:px-3 xl:py-2">
+                      <TableCell className="xl:table-cell xl:px-3 xl:py-2">
                         <span className="mr-2 text-xs text-muted-foreground xl:hidden">
                           {t("cp.users.col.suspended")}
                         </span>
@@ -238,8 +232,8 @@ export function UsersTable() {
                               ? t("cp.users.historyNotMarked")
                               : t("cp.users.historyUnknown")}
                         </Badge>
-                      </td>
-                      <td className="font-mono text-xs tabular-nums xl:table-cell xl:px-3 xl:py-2 xl:text-left">
+                      </TableCell>
+                      <TableCell className="font-mono text-xs tabular-nums xl:table-cell xl:px-3 xl:py-2 xl:text-left">
                         <span className="mr-2 font-sans text-muted-foreground xl:hidden">
                           {t("cp.users.col.quota")}
                         </span>
@@ -248,13 +242,13 @@ export function UsersTable() {
                             ? t("cp.users.historyQuotaZero")
                             : u.quota
                           : t("cp.users.notProvided")}
-                      </td>
+                      </TableCell>
                     </>
                   ) : null}
-                </tr>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
       {canShowMembers && total > 50 ? (

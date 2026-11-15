@@ -1,6 +1,7 @@
 import type { ColumnDef } from "@tanstack/react-table";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 import { DataTable } from "./data-table";
 
 vi.mock("react-i18next", () => ({
@@ -20,9 +21,12 @@ test("filtering retains pagination when the selected page size is smaller than t
     name: `${row.id < 20 ? "CPU" : "GPU"} ${row.name}`,
   }));
   const view = render(<DataTable columns={columns} data={rows} pageSize={25} />);
-  fireEvent.change(screen.getByRole("combobox", { name: "common.pagination.rowsPerPage" }), {
-    target: { value: "10" },
-  });
+  fireEvent.change(
+    nativeControl(screen.getByRole("combobox", { name: "common.pagination.rowsPerPage" })),
+    {
+      target: { value: "10" },
+    },
+  );
   view.rerender(<DataTable columns={columns} data={rows} pageSize={25} globalFilter="CPU" />);
   await waitFor(() => expect(screen.getAllByRole("cell")[0]?.textContent).toBe("CPU Job 00"));
   fireEvent.click(screen.getByRole("button", { name: "common.pagination.next" }));
@@ -51,9 +55,9 @@ test("page size stays adjustable on one page and filtering resets an out-of-rang
   const view = render(<DataTable columns={columns} data={data} pageSize={10} />);
   await waitFor(() => expect(screen.getAllByRole("cell")[0]?.textContent).toBe("Job 00"));
   const size = screen.getByRole("combobox", { name: "common.pagination.rowsPerPage" });
-  fireEvent.change(size, { target: { value: "50" } });
+  fireEvent.change(nativeControl(size), { target: { value: "50" } });
   expect(screen.getAllByRole("cell")).toHaveLength(32);
-  fireEvent.change(size, { target: { value: "10" } });
+  fireEvent.change(nativeControl(size), { target: { value: "10" } });
   fireEvent.click(screen.getByRole("button", { name: "common.pagination.next" }));
   await waitFor(() => expect(screen.getAllByRole("cell")[0]?.textContent).toBe("Job 10"));
   view.rerender(<DataTable columns={columns} data={data} pageSize={10} globalFilter="Job 00" />);
@@ -61,4 +65,33 @@ test("page size stays adjustable on one page and filtering resets an out-of-rang
   view.rerender(<DataTable columns={columns} data={data} pageSize={10} globalFilter="missing" />);
   await waitFor(() => expect(screen.getByRole("cell").textContent).toBe("common.empty"));
   expect(screen.queryByRole("combobox")).toBeNull();
+});
+
+test("server mode delegates filtering, sorting and paging without changing the supplied page", () => {
+  const sort = vi.fn();
+  const paginate = vi.fn();
+  render(
+    <DataTable
+      columns={columns}
+      data={[
+        { id: 8, name: "Job 08" },
+        { id: 2, name: "Job 02" },
+      ]}
+      manualFiltering
+      manualPagination
+      manualSorting
+      globalFilter="never-match"
+      rowCount={81}
+      pagination={{ pageIndex: 2, pageSize: 10 }}
+      sorting={[]}
+      onSortingChange={sort}
+      onPaginationChange={paginate}
+    />,
+  );
+  expect(screen.getAllByRole("cell").map((cell) => cell.textContent)).toEqual(["Job 08", "Job 02"]);
+  fireEvent.click(screen.getByRole("button", { name: "Name" }));
+  expect(sort).toHaveBeenCalledTimes(1);
+  expect(screen.getAllByRole("cell")[0]?.textContent).toBe("Job 08");
+  fireEvent.click(screen.getByRole("button", { name: "common.pagination.next" }));
+  expect(paginate).toHaveBeenCalledTimes(1);
 });

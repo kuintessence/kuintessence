@@ -31,7 +31,7 @@ export function ErrorState({
     <div
       role="alert"
       className={cn(
-        "flex flex-wrap items-center justify-between gap-3 rounded-md border border-status-failed/40 bg-status-failed/5 p-3 text-sm",
+        "flex flex-wrap items-center justify-between gap-3 border-b border-border text-status-failed p-3 text-sm",
         className,
       )}
       {...props}
@@ -56,13 +56,7 @@ export function EmptyState({
   actions?: ReactNode;
 }) {
   return (
-    <div
-      className={cn(
-        "rounded-lg border border-dashed border-border bg-muted/20 px-5 py-9 text-center",
-        className,
-      )}
-      {...props}
-    >
+    <div className={cn("border-b border-border px-5 py-9 text-center", className)} {...props}>
       {icon ? (
         <div
           aria-hidden="true"

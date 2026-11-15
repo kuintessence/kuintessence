@@ -20,6 +20,7 @@ import { listSpackMaterials } from "../../lib/spack-materials-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 const PAGE_SIZE = 20;
 
@@ -178,32 +179,48 @@ export function MaterialCatalog({
       {catalog && catalog.releases.length > 0 ? (
         <>
           <div className="max-h-[28rem] overflow-auto">
-            <table
+            <Table
               className="w-full min-w-[40rem] table-fixed text-left text-xs"
               aria-label={t("materials.catalogTitle")}
             >
-              <thead className="sticky top-0 z-10 border-b border-border bg-card text-muted-foreground">
-                <tr>
-                  <th className="w-[25%] p-2 font-medium">{t("materials.repository")}</th>
-                  <th className="p-2 font-medium">Spec</th>
-                  <th className="w-[20%] p-2 font-medium">{t("materials.target")}</th>
-                  <th className="w-20 p-2 font-medium">{t("materials.catalogSourceCount")}</th>
-                  <th className="w-28 p-2 font-medium">{t("materials.catalogTotalBytes")}</th>
-                  <th className="w-16 p-2 font-medium">{t("materials.actions")}</th>
-                </tr>
-              </thead>
-              <tbody>
+              <TableHeader className="sticky top-0 z-10 border-b border-border text-muted-foreground">
+                <TableRow>
+                  <TableHead className="w-[25%] p-2 font-medium">
+                    {t("materials.repository")}
+                  </TableHead>
+                  <TableHead className="p-2 font-medium">Spec</TableHead>
+                  <TableHead className="w-[20%] p-2 font-medium">{t("materials.target")}</TableHead>
+                  <TableHead className="w-20 p-2 font-medium">
+                    {t("materials.catalogSourceCount")}
+                  </TableHead>
+                  <TableHead className="w-28 p-2 font-medium">
+                    {t("materials.catalogTotalBytes")}
+                  </TableHead>
+                  <TableHead className="w-16 p-2 font-medium">{t("materials.actions")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {catalog.releases.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((release) => (
-                  <tr
+                  <TableRow
                     key={`${release.repositoryId}:${release.manifestDigest}`}
                     className="border-b border-border"
                   >
-                    <td className="break-all p-2 align-top font-mono">{release.repository}</td>
-                    <td className="break-all p-2 align-top font-mono">{release.spec}</td>
-                    <td className="break-all p-2 align-top font-mono">{release.target}</td>
-                    <td className="break-all p-2 align-top tabular-nums">{release.sourceCount}</td>
-                    <td className="break-all p-2 align-top tabular-nums">{release.totalBytes}</td>
-                    <td className="p-2 align-top">
+                    <TableCell className="break-all p-2 align-top font-mono">
+                      {release.repository}
+                    </TableCell>
+                    <TableCell className="break-all p-2 align-top font-mono">
+                      {release.spec}
+                    </TableCell>
+                    <TableCell className="break-all p-2 align-top font-mono">
+                      {release.target}
+                    </TableCell>
+                    <TableCell className="break-all p-2 align-top tabular-nums">
+                      {release.sourceCount}
+                    </TableCell>
+                    <TableCell className="break-all p-2 align-top tabular-nums">
+                      {release.totalBytes}
+                    </TableCell>
+                    <TableCell className="p-2 align-top">
                       <Button
                         type="button"
                         size="icon"
@@ -222,11 +239,11 @@ export function MaterialCatalog({
                       >
                         <Eye />
                       </Button>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
           <div className="flex items-center justify-end gap-2 text-xs">
             <span className="tabular-nums">

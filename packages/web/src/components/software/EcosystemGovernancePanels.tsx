@@ -27,6 +27,7 @@ import { Button } from "../ui/button";
 import { Input, Textarea } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
 import { PaginationControls } from "../ui/pagination-controls";
+import { ResourceSelectField } from "../ui/resource-select-field";
 
 interface LicenseEntitlementPanelProps {
   canReview: boolean;
@@ -103,10 +104,7 @@ export function LicenseEntitlementPanel({
 
   if (!canSubmit && !canReview) return null;
   return (
-    <section
-      className="space-y-3 rounded-md border border-border bg-card p-4"
-      data-testid="license-entitlement-panel"
-    >
+    <section className="space-y-3 border-border p-4" data-testid="license-entitlement-panel">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 className="flex items-center gap-2 text-sm font-semibold">
@@ -201,7 +199,7 @@ function ClaimReviewList({
       {claims.map((claim) => (
         <article
           key={claim.id}
-          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background p-3"
+          className="flex flex-wrap items-center justify-between gap-2 border-border p-3"
         >
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -384,10 +382,7 @@ function RuntimeAndMaterialEditor({
         `${material.selector} · ${material.materialVersion} · ${material.elementSet.join(", ")}`,
     );
   return (
-    <section
-      className="space-y-4 rounded-md border border-border bg-card p-4"
-      data-testid="runtime-material-panel"
-    >
+    <section className="space-y-4 border-border p-4" data-testid="runtime-material-panel">
       <div>
         <h2 className="text-sm font-semibold">{t("software.license.runtimeMaterialTitle")}</h2>
         <p className="mt-1 text-xs text-muted-foreground">
@@ -413,7 +408,8 @@ function RuntimeAndMaterialEditor({
         <>
           <label className="grid gap-1 text-sm">
             {t("cp.accounts.registration.agent")}
-            <NativeSelect
+            <ResourceSelectField
+              resourceType="runtime-profiles"
               aria-label={t("cp.accounts.registration.agent")}
               value={agentId}
               onChange={(event) => {
@@ -433,7 +429,7 @@ function RuntimeAndMaterialEditor({
                   {item.siteName} · {item.agentId} ({item.schedulerType})
                 </option>
               ))}
-            </NativeSelect>
+            </ResourceSelectField>
           </label>
           {!agents.length && (
             <p className="text-sm text-muted-foreground">
@@ -460,7 +456,7 @@ function RuntimeAndMaterialEditor({
           ) : (
             <div className="grid gap-3 xl:grid-cols-2">
               <form
-                className="grid gap-2 rounded-md border border-border bg-background p-3"
+                className="grid gap-2 border-b border-border p-3"
                 onSubmit={(event) => {
                   event.preventDefault();
                   if (baseReady && profile && runtimeDigest)
@@ -477,7 +473,8 @@ function RuntimeAndMaterialEditor({
                 <p className="text-xs text-muted-foreground">Python 3.12 · python-3.12-stdlib-v1</p>
                 <label className="grid gap-1 text-sm">
                   {t("software.license.runtimeProfile")}
-                  <NativeSelect
+                  <ResourceSelectField
+                    resourceType="runtime-profiles"
                     aria-label={t("software.license.runtimeProfile")}
                     value={runtimeProfileId}
                     disabled={!baseReady || bind.isPending}
@@ -490,7 +487,7 @@ function RuntimeAndMaterialEditor({
                         {item.name} · {item.languageVersion}
                       </option>
                     ))}
-                  </NativeSelect>
+                  </ResourceSelectField>
                 </label>
                 {agent && !profiles.length && (
                   <p className="text-sm text-muted-foreground">
@@ -518,7 +515,7 @@ function RuntimeAndMaterialEditor({
                 />
               </form>
               <form
-                className="grid gap-2 rounded-md border border-border bg-background p-3"
+                className="grid gap-2 border-b border-border p-3"
                 onSubmit={(event) => {
                   event.preventDefault();
                   if (materialReady)
@@ -538,7 +535,9 @@ function RuntimeAndMaterialEditor({
                 <fieldset disabled={!baseReady || register.isPending} className="grid gap-2">
                   <label className="grid gap-1 text-sm">
                     {t("software.license.materialSoftware")}
-                    <NativeSelect
+                    <ResourceSelectField
+                      searchable={false}
+                      resourceType="software-assets"
                       aria-label={t("software.license.materialSoftware")}
                       value={assetId}
                       onChange={(event) => setAssetId(event.target.value)}
@@ -551,7 +550,7 @@ function RuntimeAndMaterialEditor({
                           {item.name} · {item.asset?.version}
                         </option>
                       ))}
-                    </NativeSelect>
+                    </ResourceSelectField>
                   </label>
                   {assetsQ.error ? (
                     <div role="alert" className="flex items-center gap-2 text-sm">

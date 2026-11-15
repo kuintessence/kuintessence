@@ -1,6 +1,7 @@
 import type { RecipeSnapshot } from "@kuintessence/shared/browser";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 export function RecipeSnapshotReport({ snapshot }: { snapshot: RecipeSnapshot }) {
   const { t } = useTranslation();
@@ -8,7 +9,7 @@ export function RecipeSnapshotReport({ snapshot }: { snapshot: RecipeSnapshot })
     snapshot.diagnostics.map((diagnostic) => [JSON.stringify(diagnostic), diagnostic]),
   );
   return (
-    <div className="min-w-0 space-y-3 border-t border-border pt-3 text-xs">
+    <div className="min-w-0 space-y-3 border-border pt-3 text-xs">
       <h4 className="font-medium">{t("recipes.diagnostics")}</h4>
       <code className="block break-all">{snapshot.commit}</code>
       <div className="flex flex-wrap gap-2">
@@ -22,27 +23,27 @@ export function RecipeSnapshotReport({ snapshot }: { snapshot: RecipeSnapshot })
       </p>
       <h4 className="font-medium">{t("recipes.roots")}</h4>
       <div className="overflow-x-auto">
-        <table className="w-full text-left" aria-label={t("recipes.roots")}>
-          <thead className="border-b border-border text-muted-foreground">
-            <tr>
+        <Table className="w-full text-left" aria-label={t("recipes.roots")}>
+          <TableHeader className="border-b border-border text-muted-foreground">
+            <TableRow>
               {["path", "namespaceLabel", "api", "packages"].map((key) => (
-                <th key={key} className="p-2 font-medium">
+                <TableHead key={key} className="p-2 font-medium">
                   {t(`recipes.${key}`)}
-                </th>
+                </TableHead>
               ))}
-            </tr>
-          </thead>
-          <tbody>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {snapshot.roots.map((root) => (
-              <tr key={root.path} className="border-b border-border">
-                <td className="break-all p-2">{root.path}</td>
-                <td className="break-all p-2">{root.namespace}</td>
-                <td className="p-2">{root.api}</td>
-                <td className="p-2">{root.packageCount}</td>
-              </tr>
+              <TableRow key={root.path} className="border-b border-border">
+                <TableCell className="break-all p-2">{root.path}</TableCell>
+                <TableCell className="break-all p-2">{root.namespace}</TableCell>
+                <TableCell className="p-2">{root.api}</TableCell>
+                <TableCell className="p-2">{root.packageCount}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
       {snapshot.diagnostics.length === 0 ? (
         <p>{t("recipes.noDiagnostics")}</p>

@@ -8,7 +8,7 @@ import { useSoftwarePublishingAccess } from "../../lib/software-publishing-acces
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader } from "../ui/card";
+import { CardContent, CardHeader } from "../ui/card";
 import { EmptyState, ErrorState, LoadingState } from "../ui/content-state";
 import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
@@ -69,7 +69,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
           title={t("sandbox.catalog.title")}
           actions={
             <>
-              <span className="rounded-md border border-border px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
+              <span className=" border-border px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
                 {visible.length} / {scripts.length}
               </span>
               {canPublish ? (
@@ -136,7 +136,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
       ) : (
         <SoftwareCardGrid className="gap-4">
           {visible.map((script) => (
-            <Card
+            <section
               key={script.id}
               className={`flex min-w-0 flex-col ${clickableCardClass}`}
               data-testid={`sandbox-script-card-${script.id}`}
@@ -205,7 +205,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
                   </Button>
                 </div>
               </CardContent>
-            </Card>
+            </section>
           ))}
         </SoftwareCardGrid>
       )}

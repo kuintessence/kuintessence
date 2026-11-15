@@ -1,10 +1,13 @@
 import {
   type ColumnDef,
+  type FilterFn,
   flexRender,
   getCoreRowModel,
   getFilteredRowModel,
   getPaginationRowModel,
   getSortedRowModel,
+  type OnChangeFn,
+  type PaginationState,
   type Row,
   type SortingState,
   useReactTable,
@@ -16,38 +19,76 @@ import { cn } from "../../lib/utils";
 import { Button } from "./button";
 import { NativeSelect } from "./native-select";
 import { PaginationControls } from "./pagination-controls";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./table";
 
 export interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
   globalFilter?: string;
+  globalFilterFn?: FilterFn<TData>;
   onGlobalFilterChange?: (next: string) => void;
   getRowId?: (row: TData) => string;
   onRowClick?: (row: TData) => void;
+  onRowDoubleClick?: (row: TData) => void;
   rowDataTestId?: (row: TData) => string;
   emptyState?: ReactNode;
   pageSize?: number;
+  manualPagination?: boolean;
+  manualSorting?: boolean;
+  manualFiltering?: boolean;
+  pagination?: PaginationState;
+  onPaginationChange?: OnChangeFn<PaginationState>;
+  sorting?: SortingState;
+  onSortingChange?: OnChangeFn<SortingState>;
+  rowCount?: number;
+  hidePagination?: boolean;
+  tableClassName?: string;
+  renderRow?: (row: TData) => ReactNode;
 }
 
 export function DataTable<TData, TValue>({
   columns,
   data,
   globalFilter,
+  globalFilterFn,
   onGlobalFilterChange,
   getRowId,
   onRowClick,
+  onRowDoubleClick,
   rowDataTestId,
   emptyState,
   pageSize = 25,
+  manualPagination = false,
+  manualSorting = false,
+  manualFiltering = false,
+  pagination: controlledPagination,
+  onPaginationChange,
+  sorting: controlledSorting,
+  onSortingChange,
+  rowCount,
+  hidePagination = false,
+  tableClassName,
+  renderRow,
 }: DataTableProps<TData, TValue>) {
   const { t } = useTranslation();
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const [localSorting, setSorting] = useState<SortingState>([]);
   const table = useReactTable({
     data,
     columns,
-    state: { sorting, globalFilter },
-    onSortingChange: setSorting,
+    state: {
+      sorting: controlledSorting ?? localSorting,
+      globalFilter,
+      ...(controlledPagination ? { pagination: controlledPagination } : {}),
+    },
+    onSortingChange: onSortingChange ?? setSorting,
+    ...(onPaginationChange ? { onPaginationChange } : {}),
+    manualPagination,
+    manualSorting,
+    manualFiltering,
+    rowCount,
+    enableSorting: !manualSorting || !!onSortingChange,
     onGlobalFilterChange,
+    ...(globalFilterFn ? { globalFilterFn } : {}),
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -55,20 +96,20 @@ export function DataTable<TData, TValue>({
     getRowId: getRowId ? (row) => getRowId(row) : undefined,
     initialState: { pagination: { pageSize } },
   });
-  const total = table.getFilteredRowModel().rows.length;
+  const total = rowCount ?? table.getFilteredRowModel().rows.length;
   const pagination = table.getState().pagination;
 
   return (
     <div className="space-y-3">
-      <div className="overflow-x-auto rounded-lg border border-border bg-card">
-        <table className={cn("w-full text-sm", total > 0 && "min-w-[640px]")}>
-          <thead className="bg-muted/40 text-left text-xs text-muted-foreground">
+      <div className="overflow-x-auto">
+        <Table className={cn("w-full text-sm", total > 0 && "min-w-[640px]", tableClassName)}>
+          <TableHeader className="border-b border-border text-left text-xs text-muted-foreground">
             {table.getHeaderGroups().map((hg) => (
-              <tr key={hg.id}>
+              <TableRow key={hg.id}>
                 {hg.headers.map((header) => {
                   const sorted = header.column.getIsSorted();
                   return (
-                    <th
+                    <TableHead
                       key={header.id}
                       className="px-4 py-3 font-medium"
                       scope="col"
@@ -100,45 +141,53 @@ export function DataTable<TData, TValue>({
                       ) : (
                         flexRender(header.column.columnDef.header, header.getContext())
                       )}
-                    </th>
+                    </TableHead>
                   );
                 })}
-              </tr>
+              </TableRow>
             ))}
-          </thead>
-          <tbody>
+          </TableHeader>
+          <TableBody>
             {table.getRowModel().rows.length === 0 ? (
-              <tr>
-                <td colSpan={columns.length} className="px-4 py-16">
+              <TableRow>
+                <TableCell colSpan={columns.length} className="px-4 py-16">
                   <div className="flex items-center justify-center px-4 py-8 text-center text-sm text-muted-foreground">
                     {emptyState ?? t("common.empty")}
                   </div>
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ) : (
               table.getRowModel().rows.map((row: Row<TData>) => (
-                <tr
+                <TableRow
                   key={row.id}
                   data-testid={rowDataTestId ? rowDataTestId(row.original) : undefined}
                   className={cn(
                     "border-t border-border last:border-b-0",
-                    onRowClick && "cursor-pointer transition-colors hover:bg-muted/30",
+                    onRowClick && "cursor-pointer transition-colors hover:text-brand",
                   )}
                   onClick={() => onRowClick?.(row.original)}
+                  onDoubleClick={() => onRowDoubleClick?.(row.original)}
                 >
-                  {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-4 py-3">
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
-                  ))}
-                </tr>
+                  {renderRow ? (
+                    <TableCell colSpan={columns.length}>{renderRow(row.original)}</TableCell>
+                  ) : (
+                    row.getVisibleCells().map((cell) => (
+                      <TableCell key={cell.id} className="px-4 py-3">
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </TableCell>
+                    ))
+                  )}
+                </TableRow>
               ))
             )}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
 
-      {total > pageSize || table.getPageCount() > 1 ? (
+      <p className="text-xs text-muted-foreground" aria-live="polite">
+        {t("ui.resultCount", { count: total })}
+      </p>
+      {!hidePagination && (total > pageSize || table.getPageCount() > 1) ? (
         <div className="kq-fill-row gap-3 text-xs text-muted-foreground">
           <label className="flex items-center gap-2">
             {t("common.pagination.rowsPerPage")}

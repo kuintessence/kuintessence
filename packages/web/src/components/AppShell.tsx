@@ -317,7 +317,7 @@ function Topbar({
 }: TopbarProps) {
   const { t } = useTranslation();
   return (
-    <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur md:px-8">
+    <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-background/95 px-4 md:px-8">
       <Button
         variant="ghost"
         size="icon"
@@ -462,7 +462,7 @@ function UserMenu({ auth, onOpenPersonal, onLogout }: UserMenuProps) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="sm" data-testid="user-menu" className="gap-2">
-          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold">
+          <span className="flex h-6 w-6 items-center justify-center text-xs font-semibold">
             {initials}
           </span>
           <span className="hidden text-xs lg:inline">{username}</span>

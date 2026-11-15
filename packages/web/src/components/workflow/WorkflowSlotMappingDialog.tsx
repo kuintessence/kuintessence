@@ -15,6 +15,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 
 export interface SlotOption {
@@ -27,6 +28,10 @@ export interface SlotOption {
 
 type SlotMapping = NonNullable<GraphEdge["slotRelations"]>[number];
 const EMPTY_MAPPINGS: SlotMapping[] = [];
+
+function slotsCompatible(source: SlotOption, target: SlotOption): boolean {
+  return source.type === target.type && Boolean(source.batch) === Boolean(target.batch);
+}
 
 export function workflowOutputSlots(node: GraphNode): SlotOption[] {
   const raw = node.data.raw;
@@ -109,7 +114,7 @@ export function WorkflowSlotMappingDialog({
   const [mode, setMode] = useState<"visual" | "standard">("visual");
   const compatibleTargets = useMemo(() => {
     const sourceSlot = sources.find((slot) => slot.descriptor === fromSlot);
-    return sourceSlot ? targets.filter((slot) => slot.type === sourceSlot.type) : targets;
+    return sourceSlot ? targets.filter((slot) => slotsCompatible(sourceSlot, slot)) : targets;
   }, [fromSlot, sources, targets]);
 
   useEffect(() => {
@@ -118,15 +123,16 @@ export function WorkflowSlotMappingDialog({
     const firstSource = sources[0];
     const exact = firstSource
       ? targets.find(
-          (slot) => slot.type === firstSource.type && slot.descriptor === firstSource.descriptor,
+          (slot) =>
+            slotsCompatible(firstSource, slot) && slot.descriptor === firstSource.descriptor,
         )
       : undefined;
     const compatible = firstSource
-      ? targets.find((slot) => slot.type === firstSource.type)
+      ? targets.find((slot) => slotsCompatible(firstSource, slot))
       : targets[0];
     const firstTarget = exact ?? compatible;
     const singleCompatibleTargets = firstSource
-      ? targets.filter((slot) => slot.type === firstSource.type)
+      ? targets.filter((slot) => slotsCompatible(firstSource, slot))
       : [];
     const automatic =
       existing.length === 0 &&
@@ -153,7 +159,7 @@ export function WorkflowSlotMappingDialog({
     if (!nextFrom || !nextTo) return;
     const sourceSlot = sources.find((slot) => slot.descriptor === nextFrom);
     const targetSlot = targets.find((slot) => slot.descriptor === nextTo);
-    if (!sourceSlot || !targetSlot || sourceSlot.type !== targetSlot.type) return;
+    if (!sourceSlot || !targetSlot || !slotsCompatible(sourceSlot, targetSlot)) return;
     setMappings((current) =>
       replaceMapping(current, {
         fromSlot: nextFrom,
@@ -177,6 +183,15 @@ export function WorkflowSlotMappingDialog({
     setDraggedSlot(null);
   }
 
+  const validMappings = mappings.every((mapping) => {
+    const output = sources.find((slot) => slot.descriptor === mapping.fromSlot);
+    const input = targets.find((slot) => slot.descriptor === mapping.toSlot);
+    return output && input && slotsCompatible(output, input);
+  });
+  const canAdd =
+    compatibleTargets.some((slot) => slot.descriptor === toSlot) &&
+    sources.some((slot) => slot.descriptor === fromSlot);
+
   const dirty = JSON.stringify(mappings) !== JSON.stringify(edge?.slotRelations ?? initialMappings);
 
   return (
@@ -192,7 +207,7 @@ export function WorkflowSlotMappingDialog({
           <DialogDescription>{t("workflow.editor.slotMapping.description")}</DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
-          <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/20 p-3">
+          <div className="flex items-center gap-3 border-border p-3">
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-semibold">{source?.data.name}</p>
               <p className="truncate font-mono text-xs text-muted-foreground">{source?.id}</p>
@@ -217,7 +232,7 @@ export function WorkflowSlotMappingDialog({
               {sources.length === 0 || targets.length === 0 ? (
                 <EmptySlots text={t("workflow.editor.slotMapping.noSlots")} />
               ) : (
-                <div className="grid gap-3 rounded-lg border border-border bg-muted/10 p-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+                <div className="grid gap-3 border-border p-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
                   <SlotColumn
                     active={draggedSlot}
                     activeType={
@@ -238,6 +253,10 @@ export function WorkflowSlotMappingDialog({
                   </div>
                   <SlotColumn
                     active={draggedSlot}
+                    activeType={
+                      sources.find((slot) => slot.descriptor === draggedSlot)?.type ?? null
+                    }
+                    activeBatch={sources.find((slot) => slot.descriptor === draggedSlot)?.batch}
                     label={t("workflow.editor.slotMapping.input")}
                     mappings={mappings}
                     onDrop={completeSlotDrop}
@@ -251,21 +270,27 @@ export function WorkflowSlotMappingDialog({
               {sources.length === 0 || targets.length === 0 ? (
                 <EmptySlots text={t("workflow.editor.slotMapping.noSlots")} />
               ) : (
-                <div className="grid gap-2 rounded-lg border border-border p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
+                <div className="grid gap-2 border-border p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
                   <label className="space-y-1 text-xs text-muted-foreground">
                     {t("workflow.editor.slotMapping.output")}
-                    <NativeSelect
+                    <ResourceSelectField
+                      resourceType="workflow-output-slots"
+                      expandable
                       className="w-full"
                       value={fromSlot}
                       onChange={(event) => {
                         const next = event.target.value;
                         setFromSlot(next);
                         const sourceSlot = sources.find((slot) => slot.descriptor === next);
-                        const matchingTarget = targets.find(
-                          (slot) =>
-                            slot.type === sourceSlot?.type && (slot.descriptor === next || !toSlot),
+                        const compatible = sourceSlot
+                          ? targets.filter((slot) => slotsCompatible(sourceSlot, slot))
+                          : [];
+                        setToSlot(
+                          compatible.find((slot) => slot.descriptor === next)?.descriptor ??
+                            compatible.find((slot) => slot.descriptor === toSlot)?.descriptor ??
+                            compatible[0]?.descriptor ??
+                            "",
                         );
-                        if (matchingTarget) setToSlot(matchingTarget.descriptor);
                       }}
                     >
                       {sources.map((slot) => (
@@ -273,11 +298,13 @@ export function WorkflowSlotMappingDialog({
                           {slot.descriptor} · {slot.type}
                         </option>
                       ))}
-                    </NativeSelect>
+                    </ResourceSelectField>
                   </label>
                   <label className="space-y-1 text-xs text-muted-foreground">
                     {t("workflow.editor.slotMapping.input")}
-                    <NativeSelect
+                    <ResourceSelectField
+                      resourceType="workflow-input-slots"
+                      expandable
                       className="w-full"
                       value={toSlot}
                       onChange={(event) => setToSlot(event.target.value)}
@@ -287,7 +314,7 @@ export function WorkflowSlotMappingDialog({
                           {slot.descriptor} · {slot.type}
                         </option>
                       ))}
-                    </NativeSelect>
+                    </ResourceSelectField>
                   </label>
                   <label className="space-y-1 text-xs text-muted-foreground">
                     {t("workflow.editor.slotMapping.transfer")}
@@ -306,7 +333,7 @@ export function WorkflowSlotMappingDialog({
                     type="button"
                     className="self-end"
                     onClick={() => addMapping()}
-                    disabled={!fromSlot || !toSlot}
+                    disabled={!canAdd}
                     data-testid="workflow-slot-mapping-add"
                   >
                     <Plus />
@@ -318,18 +345,23 @@ export function WorkflowSlotMappingDialog({
           </Tabs>
 
           <div className="space-y-2">
+            {!validMappings && (
+              <p role="alert" className="text-sm text-destructive">
+                {t("workflow.editor.slotMapping.invalidMappings")}
+              </p>
+            )}
             <p className="text-sm font-medium">
               {t("workflow.editor.slotMapping.configured", { count: mappings.length })}
             </p>
             {mappings.length === 0 ? (
-              <p className="rounded-md bg-muted/30 p-3 text-xs text-muted-foreground">
+              <p className=" p-3 text-xs text-muted-foreground">
                 {t("workflow.editor.slotMapping.dependencyOnly")}
               </p>
             ) : (
               mappings.map((mapping) => (
                 <div
                   key={`${mapping.fromSlot}:${mapping.toSlot}`}
-                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm"
+                  className="flex items-center gap-2 border-border px-3 py-2 text-sm"
                 >
                   <Link2 className="h-4 w-4 shrink-0 text-brand" />
                   <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -362,8 +394,10 @@ export function WorkflowSlotMappingDialog({
           </Button>
           <Button
             type="button"
-            onClick={() => onConfirm(mappings)}
-            disabled={mappings.length === 0}
+            onClick={() => {
+              if (validMappings && mappings.length > 0) onConfirm(mappings);
+            }}
+            disabled={mappings.length === 0 || !validMappings}
             data-testid="workflow-slot-mapping-confirm"
           >
             {edge ? t("workflow.editor.slotMapping.save") : t("workflow.editor.slotMapping.create")}
@@ -375,16 +409,13 @@ export function WorkflowSlotMappingDialog({
 }
 
 function EmptySlots({ text }: { text: string }) {
-  return (
-    <div className="rounded-lg border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
-      {text}
-    </div>
-  );
+  return <div className=" border-border p-5 text-center text-sm text-muted-foreground">{text}</div>;
 }
 
 function SlotColumn({
   active,
   activeType,
+  activeBatch,
   label,
   mappings,
   onDragEnd,
@@ -395,6 +426,7 @@ function SlotColumn({
 }: {
   active: string | null;
   activeType?: SlotOption["type"] | null;
+  activeBatch?: boolean;
   label: string;
   mappings: SlotMapping[];
   onDragEnd?: () => void;
@@ -412,15 +444,18 @@ function SlotColumn({
             ? mapping.fromSlot === slot.descriptor
             : mapping.toSlot === slot.descriptor,
         );
-        const compatible = !active || side === "source" || slot.type === activeType;
+        const compatible =
+          !active ||
+          side === "source" ||
+          (slot.type === activeType && Boolean(slot.batch) === Boolean(activeBatch));
         return (
           <button
             key={slot.descriptor}
             type="button"
             className={cn(
-              "flex min-h-12 w-full items-center gap-2 rounded-md border bg-background px-3 py-2 text-left transition-all",
-              mapped && "border-brand bg-brand-soft shadow-sm",
-              active && side === "target" && compatible && "border-brand/60 ring-2 ring-brand/15",
+              "flex min-h-12 w-full items-center gap-2 border-b px-3 py-2 text-left transition-all",
+              mapped && "border-brand text-brand font-semibold ",
+              active && side === "target" && compatible && "border-brand/60 ",
             )}
             draggable={side === "source"}
             onDragEnd={onDragEnd}

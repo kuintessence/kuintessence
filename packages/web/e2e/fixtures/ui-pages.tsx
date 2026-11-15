@@ -15,7 +15,7 @@ import { WorkflowsPage } from "../../src/components/workflows/WorkflowsPage";
 import { setLang } from "../../src/lib/i18n";
 import { setMobileManagementPolicy } from "../../src/lib/mobile-management-policy";
 
-setLang("zh");
+setLang(new URL(location.href).searchParams.get("lang") === "en" ? "en" : "zh");
 setMobileManagementPolicy(true);
 localStorage.setItem("kq_active_organization_id", "demo-provider");
 const client = new QueryClient({

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -137,10 +138,10 @@ describe("MeteringWebhooks", () => {
       expect(screen.getByTestId("webhook-row-0")).toBeTruthy();
     });
 
-    fireEvent.change(screen.getByTestId("webhook-url"), {
+    fireEvent.change(nativeControl(screen.getByTestId("webhook-url")), {
       target: { value: "https://new/h" },
     });
-    fireEvent.change(screen.getByTestId("webhook-secret"), {
+    fireEvent.change(nativeControl(screen.getByTestId("webhook-secret")), {
       target: { value: "longenoughsecret" },
     });
     fireEvent.click(screen.getByTestId("webhook-event-daily"));
@@ -170,10 +171,10 @@ describe("MeteringWebhooks", () => {
       expect(screen.getByTestId("webhook-row-0")).toBeTruthy();
     });
 
-    fireEvent.change(screen.getByTestId("webhook-url"), {
+    fireEvent.change(nativeControl(screen.getByTestId("webhook-url")), {
       target: { value: "https://new/h" },
     });
-    fireEvent.change(screen.getByTestId("webhook-secret"), {
+    fireEvent.change(nativeControl(screen.getByTestId("webhook-secret")), {
       target: { value: "short" },
     });
     fireEvent.click(screen.getByTestId("webhook-event-daily"));

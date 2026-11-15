@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { PageHeader } from "../ui/page";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 interface InstalledRow {
   name: string;
@@ -66,41 +67,38 @@ export function AgentSoftwarePage({ agentId }: AgentSoftwarePageProps) {
 
       {rows.length === 0 ? (
         <div
-          className="flex h-40 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border text-sm text-muted-foreground"
+          className="flex h-40 flex-col items-center justify-center gap-2 border-border text-sm text-muted-foreground"
           data-testid="agent-software-empty"
         >
           <Package className="h-5 w-5" />
           {t("agentSoftware.empty")}
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-border bg-card px-4">
-          <table
-            className="w-full min-w-[40rem] border-collapse text-sm"
-            data-testid="agent-software-table"
-          >
-            <thead className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-              <tr>
-                <th className="py-2">{t("agentSoftware.name")}</th>
-                <th className="py-2">{t("agentSoftware.version")}</th>
-                <th className="py-2">{t("agentSoftware.compiler")}</th>
-                <th className="py-2">Hash</th>
-                <th className="py-2">Spec</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div className="overflow-x-auto border-border px-4">
+          <Table className="w-full min-w-[40rem] text-sm" data-testid="agent-software-table">
+            <TableHeader className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+              <TableRow>
+                <TableHead className="py-2">{t("agentSoftware.name")}</TableHead>
+                <TableHead className="py-2">{t("agentSoftware.version")}</TableHead>
+                <TableHead className="py-2">{t("agentSoftware.compiler")}</TableHead>
+                <TableHead className="py-2">Hash</TableHead>
+                <TableHead className="py-2">Spec</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {rows.map((r) => (
-                <tr key={r.hash} className="border-b border-border last:border-0">
-                  <td className="py-2 font-medium">{r.name}</td>
-                  <td className="py-2 font-mono text-xs">{r.version}</td>
-                  <td className="py-2 font-mono text-xs">{r.compiler ?? "-"}</td>
-                  <td className="py-2 font-mono text-xs text-muted-foreground">
+                <TableRow key={r.hash} className="border-b border-border ">
+                  <TableCell className="py-2 font-medium">{r.name}</TableCell>
+                  <TableCell className="py-2 font-mono text-xs">{r.version}</TableCell>
+                  <TableCell className="py-2 font-mono text-xs">{r.compiler ?? "-"}</TableCell>
+                  <TableCell className="py-2 font-mono text-xs text-muted-foreground">
                     {r.hash.slice(0, 12)}
-                  </td>
-                  <td className="py-2 font-mono text-xs">{r.spec}</td>
-                </tr>
+                  </TableCell>
+                  <TableCell className="py-2 font-mono text-xs">{r.spec}</TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
     </div>

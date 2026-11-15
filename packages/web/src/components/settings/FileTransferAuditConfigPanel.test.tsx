@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 const { toastSuccess, toastError, translate } = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
@@ -58,16 +59,16 @@ describe("FileTransferAuditConfigPanel", () => {
 
     render(<FileTransferAuditConfigPanel canManage />);
     await screen.findByDisplayValue("365");
-    fireEvent.change(screen.getByTestId("user-platform-retention-days"), {
+    fireEvent.change(nativeControl(screen.getByTestId("user-platform-retention-days")), {
       target: { value: "730" },
     });
-    fireEvent.change(screen.getByTestId("platform-cluster-retention-days"), {
+    fireEvent.change(nativeControl(screen.getByTestId("platform-cluster-retention-days")), {
       target: { value: "365" },
     });
-    fireEvent.change(screen.getByTestId("download-evidence-mode"), {
+    fireEvent.change(nativeControl(screen.getByTestId("download-evidence-mode")), {
       target: { value: "direct_authorization_only" },
     });
-    fireEvent.change(screen.getByTestId("file-transfer-audit-change-reason"), {
+    fireEvent.change(nativeControl(screen.getByTestId("file-transfer-audit-change-reason")), {
       target: { value: "演练期间延长保留期" },
     });
     fireEvent.click(screen.getByTestId("file-transfer-audit-save"));
@@ -107,7 +108,7 @@ describe("FileTransferAuditConfigPanel", () => {
 
     render(<FileTransferAuditConfigPanel canManage />);
     await screen.findByDisplayValue("365");
-    fireEvent.change(screen.getByTestId("user-platform-retention-days"), {
+    fireEvent.change(nativeControl(screen.getByTestId("user-platform-retention-days")), {
       target: { value: "0" },
     });
     fireEvent.click(screen.getByTestId("file-transfer-audit-save"));
@@ -115,7 +116,7 @@ describe("FileTransferAuditConfigPanel", () => {
       "settings.operations.fileTransferAudit.invalidRetention",
     );
 
-    fireEvent.change(screen.getByTestId("user-platform-retention-days"), {
+    fireEvent.change(nativeControl(screen.getByTestId("user-platform-retention-days")), {
       target: { value: "365" },
     });
     fireEvent.click(screen.getByTestId("file-transfer-audit-save"));

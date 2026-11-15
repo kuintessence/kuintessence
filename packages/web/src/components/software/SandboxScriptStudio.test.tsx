@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 import { SandboxScriptStudio } from "./SandboxScriptStudio";
 
 const navigate = vi.hoisted(() => vi.fn());
@@ -137,7 +138,7 @@ describe("SandboxScriptStudio", () => {
     });
     const { client } = renderStudio(null);
     const nameInput = screen.getByLabelText("sandbox.studio.name");
-    fireEvent.change(nameInput, { target: { value: "Created script" } });
+    fireEvent.change(nativeControl(nameInput), { target: { value: "Created script" } });
     const saveButton = screen.getByRole("button", { name: "sandbox.studio.save" });
     await waitFor(() => expect(saveButton.hasAttribute("disabled")).toBe(false));
 
@@ -161,7 +162,7 @@ describe("SandboxScriptStudio", () => {
     renderStudio();
 
     const nameInput = await screen.findByDisplayValue("Original name");
-    fireEvent.change(nameInput, { target: { value: "Renamed script" } });
+    fireEvent.change(nativeControl(nameInput), { target: { value: "Renamed script" } });
     fireEvent.click(screen.getByRole("button", { name: "sandbox.studio.newRevision" }));
 
     await waitFor(() => {

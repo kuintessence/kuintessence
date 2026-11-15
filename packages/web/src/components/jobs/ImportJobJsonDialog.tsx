@@ -273,7 +273,7 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
           {error ? (
             <div
               role="alert"
-              className="rounded-md border border-status-failed/40 bg-status-failed/10 px-3 py-2 text-sm text-status-failed"
+              className=" px-3 py-2 text-sm text-status-failed"
               data-testid="import-job-json-error"
             >
               {error}
@@ -281,10 +281,7 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
           ) : null}
 
           {importedJob && job ? (
-            <div
-              className="space-y-3 rounded-md border border-border bg-muted/30 p-3"
-              data-testid="import-job-json-preview"
-            >
+            <div className="space-y-3 border-border p-3" data-testid="import-job-json-preview">
               <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
                 <FileJson className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <span className="truncate" title={importedJob.fileName}>
@@ -360,10 +357,7 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {advancedFields.map((field) => (
-                      <code
-                        key={field}
-                        className="rounded border border-border bg-background px-1.5 py-1 text-[11px]"
-                      >
+                      <code key={field} className="border-b border-border px-1.5 py-1 text-[11px]">
                         {field}
                       </code>
                     ))}

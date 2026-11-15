@@ -2686,5 +2686,20 @@
     "accounts": {
       "disableConfirm": "Disable execution account {{name}}? New jobs will no longer be able to use this identity."
     }
+  },
+  "ui": {
+    "choose": "Choose an option",
+    "name": "Name",
+    "search": "Search options",
+    "searchPlaceholder": "Search name, ID or related information…",
+    "recent": "Recently selected",
+    "allOptions": "All options",
+    "noMatches": "No matching options. Try another search.",
+    "selectedCount": "{{count}} selected",
+    "clear": "Clear",
+    "expand": "Expand selection",
+    "resultCount": "{{count}} results",
+    "clearFilters": "Clear filters",
+    "unavailable": "This option is currently unavailable. Choose another option."
   }
 }

@@ -275,7 +275,7 @@ export function CommandWorkdirDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="grid gap-4 lg:grid-cols-2">
-          <section className="flex min-h-0 min-w-0 flex-col rounded-md border border-border bg-background">
+          <section className="flex min-h-0 min-w-0 flex-col border-border ">
             <div className="border-b border-border p-3">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Cloud className="h-4 w-4 text-muted-foreground" />
@@ -331,7 +331,7 @@ export function CommandWorkdirDialog({
                       <button
                         key={row.fullPath}
                         type="button"
-                        className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-left hover:bg-muted/40"
+                        className="flex min-w-0 items-center gap-2 border-b border-border px-3 py-2 text-left"
                         onClick={() => setCloudPrefix(row.fullPath)}
                         data-testid={`command-workdir-cloud-dir-${safeTestId(row.fullPath)}`}
                       >
@@ -351,7 +351,7 @@ export function CommandWorkdirDialog({
                     ) : (
                       <div
                         key={row.file.id}
-                        className="grid min-w-0 gap-2 rounded-md border border-border bg-card p-3"
+                        className="grid min-w-0 gap-2 border-border p-3"
                         data-testid={`command-workdir-cloud-row-${row.file.id}`}
                       >
                         <div className="min-w-0">
@@ -379,7 +379,7 @@ export function CommandWorkdirDialog({
               )}
             </div>
           </section>
-          <section className="flex min-h-0 min-w-0 flex-col rounded-md border border-border bg-background">
+          <section className="flex min-h-0 min-w-0 flex-col border-border ">
             <div className="grid gap-3 border-b border-border p-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
               <div className="min-w-0">
                 <div className="truncate text-sm font-medium">
@@ -414,10 +414,8 @@ export function CommandWorkdirDialog({
                   {t("jobs.commandWorkdir.createFolder", { defaultValue: "Create" })}
                 </Button>
                 <label
-                  className={`inline-flex h-8 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm font-medium ${
-                    cloudActionsDisabled
-                      ? "cursor-not-allowed opacity-50"
-                      : "cursor-pointer hover:bg-muted"
+                  className={`inline-flex h-8 items-center gap-2 border-b border-input px-3 text-sm font-medium ${
+                    cloudActionsDisabled ? "cursor-not-allowed opacity-50" : "cursor-pointer "
                   }`}
                 >
                   {uploading ? <Loader2 className="animate-spin" /> : <Upload />}
@@ -452,7 +450,7 @@ export function CommandWorkdirDialog({
             </div>
             <div className="min-h-0 flex-1 overflow-auto p-3" data-testid="command-workdir-entries">
               {workdirRows.length === 0 ? (
-                <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+                <div className=" border-border p-4 text-sm text-muted-foreground">
                   {t("jobs.commandWorkdir.empty", {
                     defaultValue: "No files staged into the working directory.",
                   })}
@@ -461,10 +459,7 @@ export function CommandWorkdirDialog({
                 <div className="grid gap-2">
                   {workdirRows.map((row) =>
                     row.kind === "folder" ? (
-                      <div
-                        key={row.fullPath}
-                        className="grid min-w-0 gap-2 rounded-md border border-border bg-card p-3"
-                      >
+                      <div key={row.fullPath} className="grid min-w-0 gap-2 border-border p-3">
                         <div className="flex min-w-0 items-center gap-2">
                           <button
                             type="button"
@@ -515,7 +510,7 @@ export function CommandWorkdirDialog({
                     ) : (
                       <div
                         key={row.entry.id}
-                        className="grid min-w-0 gap-2 overflow-hidden rounded-md border border-border bg-card p-3"
+                        className="grid min-w-0 gap-2 overflow-hidden border-border p-3"
                         data-testid={`command-workdir-entry-${row.entry.fileMetadataId}`}
                       >
                         <div className="flex min-w-0 items-start justify-between gap-2">
@@ -574,7 +569,7 @@ export function CommandWorkdirDialog({
               )}
             </div>
             {error ? (
-              <div className="border-t border-status-failed/30 p-3 text-xs text-status-failed">
+              <div className=" p-3 text-xs text-status-failed">
                 <span data-testid="command-workdir-error">{error}</span>
               </div>
             ) : null}

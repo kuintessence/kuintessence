@@ -141,7 +141,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
     );
   if (inputs.length === 0 && outputs.length === 0) {
     return (
-      <div className="rounded-md border border-border p-4 text-sm text-muted-foreground">
+      <div className=" border-border p-4 text-sm text-muted-foreground">
         {t("jobs.files.empty", { defaultValue: "This job has no staged files." })}
       </div>
     );
@@ -168,7 +168,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
       ) : null}
       {cloudError ? (
         <div
-          className="flex items-start gap-2 rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-xs"
+          className="flex items-start gap-2 p-3 text-xs"
           data-testid="job-files-netdrive-error"
           role="alert"
         >
@@ -189,12 +189,12 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
           {t("jobs.files.inputs", { defaultValue: "Input files" })}
         </div>
         {inputs.length === 0 ? (
-          <div className="rounded-md border border-border p-3 text-xs text-muted-foreground">
+          <div className=" border-border p-3 text-xs text-muted-foreground">
             {t("jobs.files.noInputs", { defaultValue: "No input files staged." })}
           </div>
         ) : (
-          <div className="overflow-hidden rounded-md border border-border bg-card text-sm">
-            <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(0,0.9fr)_5.5rem] bg-muted/40 text-left text-[11px] uppercase text-muted-foreground">
+          <div className="overflow-hidden border-border text-sm">
+            <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(0,0.9fr)_5.5rem] text-left text-[11px] uppercase text-muted-foreground">
               <div className="px-3 py-2 font-medium">
                 {t("jobs.files.source", { defaultValue: "Source" })}
               </div>
@@ -273,7 +273,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
           {t("jobs.files.outputs", { defaultValue: "Expected outputs" })}
         </div>
         {outputs.length === 0 ? (
-          <div className="rounded-md border border-border p-3 text-xs text-muted-foreground">
+          <div className=" border-border p-3 text-xs text-muted-foreground">
             {t("jobs.files.noOutputs", { defaultValue: "No output files declared." })}
           </div>
         ) : (
@@ -284,7 +284,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
                 return (
                   <div
                     key={output.descriptor}
-                    className="space-y-2 rounded-md border border-border bg-card p-3"
+                    className="space-y-2 border-border p-3"
                     data-testid={`job-text-output-${output.descriptor}`}
                   >
                     <div className="flex items-center gap-2 text-sm font-medium">
@@ -292,7 +292,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
                       <Badge variant="outline">{t("jobs.files.textResult")}</Badge>
                     </div>
                     {typeof value === "string" ? (
-                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-3 font-mono text-xs">
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-xs">
                         {value || t("jobs.files.emptyTextResult")}
                       </pre>
                     ) : (
@@ -309,10 +309,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
               const outputPrefix = outputCloudPrefix(job, output.path);
               const canDownloadCluster = !!job.agentId && !!job.workingDir && !isGlob(output.path);
               return (
-                <div
-                  key={`${output.descriptor}:${output.path}`}
-                  className="rounded-md border border-border bg-card p-3"
-                >
+                <div key={`${output.descriptor}:${output.path}`} className=" border-border p-3">
                   <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(12rem,0.75fr)_auto] md:items-start">
                     <div className="min-w-0">
                       <div className="flex min-w-0 items-center gap-2">
@@ -466,7 +463,7 @@ function OutputPublicationDiagnostic({
   }
   return (
     <div
-      className="rounded-md border border-dashed border-border bg-muted/30 p-2 text-xs"
+      className=" border-border p-2 text-xs"
       data-testid={`job-file-output-diagnostic-${descriptor}`}
     >
       {!netdriveLoading && !netdriveError ? (

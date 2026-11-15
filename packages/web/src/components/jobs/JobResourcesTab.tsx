@@ -21,13 +21,13 @@ export function JobResourcesTab({ job, loading }: JobResourcesTabProps) {
   return (
     <div className="space-y-3" data-testid="job-resources-tab">
       <div className="grid gap-3 text-sm sm:grid-cols-2">
-        <div className="rounded-md border border-border bg-card p-3">
+        <div className=" border-border p-3">
           <div className="text-xs uppercase text-muted-foreground">
             {t("jobs.resources.cpu", { defaultValue: "CPU" })}
           </div>
           <div className="mt-1 text-2xl font-semibold tabular-nums">{r.cpus ?? "—"}</div>
         </div>
-        <div className="rounded-md border border-border bg-card p-3">
+        <div className=" border-border p-3">
           <div className="text-xs uppercase text-muted-foreground">
             {t("jobs.resources.memory", { defaultValue: "Memory" })}
           </div>

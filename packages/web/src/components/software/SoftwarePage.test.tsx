@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { WorkflowTemplate } from "../../lib/software-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { SoftwareSpackCatalogCreatePage, SoftwareUsecaseCreatePage } from "./SoftwareCreatePages";
 import {
   collectTemplateTags,
@@ -836,11 +837,15 @@ describe("SoftwarePage", () => {
     await screen.findByTestId("software-card-hello");
     expect(screen.queryByTestId("software-count")).toBeNull();
     expect(screen.getAllByText("Page 1 / 1").length).toBeGreaterThan(0);
-    fireEvent.change(screen.getByTestId("software-search"), { target: { value: "pipeline" } });
+    fireEvent.change(nativeControl(screen.getByTestId("software-search")), {
+      target: { value: "pipeline" },
+    });
     await waitFor(() => expect(screen.getByTestId("software-card-pipe")).toBeDefined());
     expect(screen.queryByTestId("software-card-hello")).toBeNull();
 
-    fireEvent.change(screen.getByTestId("software-search"), { target: { value: "" } });
+    fireEvent.change(nativeControl(screen.getByTestId("software-search")), {
+      target: { value: "" },
+    });
     const tagFilters = await screen.findByTestId("software-tag-filters");
     await waitFor(() => expect(within(tagFilters).getAllByText("demo").length).toBeGreaterThan(0));
     fireEvent.click(within(tagFilters).getByText("demo"));
@@ -1102,7 +1107,7 @@ describe("SoftwarePage", () => {
 
     render(<SoftwareSpackCatalogCreatePage />, { wrapper: wrapper() });
 
-    fireEvent.change(screen.getByTestId("software-spack-package-file"), {
+    fireEvent.change(nativeControl(screen.getByTestId("software-spack-package-file")), {
       target: { value: "class ParsedOpenfoam(Package):" },
     });
     fireEvent.click(screen.getByTestId("software-spack-parse-package-file"));
@@ -1113,11 +1118,13 @@ describe("SoftwarePage", () => {
       );
     });
     expect(await screen.findByTestId("software-spack-package-metadata")).toBeDefined();
-    fireEvent.change(screen.getByRole("textbox", { name: "Custom package" }), {
+    fireEvent.change(nativeControl(screen.getByRole("textbox", { name: "Custom package" })), {
       target: { value: "lab-openfoam" },
     });
-    fireEvent.change(screen.getByLabelText("Package source"), { target: { value: "vendor" } });
-    fireEvent.change(screen.getByRole("textbox", { name: "Catalog tags" }), {
+    fireEvent.change(nativeControl(screen.getByLabelText("Package source")), {
+      target: { value: "vendor" },
+    });
+    fireEvent.change(nativeControl(screen.getByRole("textbox", { name: "Catalog tags" })), {
       target: { value: "cfd,lab" },
     });
     fireEvent.submit(screen.getByTestId("software-spack-catalog-create-form"));
@@ -1147,9 +1154,12 @@ describe("SoftwarePage", () => {
     const editForm = await screen.findByTestId(
       "software-spack-catalog-package-edit-form-catalog-official-cfd",
     );
-    fireEvent.change(within(editForm).getByRole("textbox", { name: "Custom package" }), {
-      target: { value: "platform-cfd-updated" },
-    });
+    fireEvent.change(
+      nativeControl(within(editForm).getByRole("textbox", { name: "Custom package" })),
+      {
+        target: { value: "platform-cfd-updated" },
+      },
+    );
     fireEvent.submit(editForm);
 
     await waitFor(() => {
@@ -1299,7 +1309,7 @@ describe("SoftwarePage", () => {
     expect((within(form).getByRole("textbox", { name: "Version" }) as HTMLInputElement).value).toBe(
       "0.1.1",
     );
-    fireEvent.change(within(form).getByRole("textbox", { name: "Template name" }), {
+    fireEvent.change(nativeControl(within(form).getByRole("textbox", { name: "Template name" })), {
       target: { value: "Hello updated" },
     });
     fireEvent.submit(form);
@@ -1380,7 +1390,7 @@ advanced:
     fireEvent.click(screen.getByTestId("software-edit-template-hello"));
     const form = await screen.findByTestId("software-template-edit-form-hello");
     const nameInput = within(form).getByRole("textbox", { name: "Template name" });
-    fireEvent.change(nameInput, { target: { value: "Unsaved replacement" } });
+    fireEvent.change(nativeControl(nameInput), { target: { value: "Unsaved replacement" } });
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -1410,10 +1420,10 @@ advanced:
       await screen.findByTestId("software-usecase-catalog-package-official-Imported Hello"),
     );
     expect(screen.getByTestId("software-usecase-spack-spec-preview").textContent).toBe(defaultSpec);
-    fireEvent.change(screen.getByRole("textbox", { name: "Usecase name" }), {
+    fireEvent.change(nativeControl(screen.getByRole("textbox", { name: "Usecase name" })), {
       target: { value: "hello" },
     });
-    fireEvent.change(screen.getByRole("textbox", { name: "commandFile" }), {
+    fireEvent.change(nativeControl(screen.getByRole("textbox", { name: "commandFile" })), {
       target: { value: "hello" },
     });
     fireEvent.submit(screen.getByTestId("software-usecase-form"));
@@ -1438,7 +1448,7 @@ advanced:
     expect((await screen.findByTestId("software-usecase-catalog-grid")).className).toContain(
       "overflow-auto",
     );
-    fireEvent.change(await screen.findByTestId("software-usecase-catalog-search"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("software-usecase-catalog-search")), {
       target: { value: "openfoam" },
     });
     await waitFor(() => {
@@ -1447,17 +1457,17 @@ advanced:
     fireEvent.click(
       await screen.findByTestId("software-usecase-catalog-package-upstream-openfoam"),
     );
-    fireEvent.change(screen.getByRole("textbox", { name: "Usecase name" }), {
+    fireEvent.change(nativeControl(screen.getByRole("textbox", { name: "Usecase name" })), {
       target: { value: "solve" },
     });
-    fireEvent.change(screen.getByRole("textbox", { name: "commandFile" }), {
+    fireEvent.change(nativeControl(screen.getByRole("textbox", { name: "commandFile" })), {
       target: { value: "simpleFoam" },
     });
     fireEvent.click(screen.getByTestId("software-usecase-open-spec-picker"));
     fireEvent.click(await screen.findByText("2312"));
     fireEvent.click(screen.getByText("+mpi"));
     fireEvent.click(screen.getByText("precision=double"));
-    fireEvent.change(screen.getByTestId("software-usecase-compiler-source"), {
+    fireEvent.change(nativeControl(screen.getByTestId("software-usecase-compiler-source")), {
       target: { value: "spec: gcc@13.2.0" },
     });
     fireEvent.click(screen.getByText("Parse compilers"));
@@ -1465,14 +1475,14 @@ advanced:
       expect(softwareClient.parseSpackCompilers).toHaveBeenCalledWith("spec: gcc@13.2.0");
     });
     fireEvent.click(await screen.findByText("gcc@13.2.0"));
-    fireEvent.change(screen.getByTestId("software-usecase-spec-module"), {
+    fireEvent.change(nativeControl(screen.getByTestId("software-usecase-spec-module")), {
       target: { value: "openfoam/2312" },
     });
     fireEvent.click(screen.getByText("Apply spec"));
-    fireEvent.change(screen.getByRole("textbox", { name: "input descriptor" }), {
+    fireEvent.change(nativeControl(screen.getByRole("textbox", { name: "input descriptor" })), {
       target: { value: "caseDir" },
     });
-    fireEvent.change(screen.getByRole("textbox", { name: "argument format" }), {
+    fireEvent.change(nativeControl(screen.getByRole("textbox", { name: "argument format" })), {
       target: { value: "--case {}" },
     });
     fireEvent.submit(screen.getByTestId("software-usecase-form"));
@@ -1527,10 +1537,10 @@ advanced:
 
     fireEvent.click(pickerButton);
     expect(screen.queryByTestId("software-usecase-package-picker")).toBeNull();
-    fireEvent.change(screen.getByRole("textbox", { name: "Usecase name" }), {
+    fireEvent.change(nativeControl(screen.getByRole("textbox", { name: "Usecase name" })), {
       target: { value: "solve" },
     });
-    fireEvent.change(screen.getByRole("textbox", { name: "commandFile" }), {
+    fireEvent.change(nativeControl(screen.getByRole("textbox", { name: "commandFile" })), {
       target: { value: "simpleFoam" },
     });
     fireEvent.submit(form);
@@ -1646,7 +1656,7 @@ advanced:
     render(<SoftwarePage />, { wrapper: wrapper() });
 
     await activateTab("software-tab-usecases", "software-usecase-list");
-    fireEvent.change(screen.getByTestId("software-usecase-search"), {
+    fireEvent.change(nativeControl(screen.getByTestId("software-usecase-search")), {
       target: { value: "simpleFoam" },
     });
     await waitFor(() => {
@@ -1694,7 +1704,7 @@ advanced:
     await activateTab("software-tab-usecases", "software-usecase-list");
     fireEvent.click(screen.getByText("Edit"));
     const form = await screen.findByTestId("software-usecase-edit-form-uc-solve");
-    fireEvent.change(within(form).getByRole("textbox", { name: "commandFile" }), {
+    fireEvent.change(nativeControl(within(form).getByRole("textbox", { name: "commandFile" })), {
       target: { value: "blockMesh" },
     });
     fireEvent.submit(form);

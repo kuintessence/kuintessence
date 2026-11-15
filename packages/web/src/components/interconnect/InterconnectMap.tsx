@@ -13,6 +13,7 @@ import { useTranslation } from "react-i18next";
 import { useTheme } from "../ThemeProvider";
 import { Button } from "../ui/button";
 import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import { clusterSymbol, getStatusLabels, groupNearbyCenters, STATUS_COLORS } from "./model";
 
 type LocatedCenter = InterconnectCenter & {
@@ -223,10 +224,7 @@ export function InterconnectMap({
     });
   };
   return (
-    <section
-      className="overflow-hidden rounded-xl border border-border bg-card"
-      aria-label={t("interconnect.mapLabel")}
-    >
+    <section className="overflow-hidden border-border " aria-label={t("interconnect.mapLabel")}>
       <div className="kq-fill-row border-b border-border p-3">
         <h2 className="mr-auto font-semibold">{t("interconnect.mapTitle")}</h2>
         <NativeSelect
@@ -239,7 +237,8 @@ export function InterconnectMap({
           <option value="province">{t("interconnect.provinceLevel")}</option>
         </NativeSelect>
         {view.level === "province" && (
-          <NativeSelect
+          <ResourceSelectField
+            resourceType="regions"
             aria-label={t("interconnect.province")}
             value={view.region}
             onChange={(e) => changeLevel("province", e.target.value)}
@@ -247,7 +246,7 @@ export function InterconnectMap({
             {provinces.map((p) => (
               <option key={p}>{p}</option>
             ))}
-          </NativeSelect>
+          </ResourceSelectField>
         )}
         <Button
           variant="outline"
@@ -342,11 +341,11 @@ export function InterconnectMap({
           }}
         />
       )}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border px-4 py-3 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-border px-4 py-3 text-xs text-muted-foreground">
         {Object.entries(statusLabels).map(([status, label]) => (
           <span key={status} className="flex items-center gap-1.5">
             <span
-              className="h-2.5 w-2.5 rounded-full"
+              className="h-2.5 w-2.5 "
               style={{ backgroundColor: STATUS_COLORS[status as keyof typeof STATUS_COLORS] }}
             />
             {label}

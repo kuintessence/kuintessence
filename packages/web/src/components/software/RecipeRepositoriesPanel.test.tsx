@@ -9,6 +9,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import i18n from "../../lib/i18n";
 import * as client from "../../lib/recipe-repositories-client";
 import { SoftwareError } from "../../lib/software-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import recipesEn from "../../locales/recipes.en.json";
 import recipesZh from "../../locales/recipes.zh.json";
 import { RecipeRepositoriesPanel } from "./RecipeRepositoriesPanel";
@@ -83,7 +84,7 @@ async function openRepository() {
 }
 function selectFiles(...names: string[]) {
   const files = names.map((name) => new File(["bundle"], name));
-  fireEvent.change(screen.getByLabelText("Git bundles"), { target: { files } });
+  fireEvent.change(nativeControl(screen.getByLabelText("Git bundles")), { target: { files } });
   return files;
 }
 
@@ -155,15 +156,15 @@ test("uses per-file organization namespaces and uploads sequentially after a par
   mount();
   await screen.findByText("No recipe repositories");
   const files = selectFiles("first.bundle", "second.bundle", "third.bundle");
-  expect(screen.getByLabelText("Repository for first.bundle")).toHaveProperty(
+  expect(nativeControl(screen.getByLabelText("Repository for first.bundle"))).toHaveProperty(
     "value",
     "org/org-a/first",
   );
-  expect(screen.getByLabelText("Repository for second.bundle")).toHaveProperty(
+  expect(nativeControl(screen.getByLabelText("Repository for second.bundle"))).toHaveProperty(
     "value",
     "org/org-a/second",
   );
-  fireEvent.change(screen.getByLabelText("Repository for third.bundle"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("Repository for third.bundle")), {
     target: { value: "public/third" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Import bundles" }));
@@ -195,7 +196,7 @@ test("rejects non-bundles and invalid or user namespaces without sending writes"
   expect(screen.getByRole("button", { name: "Import bundles" })).toHaveProperty("disabled", true);
   selectFiles("valid.bundle");
   for (const invalid of ["", "public/../bad", "user/me/private", "org//name"]) {
-    fireEvent.change(screen.getByLabelText("Repository for valid.bundle"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("Repository for valid.bundle")), {
       target: { value: invalid },
     });
     expect(screen.getByRole("button", { name: "Import bundles" })).toHaveProperty("disabled", true);
@@ -317,7 +318,7 @@ test("organization switches reset upload destinations and selected repository", 
   });
   expect(screen.queryByRole("table", { name: "Commit history" })).toBeNull();
   selectFiles("first.bundle");
-  expect(screen.getByLabelText("Repository for first.bundle")).toHaveProperty(
+  expect(nativeControl(screen.getByLabelText("Repository for first.bundle"))).toHaveProperty(
     "value",
     "org/org-b/first",
   );
@@ -372,7 +373,7 @@ test("warns explicitly when files share a destination and allows removal before 
   mount();
   await screen.findByText("No recipe repositories");
   selectFiles("one.bundle", "two.bundle");
-  fireEvent.change(screen.getByLabelText("Repository for two.bundle"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("Repository for two.bundle")), {
     target: { value: "public/one" },
   });
   expect(screen.getByText(/Multiple files target the same repository/)).toBeTruthy();
@@ -489,7 +490,7 @@ test("validates every upload destination against namespace access", async () => 
   selectFiles("builtin.bundle");
   expect(screen.getByRole("button", { name: "Import bundles" })).toHaveProperty("disabled", false);
   for (const namespace of ["public/builtin", "org/org-b/builtin"]) {
-    fireEvent.change(screen.getByLabelText("Repository for builtin.bundle"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("Repository for builtin.bundle")), {
       target: { value: namespace },
     });
     expect(screen.getByText("Read-only destination")).toBeTruthy();

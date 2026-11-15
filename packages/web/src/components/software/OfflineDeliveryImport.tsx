@@ -110,14 +110,11 @@ export function OfflineDeliveryImport({
     }
   }
   return (
-    <details
-      className="group rounded-lg border border-border bg-card"
-      data-testid="offline-delivery-import"
-    >
+    <details className="group border-b border-border" data-testid="offline-delivery-import">
       <summary className="cursor-pointer px-4 py-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-ring">
         {t("materials.offline.title")}
       </summary>
-      <div className="space-y-4 border-t border-border p-4" aria-busy={busy}>
+      <div className="space-y-4 border-border p-4" aria-busy={busy}>
         <div className="grid gap-4 md:grid-cols-2">
           <div className="min-w-0 space-y-2">
             <label htmlFor={`${id}-plan`} className="block text-sm font-medium">
@@ -185,16 +182,13 @@ export function OfflineDeliveryImport({
           </p>
         )}
         {error && (
-          <p
-            role="alert"
-            className="break-words rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed"
-          >
+          <p role="alert" className="break-words p-3 text-sm text-status-failed">
             {error}
           </p>
         )}
         {report && (
           <section className="space-y-3" aria-label={t("materials.offline.result")}>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-border pt-4">
               <h3 className="text-sm font-semibold">
                 {report.status === "planned"
                   ? t("materials.offline.preflightResult")
@@ -205,7 +199,7 @@ export function OfflineDeliveryImport({
                 <code className="mt-2 block break-all">{report.digest}</code>
               </details>
             </div>
-            <ul className="divide-y divide-border rounded-md border border-border">
+            <ul className="divide-y divide-border border-border">
               {report.items.map((item) => (
                 <li key={item.id} className="space-y-2 p-3">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -229,7 +223,7 @@ export function OfflineDeliveryImport({
                   {item.receipt !== undefined ? (
                     <details className="text-xs text-muted-foreground">
                       <summary className="cursor-pointer">{t("materials.offline.receipt")}</summary>
-                      <pre className="mt-2 max-h-64 overflow-auto rounded bg-muted/40 p-3">
+                      <pre className="mt-2 max-h-64 overflow-auto p-3">
                         {JSON.stringify(item.receipt, null, 2)}
                       </pre>
                     </details>
@@ -240,7 +234,7 @@ export function OfflineDeliveryImport({
           </section>
         )}
         {history !== null && (
-          <pre className="max-h-96 overflow-auto rounded-md bg-muted/40 p-3 text-xs">
+          <pre className="max-h-96 overflow-auto p-3 text-xs">
             {JSON.stringify(history, null, 2)}
           </pre>
         )}

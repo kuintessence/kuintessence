@@ -19,6 +19,7 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 
 const ROLES = {
   owner: "adminAccess.owner",
@@ -168,7 +169,7 @@ export function OrganizationMembershipPanel() {
             {search ? t("adminAccess.noMatches") : t("adminAccess.noMembers")}
           </p>
         ) : (
-          <ul className="max-h-[36rem] divide-y overflow-y-auto rounded-md border">
+          <ul className="max-h-[36rem] divide-y overflow-y-auto ">
             {list.data.data.map((member) => (
               <li
                 key={member.id}
@@ -286,7 +287,9 @@ export function OrganizationMembershipPanel() {
                       setEditor((current) => current && { ...current, userId: "" });
                     }}
                   />
-                  <NativeSelect
+                  <ResourceSelectField
+                    searchable={false}
+                    resourceType="organizations"
                     id="membership-user"
                     className="min-h-11 w-full"
                     disabled={mutation.isPending || options.isFetching || options.isError}
@@ -308,7 +311,7 @@ export function OrganizationMembershipPanel() {
                           {user.displayName ? `${user.displayName} · ${user.email}` : user.email}
                         </option>
                       ))}
-                  </NativeSelect>
+                  </ResourceSelectField>
                   {options.data?.data.moreUsers ? (
                     <p className="text-xs text-muted-foreground">{t("adminAccess.moreUsers")}</p>
                   ) : null}
@@ -327,7 +330,9 @@ export function OrganizationMembershipPanel() {
                       setEditor((current) => current && { ...current, orgId: "" });
                     }}
                   />
-                  <NativeSelect
+                  <ResourceSelectField
+                    searchable={false}
+                    resourceType="organizations"
                     id="membership-org"
                     className="min-h-11 w-full"
                     disabled={mutation.isPending || options.isFetching || options.isError}
@@ -349,7 +354,7 @@ export function OrganizationMembershipPanel() {
                           {org.name}
                         </option>
                       ))}
-                  </NativeSelect>
+                  </ResourceSelectField>
                   {options.data?.data.moreOrganizations ? (
                     <p className="text-xs text-muted-foreground">{t("adminAccess.moreOrgs")}</p>
                   ) : null}

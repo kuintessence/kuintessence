@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 const capabilityAccess = vi.hoisted(() => ({
   allowed: false,
@@ -69,7 +70,7 @@ describe("CpLayout", () => {
         <Draft />
       </CpLayout>,
     );
-    fireEvent.change(screen.getByLabelText("draft"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("draft")), {
       target: { value: "old organization draft" },
     });
     localStorage.setItem("kq_active_organization_id", "org-b");
@@ -83,7 +84,7 @@ describe("CpLayout", () => {
             storageArea: localStorage,
           }),
     );
-    expect(screen.getByLabelText("draft")).toHaveProperty("value", "");
+    expect(nativeControl(screen.getByLabelText("draft"))).toHaveProperty("value", "");
   });
 
   test("denies a principal without provider view capability", () => {

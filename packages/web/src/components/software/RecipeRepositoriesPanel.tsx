@@ -17,6 +17,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { EmptyState, ErrorState, LoadingState } from "../ui/content-state";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { RecipeBundleImport } from "./RecipeBundleImport";
 import { RecipeRepositoryDetail } from "./RecipeRepositoryDetail";
 import { SpackOnlineImport } from "./SpackOnlineImport";
@@ -185,32 +186,32 @@ function RepositoryPanel({
         <EmptyState title={t("recipes.empty")} />
       ) : (
         <div className="max-h-[28rem] overflow-auto">
-          <table className="w-full text-left text-xs" aria-label={t("recipes.title")}>
-            <thead className="sticky top-0 z-10 border-b border-border bg-card text-muted-foreground">
-              <tr>
+          <Table className="w-full text-left text-xs" aria-label={t("recipes.title")}>
+            <TableHeader className="sticky top-0 z-10 border-b border-border text-muted-foreground">
+              <TableRow>
                 {["repository", "activeCommit", "snapshots", "actions"].map((key) => (
-                  <th key={key} className="p-2 font-medium">
+                  <TableHead key={key} className="p-2 font-medium">
                     {t(`recipes.${key}`)}
-                  </th>
+                  </TableHead>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {repositories.data?.map((repository) => (
-                <tr key={repository.id} className="border-b border-border">
-                  <td className="break-all p-2 font-mono">
+                <TableRow key={repository.id} className="border-b border-border">
+                  <TableCell className="break-all p-2 font-mono">
                     {repository.repository}
                     {!canWriteRepository(repository.repository) ? (
                       <Badge className="ml-2 font-sans" variant="outline">
                         {t("recipes.readOnly")}
                       </Badge>
                     ) : null}
-                  </td>
-                  <td className="break-all p-2 font-mono">
+                  </TableCell>
+                  <TableCell className="break-all p-2 font-mono">
                     {repository.activeCommit ?? t("recipes.inactive")}
-                  </td>
-                  <td className="p-2">{repository.snapshots.length}</td>
-                  <td className="p-2">
+                  </TableCell>
+                  <TableCell className="p-2">{repository.snapshots.length}</TableCell>
+                  <TableCell className="p-2">
                     <Button
                       size="icon"
                       variant="ghost"
@@ -221,11 +222,11 @@ function RepositoryPanel({
                     >
                       <Eye />
                     </Button>
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
       {selectedId && !repositories.error ? (

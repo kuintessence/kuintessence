@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 import { CloudStorageGovernancePanel } from "./CloudStorageGovernancePanel";
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), post: vi.fn() }));
@@ -65,17 +66,21 @@ test.each([
   recover();
   fireEvent.click(screen.getByRole("button", { name: "重试" }));
   await screen.findByRole("button", { name: "保存策略" });
-  expect(screen.getByLabelText("默认配额（GB）")).toHaveProperty("value", "80");
+  expect(nativeControl(screen.getByLabelText("默认配额（GB）"))).toHaveProperty("value", "80");
   unmount();
   client.clear();
 });
 test("a cleared quota is not silently saved as zero", async () => {
   const { client, unmount } = setup(null);
   await screen.findByRole("button", { name: "保存策略" });
-  fireEvent.change(screen.getByLabelText("默认配额（GB）"), { target: { value: "" } });
+  fireEvent.change(nativeControl(screen.getByLabelText("默认配额（GB）")), {
+    target: { value: "" },
+  });
   fireEvent.click(screen.getByRole("button", { name: "保存策略" }));
   expect(api.put).not.toHaveBeenCalled();
-  fireEvent.change(screen.getByLabelText("默认配额（GB）"), { target: { value: "12" } });
+  fireEvent.change(nativeControl(screen.getByLabelText("默认配额（GB）")), {
+    target: { value: "12" },
+  });
   fireEvent.click(screen.getByRole("button", { name: "保存策略" }));
   await waitFor(() =>
     expect(api.put).toHaveBeenCalledWith(
@@ -89,9 +94,11 @@ test("a cleared quota is not silently saved as zero", async () => {
 
 test("quota assignment searches users and cannot submit a stale selection after searching again", async () => {
   const { client, unmount } = setup(null);
-  await screen.findByRole("option", { name: "Researcher · user@example.test" });
-  fireEvent.change(screen.getByLabelText("分配给"), { target: { value: "user-1" } });
-  fireEvent.change(screen.getByLabelText("总配额（GB）"), { target: { value: "20" } });
+  await screen.findByRole("option", { hidden: true, name: "Researcher · user@example.test" });
+  fireEvent.change(nativeControl(screen.getByLabelText("分配给")), { target: { value: "user-1" } });
+  fireEvent.change(nativeControl(screen.getByLabelText("总配额（GB）")), {
+    target: { value: "20" },
+  });
   fireEvent.click(screen.getByRole("button", { name: "分配配额" }));
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
@@ -99,14 +106,20 @@ test("quota assignment searches users and cannot submit a stale selection after 
       expect.objectContaining({ userId: "user-1", quotaBytes: 20 * 1024 ** 3 }),
     ),
   );
-  await waitFor(() => expect(screen.getByLabelText("分配给")).toHaveProperty("value", ""));
-  fireEvent.change(screen.getByLabelText("分配给"), { target: { value: "user-1" } });
-  fireEvent.change(screen.getByLabelText("总配额（GB）"), { target: { value: "30" } });
-  fireEvent.change(screen.getByLabelText("搜索用户"), { target: { value: "other" } });
+  await waitFor(() =>
+    expect(nativeControl(screen.getByLabelText("分配给"))).toHaveProperty("value", ""),
+  );
+  fireEvent.change(nativeControl(screen.getByLabelText("分配给")), { target: { value: "user-1" } });
+  fireEvent.change(nativeControl(screen.getByLabelText("总配额（GB）")), {
+    target: { value: "30" },
+  });
+  fireEvent.change(nativeControl(screen.getByLabelText("搜索用户")), {
+    target: { value: "other" },
+  });
   await waitFor(() =>
     expect(api.get).toHaveBeenCalledWith("/admin/authz/membership-options?user=other"),
   );
-  expect(screen.getByLabelText("分配给")).toHaveProperty("value", "");
+  expect(nativeControl(screen.getByLabelText("分配给"))).toHaveProperty("value", "");
   fireEvent.click(screen.getByRole("button", { name: "分配配额" }));
   expect(api.post).toHaveBeenCalledTimes(1);
   unmount();

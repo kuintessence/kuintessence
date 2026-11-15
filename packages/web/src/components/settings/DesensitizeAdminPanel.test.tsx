@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 import { DesensitizeAdminPanel } from "./DesensitizeAdminPanel";
 
 vi.mock("react-i18next", () => {
@@ -64,7 +65,7 @@ describe("DesensitizeAdminPanel", () => {
       rules: [{ scope: "global", scopeId: null, fieldPath: "actor", action: "alias" }],
     });
 
-    fireEvent.change(screen.getByTestId("desensitize-alias-ids"), {
+    fireEvent.change(nativeControl(screen.getByTestId("desensitize-alias-ids")), {
       target: { value: "alias-one\nalias-two" },
     });
     fireEvent.click(screen.getByTestId("desensitize-export"));
@@ -124,7 +125,7 @@ describe("DesensitizeAdminPanel", () => {
     render(<DesensitizeAdminPanel />);
 
     await screen.findByTestId("desensitize-global-enabled");
-    fireEvent.change(screen.getByTestId("desensitize-alias-ids"), {
+    fireEvent.change(nativeControl(screen.getByTestId("desensitize-alias-ids")), {
       target: { value: "alias-one" },
     });
     fireEvent.click(screen.getByTestId("desensitize-export"));
@@ -148,7 +149,7 @@ describe("DesensitizeAdminPanel", () => {
     render(<DesensitizeAdminPanel />);
 
     await screen.findByTestId("desensitize-global-enabled");
-    fireEvent.change(screen.getByTestId("desensitize-alias-ids"), {
+    fireEvent.change(nativeControl(screen.getByTestId("desensitize-alias-ids")), {
       target: { value: "alias-one" },
     });
     fireEvent.click(screen.getByTestId("desensitize-export"));

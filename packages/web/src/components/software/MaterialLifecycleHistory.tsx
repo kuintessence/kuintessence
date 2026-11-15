@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 const PAGE_SIZE = 10;
 
@@ -18,35 +19,45 @@ export function MaterialLifecycleHistory({ view }: { view: SpackMaterialLifecycl
       ) : (
         <>
           <div className="max-w-full overflow-x-auto">
-            <table
+            <Table
               className="w-full min-w-[42rem] table-fixed text-left text-xs"
               aria-label={t("materials.lifecycleHistory")}
             >
-              <thead className="border-b border-border text-muted-foreground">
-                <tr>
-                  <th className="w-20 p-2 font-medium">{t("materials.lifecycleRevision")}</th>
-                  <th className="w-24 p-2 font-medium">{t("materials.status")}</th>
-                  <th className="w-44 p-2 font-medium">{t("materials.lifecycleOperator")}</th>
-                  <th className="w-44 p-2 font-medium">{t("materials.lifecycleTime")}</th>
-                  <th className="p-2 font-medium">{t("materials.lifecycleReason")}</th>
-                </tr>
-              </thead>
-              <tbody>
+              <TableHeader className="border-b border-border text-muted-foreground">
+                <TableRow>
+                  <TableHead className="w-20 p-2 font-medium">
+                    {t("materials.lifecycleRevision")}
+                  </TableHead>
+                  <TableHead className="w-24 p-2 font-medium">{t("materials.status")}</TableHead>
+                  <TableHead className="w-44 p-2 font-medium">
+                    {t("materials.lifecycleOperator")}
+                  </TableHead>
+                  <TableHead className="w-44 p-2 font-medium">
+                    {t("materials.lifecycleTime")}
+                  </TableHead>
+                  <TableHead className="p-2 font-medium">
+                    {t("materials.lifecycleReason")}
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {view.history.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((event) => (
-                  <tr key={event.revision} className="border-b border-border">
-                    <td className="p-2 align-top tabular-nums">{event.revision}</td>
-                    <td className="p-2 align-top">
+                  <TableRow key={event.revision} className="border-b border-border">
+                    <TableCell className="p-2 align-top tabular-nums">{event.revision}</TableCell>
+                    <TableCell className="p-2 align-top">
                       {t(`materials.lifecycleState.${event.state}`)}
-                    </td>
-                    <td className="break-all p-2 align-top font-mono">{event.operatorId}</td>
-                    <td className="break-all p-2 align-top font-mono">
+                    </TableCell>
+                    <TableCell className="break-all p-2 align-top font-mono">
+                      {event.operatorId}
+                    </TableCell>
+                    <TableCell className="break-all p-2 align-top font-mono">
                       <time dateTime={event.createdAt}>{event.createdAt}</time>
-                    </td>
-                    <td className="break-all p-2 align-top">{event.reason}</td>
-                  </tr>
+                    </TableCell>
+                    <TableCell className="break-all p-2 align-top">{event.reason}</TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
           <div className="flex items-center justify-end gap-2 text-xs">
             <span className="tabular-nums">

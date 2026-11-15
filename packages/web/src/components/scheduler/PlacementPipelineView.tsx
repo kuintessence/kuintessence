@@ -61,7 +61,7 @@ export function PlacementPipelineView({
   if (!trace) {
     return (
       <div
-        className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground"
+        className=" border-border p-4 text-sm text-muted-foreground"
         data-testid="placement-empty"
       >
         {emptyMessage ??
@@ -108,10 +108,7 @@ function FinalDecisionBanner({
   const { t } = useTranslation();
   if (!trace.finalDecision) {
     return (
-      <div
-        className="flex items-start gap-3 rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
-        data-testid="placement-no-decision"
-      >
+      <div className="flex items-start gap-3 p-3 text-sm" data-testid="placement-no-decision">
         <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-status-failed" />
         <div>
           <div className="font-medium">
@@ -135,10 +132,8 @@ function FinalDecisionBanner({
       onClick={onAgentPick ? () => onAgentPick(id) : undefined}
       disabled={!onAgentPick}
       className={cn(
-        "flex w-full flex-wrap items-center gap-3 rounded-md border border-status-succeeded/40 bg-[color-mix(in_oklab,var(--status-succeeded)_12%,transparent)] p-3 text-left text-sm",
-        onAgentPick
-          ? "hover:bg-[color-mix(in_oklab,var(--status-succeeded)_18%,transparent)]"
-          : "cursor-default",
+        "flex w-full flex-wrap items-center gap-3 p-3 text-left text-sm",
+        onAgentPick ? "" : "cursor-default",
       )}
       data-testid="placement-final-decision"
     >
@@ -182,10 +177,7 @@ function StageRow({
 
   return (
     <li
-      className={cn(
-        "rounded-md border bg-card",
-        everyoneDropped ? "border-status-failed/40" : "border-border",
-      )}
+      className={cn(" ", everyoneDropped ? "" : "border-border")}
       data-testid={`placement-stage-${stage.name}`}
     >
       <button
@@ -219,7 +211,7 @@ function StageRow({
         </span>
       </button>
       {expanded ? (
-        <div className="border-t border-border p-3 space-y-2">
+        <div className=" border-border p-3 space-y-2">
           {rejectedCount === 0 && passedCount === 0 ? (
             <div className="text-xs text-muted-foreground">
               {t("scheduler.placement.stage.skipped", {
@@ -236,7 +228,7 @@ function StageRow({
                 {stage.rejected.map((r) => (
                   <li
                     key={`${stage.name}-${r.agent.agentId}`}
-                    className="flex items-start gap-2 rounded border border-status-failed/30 bg-[color-mix(in_oklab,var(--status-failed)_8%,transparent)] p-2 text-xs"
+                    className="flex items-start gap-2 p-2 text-xs"
                     data-testid={`placement-rejected-row-${r.agent.agentId}`}
                   >
                     <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-failed" />

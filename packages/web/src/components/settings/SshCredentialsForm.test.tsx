@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -32,6 +33,17 @@ function installFetch(handlers: Array<(call: FetchCall) => Response>) {
     vi.fn(async (input: unknown, init?: { method?: string; body?: string }) => {
       const url = typeof input === "string" ? input : (input as Request).url;
       const call: FetchCall = { url, method: init?.method ?? "GET", body: init?.body };
+      if (call.method === "GET" && /\/agents$/.test(call.url))
+        return new Response(
+          JSON.stringify({
+            agents: [
+              { agentId: "agent-1", siteName: "Cluster One", status: "online" },
+              { agentId: "agent-2", siteName: "Cluster Two", status: "online" },
+              { agentId: "agent-new", siteName: "New cluster", status: "online" },
+            ],
+          }),
+          { status: 200 },
+        );
       calls.push(call);
       const handler = queue.shift();
       if (!handler) throw new Error(`Unexpected fetch: ${call.method} ${url}`);
@@ -127,9 +139,14 @@ describe("SshCredentialsForm", () => {
     render(<SshCredentialsForm />);
 
     await waitFor(() => screen.getByTestId("ssh-cred-row-agent-1"));
-    fireEvent.change(screen.getByTestId("ssh-agent-id"), { target: { value: "agent-2" } });
-    fireEvent.change(screen.getByTestId("ssh-host"), { target: { value: "login02" } });
-    fireEvent.change(screen.getByTestId("ssh-username"), { target: { value: "bob" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Agent ID" }));
+    fireEvent.click(await screen.findByRole("option", { hidden: true, name: /Cluster Two/ }));
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-host")), {
+      target: { value: "login02" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-username")), {
+      target: { value: "bob" },
+    });
     fireEvent.click(screen.getByTestId("ssh-cred-save"));
 
     await waitFor(() => screen.getByTestId("ssh-load-error"));
@@ -154,10 +171,17 @@ describe("SshCredentialsForm", () => {
     render(<SshCredentialsForm />);
     await waitFor(() => screen.getByTestId("ssh-cred-empty"));
 
-    fireEvent.change(screen.getByTestId("ssh-agent-id"), { target: { value: "agent-1" } });
-    fireEvent.change(screen.getByTestId("ssh-host"), { target: { value: "login01" } });
-    fireEvent.change(screen.getByTestId("ssh-username"), { target: { value: "alice" } });
-    fireEvent.change(screen.getByTestId("ssh-password"), { target: { value: "hunter2" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Agent ID" }));
+    fireEvent.click(await screen.findByRole("option", { hidden: true, name: /Cluster One/ }));
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-host")), {
+      target: { value: "login01" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-username")), {
+      target: { value: "alice" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("ssh-password")), {
+      target: { value: "hunter2" },
+    });
     fireEvent.click(screen.getByTestId("ssh-cred-save"));
 
     await waitFor(() => expect(toastSuccess).toHaveBeenCalled());

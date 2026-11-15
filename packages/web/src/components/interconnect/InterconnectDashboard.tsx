@@ -18,8 +18,16 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { useTheme } from "../ThemeProvider";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
-import { NativeSelect } from "../ui/native-select";
 import { PageHeader } from "../ui/page";
+import { ResourceSelectField } from "../ui/resource-select-field";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Table as UiTable,
+} from "../ui/table";
 import { InterconnectMap } from "./InterconnectMap";
 import { type EditTarget, MetadataEditor } from "./MetadataEditor";
 import {
@@ -43,20 +51,20 @@ function Table({
   const { t } = useTranslation();
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-left text-sm">
-        <thead className="border-b border-border bg-muted/40">
-          <tr>
+      <UiTable className="w-full text-left text-sm">
+        <TableHeader className="border-b border-border ">
+          <TableRow>
             {headers.map((h) => (
-              <th key={h} className="whitespace-nowrap px-4 py-3 font-medium">
+              <TableHead key={h} className="whitespace-nowrap px-4 py-3 font-medium">
                 {h}
-              </th>
+              </TableHead>
             ))}
-          </tr>
-        </thead>
-        <tbody className="[&_td]:px-4 [&_td]:py-3 [&_tr]:border-b [&_tr]:border-border [&_tr:last-child]:border-0">
+          </TableRow>
+        </TableHeader>
+        <TableBody className="[&_td]:px-4 [&_td]:py-3 [&_tr]:border-b [&_tr]:border-border ">
           {children}
-        </tbody>
-      </table>
+        </TableBody>
+      </UiTable>
       {empty && (
         <p className="p-8 text-center text-muted-foreground">{t("interconnect.noMatches")}</p>
       )}
@@ -81,7 +89,7 @@ function Distribution({
   const textColor = resolved === "dark" ? "#cbd5e1" : "#4a5060";
   const gridColor = resolved === "dark" ? "#334155" : "#e2e8f0";
   return (
-    <section className="min-w-0 rounded-xl border border-border bg-card p-4">
+    <section className="min-w-0 border-border p-4">
       <h2 className="font-semibold">{title}</h2>
       {items.length ? (
         <>
@@ -148,7 +156,7 @@ function Distribution({
                 <button
                   key={i.id}
                   type="button"
-                  className="flex w-full justify-between gap-3 rounded px-2 py-1.5 text-left hover:bg-muted"
+                  className="flex w-full justify-between gap-3 px-2 py-1.5 text-left "
                   onClick={() => onClick(i.id)}
                 >
                   <span>{i.name}</span>
@@ -209,7 +217,7 @@ function DashboardContent({
     value ? new Date(value).toLocaleString(i18n.language) : t("interconnect.missing");
   const status = (value: keyof typeof statusLabels) => (
     <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: STATUS_COLORS[value] }} />
+      <span className="h-2 w-2 " style={{ backgroundColor: STATUS_COLORS[value] }} />
       {statusLabels[value]}
     </span>
   );
@@ -246,7 +254,7 @@ function DashboardContent({
   if (query.isPending) return <p>{t("interconnect.loadingResources")}</p>;
   if (query.error || !query.data)
     return (
-      <div role="alert" className="rounded-md border border-border p-4">
+      <div role="alert" className=" border-border p-4">
         {toUserFacingError(query.error, t("interconnect.loadFailed"))}{" "}
         <Button variant="outline" onClick={() => void query.refetch()}>
           {t("interconnect.retry")}
@@ -410,7 +418,7 @@ function DashboardContent({
             key={card.label}
             type="button"
             onClick={() => setFilter(card.filter)}
-            className="min-w-0 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-brand focus-visible:outline-2 focus-visible:outline-brand"
+            className="min-w-0 border-border p-4 text-left transition-colors focus-visible:outline-2 focus-visible:outline-brand"
           >
             <div className="text-sm text-muted-foreground">{card.label}</div>
             <div className="my-2 break-words text-2xl font-semibold tabular-nums">{card.value}</div>
@@ -422,7 +430,7 @@ function DashboardContent({
         <button
           type="button"
           onClick={() => setFilter({ kind: "clusters", metric: "jobs" })}
-          className="rounded-lg border border-border px-4 py-3 text-left text-sm hover:border-brand"
+          className="border-b border-border px-4 py-3 text-left text-sm hover:border-brand"
         >
           {t("interconnect.jobSuccess")}{" "}
           <strong className="block mt-1 text-base tabular-nums">
@@ -437,7 +445,7 @@ function DashboardContent({
         <button
           type="button"
           onClick={() => setFilter({ kind: "clusters", metric: "agents" })}
-          className="rounded-lg border border-border px-4 py-3 text-left text-sm hover:border-brand"
+          className="border-b border-border px-4 py-3 text-left text-sm hover:border-brand"
         >
           {t("interconnect.agentHealth")}{" "}
           <strong className="block mt-1 text-base tabular-nums">
@@ -455,7 +463,7 @@ function DashboardContent({
         <button
           type="button"
           onClick={() => setFilter({ kind: "links" })}
-          className="rounded-lg border border-border px-4 py-3 text-left text-sm hover:border-brand"
+          className="border-b border-border px-4 py-3 text-left text-sm hover:border-brand"
         >
           {t("interconnect.links")}{" "}
           <strong className="block mt-1 text-base tabular-nums">{data.links.length}</strong>
@@ -552,10 +560,7 @@ function DashboardContent({
           onClick={(id) => chooseGroup(id, { kind: "applications" })}
         />
       </div>
-      <section
-        className="rounded-xl border border-border bg-card"
-        aria-label={t("interconnect.details")}
-      >
+      <section className=" border-border " aria-label={t("interconnect.details")}>
         <div className="kq-fill-row border-b border-border p-4">
           <h2 className="mr-auto font-semibold">{t("interconnect.details")}</h2>
           {(
@@ -578,7 +583,8 @@ function DashboardContent({
         </div>
         <div className="kq-fill-row border-b border-border p-4 text-sm">
           <span>{t("interconnect.filter")}</span>
-          <NativeSelect
+          <ResourceSelectField
+            resourceType="compute-centers"
             aria-label={t("interconnect.filterCenter")}
             className="max-w-full p-1.5"
             value={filter.centerId ?? ""}
@@ -597,7 +603,7 @@ function DashboardContent({
                 {c.metadata.name}
               </option>
             ))}
-          </NativeSelect>
+          </ResourceSelectField>
           {[
             filter.clusterId ? clusterName(filter.clusterId) : null,
             filter.centerIds
@@ -618,7 +624,7 @@ function DashboardContent({
           ]
             .filter(Boolean)
             .map((label) => (
-              <span key={label} className="rounded bg-muted px-2 py-1">
+              <span key={label} className=" px-2 py-1">
                 {label}
               </span>
             ))}
@@ -672,8 +678,8 @@ function DashboardContent({
             {centers.map((c) => {
               const children = data.clusters.filter((x) => x.centerId === c.id);
               return (
-                <tr key={c.id}>
-                  <td>
+                <TableRow key={c.id}>
+                  <TableCell>
                     <button
                       className="text-brand underline-offset-4 hover:underline"
                       type="button"
@@ -681,29 +687,29 @@ function DashboardContent({
                     >
                       {c.metadata.name}
                     </button>
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     {[c.metadata.country, c.metadata.province, c.metadata.city]
                       .filter(Boolean)
                       .join(" / ")}
-                  </td>
-                  <td>{status(c.metadata.status)}</td>
-                  <td>{children.length}</td>
-                  <td>
+                  </TableCell>
+                  <TableCell>{status(c.metadata.status)}</TableCell>
+                  <TableCell>{children.length}</TableCell>
+                  <TableCell>
                     {children.some((r) => r.metadata.cpuCores !== null)
                       ? children
                           .reduce((n, r) => n + (r.metadata.cpuCores ?? 0), 0)
                           .toLocaleString()
                       : t("interconnect.missing")}
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     {formatCapacity(
                       children.some((r) => r.metadata.storageBytes !== null)
                         ? children.reduce((n, r) => n + (r.metadata.storageBytes ?? 0), 0)
                         : null,
                     )}
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     {data.canManage && (
                       <Button
                         size="sm"
@@ -713,8 +719,8 @@ function DashboardContent({
                         {t("interconnect.edit")}
                       </Button>
                     )}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               );
             })}
           </Table>
@@ -740,8 +746,8 @@ function DashboardContent({
             empty={!clusters.length}
           >
             {clusters.map((c) => (
-              <tr key={c.id}>
-                <td>
+              <TableRow key={c.id}>
+                <TableCell>
                   <button
                     type="button"
                     className="text-brand hover:underline"
@@ -749,17 +755,21 @@ function DashboardContent({
                   >
                     {c.metadata.name}
                   </button>
-                </td>
-                <td>{centerName(c.centerId)}</td>
-                <td>{status(c.metadata.status)}</td>
-                <td>{c.metadata.cpuCores?.toLocaleString() ?? t("interconnect.missing")}</td>
-                <td>
+                </TableCell>
+                <TableCell>{centerName(c.centerId)}</TableCell>
+                <TableCell>{status(c.metadata.status)}</TableCell>
+                <TableCell>
+                  {c.metadata.cpuCores?.toLocaleString() ?? t("interconnect.missing")}
+                </TableCell>
+                <TableCell>
                   {c.metadata.computeTypes.map((type) => computeTypeLabel(type, t)).join(", ") ||
                     t("interconnect.missing")}
-                </td>
-                <td>{formatCapacity(c.metadata.storageBytes)}</td>
-                <td>{c.metadata.storageTypes.join(", ") || t("interconnect.missing")}</td>
-                <td>
+                </TableCell>
+                <TableCell>{formatCapacity(c.metadata.storageBytes)}</TableCell>
+                <TableCell>
+                  {c.metadata.storageTypes.join(", ") || t("interconnect.missing")}
+                </TableCell>
+                <TableCell>
                   <button
                     type="button"
                     className="text-brand"
@@ -767,24 +777,24 @@ function DashboardContent({
                   >
                     {c.software.length}
                   </button>
-                </td>
+                </TableCell>
                 {filter.metric === "jobs" && (
-                  <td>
+                  <TableCell>
                     {c.jobs24h.succeeded} / {c.jobs24h.failed}
-                  </td>
+                  </TableCell>
                 )}
                 {filter.metric === "agents" && (
-                  <td>
+                  <TableCell>
                     {
                       c.agents.filter(
                         (a) => a.status === "online" && !isObservationStale(a.observedAt),
                       ).length
                     }{" "}
                     / {c.agents.length}
-                  </td>
+                  </TableCell>
                 )}
-                <td className="whitespace-nowrap text-xs">{time(c.updatedAt)}</td>
-              </tr>
+                <TableCell className="whitespace-nowrap text-xs">{time(c.updatedAt)}</TableCell>
+              </TableRow>
             ))}
           </Table>
         )}
@@ -807,8 +817,8 @@ function DashboardContent({
               empty={!applications.length}
             >
               {applications.map(({ cluster: c, software: s }) => (
-                <tr key={`${c.id}:${s.name}`}>
-                  <td>
+                <TableRow key={`${c.id}:${s.name}`}>
+                  <TableCell>
                     <button
                       type="button"
                       className="text-brand"
@@ -816,9 +826,9 @@ function DashboardContent({
                     >
                       {s.name}
                     </button>
-                  </td>
-                  <td>{centerName(c.centerId)}</td>
-                  <td>
+                  </TableCell>
+                  <TableCell>{centerName(c.centerId)}</TableCell>
+                  <TableCell>
                     <button
                       type="button"
                       className="text-brand"
@@ -826,18 +836,18 @@ function DashboardContent({
                     >
                       {c.metadata.name}
                     </button>
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     {s.source === "inventory"
                       ? t("interconnect.inventory")
                       : t("interconnect.declared")}
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     {s.source === "declared"
                       ? t("interconnect.unverified")
                       : `${isObservationStale(s.observedAt) ? t("interconnect.reportStalePrefix") : t("interconnect.installedPrefix")}${time(s.observedAt)}`}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
             </Table>
           </>
@@ -854,8 +864,8 @@ function DashboardContent({
             empty={!links.length}
           >
             {links.map((l) => (
-              <tr key={l.id}>
-                <td>
+              <TableRow key={l.id}>
+                <TableCell>
                   <button
                     type="button"
                     className="text-brand"
@@ -863,10 +873,10 @@ function DashboardContent({
                   >
                     {l.metadata.name}
                   </button>
-                </td>
-                <td>{centerName(l.fromCenterId)}</td>
-                <td>{centerName(l.toCenterId)}</td>
-                <td>
+                </TableCell>
+                <TableCell>{centerName(l.fromCenterId)}</TableCell>
+                <TableCell>{centerName(l.toCenterId)}</TableCell>
+                <TableCell>
                   {status(
                     isObservationStale(l.metadata.observedAt) ? "unknown" : l.metadata.status,
                   )}
@@ -875,9 +885,9 @@ function DashboardContent({
                       {t("interconnect.stale")}
                     </span>
                   )}
-                </td>
-                <td>{time(l.metadata.observedAt)}</td>
-              </tr>
+                </TableCell>
+                <TableCell>{time(l.metadata.observedAt)}</TableCell>
+              </TableRow>
             ))}
           </Table>
         )}
@@ -929,7 +939,7 @@ function DashboardContent({
                   <h3 className="font-semibold">Agent</h3>
                   {selectedCluster.agents.length ? (
                     selectedCluster.agents.map((a) => (
-                      <div key={a.id} className="break-words rounded border border-border p-2">
+                      <div key={a.id} className="break-words border-border p-2">
                         {a.id} ·{" "}
                         {isObservationStale(a.observedAt)
                           ? t("interconnect.staleHeartbeat")

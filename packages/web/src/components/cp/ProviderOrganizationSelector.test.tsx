@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 const activeOrganization = vi.hoisted(() => ({
   get: vi.fn(),
@@ -147,9 +148,12 @@ describe("ProviderOrganizationSelector", () => {
         "ready:true",
       ]),
     );
-    fireEvent.change(await screen.findByLabelText("cp.organizationSelector.ariaLabel"), {
-      target: { value: "org-b" },
-    });
+    fireEvent.change(
+      nativeControl(await screen.findByLabelText("cp.organizationSelector.ariaLabel")),
+      {
+        target: { value: "org-b" },
+      },
+    );
     await waitFor(() =>
       expect(screen.getAllByTestId("capability-consumer").map((item) => item.textContent)).toEqual([
         "ready:false",
@@ -176,7 +180,7 @@ describe("ProviderOrganizationSelector", () => {
     expect(select?.textContent).toContain("Provider B");
 
     if (!select) throw new Error("organization select was not rendered");
-    fireEvent.change(select, { target: { value: "org-b" } });
+    fireEvent.change(nativeControl(select), { target: { value: "org-b" } });
     await waitFor(() =>
       expect(activeOrganization.set).toHaveBeenCalledWith("org-b", expect.anything()),
     );
@@ -224,7 +228,7 @@ describe("ProviderOrganizationSelector", () => {
     const select = (await screen.findByLabelText(
       "cp.organizationSelector.ariaLabel",
     )) as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: "org-b" } });
+    fireEvent.change(nativeControl(select), { target: { value: "org-b" } });
 
     const error = await screen.findByTestId("cp-organization-selector-update-error");
     expect(error.textContent).toContain("cp.organizationSelector.updateFailed");
@@ -233,7 +237,7 @@ describe("ProviderOrganizationSelector", () => {
     expect(select.value).toBe("org-a");
 
     activeOrganization.set.mockResolvedValueOnce(undefined);
-    fireEvent.change(select, { target: { value: "org-b" } });
+    fireEvent.change(nativeControl(select), { target: { value: "org-b" } });
     await waitFor(() =>
       expect(activeOrganization.set).toHaveBeenLastCalledWith("org-b", expect.anything()),
     );
@@ -262,9 +266,12 @@ describe("ProviderOrganizationSelector", () => {
       </QueryClientProvider>,
     );
 
-    fireEvent.change(await screen.findByLabelText("cp.organizationSelector.ariaLabel"), {
-      target: { value: "org-b" },
-    });
+    fireEvent.change(
+      nativeControl(await screen.findByLabelText("cp.organizationSelector.ariaLabel")),
+      {
+        target: { value: "org-b" },
+      },
+    );
 
     await waitFor(() =>
       expect(activeOrganization.set).toHaveBeenCalledWith("org-b", expect.anything()),

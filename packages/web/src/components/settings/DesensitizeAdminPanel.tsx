@@ -164,7 +164,7 @@ export function DesensitizeAdminPanel() {
           </div>
         ) : (
           <fieldset disabled={mobileReadOnly || saving} className="min-w-0 space-y-5">
-            <label className="flex items-center justify-between gap-4 rounded-md border p-3 text-sm">
+            <label className="flex items-center justify-between gap-4 border-b p-3 text-sm">
               <span>{t("settings.desensitize.globalEnabled")}</span>
               <input
                 type="checkbox"
@@ -178,7 +178,7 @@ export function DesensitizeAdminPanel() {
               {rules.map((rule) => (
                 <div
                   key={rule.id}
-                  className="grid gap-2 rounded-md border p-3 md:grid-cols-[130px_1fr_1fr_140px_36px]"
+                  className="grid gap-2 p-3 md:grid-cols-[130px_1fr_1fr_140px_36px]"
                   data-testid={`desensitize-rule-${rule.id}`}
                 >
                   <NativeSelect
@@ -236,7 +236,7 @@ export function DesensitizeAdminPanel() {
                 </div>
               ))}
               {rules.length === 0 ? (
-                <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                <p className=" p-3 text-sm text-muted-foreground">
                   {t("settings.desensitize.empty")}
                 </p>
               ) : null}
@@ -279,7 +279,7 @@ export function DesensitizeAdminPanel() {
               </Button>
             </div>
 
-            <div className="space-y-3 border-t pt-5">
+            <div className="space-y-3 pt-5">
               <div>
                 <div className="text-sm font-medium">{t("settings.desensitize.exportTitle")}</div>
                 <p className="mt-1 text-xs text-muted-foreground">

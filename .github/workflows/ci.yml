@@ -101,6 +101,11 @@ jobs:
       - name: Lint (Biome)
         run: bun run lint --max-diagnostics=100
 
+      - name: Check flat UI surfaces and guard regression
+        run: |
+          bun scripts/check-ui-surfaces.ts
+          bun test scripts/check-ui-surfaces.test.ts
+
       - name: Check local documentation links
         run: bun scripts/check-doc-links.ts
 

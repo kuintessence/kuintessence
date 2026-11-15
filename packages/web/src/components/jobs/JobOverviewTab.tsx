@@ -29,7 +29,7 @@ function MonoValue({ value }: { value: string }) {
 
 function CommandValue({ value }: { value: string }) {
   return (
-    <code className="block max-h-32 min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-sm bg-muted/40 px-2 py-1">
+    <code className="block max-h-32 min-w-0 overflow-auto whitespace-pre-wrap break-words px-2 py-1">
       {value}
     </code>
   );
@@ -62,7 +62,7 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
       ) : null}
       {failed ? (
         <section
-          className="space-y-2 rounded-md border border-status-failed/30 bg-[color-mix(in_oklab,var(--status-failed)_8%,transparent)] px-3 py-3"
+          className="space-y-2 px-3 py-3"
           data-testid="job-error-summary"
           aria-label={t("jobs.overview.failureDetails")}
         >
@@ -88,7 +88,7 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
         <summary className="cursor-pointer">{t("jobs.overview.identifier")}</summary>
         <code className="mt-2 block select-all break-all">{job.id}</code>
       </details>
-      <dl className="divide-y divide-border border-y border-border empty:hidden">
+      <dl className="divide-y divide-border border-border empty:hidden">
         {job.usecasePackageName ? (
           <Field
             label={t("jobs.overview.usecase", { defaultValue: "Usecase" })}
@@ -117,7 +117,7 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
           <Field label={t("jobs.overview.command")} value={<CommandValue value={job.command} />} />
         ) : null}
       </dl>
-      <dl className="divide-y divide-border border-y border-border">
+      <dl className="divide-y divide-border border-border">
         <Field
           label={t("jobs.overview.schedulerId")}
           value={job.schedulerJobId ? <MonoValue value={job.schedulerJobId} /> : "—"}
@@ -136,7 +136,7 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
           />
         ) : null}
       </dl>
-      <dl className="divide-y divide-border border-y border-border">
+      <dl className="divide-y divide-border border-border">
         <Field
           label={t("jobs.overview.submitted")}
           value={

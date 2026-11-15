@@ -131,7 +131,7 @@ export function Login({
 
   return (
     <div
-      className="flex min-h-screen items-center justify-center bg-background px-4 py-12"
+      className="flex min-h-screen items-center justify-center px-4 py-12"
       data-testid="login-page"
     >
       <div className="w-full max-w-sm space-y-6">
@@ -179,7 +179,7 @@ export function Login({
           <div
             role="alert"
             data-testid="sso-unavailable"
-            className="flex items-start gap-2 rounded-md border border-status-warning/40 bg-[color-mix(in_oklab,var(--status-warning)_10%,transparent)] px-3 py-2 text-sm text-foreground"
+            className="flex items-start gap-2 px-3 py-2 text-sm text-foreground"
           >
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
             <span>{t("login.ssoUnavailable")}</span>
@@ -190,7 +190,7 @@ export function Login({
           <div
             role="alert"
             data-testid="sso-config-error"
-            className="space-y-3 rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] px-3 py-3 text-sm text-foreground"
+            className="space-y-3 px-3 py-3 text-sm text-foreground"
           >
             <div className="flex items-start gap-2">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-status-failed" />
@@ -266,7 +266,7 @@ export function Login({
                   <div
                     role="alert"
                     data-testid="login-error"
-                    className="flex items-start gap-2 rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] px-3 py-2 text-sm text-status-failed"
+                    className="flex items-start gap-2 px-3 py-2 text-sm text-status-failed"
                   >
                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>{error}</span>
@@ -291,7 +291,7 @@ export function Login({
                 </Button>
               </form>
             </CardContent>
-            <CardFooter className="border-t border-border px-6 py-3">
+            <CardFooter className=" border-border px-6 py-3">
               <p className="text-[11px] text-muted-foreground">{t("login.devModeNote")}</p>
             </CardFooter>
           </Card>

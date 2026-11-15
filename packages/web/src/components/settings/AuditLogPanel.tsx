@@ -41,10 +41,7 @@ export function AuditLogPanel() {
         </Button>
       </div>
       {error ? (
-        <div
-          className="rounded-md border border-status-failed/40 p-3 text-sm text-status-failed"
-          data-testid="platform-audit-error"
-        >
+        <div className=" p-3 text-sm text-status-failed" data-testid="platform-audit-error">
           {toUserFacingError(error, t("settings.operations.auditLog.loadFailed"))}
         </div>
       ) : audit.isLoading ? (

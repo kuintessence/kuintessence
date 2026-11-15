@@ -1,14 +1,26 @@
 import { forwardRef, type HTMLAttributes } from "react";
 import { cn } from "../../lib/utils";
+import { SurfaceBoundary, useInsideSurface } from "./surface";
 
 export const Card = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
-  ({ className, ...props }, ref) => (
-    <div
-      ref={ref}
-      className={cn("rounded-xl border border-border bg-card text-card-foreground", className)}
-      {...props}
-    />
-  ),
+  ({ className, children, ...props }, ref) => {
+    const nested = useInsideSurface();
+    return (
+      <div
+        ref={ref}
+        data-kq-surface={nested ? "section" : "region"}
+        className={cn(
+          "min-w-0",
+          !nested && "rounded-xl border border-border bg-card text-card-foreground",
+          className,
+          nested && "rounded-none border-x-0 border-t-0 bg-transparent shadow-none ring-0",
+        )}
+        {...props}
+      >
+        <SurfaceBoundary>{children}</SurfaceBoundary>
+      </div>
+    );
+  },
 );
 Card.displayName = "Card";
 

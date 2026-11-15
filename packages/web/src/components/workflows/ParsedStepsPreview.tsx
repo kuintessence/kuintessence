@@ -10,7 +10,7 @@ export function ParsedStepsPreview({ result }: ParsedStepsPreviewProps) {
   if (!result) {
     return (
       <div
-        className="flex h-28 items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center text-xs text-muted-foreground"
+        className="flex h-28 items-center justify-center border-border px-4 text-center text-xs text-muted-foreground"
         data-testid="parsed-empty"
       >
         Edit the YAML on the left to see parsed nodes.
@@ -19,10 +19,7 @@ export function ParsedStepsPreview({ result }: ParsedStepsPreviewProps) {
   }
   if (!result.ok) {
     return (
-      <div
-        className="rounded-lg border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-4 text-sm"
-        data-testid="parsed-error"
-      >
+      <div className=" p-4 text-sm" data-testid="parsed-error">
         <div className="flex items-center gap-2 font-medium">
           <CircleAlert className="h-4 w-4 text-[var(--status-failed)]" />
           {result.message}
@@ -53,10 +50,10 @@ export function ParsedStepsPreview({ result }: ParsedStepsPreviewProps) {
         <div className="text-xs font-medium text-muted-foreground">Parsed nodes</div>
         <ul className="mt-1 space-y-1">
           {result.workflow.spec.nodeDrafts.map((n) => (
-            <li key={n.id} className="rounded-lg border border-border bg-card px-3 py-2 text-xs">
+            <li key={n.id} className=" border-border px-3 py-2 text-xs">
               <div className="flex items-center justify-between gap-3">
                 <span className="min-w-0 truncate font-medium">{n.name || n.id}</span>
-                <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+                <span className="shrink-0 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
                   {n.type}
                 </span>
               </div>
@@ -81,7 +78,7 @@ interface CounterProps {
 
 function Counter({ icon: Icon, label, value }: CounterProps) {
   return (
-    <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-center">
+    <div className=" border-border px-3 py-2 text-center">
       <div className="flex items-center justify-center gap-1 text-[10px] font-medium text-muted-foreground">
         {Icon ? <Icon className="h-3 w-3" /> : null}
         {label}

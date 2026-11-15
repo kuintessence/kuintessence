@@ -128,11 +128,8 @@ export function SessionPane({ session, onClose }: SessionPaneProps) {
   }, [session.id, session.remoteUser, session.siteId]);
 
   return (
-    <div
-      className="min-w-0 overflow-hidden rounded-md border border-border"
-      data-testid="terminal-pane"
-    >
-      <div className="flex min-h-11 flex-col gap-2 border-b border-border bg-card/60 px-3 py-2 md:flex-row md:items-center">
+    <div className="min-w-0 overflow-hidden border-border" data-testid="terminal-pane">
+      <div className="flex min-h-11 flex-col gap-2 border-b border-border px-3 py-2 md:flex-row md:items-center">
         <span
           className="min-w-0 truncate font-mono text-xs text-muted-foreground"
           title={`opened ${session.openedAt}`}

@@ -1,8 +1,9 @@
 import type { HTMLAttributes, ReactNode } from "react";
 import { cn } from "../../lib/utils";
+import { Card } from "./card";
 
 export function PageShell({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("min-w-0 space-y-5", className)} {...props} />;
+  return <Card className={cn("min-w-0 space-y-5 p-4 sm:p-5", className)} {...props} />;
 }
 
 interface PageHeaderProps extends Omit<HTMLAttributes<HTMLDivElement>, "title"> {

@@ -21,7 +21,7 @@ export function WorkflowReviewGraph({
   const parsed = useMemo(() => yamlToGraph(yaml), [yaml]);
   if (!parsed.ok || parsed.graph.nodes.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+      <div className=" border-border p-8 text-center text-sm text-muted-foreground">
         {t("workflows.creation.review.graphEmpty")}
       </div>
     );
@@ -34,7 +34,7 @@ export function WorkflowReviewGraph({
 
   return (
     <div
-      className={`flex justify-center rounded-lg border border-border bg-muted/20 ${
+      className={`flex justify-center border-border ${
         mode === "fill"
           ? "h-full min-h-96 overflow-hidden"
           : mode === "resizable"

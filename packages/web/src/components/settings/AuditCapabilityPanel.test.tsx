@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 import { AuditCapabilityPanel } from "./AuditCapabilityPanel";
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), delete: vi.fn() }));
@@ -29,7 +30,9 @@ test("server search and pagination keep the correct user attached to grant actio
       "/admin/authz/audit-capabilities?search=&limit=50&offset=50",
     ),
   );
-  fireEvent.change(screen.getByRole("searchbox"), { target: { value: "target@example.test" } });
+  fireEvent.change(nativeControl(screen.getByRole("searchbox")), {
+    target: { value: "target@example.test" },
+  });
   fireEvent.click(screen.getByRole("button", { name: "搜索" }));
   await waitFor(() =>
     expect(api.get).toHaveBeenLastCalledWith(

@@ -34,10 +34,7 @@ export function SandboxMappingReviewPanel() {
   const rows = queueQuery.data ?? [];
 
   return (
-    <section
-      className="grid gap-3 rounded-lg border border-border bg-card p-4"
-      data-testid="sandbox-mapping-review"
-    >
+    <section className="grid gap-3 border-border p-4" data-testid="sandbox-mapping-review">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="flex items-center gap-2 text-sm font-semibold">
@@ -57,7 +54,7 @@ export function SandboxMappingReviewPanel() {
       ) : queueQuery.isLoading ? (
         <div className="text-sm text-muted-foreground">{t("common.loading")}</div>
       ) : rows.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+        <div className=" border-border p-4 text-sm text-muted-foreground">
           {t("sandbox.accounts.reviewEmpty")}
         </div>
       ) : (
@@ -66,7 +63,7 @@ export function SandboxMappingReviewPanel() {
             <div
               key={mapping.id}
               data-testid={`sandbox-mapping-review-${mapping.id}`}
-              className="flex flex-col gap-3 rounded-md border border-border bg-background p-3 md:flex-row md:items-center md:justify-between"
+              className="flex flex-col gap-3 border-border p-3 md:flex-row md:items-center md:justify-between"
             >
               <div className="min-w-0 break-words">
                 <div className="text-sm font-medium">

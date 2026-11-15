@@ -18,6 +18,7 @@ import {
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { PageHeader } from "../ui/page";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 interface PlatformUser {
   id: string;
@@ -88,14 +89,14 @@ export function PlatformUsersTable() {
       ) : query.isPending ? (
         <p role="status">{t("cp.common.loading")}</p>
       ) : items.length === 0 ? (
-        <p className="border-y border-border py-8 text-sm text-muted-foreground">
+        <p className=" border-border py-8 text-sm text-muted-foreground">
           {t(search ? "cp.users.noSearchResults" : "cp.users.empty")}
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-border">
-          <table className="block w-full text-sm lg:table">
-            <thead className="sr-only bg-muted/40 text-left text-muted-foreground lg:not-sr-only lg:table-header-group">
-              <tr>
+        <div className="overflow-x-auto border-border">
+          <Table className="block w-full text-sm lg:table">
+            <TableHeader className="sr-only text-left text-muted-foreground lg:not-sr-only lg:table-header-group">
+              <TableRow>
                 {[
                   "cp.users.col.email",
                   "operations.resources.provider",
@@ -103,33 +104,33 @@ export function PlatformUsersTable() {
                   "operations.users.status",
                   "cp.agents.col.actions",
                 ].map((label) => (
-                  <th key={label} className="px-4 py-3 font-medium">
+                  <TableHead key={label} className="px-4 py-3 font-medium">
                     {t(label)}
-                  </th>
+                  </TableHead>
                 ))}
-              </tr>
-            </thead>
-            <tbody className="block divide-y divide-border lg:table-row-group">
+              </TableRow>
+            </TableHeader>
+            <TableBody className="block divide-y divide-border lg:table-row-group">
               {items.map((user) => (
-                <tr key={user.id} className="grid gap-2 p-4 lg:table-row lg:p-0">
-                  <td className="min-w-0 break-all lg:px-4 lg:py-3">
+                <TableRow key={user.id} className="grid gap-2 p-4 lg:table-row lg:p-0">
+                  <TableCell className="min-w-0 break-all lg:px-4 lg:py-3">
                     <div className="font-medium">{user.displayName || user.email}</div>
                     {user.displayName && (
                       <div className="text-xs text-muted-foreground">{user.email}</div>
                     )}
-                  </td>
-                  <td className="break-words text-muted-foreground lg:max-w-64 lg:px-4 lg:py-3">
+                  </TableCell>
+                  <TableCell className="break-words text-muted-foreground lg:max-w-64 lg:px-4 lg:py-3">
                     {user.organizations.map((org) => org.name).join(" · ") || "—"}
-                  </td>
-                  <td className="text-muted-foreground lg:px-4 lg:py-3">
+                  </TableCell>
+                  <TableCell className="text-muted-foreground lg:px-4 lg:py-3">
                     {t(`cp.users.roles.${user.role}`, { defaultValue: user.role })}
-                  </td>
-                  <td className="lg:px-4 lg:py-3">
+                  </TableCell>
+                  <TableCell className="lg:px-4 lg:py-3">
                     <Badge variant={user.suspended ? "cancelled" : "running"}>
                       {t(user.suspended ? "cp.common.disabled" : "cp.common.enabled")}
                     </Badge>
-                  </td>
-                  <td className="lg:px-4 lg:py-3">
+                  </TableCell>
+                  <TableCell className="lg:px-4 lg:py-3">
                     {user.canManage && !mobileReadOnly && (
                       <Button
                         variant="outline"
@@ -144,11 +145,11 @@ export function PlatformUsersTable() {
                         {t(user.suspended ? "operations.users.enable" : "operations.users.disable")}
                       </Button>
                     )}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
       {query.data && query.data.total > 50 && (

@@ -9,6 +9,7 @@ import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import { WorkflowReviewGraph } from "./WorkflowReviewGraph";
 
 export interface WorkflowQueueOption {
@@ -147,7 +148,7 @@ export function WorkflowResourcesStep({
 
   return (
     <div className="space-y-4" data-testid="workflow-resources-step">
-      <Card className="rounded-xl shadow-none">
+      <Card className=" ">
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
           <CardTitle>{t("workflows.creation.resources.title")}</CardTitle>
           <Badge variant="outline">
@@ -238,7 +239,7 @@ export function WorkflowResourcesStep({
         </CardContent>
       </Card>
 
-      <Card className="rounded-xl shadow-none">
+      <Card className=" ">
         <CardHeader>
           <div>
             <CardTitle>{t("workflows.creation.resources.nodeTitle")}</CardTitle>
@@ -254,7 +255,7 @@ export function WorkflowResourcesStep({
             selectedNodeId={selectedNodeId}
             onNodeSelect={setSelectedNodeId}
           />
-          <section className="rounded-lg border border-border bg-muted/20 p-4">
+          <section className=" border-border p-4">
             {selectedNode ? (
               <div className="space-y-4">
                 <div>
@@ -289,7 +290,10 @@ export function WorkflowResourcesStep({
                     <span className="text-sm font-medium">
                       {t("workflows.creation.resources.targetQueue")}
                     </span>
-                    <NativeSelect
+                    <ResourceSelectField
+                      resourceType="queues"
+                      recent
+                      expandable
                       data-testid="workflow-resource-target-queue"
                       className="w-full"
                       value={selectedQueueId}
@@ -302,7 +306,7 @@ export function WorkflowResourcesStep({
                           {queueDisplayName(queue)} · {queue.queueName}
                         </option>
                       ))}
-                    </NativeSelect>
+                    </ResourceSelectField>
                   </label>
                 ) : null}
                 <label className="block space-y-1.5">
@@ -346,7 +350,7 @@ function EstimateCard({
   hint: string;
 }) {
   return (
-    <div className="rounded-lg border border-border bg-muted/20 p-3">
+    <div className=" border-border p-3">
       <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
         <Icon className="h-4 w-4 text-brand" />
         {label}

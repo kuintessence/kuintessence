@@ -57,7 +57,7 @@ export function AttentionOverviewCard({
       <CardHeader className="p-4 pb-2">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-muted/35">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center ">
               <Icon className="h-4 w-4 text-muted-foreground" />
             </div>
             <div className="min-w-0">
@@ -72,7 +72,7 @@ export function AttentionOverviewCard({
       </CardHeader>
       <CardContent className="space-y-2 p-4 pt-2">
         {total === 0 && !hasUnknown ? (
-          <div className="flex items-center gap-2 rounded-md bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
             <CheckCircle2 className="h-4 w-4 text-[var(--status-succeeded)]" />
             {emptyLabel}
           </div>

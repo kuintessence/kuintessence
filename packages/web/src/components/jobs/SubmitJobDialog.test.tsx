@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { jobSubmitDraftStorageKey } from "../../lib/job-submit-draft";
 import type { UsecasePackage } from "../../lib/software-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { SubmitJobDialog } from "./SubmitJobDialog";
 
 const softwareClient = vi.hoisted(() => ({
@@ -244,8 +245,10 @@ async function prepareCommandJob(name = "queue-placement") {
   const commandTab = await screen.findByTestId("submit-mode-command");
   fireEvent.pointerDown(commandTab, { button: 0, ctrlKey: false });
   fireEvent.click(commandTab);
-  fireEvent.change(await screen.findByTestId("submit-job-name"), { target: { value: name } });
-  fireEvent.change(screen.getByTestId("submit-job-command"), {
+  fireEvent.change(nativeControl(await screen.findByTestId("submit-job-name")), {
+    target: { value: name },
+  });
+  fireEvent.change(nativeControl(screen.getByTestId("submit-job-command")), {
     target: { value: "python queue-placement.py" },
   });
 }
@@ -300,14 +303,18 @@ describe("SubmitJobDialog command workdir", () => {
     const commandTab = await screen.findByTestId("submit-mode-command");
     fireEvent.pointerDown(commandTab, { button: 0, ctrlKey: false });
     fireEvent.click(commandTab);
-    fireEvent.change(await screen.findByTestId("submit-job-name"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("submit-job-name")), {
       target: { value: "resume-after-refresh" },
     });
-    fireEvent.change(screen.getByTestId("submit-job-command"), {
+    fireEvent.change(nativeControl(screen.getByTestId("submit-job-command")), {
       target: { value: "python analyze.py" },
     });
-    fireEvent.change(screen.getByTestId("submit-job-cpus"), { target: { value: "4" } });
-    fireEvent.change(screen.getByTestId("submit-job-memory"), { target: { value: "8192" } });
+    fireEvent.change(nativeControl(screen.getByTestId("submit-job-cpus")), {
+      target: { value: "4" },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("submit-job-memory")), {
+      target: { value: "8192" },
+    });
 
     await waitFor(() => expect(sessionStorage.length).toBe(1));
     first.unmount();
@@ -353,10 +360,10 @@ describe("SubmitJobDialog command workdir", () => {
     const commandTab = await screen.findByTestId("submit-mode-command");
     fireEvent.pointerDown(commandTab, { button: 0, ctrlKey: false });
     fireEvent.click(commandTab);
-    fireEvent.change(await screen.findByTestId("submit-job-name"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("submit-job-name")), {
       target: { value: "organization-a-only" },
     });
-    fireEvent.change(screen.getByTestId("submit-job-command"), {
+    fireEvent.change(nativeControl(screen.getByTestId("submit-job-command")), {
       target: { value: "python private-a.py" },
     });
     await waitFor(() => expect(sessionStorage.length).toBe(1));
@@ -417,12 +424,12 @@ describe("SubmitJobDialog command workdir", () => {
     fireEvent.pointerDown(commandTab, { button: 0, ctrlKey: false });
     fireEvent.click(commandTab);
     await screen.findByTestId("submit-job-command");
-    fireEvent.change(screen.getByTestId("submit-job-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("submit-job-name")), {
       target: { value: "command-empty-folder" },
     });
 
     fireEvent.click(await screen.findByTestId("submit-command-workdir-open"));
-    fireEvent.change(screen.getByTestId("command-workdir-new-folder-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("command-workdir-new-folder-name")), {
       target: { value: "inputs/nested" },
     });
     fireEvent.click(screen.getByTestId("command-workdir-create-folder"));
@@ -460,10 +467,10 @@ describe("SubmitJobDialog command workdir", () => {
     fireEvent.pointerDown(commandTab, { button: 0, ctrlKey: false });
     fireEvent.click(commandTab);
     await screen.findByTestId("submit-job-command");
-    fireEvent.change(screen.getByTestId("submit-job-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("submit-job-name")), {
       target: { value: "command-with-inputs" },
     });
-    fireEvent.change(screen.getByTestId("submit-job-command"), {
+    fireEvent.change(nativeControl(screen.getByTestId("submit-job-command")), {
       target: { value: "cat inputs/a.txt" },
     });
 
@@ -471,7 +478,7 @@ describe("SubmitJobDialog command workdir", () => {
     fireEvent.click(await screen.findByTestId("command-workdir-cloud-dir-datasets"));
     fireEvent.click(await screen.findByTestId("command-workdir-cloud-dir-datasets-input"));
     fireEvent.click(await screen.findByTestId("command-workdir-add-cloud-a"));
-    fireEvent.change(screen.getByTestId("command-workdir-stage-cloud-a"), {
+    fireEvent.change(nativeControl(screen.getByTestId("command-workdir-stage-cloud-a")), {
       target: { value: "inputs/a.txt" },
     });
     fireEvent.click(screen.getByTestId("command-workdir-confirm"));
@@ -542,7 +549,7 @@ describe("SubmitJobDialog queue placement", () => {
     await prepareCommandJob("named-placement");
     fireEvent.click(screen.getByTestId("submit-job-placement-named"));
     const queueSelect = await screen.findByTestId("submit-job-queue-select");
-    fireEvent.change(queueSelect, { target: { value: "queue-named" } });
+    fireEvent.change(nativeControl(queueSelect), { target: { value: "queue-named" } });
 
     fireEvent.click(screen.getByTestId("placement-preview-toggle"));
     fireEvent.click(await screen.findByTestId("placement-preview-refresh"));
@@ -574,13 +581,13 @@ describe("SubmitJobDialog queue placement", () => {
     await prepareCommandJob();
     fireEvent.click(screen.getByTestId("submit-job-placement-default"));
     const queueSelect = await screen.findByTestId("submit-job-queue-select");
-    fireEvent.change(queueSelect, { target: { value: "queue-warning" } });
+    fireEvent.change(nativeControl(queueSelect), { target: { value: "queue-warning" } });
     await waitFor(() =>
       expect(screen.getByTestId("submit-job-queue-eligibility").textContent).toContain("stale"),
     );
     expect(screen.getByTestId("submit-job-confirm")).toHaveProperty("disabled", false);
 
-    fireEvent.change(queueSelect, { target: { value: "queue-blocked" } });
+    fireEvent.change(nativeControl(queueSelect), { target: { value: "queue-blocked" } });
     await waitFor(() =>
       expect(screen.getByTestId("submit-job-confirm")).toHaveProperty("disabled", true),
     );
@@ -601,7 +608,7 @@ describe("SubmitJobDialog queue placement", () => {
     await prepareCommandJob("retry-named-placement");
     fireEvent.click(screen.getByTestId("submit-job-placement-named"));
     const queueSelect = await screen.findByTestId("submit-job-queue-select");
-    fireEvent.change(queueSelect, { target: { value: "queue-named" } });
+    fireEvent.change(nativeControl(queueSelect), { target: { value: "queue-named" } });
     fireEvent.click(screen.getByTestId("submit-job-confirm"));
 
     expect((await screen.findByTestId("submit-job-queue-submit-error")).textContent).toContain(
@@ -649,9 +656,9 @@ describe("SubmitJobDialog usecase picker", () => {
     fireEvent.click(screen.getByTestId("submit-usecase-picker-open"));
 
     const dialog = await screen.findByTestId("submit-usecase-picker-dialog");
-    expect(within(dialog).getByTestId("submit-usecase-option-uc-gromacs").className).toContain(
-      "border-brand",
-    );
+    expect(
+      within(dialog).getByTestId("submit-usecase-option-uc-gromacs").getAttribute("aria-pressed"),
+    ).toBe("true");
     expect(within(dialog).getByTestId("submit-usecase-option-uc-bare")).toBeTruthy();
     expect(within(dialog).queryByTestId("submit-usecase-option-uc-script")).toBeNull();
   });
@@ -662,7 +669,7 @@ describe("SubmitJobDialog usecase picker", () => {
     fireEvent.click(await screen.findByTestId("submit-usecase-picker-open"));
     const dialog = await screen.findByTestId("submit-usecase-picker-dialog");
 
-    fireEvent.change(within(dialog).getByTestId("submit-usecase-runtime-filter"), {
+    fireEvent.change(nativeControl(within(dialog).getByTestId("submit-usecase-runtime-filter")), {
       target: { value: "Spack" },
     });
     await waitFor(() => {
@@ -670,10 +677,10 @@ describe("SubmitJobDialog usecase picker", () => {
       expect(within(dialog).queryByTestId("submit-usecase-option-uc-bare")).toBeNull();
     });
 
-    fireEvent.change(within(dialog).getByTestId("submit-usecase-input-filter"), {
+    fireEvent.change(nativeControl(within(dialog).getByTestId("submit-usecase-input-filter")), {
       target: { value: "file" },
     });
-    fireEvent.change(within(dialog).getByTestId("submit-usecase-software-filter"), {
+    fireEvent.change(nativeControl(within(dialog).getByTestId("submit-usecase-software-filter")), {
       target: { value: "gromacs" },
     });
 
@@ -693,7 +700,7 @@ describe("SubmitJobDialog usecase picker", () => {
     const dialog = await screen.findByTestId("submit-usecase-picker-dialog");
     const datasetId = "submit-usecase-option-00000000-0000-4000-8000-000000000101";
 
-    fireEvent.change(within(dialog).getByTestId("submit-usecase-catalog-search"), {
+    fireEvent.change(nativeControl(within(dialog).getByTestId("submit-usecase-catalog-search")), {
       target: { value: "trajectoryDataset" },
     });
     await waitFor(() => {
@@ -701,10 +708,10 @@ describe("SubmitJobDialog usecase picker", () => {
       expect(within(dialog).queryByTestId("submit-usecase-option-uc-bare")).toBeNull();
     });
 
-    fireEvent.change(within(dialog).getByTestId("submit-usecase-catalog-search"), {
+    fireEvent.change(nativeControl(within(dialog).getByTestId("submit-usecase-catalog-search")), {
       target: { value: "" },
     });
-    fireEvent.change(within(dialog).getByTestId("submit-usecase-input-filter"), {
+    fireEvent.change(nativeControl(within(dialog).getByTestId("submit-usecase-input-filter")), {
       target: { value: "dataset" },
     });
     await waitFor(() => {
@@ -750,7 +757,7 @@ describe("SubmitJobDialog usecase picker", () => {
     expect(screen.getByTestId("submit-job-confirm").hasAttribute("disabled")).toBe(true);
     await waitFor(() => expect((select as HTMLSelectElement).disabled).toBe(false));
 
-    fireEvent.change(select, { target: { value: datasetOption.versionId } });
+    fireEvent.change(nativeControl(select), { target: { value: datasetOption.versionId } });
     await waitFor(() =>
       expect(screen.getByTestId("submit-job-confirm").hasAttribute("disabled")).toBe(false),
     );
@@ -824,14 +831,17 @@ describe("SubmitJobDialog usecase picker", () => {
     await waitFor(() => expect(select.textContent).toContain("Deep trajectory"));
     expect(apiClient.api.get).toHaveBeenCalledWith(expect.stringContaining("offset=25"));
 
-    fireEvent.change(screen.getByTestId("submit-usecase-dataset-search-trajectoryDataset"), {
-      target: { value: "deep" },
-    });
+    fireEvent.change(
+      nativeControl(screen.getByTestId("submit-usecase-dataset-search-trajectoryDataset")),
+      {
+        target: { value: "deep" },
+      },
+    );
     await waitFor(() =>
       expect(apiClient.api.get).toHaveBeenCalledWith(expect.stringContaining("q=deep")),
     );
     await waitFor(() => expect((select as HTMLSelectElement).disabled).toBe(false));
-    fireEvent.change(select, { target: { value: lastOption.versionId } });
+    fireEvent.change(nativeControl(select), { target: { value: lastOption.versionId } });
     await waitFor(() =>
       expect(screen.getByTestId("submit-job-confirm").hasAttribute("disabled")).toBe(false),
     );
@@ -855,7 +865,7 @@ describe("SubmitJobDialog usecase picker", () => {
 
     const select = await screen.findByTestId("submit-usecase-dataset-select-trajectoryDataset");
     await waitFor(() => expect((select as HTMLSelectElement).disabled).toBe(false));
-    fireEvent.change(select, { target: { value: datasetOption.versionId } });
+    fireEvent.change(nativeControl(select), { target: { value: datasetOption.versionId } });
     await waitFor(() =>
       expect(screen.getByTestId("submit-job-confirm").hasAttribute("disabled")).toBe(false),
     );
@@ -886,7 +896,7 @@ describe("SubmitJobDialog usecase picker", () => {
 
     const select = await screen.findByTestId("submit-usecase-dataset-select-trajectoryDataset");
     await waitFor(() => expect((select as HTMLSelectElement).disabled).toBe(false));
-    fireEvent.change(select, { target: { value: datasetOption.versionId } });
+    fireEvent.change(nativeControl(select), { target: { value: datasetOption.versionId } });
     await waitFor(() =>
       expect(screen.getByTestId("submit-job-confirm").hasAttribute("disabled")).toBe(false),
     );
@@ -911,19 +921,22 @@ describe("SubmitJobDialog usecase picker", () => {
 
     const select = await screen.findByTestId("submit-usecase-dataset-select-trajectoryDataset");
     await waitFor(() => expect((select as HTMLSelectElement).disabled).toBe(false));
-    fireEvent.change(select, { target: { value: datasetOption.versionId } });
+    fireEvent.change(nativeControl(select), { target: { value: datasetOption.versionId } });
     await waitFor(() =>
       expect(screen.getByTestId("submit-job-confirm").hasAttribute("disabled")).toBe(false),
     );
     fireEvent.click(screen.getByTestId("submit-usecase-dataset-clear-trajectoryDataset"));
     expect(screen.getByTestId("submit-job-confirm").hasAttribute("disabled")).toBe(true);
 
-    fireEvent.change(screen.getByTestId("submit-usecase-dataset-select-trajectoryDataset"), {
-      target: { value: datasetOption.versionId },
-    });
+    fireEvent.change(
+      nativeControl(screen.getByTestId("submit-usecase-dataset-select-trajectoryDataset")),
+      {
+        target: { value: datasetOption.versionId },
+      },
+    );
     fireEvent.click(screen.getByTestId("submit-usecase-picker-open"));
     fireEvent.click(await screen.findByTestId("submit-usecase-option-uc-bare"));
-    fireEvent.change(await screen.findByTestId("submit-usecase-input-filename"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("submit-usecase-input-filename")), {
       target: { value: "input.dat" },
     });
     expect(screen.getByTestId("submit-job-confirm").hasAttribute("disabled")).toBe(false);

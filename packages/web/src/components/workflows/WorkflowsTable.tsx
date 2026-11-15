@@ -39,7 +39,7 @@ export function WorkflowsTable({
           <div className="flex min-w-0 flex-col">
             <button
               type="button"
-              className="max-w-[28rem] truncate rounded-sm text-left font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+              className="max-w-[28rem] truncate text-left font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
               title={row.original.name}
               onClick={(event) => {
                 event.stopPropagation();
@@ -84,7 +84,7 @@ export function WorkflowsTable({
     return (
       <div className="space-y-2">
         {runs.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+          <div className=" border-border px-4 py-10 text-center text-sm text-muted-foreground">
             {emptyState ?? t("workflows.noMatches")}
           </div>
         ) : (
@@ -94,7 +94,7 @@ export function WorkflowsTable({
               type="button"
               data-testid={`workflow-row-${run.id}`}
               onClick={() => onRowClick(run)}
-              className="flex w-full flex-col gap-3 rounded-lg border border-border bg-card p-4 text-left shadow-sm transition-colors hover:bg-muted/30"
+              className="flex w-full flex-col gap-3 border-border p-4 text-left transition-colors"
             >
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold" title={run.name}>
@@ -121,6 +121,9 @@ export function WorkflowsTable({
 
   return (
     <DataTable
+      manualPagination
+      manualSorting
+      hidePagination
       columns={columns}
       data={runs}
       globalFilter={globalFilter}

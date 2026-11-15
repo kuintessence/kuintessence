@@ -82,6 +82,7 @@
         "configured_one": "已配置 {{count}} 条插槽映射",
         "configured_other": "已配置 {{count}} 条插槽映射",
         "noSlots": "这两个节点没有可关联的输出或输入插槽，无法创建数据连线。",
+        "invalidMappings": "部分映射的插槽已失效或类型不兼容，请移除后重新选择。",
         "dependencyOnly": "请至少添加一条兼容的输入输出插槽映射。",
         "create": "创建连线",
         "save": "保存关联"

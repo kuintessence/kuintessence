@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 const auth = vi.hoisted(() => ({ role: "platform_admin" }));
 
@@ -472,7 +473,7 @@ describe("CpAgentsTable", () => {
     fireEvent.click(screen.getByTestId("cp-agent-certs-toggle-agent-1"));
     await waitFor(() => screen.getByTestId(`cp-agent-cert-row-${fp}`));
     fireEvent.click(screen.getByTestId(`cp-agent-cert-revoke-${fp}`));
-    fireEvent.change(screen.getByTestId("cp-agent-cert-revoke-reason"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cp-agent-cert-revoke-reason")), {
       target: { value: "key rotation" },
     });
     fireEvent.click(screen.getByTestId("cp-agent-cert-revoke-confirm"));

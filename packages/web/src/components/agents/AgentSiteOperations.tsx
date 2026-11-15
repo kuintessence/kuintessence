@@ -10,8 +10,8 @@ export function AgentSiteOperations({ value, online }: { value: unknown; online:
   const report = parsed.data;
   const stale = !online || Date.now() - report.observedAt > 300000;
   return (
-    <details className="border-t border-border pt-2" data-testid="agent-site-operations">
-      <summary className="cursor-pointer rounded-sm text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
+    <details className="border-border pt-2" data-testid="agent-site-operations">
+      <summary className="cursor-pointer text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
         {t("agents.operations.title")}
       </summary>
       <p className="my-2 text-muted-foreground" role={stale ? "status" : undefined}>

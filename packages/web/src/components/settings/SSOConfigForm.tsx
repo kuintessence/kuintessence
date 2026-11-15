@@ -328,7 +328,7 @@ export function SSOConfigForm() {
               </span>
             </label>
 
-            <div className="grid gap-4 rounded-md border border-border bg-muted/20 p-4">
+            <div className="grid gap-4 border-border p-4">
               <div>
                 <div className="text-sm font-medium">{t("settings.sso.loginDisplayTitle")}</div>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -551,10 +551,8 @@ export function SSOConfigForm() {
               <div
                 data-testid="sso-test-result"
                 className={cn(
-                  "rounded-md border px-3 py-2 text-xs",
-                  testResult.success
-                    ? "border-status-running/40 bg-[color-mix(in_oklab,var(--status-running)_10%,transparent)] text-status-running"
-                    : "border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] text-status-failed",
+                  " px-3 py-2 text-xs",
+                  testResult.success ? " text-status-running" : " text-status-failed",
                 )}
               >
                 {testResult.success ? (

@@ -8,6 +8,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 const {
   get,
@@ -296,10 +297,12 @@ describe("NewWorkflowPage", () => {
   test("renames the workflow from the title and writes the name back to YAML", () => {
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: WORKFLOW_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: WORKFLOW_DOC },
+    });
 
     const name = screen.getByTestId("workflow-name-input") as HTMLInputElement;
-    fireEvent.change(name, { target: { value: "renamed-workflow" } });
+    fireEvent.change(nativeControl(name), { target: { value: "renamed-workflow" } });
     fireEvent.blur(name);
 
     expect((screen.getByTestId("yaml-input") as HTMLTextAreaElement).value).toContain(
@@ -310,7 +313,9 @@ describe("NewWorkflowPage", () => {
   test("keeps step navigation in the title card and templates in the editor menu", () => {
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: WORKFLOW_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: WORKFLOW_DOC },
+    });
 
     expect(
       screen
@@ -354,13 +359,15 @@ describe("NewWorkflowPage", () => {
     type: string
     default: ${JSON.stringify(initial)}
 `;
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: document } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: document },
+    });
     fireEvent.click(screen.getByTestId("workflow-title-next"));
     const field = screen.getByTestId("workflow-value-param:command");
     expect(field.tagName).toBe("TEXTAREA");
     expect(field).toHaveProperty("value", initial);
     const edited = initial + "echo complete\n";
-    fireEvent.change(field, { target: { value: edited } });
+    fireEvent.change(nativeControl(field), { target: { value: edited } });
     fireEvent.click(screen.getByTestId("workflow-title-next"));
     fireEvent.click(screen.getByTestId("workflow-title-previous"));
     expect(screen.getByTestId("workflow-value-param:command")).toHaveProperty("value", edited);
@@ -382,7 +389,7 @@ describe("NewWorkflowPage", () => {
     renderPage();
     fireEvent.click(screen.getByTestId("workflow-start-template"));
     await screen.findByTestId("workflow-template-option-template-two-node");
-    fireEvent.change(screen.getByTestId("workflow-template-search"), {
+    fireEvent.change(nativeControl(screen.getByTestId("workflow-template-search")), {
       target: { value: "not-found" },
     });
     expect(screen.queryByTestId("workflow-template-option-template-two-node")).toBeNull();
@@ -392,7 +399,7 @@ describe("NewWorkflowPage", () => {
     renderPage();
     fireEvent.click(screen.getByTestId("workflow-start-template"));
     await screen.findByTestId("workflow-template-option-template-two-node");
-    fireEvent.change(screen.getByTestId("workflow-template-search"), {
+    fireEvent.change(nativeControl(screen.getByTestId("workflow-template-search")), {
       target: { value: "not-found" },
     });
     await waitFor(() => {
@@ -458,7 +465,9 @@ describe("NewWorkflowPage", () => {
   test("invalid YAML blocks navigation to review and never posts", () => {
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: "name: [" } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: "name: [" },
+    });
     openReview();
     expect(screen.queryByTestId("submit-workflow")).toBeNull();
     expect(post).not.toHaveBeenCalled();
@@ -493,7 +502,9 @@ describe("NewWorkflowPage", () => {
     post.mockResolvedValueOnce({ runId: "workflow-run-1", status: "submitted" });
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: WORKFLOW_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: WORKFLOW_DOC },
+    });
     openReview();
     confirmSubmit();
     await waitFor(() => expect(post).toHaveBeenCalled());
@@ -522,17 +533,19 @@ describe("NewWorkflowPage", () => {
     post.mockResolvedValueOnce({ runId: "workflow-run-placement", status: "submitted" });
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: QUEUED_WORKFLOW_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: QUEUED_WORKFLOW_DOC },
+    });
     fireEvent.click(screen.getByTestId("workflow-step-resources"));
     await screen.findByTestId("workflow-resource-target-queue");
 
-    fireEvent.change(screen.getByTestId("workflow-resource-planner-mode"), {
+    fireEvent.change(nativeControl(screen.getByTestId("workflow-resource-planner-mode")), {
       target: { value: "Lookahead" },
     });
-    fireEvent.change(screen.getByTestId("workflow-resource-budget-cap"), {
+    fireEvent.change(nativeControl(screen.getByTestId("workflow-resource-budget-cap")), {
       target: { value: "25.5" },
     });
-    fireEvent.change(screen.getByTestId("workflow-resource-data-movement"), {
+    fireEvent.change(nativeControl(screen.getByTestId("workflow-resource-data-movement")), {
       target: { value: "Forbid" },
     });
     fireEvent.click(screen.getByTestId("workflow-step-review"));
@@ -555,7 +568,9 @@ describe("NewWorkflowPage", () => {
   test("review renders the final workflow, I/O configuration, and YAML copy action", () => {
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: WORKFLOW_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: WORKFLOW_DOC },
+    });
     openReview();
 
     expect(screen.getByTestId("workflow-review-graph")).toBeTruthy();
@@ -591,16 +606,18 @@ describe("NewWorkflowPage", () => {
     });
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: DATASET_INPUT_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: DATASET_INPUT_DOC },
+    });
     fireEvent.click(screen.getByTestId("workflow-step-inputs"));
 
     const preprocess = await screen.findByTestId(
       "workflow-dataset-select-dataset:preprocess:trajectory",
     );
     const analyze = await screen.findByTestId("workflow-dataset-select-dataset:analyze:trajectory");
-    await screen.findAllByRole("option", { name: "Trajectory corpus / release-b" });
-    fireEvent.change(preprocess, { target: { value: DATASET_OPTION.versionId } });
-    fireEvent.change(analyze, { target: { value: DATASET_OPTION.versionId } });
+    await screen.findAllByRole("option", { hidden: true, name: "Trajectory corpus / release-b" });
+    fireEvent.change(nativeControl(preprocess), { target: { value: DATASET_OPTION.versionId } });
+    fireEvent.change(nativeControl(analyze), { target: { value: DATASET_OPTION.versionId } });
     await waitFor(() =>
       expect(screen.getByTestId("workflow-readiness").textContent).toContain(
         "workflows.creation.readyToSubmit",
@@ -651,13 +668,15 @@ describe("NewWorkflowPage", () => {
     });
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: DATASET_INPUT_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: DATASET_INPUT_DOC },
+    });
     fireEvent.click(screen.getByTestId("workflow-step-inputs"));
     const picker = await screen.findByTestId(
       "workflow-dataset-select-dataset:preprocess:trajectory",
     );
-    await screen.findAllByRole("option", { name: "Trajectory corpus / release-b" });
-    fireEvent.change(picker, { target: { value: DATASET_OPTION.versionId } });
+    await screen.findAllByRole("option", { hidden: true, name: "Trajectory corpus / release-b" });
+    fireEvent.change(nativeControl(picker), { target: { value: DATASET_OPTION.versionId } });
     await waitFor(() =>
       expect(screen.getByTestId("workflow-readiness").textContent).toContain(
         "workflows.creation.readiness.chooseDatasets:1",
@@ -725,7 +744,7 @@ describe("NewWorkflowPage", () => {
     });
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), {
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
       target: {
         value: DATASET_INPUT_DOC.replaceAll(
           "contents: null",
@@ -763,7 +782,7 @@ describe("NewWorkflowPage", () => {
     });
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), {
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
       target: { value: BY_VERSION_SUBWORKFLOW_DOC },
     });
     openReview();
@@ -777,7 +796,7 @@ describe("NewWorkflowPage", () => {
   test("blocks submission while a ByVersion subworkflow cannot expose its Dataset requirements", async () => {
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), {
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
       target: { value: BY_VERSION_SUBWORKFLOW_DOC },
     });
     openReview();
@@ -803,7 +822,9 @@ describe("NewWorkflowPage", () => {
     );
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: FILE_INPUT_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: FILE_INPUT_DOC },
+    });
     fireEvent.click(screen.getByTestId("workflow-step-inputs"));
 
     const localFile = new File(["gro"], "input.gro", { type: "text/plain" });
@@ -814,7 +835,9 @@ describe("NewWorkflowPage", () => {
     expect(chooser).toBeTruthy();
     expect(screen.getByText("workflows.creation.inputs.dropHere")).toBeTruthy();
     expect(screen.getByText("workflows.creation.inputs.chooseFromCloud")).toBeTruthy();
-    fireEvent.change(chooser as HTMLInputElement, { target: { files: [localFile] } });
+    fireEvent.change(nativeControl(chooser as HTMLInputElement), {
+      target: { files: [localFile] },
+    });
 
     expect(screen.getAllByText("input.gro").length).toBeGreaterThan(0);
     expect(uploadFileToNetDrive).not.toHaveBeenCalled();
@@ -843,7 +866,9 @@ describe("NewWorkflowPage", () => {
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: FILE_INPUT_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: FILE_INPUT_DOC },
+    });
     fireEvent.click(screen.getByTestId("workflow-step-inputs"));
 
     const fileChooser = screen.getByTestId("workflow-choose-local-file-slot:consume:structure");
@@ -852,7 +877,7 @@ describe("NewWorkflowPage", () => {
     expect(folderChooser.getAttribute("webkitdirectory")).toBe("");
 
     const selectedFile = new File(["gro"], "input.gro", { type: "text/plain" });
-    fireEvent.change(fileChooser, { target: { files: [selectedFile] } });
+    fireEvent.change(nativeControl(fileChooser), { target: { files: [selectedFile] } });
     expect(screen.getAllByText("input.gro").length).toBeGreaterThan(0);
     const requirement = screen.getByTestId("workflow-file-requirement-slot:consume:structure");
     const bindingName = requirement.querySelector<HTMLElement>(
@@ -865,7 +890,7 @@ describe("NewWorkflowPage", () => {
 
     const folderFile = new File(["xtc"], "trajectory.xtc", { type: "application/octet-stream" });
     Object.defineProperty(folderFile, "webkitRelativePath", { value: "sample/trajectory.xtc" });
-    fireEvent.change(folderChooser, { target: { files: [folderFile] } });
+    fireEvent.change(nativeControl(folderChooser), { target: { files: [folderFile] } });
     expect(screen.getAllByText("trajectory.xtc").length).toBeGreaterThan(0);
     const remove = requirement.querySelector('button[aria-label="common.remove"]');
     expect(remove).toBeTruthy();
@@ -873,7 +898,7 @@ describe("NewWorkflowPage", () => {
     expect(requirement.textContent).not.toContain("input.gro");
 
     const replacement = new File(["gro"], "replacement.gro", { type: "text/plain" });
-    fireEvent.change(fileChooser, { target: { files: [replacement] } });
+    fireEvent.change(nativeControl(fileChooser), { target: { files: [replacement] } });
     expect(requirement.textContent).toContain("replacement.gro");
     Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth });
     Object.defineProperty(window, "innerHeight", { configurable: true, value: originalHeight });
@@ -882,12 +907,16 @@ describe("NewWorkflowPage", () => {
   test("confirms file associations before leaving and preserves the confirmed state", async () => {
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: FILE_INPUT_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: FILE_INPUT_DOC },
+    });
     fireEvent.click(screen.getByTestId("workflow-step-inputs"));
 
     const localFile = new File(["gro"], "input.gro", { type: "text/plain" });
     const chooser = screen.getByTestId("workflow-choose-local-file-slot:consume:structure");
-    fireEvent.change(chooser as HTMLInputElement, { target: { files: [localFile] } });
+    fireEvent.change(nativeControl(chooser as HTMLInputElement), {
+      target: { files: [localFile] },
+    });
     fireEvent.click(screen.getByTestId("workflow-title-next"));
 
     expect(screen.getByTestId("workflow-association-confirm-dialog")).toBeTruthy();
@@ -916,7 +945,9 @@ describe("NewWorkflowPage", () => {
     });
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: QUEUED_WORKFLOW_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: QUEUED_WORKFLOW_DOC },
+    });
 
     const status = await screen.findByTestId("workflow-readiness");
     expect(status.textContent).toContain("workflows.creation.readyToSubmit");
@@ -927,7 +958,9 @@ describe("NewWorkflowPage", () => {
     get.mockResolvedValueOnce({ queues: [] });
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: QUEUED_WORKFLOW_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: QUEUED_WORKFLOW_DOC },
+    });
 
     const status = await screen.findByTestId("workflow-readiness");
     expect(status.textContent).toContain("workflows.creation.readiness.chooseQueue:1");
@@ -937,7 +970,9 @@ describe("NewWorkflowPage", () => {
     get.mockRejectedValueOnce(new Error("Queue registry unavailable"));
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: QUEUED_WORKFLOW_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: QUEUED_WORKFLOW_DOC },
+    });
 
     const status = await screen.findByTestId("workflow-readiness");
     expect(status.textContent).toContain("workflows.creation.readiness.loadQueues");
@@ -981,7 +1016,7 @@ describe("draft loading and save races", () => {
     expect(screen.queryByTestId("workflow-save-draft")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "globalError.retry" }));
     await screen.findByTestId("workflow-name-input");
-    fireEvent.change(screen.getByTestId("workflow-name-input"), {
+    fireEvent.change(nativeControl(screen.getByTestId("workflow-name-input")), {
       target: { value: "unsaved edit" },
     });
     expect(
@@ -1001,12 +1036,16 @@ describe("draft loading and save races", () => {
     put.mockResolvedValue(draft);
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: WORKFLOW_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: WORKFLOW_DOC },
+    });
     fireEvent.click(screen.getByTestId("workflow-save-draft"));
     fireEvent.click(screen.getByTestId("workflow-save-draft"));
     expect(post).toHaveBeenCalledTimes(1);
     const newerYaml = WORKFLOW_DOC.replace("name: cf", "name: edits-during-save");
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: newerYaml } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: newerYaml },
+    });
     finishSave?.(draft);
     await waitFor(() =>
       expect(screen.getByTestId("workflow-save-draft")).toHaveProperty("disabled", false),
@@ -1086,10 +1125,12 @@ describe("workflow input validation", () => {
   test("rejects negative budgets before saving or submitting and recovers after correction", async () => {
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: WORKFLOW_DOC } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: WORKFLOW_DOC },
+    });
     fireEvent.click(screen.getByTestId("workflow-step-resources"));
     const budget = screen.getByTestId("workflow-resource-budget-cap");
-    fireEvent.change(budget, { target: { value: "-5" } });
+    fireEvent.change(nativeControl(budget), { target: { value: "-5" } });
     expect(budget.getAttribute("aria-invalid")).toBe("true");
     expect(screen.getByRole("alert").textContent).toContain(
       "workflows.creation.resources.invalidBudget",
@@ -1099,7 +1140,7 @@ describe("workflow input validation", () => {
     expect(screen.getByTestId("submit-workflow")).toHaveProperty("disabled", true);
     expect(post).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("workflow-step-resources"));
-    fireEvent.change(screen.getByTestId("workflow-resource-budget-cap"), {
+    fireEvent.change(nativeControl(screen.getByTestId("workflow-resource-budget-cap")), {
       target: { value: "0" },
     });
     expect(screen.queryByRole("alert")).toBeNull();
@@ -1113,8 +1154,12 @@ describe("workflow input validation", () => {
   test("requires a nonblank title even when the underlying YAML remains valid", () => {
     renderPage();
     startFromScratch();
-    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: WORKFLOW_DOC } });
-    fireEvent.change(screen.getByTestId("workflow-name-input"), { target: { value: "  " } });
+    fireEvent.change(nativeControl(screen.getByTestId("yaml-input")), {
+      target: { value: WORKFLOW_DOC },
+    });
+    fireEvent.change(nativeControl(screen.getByTestId("workflow-name-input")), {
+      target: { value: "  " },
+    });
     openReview();
     expect(screen.getByTestId("submit-workflow")).toHaveProperty("disabled", true);
     expect(screen.getByTestId("workflow-save-draft")).toHaveProperty("disabled", true);

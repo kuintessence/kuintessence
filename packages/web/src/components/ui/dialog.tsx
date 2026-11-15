@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
+import { SurfaceBoundary } from "./surface";
 
 export const Dialog = DialogPrimitive.Root;
 export const DialogTrigger = DialogPrimitive.Trigger;
@@ -55,6 +56,7 @@ export const DialogContent = React.forwardRef<
         <DialogOverlay />
         <DialogPrimitive.Content
           ref={ref}
+          data-kq-surface="region"
           className={cn(
             "fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-1.5rem)] w-[min(calc(100vw-1rem),42rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-md border border-border bg-card text-card-foreground shadow-2xl shadow-black/15 outline-none",
             "kq-motion kq-motion--dialog",
@@ -82,7 +84,7 @@ export const DialogContent = React.forwardRef<
           }}
           {...props}
         >
-          {children}
+          <SurfaceBoundary>{children}</SurfaceBoundary>
           <DialogPrimitive.Close
             aria-label={t("common.close")}
             disabled={!dismissible}

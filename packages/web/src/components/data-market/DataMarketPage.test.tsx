@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 import { DataMarketPage } from "./DataMarketPage";
 
 const {
@@ -122,16 +123,16 @@ describe("DataMarketPage", () => {
     uploadAssetFile.mockResolvedValue({ id: "version-potcar" });
     render(<DataMarketPage />, { wrapper });
 
-    fireEvent.change(await screen.findByPlaceholderText("dataMarket.name"), {
+    fireEvent.change(nativeControl(await screen.findByPlaceholderText("dataMarket.name")), {
       target: { value: "My POTCAR" },
     });
-    fireEvent.change(screen.getByLabelText("dataMarket.privateKind"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("dataMarket.privateKind")), {
       target: { value: "licensed-material" },
     });
-    fireEvent.change(screen.getByLabelText("dataMarket.elements"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("dataMarket.elements")), {
       target: { value: "si, O" },
     });
-    fireEvent.change(screen.getByLabelText("dataMarket.privateFile"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("dataMarket.privateFile")), {
       target: { files: [new File(["POTCAR"], "POTCAR")] },
     });
     fireEvent.click(screen.getByText("dataMarket.privateUpload"));
@@ -203,7 +204,7 @@ describe("DataMarketPage", () => {
     render(<DataMarketPage />, { wrapper });
 
     fireEvent.click(await screen.findByTestId("data-asset-asset-licensed"));
-    fireEvent.change(screen.getByLabelText("dataMarket.ownerEntitlementReason"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("dataMarket.ownerEntitlementReason")), {
       target: { value: "Approved research license" },
     });
     fireEvent.click(screen.getByText("dataMarket.requestOwnerEntitlement"));

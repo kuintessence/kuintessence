@@ -9,7 +9,7 @@ import { listSandboxAccountMappings } from "../../lib/sandbox-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import type { AgentRow } from "../agents/AgentCard";
 import { Button } from "../ui/button";
-import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import {
   Sheet,
   SheetBody,
@@ -126,20 +126,23 @@ export function NewSessionDialog({ open, onOpenChange, onCreated }: NewSessionDi
                 <div className="text-sm text-muted-foreground">{t("terminal.loadingAgents")}</div>
               ) : agentsLoadError ? (
                 <div
-                  className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-xs text-status-failed"
+                  className=" p-3 text-xs text-status-failed"
                   data-testid="terminal-agents-error"
                 >
                   {toUserFacingError(agentsLoadError, t("terminal.agentsLoadFailed"))}
                 </div>
               ) : onlineAgents.length === 0 ? (
-                <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+                <div className=" border-border p-3 text-xs text-muted-foreground">
                   {t("terminal.noOnlineAgentHint")}{" "}
                   <code className="font-mono">
                     SERVER_GRPC_URL=… AGENT_ID=… AGENT_SITE_NAME=… bun packages/agent/src/index.ts
                   </code>
                 </div>
               ) : (
-                <NativeSelect
+                <ResourceSelectField
+                  resourceType="agents"
+                  recent
+                  expandable
                   id="terminal-agent"
                   data-testid="terminal-agent-select"
                   className="flex w-full font-mono"
@@ -154,7 +157,7 @@ export function NewSessionDialog({ open, onOpenChange, onCreated }: NewSessionDi
                       {a.siteName} · {a.schedulerType} {a.schedulerVersion}
                     </option>
                   ))}
-                </NativeSelect>
+                </ResourceSelectField>
               )}
             </div>
 
@@ -170,18 +173,21 @@ export function NewSessionDialog({ open, onOpenChange, onCreated }: NewSessionDi
                   {t("terminal.loadingAccountMappings")}
                 </div>
               ) : mappingsQ.error instanceof Error ? (
-                <div className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-xs text-status-failed">
+                <div className=" p-3 text-xs text-status-failed">
                   {toUserFacingError(mappingsQ.error, t("terminal.accountMappingsLoadFailed"))}
                 </div>
               ) : approvedMappings.length === 0 ? (
-                <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+                <div className=" border-border p-3 text-xs text-muted-foreground">
                   <p>{t("terminal.noApprovedAccountMapping")}</p>
                   <Button asChild variant="link" size="sm" className="h-auto px-0 py-1">
                     <a href="/settings">{t("terminal.manageAccountMappings")}</a>
                   </Button>
                 </div>
               ) : (
-                <NativeSelect
+                <ResourceSelectField
+                  resourceType="execution-account-mappings"
+                  recent
+                  expandable
                   id="terminal-user"
                   value={selectedMapping?.mapping.id ?? ""}
                   onChange={(event) => setMappingId(event.target.value)}
@@ -194,7 +200,7 @@ export function NewSessionDialog({ open, onOpenChange, onCreated }: NewSessionDi
                       {account.schedulerAccount ? ` · ${account.schedulerAccount}` : ""}
                     </option>
                   ))}
-                </NativeSelect>
+                </ResourceSelectField>
               )}
               <p className="text-[11px] text-muted-foreground">
                 {t("terminal.accountMappingHint")}
@@ -202,7 +208,7 @@ export function NewSessionDialog({ open, onOpenChange, onCreated }: NewSessionDi
             </div>
 
             <div
-              className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground"
+              className=" border-border p-3 text-xs text-muted-foreground"
               data-testid="terminal-ssh-handoff"
             >
               <p>{t("terminal.sshHandoff")}</p>

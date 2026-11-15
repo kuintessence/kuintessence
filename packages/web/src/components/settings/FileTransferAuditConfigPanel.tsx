@@ -208,10 +208,7 @@ export function FileTransferAuditConfigPanel({
         </div>
 
         {form.downloadEvidenceMode === "direct_authorization_only" ? (
-          <div
-            className="flex gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-sm"
-            data-testid="direct-authorization-warning"
-          >
+          <div className="flex gap-2 p-3 text-sm" data-testid="direct-authorization-warning">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
             <span>{t("settings.operations.fileTransferAudit.directWarning")}</span>
           </div>
@@ -243,7 +240,7 @@ export function FileTransferAuditConfigPanel({
           </p>
         )}
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-border pt-3">
           <span className="text-xs text-muted-foreground">
             {t("settings.operations.fileTransferAudit.policyVersion", {
               version: config.policyVersion,

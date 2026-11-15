@@ -12,6 +12,7 @@ import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 
 const GB = 1024 ** 3;
 
@@ -255,7 +256,7 @@ export function CloudStorageGovernancePanel() {
           <p className="text-sm text-muted-foreground">请在电脑端修改平台配置。</p>
         )}
         <fieldset disabled={mobileReadOnly} className="space-y-4">
-          <section className="space-y-3 rounded-md border p-3">
+          <section className="space-y-3 p-3">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold">全局配额策略</div>
@@ -329,7 +330,7 @@ export function CloudStorageGovernancePanel() {
           </section>
 
           <section className="grid gap-4 xl:grid-cols-[1.1fr_1fr]">
-            <div className="space-y-3 rounded-md border p-3">
+            <div className="space-y-3 p-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-semibold">待审批申请</div>
                 <Badge variant={pendingRequests.length > 0 ? "brand" : "outline"}>
@@ -337,13 +338,13 @@ export function CloudStorageGovernancePanel() {
                 </Badge>
               </div>
               {pendingRequests.length === 0 ? (
-                <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+                <div className=" p-4 text-center text-xs text-muted-foreground">
                   当前没有待审批的配额申请。
                 </div>
               ) : (
                 <div className="max-h-64 space-y-2 overflow-auto">
                   {pendingRequests.map((request) => (
-                    <div key={request.id} className="rounded-md border p-3 text-xs">
+                    <div key={request.id} className=" p-3 text-xs">
                       <div className="flex items-start gap-3">
                         <div className="min-w-0 flex-1">
                           <div className="break-words font-medium" title={request.userId}>
@@ -380,7 +381,7 @@ export function CloudStorageGovernancePanel() {
               )}
             </div>
 
-            <div className="space-y-3 rounded-md border p-3">
+            <div className="space-y-3 p-3">
               <div>
                 <div className="text-sm font-semibold">手动分配配额</div>
                 <div className="text-xs text-muted-foreground">
@@ -405,7 +406,9 @@ export function CloudStorageGovernancePanel() {
                     </Button>
                   </div>
                 ) : (
-                  <NativeSelect
+                  <ResourceSelectField
+                    searchable={false}
+                    resourceType="users"
                     aria-label="分配给"
                     className="w-full min-w-0"
                     value={grantUserId}
@@ -425,7 +428,7 @@ export function CloudStorageGovernancePanel() {
                         {user.displayName ? ` · ${user.email}` : ""}
                       </option>
                     ))}
-                  </NativeSelect>
+                  </ResourceSelectField>
                 )}
                 {usersQ.data?.data.moreUsers && <p>仅显示前 50 个匹配用户，请缩小搜索范围。</p>}
               </Field>
@@ -481,7 +484,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border bg-muted/25 p-3">
+    <div className=" p-3">
       <div className="text-[11px] text-muted-foreground">{label}</div>
       <div className="mt-1 font-mono text-lg font-semibold tabular-nums">{value}</div>
     </div>

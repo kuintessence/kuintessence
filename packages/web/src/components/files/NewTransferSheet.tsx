@@ -461,10 +461,8 @@ export function NewTransferSheet({
                       aria-pressed={selected}
                       onClick={() => setDirection(d.value)}
                       className={cn(
-                        "flex w-full items-start gap-3 rounded-md border px-3 py-2 text-left text-sm transition-colors",
-                        selected
-                          ? "border-brand bg-brand-soft text-foreground"
-                          : "border-border text-muted-foreground hover:bg-muted/60",
+                        "flex w-full items-start gap-3 px-3 py-2 text-left text-sm transition-colors",
+                        selected ? " text-foreground" : "border-border text-muted-foreground ",
                       )}
                     >
                       <Icon className="mt-0.5 h-4 w-4" />
@@ -513,7 +511,7 @@ export function NewTransferSheet({
                   {t("files.transfer.executionCluster")}
                 </span>
                 <div
-                  className="rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs"
+                  className=" border-border px-3 py-2 font-mono text-xs"
                   data-testid="files-new-transfer-execution-cluster"
                 >
                   {executionClusterLabel}
@@ -522,7 +520,7 @@ export function NewTransferSheet({
 
               {clusterContextBlocked ? (
                 <p
-                  className="rounded-md border border-status-failed/30 bg-status-failed/5 px-3 py-2 text-xs text-status-failed"
+                  className=" px-3 py-2 text-xs text-status-failed"
                   role="alert"
                   data-testid="files-new-transfer-cluster-context-invalid"
                 >
@@ -532,7 +530,7 @@ export function NewTransferSheet({
 
               {cloudContextBlocked ? (
                 <p
-                  className="rounded-md border border-status-failed/30 bg-status-failed/5 px-3 py-2 text-xs text-status-failed"
+                  className=" px-3 py-2 text-xs text-status-failed"
                   role="alert"
                   data-testid="files-new-transfer-cloud-context-invalid"
                 >
@@ -572,10 +570,7 @@ export function NewTransferSheet({
                 </p>
               </div>
 
-              <div
-                className="space-y-2 rounded-md border border-border bg-card/60 p-3"
-                data-testid="files-new-transfer-summary"
-              >
+              <div className="space-y-2 border-border p-3" data-testid="files-new-transfer-summary">
                 <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   {t("files.transfer.summary")}
                 </div>

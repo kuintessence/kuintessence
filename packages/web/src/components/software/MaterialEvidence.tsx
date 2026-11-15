@@ -51,7 +51,7 @@ export function MaterialEvidence({
     <section className="space-y-2 text-xs" aria-label="材料许可证与证据">
       <h4>材料许可证与证据（原始声明）</h4>
       {manifest.evidence.materials.map((entry) => (
-        <div key={entry.subject.digest} className="break-all border p-2">
+        <div key={entry.subject.digest} className="break-all p-2">
           <p>
             {entry.subject.digest} · {entry.subject.size} bytes
           </p>

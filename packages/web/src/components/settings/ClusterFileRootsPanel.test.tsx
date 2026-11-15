@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 import { ClusterFileRootsPanel } from "./ClusterFileRootsPanel";
 
 vi.mock("react-i18next", () => ({
@@ -135,14 +136,14 @@ describe("ClusterFileRootsPanel", () => {
     mount();
 
     await waitFor(() => screen.getByTestId("cluster-file-root-create-form"));
-    fireEvent.change(screen.getByTestId("cluster-file-root-new-label"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cluster-file-root-new-label")), {
       target: { value: "Project" },
     });
-    await screen.findByRole("option", { name: "Provider A" });
-    fireEvent.change(screen.getByTestId("cluster-file-root-new-provider"), {
+    await screen.findByRole("option", { hidden: true, name: "Provider A" });
+    fireEvent.change(nativeControl(screen.getByTestId("cluster-file-root-new-provider")), {
       target: { value: "00000000-0000-0000-0000-00000000a001" },
     });
-    fireEvent.change(screen.getByTestId("cluster-file-root-new-path"), {
+    fireEvent.change(nativeControl(screen.getByTestId("cluster-file-root-new-path")), {
       target: { value: "/project/a" },
     });
     const sharing = within(screen.getByTestId("cluster-file-root-new-visible-orgs"));
@@ -172,10 +173,10 @@ describe("ClusterFileRootsPanel", () => {
     mount();
 
     await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
-    fireEvent.change(screen.getByTestId(`cluster-file-root-path-${rootA.id}`), {
+    fireEvent.change(nativeControl(screen.getByTestId(`cluster-file-root-path-${rootA.id}`)), {
       target: { value: "/work/me" },
     });
-    await screen.findByRole("option", { name: "Provider A" });
+    await screen.findByRole("option", { hidden: true, name: "Provider A" });
     fireEvent.click(
       within(screen.getByTestId(`cluster-file-root-visible-orgs-${rootA.id}`)).getByRole(
         "checkbox",
@@ -268,19 +269,21 @@ describe("ClusterFileRootsPanel", () => {
 test("provider selection scopes agents and changing provider clears the selected agent", async () => {
   installFetch([() => json({ roots: [] })]);
   mount();
-  await screen.findByRole("option", { name: "Provider A" });
-  fireEvent.change(screen.getByTestId("cluster-file-root-new-provider"), {
+  await screen.findByRole("option", { hidden: true, name: "Provider A" });
+  fireEvent.change(nativeControl(screen.getByTestId("cluster-file-root-new-provider")), {
     target: { value: rootA.providerOrgId },
   });
   const agent = screen.getByTestId("cluster-file-root-new-agent");
-  expect(within(agent).getByRole("option", { name: "Slurm A · agent-a" })).toBeTruthy();
-  expect(within(agent).queryByRole("option", { name: "PBS B · agent-b" })).toBeNull();
-  fireEvent.change(agent, { target: { value: "agent-a" } });
-  fireEvent.change(screen.getByTestId("cluster-file-root-new-provider"), {
+  expect(
+    within(agent).getByRole("option", { hidden: true, name: "Slurm A · agent-a" }),
+  ).toBeTruthy();
+  expect(within(agent).queryByRole("option", { hidden: true, name: "PBS B · agent-b" })).toBeNull();
+  fireEvent.change(nativeControl(agent), { target: { value: "agent-a" } });
+  fireEvent.change(nativeControl(screen.getByTestId("cluster-file-root-new-provider")), {
     target: { value: "00000000-0000-0000-0000-00000000b001" },
   });
   expect(agent).toHaveProperty("value", "");
-  expect(within(agent).getByRole("option", { name: "PBS B · agent-b" })).toBeTruthy();
+  expect(within(agent).getByRole("option", { hidden: true, name: "PBS B · agent-b" })).toBeTruthy();
 });
 test("unknown sharing identifiers survive an unrelated edit and invalid capacity cannot clear metadata", async () => {
   const root = { ...rootA, visibleOrgIds: ["00000000-0000-0000-0000-00000000ffff"] };
@@ -288,10 +291,10 @@ test("unknown sharing identifiers survive an unrelated edit and invalid capacity
   mount();
   await screen.findByTestId(`cluster-file-root-row-${root.id}`);
   const capacity = screen.getByTestId(`cluster-file-root-capacity-${root.id}`);
-  fireEvent.change(capacity, { target: { value: "-1" } });
+  fireEvent.change(nativeControl(capacity), { target: { value: "-1" } });
   fireEvent.click(screen.getByTestId(`cluster-file-root-save-${root.id}`));
   expect(calls).toHaveLength(1);
-  fireEvent.change(capacity, { target: { value: "10" } });
+  fireEvent.change(nativeControl(capacity), { target: { value: "10" } });
   fireEvent.click(screen.getByTestId(`cluster-file-root-save-${root.id}`));
   await waitFor(() => expect(calls).toHaveLength(2));
   expect(JSON.parse(String(calls[1]?.body))).toMatchObject({
@@ -312,7 +315,7 @@ test("directory failures prevent new root creation and can be retried", async ()
   fireEvent.submit(screen.getByTestId("cluster-file-root-create-form"));
   expect(calls).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "common.retry" }));
-  await screen.findByRole("option", { name: "Provider A" });
+  await screen.findByRole("option", { hidden: true, name: "Provider A" });
   expect(screen.queryByRole("alert")).toBeNull();
 });
 test("mobile allows root inspection while hiding create and disabling configuration writes", async () => {
@@ -345,12 +348,15 @@ test("sharing can add a known organization outside the readable directory withou
   const outside = "00000000-0000-0000-0000-00000000ffff";
   const calls = installFetch([() => json({ roots: [rootA] }), () => json(rootA)]);
   mount();
-  await screen.findByRole("option", { name: "Provider A" });
+  await screen.findByRole("option", { hidden: true, name: "Provider A" });
   await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
   const sharing = within(screen.getByTestId(`cluster-file-root-visible-orgs-${rootA.id}`));
-  fireEvent.change(sharing.getByLabelText("settings.clusterFileRoots.searchOrganizations"), {
-    target: { value: outside },
-  });
+  fireEvent.change(
+    nativeControl(sharing.getByLabelText("settings.clusterFileRoots.searchOrganizations")),
+    {
+      target: { value: outside },
+    },
+  );
   fireEvent.click(
     sharing.getByRole("button", {
       name: "settings.clusterFileRoots.addOrganizationId",

@@ -22,17 +22,29 @@ shadcn/ui 通过源码分发，公共组件由项目维护，沿用已有接口�
 | 搜索框 | `SearchInput` | 组合现有 `Input` 与 Lucide 图标；`containerClassName` 控制外层宽度，`className` 控制输入框；保留原生事件、ref、name 和外部 label |
 | 翻页按钮 | `PaginationControls` | 组合现有 `Button`；页面传入 `previous` / `next` 的禁用条件、点击回调及可选文案，继续管理服务端页码或游标 |
 | 输入、多行文本 | `Input`、`Textarea` | 页面只提供布局、业务状态和必要的字体变体，错误时关联错误文本并设置 `aria-invalid` |
+| 资源选择 | `ResourceSelect` / `ResourcePickerDialog` / `ResourceSelectField` | 使用 Radix Popover + cmdk 或 Dialog；业务提供稳定 ID、标签、禁选原因和候选；支持自定义条目或表格列 |
+| 统一列表 | `CollectionView` / `DataTable` / `Table` | 共用工具栏、状态、计数和表格视觉；显式区分本地完整集合与服务端查询 |
 | 简单选择 | `NativeSelect` | 统一样式的原生 select，保留 `onChange`、空值、`optgroup`、`name`、required、FormData 和移动端系统选择器 |
 | 单选按钮组 | Radix `ToggleGroup`、`ToggleGroupItem` | 作业、工作流、文件传输状态和外观选择采用 `type="single"`；非空选项忽略取消选择返回的空值；单选使用 `aria-checked` |
 | 菜单、弹窗、侧栏、页签 | 现有 Radix `DropdownMenu`、`Dialog`、`Sheet`、`Tabs` | 复用现有业务关闭策略、焦点恢复和 reduced-motion 支持 |
 | 客户端表格 | TanStack `DataTable` | 库负责排序、过滤和分页；排序按钮显示方向；多页时可调整每页条数；服务端列表仍由页面的服务端分页管理 |
 | 工作流、图表、编辑器、终端 | React Flow、ECharts、Monaco、xterm | 继续使用现有专用库，不另造通用 UI 替代品 |
 
-公共选择框和多行文本框覆盖登录、作业、工作流、文件、软件、算网、算力中心控制台和设置。复选框、单选框、文件上传及画布内特殊输入保留既有语义。
+公共控件覆盖登录、作业、工作流、文件、软件、算网、算力中心控制台和设置。当前资源选择、固定枚举及自由输入的逐项状态见[迁移清单](ui/migration-inventory.md)。复选框、单选框、文件上传及画布内特殊输入保留既有语义；没有把所有原生 HTML 都包装一层。
 
-`NativeSelect` 不实现搜索、多选标签或远端分页。业务确实需要此类交互时，再引入对应成熟组件；不要给普通下拉框编写自定义浮层。
+`NativeSelect` 用于少量固定枚举。资源候选使用 `ResourceSelect` 或 `ResourcePickerDialog`；不要在业务页重新编写搜索浮层或焦点管理。`ResourceSelectField` 为已有 select 表单保留原生提交、事件与校验契约。
 
-Biome 的 `noLabelWithoutControl` 将 `Input`、`Textarea`、`NativeSelect` 识别为真实表单控件，规则仍为 error。浏览器 `color-scheme` 随主题变化，使原生选项和滚动条匹配明暗主题。
+Biome 的 `noLabelWithoutControl` 将 `Input`、`Textarea`、`NativeSelect`、`ResourceSelect`、`ResourceSelectField` 识别为真实表单控件，规则仍为 error。浏览器 `color-scheme` 随主题变化，使原生选项和滚动条匹配明暗主题。
+
+## 资源选择与查询模式
+
+方案 A 使用 Popover + Command，搜索、最近、次要信息、清空、展开由业务按需启用。最近最多五条，按用户/组织/资源类型隔离且重新校验候选。方案 B 使用 Dialog 和统一表格，选择暂存在弹层中，确认后回填；取消保持原值。自定义内容用 `renderOption` / `renderSelected` 或 `columns`，不覆盖公共键盘及焦点逻辑。
+
+`queryMode` 默认 `local`，只有完整候选集合才允许本地搜索、排序及分页；受控 `search` / `onSearchChange` 不隐式改变查询模式。服务器分页必须用 `server`：CollectionView 的 `table` 或选择器的 `tableQuery` 接收受控 sorting/pagination/rowCount 及回调，业务发起查询并在条件变化时复位页码。服务器页内不再次过滤、排序或分页。加载失败显示重试，不能把失败当空列表。部分候选目录继续使用外部服务器搜索和翻页，关闭菜单内搜索/展开，防止只搜当前页。
+
+## 单层容器
+
+功能区只保留最外层 Card；Dialog/Sheet 自身是外壳，里面使用透明 section、间距、文字层级和 1px 分隔线。不得用普通 div、底色、圆角或阴影拼回内层卡片。Card 的 Surface 上下文防止跨组件组合生成第二层装饰容器；静态检查同时检查普通结构元素。输入框、按钮保留必要边界和焦点；React Flow 节点保留必要外轮廓及选中提示，内部透明、无阴影。详见 [DESIGN.md](../DESIGN.md) 与[验收记录](ui/verification.md)。
 
 ## 复用约定
 
@@ -73,7 +85,7 @@ bunx --no-install patchright test --config=e2e/ui-components.config.ts
 - `ListToolbar` 组合现有 `SearchInput`、筛选内容和操作区，已用于作业、工作流及软件目录。通过 `search` 传输入框属性，筛选传 `children`，按钮传 `actions`；查询、清空、重置页码和权限判断由页面负责。
 - `FormField` 统一 label、说明和错误布局，用于软件创建和版本表单。子函数接收自动生成的 `id`、`aria-describedby`、`aria-invalid`，展开到已有 `Input`、`Textarea` 或 `NativeSelect`；需要稳定 ID 时传 `id`。校验规则仍在业务表单中。
 - `LoadingState`、`ErrorState`、`EmptyState` 统一列表状态，分别提供 status、alert 和空状态标题／说明／操作组合。`CatalogEmptyState` 只保留软件目录的创建链接语义，视觉复用公共空状态。
-- `SoftwareCardGrid` 按实际内容区宽度排列卡片，每列至少 20rem；窄于 20rem 时占满容器。模板、Spack 目录、脚本目录共用，不根据整个视口盲目增加列数。
+- `SoftwareCardGrid` 按实际内容区宽度排列透明条目，每列至少 20rem；窄于 20rem 时占满容器。模板、Spack 目录、脚本目录共用，不根据整个视口盲目增加列数。
 - 手机只读策略生效时，算力中心软件页优先显示策略、Agent 状态和配置摘要。运行环境及材料映射保留 Agent 筛选和现有记录，省去禁用的编辑表单；材料管理区默认折叠，仍可展开查询。允许写入的桌面视图保留编辑流程。
 
 ```tsx

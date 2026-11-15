@@ -16,6 +16,7 @@ import * as recipes from "../../lib/recipe-repositories-client";
 import { SoftwareError } from "../../lib/software-client";
 import * as materials from "../../lib/spack-materials-client";
 import * as upstream from "../../lib/spack-upstream-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import recipesEn from "../../locales/recipes.en.json";
 import recipesZh from "../../locales/recipes.zh.json";
 import { RecipeRepositoriesPanel } from "./RecipeRepositoriesPanel";
@@ -115,7 +116,7 @@ function mount(kind: Kind, strict = false) {
 }
 
 function selectFile(kind: Kind, file: File) {
-  fireEvent.change(screen.getByLabelText(`Choose online ${kind} manifest (JSON)`), {
+  fireEvent.change(nativeControl(screen.getByLabelText(`Choose online ${kind} manifest (JSON)`)), {
     target: { files: [file] },
   });
 }
@@ -295,7 +296,7 @@ test.each([
     await screen.findByText(recipesEn.spackOnline.unknown);
     expect(screen.queryByText("Online import confirmed")).toBeNull();
     expect(screen.queryByTestId("material-release-detail")).toBeNull();
-    expect(screen.getByLabelText("Repository ID")).toHaveProperty("value", "");
+    expect(nativeControl(screen.getByLabelText("Repository ID"))).toHaveProperty("value", "");
     expect(materials.getSpackMaterial).not.toHaveBeenCalled();
   }
   expect(fetcher).toHaveBeenCalledTimes(1);

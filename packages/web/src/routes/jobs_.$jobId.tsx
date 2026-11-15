@@ -160,10 +160,7 @@ function JobDetailError({
   return (
     <PageShell data-testid="job-detail-error">
       <PageHeader title={title} subtitle={jobId} />
-      <div
-        className="flex items-start gap-3 rounded-md border border-status-failed/40 p-4"
-        role="alert"
-      >
+      <div className="flex items-start gap-3 p-4" role="alert">
         <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-status-failed" />
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">

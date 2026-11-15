@@ -18,13 +18,13 @@ export function CpSoftwarePage() {
       <SoftwarePolicyTable canManage={management.allowed} />
       <details
         open={!mobileReadOnly}
-        className="rounded-lg border border-border bg-card"
+        className="border-b border-border"
         data-testid="cp-software-material-details"
       >
-        <summary className="cursor-pointer rounded-lg px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
           {t("software.materialManagement")}
         </summary>
-        <div className="space-y-4 border-t border-border p-4">
+        <div className="space-y-4 border-border p-4">
           <RecipeRepositoriesPanel canManage={management.allowed} />
           <SpackMaterialsPanel canManage={management.allowed} />
         </div>

@@ -35,7 +35,7 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
           <div className="flex min-w-0 max-w-[28rem] flex-col">
             <button
               type="button"
-              className="max-w-[28rem] truncate rounded-sm text-left font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+              className="max-w-[28rem] truncate text-left font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
               title={row.original.name}
               onClick={(event) => {
                 event.stopPropagation();
@@ -77,7 +77,7 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
     return (
       <div className="space-y-2">
         {jobs.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+          <div className=" border-border px-4 py-10 text-center text-sm text-muted-foreground">
             {t("jobs.noMatches")}
           </div>
         ) : (
@@ -87,7 +87,7 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
               type="button"
               data-testid={`job-row-${job.id}`}
               onClick={() => onRowClick(job)}
-              className="flex w-full flex-col gap-3 rounded-lg border border-border bg-card p-4 text-left shadow-sm transition-colors hover:bg-muted/30"
+              className="flex w-full flex-col gap-3 border-border p-4 text-left transition-colors"
             >
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold" title={job.name}>
@@ -118,6 +118,9 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
 
   return (
     <DataTable
+      manualPagination
+      manualSorting
+      hidePagination
       columns={columns}
       data={jobs}
       getRowId={(j) => j.id}

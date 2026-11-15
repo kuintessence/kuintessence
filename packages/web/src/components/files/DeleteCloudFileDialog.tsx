@@ -47,7 +47,7 @@ export function DeleteCloudFileDialog({
           <DialogDescription>{t("files.deleteDialog.description")}</DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-3">
-          <div className="rounded-md border border-border bg-muted/30 p-3">
+          <div className=" border-border p-3">
             <div className="break-all font-mono text-sm font-medium">{displayFile?.key}</div>
             <div className="mt-1 text-xs text-muted-foreground">
               {t("files.deleteDialog.size", { size: fmtBytes(displayFile?.size) })}
@@ -56,7 +56,7 @@ export function DeleteCloudFileDialog({
           {error ? (
             <div
               role="alert"
-              className="rounded-md border border-status-failed/30 bg-status-failed/10 px-3 py-2 text-xs text-status-failed"
+              className=" px-3 py-2 text-xs text-status-failed"
               data-testid="files-delete-error"
             >
               {error}

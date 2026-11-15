@@ -12,6 +12,7 @@ import {
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 interface ImportRow {
   status: "queued" | MaterialImportProgress["status"];
@@ -179,7 +180,7 @@ export function MaterialPackImport({
   }
 
   return (
-    <div className="min-w-0 space-y-3 border-y border-border py-3">
+    <div className="min-w-0 space-y-3 border-border py-3">
       <div className="grid min-w-0 gap-3 lg:grid-cols-3">
         <label htmlFor={`${id}-manifest`} className="min-w-0 space-y-1 text-xs font-medium">
           <span>{t("materials.manifestFile")}</span>
@@ -254,23 +255,25 @@ export function MaterialPackImport({
       ) : null}
       {pack ? (
         <div className="overflow-x-auto">
-          <table
+          <Table
             className="w-full min-w-[36rem] table-fixed text-left text-xs"
             aria-label={t("materials.queue")}
           >
-            <thead className="border-b border-border text-muted-foreground">
-              <tr>
-                <th className="w-[28%] p-2 font-medium">{t("materials.repository")}</th>
-                <th className="w-[32%] p-2 font-medium">{t("materials.release")}</th>
-                <th className="p-2 font-medium">{t("materials.status")}</th>
-                <th className="w-24 p-2 font-medium">{t("materials.actions")}</th>
-              </tr>
-            </thead>
-            <tbody>
+            <TableHeader className="border-b border-border text-muted-foreground">
+              <TableRow>
+                <TableHead className="w-[28%] p-2 font-medium">
+                  {t("materials.repository")}
+                </TableHead>
+                <TableHead className="w-[32%] p-2 font-medium">{t("materials.release")}</TableHead>
+                <TableHead className="p-2 font-medium">{t("materials.status")}</TableHead>
+                <TableHead className="w-24 p-2 font-medium">{t("materials.actions")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {pack.releases.map((release, index) => {
                 const row = rows[index];
                 return (
-                  <tr
+                  <TableRow
                     key={JSON.stringify([
                       release.repository,
                       release.spec,
@@ -279,12 +282,14 @@ export function MaterialPackImport({
                     ])}
                     className="border-b border-border"
                   >
-                    <td className="break-all p-2 align-top font-mono">{release.repository}</td>
-                    <td className="break-all p-2 align-top">
+                    <TableCell className="break-all p-2 align-top font-mono">
+                      {release.repository}
+                    </TableCell>
+                    <TableCell className="break-all p-2 align-top">
                       <div className="font-mono">{release.spec}</div>
                       <div className="text-muted-foreground">{release.target}</div>
-                    </td>
-                    <td className="break-words p-2 align-top" aria-live="polite">
+                    </TableCell>
+                    <TableCell className="break-words p-2 align-top" aria-live="polite">
                       {t(
                         `materials.${
                           row?.publicationUnconfirmed &&
@@ -306,8 +311,8 @@ export function MaterialPackImport({
                       {row?.error && row.status === "failed" ? (
                         <div className="text-status-failed">{row.error}</div>
                       ) : null}
-                    </td>
-                    <td className="p-2 align-top">
+                    </TableCell>
+                    <TableCell className="p-2 align-top">
                       {row?.binding ? (
                         <div className="flex">
                           <Button
@@ -330,12 +335,12 @@ export function MaterialPackImport({
                           </Button>
                         </div>
                       ) : null}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       ) : null}
       <label className="flex items-start gap-2 text-xs">

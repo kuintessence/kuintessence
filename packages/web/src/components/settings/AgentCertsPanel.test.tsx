@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -71,7 +72,7 @@ describe("AgentCertsPanel", () => {
     const calls = installFetch([() => certList()]);
     render(<AgentCertsPanel />);
 
-    fireEvent.change(screen.getByTestId("agent-certs-agent-id"), {
+    fireEvent.change(nativeControl(screen.getByTestId("agent-certs-agent-id")), {
       target: { value: "agent-1" },
     });
     fireEvent.click(screen.getByTestId("agent-certs-load"));
@@ -100,7 +101,7 @@ describe("AgentCertsPanel", () => {
     ]);
     render(<AgentCertsPanel />);
 
-    fireEvent.change(screen.getByTestId("agent-certs-agent-id"), {
+    fireEvent.change(nativeControl(screen.getByTestId("agent-certs-agent-id")), {
       target: { value: "agent-1" },
     });
     fireEvent.click(screen.getByTestId("agent-certs-load"));
@@ -126,13 +127,13 @@ describe("AgentCertsPanel", () => {
     ]);
     render(<AgentCertsPanel />);
 
-    fireEvent.change(screen.getByTestId("agent-certs-agent-id"), {
+    fireEvent.change(nativeControl(screen.getByTestId("agent-certs-agent-id")), {
       target: { value: "agent-1" },
     });
     fireEvent.click(screen.getByTestId("agent-certs-load"));
     await waitFor(() => screen.getByTestId(`agent-cert-revoke-${fp}`));
     fireEvent.click(screen.getByTestId(`agent-cert-revoke-${fp}`));
-    fireEvent.change(screen.getByTestId("agent-cert-revoke-reason"), {
+    fireEvent.change(nativeControl(screen.getByTestId("agent-cert-revoke-reason")), {
       target: { value: "compromised host" },
     });
     fireEvent.click(screen.getByTestId("agent-cert-revoke-confirm"));
@@ -165,7 +166,9 @@ test("mobile policy closes a pending certificate confirmation while keeping look
   );
   const calls = installFetch([() => certList()]);
   render(<AgentCertsPanel />);
-  fireEvent.change(screen.getByTestId("agent-certs-agent-id"), { target: { value: "agent-1" } });
+  fireEvent.change(nativeControl(screen.getByTestId("agent-certs-agent-id")), {
+    target: { value: "agent-1" },
+  });
   fireEvent.click(screen.getByTestId("agent-certs-load"));
   fireEvent.click(await screen.findByTestId(`agent-cert-revoke-${fp}`));
   await screen.findByTestId("agent-cert-revoke-dialog");

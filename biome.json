@@ -52,7 +52,14 @@
         "noLabelWithoutControl": {
           "level": "error",
           "options": {
-            "inputComponents": ["Input", "Textarea", "NativeSelect", "SearchInput"]
+            "inputComponents": [
+              "Input",
+              "Textarea",
+              "NativeSelect",
+              "ResourceSelectField",
+              "ResourceSelect",
+              "SearchInput"
+            ]
           }
         }
       }

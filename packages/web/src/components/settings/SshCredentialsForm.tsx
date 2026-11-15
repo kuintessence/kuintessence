@@ -8,6 +8,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input, Textarea } from "../ui/input";
+import { ResourceSelect } from "../ui/resource-picker";
 
 /**
  * admin SSH credential vault form (PRD F17).
@@ -58,6 +59,24 @@ export function SshCredentialsForm() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+  const [agents, setAgents] = useState<{ agentId: string; siteName: string; status: string }[]>([]);
+  const [agentError, setAgentError] = useState<string>();
+  const [agentsLoading, setAgentsLoading] = useState(true);
+  const refreshAgents = useCallback(async () => {
+    setAgentsLoading(true);
+    try {
+      const result = await api.get<{ agents: typeof agents }>("/agents");
+      setAgents(result.agents);
+      setAgentError(undefined);
+    } catch (error) {
+      setAgentError(toUserFacingError(error, "暂时无法加载集群列表，请重试。"));
+    } finally {
+      setAgentsLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    void refreshAgents();
+  }, [refreshAgents]);
 
   const refresh = useCallback(async () => {
     try {
@@ -99,7 +118,12 @@ export function SshCredentialsForm() {
     e.preventDefault();
     if (mobileReadOnly || loadError) return;
     const agentId = form.agentId.trim();
-    if (!agentId) {
+    if (
+      !agentId ||
+      agentsLoading ||
+      agentError ||
+      !agents.some((agent) => agent.agentId === agentId)
+    ) {
       toast.error(t("settings.ssh.needAgent", { defaultValue: "Agent ID is required" }));
       return;
     }
@@ -174,7 +198,7 @@ export function SshCredentialsForm() {
               <div
                 key={row.agentId}
                 data-testid={`ssh-cred-row-${row.agentId}`}
-                className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2 text-xs"
+                className="flex items-center justify-between gap-2 border-border px-3 py-2 text-xs"
               >
                 <div className="min-w-0">
                   <div className="font-medium text-foreground">{row.agentId}</div>
@@ -220,15 +244,31 @@ export function SshCredentialsForm() {
         <form onSubmit={onSave}>
           <fieldset
             disabled={mobileReadOnly || saving || Boolean(loadError)}
-            className="min-w-0 space-y-3 border-t border-border pt-3"
+            className="min-w-0 space-y-3 border-border pt-3"
           >
             <div className="grid grid-cols-2 gap-2">
-              <LabeledInput
-                id="ssh-agent-id"
-                label={t("settings.ssh.agentId", { defaultValue: "Agent ID" })}
-                value={form.agentId}
-                onChange={(v) => update("agentId", v)}
-              />
+              <div className="space-y-1.5">
+                <label htmlFor="ssh-agent-id" className="block text-xs text-muted-foreground">
+                  {t("settings.ssh.agentId", { defaultValue: "Agent ID" })}
+                </label>
+                <ResourceSelect
+                  id="ssh-agent-id"
+                  label={t("settings.ssh.agentId", { defaultValue: "Agent ID" })}
+                  value={form.agentId}
+                  options={agents.map((agent) => ({
+                    value: agent.agentId,
+                    label: agent.siteName || agent.agentId,
+                    description: `${agent.agentId} · ${agent.status}`,
+                  }))}
+                  loading={agentsLoading}
+                  error={agentError}
+                  onRetry={() => void refreshAgents()}
+                  onValueChange={(value) => update("agentId", value)}
+                  recent
+                  resourceType="ssh-agent"
+                  expandable
+                />
+              </div>
               <LabeledInput
                 id="ssh-username"
                 label={t("settings.ssh.username", { defaultValue: "Username" })}

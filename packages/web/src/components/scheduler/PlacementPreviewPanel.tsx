@@ -90,7 +90,7 @@ export function PlacementPreviewPanel({
 
       {errorMessage ? (
         <div
-          className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_8%,transparent)] p-2 text-xs text-status-failed"
+          className=" p-2 text-xs text-status-failed"
           role="alert"
           data-testid="placement-preview-error"
         >

@@ -15,6 +15,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 interface AgentEffectivePolicy {
   agentId: string;
@@ -168,41 +169,53 @@ export function SandboxSecurityPanel() {
         ) : overlaysQuery.isLoading || agentsQuery.isLoading || effectiveQuery.isLoading ? (
           <div className="text-sm text-muted-foreground">{t("common.loading")}</div>
         ) : agents.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+          <div className=" border-border p-4 text-sm text-muted-foreground">
             {t("sandbox.security.empty")}
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-md border border-border">
-            <table className="w-full min-w-[880px] text-left text-xs">
-              <thead className="bg-muted/40 text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium">{t("sandbox.security.table.agent")}</th>
-                  <th className="px-3 py-2 font-medium">{t("sandbox.security.table.scheduler")}</th>
-                  <th className="px-3 py-2 font-medium">{t("sandbox.security.table.root")}</th>
-                  <th className="px-3 py-2 font-medium">{t("sandbox.security.table.readiness")}</th>
-                  <th className="px-3 py-2 font-medium">
+          <div className="overflow-x-auto border-border">
+            <Table className="w-full min-w-[880px] text-left text-xs">
+              <TableHeader className=" text-muted-foreground">
+                <TableRow>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("sandbox.security.table.agent")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("sandbox.security.table.scheduler")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("sandbox.security.table.root")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("sandbox.security.table.readiness")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
                     {t("sandbox.security.table.impersonation")}
-                  </th>
-                  <th className="px-3 py-2 font-medium">{t("sandbox.security.table.shared")}</th>
-                  <th className="px-3 py-2 font-medium">{t("sandbox.security.table.limits")}</th>
-                </tr>
-              </thead>
-              <tbody>
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("sandbox.security.table.shared")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("sandbox.security.table.limits")}
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {agents.map((agent) => {
                   const effective = effectiveByAgent.get(agent.agentId);
                   return (
-                    <tr key={agent.agentId} className="border-t border-border">
-                      <td className="px-3 py-2">
+                    <TableRow key={agent.agentId} className=" border-border">
+                      <TableCell className="px-3 py-2">
                         <div className="font-medium">{agent.siteName}</div>
                         <div className="font-mono text-xs text-muted-foreground">
                           {agent.agentId}
                         </div>
-                      </td>
-                      <td className="px-3 py-2 font-mono">{agent.schedulerType}</td>
-                      <td className="px-3 py-2">
+                      </TableCell>
+                      <TableCell className="px-3 py-2 font-mono">{agent.schedulerType}</TableCell>
+                      <TableCell className="px-3 py-2">
                         <Fact enabled={agent.rootMode} />
-                      </td>
-                      <td className="px-3 py-2">
+                      </TableCell>
+                      <TableCell className="px-3 py-2">
                         <Badge
                           variant={
                             agent.sandboxCapabilities?.enabled === false
@@ -218,23 +231,23 @@ export function SandboxSecurityPanel() {
                             `sandbox.security.readiness.${agent.sandboxCapabilities?.enabled === false ? "disabled" : agent.sandboxReadiness}`,
                           )}
                         </Badge>
-                      </td>
-                      <td className="px-3 py-2">
+                      </TableCell>
+                      <TableCell className="px-3 py-2">
                         <Fact enabled={effective?.impersonationEnabled ?? false} />
-                      </td>
-                      <td className="px-3 py-2">
+                      </TableCell>
+                      <TableCell className="px-3 py-2">
                         <Fact enabled={effective?.sharedServiceAllowed ?? false} />
-                      </td>
-                      <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
+                      </TableCell>
+                      <TableCell className="px-3 py-2 font-mono text-xs text-muted-foreground">
                         {effective
                           ? `${effective.limits.maxCpuCores} CPU · ${effective.limits.maxMemoryMb} MiB · ${effective.limits.maxWallTimeSec}s`
                           : "—"}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   );
                 })}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         )}
       </CardContent>
@@ -252,7 +265,7 @@ function PolicyToggle({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 rounded-md border border-border bg-background p-3 text-xs">
+    <label className="flex items-center gap-2 border-b border-border p-3 text-xs">
       <input
         type="checkbox"
         checked={checked}

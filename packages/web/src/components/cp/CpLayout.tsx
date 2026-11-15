@@ -24,7 +24,7 @@ export function CpLayout({ children }: CpLayoutProps) {
   if (!access.allowed) {
     return (
       <div
-        className="flex items-start gap-2 rounded-md border border-dashed border-border bg-muted/30 p-4 text-sm text-muted-foreground"
+        className="flex items-start gap-2 border-border p-4 text-sm text-muted-foreground"
         data-testid="cp-rbac-denied"
       >
         <ShieldOff className="mt-0.5 h-4 w-4 shrink-0" />

@@ -12,6 +12,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 const MIN_SECRET_LENGTH = 8;
 
@@ -107,39 +108,45 @@ export function MeteringWebhooks({ organizationId = null }: { organizationId?: s
           </p>
         ) : (
           <div
-            className="overflow-x-auto overscroll-x-contain rounded-md border border-border"
+            className="overflow-x-auto overscroll-x-contain border-border"
             data-testid="webhook-table-scroll"
           >
-            <table className="min-w-[52rem] w-full text-sm" data-testid="webhook-table">
-              <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium">{t("cp.metering.webhooks.col.url")}</th>
-                  <th className="px-3 py-2 font-medium">{t("cp.metering.webhooks.col.events")}</th>
-                  <th className="px-3 py-2 font-medium">{t("cp.metering.webhooks.col.enabled")}</th>
-                  <th className="px-3 py-2 font-medium text-right">
+            <Table className="min-w-[52rem] w-full text-sm" data-testid="webhook-table">
+              <TableHeader className=" text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <TableRow>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("cp.metering.webhooks.col.url")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("cp.metering.webhooks.col.events")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("cp.metering.webhooks.col.enabled")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium text-right">
                     {t("cp.metering.webhooks.col.failures")}
-                  </th>
-                  <th className="px-3 py-2 font-medium text-right">
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium text-right">
                     {t("cp.metering.webhooks.col.actions")}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {items.map((w, i) => (
-                  <tr
+                  <TableRow
                     key={w.id}
                     data-testid={`webhook-row-${i}`}
-                    className="border-t border-border last:border-b-0"
+                    className=" border-border last:border-b-0"
                   >
-                    <td className="px-3 py-2 font-mono text-xs">{w.url}</td>
-                    <td className="px-3 py-2 text-xs">{w.events.join(", ")}</td>
-                    <td className="px-3 py-2 text-xs">
+                    <TableCell className="px-3 py-2 font-mono text-xs">{w.url}</TableCell>
+                    <TableCell className="px-3 py-2 text-xs">{w.events.join(", ")}</TableCell>
+                    <TableCell className="px-3 py-2 text-xs">
                       {w.enabled ? t("cp.metering.webhooks.yes") : t("cp.metering.webhooks.no")}
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono text-xs tabular-nums">
+                    </TableCell>
+                    <TableCell className="px-3 py-2 text-right font-mono text-xs tabular-nums">
                       {w.failures}
-                    </td>
-                    <td className="px-3 py-2 text-right">
+                    </TableCell>
+                    <TableCell className="px-3 py-2 text-right">
                       <Button
                         type="button"
                         variant="ghost"
@@ -151,11 +158,11 @@ export function MeteringWebhooks({ organizationId = null }: { organizationId?: s
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         )}
 

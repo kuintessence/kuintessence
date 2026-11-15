@@ -17,6 +17,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { AgentCertRevokeDialog } from "../agent/AgentCertRevokeDialog";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 function statusVariant(status: string): "running" | "cancelled" | "failed" | "default" {
   const s = status.toLowerCase();
@@ -49,10 +50,7 @@ export function CpAgentsTable() {
       </div>
 
       {q.error ? (
-        <div
-          className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
-          data-testid="cp-agents-error"
-        >
+        <div className=" p-3 text-sm" data-testid="cp-agents-error">
           {toUserFacingError(q.error, t("cp.dashboard.loadFailed"))}
           <Button variant="outline" className="ml-3" onClick={() => void q.refetch()}>
             {t("cp.common.refresh")}
@@ -64,51 +62,57 @@ export function CpAgentsTable() {
         <div className="text-sm text-muted-foreground">{t("cp.common.loading")}</div>
       ) : items.length === 0 ? (
         <div
-          className="flex h-32 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground"
+          className="flex h-32 items-center justify-center border-border text-sm text-muted-foreground"
           data-testid="cp-agents-empty"
         >
           {t("cp.agents.empty")}
         </div>
       ) : (
         <div
-          className="rounded-md border border-border sm:overflow-x-auto sm:overscroll-x-contain"
+          className=" border-border sm:overflow-x-auto sm:overscroll-x-contain"
           data-testid="cp-agents-table-scroll"
         >
-          <table className="block w-full text-sm sm:table sm:min-w-[48rem]">
-            <thead className="sr-only bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground sm:not-sr-only sm:table-header-group">
-              <tr>
-                <th className="px-3 py-2 font-medium">{t("cp.agents.col.id")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.agents.col.hostname")}</th>
-                <th className="px-3 py-2 font-medium">{t("operations.resources.provider")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.agents.col.status")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.agents.col.actions")}</th>
-              </tr>
-            </thead>
-            <tbody className="block divide-y divide-border sm:table-row-group sm:divide-y-0">
+          <Table className="block w-full text-sm sm:table sm:min-w-[48rem]">
+            <TableHeader className="sr-only text-left text-xs uppercase tracking-wide text-muted-foreground sm:not-sr-only sm:table-header-group">
+              <TableRow>
+                <TableHead className="px-3 py-2 font-medium">{t("cp.agents.col.id")}</TableHead>
+                <TableHead className="px-3 py-2 font-medium">
+                  {t("cp.agents.col.hostname")}
+                </TableHead>
+                <TableHead className="px-3 py-2 font-medium">
+                  {t("operations.resources.provider")}
+                </TableHead>
+                <TableHead className="px-3 py-2 font-medium">{t("cp.agents.col.status")}</TableHead>
+                <TableHead className="px-3 py-2 font-medium">
+                  {t("cp.agents.col.actions")}
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody className="block divide-y divide-border sm:table-row-group sm:divide-y-0">
               {items.map((a) => (
                 <Fragment key={a.id}>
-                  <tr
-                    className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 p-4 sm:table-row sm:border-t sm:border-border sm:p-0"
+                  <TableRow
+                    className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 p-4 sm:table-row sm:border-border sm:p-0"
                     data-testid={`cp-agents-row-${a.id}`}
                   >
-                    <td className="order-3 col-span-2 min-w-0 font-mono text-xs text-muted-foreground sm:table-cell sm:px-3 sm:py-2 sm:text-foreground">
+                    <TableCell className="order-3 col-span-2 min-w-0 font-mono text-xs text-muted-foreground sm:table-cell sm:px-3 sm:py-2 sm:text-foreground">
                       <span className="mr-2 font-sans text-muted-foreground sm:hidden">
                         {t("cp.agents.col.id")}
                       </span>
                       <span className="break-all sm:break-normal">{a.id}</span>
-                    </td>
-                    <td className="order-1 min-w-0 font-mono text-sm font-medium sm:table-cell sm:px-3 sm:py-2 sm:text-xs sm:font-normal">
+                    </TableCell>
+                    <TableCell className="order-1 min-w-0 font-mono text-sm font-medium sm:table-cell sm:px-3 sm:py-2 sm:text-xs sm:font-normal">
                       <span className="break-all sm:break-normal">{a.hostname}</span>
-                    </td>
-                    <td className="order-2 col-span-2 min-w-0 font-mono text-xs text-muted-foreground sm:table-cell sm:px-3 sm:py-2 sm:text-foreground">
+                    </TableCell>
+                    <TableCell className="order-2 col-span-2 min-w-0 font-mono text-xs text-muted-foreground sm:table-cell sm:px-3 sm:py-2 sm:text-foreground">
                       <span className="mr-2 font-sans text-muted-foreground sm:hidden">
                         {t("operations.resources.provider")}
                       </span>
                       <span className="break-all sm:break-normal">
                         {a.providerOrgId ? organizationName(a.providerOrgId) : "—"}
                       </span>
-                    </td>
-                    <td className="order-1 sm:table-cell sm:px-3 sm:py-2">
+                    </TableCell>
+                    <TableCell className="order-1 sm:table-cell sm:px-3 sm:py-2">
                       <Badge variant={statusVariant(a.status)}>
                         <span>
                           {t(`cp.common.agentStatus.${a.status.toLowerCase()}`, {
@@ -116,8 +120,8 @@ export function CpAgentsTable() {
                           })}
                         </span>
                       </Badge>
-                    </td>
-                    <td className="order-4 col-span-2 sm:table-cell sm:px-3 sm:py-2">
+                    </TableCell>
+                    <TableCell className="order-4 col-span-2 sm:table-cell sm:px-3 sm:py-2">
                       <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                         <Button
                           type="button"
@@ -156,32 +160,32 @@ export function CpAgentsTable() {
                           {t("cp.agents.certs.button")}
                         </Button>
                       </div>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                   {rootsAgentId === a.id ? (
-                    <tr
+                    <TableRow
                       id={`cp-agent-roots-detail-${a.id}`}
-                      className="block bg-muted/20 sm:table-row sm:border-t sm:border-border"
+                      className="block sm:table-row sm:border-border"
                     >
-                      <td colSpan={5} className="block px-4 py-3 sm:table-cell sm:px-3">
+                      <TableCell colSpan={5} className="block px-4 py-3 sm:table-cell sm:px-3">
                         <CpAgentClusterFileRoots agentId={a.id} />
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   ) : null}
                   {certAgentId === a.id ? (
-                    <tr
+                    <TableRow
                       id={`cp-agent-certs-detail-${a.id}`}
-                      className="block bg-muted/20 sm:table-row sm:border-t sm:border-border"
+                      className="block sm:table-row sm:border-border"
                     >
-                      <td colSpan={5} className="block px-4 py-3 sm:table-cell sm:px-3">
+                      <TableCell colSpan={5} className="block px-4 py-3 sm:table-cell sm:px-3">
                         <CpAgentCerts agentId={a.id} />
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   ) : null}
                 </Fragment>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
     </div>
@@ -263,7 +267,7 @@ function CpAgentClusterFileRoots({ agentId }: { agentId: string }) {
           {rows.map((root) => (
             <div
               key={root.id}
-              className="flex flex-col gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between"
+              className="flex flex-col gap-2 border-border px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between"
               data-testid={`cp-agent-root-row-${root.id}`}
             >
               <div className="min-w-0">
@@ -385,7 +389,7 @@ function CpAgentCerts({ agentId }: { agentId: string }) {
         return (
           <div
             key={cert.fingerprintSha256}
-            className="flex flex-col gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between"
+            className="flex flex-col gap-2 border-border px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between"
             data-testid={`cp-agent-cert-row-${cert.fingerprintSha256}`}
           >
             <div className="min-w-0">

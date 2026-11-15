@@ -449,8 +449,8 @@ export function FilesPage() {
                     : (quotaBytes / 1024 / 1024 / 1024).toFixed(1),
                 })}
               </span>
-              <span className="h-1 w-32 overflow-hidden rounded-full bg-muted">
-                <span className="block h-full bg-brand" style={{ width: `${pct}%` }} />
+              <span className="h-1 w-32 overflow-hidden ">
+                <span className="block h-full " style={{ width: `${pct}%` }} />
               </span>
             </div>
             <Button variant="outline" onClick={() => setQuotaDialogOpen(true)}>
@@ -470,7 +470,7 @@ export function FilesPage() {
         }
       />
 
-      <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 lg:flex-row lg:items-center">
+      <div className="flex flex-col gap-3 border-border p-3 lg:flex-row lg:items-center">
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             {t("files.selectionBar")}
@@ -626,13 +626,10 @@ export function FilesPage() {
         />
       </div>
 
-      <section
-        className="overflow-hidden rounded-md border border-border bg-card"
-        data-testid="files-transfers-section"
-      >
+      <section className="overflow-hidden border-border " data-testid="files-transfers-section">
         <button
           type="button"
-          className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2 text-left hover:bg-muted/40"
+          className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2 text-left"
           onClick={() => setShowTransfers((value) => !value)}
           aria-expanded={showTransfers}
           data-testid="files-transfers-toggle"

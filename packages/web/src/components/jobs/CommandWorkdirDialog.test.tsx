@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, uploadFileToNetDrive } from "../../lib/api-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { CommandWorkdirDialog, type CommandWorkdirEntry } from "./CommandWorkdirDialog";
 
 vi.mock("react-i18next", () => ({
@@ -178,7 +179,7 @@ describe("CommandWorkdirDialog", () => {
     expect(upload).toHaveProperty("disabled", true);
     const file = new File(["local"], "local.txt", { type: "text/plain" });
 
-    fireEvent.change(upload, { target: { files: [file] } });
+    fireEvent.change(nativeControl(upload), { target: { files: [file] } });
 
     expect(uploadFileToNetDrive).not.toHaveBeenCalled();
   });
@@ -237,7 +238,7 @@ describe("CommandWorkdirDialog", () => {
     vi.mocked(api.get).mockImplementation(() => new Promise(() => {}));
     const { onApply } = renderDialog();
 
-    fireEvent.change(screen.getByTestId("command-workdir-new-folder-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("command-workdir-new-folder-name")), {
       target: { value: "scratch" },
     });
     fireEvent.click(screen.getByTestId("command-workdir-create-folder"));
@@ -255,7 +256,7 @@ describe("CommandWorkdirDialog", () => {
   test("creates, renames, and deletes workdir subfolders", async () => {
     const { onApply } = renderDialog();
 
-    fireEvent.change(screen.getByTestId("command-workdir-new-folder-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("command-workdir-new-folder-name")), {
       target: { value: "inputs" },
     });
     fireEvent.click(screen.getByTestId("command-workdir-create-folder"));
@@ -268,7 +269,7 @@ describe("CommandWorkdirDialog", () => {
     expect(await screen.findByDisplayValue("inputs/a.txt")).toBeTruthy();
 
     fireEvent.click(screen.getByTestId("command-workdir-up"));
-    fireEvent.change(screen.getByTestId("command-workdir-rename-dir-inputs"), {
+    fireEvent.change(nativeControl(screen.getByTestId("command-workdir-rename-dir-inputs")), {
       target: { value: "renamed" },
     });
     fireEvent.click(await screen.findByTestId("command-workdir-open-dir-renamed"));
@@ -286,7 +287,7 @@ describe("CommandWorkdirDialog", () => {
   test("shows slash-created empty folder hierarchies immediately and after confirm", async () => {
     const { onApply } = renderDialog();
 
-    fireEvent.change(screen.getByTestId("command-workdir-new-folder-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("command-workdir-new-folder-name")), {
       target: { value: "inputs/nested" },
     });
     fireEvent.click(screen.getByTestId("command-workdir-create-folder"));
@@ -305,7 +306,7 @@ describe("CommandWorkdirDialog", () => {
   test("creates an empty workdir folder with Enter and keeps it visible", async () => {
     const { onApply } = renderDialog();
 
-    fireEvent.change(screen.getByTestId("command-workdir-new-folder-name"), {
+    fireEvent.change(nativeControl(screen.getByTestId("command-workdir-new-folder-name")), {
       target: { value: "scratch" },
     });
     fireEvent.keyDown(screen.getByTestId("command-workdir-new-folder-name"), {
@@ -359,7 +360,7 @@ describe("CommandWorkdirDialog", () => {
     const file = new File(["local"], "local.txt", { type: "text/plain" });
 
     await waitFor(() => expect(upload).toHaveProperty("disabled", false));
-    fireEvent.change(upload, { target: { files: [file] } });
+    fireEvent.change(nativeControl(upload), { target: { files: [file] } });
 
     await waitFor(() =>
       expect(uploadFileToNetDrive).toHaveBeenCalledWith(file, "jobs/command-drafts/test-draft"),

@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "../../lib/api-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { StorageQuotaRequestDialog } from "./StorageQuotaRequestDialog";
 
 const toastError = vi.hoisted(() => vi.fn());
@@ -117,10 +118,10 @@ describe("StorageQuotaRequestDialog", () => {
       ),
     );
 
-    fireEvent.change(screen.getByLabelText("files.quota.requestedGb"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("files.quota.requestedGb")), {
       target: { value: "10" },
     });
-    fireEvent.change(screen.getByLabelText("files.quota.reason"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("files.quota.reason")), {
       target: { value: "experiment outputs" },
     });
     const submit = screen.getByText("files.quota.submit");
@@ -154,14 +155,14 @@ describe("quota request validation and history scope", () => {
         />,
       ),
     );
-    fireEvent.change(screen.getByLabelText("files.quota.requestedGb"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("files.quota.requestedGb")), {
       target: { value: quota },
     });
-    fireEvent.change(screen.getByLabelText("files.quota.reason"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("files.quota.reason")), {
       target: { value: "Research outputs" },
     });
     if (expiry)
-      fireEvent.change(screen.getByLabelText("files.quota.expiresAt"), {
+      fireEvent.change(nativeControl(screen.getByLabelText("files.quota.expiresAt")), {
         target: { value: expiry },
       });
     fireEvent.click(screen.getByText("files.quota.submit"));
@@ -181,11 +182,13 @@ describe("quota request validation and history scope", () => {
         />,
       ),
     );
-    fireEvent.change(screen.getByLabelText("files.quota.requestedGb"), { target: { value: "2" } });
-    fireEvent.change(screen.getByLabelText("files.quota.reason"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("files.quota.requestedGb")), {
+      target: { value: "2" },
+    });
+    fireEvent.change(nativeControl(screen.getByLabelText("files.quota.reason")), {
       target: { value: " Research outputs " },
     });
-    fireEvent.change(screen.getByLabelText("files.quota.expiresAt"), {
+    fireEvent.change(nativeControl(screen.getByLabelText("files.quota.expiresAt")), {
       target: { value: "2099-01-01T12:00" },
     });
     fireEvent.click(screen.getByText("files.quota.submit"));

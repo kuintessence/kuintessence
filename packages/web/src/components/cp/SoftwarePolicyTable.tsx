@@ -82,6 +82,7 @@ import {
 import { Input, Textarea } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import { SearchInput } from "../ui/search-input";
 import {
   Sheet,
@@ -92,6 +93,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "../ui/sheet";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 const INSTALL_MODES: InstallMode[] = [
   "preinstalled-only",
@@ -297,7 +299,7 @@ export function SoftwarePolicyTable({
       )}
 
       {overviewQuery.error ? (
-        <div className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm">
+        <div className=" p-3 text-sm">
           {toUserFacingError(overviewQuery.error, t("cp.software.loadFailed"))}
         </div>
       ) : null}
@@ -368,7 +370,7 @@ function ControlChannelNotice({ overview }: { overview: CpSoftwareOverview }) {
   if (totalAgents === 0 || onlineAgents > 0) return null;
   return (
     <div
-      className="flex items-start gap-3 rounded-md border border-status-warning/40 bg-[color-mix(in_oklab,var(--status-warning)_12%,transparent)] p-3 text-sm"
+      className="flex items-start gap-3 p-3 text-sm"
       data-testid="cp-software-control-channel-notice"
     >
       <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
@@ -484,7 +486,7 @@ function ClusterAgentTable({
   if (overview.agents.length === 0) {
     return (
       <div
-        className="flex h-32 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground"
+        className="flex h-32 items-center justify-center border-border text-sm text-muted-foreground"
         data-testid="cp-software-empty"
       >
         {t("cp.software.empty")}
@@ -497,9 +499,9 @@ function ClusterAgentTable({
       {overview.clusters.map((cluster) => (
         <div
           key={`${cluster.providerOrgId}:${cluster.cluster}`}
-          className="overflow-hidden rounded-md border border-border"
+          className="overflow-hidden border-border"
         >
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/30 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
             <div>
               <div className="font-medium">{cluster.cluster}</div>
               <div className="text-sm text-muted-foreground">
@@ -545,31 +547,43 @@ function ClusterAgentTable({
             className="overflow-x-auto overscroll-x-contain"
             data-testid={`cp-software-cluster-table-scroll-${cluster.cluster}`}
           >
-            <table className="min-w-[58rem] w-full text-sm">
-              <thead className="bg-muted/20 text-left text-xs uppercase tracking-wide text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium">{t("cp.software.col.agent")}</th>
-                  <th className="px-3 py-2 font-medium">{t("cp.software.col.status")}</th>
-                  <th className="px-3 py-2 font-medium">{t("cp.software.col.installMode")}</th>
-                  <th className="px-3 py-2 font-medium">{t("cp.software.col.installed")}</th>
-                  <th className="px-3 py-2 font-medium">{t("cp.software.col.policy")}</th>
-                  <th className="px-3 py-2 font-medium text-right">{t("cp.common.actions")}</th>
-                </tr>
-              </thead>
-              <tbody>
+            <Table className="min-w-[58rem] w-full text-sm">
+              <TableHeader className=" text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <TableRow>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("cp.software.col.agent")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("cp.software.col.status")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("cp.software.col.installMode")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("cp.software.col.installed")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("cp.software.col.policy")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium text-right">
+                    {t("cp.common.actions")}
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {cluster.agents.map((agent) => (
-                  <tr
+                  <TableRow
                     key={agent.agentId}
-                    className="border-t border-border"
+                    className=" border-border"
                     data-testid={`cp-software-agent-${agent.agentId}`}
                   >
-                    <td className="px-3 py-2">
+                    <TableCell className="px-3 py-2">
                       <div className="font-mono text-xs">{agent.agentId}</div>
                       <div className="text-xs text-muted-foreground">
                         {agent.schedulerType} {agent.schedulerVersion}
                       </div>
-                    </td>
-                    <td className="px-3 py-2">
+                    </TableCell>
+                    <TableCell className="px-3 py-2">
                       <div className="flex flex-wrap gap-1">
                         <StatusBadge
                           status={agent.status}
@@ -578,15 +592,15 @@ function ClusterAgentTable({
                         />
                         <ControlChannelBadge online={agent.controlChannelOnline} />
                       </div>
-                    </td>
-                    <td className="px-3 py-2">
+                    </TableCell>
+                    <TableCell className="px-3 py-2">
                       {t(`cp.software.installMode.${agent.effectivePolicy.installMode}`)}
-                    </td>
-                    <td className="px-3 py-2 tabular-nums">{agent.installedCount}</td>
-                    <td className="px-3 py-2">
+                    </TableCell>
+                    <TableCell className="px-3 py-2 tabular-nums">{agent.installedCount}</TableCell>
+                    <TableCell className="px-3 py-2">
                       <PolicyBadges agent={agent} />
-                    </td>
-                    <td className="px-3 py-2 text-right">
+                    </TableCell>
+                    <TableCell className="px-3 py-2 text-right">
                       <div className="inline-flex gap-1">
                         <Button
                           variant="outline"
@@ -609,11 +623,11 @@ function ClusterAgentTable({
                           </Button>
                         ) : null}
                       </div>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         </div>
       ))}
@@ -863,7 +877,7 @@ function AvailabilityPreviewForm({
           </Button>
         </form>
         {error ? (
-          <div className="rounded-md border border-status-failed/40 p-3 text-sm text-status-failed">
+          <div className=" p-3 text-sm text-status-failed">
             {toUserFacingError(error, t("cp.software.operations.failed"))}
           </div>
         ) : null}
@@ -901,14 +915,14 @@ function AvailabilityColumn({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-border p-3">
+    <div className=" border-border p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-sm font-medium">{title}</span>
         <Badge variant={blocked ? "failed" : "outline"}>{nodes.length}</Badge>
       </div>
       <div className="space-y-2">
         {nodes.slice(0, 8).map((node) => (
-          <div key={node.agentId} className="rounded-md bg-muted/30 p-2 text-xs">
+          <div key={node.agentId} className=" p-2 text-xs">
             <div className="font-mono">{node.agentId}</div>
             <div className="text-muted-foreground">{node.siteName}</div>
             {node.reasons.length > 0 ? (
@@ -1322,7 +1336,7 @@ function AgentDetailSheet({
                 ) : null}
               </div>
               {operationDisabled ? (
-                <div className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_8%,transparent)] p-3 text-sm text-status-failed">
+                <div className=" p-3 text-sm text-status-failed">
                   {t("cp.software.operations.controlChannelOfflineHint")}
                 </div>
               ) : null}
@@ -1404,7 +1418,7 @@ function AgentDetailSheet({
                   <PolicyRejectionHint reason={operationPolicyRejection} />
                 ) : null}
                 <form
-                  className="rounded-md border border-border p-3"
+                  className="border-b border-border p-3"
                   onSubmit={submitBatchOperation}
                   data-testid="cp-software-batch-form"
                 >
@@ -1510,7 +1524,7 @@ function AgentDetailSheet({
                     </div>
                     {batchPolicyRejectedSpecs.length > 0 ? (
                       <div
-                        className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_8%,transparent)] p-2 text-xs text-status-failed md:col-start-2"
+                        className=" p-2 text-xs text-status-failed md:col-start-2"
                         data-testid="cp-software-batch-policy-rejections"
                       >
                         <div className="mb-1 font-medium">
@@ -1561,7 +1575,7 @@ function AgentDetailSheet({
                     {agent.preinstalledMappings.map((mapping) => (
                       <div
                         key={mapping.id}
-                        className="rounded-md border border-border p-2 text-xs"
+                        className=" border-border p-2 text-xs"
                         data-testid={`cp-software-preinstalled-mapping-${mapping.id}`}
                       >
                         <div className="font-mono">{mapping.localSpec}</div>
@@ -1666,7 +1680,7 @@ function softwareOperationPolicyRejection(
 function PolicyRejectionHint({ reason }: { reason: string }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_8%,transparent)] p-2 text-xs text-status-failed">
+    <div className=" p-2 text-xs text-status-failed">
       {t("cp.software.operations.policyRejected", {
         reason: policyRejectionMessage(reason, t),
       })}
@@ -1708,7 +1722,7 @@ function PolicyDigest({ policy }: { policy: PolicyOverlayInput }) {
 
 function DigestCell({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex min-h-14 items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
+    <div className="flex min-h-14 items-center justify-between gap-2 border-border px-3 py-2">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="shrink-0 text-sm font-semibold tabular-nums">{children}</div>
     </div>
@@ -1727,7 +1741,7 @@ function DetailSection({ title, children }: { title: string; children: ReactNode
 function UsecasePolicyPanel({ policy }: { policy: PolicyOverlayInput }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-border p-3">
+    <div className=" border-border p-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm font-semibold">{t("cp.software.usecase.title")}</div>
         <Badge variant={policy.usecaseDefaultAllow ? "succeeded" : "brand"}>
@@ -1754,7 +1768,7 @@ function UsecasePolicyPanel({ policy }: { policy: PolicyOverlayInput }) {
 function UsecasePolicyStatus({ policy }: { policy: PolicyOverlayInput }) {
   const { t } = useTranslation();
   return (
-    <div className="min-w-0 rounded-md bg-muted/30 p-2 text-xs">
+    <div className="min-w-0 p-2 text-xs">
       <div className="mb-1 font-medium">{t("cp.software.usecase.authorization")}</div>
       <div className="text-muted-foreground">
         {policy.usecaseDefaultAllow
@@ -1779,7 +1793,7 @@ function UsecasePolicyList({
   const visibleItems = expanded ? items : items.slice(0, COLLAPSED_USECASE_POLICY_LIST_LIMIT);
   const hasHiddenItems = items.length > COLLAPSED_USECASE_POLICY_LIST_LIMIT;
   return (
-    <div className="min-w-0 rounded-md bg-muted/30 p-2 text-xs">
+    <div className="min-w-0 p-2 text-xs">
       <div className="mb-1 font-medium">{title}</div>
       {items.length === 0 ? (
         <div className="text-muted-foreground">{empty}</div>
@@ -1787,7 +1801,7 @@ function UsecasePolicyList({
         <>
           <div className="space-y-1">
             {visibleItems.map((item) => (
-              <code key={item} className="block truncate rounded bg-background px-2 py-1 font-mono">
+              <code key={item} className="block truncate px-2 py-1 font-mono">
                 {item}
               </code>
             ))}
@@ -1885,9 +1899,9 @@ function SpecList({
           return (
             <div
               key={spec}
-              className="grid gap-2 rounded-md border border-border p-2 text-xs md:grid-cols-[1fr_auto]"
+              className="grid gap-2 border-border p-2 text-xs md:grid-cols-[1fr_auto]"
             >
-              <code className="min-w-0 truncate bg-muted px-2 py-1 font-mono" title={spec}>
+              <code className="min-w-0 truncate px-2 py-1 font-mono" title={spec}>
                 {spec}
               </code>
               {onLoad || onUninstall ? (
@@ -1932,7 +1946,7 @@ function SpecList({
           );
         })
       ) : (
-        <div className="flex h-20 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground">
+        <div className="flex h-20 items-center justify-center border-border text-sm text-muted-foreground">
           {t("cp.software.agent.installedFilterEmpty")}
         </div>
       )}
@@ -2051,7 +2065,7 @@ function OperationHistory({
           onActionFilterChange={changeActionFilter}
         />
         {activeServerFilters}
-        <div className="rounded-md border border-status-failed/30 bg-status-failed/5 px-3 py-2 text-sm text-status-failed">
+        <div className=" px-3 py-2 text-sm text-status-failed">
           {toUserFacingError(error, t("cp.software.operations.failed"))}
         </div>
       </div>
@@ -2067,7 +2081,7 @@ function OperationHistory({
           onActionFilterChange={changeActionFilter}
         />
         {activeServerFilters}
-        <div className="flex h-24 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground">
+        <div className="flex h-24 items-center justify-center border-border text-sm text-muted-foreground">
           <History className="h-4 w-4" />
           {t(
             hasServerFilter
@@ -2088,7 +2102,7 @@ function OperationHistory({
       />
       {activeServerFilters}
       {error ? (
-        <div className="rounded-md border border-status-failed/30 bg-status-failed/5 px-3 py-2 text-xs text-status-failed">
+        <div className=" px-3 py-2 text-xs text-status-failed">
           {toUserFacingError(error, t("cp.software.operations.failed"))}
         </div>
       ) : null}
@@ -2144,19 +2158,25 @@ function OperationHistory({
       ) : null}
       {visibleOperations.length > 0 ? (
         <div
-          className="overflow-x-auto overscroll-x-contain rounded-md border border-border"
+          className="overflow-x-auto overscroll-x-contain border-border"
           data-testid="cp-software-history-table-scroll"
         >
-          <table className="min-w-[40rem] w-full text-xs">
-            <thead className="bg-muted/20 text-left uppercase tracking-wide text-muted-foreground">
-              <tr>
-                <th className="px-2 py-2">{t("cp.software.operations.col.action")}</th>
-                <th className="px-2 py-2">{t("cp.software.operations.col.spec")}</th>
-                <th className="px-2 py-2">{t("cp.software.operations.col.status")}</th>
-                <th className="px-2 py-2">{t("cp.software.operations.col.updatedAt")}</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table className="min-w-[40rem] w-full text-xs">
+            <TableHeader className=" text-left uppercase tracking-wide text-muted-foreground">
+              <TableRow>
+                <TableHead className="px-2 py-2">
+                  {t("cp.software.operations.col.action")}
+                </TableHead>
+                <TableHead className="px-2 py-2">{t("cp.software.operations.col.spec")}</TableHead>
+                <TableHead className="px-2 py-2">
+                  {t("cp.software.operations.col.status")}
+                </TableHead>
+                <TableHead className="px-2 py-2">
+                  {t("cp.software.operations.col.updatedAt")}
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {visibleOperations.map((operation) => (
                 <OperationHistoryRow
                   key={operation.id}
@@ -2166,11 +2186,11 @@ function OperationHistory({
                   retryDisabled={error !== null}
                 />
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       ) : (
-        <div className="flex h-20 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground">
+        <div className="flex h-20 items-center justify-center border-border text-sm text-muted-foreground">
           {t("cp.software.operations.historyFilterEmpty")}
         </div>
       )}
@@ -2332,7 +2352,7 @@ function OperationHistoryActiveServerFilters({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs">
+    <div className="flex flex-wrap items-center gap-2 border-border px-3 py-2 text-xs">
       <span className="font-medium text-muted-foreground">
         {t("cp.software.operations.historyServerFilters")}
       </span>
@@ -2395,8 +2415,8 @@ function OperationHistoryRow({
   const retryable = !operation.auditOnly && isFailedOperation(operation);
   return (
     <>
-      <tr className="border-t border-border" data-testid={`cp-software-operation-${operation.id}`}>
-        <td className="px-2 py-2">
+      <TableRow className=" border-border" data-testid={`cp-software-operation-${operation.id}`}>
+        <TableCell className="px-2 py-2">
           <div className="flex flex-wrap items-center gap-1.5">
             <span>
               <OperationActionIcon action={operation.action} />
@@ -2419,9 +2439,12 @@ function OperationHistoryRow({
               </Button>
             ) : null}
           </div>
-        </td>
-        <td className="max-w-64 truncate px-2 py-2 font-mono">{operation.spec}</td>
-        <td className="px-2 py-2" data-testid={`cp-software-operation-status-${operation.id}`}>
+        </TableCell>
+        <TableCell className="max-w-64 truncate px-2 py-2 font-mono">{operation.spec}</TableCell>
+        <TableCell
+          className="px-2 py-2"
+          data-testid={`cp-software-operation-status-${operation.id}`}
+        >
           <OperationStatusBadge operation={operation} />
           {operation.auditStatus === "passed" ? (
             <div className="mt-1 max-w-56 text-[11px] text-muted-foreground">
@@ -2446,26 +2469,26 @@ function OperationHistoryRow({
               {t("cp.software.operations.queuedDeliveryUncertainShort")}
             </div>
           ) : null}
-        </td>
-        <td className="px-2 py-2 font-mono text-muted-foreground">
+        </TableCell>
+        <TableCell className="px-2 py-2 font-mono text-muted-foreground">
           {new Date(operation.updatedAt).toLocaleString()}
-        </td>
-      </tr>
+        </TableCell>
+      </TableRow>
       {hasDetails ? (
-        <tr className="border-t border-border bg-muted/20">
-          <td colSpan={4} className="px-2 py-2">
+        <TableRow className=" border-border ">
+          <TableCell colSpan={4} className="px-2 py-2">
             <details>
               <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
                 {t("cp.software.operations.details")}
               </summary>
               <div className="mt-2 grid gap-2 md:grid-cols-3">
                 {deliveryUncertain ? (
-                  <div className="rounded-md border border-border bg-background p-2 text-xs text-muted-foreground md:col-span-3">
+                  <div className=" border-border p-2 text-xs text-muted-foreground md:col-span-3">
                     {t("cp.software.operations.queuedDeliveryUncertain")}
                   </div>
                 ) : null}
                 {isFailedOperation(operation) ? (
-                  <div className="rounded-md border border-status-failed/30 bg-status-failed/5 p-2 text-xs text-status-failed md:col-span-3">
+                  <div className=" p-2 text-xs text-status-failed md:col-span-3">
                     {formatSoftwareOperationFailure(
                       operation,
                       t("cp.software.operations.failed"),
@@ -2486,8 +2509,8 @@ function OperationHistoryRow({
                 ) : null}
               </div>
             </details>
-          </td>
-        </tr>
+          </TableCell>
+        </TableRow>
       ) : null}
     </>
   );
@@ -2708,7 +2731,7 @@ function SpackCatalogPickerDialog({
           </div>
           <CatalogPagination catalog={catalog} onPageChange={changeCatalogPage} />
           {error ? (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-status-failed/40 p-3 text-sm text-status-failed">
+            <div className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm text-status-failed">
               <span>{toUserFacingError(error, t("cp.software.operations.catalogRetry"))}</span>
               <Button
                 type="button"
@@ -2725,7 +2748,7 @@ function SpackCatalogPickerDialog({
           ) : null}
           <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_340px]">
             <div
-              className="grid min-h-72 auto-rows-max content-start gap-3 overflow-auto rounded-md border border-border bg-background p-2 sm:grid-cols-2"
+              className="grid min-h-72 auto-rows-max content-start gap-3 overflow-auto border-border p-2 sm:grid-cols-2"
               data-testid="cp-software-catalog-grid"
             >
               {loading ? (
@@ -2742,9 +2765,9 @@ function SpackCatalogPickerDialog({
                   <button
                     key={`${pkg.source}:${pkg.name}`}
                     type="button"
-                    className={`grid min-h-32 min-w-0 content-between gap-3 rounded-md border bg-card p-3 text-left transition-colors hover:border-brand/50 hover:bg-muted/30 ${
+                    className={`grid min-h-32 min-w-0 content-between gap-3 p-3 text-left transition-colors ${
                       selectedPackage?.source === pkg.source && selectedPackage.name === pkg.name
-                        ? "border-brand ring-1 ring-brand/30"
+                        ? " "
                         : "border-border"
                     }`}
                     onClick={() => choosePackage(pkg)}
@@ -2781,7 +2804,7 @@ function SpackCatalogPickerDialog({
                 ))
               )}
             </div>
-            <div className="flex min-h-0 flex-col gap-3 rounded-md border border-border bg-background p-3">
+            <div className="flex min-h-0 flex-col gap-3 border-border p-3">
               <div>
                 <div className="text-sm font-medium">
                   {t("cp.software.operations.catalogSpecTitle")}
@@ -2799,7 +2822,8 @@ function SpackCatalogPickerDialog({
                     <label className="text-xs font-medium" htmlFor="cp-spack-catalog-version">
                       {t("cp.software.operations.catalogVersion")}
                     </label>
-                    <NativeSelect
+                    <ResourceSelectField
+                      resourceType="software-versions"
                       id="cp-spack-catalog-version"
                       value={selectedVersion}
                       onChange={(event) => setSelectedVersion(event.target.value)}
@@ -2811,14 +2835,14 @@ function SpackCatalogPickerDialog({
                           {version}
                         </option>
                       ))}
-                    </NativeSelect>
+                    </ResourceSelectField>
                   </div>
                   <div className="min-h-0">
                     <div className="mb-1.5 text-xs font-medium">
                       {t("cp.software.operations.catalogVariants")}
                     </div>
                     {selectedVariants.length > 0 ? (
-                      <div className="max-h-44 space-y-1 overflow-auto rounded-md border border-border bg-card p-2">
+                      <div className="max-h-44 space-y-1 overflow-auto border-border p-2">
                         {selectedVariants.map((variant) => {
                           const booleanVariant = isBooleanSpackVariant(variant);
                           const variantInputId = `cp-spack-catalog-variant-${variant.name}`;
@@ -2826,7 +2850,7 @@ function SpackCatalogPickerDialog({
                           return (
                             <div
                               key={variant.name}
-                              className="grid min-w-0 gap-1 rounded-sm px-1.5 py-1 text-xs hover:bg-muted/50"
+                              className="grid min-w-0 gap-1 px-1.5 py-1 text-xs "
                             >
                               <label
                                 className="flex min-w-0 items-center justify-between gap-2"
@@ -2895,7 +2919,7 @@ function SpackCatalogPickerDialog({
                         })}
                       </div>
                     ) : (
-                      <div className="rounded-md border border-border bg-card p-2 text-xs text-muted-foreground">
+                      <div className=" border-border p-2 text-xs text-muted-foreground">
                         {t("cp.software.operations.catalogVariantsEmpty")}
                       </div>
                     )}
@@ -3053,7 +3077,8 @@ function PolicyEditorSheet({
             {target?.type === "provider" && providerOrgIds.length > 1 ? (
               <label className="grid gap-1 text-sm">
                 <span>{t("cp.software.edit.providerOrg")}</span>
-                <NativeSelect
+                <ResourceSelectField
+                  resourceType="organizations"
                   value={draft.providerOrgId}
                   onChange={(event) => setDraft({ ...draft, providerOrgId: event.target.value })}
                 >
@@ -3063,7 +3088,7 @@ function PolicyEditorSheet({
                       {orgId}
                     </option>
                   ))}
-                </NativeSelect>
+                </ResourceSelectField>
               </label>
             ) : null}
             <label className="grid gap-1 text-sm">
@@ -3124,7 +3149,7 @@ function PolicyEditorSheet({
                 })}
               </PolicyEditorNotice>
             ) : null}
-            <div className="rounded-md border border-border p-3">
+            <div className=" border-border p-3">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div className="text-sm font-medium">{t("cp.software.usecase.title")}</div>
@@ -3242,7 +3267,7 @@ function PolicyEditorNotice({
     tone === "danger"
       ? "border-status-failed/40 bg-status-failed/10 text-status-failed"
       : "border-[var(--status-pending)]/40 bg-[var(--status-pending)]/10 text-[var(--status-pending)]";
-  return <div className={`rounded-md border px-3 py-2 text-xs ${className}`}>{children}</div>;
+  return <div className={` px-3 py-2 text-xs ${className}`}>{children}</div>;
 }
 
 function targetToDraft(target: EditorTarget | null, providerOrgIds: string[]): PolicyDraft {

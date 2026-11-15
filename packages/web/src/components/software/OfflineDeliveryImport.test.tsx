@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import i18n from "../../lib/i18n";
 import { requestSoftwareJson } from "../../lib/software-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { OfflineDeliveryImport } from "./OfflineDeliveryImport";
 
 vi.mock("../../lib/software-client", () => ({
@@ -45,7 +46,7 @@ test("delivery requires preflight and preserves explicit actions in the request"
   });
   render(<OfflineDeliveryImport isCurrent={() => true} canWriteRepository={() => true} />);
   const file = new File([JSON.stringify(plan)], "delivery.json", { type: "application/json" });
-  fireEvent.change(screen.getByLabelText("交付清单"), { target: { files: [file] } });
+  fireEvent.change(nativeControl(screen.getByLabelText("交付清单")), { target: { files: [file] } });
   await waitFor(() => expect(screen.getByText("上传并预检").hasAttribute("disabled")).toBe(false));
   expect(screen.getByText("导入").hasAttribute("disabled")).toBe(true);
   fireEvent.click(screen.getByText("上传并预检"));
@@ -64,7 +65,7 @@ test("delivery requires preflight and preserves explicit actions in the request"
 
 test("revoked sessions cannot issue import requests", async () => {
   render(<OfflineDeliveryImport isCurrent={() => false} canWriteRepository={() => true} />);
-  fireEvent.change(screen.getByLabelText("交付清单"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("交付清单")), {
     target: { files: [new File([JSON.stringify(plan)], "delivery.json")] },
   });
   expect(screen.getByText("上传并预检").hasAttribute("disabled")).toBe(true);
@@ -86,7 +87,7 @@ test("a planned report with blocked items does not claim it is ready to import",
     ],
   });
   render(<OfflineDeliveryImport isCurrent={() => true} canWriteRepository={() => true} />);
-  fireEvent.change(screen.getByLabelText("交付清单"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("交付清单")), {
     target: { files: [new File([JSON.stringify(plan)], "delivery.json")] },
   });
   const preflight = screen.getByRole("button", { name: "上传并预检" });
@@ -120,13 +121,15 @@ test.each([
   );
   render(<OfflineDeliveryImport isCurrent={() => true} canWriteRepository={() => true} />);
   const input = screen.getByLabelText("交付清单");
-  fireEvent.change(input, { target: { files: [older] } });
+  fireEvent.change(nativeControl(input), { target: { files: [older] } });
   const newer = new File(
     [selection === "invalid" ? "invalid" : JSON.stringify({ ...plan, name: "newer" })],
     "newer.json",
   );
   await act(async () => {
-    fireEvent.change(input, { target: { files: selection === "cleared" ? [] : [newer] } });
+    fireEvent.change(nativeControl(input), {
+      target: { files: selection === "cleared" ? [] : [newer] },
+    });
   });
   await act(async () => finishRead(JSON.stringify(plan)));
   const preflight = screen.getByRole("button", { name: "上传并预检" });
@@ -150,7 +153,7 @@ test("a failed recheck invalidates the earlier successful preflight", async () =
     })
     .mockRejectedValueOnce(new Error("network failure"));
   render(<OfflineDeliveryImport isCurrent={() => true} canWriteRepository={() => true} />);
-  fireEvent.change(screen.getByLabelText("交付清单"), {
+  fireEvent.change(nativeControl(screen.getByLabelText("交付清单")), {
     target: { files: [new File([JSON.stringify(plan)], "delivery.json")] },
   });
   const preflight = screen.getByRole("button", { name: "上传并预检" });

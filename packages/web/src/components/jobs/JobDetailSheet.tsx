@@ -115,7 +115,7 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
         );
         return (
           <div
-            className="flex items-start gap-3 rounded-md border border-border bg-card p-4"
+            className="flex items-start gap-3 border-border p-4"
             data-testid="job-detail-error"
             role="alert"
           >

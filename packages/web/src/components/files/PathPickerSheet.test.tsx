@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { ApiError, api } from "../../lib/api-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { PathPickerSheet } from "./PathPickerSheet";
 
 vi.mock("react-i18next", () => ({
@@ -103,7 +104,7 @@ describe("PathPickerSheet", () => {
     );
     expect(screen.getByTestId("path-picker-cluster-up")).toHaveProperty("disabled", true);
 
-    fireEvent.change(screen.getByTestId("path-picker-cluster-root-select"), {
+    fireEvent.change(nativeControl(screen.getByTestId("path-picker-cluster-root-select")), {
       target: { value: "/scratch/team-a" },
     });
     await waitFor(() =>
@@ -173,7 +174,7 @@ describe("PathPickerSheet", () => {
       />,
     );
 
-    fireEvent.change(await screen.findByTestId("path-picker-cluster-root-select"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("path-picker-cluster-root-select")), {
       target: { value: "/scratch/team-a" },
     });
     await waitFor(() =>
@@ -467,7 +468,7 @@ test("loads a separate listing when two picker agents share a site name", async 
     />,
   );
   await screen.findByRole("button", { name: "agent-a.txt" });
-  fireEvent.change(screen.getByTestId("path-picker-agent-select"), {
+  fireEvent.change(nativeControl(screen.getByTestId("path-picker-agent-select")), {
     target: { value: "agent-b" },
   });
   const choice = await screen.findByRole("button", { name: "agent-b.txt" });

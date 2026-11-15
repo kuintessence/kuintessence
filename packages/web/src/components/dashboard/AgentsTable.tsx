@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import type { AgentRow } from "../../lib/dashboard-data";
 import { Badge } from "../ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 export interface AgentsTableProps {
   agents: AgentRow[];
@@ -26,7 +27,7 @@ export function AgentsTable({ agents }: AgentsTableProps) {
   if (agents.length === 0) {
     return (
       <div
-        className="flex h-32 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground"
+        className="flex h-32 items-center justify-center border-border text-sm text-muted-foreground"
         data-testid="agents-empty"
       >
         {t("dashboard.noAgents")}
@@ -34,36 +35,36 @@ export function AgentsTable({ agents }: AgentsTableProps) {
     );
   }
   return (
-    <div className="overflow-hidden rounded-md border border-border" data-testid="agents-table">
-      <table className="w-full text-sm">
-        <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
-          <tr>
-            <th className="px-3 py-2 font-medium">{t("dashboard.site")}</th>
-            <th className="px-3 py-2 font-medium">{t("dashboard.scheduler")}</th>
-            <th className="px-3 py-2 font-medium">{t("dashboard.status")}</th>
-          </tr>
-        </thead>
-        <tbody>
+    <div className="overflow-hidden border-border" data-testid="agents-table">
+      <Table className="w-full text-sm">
+        <TableHeader className=" text-left text-xs uppercase tracking-wide text-muted-foreground">
+          <TableRow>
+            <TableHead className="px-3 py-2 font-medium">{t("dashboard.site")}</TableHead>
+            <TableHead className="px-3 py-2 font-medium">{t("dashboard.scheduler")}</TableHead>
+            <TableHead className="px-3 py-2 font-medium">{t("dashboard.status")}</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {agents.map((a) => (
-            <tr key={a.agentId} className="border-t border-border last:border-b-0">
-              <td className="px-3 py-2">
+            <TableRow key={a.agentId} className=" border-border last:border-b-0">
+              <TableCell className="px-3 py-2">
                 <div className="font-medium">{a.siteName}</div>
                 <div className="font-mono text-[11px] text-muted-foreground" title={a.agentId}>
                   {a.agentId.slice(0, 8)}
                 </div>
-              </td>
-              <td className="px-3 py-2 font-mono text-xs text-muted-foreground tabular-nums">
+              </TableCell>
+              <TableCell className="px-3 py-2 font-mono text-xs text-muted-foreground tabular-nums">
                 {a.schedulerType} {a.schedulerVersion}
-              </td>
-              <td className="px-3 py-2">
+              </TableCell>
+              <TableCell className="px-3 py-2">
                 <Badge className="whitespace-nowrap" variant={statusVariant(a.status)}>
                   {statusLabel(a.status, t)}
                 </Badge>
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   );
 }

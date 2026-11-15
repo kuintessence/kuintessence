@@ -74,17 +74,17 @@ export function TerminalPage() {
         meta={
           <div className="flex flex-wrap gap-2 text-xs">
             <span
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-muted-foreground"
+              className="inline-flex items-center gap-1.5 border-border px-2.5 py-1 text-muted-foreground"
               data-testid="terminal-mode-badge"
             >
               <TerminalSquare className="h-3.5 w-3.5" />
               {t("terminal.mode")}
             </span>
-            <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5 border-border px-2.5 py-1 text-muted-foreground">
               <ShieldCheck className="h-3.5 w-3.5" />
               {t("terminal.auditBadge")}
             </span>
-            <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5 border-border px-2.5 py-1 text-muted-foreground">
               <Server className="h-3.5 w-3.5" />
               {t("terminal.activeCount", { count: open.length })}
             </span>
@@ -125,15 +125,12 @@ export function TerminalPage() {
       />
 
       {sessionsLoadError ? (
-        <div
-          className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm text-status-failed"
-          data-testid="terminal-sessions-error"
-        >
+        <div className=" p-3 text-sm text-status-failed" data-testid="terminal-sessions-error">
           {toUserFacingError(sessionsLoadError, t("terminal.sessionsLoadFailed"))}
         </div>
       ) : open.length === 0 ? (
         <div
-          className="flex min-h-48 flex-col items-center justify-center gap-3 rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground"
+          className="flex min-h-48 flex-col items-center justify-center gap-3 border-border px-4 py-8 text-center text-sm text-muted-foreground"
           data-testid="terminal-empty"
         >
           <TerminalSquare className="h-5 w-5" />
@@ -169,10 +166,8 @@ export function TerminalPage() {
                 <div
                   key={s.id}
                   className={cn(
-                    "flex min-w-max items-center gap-2 rounded-md border px-2 py-1 text-xs transition-colors",
-                    selected
-                      ? "border-brand bg-brand-soft text-foreground"
-                      : "border-border text-muted-foreground hover:bg-muted/60",
+                    "flex min-w-max items-center gap-2 px-2 py-1 text-xs transition-colors",
+                    selected ? " text-foreground" : "border-border text-muted-foreground ",
                   )}
                 >
                   <button
@@ -183,7 +178,7 @@ export function TerminalPage() {
                     onClick={() => setActiveId(s.id)}
                     className="flex min-w-0 items-center gap-2"
                   >
-                    <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[s.state])} />
+                    <span className={cn("h-1.5 w-1.5 ", STATUS_DOT[s.state])} />
                     <span className="max-w-48 truncate font-mono" title={s.siteId}>
                       {s.siteId}
                     </span>

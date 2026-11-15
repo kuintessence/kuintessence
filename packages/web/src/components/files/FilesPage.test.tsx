@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { ApiError, api, downloadAuthedFile, uploadFileToNetDrive } from "../../lib/api-client";
+import { nativeControl } from "../../lib/test-resource-field";
 import { FilesPage } from "./FilesPage";
 
 const toastError = vi.hoisted(() => vi.fn());
@@ -1109,7 +1110,7 @@ describe("FilesPage transfer direction", () => {
     );
     expect(screen.getByTestId("files-cluster-up")).toHaveProperty("disabled", true);
 
-    fireEvent.change(screen.getByTestId("files-cluster-root-select"), {
+    fireEvent.change(nativeControl(screen.getByTestId("files-cluster-root-select")), {
       target: { value: "/scratch/team-a" },
     });
     await waitFor(() =>
@@ -1334,7 +1335,7 @@ describe("FilesPage transfer direction", () => {
 
     render(withQueryClient(<FilesPage />));
 
-    fireEvent.change(await screen.findByTestId("files-cluster-root-select"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("files-cluster-root-select")), {
       target: { value: "/scratch/team-a" },
     });
     fireEvent.click(await screen.findByTestId("files-cluster-row-README.md"));
@@ -1399,7 +1400,7 @@ describe("FilesPage transfer direction", () => {
 
     render(withQueryClient(<FilesPage />));
 
-    fireEvent.change(await screen.findByTestId("files-cluster-root-select"), {
+    fireEvent.change(nativeControl(await screen.findByTestId("files-cluster-root-select")), {
       target: { value: "/scratch/team-a" },
     });
     await waitFor(() =>
@@ -1998,7 +1999,7 @@ function setupAgentIsolationFixture() {
 test("separates cluster listings for agents sharing a site name", async () => {
   setupAgentIsolationFixture();
   await screen.findByText("agent-a.txt");
-  fireEvent.change(screen.getByTestId("files-cluster-agent-select"), {
+  fireEvent.change(nativeControl(screen.getByTestId("files-cluster-agent-select")), {
     target: { value: "agent-b" },
   });
   expect(await screen.findByText("agent-b.txt")).toBeTruthy();
@@ -2016,7 +2017,7 @@ test("requires explicit reselection when the current agent disappears", async ()
   expect(screen.getByTestId("files-cluster-agent-select")).toHaveProperty("value", "");
   expect(screen.getByTestId("files-pull")).toHaveProperty("disabled", true);
   expect(calls.some((path) => path.includes("agentId=agent-b"))).toBe(false);
-  fireEvent.change(screen.getByTestId("files-cluster-agent-select"), {
+  fireEvent.change(nativeControl(screen.getByTestId("files-cluster-agent-select")), {
     target: { value: "agent-b" },
   });
   expect(await screen.findByText("agent-b.txt")).toBeTruthy();
@@ -2106,7 +2107,7 @@ test("locks upload batches across file selection and drop, reports failures, and
   const input = await screen.findByTestId("files-cloud-upload-input");
   const first = new File(["a"], "first.txt");
   const second = new File(["b"], "second.txt");
-  fireEvent.change(input, { target: { files: [first, second] } });
+  fireEvent.change(nativeControl(input), { target: { files: [first, second] } });
   fireEvent.drop(screen.getByTestId("files-cloud-pane"), { dataTransfer: { files: [first] } });
   expect(uploadFileToNetDrive).toHaveBeenCalledTimes(1);
   expect(screen.getByTestId("files-cloud-upload")).toHaveProperty("disabled", true);

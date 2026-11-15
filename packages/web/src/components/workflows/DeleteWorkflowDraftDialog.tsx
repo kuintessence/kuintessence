@@ -49,9 +49,7 @@ export function DeleteWorkflowDraftDialog({
           <DialogDescription>{t("workflows.drafts.deleteDescription")}</DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-3">
-          <p className="break-all rounded-md border border-border bg-muted/30 p-3 font-medium">
-            {(draft ?? snapshot)?.name}
-          </p>
+          <p className="break-all border-border p-3 font-medium">{(draft ?? snapshot)?.name}</p>
           {error ? (
             <div role="alert" className="text-sm text-status-failed">
               {error}

@@ -29,10 +29,7 @@ export function TemplateGallery({ onPick, selectedYaml }: TemplateGalleryProps) 
   const selected = useMemo(() => selectedTemplate(selectedYaml), [selectedYaml]);
 
   return (
-    <div
-      className="rounded-xl border border-border bg-card p-4 shadow-sm"
-      data-testid="template-gallery"
-    >
+    <div className=" border-border p-4 " data-testid="template-gallery">
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
@@ -46,7 +43,7 @@ export function TemplateGallery({ onPick, selectedYaml }: TemplateGalleryProps) 
           </p>
         </div>
         <span
-          className="min-w-0 truncate rounded-full border border-border bg-background px-3 py-1 font-mono text-[11px] text-muted-foreground"
+          className="min-w-0 truncate border-border px-3 py-1 font-mono text-[11px] text-muted-foreground"
           data-testid="template-selected"
           title={selected?.name ?? t("workflows.templates.custom")}
         >
@@ -65,8 +62,8 @@ export function TemplateGallery({ onPick, selectedYaml }: TemplateGalleryProps) 
               data-testid={`template-${template.slug}`}
               onClick={() => onPick(template.yaml)}
               className={cn(
-                "flex min-h-24 w-[17rem] shrink-0 flex-col items-start rounded-lg border bg-background p-3 text-left transition-colors hover:border-brand/70 hover:bg-brand-soft/30 sm:w-[20rem]",
-                active ? "border-brand bg-brand-soft/40 ring-1 ring-brand" : "border-border",
+                "flex min-h-24 w-[17rem] shrink-0 flex-col items-start p-3 text-left transition-colors sm:w-[20rem]",
+                active ? "text-brand" : "",
               )}
               aria-pressed={active}
             >

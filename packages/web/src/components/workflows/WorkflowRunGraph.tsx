@@ -92,10 +92,7 @@ function RunNode({ data }: { data: RunNodeData }) {
     <div
       data-testid={`run-node-${data.nodeId}`}
       data-status={data.status}
-      className={cn(
-        "relative flex flex-col gap-1 rounded-lg border-2 p-2.5 shadow-sm",
-        STATUS_CLASS[variant],
-      )}
+      className={cn("relative flex flex-col gap-1 p-2.5 ", STATUS_CLASS[variant])}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
     >
       <Handle
@@ -209,11 +206,7 @@ export function WorkflowRunGraph({ graph, statusByNode, jobIdsByNode }: Workflow
   };
 
   return (
-    <div
-      className="overflow-hidden rounded-xl border border-border"
-      style={wrapStyle}
-      data-testid="run-graph-wrap"
-    >
+    <div className="overflow-hidden border-border" style={wrapStyle} data-testid="run-graph-wrap">
       <ReactFlow
         colorMode={resolved}
         nodes={rfNodes}

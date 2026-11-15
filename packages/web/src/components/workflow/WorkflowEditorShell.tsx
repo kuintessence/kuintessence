@@ -26,11 +26,13 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
   getSandboxScript,
+  listSandboxRuntimeProfiles,
   listSandboxScripts,
   type SandboxScriptAsset,
 } from "../../lib/sandbox-client";
 import { listUsecasePackages, type UsecasePackage } from "../../lib/software-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { parseWorkflowYaml } from "../../lib/workflow-parser";
 import {
   type GraphEdge,
   type GraphHeader,
@@ -146,9 +148,20 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
   const usecasesQ = useQuery({
     queryKey: ["software-usecases"],
     queryFn: () => listUsecasePackages(),
-    enabled: pendingNode?.kind === "SoftwareUsecaseComputing",
+    enabled:
+      pendingNode?.kind === "SoftwareUsecaseComputing" ||
+      graph.nodes.some(
+        (node) => node.id === selectedId && node.data.kind === "SoftwareUsecaseComputing",
+      ),
     retry: false,
   });
+  const runtimesQ = useQuery({
+    queryKey: ["sandbox-runtime-profiles"],
+    queryFn: listSandboxRuntimeProfiles,
+    enabled: graph.nodes.some((node) => node.id === selectedId && node.data.kind === "Script"),
+    retry: false,
+  });
+
   const scriptsQ = useQuery({
     queryKey: ["sandbox-scripts"],
     queryFn: () => listSandboxScripts(),
@@ -200,6 +213,37 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
   }
 
   function handlePatch(nodeId: string, patch: Partial<GraphNodeData>) {
+    const nextRaw = patch.raw;
+    if (nextRaw?.type === "SoftwareUsecaseComputing") {
+      const current = graph.nodes.find((node) => node.id === nodeId)?.data.raw;
+      const pkg = usecasesQ.data?.find((candidate) => candidate.id === nextRaw.usecaseVersionId);
+      if (
+        pkg &&
+        current?.type === "SoftwareUsecaseComputing" &&
+        current.usecaseVersionId !== nextRaw.usecaseVersionId
+      ) {
+        const slots = buildUsecaseInputSlots(pkg).map((slot) => {
+          const existing = current.inputSlots?.find(
+            (old) => old.descriptor === slot.descriptor && old.type === slot.type,
+          );
+          return existing ?? slot;
+        });
+        patch = {
+          ...patch,
+          raw: {
+            ...nextRaw,
+            inputSlots: slots,
+            outputSlots: (pkg.spec.filesomeOutputs ?? []).map((output) => ({
+              type: "File" as const,
+              descriptor: output.descriptor,
+              optional: false,
+              origin: "UsecaseOut" as const,
+              isBatch: output.fileKind.kind === "Batched",
+            })),
+          },
+        };
+      }
+    }
     setState((prev) => {
       const nextNodes = prev.graph.nodes.map((n) => {
         if (n.id !== nodeId) return n;
@@ -227,6 +271,11 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
       return { graph: nextGraph, error: null };
     });
   }
+
+  const graphValidation = useMemo(
+    () => parseWorkflowYaml(graphToYaml(graph.header, graph.nodes, graph.edges)),
+    [graph],
+  );
 
   function handleEdgePatch(edgeId: string, patch: Partial<GraphEdge>) {
     const nextEdges = graph.edges.map((edge) =>
@@ -382,11 +431,8 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
   }
 
   return (
-    <div
-      data-testid="rf-shell"
-      className="flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm"
-    >
-      <div className="flex flex-col gap-3 border-b border-border bg-muted/20 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+    <div data-testid="rf-shell" className="flex flex-col overflow-hidden border-border ">
+      <div className="flex flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <h3 className="text-base font-semibold">
             {t("workflow.editor.title", { defaultValue: "Workflow editor" })}
@@ -396,7 +442,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           {error ? (
             <span
               data-testid="rf-shell-sync-error"
-              className="rounded-full border border-status-failed/30 bg-status-failed/10 px-3 py-1 font-mono text-[11px] text-status-failed"
+              className=" px-3 py-1 font-mono text-[11px] text-status-failed"
             >
               {t("workflow.editor.canvas.syncError", {
                 defaultValue: "YAML parse error, edits paused",
@@ -424,7 +470,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
             <Waypoints className="h-3.5 w-3.5" />
             {t("workflow.editor.connectionAssist")}
           </Button>
-          <label className="relative flex h-8 items-center rounded-md border border-input bg-background pl-8 pr-2 text-xs">
+          <label className="relative flex h-8 items-center border-b border-input pl-8 pr-2 text-xs">
             <Activity className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-muted-foreground" />
             <span className="sr-only">{t("workflow.editor.flowAnimation.label")}</span>
             <NativeSelect
@@ -511,7 +557,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           hidden={paletteCollapsed}
           label={t("workflow.editor.resizePalette")}
         />
-        <div className="relative min-h-[420px] w-full overflow-hidden border-y border-border bg-background lg:h-full lg:min-h-0 lg:border-x lg:border-y-0">
+        <div className="relative min-h-[420px] w-full overflow-hidden border-border lg:h-full lg:min-h-0 ">
           <ReactFlowProvider key={loadedGraphRevision}>
             <ReactFlowEditor
               nodes={graph.nodes}
@@ -536,6 +582,31 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           label={t("workflow.editor.resizeProperties")}
         />
         <PropertiesPanel
+          catalogState={{
+            loading:
+              selectedNode?.data.kind === "Script" ? runtimesQ.isLoading : usecasesQ.isLoading,
+            error:
+              selectedNode?.data.kind === "Script"
+                ? runtimesQ.error
+                  ? toUserFacingError(runtimesQ.error, t("common.loadFailed"))
+                  : undefined
+                : usecasesQ.error
+                  ? toUserFacingError(usecasesQ.error, t("common.loadFailed"))
+                  : undefined,
+            onRetry: () => {
+              if (selectedNode?.data.kind === "Script") void runtimesQ.refetch();
+              else void usecasesQ.refetch();
+            },
+          }}
+          nodes={graph.nodes}
+          usecases={usecasesQ.data ?? []}
+          runtimes={(runtimesQ.data ?? []).map((profile) => ({
+            value: profile.id,
+            label: profile.name,
+            description: `${profile.language} ${profile.languageVersion}`,
+            disabled: profile.lifecycle !== "active",
+            disabledReason: profile.lifecycle !== "active" ? profile.lifecycle : undefined,
+          }))}
           selected={selectedNode}
           selectedEdge={selectedEdge}
           onPatch={handlePatch}
@@ -544,6 +615,18 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           onToggleCollapsed={() => setPropsCollapsed((v) => !v)}
         />
       </div>
+      {!error && !graphValidation.ok ? (
+        <p
+          role="alert"
+          data-testid="rf-shell-reference-error"
+          className="break-words border-b border-border p-3 text-xs text-status-failed"
+        >
+          {graphValidation.message}
+          {graphValidation.issues
+            ?.map((issue) => ` ${issue.path.join(".")}: ${issue.message}`)
+            .join(";")}
+        </p>
+      ) : null}
       <WorkflowUsecasePickerDialog
         error={usecasesQ.error ?? null}
         loading={usecasesQ.isLoading}

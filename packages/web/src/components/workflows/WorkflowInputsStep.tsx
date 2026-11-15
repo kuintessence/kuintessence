@@ -45,6 +45,7 @@ import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input, Textarea } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { ResourceSelectField } from "../ui/resource-select-field";
 import { SearchInput } from "../ui/search-input";
 
 interface NetDriveListResp {
@@ -522,7 +523,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
     return (
       <div className="space-y-4" data-testid="workflow-inputs-step">
         {model.values.length === 0 && model.datasets.length === 0 && model.files.length === 0 && (
-          <p className="rounded-xl border bg-card p-5 text-sm text-muted-foreground">
+          <p className=" p-5 text-sm text-muted-foreground">
             {t(
               model.unresolvedSubworkflowRefs.length
                 ? "workflows.creation.inputs.unresolvedInputs"
@@ -531,7 +532,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
           </p>
         )}
         {model.values.length > 0 && (
-          <Card className="rounded-md shadow-none">
+          <Card className=" ">
             <CardHeader>
               <div>
                 <CardTitle>{t("workflows.creation.inputs.parametersTitle")}</CardTitle>
@@ -610,7 +611,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
         )}
 
         {model.datasets.length > 0 && (
-          <Card className="rounded-md shadow-none">
+          <Card className=" ">
             <CardHeader>
               <CardTitle>{t("workflows.creation.inputs.datasetsTitle")}</CardTitle>
             </CardHeader>
@@ -621,10 +622,10 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                 datasetGroups.map((group) => (
                   <article
                     key={group.nodeId}
-                    className="overflow-hidden rounded-lg border border-border bg-background"
+                    className="overflow-hidden border-border "
                     data-testid={`workflow-dataset-node-${group.nodeId}`}
                   >
-                    <header className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-3 py-2.5">
+                    <header className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold">{group.nodeName}</p>
                         <p className="truncate font-mono text-[11px] text-muted-foreground">
@@ -658,7 +659,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
         )}
 
         {model.files.length > 0 && (
-          <Card className="rounded-md shadow-none">
+          <Card className=" ">
             <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
               <div>
                 <CardTitle>{t("workflows.creation.inputs.filesTitle")}</CardTitle>
@@ -695,7 +696,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
             <CardContent className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
               <section
                 aria-label={t("workflows.creation.inputs.candidateFiles")}
-                className="min-w-0 rounded-lg border border-border bg-muted/20 p-3 transition-colors hover:border-brand/50"
+                className="min-w-0 border-border p-3 transition-colors "
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={(event) => {
                   event.preventDefault();
@@ -748,11 +749,8 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                     <EmptyMessage text={t("workflows.creation.inputs.noCandidates")} />
                   ) : (
                     candidateTrees.map((tree) => (
-                      <div
-                        key={tree.key}
-                        className="overflow-hidden rounded-md border border-border bg-card"
-                      >
-                        <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-2.5 py-2 text-xs font-medium">
+                      <div key={tree.key} className="overflow-hidden border-border ">
+                        <div className="flex items-center gap-2 border-b border-border px-2.5 py-2 text-xs font-medium">
                           {tree.source === "local" ? (
                             <FolderOpen
                               className="h-3.5 w-3.5 text-brand"
@@ -789,10 +787,10 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                   requirementGroups.map((group) => (
                     <article
                       key={group.nodeId}
-                      className="overflow-hidden rounded-md border border-border bg-card"
+                      className="overflow-hidden border-border "
                       data-testid={`workflow-file-node-${group.nodeId}`}
                     >
-                      <header className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-3 py-2.5">
+                      <header className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-semibold">{group.nodeName}</p>
                           <p className="truncate font-mono text-[11px] text-muted-foreground">
@@ -808,7 +806,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                             <fieldset
                               key={requirement.key}
                               aria-label={`${requirement.nodeName} / ${requirement.descriptor}`}
-                              className="rounded-lg border border-dashed border-border bg-background p-3 transition-colors focus-within:border-brand"
+                              className=" border-border p-3 transition-colors "
                               onDragOver={(event) => event.preventDefault()}
                               onDrop={(event) => {
                                 event.preventDefault();
@@ -843,7 +841,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                                 </Badge>
                               </div>
                               <div className="mt-3 space-y-2">
-                                <div className="flex min-h-10 min-w-0 flex-col items-stretch gap-2 rounded-md border border-dashed border-brand/35 bg-brand-soft/20 px-3 py-2">
+                                <div className="flex min-h-10 min-w-0 flex-col items-stretch gap-2 px-3 py-2">
                                   {assigned.length === 0 ? (
                                     <span className="block min-w-0 truncate text-xs text-muted-foreground">
                                       {t("workflows.creation.inputs.dropHere")}
@@ -852,7 +850,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                                     assigned.map((candidate) => (
                                       <span
                                         key={candidate.id}
-                                        className="flex min-w-0 w-full items-center gap-1 rounded-md bg-brand-soft px-2 py-1 text-xs text-brand"
+                                        className="flex min-w-0 w-full items-center gap-1 px-2 py-1 text-xs text-brand"
                                       >
                                         <span
                                           className="min-w-0 flex-1 truncate"
@@ -1120,7 +1118,7 @@ function DatasetInputPicker({
   if (!requirement.usecaseVersionId) {
     return (
       <section
-        className="space-y-2 rounded-lg border border-status-failed/40 bg-status-failed/10 p-3"
+        className="space-y-2 p-3"
         data-testid={`workflow-dataset-unresolved-${requirement.key}`}
       >
         <p className="text-sm font-semibold">{requirement.descriptor}</p>
@@ -1133,7 +1131,7 @@ function DatasetInputPicker({
 
   return (
     <section
-      className="space-y-2 rounded-lg border border-border bg-muted/10 p-3"
+      className="space-y-2 border-border p-3"
       data-testid={`workflow-dataset-requirement-${requirement.key}`}
     >
       <div className="flex items-center justify-between gap-2">
@@ -1152,7 +1150,9 @@ function DatasetInputPicker({
         value={query}
       />
       <div className="flex items-center gap-2">
-        <NativeSelect
+        <ResourceSelectField
+          searchable={false}
+          resourceType="dataset-versions"
           className="min-w-0 flex-1"
           data-testid={`workflow-dataset-select-${requirement.key}`}
           disabled={optionsQ.isLoading || optionsQ.isError || displayedOptions.length === 0}
@@ -1177,7 +1177,7 @@ function DatasetInputPicker({
               {option.assetName} / {option.version}
             </option>
           ))}
-        </NativeSelect>
+        </ResourceSelectField>
         <Button
           aria-label={t("workflows.creation.inputs.refreshDatasets")}
           data-testid={`workflow-dataset-refresh-${requirement.key}`}
@@ -1283,7 +1283,7 @@ function CandidateTreeBranches({
     return (
       <details key={node.path} className="group/tree" open={depth <= 3}>
         <summary
-          className="flex cursor-pointer list-none items-center gap-2 px-2.5 py-2 text-xs font-medium hover:bg-muted/40"
+          className="flex cursor-pointer list-none items-center gap-2 px-2.5 py-2 text-xs font-medium"
           style={{ paddingLeft: `${Math.min(depth, 5) * 10}px` }}
         >
           <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform duration-150 group-open/tree:rotate-90" />
@@ -1331,7 +1331,7 @@ function CandidateFileRow({
   const { t } = useTranslation();
   return (
     <div
-      className="flex w-full items-center pr-2.5 transition-colors hover:bg-brand-soft/40"
+      className="flex w-full items-center pr-2.5 transition-colors "
       style={{ paddingLeft: `${Math.min(depth, 6) * 10 + 20}px` }}
     >
       <button
@@ -1372,15 +1372,15 @@ function UploadOverlay({ progress }: { progress: UploadProgress }) {
   const percent = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4 backdrop-blur-md"
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4 backdrop-blur-md"
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="workflow-upload-title"
       data-testid="workflow-upload-overlay"
     >
-      <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-2xl">
+      <div className="w-full max-w-md border-border p-6 ">
         <div className="flex items-start gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center text-brand">
             <Loader2 className="h-5 w-5 animate-spin" />
           </span>
           <div className="min-w-0">
@@ -1392,9 +1392,9 @@ function UploadOverlay({ progress }: { progress: UploadProgress }) {
             </p>
           </div>
         </div>
-        <div className="mt-5 h-2 overflow-hidden rounded-full bg-muted">
+        <div className="mt-5 h-2 overflow-hidden ">
           <div
-            className="h-full rounded-full bg-brand transition-[width] duration-300"
+            className="h-full transition-[width] duration-300"
             style={{ width: `${percent}%` }}
           />
         </div>
@@ -1410,9 +1410,5 @@ function UploadOverlay({ progress }: { progress: UploadProgress }) {
 }
 
 function EmptyMessage({ text }: { text: string }) {
-  return (
-    <div className="rounded-md border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
-      {text}
-    </div>
-  );
+  return <div className=" border-border p-5 text-center text-sm text-muted-foreground">{text}</div>;
 }

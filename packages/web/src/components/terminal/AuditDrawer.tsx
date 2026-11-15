@@ -67,7 +67,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
             <SheetTitle className="font-mono text-sm">
               {t("terminal.auditTitle")} · {session.id.slice(0, 8)}
             </SheetTitle>
-            <span className="rounded-md border border-border bg-muted/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            <span className=" border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
               {t("terminal.auditReadonly")}
             </span>
           </div>
@@ -76,10 +76,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
 
         <SheetBody>
           <div className="space-y-4">
-            <div
-              className="rounded-md border border-border p-4 text-xs"
-              data-testid="terminal-audit-meta"
-            >
+            <div className=" border-border p-4 text-xs" data-testid="terminal-audit-meta">
               <dl className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-x-3 gap-y-1.5 break-words font-mono [overflow-wrap:anywhere] sm:grid-cols-[120px_minmax(0,1fr)]">
                 <dt className="text-muted-foreground">{t("terminal.auditSite")}</dt>
                 <dd>{session.siteId}</dd>
@@ -137,7 +134,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
             </div>
 
             <div
-              className="max-h-[50vh] overflow-auto rounded-md border border-border"
+              className="max-h-[50vh] overflow-auto border-border"
               data-testid="terminal-audit-list"
             >
               {auditQ.isLoading ? (
@@ -159,7 +156,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
                         key={`${f.ts}-${f.kind}-${i}`}
                         className={cn(
                           "flex items-start gap-2 px-3 py-1.5 font-mono text-[11px]",
-                          i % 2 === 1 ? "bg-muted/20" : "",
+                          i % 2 === 1 ? "" : "",
                         )}
                       >
                         <span
@@ -174,7 +171,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
                             inbound ? "text-brand" : "text-muted-foreground",
                           )}
                         />
-                        <span className="shrink-0 rounded-sm bg-muted/40 px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        <span className="shrink-0 px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
                           {f.kind}
                         </span>
                         <span className="min-w-0 truncate" title={f.data}>
@@ -188,7 +185,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
             </div>
 
             <div
-              className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/30 p-3 text-xs"
+              className="flex items-center justify-between gap-2 border-border p-3 text-xs"
               data-testid="terminal-audit-retention"
             >
               <span className="text-muted-foreground">{t("terminal.auditRetention")}</span>
