@@ -648,8 +648,8 @@ describe("SubmitJobDialog usecase picker", () => {
 
     const steps = await screen.findByTestId("submit-usecase-input-steps");
     expect(steps).toBeTruthy();
-    const selectedCard = screen.getByText("Selected usecase").closest(".bg-card");
-    expect(selectedCard?.contains(steps)).toBe(true);
+    const selectedSection = screen.getByRole("region", { name: "Selected usecase" });
+    expect(selectedSection.contains(steps)).toBe(true);
     expect(screen.queryByTestId("submit-usecase-input-script")).toBeNull();
     expect(screen.getByTestId("submit-usecase-picker-open").className).toContain("w-full");
 

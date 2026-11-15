@@ -1015,24 +1015,24 @@
 
 ## packages/web/src/components/jobs/SubmitJobDialog.tsx
 
-容器：SheetContent:1097、DialogContent:1812。
+容器：SheetContent:1097、DialogContent:1815。
 
 | 行 | 控件 / 字段 | 状态 | 原因 |
 | --- | --- | --- | --- |
 | 390 | ResourceSelectField · {`submit-usecase-dataset-select-${descriptor}`} | 已替换 | 共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。 |
-| 1241 | Textarea · {fieldId} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1252 | Input · {fieldId} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1377 | Textarea · "submit-job-command-input" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1440 | Input · "submit-job-name-input" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1457 | Input · "submit-job-cpus-input" | 保留 | 数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。 |
-| 1473 | Input · "submit-job-memory-input" | 保留 | 数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。 |
-| 1489 | input · "submit-job-placement-auto" | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
-| 1503 | input · "submit-job-placement-default" | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
-| 1517 | input · "submit-job-placement-named" | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
-| 1589 | ResourceSelectField · "submit-job-queue-select" | 已替换 | 共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。 |
-| 1835 | NativeSelect · "submit-usecase-runtime-filter" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
-| 1849 | NativeSelect · "submit-usecase-input-filter" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
-| 1861 | Input · "submit-usecase-software-filter" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 1244 | Textarea · {fieldId} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 1255 | Input · {fieldId} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 1380 | Textarea · "submit-job-command-input" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 1443 | Input · "submit-job-name-input" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 1460 | Input · "submit-job-cpus-input" | 保留 | 数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。 |
+| 1476 | Input · "submit-job-memory-input" | 保留 | 数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。 |
+| 1492 | input · "submit-job-placement-auto" | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
+| 1506 | input · "submit-job-placement-default" | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
+| 1520 | input · "submit-job-placement-named" | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
+| 1592 | ResourceSelectField · "submit-job-queue-select" | 已替换 | 共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。 |
+| 1838 | NativeSelect · "submit-usecase-runtime-filter" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+| 1852 | NativeSelect · "submit-usecase-input-filter" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+| 1864 | Input · "submit-usecase-software-filter" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
 
 ## packages/web/src/components/providers/ComputeProvidersPage.tsx
 

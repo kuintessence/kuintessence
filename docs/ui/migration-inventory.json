@@ -2739,91 +2739,91 @@
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 1241,
+        "line": 1244,
         "component": "Textarea",
         "field": "{fieldId}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1252,
+        "line": 1255,
         "component": "Input",
         "field": "{fieldId}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1377,
+        "line": 1380,
         "component": "Textarea",
         "field": "\"submit-job-command-input\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1440,
+        "line": 1443,
         "component": "Input",
         "field": "\"submit-job-name-input\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1457,
+        "line": 1460,
         "component": "Input",
         "field": "\"submit-job-cpus-input\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 1473,
+        "line": 1476,
         "component": "Input",
         "field": "\"submit-job-memory-input\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 1489,
+        "line": 1492,
         "component": "input",
         "field": "\"submit-job-placement-auto\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1503,
+        "line": 1506,
         "component": "input",
         "field": "\"submit-job-placement-default\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1517,
+        "line": 1520,
         "component": "input",
         "field": "\"submit-job-placement-named\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1589,
+        "line": 1592,
         "component": "ResourceSelectField",
         "field": "\"submit-job-queue-select\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 1835,
+        "line": 1838,
         "component": "NativeSelect",
         "field": "\"submit-usecase-runtime-filter\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 1849,
+        "line": 1852,
         "component": "NativeSelect",
         "field": "\"submit-usecase-input-filter\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 1861,
+        "line": 1864,
         "component": "Input",
         "field": "\"submit-usecase-software-filter\"",
         "status": "保留",
@@ -2836,7 +2836,7 @@
         "component": "SheetContent"
       },
       {
-        "line": 1812,
+        "line": 1815,
         "component": "DialogContent"
       }
     ],

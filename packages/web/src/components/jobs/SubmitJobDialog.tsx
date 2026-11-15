@@ -1148,7 +1148,10 @@ export function SubmitJobDialog({
               </TabsList>
               <TabsContent value="usecase" className="space-y-4 pt-3">
                 <div className="space-y-3">
-                  <div className=" border-border p-3">
+                  <section
+                    className="border-border p-3"
+                    aria-label={t("jobs.usecase.selected", { defaultValue: "Selected usecase" })}
+                  >
                     <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                       <div className="min-w-0">
                         <div className="text-xs font-medium uppercase text-muted-foreground">
@@ -1354,7 +1357,7 @@ export function SubmitJobDialog({
                         ))}
                       </div>
                     ) : null}
-                  </div>
+                  </section>
                 </div>
                 <UsecasePickerDialog
                   error={!!usecasesQ.error}
