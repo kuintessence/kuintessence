@@ -103,3 +103,5 @@ describe("CpInfrastructurePage", () => {
     expect(screen.getByText("cp.infrastructure.link.sandbox.restricted")).toBeTruthy();
   });
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

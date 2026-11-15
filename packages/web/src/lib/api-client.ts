@@ -93,10 +93,11 @@ export async function downloadAuthedFile(path: string, filename: string): Promis
 }
 
 export const api = {
-  get: <T>(path: string, scope?: ApiOrganizationScope) =>
+  get: <T>(path: string, scope?: ApiOrganizationScope, signal?: AbortSignal) =>
     request<T>(path, () => ({
       credentials: "same-origin",
       headers: authHeaders(scope),
+      signal,
     })),
   post: <T>(path: string, body?: unknown, scope?: ApiOrganizationScope) =>
     mutationRequest<T>(path, () => ({

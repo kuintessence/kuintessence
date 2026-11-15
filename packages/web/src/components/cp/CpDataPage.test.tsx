@@ -625,3 +625,5 @@ function accessRequest(): DataAccessRequest {
     subjectKind: "user" as const,
   };
 }
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

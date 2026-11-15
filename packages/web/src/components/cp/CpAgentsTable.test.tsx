@@ -11,7 +11,10 @@ vi.mock("react-i18next", () => ({
     t: (key: string) => key,
   }),
 }));
-vi.mock("../../lib/auth", () => ({ getAuthState: () => ({ role: auth.role }) }));
+vi.mock("../../lib/auth", () => ({
+  getAuthState: () => ({ role: auth.role }),
+  subscribeAuthState: () => () => undefined,
+}));
 
 const toastSuccess = vi.fn();
 const toastError = vi.fn();

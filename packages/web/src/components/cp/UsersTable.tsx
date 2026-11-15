@@ -5,6 +5,7 @@ import { useActiveOrganizationId } from "../../lib/active-organization";
 import { useCpUsers } from "../../lib/use-cp-users";
 import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -47,6 +48,7 @@ export function UsersTable() {
 
   return (
     <div className="space-y-4" data-testid="cp-users-table">
+      <FunctionMaps ids={["G07"]} />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between">
         <div className="min-w-0 flex-1">
           <h2 className="text-2xl font-semibold tracking-tight">{t("cp.users.title")}</h2>

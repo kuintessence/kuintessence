@@ -12,6 +12,7 @@ import { getAuthState, subscribeAuthState } from "../../lib/auth";
 import { FEDERATION_SECTIONS, type FederationSection } from "../../lib/federation-navigation";
 import { federationReadFailed } from "../../lib/federation-query-state";
 import { refreshOrganizationScope } from "../../lib/organization-query-scope";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Button } from "../ui/button";
 import { PageHeader, PageShell } from "../ui/page";
 import { AgreementPanel } from "./AgreementPanel";
@@ -145,6 +146,25 @@ function OrganizationAgreements({
       {organizationId && context.data.organizations.some((org) => org.orgId === organizationId) ? (
         <FederationPageTitle value={pageTitle}>
           <div key={`${organizationId}:${revision}:${section}`} className="federation-content">
+            {section !== "commercial" ? (
+              <FunctionMaps
+                ids={
+                  section === "tasks"
+                    ? ["D06", "G21"]
+                    : section === "agreements"
+                      ? ["G23", "T02"]
+                      : section === "market"
+                        ? ["G22"]
+                        : section === "assets"
+                          ? ["G24"]
+                          : section === "delivery"
+                            ? ["G26"]
+                            : section === "cases"
+                              ? ["G27"]
+                              : ["G28"]
+                }
+              />
+            ) : null}
             {section === "tasks" ? (
               <FederationTasksPanel
                 scope={{ organizationId, authRevision: revision }}

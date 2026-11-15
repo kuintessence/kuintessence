@@ -312,3 +312,5 @@ test("the CP page cannot bypass a denied provider management gate", async () => 
   expect(screen.queryByTestId("spack-install-binding-editor")).toBeNull();
   expect(bindings.inspectSpackInstallBinding).not.toHaveBeenCalled();
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

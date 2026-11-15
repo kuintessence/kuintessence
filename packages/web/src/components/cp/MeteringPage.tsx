@@ -9,6 +9,7 @@ import {
 } from "../../lib/use-metering-query";
 import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Button } from "../ui/button";
 import { CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
@@ -130,6 +131,7 @@ export function MeteringPage({
           </Button>
         }
       />
+      {showWebhooks ? <FunctionMaps ids={["G10"]} /> : null}
 
       {exportError ? (
         <div className="text-xs text-status-failed" data-testid="metering-export-error">

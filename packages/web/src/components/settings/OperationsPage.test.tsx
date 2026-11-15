@@ -228,3 +228,5 @@ test("global resource areas are exposed through the platform operations capabili
   render(<OperationsPage />);
   expect(screen.getByTestId("operations-resource-accounts")).toBeTruthy();
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

@@ -459,3 +459,5 @@ describe("draft confirmation revalidation", () => {
     expect(screen.queryByText("Original draft")).toBeNull();
   });
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

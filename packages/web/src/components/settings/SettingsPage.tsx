@@ -15,6 +15,7 @@ import {
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { FederationPageTitle } from "../federation/FederationLayout";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { type ThemePreference, useTheme } from "../ThemeProvider";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -346,6 +347,28 @@ export function SettingsPage() {
       ) : (
         <>
           <PageHeader title={pageTitle} />
+          {activeTab === "personal" && personalSection === "account" ? (
+            <FunctionMaps ids={["D05"]} />
+          ) : null}
+          {activeTab === "security" && !requestedSection ? <FunctionMaps ids={["G13"]} /> : null}
+          {activeTab === "security" && selectedSection === "authz" ? (
+            <FunctionMaps ids={["G12"]} />
+          ) : null}
+          {activeTab === "security" && selectedSection === "ssh-vault" ? (
+            <FunctionMaps ids={["G14"]} />
+          ) : null}
+          {activeTab === "security" && selectedSection === "agent-certs" ? (
+            <FunctionMaps ids={["G30"]} />
+          ) : null}
+          {activeTab === "security" && selectedSection === "federation-clusters" ? (
+            <FunctionMaps ids={["G20", "T06"]} />
+          ) : null}
+          {activeTab === "security" && selectedSection === "federation-trust" ? (
+            <FunctionMaps ids={["T05"]} />
+          ) : null}
+          {activeTab === "infrastructure" && selectedSection === "cluster-file-roots" ? (
+            <FunctionMaps ids={["G15"]} />
+          ) : null}
 
           {activeTab === "personal" ? (
             <div className="space-y-4">

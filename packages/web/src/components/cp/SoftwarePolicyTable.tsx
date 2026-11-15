@@ -67,6 +67,7 @@ import {
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { RuntimeAndMaterialPanel } from "../software/EcosystemGovernancePanels";
 import { Badge, badgeVariants } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -294,6 +295,7 @@ export function SoftwarePolicyTable({
           </Button>
         }
       />
+      <FunctionMaps ids={["G08"]} />
       {mobileReadOnly && (
         <p className="text-sm text-muted-foreground">{t("cp.software.desktopManage")}</p>
       )}

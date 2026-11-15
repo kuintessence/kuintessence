@@ -2702,5 +2702,104 @@
     "resultCount": "共 {{count}} 条",
     "clearFilters": "清空筛选",
     "unavailable": "该选项当前不可用，请重新选择。"
+  },
+  "functionMaps": {
+    "portal": "功能与业务示意图",
+    "choose": "查看示意图",
+    "permissionFailed": "无法核实入口权限，请重试。",
+    "partialAccess": "联邦权限尚未核实，当前仅显示已获准入口。",
+    "noAccess": "当前范围没有可显示的获准入口。",
+    "noData": "当前没有可显示的数据。",
+    "template": "流程模板：不表示某次执行的实际进度。",
+    "designRelations": "设计关系：仅显示当前权限内的能力或对象类型。",
+    "actualSources": "运行数据：以接口字段及时间依据分别判断。",
+    "compact": "收起大图",
+    "expand": "展开大图",
+    "canvas": "可滚动示意图",
+    "mobile": "示意图节点文字视图",
+    "dependencyLegend": "实线标注关系类型；虚线为包含或观测。A → B 仅在“依赖”关系中表示 A 依赖 B；可达关系不证明故障传播。",
+    "runtimeLegend": "生命周期、进度、健康与获取状态分别判断；刷新失败不代表资源故障。",
+    "processLegend": "箭头表达已实现的条件、数据或办理路径；等待、异常与恢复条件见节点说明。",
+    "relations": "查看全部已显示关系与方向",
+    "noRelations": "没有已确认的对象间关系；不推断顺序或依赖。",
+    "explanation": "节点解释",
+    "objectType": "对象类型",
+    "preconditions": "前置条件",
+    "input": "输入",
+    "output": "输出／结果",
+    "pageSection": "已有页面内位置",
+    "open": "打开已有入口",
+    "evidence": "查看实现依据",
+    "selectHint": "点击节点查看解释、依据与入口；也可用 Tab 与 Enter 操作。",
+    "roles": "适用角色",
+    "startEnd": "开始与结束条件",
+    "notProvided": "数据源未提供",
+    "acquisitionLabel": "数据获取状态",
+    "lifecycle": "资源生命周期",
+    "progress": "任务进度",
+    "health": "运行健康",
+    "observedAt": "观测时间",
+    "fetchedAt": "页面获取时间",
+    "source": "字段来源",
+    "facts": "判定依据／缺口",
+    "types": {
+      "process": "业务流程图",
+      "dependency": "资源依赖图",
+      "runtime": "运行状态图"
+    },
+    "kinds": {
+      "capability": "能力",
+      "service": "服务",
+      "resource-type": "资源类型",
+      "instance": "资源实例",
+      "action": "操作任务"
+    },
+    "lanes": {
+      "user": "使用者",
+      "system": "系统",
+      "partner": "合作方"
+    },
+    "relationsKind": {
+      "depends-on": "依赖",
+      "contains": "包含",
+      "belongs-to": "属于",
+      "uses": "使用",
+      "observes": "观测",
+      "flow": "业务路径",
+      "evidence": "证据关联",
+      "navigation": "操作入口",
+      "calls": "调用",
+      "deployed-on": "部署于"
+    },
+    "basis": {
+      "design": "实现已确认的设计关系",
+      "configuration": "配置关系",
+      "observation": "实际观测关系"
+    },
+    "acquisition": {
+      "loading": "加载中",
+      "ready": "已获取",
+      "unknown": "未知／未接入",
+      "no-data": "无数据",
+      "forbidden": "无权限",
+      "error": "获取失败",
+      "stale": "数据源已判定过期"
+    },
+    "healthStates": {
+      "unknown": "未知；未接入健康探测",
+      "confirmed-fault": "数据源确认异常",
+      "reported-ok": "该项检查通过"
+    },
+    "symbols": {
+      "task": "动作",
+      "condition": "条件／分支",
+      "wait": "等待／核查",
+      "end": "结果核查"
+    },
+    "healthShort": {
+      "unknown": "健康未知",
+      "confirmed-fault": "已确认异常",
+      "reported-ok": "探测正常（仅该项）"
+    }
   }
 }

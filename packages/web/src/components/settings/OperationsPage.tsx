@@ -5,6 +5,7 @@ import { getAuthState } from "../../lib/auth";
 import { isLocalMode } from "../../lib/local-mode";
 import { toCapabilitySet, useMeCapabilities } from "../../lib/platform-capabilities";
 import { MeteringPage } from "../cp/MeteringPage";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { PageHeader, PageShell } from "../ui/page";
 import { AuditCapabilityPanel } from "./AuditCapabilityPanel";
 import { AuditLogPanel } from "./AuditLogPanel";
@@ -81,6 +82,7 @@ export function OperationsPage() {
   ) {
     return (
       <PageShell data-testid="operations-page">
+        {resourceArea === "accounts" ? <FunctionMaps ids={["G29"]} /> : null}
         <OperationsResources
           area={isOperationsResourceArea(resourceArea) ? resourceArea : "overview"}
         />
@@ -98,6 +100,9 @@ export function OperationsPage() {
           )}
         />
       )}
+      {activeArea === "audit" && capabilities.has("audit.view") ? (
+        <FunctionMaps ids={["G16"]} />
+      ) : null}
       {activeArea ? null : <OperationsAttentionCards />}
       <OperationsConfiguration area={activeArea} role={auth.role} capabilities={capabilities} />
       {activeArea && activeArea !== "metering" && activeArea !== "audit" ? (

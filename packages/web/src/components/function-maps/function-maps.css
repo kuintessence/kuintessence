@@ -1,0 +1,53 @@
+.function-map-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.function-map-icon {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  color: var(--brand);
+}
+.function-map-node-content {
+  display: block;
+  min-width: 0;
+}
+.function-map-mobile-node {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.function-map-node:hover,
+.function-map-node[aria-pressed="true"] {
+  border-color: var(--brand);
+  background: var(--muted);
+}
+.function-map-node:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -3px;
+}
+.function-map-mobile-node[aria-pressed="true"] {
+  color: var(--brand);
+}
+.function-map-edge {
+  background: var(--card);
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+  padding: 2px;
+}
+.function-map-canvas {
+  scrollbar-color: var(--border) var(--card);
+  scrollbar-width: thin;
+}
+.function-map ::selection {
+  background: var(--brand-soft);
+  color: var(--foreground);
+}

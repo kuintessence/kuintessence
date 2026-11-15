@@ -11,6 +11,7 @@
  */
 
 import { ApiError } from "@kuintessence/shared/browser";
+import { getAuthState } from "./auth";
 import { authenticatedHeaders, fetchAuthed } from "./authenticated-fetch";
 import { assertMobileMutationAllowed } from "./mobile-management-policy";
 
@@ -59,11 +60,35 @@ async function parse<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-function get<T>(path: string): Promise<T> {
-  return fetchAuthed(`/cp${path}`, () => ({
-    credentials: "same-origin",
-    headers: authHeaders(),
-  })).then(parse<T>);
+function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const organizationId =
+    typeof localStorage === "undefined"
+      ? null
+      : localStorage.getItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
+  const revision = getAuthState().revision;
+  const assertScope = () => {
+    signal?.throwIfAborted();
+    const currentOrg =
+      typeof localStorage === "undefined"
+        ? null
+        : localStorage.getItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
+    if (organizationId !== currentOrg || revision !== getAuthState().revision)
+      throw new CpApiError(
+        409,
+        "ORGANIZATION_CONTEXT_CHANGED",
+        "Organization or login session changed",
+      );
+  };
+  assertScope();
+  return fetchAuthed(`/cp${path}`, () => {
+    assertScope();
+    return { credentials: "same-origin", headers: authHeaders(), signal };
+  })
+    .then(parse<T>)
+    .then((value) => {
+      assertScope();
+      return value;
+    });
 }
 
 function post<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
@@ -424,8 +449,8 @@ export async function listSoftwarePolicies(): Promise<SoftwarePolicy[]> {
   return body.items;
 }
 
-export async function getSoftwareOverview(): Promise<CpSoftwareOverview> {
-  return get<CpSoftwareOverview>("/software/overview");
+export async function getSoftwareOverview(signal?: AbortSignal): Promise<CpSoftwareOverview> {
+  return get<CpSoftwareOverview>("/software/overview", signal);
 }
 
 export async function editSoftwarePolicy(payload: SoftwarePolicyEdit): Promise<void> {
@@ -545,8 +570,8 @@ export async function searchAudit(q: AuditSearchQuery): Promise<AuditSearchPage>
   return post<AuditSearchPage>("/audit/search", q);
 }
 
-export async function listAgents(): Promise<CpAgent[]> {
-  const body = await get<{ items: CpAgent[] }>("/agents");
+export async function listAgents(signal?: AbortSignal): Promise<CpAgent[]> {
+  const body = await get<{ items: CpAgent[] }>("/agents", signal);
   return body.items;
 }
 

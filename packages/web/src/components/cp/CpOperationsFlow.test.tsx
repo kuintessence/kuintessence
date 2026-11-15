@@ -223,3 +223,5 @@ describe("CP operations flow", () => {
     expect(auditBody.text).toBe("key rotation");
   });
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

@@ -24,6 +24,7 @@ import {
 } from "../../lib/use-cp-queues";
 import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
@@ -927,6 +928,7 @@ export function CpQueuesPage() {
 
   return (
     <div className="min-w-0 space-y-4" data-testid="cp-queues-page">
+      <FunctionMaps ids={["G06"]} />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">{t("cp.queues.title")}</h2>

@@ -199,3 +199,5 @@ test("mobile authorization keeps refresh available and blocks advanced mutations
   fireEvent.click(screen.getByText("刷新"));
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

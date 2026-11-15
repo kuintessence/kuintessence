@@ -15,6 +15,7 @@ import { api } from "../../lib/api-client";
 import { getAuthState } from "../../lib/auth";
 import { usePlatformCapability } from "../../lib/platform-capabilities";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { useTheme } from "../ThemeProvider";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -378,6 +379,7 @@ function DashboardContent({
   return (
     <div className="space-y-5" data-testid="interconnect-dashboard">
       <PageHeader title={t("workspace.nav.interconnect")} />
+      {mode === "operator" ? <FunctionMaps ids={["D03", "G11"]} /> : null}
       <div className="kq-fill-row text-sm">
         <span className="mr-auto text-muted-foreground">
           {mode === "operator"

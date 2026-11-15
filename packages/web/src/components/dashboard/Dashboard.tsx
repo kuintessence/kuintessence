@@ -19,6 +19,7 @@ import {
 import { isLocalMode, useLocalCapabilities } from "../../lib/local-mode";
 import { usePlatformCapability } from "../../lib/platform-capabilities";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { CardContent, CardHeader, CardTitle } from "../ui/card";
 import { PageHeader, PageShell } from "../ui/page";
 import { AgentsTable } from "./AgentsTable";
@@ -124,6 +125,7 @@ export function Dashboard() {
           </span>
         }
       />
+      <FunctionMaps ids={["D01"]} />
 
       {dashboardError ? (
         <div

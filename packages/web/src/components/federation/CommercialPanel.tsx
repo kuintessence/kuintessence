@@ -16,6 +16,7 @@ import { z } from "zod";
 import { ApiError, type ApiOrganizationScope, api } from "../../lib/api-client";
 import { federationReadFailed } from "../../lib/federation-query-state";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -298,6 +299,55 @@ export function CommercialPanel({
                 setAdjustmentSettlement(undefined);
               }}
             >
+              <FunctionMaps
+                hiddenNodeIds={[
+                  ...(detail.data.terms.agreement.mode !== "ledger_coordinated" ? ["g25.n2"] : []),
+                  ...(detail.data.terms.consideration !== "paid" ? ["t03.n4"] : []),
+                ]}
+                ids={
+                  section === "disputes"
+                    ? ["T04"]
+                    : [
+                          "usage",
+                          "bills",
+                          "settlements",
+                          "adjustments",
+                          "payments",
+                          "refunds",
+                        ].includes(section)
+                      ? ["T03"]
+                      : ["G25"]
+                }
+                onOpen={(node) => {
+                  const target: Record<string, string> = {
+                    "g25.n1": "terms",
+                    "g25.n2": "automation",
+                    "g25.n3": "usage",
+                    "g25.n4": "settlements",
+                    "g25.n5": "disputes",
+                    "g25.n6": "terms",
+                    "t03.n1": "usage",
+                    "t03.n2": "bills",
+                    "t03.n3": "settlements",
+                    "t03.n4": "payments",
+                    "t03.n5": "closing",
+                    "t04.n1": "bills",
+                    "t04.n2": "disputes",
+                    "t04.n3": "disputes",
+                    "t04.n5": "disputes",
+                  };
+                  const tab = target[node.id];
+                  if (!tab) return false;
+                  if (
+                    tab === "automation" &&
+                    detail.data.terms.agreement.mode !== "ledger_coordinated"
+                  )
+                    return true;
+                  if (tab === "payments" && detail.data.terms.consideration !== "paid") return true;
+                  setSection(tab);
+                  return true;
+                }}
+              />
               <TabsList
                 className="grid w-full max-w-full grid-cols-1 items-start gap-4 rounded-none border-b border-border bg-transparent p-0 pb-4 sm:grid sm:w-full sm:grid-cols-3"
                 aria-label={t("federation.usage.contractSections")}

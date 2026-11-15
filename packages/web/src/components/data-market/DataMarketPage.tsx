@@ -9,6 +9,7 @@ import {
   dataMarketClient,
 } from "../../lib/data-market-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -114,6 +115,7 @@ export function DataMarketPage() {
           </Button>
         }
       />
+      <FunctionMaps ids={["G04"]} />
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section>
           <CardHeader className="gap-3">

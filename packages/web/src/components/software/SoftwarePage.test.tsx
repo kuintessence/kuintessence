@@ -1767,3 +1767,5 @@ advanced:
     expect(softwareClient.updateUsecasePackage).not.toHaveBeenCalled();
   });
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

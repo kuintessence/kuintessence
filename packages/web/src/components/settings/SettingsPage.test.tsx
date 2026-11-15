@@ -118,3 +118,5 @@ describe("SettingsPage deep links", () => {
     expect(screen.getByText("settings.restrictedDeepLink.returnToAccessible")).toBeTruthy();
   });
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));

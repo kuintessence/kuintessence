@@ -23,6 +23,7 @@ import { ApiError, api, downloadAuthedFile, uploadFileToNetDrive } from "../../l
 import { listAllNetDriveFiles } from "../../lib/netdrive-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import type { AgentRow } from "../agents/AgentCard";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Button } from "../ui/button";
 import { PageHeader, PageShell } from "../ui/page";
 import { CloudPane, type CloudPaneEntry } from "./CloudPane";
@@ -469,6 +470,7 @@ export function FilesPage() {
           </>
         }
       />
+      <FunctionMaps ids={["G03"]} />
 
       <div className="flex flex-col gap-3 border-border p-3 lg:flex-row lg:items-center">
         <div className="min-w-0 flex-1">

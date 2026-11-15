@@ -1,5 +1,7 @@
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
 import { useActiveOrganizationId } from "./active-organization";
+import { getAuthState, subscribeAuthState } from "./auth";
 import {
   type AvailabilityPreviewRequest,
   CpApiError,
@@ -58,10 +60,15 @@ export function useCpEditSoftwarePolicy() {
 }
 
 export function useCpSoftwareOverview() {
+  const revision = useSyncExternalStore(
+    subscribeAuthState,
+    () => getAuthState().revision,
+    () => null,
+  );
   const activeOrganizationId = useActiveOrganizationId();
   return useQuery<CpSoftwareOverview>({
-    queryKey: [...OVERVIEW_KEY, activeOrganizationId ?? "all"],
-    queryFn: () => getSoftwareOverview(),
+    queryKey: [...OVERVIEW_KEY, activeOrganizationId ?? "all", revision],
+    queryFn: ({ signal }) => getSoftwareOverview(signal),
     refetchInterval: 15_000,
   });
 }
@@ -244,7 +251,7 @@ export function useCpReviewPreinstalledMapping() {
   return useMutation<CpSoftwareOverview, Error, PreinstalledMappingReviewRequest>({
     mutationFn: (p) => reviewPreinstalledMapping(p),
     onSuccess: (overview) => {
-      qc.setQueryData([...OVERVIEW_KEY, activeOrganizationId ?? "all"], overview);
+      qc.setQueriesData({ queryKey: [...OVERVIEW_KEY, activeOrganizationId ?? "all"] }, overview);
       qc.invalidateQueries({ queryKey: KEY });
     },
   });

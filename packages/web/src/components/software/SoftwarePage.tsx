@@ -82,6 +82,7 @@ import { useSoftwarePublishingAccess } from "../../lib/software-publishing-acces
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { parsePublishedWorkflowTemplate, summarize } from "../../lib/workflow-parser";
+import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ErrorState, LoadingState } from "../ui/content-state";
@@ -632,6 +633,8 @@ export function SoftwarePage() {
         }
       />
 
+      {activeTab === "templates" ? <FunctionMaps ids={["D04"]} /> : null}
+      {activeTab === "spack" ? <FunctionMaps ids={["G17"]} /> : null}
       {canManagePlatform ? (
         <SoftwareGovernancePanel
           assets={reviewQueue}
@@ -677,6 +680,7 @@ export function SoftwarePage() {
             reviewAccess={(requestId, decision) => reviewAccess.mutate({ requestId, decision })}
           />
 
+          <FunctionMaps ids={["G18"]} />
           <LicenseEntitlementPanel
             canReview={canManagePlatform}
             canSubmit={canManageOrganization}
@@ -777,6 +781,7 @@ export function SoftwarePage() {
                 {t("software.materialManagement")}
               </summary>
               <div className="kq-motion--disclosure space-y-4 border-border p-4">
+                <FunctionMaps ids={["G19"]} />
                 <RecipeRepositoriesPanel canManage={canManageOrganization} />
                 <SpackMaterialsPanel canManage={canManageOrganization} canManageBindings />
               </div>

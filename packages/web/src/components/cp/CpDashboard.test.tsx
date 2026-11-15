@@ -152,3 +152,5 @@ test("empty samples do not imply zero success or availability; real failures sti
   render(<CpDashboard />, { wrapper: makeWrapper() });
   await waitFor(() => expect(screen.getAllByText("0%")).toHaveLength(2));
 });
+
+vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));
