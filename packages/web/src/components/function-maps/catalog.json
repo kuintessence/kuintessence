@@ -283,8 +283,8 @@
           "en": "Provider profile"
         },
         "purpose": {
-          "zh": "机构信息与归属",
-          "en": "Organization identity and ownership"
+          "zh": "维护算力提供方的机构信息和组织归属，查看对外展示的运营资料。",
+          "en": "Maintain provider organization details and ownership, and review the published provider profile."
         },
         "kind": "capability",
         "route": "/cp/profile",
@@ -301,8 +301,8 @@
           "en": "Infrastructure"
         },
         "purpose": {
-          "zh": "集群与 Agent",
-          "en": "Clusters and Agents"
+          "zh": "管理集群与接入代理，查看节点连接状态并进入接入配置。",
+          "en": "Manage clusters and agents, inspect connectivity, and open onboarding configuration."
         },
         "kind": "capability",
         "route": "/cp/infrastructure",
@@ -319,8 +319,8 @@
           "en": "Users and accounts"
         },
         "purpose": {
-          "zh": "访问映射与授权",
-          "en": "Identity mappings and grants"
+          "zh": "管理提供方用户及其可用资源，维护集群执行账号与平台身份的映射。",
+          "en": "Manage provider users and resource access, and maintain cluster execution account mappings."
         },
         "kind": "capability",
         "route": "/cp/users",
@@ -337,8 +337,8 @@
           "en": "Software"
         },
         "purpose": {
-          "zh": "安装与运行环境",
-          "en": "Installation and runtime environments"
+          "zh": "配置集群软件策略，查看软件材料和运行环境的准备情况。",
+          "en": "Configure cluster software policies and review material and runtime readiness."
         },
         "kind": "capability",
         "route": "/cp/software",
@@ -355,8 +355,8 @@
           "en": "Data and usage"
         },
         "purpose": {
-          "zh": "发布、配额和计量",
-          "en": "Publication, quotas and metering"
+          "zh": "管理数据资产、不可变版本和发布范围，处理数据访问申请。资源用量与额度可从二级导航「用量计量」查看。",
+          "en": "Manage data assets, immutable versions, publication and access requests. Find resource usage and quotas under Usage metering in the secondary navigation."
         },
         "kind": "capability",
         "route": "/cp/data",
@@ -373,8 +373,8 @@
           "en": "Audit"
         },
         "purpose": {
-          "zh": "提供方操作记录",
-          "en": "Provider operation records"
+          "zh": "查询提供方范围内的操作记录，核查操作主体、对象与结果。",
+          "en": "Review provider audit records, including actors, affected objects and outcomes."
         },
         "kind": "capability",
         "route": "/cp/audit",

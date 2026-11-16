@@ -6,10 +6,11 @@ import { queueDisplayName } from "../../lib/queue-selection";
 import { estimateWorkflow } from "../../lib/workflow-estimate";
 import { graphToYaml, yamlToGraph } from "../../lib/yaml-graph-sync";
 import { Badge } from "../ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
 import { ResourceSelectField } from "../ui/resource-select-field";
+import { WorkflowPanel } from "./WorkflowCreationLayout";
 import { WorkflowReviewGraph } from "./WorkflowReviewGraph";
 
 export interface WorkflowQueueOption {
@@ -148,7 +149,7 @@ export function WorkflowResourcesStep({
 
   return (
     <div className="space-y-4" data-testid="workflow-resources-step">
-      <Card className=" ">
+      <WorkflowPanel className="rounded-xl shadow-none">
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
           <CardTitle>{t("workflows.creation.resources.title")}</CardTitle>
           <Badge variant="outline">
@@ -237,25 +238,22 @@ export function WorkflowResourcesStep({
             />
           </div>
         </CardContent>
-      </Card>
+      </WorkflowPanel>
 
-      <Card className=" ">
+      <WorkflowPanel className="rounded-xl shadow-none">
         <CardHeader>
           <div>
             <CardTitle>{t("workflows.creation.resources.nodeTitle")}</CardTitle>
           </div>
         </CardHeader>
-        <CardContent
-          className="grid min-h-96 items-stretch gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]"
-          style={{ height: "calc(100dvh - 20rem)" }}
-        >
+        <CardContent className="grid items-stretch gap-4 lg:h-[calc(100dvh-20rem)] lg:min-h-96 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
           <WorkflowReviewGraph
             mode="fill"
             yaml={yaml}
             selectedNodeId={selectedNodeId}
             onNodeSelect={setSelectedNodeId}
           />
-          <section className=" border-border p-4">
+          <section className="min-w-0 rounded-lg border border-border bg-muted/20 p-4 lg:min-h-0 lg:overflow-y-auto">
             {selectedNode ? (
               <div className="space-y-4">
                 <div>
@@ -333,7 +331,7 @@ export function WorkflowResourcesStep({
             )}
           </section>
         </CardContent>
-      </Card>
+      </WorkflowPanel>
     </div>
   );
 }
@@ -350,7 +348,7 @@ function EstimateCard({
   hint: string;
 }) {
   return (
-    <div className=" border-border p-3">
+    <div className="rounded-lg border border-border bg-muted/20 p-3">
       <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
         <Icon className="h-4 w-4 text-brand" />
         {label}

@@ -1,6 +1,7 @@
 import type { PlacementTrace } from "@kuintessence/shared/browser";
 import { useTranslation } from "react-i18next";
 import { statusLabel } from "../../lib/format";
+import { FunctionMapRegion } from "../function-maps/FunctionMapRegion";
 import { FunctionMapView } from "../function-maps/FunctionMapView";
 import type { FunctionMap, MapNode, MapText } from "../function-maps/model";
 import type { JobDetail } from "./types";
@@ -44,8 +45,8 @@ export function jobResourceMap(job: JobDetail, placement?: PlacementTrace): Func
     summary: purpose,
     icon,
     kind: "instance",
-    route: "",
-    section: bilingual(""),
+    route: "/jobs",
+    section: bilingual("作业详情 / 概览", "Job details / Overview"),
   });
   const nodes = [
     node(
@@ -120,10 +121,16 @@ export function jobResourceMap(job: JobDetail, placement?: PlacementTrace): Func
 
 export function JobResourceMap({ job, placement }: { job: JobDetail; placement?: PlacementTrace }) {
   const { i18n } = useTranslation();
+  const language = i18n?.resolvedLanguage ?? i18n?.language ?? "zh";
   return (
-    <FunctionMapView
-      model={jobResourceMap(job, placement)}
-      language={i18n?.resolvedLanguage ?? i18n?.language ?? "zh"}
+    <FunctionMapRegion
+      key={job.id}
+      page="job-resources"
+      title={language.startsWith("zh") ? "作业资源" : "Job resources"}
+      type="dependency"
+      diagram={
+        <FunctionMapView model={jobResourceMap(job, placement)} language={language} embedded />
+      }
     />
   );
 }

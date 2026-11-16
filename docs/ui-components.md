@@ -44,7 +44,7 @@ Biome 的 `noLabelWithoutControl` 将 `Input`、`Textarea`、`NativeSelect`、`R
 
 ## 单层容器
 
-功能区只保留最外层 Card；Dialog/Sheet 自身是外壳，里面使用透明 section、间距、文字层级和 1px 分隔线。不得用普通 div、底色、圆角或阴影拼回内层卡片。Card 的 Surface 上下文防止跨组件组合生成第二层装饰容器；静态检查同时检查普通结构元素。输入框、按钮保留必要边界和焦点；React Flow 节点保留必要外轮廓及选中提示，内部透明、无阴影。详见 [DESIGN.md](../DESIGN.md) 与[验收记录](ui/verification.md)。
+普通业务功能区使用平面布局；Dialog/Sheet 自身是外壳，里面使用透明 section、间距、文字层级和 1px 分隔线。不得用普通 div、底色、圆角或阴影拼回内层卡片。Card 的 Surface 上下文防止跨组件组合生成第二层装饰容器；静态检查同时检查普通结构元素。输入框、按钮保留必要边界和焦点；React Flow 节点保留必要外轮廓及选中提示。工作流创建和编辑使用独立 `WorkflowCreationLayout`／`WorkflowPanel`，步骤导航、输入、资源、预览和画布保持任务面板边界，不受通用 Card 扁平化影响。详见 [DESIGN.md](../DESIGN.md) 与[验收记录](ui/verification.md)。
 
 ## 复用约定
 
@@ -134,3 +134,9 @@ bunx --no-install patchright test --config=e2e/ui-components.config.ts --update-
 bun node_modules/vite/bin/vite.js build --config packages/web/visual/function-maps.config.ts
 bun packages/web/visual/verify-job-controls.mjs
 ```
+
+### 示意图展示与统一偏好
+
+`FunctionMapRegion` 管理已有位置的双视图或折叠状态，`FunctionMaps` 继续负责权限、节点定位及原入口导航。双视图保留挂载状态，折叠保留标题与恢复按钮；共同筛选、重要异常及业务表单留在外侧。`MapPreferencesPanel` 集中在个人中心「外观与界面」配置连线效果与默认规则，每页「视图设置」提供页面覆盖。偏好按账号保存在当前浏览器，不跨设备同步；三个模式、URL 优先级及模块清单见[功能示意图说明](architecture/function-maps.md)。
+
+浏览器夹具 `e2e/map-workflow.spec.ts` 使用正式组件和构建 CSS，离线检查工作流编辑、输入、资源、预览四步，以及示意图弹窗、视图切换、折叠和全局外观；不启动平台服务或提交业务变更。

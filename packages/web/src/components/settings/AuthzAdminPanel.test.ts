@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createElement } from "react";
+import { createElement, Fragment, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { setLang } from "../../lib/i18n";
 import { AuthzAdminPanel, canProcessAuthzOutbox } from "./AuthzAdminPanel";
@@ -200,4 +200,7 @@ test("mobile authorization keeps refresh available and blocks advanced mutations
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
 });
 
-vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));
+vi.mock("../function-maps/FunctionMaps", () => ({
+  FunctionMaps: ({ dashboard, common }: { dashboard?: ReactNode; common?: ReactNode }) =>
+    createElement(Fragment, null, common, dashboard),
+}));

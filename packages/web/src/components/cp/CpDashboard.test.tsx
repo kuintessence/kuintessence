@@ -153,4 +153,17 @@ test("empty samples do not imply zero success or availability; real failures sti
   await waitFor(() => expect(screen.getAllByText("0%")).toHaveLength(2));
 });
 
-vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));
+vi.mock("../function-maps/FunctionMaps", () => ({
+  FunctionMaps: ({
+    dashboard,
+    common,
+  }: {
+    dashboard?: import("react").ReactNode;
+    common?: import("react").ReactNode;
+  }) => (
+    <>
+      {common}
+      {dashboard}
+    </>
+  ),
+}));

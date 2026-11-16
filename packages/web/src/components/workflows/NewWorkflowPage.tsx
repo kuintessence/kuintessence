@@ -46,6 +46,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { WorkflowEditorShell } from "../workflow/WorkflowEditorShell";
+import { WorkflowCreationLayout } from "./WorkflowCreationLayout";
 import { type WorkflowCreationStep, WorkflowCreationStepper } from "./WorkflowCreationStepper";
 import { WorkflowInputsStep, type WorkflowInputsStepHandle } from "./WorkflowInputsStep";
 import { WorkflowTemplatePickerDialog } from "./WorkflowPickerDialogs";
@@ -645,7 +646,7 @@ export function NewWorkflowPage() {
   if (draftLoading || draftLoadError) {
     return (
       <div
-        className="space-y-4 border-border p-5"
+        className="space-y-4 rounded-xl border border-border bg-card p-5"
         data-testid="workflow-draft-load-state"
         aria-busy={draftLoading}
       >
@@ -675,140 +676,140 @@ export function NewWorkflowPage() {
   }
 
   return (
-    <div className="space-y-5" data-testid="new-workflow-page">
-      <div className="overflow-hidden border-border ">
-        <div className="p-4 sm:p-5">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-            <div className="min-w-0">
-              <input
-                aria-label={t("workflows.creation.workflowName")}
-                className="min-w-0 max-w-full border-0 bg-transparent p-0 text-2xl font-semibold tracking-tight rounded-sm outline-none ring-0 focus-visible:ring-2 focus-visible:ring-ring sm:text-3xl"
-                value={workflowName}
-                onChange={(event) => setWorkflowName(event.target.value)}
-                onBlur={commitWorkflowName}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") event.currentTarget.blur();
-                }}
-                data-testid="workflow-name-input"
-              />
-            </div>
-            <div
-              className="flex flex-wrap items-center gap-2 xl:justify-end"
-              data-testid="workflow-title-actions"
+    <WorkflowCreationLayout
+      header={
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div className="min-w-0">
+            <input
+              aria-label={t("workflows.creation.workflowName")}
+              className="min-w-0 max-w-full border-0 bg-transparent p-0 text-2xl font-semibold tracking-tight rounded-sm outline-none ring-0 focus-visible:ring-2 focus-visible:ring-ring sm:text-3xl"
+              value={workflowName}
+              onChange={(event) => setWorkflowName(event.target.value)}
+              onBlur={commitWorkflowName}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+              data-testid="workflow-name-input"
+            />
+          </div>
+          <div
+            className="flex flex-wrap items-center gap-2 xl:justify-end"
+            data-testid="workflow-title-actions"
+          >
+            <SubmissionReadinessStatus
+              blocking={!parsed.ok || Boolean(queuesQ.error) || Boolean(byVersionInputsQ.error)}
+              loading={
+                byVersionInputsQ.isLoading || (queueReferences.length > 0 && queuesQ.isLoading)
+              }
+              message={readinessMessage}
+              ready={workflowReady}
+              t={t}
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={savingDraft || !workflowName.trim() || !budgetValid}
+              onClick={() => void saveDraft()}
+              data-testid="workflow-save-draft"
             >
-              <SubmissionReadinessStatus
-                blocking={!parsed.ok || Boolean(queuesQ.error) || Boolean(byVersionInputsQ.error)}
-                loading={
-                  byVersionInputsQ.isLoading || (queueReferences.length > 0 && queuesQ.isLoading)
-                }
-                message={readinessMessage}
-                ready={workflowReady}
-                t={t}
-              />
+              {savingDraft ? <Loader2 className="animate-spin" /> : <Save />}
+              {t("workflows.creation.saveDraft")}
+            </Button>
+            {!startOverlayOpen && activeStep === "edit" ? (
               <Button
                 type="button"
                 size="sm"
-                variant="outline"
-                disabled={savingDraft || !workflowName.trim() || !budgetValid}
-                onClick={() => void saveDraft()}
-                data-testid="workflow-save-draft"
+                onClick={() => void goToStep("inputs")}
+                disabled={!parsed.ok || parsedNodeCount === 0}
+                data-testid="workflow-title-next"
               >
-                {savingDraft ? <Loader2 className="animate-spin" /> : <Save />}
-                {t("workflows.creation.saveDraft")}
+                {t("common.next")}
+                <ArrowRight />
               </Button>
-              {!startOverlayOpen && activeStep === "edit" ? (
+            ) : null}
+            {!startOverlayOpen && activeStep === "inputs" ? (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void goToStep("edit")}
+                  data-testid="workflow-title-previous"
+                >
+                  <ArrowLeft />
+                  {t("common.previous")}
+                </Button>
                 <Button
                   type="button"
                   size="sm"
-                  onClick={() => void goToStep("inputs")}
-                  disabled={!parsed.ok || parsedNodeCount === 0}
+                  onClick={() => void goToStep("resources")}
                   data-testid="workflow-title-next"
                 >
                   {t("common.next")}
                   <ArrowRight />
                 </Button>
-              ) : null}
-              {!startOverlayOpen && activeStep === "inputs" ? (
-                <>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void goToStep("edit")}
-                    data-testid="workflow-title-previous"
-                  >
-                    <ArrowLeft />
-                    {t("common.previous")}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => void goToStep("resources")}
-                    data-testid="workflow-title-next"
-                  >
-                    {t("common.next")}
-                    <ArrowRight />
-                  </Button>
-                </>
-              ) : null}
-              {!startOverlayOpen && activeStep === "resources" ? (
-                <>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void goToStep("inputs")}
-                    data-testid="workflow-title-previous"
-                  >
-                    <ArrowLeft />
-                    {t("common.previous")}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => void goToStep("review")}
-                    data-testid="workflow-title-next"
-                  >
-                    {t("common.next")}
-                    <ArrowRight />
-                  </Button>
-                </>
-              ) : null}
-              {!startOverlayOpen && activeStep === "review" ? (
-                <>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void goToStep("resources")}
-                    data-testid="workflow-title-previous"
-                  >
-                    <ArrowLeft />
-                    {t("common.previous")}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={!workflowReady || busy}
-                    onClick={() => setSubmitConfirmOpen(true)}
-                    data-testid="submit-workflow"
-                  >
-                    {busy ? <Loader2 className="animate-spin" /> : <Send />}
-                    {t("workflows.submitWorkflow")}
-                  </Button>
-                </>
-              ) : null}
-            </div>
+              </>
+            ) : null}
+            {!startOverlayOpen && activeStep === "resources" ? (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void goToStep("inputs")}
+                  data-testid="workflow-title-previous"
+                >
+                  <ArrowLeft />
+                  {t("common.previous")}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void goToStep("review")}
+                  data-testid="workflow-title-next"
+                >
+                  {t("common.next")}
+                  <ArrowRight />
+                </Button>
+              </>
+            ) : null}
+            {!startOverlayOpen && activeStep === "review" ? (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void goToStep("resources")}
+                  data-testid="workflow-title-previous"
+                >
+                  <ArrowLeft />
+                  {t("common.previous")}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={!workflowReady || busy}
+                  onClick={() => setSubmitConfirmOpen(true)}
+                  data-testid="submit-workflow"
+                >
+                  {busy ? <Loader2 className="animate-spin" /> : <Send />}
+                  {t("workflows.submitWorkflow")}
+                </Button>
+              </>
+            ) : null}
           </div>
         </div>
+      }
+      steps={
         <WorkflowCreationStepper
           blocked={startOverlayOpen}
           current={activeStep}
           embedded
           onChange={(step) => void goToStep(step)}
         />
-      </div>
-
+      }
+    >
       <WorkflowTemplatePickerDialog
         error={templatesQ.error ?? null}
         hasNext={templatesQ.data?.hasNext ?? false}
@@ -988,7 +989,7 @@ export function NewWorkflowPage() {
           yaml={yaml}
         />
       ) : null}
-    </div>
+    </WorkflowCreationLayout>
   );
 }
 
