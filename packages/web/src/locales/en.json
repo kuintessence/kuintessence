@@ -293,7 +293,7 @@
   "jobs": {
     "title": "Jobs",
     "subtitle": "Auto-refreshes every 5s while any job is pending or running.",
-    "countHint": "{{visible}} visible · {{total}} total",
+    "countHint": "{{visible}}/{{total}} visible",
     "agentFilter": {
       "active": "Showing jobs on Agent {{agentId}}",
       "clear": "Clear Agent filter"
@@ -459,6 +459,13 @@
       "textResultUnavailable": "This text result has not been collected."
     },
     "usecase": {
+      "noInputs": "This usecase declares no configurable input files or parameters.",
+      "unboundInputs": "Usecase inputs are not bound to executable materials. Choose another usecase or contact the publisher.",
+      "invalidInput": "This value does not meet the parameter format or range.",
+      "boolean": {
+        "true": "Yes",
+        "false": "No"
+      },
       "mode": "Usecase",
       "selected": "Selected usecase",
       "chooseUsecase": "Choose usecase",
@@ -548,7 +555,7 @@
   "workflows": {
     "title": "Workflows",
     "subtitle": "Track submitted, queued, running, and terminal workflow runs.",
-    "countHint": "{{visible}} visible · {{total}} total",
+    "countHint": "{{visible}}/{{total}} visible",
     "searchPlaceholder": "Search runs",
     "lastUpdated": "Updated {{time}}",
     "notUpdated": "not yet",
@@ -890,7 +897,7 @@
   "agents": {
     "title": "Agents",
     "subtitle": "One card per registered agent. Auto-refreshes every 10s.",
-    "countHint": "{{online}} online · {{total}} total",
+    "countHint": "{{online}}/{{total}} online",
     "empty": "No agents registered yet. Start one with",
     "loadFailed": "The Agent list is temporarily unavailable. Please try again shortly.",
     "softwareLoadFailed": "The Agent software inventory is temporarily unavailable. Please try again shortly.",
@@ -2284,7 +2291,7 @@
         "section": "Placement preview",
         "title": "Placement preview",
         "subtitle": "Run the queue-aware placement pipeline against this draft.",
-        "button": "Refresh preview",
+        "button": "Check available resources",
         "empty": "Run preview to see how your job will be placed."
       },
       "stages": {
@@ -2703,6 +2710,17 @@
     "unavailable": "This option is currently unavailable. Choose another option."
   },
   "functionMaps": {
+    "appearance": "Appearance",
+    "connection": "Connections",
+    "static": "Static",
+    "flow": "Flowing",
+    "lineColor": "Line color",
+    "neutral": "Neutral",
+    "brand": "Brand",
+    "contrast": "High contrast",
+    "lineWidth": "Line width",
+    "flowDuration": "Flow duration",
+    "related": "Business relationships",
     "portal": "Function and business maps",
     "choose": "Choose a map",
     "permissionFailed": "Cannot verify access. Please retry.",
@@ -2714,7 +2732,7 @@
     "actualSources": "Runtime data: evaluate individual fields and their timestamps.",
     "compact": "Compact view",
     "expand": "Expand map",
-    "canvas": "Scrollable map",
+    "canvas": "Business map",
     "mobile": "Text view of map nodes",
     "dependencyLegend": "Lines name their relationship; dashed lines mean containment or observation. Only “depends on” means A depends on B. Reachability does not prove fault propagation.",
     "runtimeLegend": "Lifecycle, progress, health and acquisition are separate. Refresh failure does not mean a resource fault.",

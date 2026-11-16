@@ -13,7 +13,7 @@ vi.mock("react-i18next", () => ({
     t: (key: string, opts?: Record<string, unknown>) => {
       if (key === "common.all") return "All";
       if (key === "common.refresh") return "Refresh";
-      if (key === "workflows.countHint") return `${opts?.visible} visible · ${opts?.total} total`;
+      if (key === "workflows.countHint") return `${opts?.visible}/${opts?.total} visible`;
       if (key === "workflows.lastUpdated") return `Updated ${opts?.time}`;
       if (key === "workflows.pagination.page") return `Page ${opts?.page} of ${opts?.pages}`;
       const labels: Record<string, string> = {
@@ -153,7 +153,7 @@ describe("WorkflowsPage", () => {
     render(<WorkflowsPage />, { wrapper: wrapper() });
 
     await screen.findByTestId("workflow-row-run-submitted");
-    expect(screen.getByTestId("workflows-count").textContent).toBe("5 visible · 5 total");
+    expect(screen.getByTestId("workflows-count").textContent).toBe("5/5 visible");
     expect(screen.getByTestId("workflows-summary-active").textContent).toBe("2");
     expect(screen.getByTestId("workflows-summary-completed").textContent).toBe("1");
     expect(screen.getByTestId("workflows-summary-failed").textContent).toBe("1");
@@ -163,19 +163,19 @@ describe("WorkflowsPage", () => {
       target: { value: "alpha" },
     });
     await waitFor(() =>
-      expect(screen.getByTestId("workflows-count").textContent).toBe("1 visible · 1 total"),
+      expect(screen.getByTestId("workflows-count").textContent).toBe("1/1 visible"),
     );
     expect(screen.getByTestId("workflow-row-run-submitted")).toBeTruthy();
     expect(screen.queryByTestId("workflow-row-run-running")).toBeNull();
 
     fireEvent.click(screen.getByTestId("workflows-clear-filters"));
     await waitFor(() =>
-      expect(screen.getByTestId("workflows-count").textContent).toBe("5 visible · 5 total"),
+      expect(screen.getByTestId("workflows-count").textContent).toBe("5/5 visible"),
     );
 
     fireEvent.click(screen.getByTestId("workflows-chip-active"));
     await waitFor(() =>
-      expect(screen.getByTestId("workflows-count").textContent).toBe("2 visible · 2 total"),
+      expect(screen.getByTestId("workflows-count").textContent).toBe("2/2 visible"),
     );
     expect(screen.getByTestId("workflow-row-run-submitted")).toBeTruthy();
     expect(screen.getByTestId("workflow-row-run-running")).toBeTruthy();
@@ -197,7 +197,7 @@ describe("WorkflowsPage", () => {
     );
     expect(screen.queryByText("No workflow runs yet.")).toBeNull();
     expect(screen.getByTestId("workflows-new")).toHaveProperty("disabled", true);
-    expect(screen.getByTestId("workflows-count").textContent).toBe("— visible · — total");
+    expect(screen.getByTestId("workflows-count").textContent).toBe("—/— visible");
     expect(screen.getByTestId("workflows-summary-active").textContent).toBe("—");
     expect(screen.getByTestId("workflows-summary-completed").textContent).toBe("—");
     expect(screen.getByTestId("workflows-summary-failed").textContent).toBe("—");
@@ -233,7 +233,7 @@ describe("WorkflowsPage", () => {
     );
     expect(screen.queryByTestId("workflow-row-run-running")).toBeNull();
     expect(screen.getByTestId("workflows-new")).toHaveProperty("disabled", true);
-    expect(screen.getByTestId("workflows-count").textContent).toBe("— visible · — total");
+    expect(screen.getByTestId("workflows-count").textContent).toBe("—/— visible");
     expect(navigate).not.toHaveBeenCalled();
   });
 

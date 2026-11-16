@@ -79,7 +79,7 @@ function Preview() {
         : undefined;
   const graph = demo?.nodes ? { ...model, nodes: demo.nodes, edges: demo.edges ?? [] } : model;
   return (
-    <main className="mx-auto max-w-7xl space-y-4 p-4 sm:p-8">
+    <main className="mx-auto max-w-5xl space-y-4 p-4 sm:p-8">
       <p className="text-sm text-muted-foreground">
         本地组件验收 · 使用正式组件与主题 · 运行状态为明确标记的模拟数据 · 不连接平台、不执行操作
       </p>

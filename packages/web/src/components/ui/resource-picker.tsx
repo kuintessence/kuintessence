@@ -144,7 +144,13 @@ export function ResourcePickerDialog<T extends ResourceOption>({
       header: t("ui.name"),
       cell: ({ row }) => (
         <div className="min-w-0 space-y-1">
-          <span className={row.original.disabled ? "text-muted-foreground" : "font-medium"}>
+          <span
+            title={row.original.label}
+            className={cn(
+              "kq-name-fade",
+              row.original.disabled ? "text-muted-foreground" : "font-medium",
+            )}
+          >
             {row.original.label}
           </span>
           {row.original.description ? (
@@ -408,7 +414,9 @@ export function ResourceSelect<T extends ResourceOption>({
           renderOption(option)
         ) : (
           <>
-            <span>{option.label}</span>
+            <span className="kq-name-fade" title={option.label}>
+              {option.label}
+            </span>
             {option.description ? (
               <p className="mt-1 text-xs text-muted-foreground">{option.description}</p>
             ) : null}

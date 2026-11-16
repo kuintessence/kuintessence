@@ -116,7 +116,11 @@ export function JobDetailPage({ jobId }: { jobId: string }) {
           ) : null}
         </TabsList>
         <TabsContent value="overview">
-          <JobOverviewTab job={job} loading={false} />
+          <JobOverviewTab
+            job={job}
+            loading={false}
+            placement={traceQ.isSuccess ? traceQ.data : undefined}
+          />
         </TabsContent>
         <TabsContent value="logs">
           <JobLogsTab jobId={jobId} />

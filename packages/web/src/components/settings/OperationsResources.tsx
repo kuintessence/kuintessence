@@ -7,7 +7,6 @@ import { AgentRegistrationPage } from "../cp/AgentRegistrationPage";
 import { CpAccountsPage } from "../cp/CpAccountsPage";
 import { CpAgentsTable } from "../cp/CpAgentsTable";
 import { CpQueuesPage } from "../cp/CpQueuesPage";
-import { ProviderOrganizationSelector } from "../cp/ProviderOrganizationSelector";
 import { SoftwarePolicyTable } from "../cp/SoftwarePolicyTable";
 import { Button } from "../ui/button";
 import { PageHeader } from "../ui/page";
@@ -33,14 +32,13 @@ export function OperationsResources({ area }: { area: ResourceArea }) {
   const organizationId = useActiveOrganizationId();
   return (
     <div className="space-y-5" data-testid="operations-resources">
-      <div className="flex flex-wrap items-center justify-end gap-3">
-        <ProviderOrganizationSelector />
-        {area === "clusters" && (
+      {area === "clusters" && (
+        <div className="flex justify-end">
           <Button asChild>
             <a href="/operations#registration">{t("cp.nav.agentRegistration")}</a>
           </Button>
-        )}
-      </div>
+        </div>
+      )}
       <Fragment key={`${area}:${organizationId ?? "all"}`}>
         {area === "overview" && <OperationsOverview />}
         {area === "clusters" && <CpAgentsTable />}
@@ -94,8 +92,8 @@ function OperationsOverview() {
           </div>
         ))}
       </dl>
-      <CpAgentsTable />
       <OperationsAttentionCards />
+      <CpAgentsTable />
     </div>
   );
 }

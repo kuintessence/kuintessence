@@ -11,7 +11,7 @@ export const Card = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
         data-kq-surface={nested ? "section" : "region"}
         className={cn(
           "min-w-0",
-          !nested && "rounded-xl border border-border bg-card text-card-foreground",
+          "rounded-none border-0 bg-transparent shadow-none ring-0",
           className,
           nested && "rounded-none border-x-0 border-t-0 bg-transparent shadow-none ring-0",
         )}

@@ -676,7 +676,7 @@ function CloudBrowser({
                           <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <button
                             type="button"
-                            className="min-w-0 truncate text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                            className="kq-name-fade flex-1 text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
                             title={`${row.name}/`}
                           >
                             {row.name}/
@@ -742,7 +742,7 @@ function CloudBrowser({
                           type="button"
                           disabled={mode !== "file" || !usable}
                           aria-pressed={mode === "file" ? selected : undefined}
-                          className="min-w-0 truncate text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                          className="kq-name-fade flex-1 text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
                           title={row.displayName}
                         >
                           {row.displayName}
@@ -952,7 +952,7 @@ function ClusterBrowser({
                           aria-pressed={
                             entry.kind === "file" && mode === "file" ? selected : undefined
                           }
-                          className="min-w-0 truncate text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                          className="kq-name-fade flex-1 text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
                           title={entry.name}
                         >
                           {entry.name}

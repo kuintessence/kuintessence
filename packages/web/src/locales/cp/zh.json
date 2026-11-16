@@ -613,7 +613,7 @@
       "resumed": "已恢复用户",
       "quotaSaved": "配额已更新",
       "empty": "范围内暂无用户。",
-      "countHint": "{{visible}} 显示 · {{total}} 共计",
+      "countHint": "{{visible}}/{{total}} 可见",
       "showLegacy": "显示历史字段",
       "pagination": "组织成员分页",
       "previousPage": "上一页",

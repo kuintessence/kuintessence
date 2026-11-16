@@ -110,9 +110,9 @@ components:
     typography: "{typography.label}"
     padding: "0.125rem 0"
   "surface-region":
-    backgroundColor: "{colors.card}"
+    backgroundColor: "transparent"
     textColor: "{colors.foreground}"
-    rounded: "{rounded.xl}"
+    rounded: "0"
     padding: "1rem"
   "surface-section":
     backgroundColor: "transparent"
@@ -126,7 +126,7 @@ components:
 
 **Creative North Star: "Operate"**
 
-本规范沿用用户已确认的 Operate 方向，记录严格的单层扁平容器约定，继承现有蓝白主题、品牌蓝、系统 sans 字体和 token 尺度。信息以标题、留白、行列和细分隔线组织；页面、弹层或抽屉各保留一个最外层容器，内部模块透明且不再形成独立卡片。
+本规范沿用用户已确认的 Operate 方向，记录严格的单层扁平容器约定，继承现有蓝白主题、品牌蓝、系统 sans 字体和 token 尺度。信息以标题、留白、行列和细分隔线组织；页面采用无卡片外框的平面区域；弹层或抽屉各保留一个最外层容器，内部模块透明且不再形成独立卡片。
 
 工作流节点是需要独立识别、连线和选择的画布实体，允许必要的轮廓、底色与选中 ring；节点内部透明，继承节点底色。此例外不扩展到节点内部、属性面板或普通业务模块。名称、中英文文案与状态必须保持可辨认，不依赖颜色单独传达意义。
 
@@ -171,7 +171,7 @@ components:
 
 **The Single Surface Rule.** 页面、Dialog 与 Sheet 内只保留一个区域外壳；嵌套模块不得再有完整边框、圆角背景、阴影或装饰 ring。输入控件、交互状态及画布节点的必要边界保留。
 
-PageShell 负责唯一外层区域及内边距，PageHeader 用底部分隔线划分标题与操作。Card 在区域外是容器，在 SurfaceBoundary 内自动降为透明 section。Dialog 与 Sheet 各建立自己的区域边界，内部列表、表单、统计和错误状态不再绘制外壳。
+PageShell 负责页面内容间距，不绘制完整边框、圆角、底色或阴影；PageHeader 用底部分隔线划分标题与操作。Card 在页面与独立区域中均保持透明平面样式，在 SurfaceBoundary 内自动降为 section。Dialog 与 Sheet 各建立自己的区域边界，内部列表、表单、统计和错误状态不再绘制外壳。
 
 间距沿用 Tailwind 的现有尺度。页面内边距为 spacing.4，sm 起为 spacing.5；主应用内容由 AppShell 限制最大宽度（80rem），按屏宽从 spacing.4 增至 spacing.8。常规控件高度使用既有按钮/输入 token，主要按钮可随操作行弹性伸展；固定图标按钮不拉长。
 
@@ -185,7 +185,7 @@ PageShell 负责唯一外层区域及内边距，PageHeader 用底部分隔线�
 
 ## Shapes
 
-外层 Card 沿用 rounded.xl，按钮、输入和浮层沿用 rounded.md。内部 section 不保留圆角、背景、完整边框、阴影或装饰 ring。表格行、Tabs、搜索结果依靠细分隔线和文字选中态组织。
+页面第一级区域与 Card 不使用圆角卡片外壳；按钮、输入和浮层沿用 rounded.md。内部 section 不保留圆角、背景、完整边框、阴影或装饰 ring。表格行、Tabs、搜索结果依靠细分隔线和文字选中态组织。
 
 **The Functional Node Rule.** 工作流节点可保留遮挡连线的外层底色、类型或状态轮廓及选中 ring，内部模块保持透明，不套卡片。
 
@@ -203,7 +203,7 @@ Button 保留 default、secondary、outline、ghost、destructive、link 及现�
 
 ### Cards / Containers / Navigation / Badges
 
-Card 仅在外层绘制完整外壳；嵌套 Card 由 SurfaceBoundary 降为透明 section。Tabs 使用底线和品牌色表达活动状态，不绘制独立的分段卡片。侧栏沿用现有工作区导航与移动端展开逻辑。Badge 使用透明背景的状态文字，不能套胶囊背景。
+Card 与嵌套 section 均采用透明平面样式。Tabs 使用底线和品牌色表达活动状态，不绘制独立的分段卡片。侧栏沿用现有工作区导航与移动端展开逻辑。Badge 使用透明背景的状态文字，不能套胶囊背景。
 
 ### CollectionView / DataTable
 
@@ -267,3 +267,11 @@ changeServerSearch/changeServerSorting 应在更新查询时重置页码；chang
 - **Don't** 手写第二套 combobox、焦点陷阱、浮层定位或表格排序分页逻辑。
 - **Don't** 将权限过滤、最近记录或前端选中状态当成服务端授权与资源有效性保证。
 - **Don't** 把静态预览片段或旧审核原型当成完整交互实现，也不要为节点内部增加独立卡片。
+
+## Organization Scope
+
+算力中心与平台运营共用的组织范围选择器放在二级导航标题下方，跟随移动端导航抽屉；内容区不重复显示组织切换工具行。切换沿用既有组织状态与缓存刷新，业务表单中的组织字段保持各自用途。概览标题不展示自动刷新周期等技术提示；审批待办标题与图标垂直居中，数量使用品牌色与较大数字，并放在节点清单前。
+
+### 展示文字与名称列表
+
+纯展示标题、表头、字段名和品牌文字使用默认光标且不可选中，不显示交互悬停效果。按钮、链接继续保留悬停与键盘焦点；命令、日志、路径和业务数据仍可复制。文件及目录名称使用单行尾部渐隐，保留完整 title 和无障碍名称，不因长名称改变列表行高。数量摘要使用“在线数/总数 在线”或“可见数/总数 可见”，未知值保留破折号。

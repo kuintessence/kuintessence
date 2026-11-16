@@ -10,6 +10,12 @@ export default defineConfig({
   build: {
     outDir: resolve(import.meta.dirname, "../../../.impeccable/review/function-maps-build"),
     emptyOutDir: true,
-    rollupOptions: { input: resolve(import.meta.dirname, "function-maps.html") },
+    rollupOptions: {
+      input: [
+        resolve(import.meta.dirname, "function-maps.html"),
+        resolve(import.meta.dirname, "workspace.html"),
+        resolve(import.meta.dirname, "job-controls.html"),
+      ],
+    },
   },
 });
