@@ -113,18 +113,7 @@ export function Dashboard() {
 
   return (
     <PageShell className="space-y-6" data-testid="dashboard">
-      <PageHeader
-        title={t("dashboard.title")}
-        actions={
-          <span
-            className="font-mono text-[11px] text-muted-foreground tabular-nums"
-            data-testid="dashboard-refresh-hint"
-            title="Auto-refresh interval"
-          >
-            {t("dashboard.refreshHint")}
-          </span>
-        }
-      />
+      <PageHeader title={t("dashboard.title")} />
       <FunctionMaps ids={["D01"]} />
 
       {dashboardError ? (

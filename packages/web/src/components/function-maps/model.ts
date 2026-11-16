@@ -22,6 +22,7 @@ export interface MapNode {
   icon?: MapIconName;
   name: MapText;
   purpose: MapText;
+  summary?: MapText;
   kind: ObjectKind;
   route: string;
   section: MapText;

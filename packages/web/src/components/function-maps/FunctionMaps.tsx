@@ -32,7 +32,11 @@ export function FunctionMaps(props: FunctionMapsProps) {
   const auth = getAuthState();
   if (!auth.isAuthenticated) return null;
   // Scope changes reset selection and explanation before another organization's data can render.
-  return <ScopedMaps key={`${organizationId}:${auth.revision}:${auth.role}`} {...props} />;
+  return (
+    <div className="function-maps min-w-0">
+      <ScopedMaps key={`${organizationId}:${auth.revision}:${auth.role}`} {...props} />
+    </div>
+  );
 }
 function ScopedMaps({ ids, runtime, onOpen, hiddenNodeIds = [] }: FunctionMapsProps) {
   const { t, i18n } = useTranslation();

@@ -35,7 +35,7 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
           <div className="flex min-w-0 max-w-[28rem] flex-col">
             <button
               type="button"
-              className="max-w-[28rem] truncate text-left font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+              className="kq-name-fade max-w-[28rem] text-left font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
               title={row.original.name}
               onClick={(event) => {
                 event.stopPropagation();
@@ -90,7 +90,7 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
               className="flex w-full flex-col gap-3 border-border p-4 text-left transition-colors"
             >
               <div className="min-w-0">
-                <div className="truncate text-sm font-semibold" title={job.name}>
+                <div className="kq-name-fade text-sm font-semibold" title={job.name}>
                   {job.name}
                 </div>
               </div>

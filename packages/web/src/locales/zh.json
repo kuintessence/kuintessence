@@ -293,7 +293,7 @@
   "jobs": {
     "title": "作业",
     "subtitle": "有作业等待或运行时每 5s 自动刷新。",
-    "countHint": "{{visible}} 可见 · {{total}} 共计",
+    "countHint": "{{visible}}/{{total}} 可见",
     "agentFilter": {
       "active": "仅显示接入代理 {{agentId}} 上的作业",
       "clear": "清除接入代理筛选"
@@ -459,6 +459,13 @@
       "textResultUnavailable": "尚未收到此文本结果。"
     },
     "usecase": {
+      "noInputs": "此用例未声明可配置的输入文件或参数。",
+      "unboundInputs": "用例输入尚未绑定执行材料，请选择其他用例或联系发布方补全。",
+      "invalidInput": "输入不符合此参数的格式或范围要求。",
+      "boolean": {
+        "true": "是",
+        "false": "否"
+      },
       "mode": "软件用例",
       "selected": "已选择用例",
       "chooseUsecase": "选择用例",
@@ -549,7 +556,7 @@
   "workflows": {
     "title": "工作流",
     "subtitle": "跟踪已提交、排队中、运行中和已结束的工作流运行。",
-    "countHint": "{{visible}} 可见 · {{total}} 共计",
+    "countHint": "{{visible}}/{{total}} 可见",
     "searchPlaceholder": "搜索运行记录",
     "lastUpdated": "更新于 {{time}}",
     "notUpdated": "尚未更新",
@@ -891,7 +898,7 @@
   "agents": {
     "title": "节点",
     "subtitle": "每个注册节点一张卡片，每 10s 自动刷新。",
-    "countHint": "{{online}} 在线 · {{total}} 共计",
+    "countHint": "{{online}}/{{total}} 在线",
     "empty": "暂无注册节点。使用以下命令启动：",
     "loadFailed": "暂时无法加载节点列表，请稍后重试。",
     "softwareLoadFailed": "暂时无法加载节点软件清单，请稍后重试。",
@@ -2285,7 +2292,7 @@
         "section": "选址预览",
         "title": "选址预览",
         "subtitle": "用当前草稿跑一次支持队列约束的选址流水线。",
-        "button": "刷新预览",
+        "button": "检查可用资源",
         "empty": "点击「刷新预览」即可查看作业的预期选址结果。"
       },
       "stages": {
@@ -2704,6 +2711,17 @@
     "unavailable": "该选项当前不可用，请重新选择。"
   },
   "functionMaps": {
+    "appearance": "外观",
+    "connection": "连线效果",
+    "static": "静态",
+    "flow": "流动",
+    "lineColor": "连线颜色",
+    "neutral": "中性灰",
+    "brand": "品牌蓝",
+    "contrast": "高对比",
+    "lineWidth": "线宽",
+    "flowDuration": "流动周期",
+    "related": "业务关系",
     "portal": "功能与业务示意图",
     "choose": "查看示意图",
     "permissionFailed": "无法核实入口权限，请重试。",
@@ -2715,7 +2733,7 @@
     "actualSources": "运行数据：以接口字段及时间依据分别判断。",
     "compact": "收起大图",
     "expand": "展开大图",
-    "canvas": "可滚动示意图",
+    "canvas": "业务示意图",
     "mobile": "示意图节点文字视图",
     "dependencyLegend": "实线标注关系类型；虚线为包含或观测。A → B 仅在“依赖”关系中表示 A 依赖 B；可达关系不证明故障传播。",
     "runtimeLegend": "生命周期、进度、健康与获取状态分别判断；刷新失败不代表资源故障。",

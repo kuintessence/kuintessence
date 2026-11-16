@@ -117,3 +117,20 @@ bunx --no-install patchright test --config=e2e/ui-components.config.ts --update-
 ```
 
 普通验证不加 `--update-snapshots`；不要用更新基线掩盖非预期变化。预览站仍需检查登录、真实接口、权限和筛选，这些不由离线截图替代。
+
+## 工作区与作业交互
+
+页面第一级采用无圆角卡片外壳的平面区域。算力中心及有运营权限的平台管理共用组织选择器，放在二级导航标题下；组织范围的权限和查询失效行为保持统一。
+
+`ResourceSelect` 在 Dialog/Sheet 中仍使用文档级 Portal，搜索框接收真实键盘输入，Escape 只关闭最上层。Popover 固定为与现有 Dialog/Menu 共用 focus-scope、dismissable-layer 的 1.1.15 版本；升级 Radix 时需要一起验证这些模块的版本及嵌套交互，避免多个独立焦点栈争夺焦点。
+
+作业用例同时展示执行输入槽和类型化声明，按类型渲染数字、枚举、布尔及文件控件，读取标量默认值并检查格式、范围与必填状态。没有声明输入的用例显示明确空态；缺少执行材料绑定的输入显示发布错误并阻止提交，不把未绑定参数当作执行参数。输入值继续沿用服务端的字符串/文件引用契约，Dataset 使用独立的数据选择与授权检查。
+
+提交前保留按需“检查可用资源”，不在表单中常驻空的调度流水线；用例物化失败在本地检查区域显示错误。作业概览复用平面示意图，展示已记录的集群、Agent、软件、输入输出及申请资源，集群信息只来自匹配的持久选址记录，缺失值显示未记录。图在手机宽度隐藏，节点详情使用受视口约束的弹窗。
+
+本地夹具与浏览器检查（虚构数据，不连接平台）：
+
+```sh
+bun node_modules/vite/bin/vite.js build --config packages/web/visual/function-maps.config.ts
+bun packages/web/visual/verify-job-controls.mjs
+```

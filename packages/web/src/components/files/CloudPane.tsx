@@ -275,7 +275,7 @@ export function CloudPane({
                   {t("files.table.modified")}
                 </TableHead>
                 <TableHead
-                  className="w-[92px] px-1 py-2 font-medium sm:w-[72px]"
+                  className="w-28 px-1 py-2 font-medium sm:w-24"
                   aria-label={t("files.table.actions")}
                 />
               </TableRow>
@@ -306,7 +306,7 @@ export function CloudPane({
                           <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <button
                             type="button"
-                            className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
+                            className="kq-name-fade flex-1 text-left text-sm focus-visible:outline-2 focus-visible:outline-brand"
                             title={`${r.name}/`}
                             onClick={(event) => {
                               event.stopPropagation();
@@ -385,7 +385,7 @@ export function CloudPane({
                         <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         <button
                           type="button"
-                          className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
+                          className="kq-name-fade flex-1 text-left text-sm focus-visible:outline-2 focus-visible:outline-brand"
                           title={r.displayName}
                           aria-pressed={isSelected}
                           onClick={(event) => {
@@ -425,7 +425,7 @@ export function CloudPane({
                         ) : null}
                         {!canUse ? (
                           <span
-                            className="px-2 text-[10px] text-muted-foreground"
+                            className="shrink-0 whitespace-nowrap px-2 text-[10px] text-muted-foreground"
                             title={t("files.useUnavailable")}
                             data-testid={`files-cloud-view-only-${r.obj.id}`}
                           >

@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { useActiveOrganizationId } from "../../lib/active-organization";
 import { usePlatformCapability } from "../../lib/platform-capabilities";
 import { CpCapabilityError } from "./CpCapabilityError";
-import { ProviderOrganizationSelector } from "./ProviderOrganizationSelector";
 
 export interface CpLayoutProps {
   children: ReactNode;
@@ -35,9 +34,6 @@ export function CpLayout({ children }: CpLayoutProps) {
 
   return (
     <div className="space-y-4" data-testid="cp-layout">
-      <div className="flex justify-start sm:justify-end">
-        <ProviderOrganizationSelector />
-      </div>
       <Fragment key={organizationId ?? "all"}>{children}</Fragment>
     </div>
   );

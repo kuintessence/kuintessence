@@ -189,7 +189,7 @@ export function OperationsAttentionCards() {
 
   return (
     <section
-      className="grid gap-3 xl:grid-cols-2"
+      className="grid items-start gap-3 xl:grid-cols-2"
       aria-label={t("settings.operations.attention.label")}
     >
       {canManagePlatform || getAuthState().role === "operator" ? (

@@ -551,7 +551,6 @@ describe("SubmitJobDialog queue placement", () => {
     const queueSelect = await screen.findByTestId("submit-job-queue-select");
     fireEvent.change(nativeControl(queueSelect), { target: { value: "queue-named" } });
 
-    fireEvent.click(screen.getByTestId("placement-preview-toggle"));
     fireEvent.click(await screen.findByTestId("placement-preview-refresh"));
     await waitFor(() => expect(previewPayloads).toHaveLength(1));
 
@@ -762,7 +761,6 @@ describe("SubmitJobDialog usecase picker", () => {
       expect(screen.getByTestId("submit-job-confirm").hasAttribute("disabled")).toBe(false),
     );
 
-    fireEvent.click(screen.getByTestId("placement-preview-toggle"));
     fireEvent.click(await screen.findByTestId("placement-preview-refresh"));
 
     const dataInputs = { trajectoryDataset: datasetOption.input };
@@ -996,4 +994,76 @@ describe("SubmitJobDialog usecase picker", () => {
     ).toBe(true);
     expect(screen.getByTestId("submit-job-confirm").hasAttribute("disabled")).toBe(true);
   });
+});
+
+test("renders declared parameter types, defaults and constraints alongside file inputs", async () => {
+  const pkg = gromacsUsecase();
+  pkg.spec = {
+    ...pkg.spec,
+    softwareRef: { source: "official-upstream", name: "gromacs", version: "2024.1" },
+    inputs: [
+      {
+        descriptor: "steps",
+        type: "Integer",
+        required: true,
+        minimum: 1,
+        maximum: 100,
+        default: 10,
+      },
+      { descriptor: "structure", type: "File", required: true },
+      {
+        descriptor: "precision",
+        type: "Enum",
+        required: true,
+        enum: ["single", "double"],
+        default: "single",
+      },
+      { descriptor: "verbose", type: "Boolean", required: true, default: false },
+    ],
+  };
+  pkg.spec.usecase.inputSlots.push(
+    {
+      kind: "Text",
+      descriptor: "precision",
+      refMaterials: [{ kind: "EnvRef", descriptor: "precision" }],
+    },
+    {
+      kind: "Text",
+      descriptor: "verbose",
+      refMaterials: [{ kind: "EnvRef", descriptor: "verbose" }],
+    },
+  );
+  softwareClient.listUsecasePackages.mockResolvedValue([pkg]);
+  render(<SubmitJobDialog open onOpenChange={() => {}} />, { wrapper: wrapper() });
+  const steps = (await screen.findByTestId("submit-usecase-input-steps")) as HTMLInputElement;
+  await waitFor(() => expect(steps.value).toBe("10"));
+  expect(steps.type).toBe("number");
+  expect(steps.min).toBe("1");
+  expect(steps.max).toBe("100");
+  expect(
+    (nativeControl(screen.getByTestId("submit-usecase-input-precision")) as HTMLSelectElement)
+      .value,
+  ).toBe("single");
+  expect(
+    (nativeControl(screen.getByTestId("submit-usecase-input-verbose")) as HTMLSelectElement).value,
+  ).toBe("false");
+  expect(screen.getByTestId("submit-usecase-file-structure")).toBeTruthy();
+  fireEvent.change(steps, { target: { value: "101" } });
+  expect(steps.getAttribute("aria-invalid")).toBe("true");
+  expect(screen.getByText("jobs.usecase.invalidInput")).toBeTruthy();
+});
+
+test("explains packages without inputs and blocks unbound typed fields", async () => {
+  const pkg = datasetUsecase(false);
+  pkg.spec.inputs = [];
+  softwareClient.listUsecasePackages.mockResolvedValue([pkg]);
+  const view = render(<SubmitJobDialog open onOpenChange={() => {}} />, { wrapper: wrapper() });
+  expect(await screen.findByTestId("submit-usecase-no-inputs")).toBeTruthy();
+  view.unmount();
+  pkg.spec.inputs = [{ descriptor: "iterations", type: "Integer", required: true }];
+  softwareClient.listUsecasePackages.mockResolvedValue([pkg]);
+  render(<SubmitJobDialog open onOpenChange={() => {}} />, { wrapper: wrapper() });
+  expect(await screen.findByTestId("submit-usecase-input-iterations")).toBeTruthy();
+  expect(screen.getByText("jobs.usecase.unboundInputs")).toBeTruthy();
+  expect(screen.getByTestId("submit-job-confirm").hasAttribute("disabled")).toBe(true);
 });

@@ -39,7 +39,7 @@ export function WorkflowsTable({
           <div className="flex min-w-0 flex-col">
             <button
               type="button"
-              className="max-w-[28rem] truncate text-left font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+              className="kq-name-fade max-w-[28rem] text-left font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
               title={row.original.name}
               onClick={(event) => {
                 event.stopPropagation();
@@ -97,7 +97,7 @@ export function WorkflowsTable({
               className="flex w-full flex-col gap-3 border-border p-4 text-left transition-colors"
             >
               <div className="min-w-0">
-                <div className="truncate text-sm font-semibold" title={run.name}>
+                <div className="kq-name-fade text-sm font-semibold" title={run.name}>
                   {run.name}
                 </div>
                 <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">

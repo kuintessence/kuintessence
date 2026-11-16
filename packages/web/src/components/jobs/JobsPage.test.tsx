@@ -11,6 +11,7 @@ const importJobJsonDialogMock = vi.hoisted(() => vi.fn());
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, opts?: Record<string, unknown>) => {
+      if (key === "jobs.countHint") return `${opts?.visible}/${opts?.total} visible`;
       if (key === "jobs.pagination.next") return "下一页";
       if (key === "jobs.pagination.previous") return "上一页";
       if (key === "jobs.pagination.range") {
@@ -195,6 +196,7 @@ describe("JobsPage pagination", () => {
     await waitFor(() => screen.getByTestId("jobs-list-error"));
     expect(screen.getByTestId("jobs-list-error").textContent).toContain("does not have permission");
     expect(screen.getByTestId("jobs-list-error").textContent).not.toContain("jobs denied");
+    expect(screen.getByTestId("jobs-count").textContent).toBe("—/— visible");
     expect(screen.queryByText("No jobs match these filters.")).toBeNull();
     expect(screen.queryByTestId("jobs-pagination")).toBeNull();
     expect(screen.getByTestId("jobs-submit-button")).toHaveProperty("disabled", true);
@@ -290,6 +292,7 @@ describe("JobsPage pagination", () => {
     await waitFor(() => screen.getByTestId("jobs-list-error"));
     expect(screen.getByTestId("jobs-list-error").textContent).toContain("does not have permission");
     expect(screen.getByTestId("jobs-list-error").textContent).not.toContain("jobs denied");
+    expect(screen.getByTestId("jobs-count").textContent).toBe("—/— visible");
     expect(screen.queryByTestId(`job-row-${firstJob.id}`)).toBeNull();
     expect(screen.queryByTestId("mock-job-detail-sheet")).toBeNull();
     expect(screen.queryByTestId("jobs-pagination")).toBeNull();

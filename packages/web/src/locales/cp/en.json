@@ -613,7 +613,7 @@
       "resumed": "User resumed",
       "quotaSaved": "Quota updated",
       "empty": "No users in scope.",
-      "countHint": "{{visible}} shown · {{total}} total",
+      "countHint": "{{visible}}/{{total}} visible",
       "showLegacy": "Show legacy fields",
       "pagination": "Member pagination",
       "previousPage": "Previous",

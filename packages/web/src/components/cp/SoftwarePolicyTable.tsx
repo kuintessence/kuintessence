@@ -2300,9 +2300,6 @@ function OperationHistoryToolbar({
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div>
         <div className="text-xs font-medium">{t("cp.software.operations.historyTitle")}</div>
-        <div className="text-xs text-muted-foreground">
-          {t("cp.software.operations.historySubtitle")}
-        </div>
       </div>
       <div className="kq-fill-row">
         <NativeSelect
