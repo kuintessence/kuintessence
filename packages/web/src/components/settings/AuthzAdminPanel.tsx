@@ -217,53 +217,8 @@ function ScopedAuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: bo
       <OrganizationMembershipPanel />
       <FunctionMaps
         ids={["T01"]}
-        runtime={{
-          ...authorizationRuntime({
-            health,
-            readiness,
-            state: loading
-              ? "loading"
-              : loadError
-                ? loadForbidden
-                  ? "forbidden"
-                  : "error"
-                : health && readiness
-                  ? "ready"
-                  : "no-data",
-            fetchedAt,
-          }),
-          refresh: () => void refresh(),
-          refreshing: loading,
-        }}
-        onOpen={() => {
-          const details = document.getElementById("authz-existing-controls");
-          if (details instanceof HTMLDetailsElement) {
-            details.open = true;
-            details.scrollIntoView({ block: "start" });
-          }
-          return true;
-        }}
-      />
-      <details className="border-b" id="authz-existing-controls">
-        <summary className="cursor-pointer p-4 text-sm font-medium">
-          {t("adminAccess.advancedTitle")}
-        </summary>
-        <Card data-testid="authz-admin-panel" className="">
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <ShieldAlert className="h-4 w-4" />
-
-                {t("adminAccess.serviceTitle")}
-              </CardTitle>
-            </div>
-            <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
-              {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-
-              {t("adminAccess.refresh")}
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-5">
+        dashboard={
+          <div className="space-y-5">
             <div className="grid gap-3 md:grid-cols-5">
               <Metric
                 label={t("adminAccess.mode")}
@@ -334,6 +289,18 @@ function ScopedAuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: bo
                 value={readiness ? String(readiness.outbox.dead) : t("adminAccess.unknown")}
               />
             </div>
+          </div>
+        }
+        common={
+          <>
+            {health?.error ? (
+              <div className=" p-3 text-sm text-status-failed">{t("adminAccess.unavailable")}</div>
+            ) : null}
+            {loadError ? (
+              <div className=" p-3 text-sm text-status-failed" data-testid="authz-refresh-error">
+                {loadError}
+              </div>
+            ) : null}
             {readiness?.blockers.length ? (
               <div className=" p-3 text-sm text-status-failed">
                 <div className="font-medium">{t("adminAccess.conditions")}</div>
@@ -349,6 +316,55 @@ function ScopedAuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: bo
                 {t("adminAccess.verifyEnforcement")}
               </div>
             ) : null}
+          </>
+        }
+        runtime={{
+          ...authorizationRuntime({
+            health,
+            readiness,
+            state: loading
+              ? "loading"
+              : loadError
+                ? loadForbidden
+                  ? "forbidden"
+                  : "error"
+                : health && readiness
+                  ? "ready"
+                  : "no-data",
+            fetchedAt,
+          }),
+          refresh: () => void refresh(),
+          refreshing: loading,
+        }}
+        onOpen={() => {
+          const details = document.getElementById("authz-existing-controls");
+          if (details instanceof HTMLDetailsElement) {
+            details.open = true;
+            details.scrollIntoView({ block: "start" });
+          }
+          return true;
+        }}
+      />
+      <details className="border-b" id="authz-existing-controls">
+        <summary className="cursor-pointer p-4 text-sm font-medium">
+          {t("adminAccess.advancedTitle")}
+        </summary>
+        <Card data-testid="authz-admin-panel" className="">
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <ShieldAlert className="h-4 w-4" />
+
+                {t("adminAccess.serviceTitle")}
+              </CardTitle>
+            </div>
+            <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
+              {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+
+              {t("adminAccess.refresh")}
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-5">
             <Button
               variant="outline"
               size="sm"
@@ -378,14 +394,6 @@ function ScopedAuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: bo
 
               {t("adminAccess.rebuild")}
             </Button>
-            {health?.error ? (
-              <div className=" p-3 text-sm text-status-failed">{t("adminAccess.unavailable")}</div>
-            ) : null}
-            {loadError ? (
-              <div className=" p-3 text-sm text-status-failed" data-testid="authz-refresh-error">
-                {loadError}
-              </div>
-            ) : null}
 
             <div>
               {showBreakGlass ? (

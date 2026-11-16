@@ -24,12 +24,13 @@ import { type GraphEdge, type GraphNode, yamlToGraph } from "../../lib/yaml-grap
 import { fmtBytes } from "../files/path-picker-utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { CardContent, CardHeader, CardTitle } from "../ui/card";
 import {
   type SlotOption,
   workflowInputSlots,
   workflowOutputSlots,
 } from "../workflow/WorkflowSlotMappingDialog";
+import { WorkflowPanel } from "./WorkflowCreationLayout";
 import { formatCost, formatDuration } from "./WorkflowResourcesStep";
 import { WorkflowReviewGraph } from "./WorkflowReviewGraph";
 
@@ -130,7 +131,7 @@ export function WorkflowReviewStep({
 
   return (
     <div className="space-y-4" data-testid="workflow-review-step">
-      <Card className=" ">
+      <WorkflowPanel className="rounded-md shadow-none">
         <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
           <div>
             <CardTitle>{t("workflows.creation.review.title")}</CardTitle>
@@ -163,7 +164,7 @@ export function WorkflowReviewStep({
               value={formatCost(estimate.minCost, estimate.maxCost, t)}
             />
           </div>
-          <dl className="flex flex-wrap gap-x-6 gap-y-2 border-border py-3">
+          <dl className="flex flex-wrap gap-x-6 gap-y-2 border-y border-border py-3">
             <Summary label={t("workflows.creation.review.nodes")} value={nodeCount} />
             <Summary label={t("workflows.creation.review.edges")} value={edgeCount} />
             <Summary
@@ -173,7 +174,7 @@ export function WorkflowReviewStep({
             <Summary label={t("workflows.creation.review.files")} value={model.files.length} />
           </dl>
           {missingFiles.length > 0 || missingValues.length > 0 || invalidDatasets.length > 0 ? (
-            <div className=" p-3 text-sm">
+            <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
               <p className="font-medium">{t("workflows.creation.review.missingTitle")}</p>
               <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
                 {missingValues.map((requirement) => (
@@ -193,7 +194,10 @@ export function WorkflowReviewStep({
             </div>
           ) : null}
           {prerequisites.length > 0 ? (
-            <div className=" p-3 text-sm" data-testid="workflow-license-prerequisites">
+            <div
+              className="rounded-lg border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
+              data-testid="workflow-license-prerequisites"
+            >
               <p className="font-medium">{t("workflows.creation.review.governanceBlocked")}</p>
               <ul className="mt-2 space-y-2 text-muted-foreground">
                 {prerequisites.map((block) => (
@@ -218,8 +222,11 @@ export function WorkflowReviewStep({
                     const outputs = workflowOutputSlots(node);
                     if (inputs.length === 0 && outputs.length === 0) return null;
                     return (
-                      <article key={node.id} className="overflow-hidden border-border ">
-                        <header className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
+                      <article
+                        key={node.id}
+                        className="overflow-hidden rounded-lg border border-border bg-background"
+                      >
+                        <header className="flex items-center justify-between gap-3 border-b border-border bg-muted/25 px-3 py-2.5">
                           <div className="min-w-0">
                             <p className="truncate text-sm font-semibold">{node.data.name}</p>
                             <p className="truncate text-[11px] text-muted-foreground">{node.id}</p>
@@ -275,7 +282,7 @@ export function WorkflowReviewStep({
             </div>
           </section>
         </CardContent>
-      </Card>
+      </WorkflowPanel>
     </div>
   );
 }
@@ -291,7 +298,7 @@ function ReviewEstimate({
 }) {
   return (
     <div className="flex items-center gap-3 py-2">
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center text-brand">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-brand-soft text-brand">
         <Icon className="h-4 w-4" />
       </span>
       <div className="min-w-0">
@@ -405,7 +412,7 @@ function SlotSection({
               return (
                 <li
                   key={slot.descriptor}
-                  className="flex min-w-0 items-center gap-2 border-border px-2.5 py-2"
+                  className="flex min-w-0 items-center gap-2 rounded-md border border-border px-2.5 py-2"
                   title={slot.description ?? slot.value}
                 >
                   <Badge variant="outline">Text</Badge>
@@ -420,7 +427,7 @@ function SlotSection({
             }
             if (slot.type === "Dataset") {
               return (
-                <li key={slot.descriptor} className="min-w-0 border-border p-2.5">
+                <li key={slot.descriptor} className="min-w-0 rounded-md border border-border p-2.5">
                   <div className="flex items-center gap-2">
                     <Badge variant="outline">Dataset</Badge>
                     <span className="truncate text-xs font-medium">{slot.descriptor}</span>
@@ -441,7 +448,7 @@ function SlotSection({
               );
             }
             return (
-              <li key={slot.descriptor} className="min-w-0 border-border p-2.5">
+              <li key={slot.descriptor} className="min-w-0 rounded-md border border-border p-2.5">
                 <div className="flex items-center gap-2">
                   <Badge variant="outline">
                     File{slot.batch ? ` · ${t("workflows.creation.inputs.fileBatch")}` : ""}
@@ -460,7 +467,7 @@ function SlotSection({
                       return (
                         <div
                           key={file.id}
-                          className="flex min-w-0 items-center gap-2 px-2 py-1.5 text-[11px] text-success"
+                          className="flex min-w-0 items-center gap-2 rounded bg-success/10 px-2 py-1.5 text-[11px] text-success"
                         >
                           <SourceIcon className="h-3.5 w-3.5 shrink-0" />
                           <FileIcon className="h-3.5 w-3.5 shrink-0" />

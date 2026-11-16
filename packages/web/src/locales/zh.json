@@ -2732,7 +2732,7 @@
     "designRelations": "设计关系：仅显示当前权限内的能力或对象类型。",
     "actualSources": "运行数据：以接口字段及时间依据分别判断。",
     "compact": "收起大图",
-    "expand": "展开大图",
+    "expand": "展开",
     "canvas": "业务示意图",
     "mobile": "示意图节点文字视图",
     "dependencyLegend": "实线标注关系类型；虚线为包含或观测。A → B 仅在“依赖”关系中表示 A 依赖 B；可达关系不证明故障传播。",
@@ -2818,6 +2818,38 @@
       "unknown": "健康未知",
       "confirmed-fault": "已确认异常",
       "reported-ok": "探测正常（仅该项）"
-    }
+    },
+    "mainFunction": "主要功能",
+    "entrance": "入口位置",
+    "collapse": "收起",
+    "views": {
+      "process": "业务流程",
+      "dependency": "资源关系",
+      "runtime": "运行状态",
+      "data": "数据概览"
+    },
+    "preferences": {
+      "title": "示意图与视图偏好",
+      "scope": "统一设置所有示意图的连线外观和页面进入规则。偏好按账号保存在当前浏览器。",
+      "mode": "下次进入时",
+      "memory": "记住上次手动选择",
+      "fixed": "固定默认",
+      "recommended": "跟随页面推荐",
+      "default": "默认显示",
+      "default_data": "默认打开数据概览",
+      "default_diagram": "默认打开示意图",
+      "default_expanded": "默认展开示意图",
+      "default_collapsed": "默认折叠示意图",
+      "saved": "已保存，下次普通进入时生效",
+      "nextEntry": "保存后保持当前显示，下次普通进入时生效",
+      "saveFailed": "无法保存偏好，请检查浏览器存储权限后重试",
+      "viewSettings": "视图设置",
+      "inherit": "使用统一设置",
+      "centralAppearance": "连线外观统一在个人中心「外观与界面」设置。",
+      "dual": "有示意图与数据概览的页面",
+      "single": "仅有示意图的页面",
+      "overrides": "页面内单独保存的视图设置优先；在对应页面选择「使用统一设置」可恢复这里的规则。"
+    },
+    "scopeFunction": "查看当前可用的{{names}}，并进入对应业务功能。"
   }
 }

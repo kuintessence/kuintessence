@@ -4,6 +4,7 @@ import { setLang } from "../../lib/i18n";
 import catalog from "./catalog.json";
 import { FunctionMapView } from "./FunctionMapView";
 import { functionMapIcons } from "./icons";
+import { MapPreferencesPanel } from "./MapPreferencesPanel";
 import type { FunctionMap, MapRuntime } from "./model";
 import { infrastructureRuntime } from "./runtime";
 
@@ -83,7 +84,8 @@ test("appearance controls change flow and line styling without changing business
   const { container } = render(<FunctionMapView model={model} language="zh" onOpen={() => {}} />);
   expect(container.querySelectorAll(".function-map-connection")).toHaveLength(model.edges.length);
   expect(container.querySelector(".function-map-flow")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "外观" }));
+  expect(screen.queryByRole("button", { name: "外观" })).toBeNull();
+  render(<MapPreferencesPanel />);
   expect((screen.getByRole("slider", { name: /流动周期/ }) as HTMLInputElement).disabled).toBe(
     true,
   );
@@ -91,12 +93,14 @@ test("appearance controls change flow and line styling without changing business
   fireEvent.change(screen.getByLabelText("连线颜色"), { target: { value: "brand" } });
   fireEvent.change(screen.getByRole("slider", { name: /线宽/ }), { target: { value: "3" } });
   fireEvent.change(screen.getByRole("slider", { name: /流动周期/ }), { target: { value: "4" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存" }));
   const canvas = container.querySelector(".function-map-canvas") as HTMLElement;
   expect(canvas.style.getPropertyValue("--map-line-color")).toBe("var(--brand)");
   expect(canvas.style.getPropertyValue("--map-line-width")).toBe("3");
   expect(canvas.style.getPropertyValue("--map-flow-duration")).toBe("4s");
   expect(container.querySelectorAll(".function-map-flow")).toHaveLength(model.edges.length);
   fireEvent.change(screen.getByLabelText("连线效果"), { target: { value: "static" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存" }));
   expect(container.querySelector(".function-map-flow")).toBeNull();
 });
 

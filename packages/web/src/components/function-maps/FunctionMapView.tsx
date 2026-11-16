@@ -1,5 +1,5 @@
 import dagre from "@dagrejs/dagre";
-import { ArrowUpRight, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { type CSSProperties, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button";
@@ -12,8 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
-import { NativeSelect } from "../ui/native-select";
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { WORKSPACE_DOMAINS, WORKSPACE_IDENTITIES } from "../workspace-navigation";
 import { FunctionMapIcon } from "./icons";
 import {
   type FunctionMap,
@@ -22,6 +21,7 @@ import {
   type MapRuntime,
   mapText,
 } from "./model";
+import { useMapPreferences } from "./preferences";
 import "./function-maps.css";
 
 const WIDTH = 208;
@@ -152,27 +152,29 @@ export function FunctionMapView({
   language,
   runtime,
   onOpen,
+  embedded = false,
+  initialNodeId,
 }: {
   model: FunctionMap;
   language: string;
   runtime?: MapRuntime;
   onOpen?: (node: MapNode) => void;
+  embedded?: boolean;
+  initialNodeId?: string;
 }) {
   const { t } = useTranslation();
   const marker = useId().replace(/:/g, "");
-  const [appearanceOpen, setAppearanceOpen] = useState(false);
-  const [flow, setFlow] = useState(false);
-  const [color, setColor] = useState("muted-foreground");
-  const [lineWidth, setLineWidth] = useState(1.5);
-  const [duration, setDuration] = useState(2);
+  const { prefs } = useMapPreferences();
+  const { flow, color, lineWidth, duration } = prefs.appearance;
   const trigger = useRef<HTMLButtonElement | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(() =>
+    window.matchMedia("(min-width: 768px)").matches ? (initialNodeId ?? null) : null,
+  );
   useEffect(() => {
     const media = window.matchMedia("(min-width: 768px)");
     const closeOnSmallScreen = () => {
       if (!media.matches) {
         setSelected(null);
-        setAppearanceOpen(false);
       }
     };
     media.addEventListener("change", closeOnSmallScreen);
@@ -183,14 +185,33 @@ export function FunctionMapView({
   const dimensions = graph.graph();
   const node = model.nodes.find((item) => item.id === selected);
   const observations = new Map(runtime?.observations.map((item) => [item.nodeId, item]));
-  const relations = node
-    ? model.edges.filter((edge) => edge.source === node.id || edge.target === node.id)
-    : [];
   const text = (value: Parameters<typeof mapText>[0]) => mapText(value, language);
+  function entrance(item: MapNode) {
+    const [path, hash] = item.route.split("#");
+    const routes = WORKSPACE_IDENTITIES.flatMap((identity) =>
+      identity.sections.flatMap((section) => section.items.map((entry) => ({ identity, entry }))),
+    );
+    const match =
+      routes.find(({ entry }) => entry.to === path && (entry.hash ?? "") === (hash ?? "")) ??
+      routes.find(({ entry }) => entry.to === path) ??
+      routes.find(({ entry }) => path === "/workflows/new" && entry.to === "/workflows");
+    const domain = WORKSPACE_DOMAINS.find((domain) => domain.id === match?.identity.domain);
+    return [
+      domain ? t(domain.labelKey) : null,
+      match ? t(match.entry.labelKey) : text(model.title),
+      item.section.zh ? text(item.section) : null,
+    ]
+      .filter(Boolean)
+      .join(" / ");
+  }
   return (
     <section className="function-map" data-map-id={model.id}>
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">{text(model.title)}</h2>
+      <div
+        className={
+          embedded && !runtime?.refresh ? "hidden" : "mb-2 flex items-center justify-between gap-3"
+        }
+      >
+        {!embedded ? <h2 className="text-sm font-semibold">{text(model.title)}</h2> : null}
         <div className="flex shrink-0 items-center gap-1">
           {runtime?.refresh ? (
             <Button
@@ -203,76 +224,6 @@ export function FunctionMapView({
               {t("common.refresh")}
             </Button>
           ) : null}
-          <Popover open={appearanceOpen} onOpenChange={setAppearanceOpen}>
-            <PopoverTrigger asChild>
-              <Button variant="ghost" size="sm" aria-label={t("functionMaps.appearance")}>
-                <SlidersHorizontal aria-hidden="true" />
-                {t("functionMaps.appearance")}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent
-              align="end"
-              className="w-72 space-y-4 p-4"
-              aria-label={t("functionMaps.appearance")}
-            >
-              <label className="flex items-center justify-between gap-3 text-sm">
-                {t("functionMaps.connection")}
-                <NativeSelect
-                  aria-label={t("functionMaps.connection")}
-                  value={flow ? "flow" : "static"}
-                  onChange={(event) => setFlow(event.target.value === "flow")}
-                >
-                  <option value="static">{t("functionMaps.static")}</option>
-                  <option value="flow">{t("functionMaps.flow")}</option>
-                </NativeSelect>
-              </label>
-              <label className="flex items-center justify-between gap-3 text-sm">
-                {t("functionMaps.lineColor")}
-                <NativeSelect
-                  aria-label={t("functionMaps.lineColor")}
-                  value={color}
-                  onChange={(event) => setColor(event.target.value)}
-                >
-                  <option value="muted-foreground">{t("functionMaps.neutral")}</option>
-                  <option value="brand">{t("functionMaps.brand")}</option>
-                  <option value="foreground">{t("functionMaps.contrast")}</option>
-                </NativeSelect>
-              </label>
-              <label className="block space-y-2 text-sm">
-                <span className="flex justify-between">
-                  {t("functionMaps.lineWidth")}
-                  <output>{lineWidth} px</output>
-                </span>
-                <input
-                  className="function-map-range w-full"
-                  aria-label={t("functionMaps.lineWidth")}
-                  type="range"
-                  min="1"
-                  max="3"
-                  step="0.5"
-                  value={lineWidth}
-                  onChange={(event) => setLineWidth(Number(event.target.value))}
-                />
-              </label>
-              <label className="block space-y-2 text-sm">
-                <span className="flex justify-between">
-                  {t("functionMaps.flowDuration")}
-                  <output>{duration} s</output>
-                </span>
-                <input
-                  className="function-map-range w-full"
-                  aria-label={t("functionMaps.flowDuration")}
-                  type="range"
-                  min="1"
-                  max="5"
-                  step="0.5"
-                  disabled={!flow}
-                  value={duration}
-                  onChange={(event) => setDuration(Number(event.target.value))}
-                />
-              </label>
-            </PopoverContent>
-          </Popover>
         </div>
       </div>
       {runtime && text(runtime.notice) ? (
@@ -427,12 +378,23 @@ export function FunctionMapView({
           >
             <DialogHeader>
               <DialogTitle>{text(node.name)}</DialogTitle>
-              <DialogDescription>{text(node.purpose)}</DialogDescription>
+              <DialogDescription>{text(model.title)}</DialogDescription>
             </DialogHeader>
             <DialogBody className="space-y-4">
               <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[8rem_minmax(0,1fr)]">
-                <dt className="text-muted-foreground">{t("functionMaps.objectType")}</dt>
-                <dd>{t(`functionMaps.kinds.${node.kind}`)}</dd>
+                <dt className="text-muted-foreground">{t("functionMaps.mainFunction")}</dt>
+                <dd className="leading-6">
+                  {node.id.endsWith(".scope")
+                    ? t("functionMaps.scopeFunction", {
+                        names: model.nodes
+                          .filter((item) => item.id !== node.id)
+                          .map((item) => text(item.name))
+                          .join(language.startsWith("zh") ? "、" : ", "),
+                      })
+                    : text(node.purpose)}
+                </dd>
+                <dt className="text-muted-foreground">{t("functionMaps.entrance")}</dt>
+                <dd className="leading-6">{entrance(node)}</dd>
                 {node.prerequisites ? (
                   <>
                     <dt className="text-muted-foreground">{t("functionMaps.preconditions")}</dt>
@@ -451,38 +413,9 @@ export function FunctionMapView({
                     <dd>{text(node.output)}</dd>
                   </>
                 ) : null}
-                {node.section.zh ? (
-                  <>
-                    <dt className="text-muted-foreground">{t("functionMaps.pageSection")}</dt>
-                    <dd>{text(node.section)}</dd>
-                  </>
-                ) : null}
               </dl>
               {observations.get(node.id) ? (
                 <ObservationDetails observation={observations.get(node.id)} language={language} />
-              ) : null}
-              {relations.length ? (
-                <ul className="space-y-2 text-sm" aria-label={t("functionMaps.related")}>
-                  {relations.map((edge) => (
-                    <li key={`${edge.source}:${edge.target}:${edge.kind}:${edge.label.zh}`}>
-                      {text(
-                        model.nodes.find((item) => item.id === edge.source)?.name ?? {
-                          zh: "",
-                          en: "",
-                        },
-                      )}
-                      {" → "}
-                      {text(
-                        model.nodes.find((item) => item.id === edge.target)?.name ?? {
-                          zh: "",
-                          en: "",
-                        },
-                      )}
-                      {" · "}
-                      {text(edge.label)}
-                    </li>
-                  ))}
-                </ul>
               ) : null}
             </DialogBody>
             {onOpen ? (

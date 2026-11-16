@@ -252,16 +252,24 @@ function DashboardContent({
     },
     onError: (e) => toast.error(toUserFacingError(e)),
   });
-  if (query.isPending) return <p>{t("interconnect.loadingResources")}</p>;
-  if (query.error || !query.data)
-    return (
-      <div role="alert" className=" border-border p-4">
+  if (query.isPending || query.error || !query.data) {
+    const status = query.isPending ? (
+      <p role="status">{t("interconnect.loadingResources")}</p>
+    ) : (
+      <div role="alert" className="border-border p-4">
         {toUserFacingError(query.error, t("interconnect.loadFailed"))}{" "}
         <Button variant="outline" onClick={() => void query.refetch()}>
           {t("interconnect.retry")}
         </Button>
       </div>
     );
+    return (
+      <div className="space-y-5" data-testid="interconnect-dashboard">
+        <PageHeader title={t("workspace.nav.interconnect")} />
+        {mode === "operator" ? <FunctionMaps ids={["D03", "G11"]} dashboard={status} /> : status}
+      </div>
+    );
+  }
   const data = query.data;
   const summary = summarizeInterconnect(data.centers, data.clusters);
   const centerName = (id: string) => data.centers.find((c) => c.id === id)?.metadata.name ?? id;
@@ -376,44 +384,8 @@ function DashboardContent({
         filter: { kind: "applications" },
       },
     ];
-  return (
-    <div className="space-y-5" data-testid="interconnect-dashboard">
-      <PageHeader title={t("workspace.nav.interconnect")} />
-      {mode === "operator" ? <FunctionMaps ids={["D03", "G11"]} /> : null}
-      <div className="kq-fill-row text-sm">
-        <span className="mr-auto text-muted-foreground">
-          {mode === "operator"
-            ? t("interconnect.platformScope")
-            : t("interconnect.organizationScope")}{" "}
-          · {t("interconnect.updated", { time: time(data.generatedAt) })}
-        </span>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={query.isFetching}
-          onClick={() => void query.refetch()}
-        >
-          {t("interconnect.refresh")}
-        </Button>
-        {data.canManage &&
-          (
-            [
-              ["centers", t("interconnect.addCenter")],
-              ["clusters", t("interconnect.addCluster")],
-              ["links", t("interconnect.addLink")],
-            ] as const
-          ).map(([kind, label]) => (
-            <Button
-              key={kind}
-              variant="outline"
-              size="sm"
-              disabled={kind !== "centers" && data.centers.length < (kind === "links" ? 2 : 1)}
-              onClick={() => setEditor({ kind })}
-            >
-              {label}
-            </Button>
-          ))}
-      </div>
+  const overview = (
+    <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 2xl:grid-cols-6">
         {metricCards.map((card) => (
           <button
@@ -562,6 +534,66 @@ function DashboardContent({
           onClick={(id) => chooseGroup(id, { kind: "applications" })}
         />
       </div>
+    </div>
+  );
+  return (
+    <div className="space-y-5" data-testid="interconnect-dashboard">
+      <PageHeader title={t("workspace.nav.interconnect")} />
+      <div className="kq-fill-row text-sm">
+        <span className="mr-auto text-muted-foreground">
+          {mode === "operator"
+            ? t("interconnect.platformScope")
+            : t("interconnect.organizationScope")}{" "}
+          · {t("interconnect.updated", { time: time(data.generatedAt) })}
+        </span>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={query.isFetching}
+          onClick={() => void query.refetch()}
+        >
+          {t("interconnect.refresh")}
+        </Button>
+        {data.canManage &&
+          (
+            [
+              ["centers", t("interconnect.addCenter")],
+              ["clusters", t("interconnect.addCluster")],
+              ["links", t("interconnect.addLink")],
+            ] as const
+          ).map(([kind, label]) => (
+            <Button
+              key={kind}
+              variant="outline"
+              size="sm"
+              disabled={kind !== "centers" && data.centers.length < (kind === "links" ? 2 : 1)}
+              onClick={() => setEditor({ kind })}
+            >
+              {label}
+            </Button>
+          ))}
+      </div>
+      {mode === "operator" ? (
+        <FunctionMaps
+          ids={["D03", "G11"]}
+          dashboard={overview}
+          common={
+            <p className="text-sm text-muted-foreground">
+              {t("interconnect.jobCounts", {
+                succeeded: summary.succeeded,
+                failed: summary.failed,
+              })}
+              {" · "}
+              {t("interconnect.heartbeatCounts", {
+                healthy: healthyAgents,
+                total: boundAgents.length,
+              })}
+            </p>
+          }
+        />
+      ) : (
+        overview
+      )}
       <section className=" border-border " aria-label={t("interconnect.details")}>
         <div className="kq-fill-row border-b border-border p-4">
           <h2 className="mr-auto font-semibold">{t("interconnect.details")}</h2>
