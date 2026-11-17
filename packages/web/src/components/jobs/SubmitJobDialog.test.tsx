@@ -638,7 +638,7 @@ describe("SubmitJobDialog usecase picker", () => {
 
     const dialog = await screen.findByTestId("submit-usecase-picker-dialog");
     expect(dialog.className).toContain("h-[min(88vh,900px)]");
-    expect(dialog.className).toContain("overflow-hidden");
+    expect(dialog.className).toContain("overflow-clip");
     expect(screen.getByTestId("submit-usecase-catalog-grid").className).toContain("overflow-auto");
   });
 
