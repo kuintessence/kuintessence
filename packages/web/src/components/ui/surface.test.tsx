@@ -42,3 +42,18 @@ test("a dialog is a new outer surface while its composed content stays flat", ()
   expect(dialog?.getAttribute("data-kq-surface")).toBe("region");
   expect(dialog?.querySelector('[data-kq-surface="region"]')).toBeNull();
 });
+
+test("page and standalone card roots use flat content without a card shell", () => {
+  const { container } = render(
+    <>
+      <PageShell>Page</PageShell>
+      <Card>Content</Card>
+    </>,
+  );
+  for (const root of container.querySelectorAll('[data-kq-surface="region"]')) {
+    expect(root.className).toContain("rounded-none");
+    expect(root.className).toContain("bg-transparent");
+    expect(root.className).toContain("border-0");
+    expect(root.className).not.toMatch(/rounded-xl|bg-card/);
+  }
+});

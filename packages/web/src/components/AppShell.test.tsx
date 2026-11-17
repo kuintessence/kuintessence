@@ -44,6 +44,7 @@ vi.mock("../lib/platform-capabilities", () => ({
           ...(platformViewer
             ? [
                 "workspace.platform.view",
+                "workspace.platform.operate",
                 ...(elevated
                   ? [
                       "workspace.provider.view",
@@ -61,6 +62,10 @@ vi.mock("../lib/platform-capabilities", () => ({
       retry: vi.fn(),
     };
   },
+}));
+
+vi.mock("./cp/ProviderOrganizationSelector", () => ({
+  ProviderOrganizationSelector: () => <div data-testid="sidebar-organization-selector" />,
 }));
 
 vi.mock("./ThemeProvider", () => ({
@@ -394,4 +399,15 @@ describe("AppShell auth metadata", () => {
     await waitFor(() => expect(localStorage.getItem("kq_role")).toBe("user"));
     expect(screen.queryByTestId("workspace-domain-provider")).toBeNull();
   });
+});
+
+test.each([
+  "/cp/profile",
+  "/operations",
+])("organization switching lives below the sidebar heading on %s", (pathname) => {
+  router.pathname = pathname;
+  render(<AppShell />);
+  const selector = screen.getByTestId("sidebar-organization-selector");
+  expect(selector.closest("aside")).toBeTruthy();
+  expect(selector.closest("main")).toBeNull();
 });

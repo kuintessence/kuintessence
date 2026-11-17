@@ -16,6 +16,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { FederationPageTitle } from "../federation/FederationLayout";
 import { FunctionMaps } from "../function-maps/FunctionMaps";
+import { MapPreferencesPanel } from "../function-maps/MapPreferencesPanel";
 import { type ThemePreference, useTheme } from "../ThemeProvider";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -409,8 +410,9 @@ export function SettingsPage() {
                   <CardHeader>
                     <CardTitle>{t("settings.appearance")}</CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-2">
+                  <CardContent className="space-y-6">
                     <ThemeRow />
+                    <MapPreferencesPanel key={auth.email} />
                   </CardContent>
                 </section>
               ) : null}

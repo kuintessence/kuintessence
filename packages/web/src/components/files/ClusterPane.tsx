@@ -273,13 +273,13 @@ export function ClusterPane({
                     <TableCell className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
                         {e.kind === "dir" ? (
-                          <Folder className="h-3.5 w-3.5 text-muted-foreground" />
+                          <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         ) : (
-                          <File className="h-3.5 w-3.5 text-muted-foreground" />
+                          <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         )}
                         <button
                           type="button"
-                          className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
+                          className="kq-name-fade flex-1 text-left text-sm focus-visible:outline-2 focus-visible:outline-brand"
                           title={e.name}
                           aria-pressed={isFile ? isSelected : undefined}
                           onClick={(event) => {

@@ -145,7 +145,8 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                     <TableCell className="min-w-44 px-4 py-3">
                       <button
                         type="button"
-                        className="break-words text-left text-brand hover:underline"
+                        className="kq-name-fade max-w-72 text-left text-brand hover:underline"
+                        title={provider.name}
                         onClick={() => {
                           setSelected(provider.id);
                           setEditing(false);

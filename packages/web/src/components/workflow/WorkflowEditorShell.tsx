@@ -1,4 +1,5 @@
 import { NativeSelect } from "../ui/native-select";
+import { WorkflowPanel } from "../workflows/WorkflowCreationLayout";
 /**
  * Three-pane visual editor shell that owns graph<->YAML synchronization.
  *
@@ -431,7 +432,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
   }
 
   return (
-    <div data-testid="rf-shell" className="flex flex-col overflow-hidden border-border ">
+    <WorkflowPanel data-testid="rf-shell" className="flex flex-col">
       <div className="flex flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <h3 className="text-base font-semibold">
@@ -557,7 +558,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           hidden={paletteCollapsed}
           label={t("workflow.editor.resizePalette")}
         />
-        <div className="relative min-h-[420px] w-full overflow-hidden border-border lg:h-full lg:min-h-0 ">
+        <div className="relative min-h-[420px] w-full overflow-hidden border-y border-border bg-background lg:h-full lg:min-h-0 lg:border-y-0">
           <ReactFlowProvider key={loadedGraphRevision}>
             <ReactFlowEditor
               nodes={graph.nodes}
@@ -648,7 +649,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
         open={pendingNode?.kind === "Script"}
         scripts={scriptsQ.data ?? []}
       />
-    </div>
+    </WorkflowPanel>
   );
 }
 

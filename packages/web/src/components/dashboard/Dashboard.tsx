@@ -113,130 +113,129 @@ export function Dashboard() {
 
   return (
     <PageShell className="space-y-6" data-testid="dashboard">
-      <PageHeader
-        title={t("dashboard.title")}
-        actions={
-          <span
-            className="font-mono text-[11px] text-muted-foreground tabular-nums"
-            data-testid="dashboard-refresh-hint"
-            title="Auto-refresh interval"
-          >
-            {t("dashboard.refreshHint")}
-          </span>
+      <PageHeader title={t("dashboard.title")} />
+      <FunctionMaps
+        ids={["D01"]}
+        recommended={bootstrap ? "diagram" : "data"}
+        common={
+          <>
+            {dashboardError ? (
+              <div
+                className=" p-3 text-sm text-status-failed"
+                data-testid="dashboard-load-error"
+                role="alert"
+              >
+                {toUserFacingError(dashboardError, t("dashboard.loadFailed"))}
+              </div>
+            ) : null}
+
+            {!dashboardError && bootstrap && !jobsQ.isLoading && !workflowsQ.isLoading ? (
+              <QuickStart onSubmitted={refresh} />
+            ) : null}
+          </>
+        }
+        dashboard={
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+              <StatCard
+                title={t("dashboard.activeJobs")}
+                icon={ListTodo}
+                tone="running"
+                value={jobsQ.error ? "—" : activeJobCount(jobs)}
+                hint={
+                  jobsQ.error
+                    ? t("dashboard.unavailable")
+                    : `${jobs?.length ?? 0} ${t("common.total")}`
+                }
+                testId="stat-active-jobs"
+              />
+              <StatCard
+                title={t("dashboard.workflowsInFlight")}
+                icon={GitBranch}
+                tone="running"
+                value={workflowsQ.error ? "—" : activeWorkflowCount(runs)}
+                hint={
+                  workflowsQ.error
+                    ? t("dashboard.unavailable")
+                    : `${runs?.length ?? 0} ${t("common.total")}`
+                }
+                testId="stat-active-workflows"
+              />
+              <StatCard
+                title={t("dashboard.agentsOnline")}
+                icon={Server}
+                value={agentsQ.error ? "—" : onlineAgentCount(agents)}
+                hint={
+                  agentsQ.error
+                    ? t("dashboard.unavailable")
+                    : `${agents.length} ${t("common.registered")}`
+                }
+                testId="stat-agents-online"
+              />
+              <StatCard
+                title={t("dashboard.submissions24h")}
+                icon={Activity}
+                value={jobsQ.error ? "—" : hourlyTotal}
+                hint={jobsQ.error ? t("dashboard.unavailable") : t("dashboard.hourlyBuckets")}
+                testId="stat-throughput-total"
+              />
+            </div>
+            <div
+              className={
+                showThroughput ? "grid grid-cols-1 items-start gap-4 lg:grid-cols-3" : "space-y-4"
+              }
+            >
+              {showThroughput ? (
+                <section className="lg:col-span-2" data-testid="throughput-card">
+                  <CardHeader>
+                    <CardTitle>{t("dashboard.submissionsLast24h")}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {jobsQ.error ? (
+                      <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
+                        {t("dashboard.unavailable")}
+                      </div>
+                    ) : (
+                      <ThroughputChart data={buckets} />
+                    )}
+                  </CardContent>
+                </section>
+              ) : null}
+
+              <section data-testid="agents-card">
+                <CardHeader>
+                  <CardTitle>{t("dashboard.agents")}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {agentsQ.error ? (
+                    <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
+                      {t("dashboard.unavailable")}
+                    </div>
+                  ) : (
+                    <AgentsTable agents={agents} />
+                  )}
+                </CardContent>
+              </section>
+            </div>
+            {canViewAuditLog ? (
+              <section data-testid="events-card">
+                <CardHeader>
+                  <CardTitle>{t("dashboard.recentActivity")}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <EventsList
+                    entries={auditQ.data?.entries ?? []}
+                    forbidden={
+                      !canViewAuditLog ||
+                      (auditQ.data as { forbidden?: boolean } | undefined)?.forbidden
+                    }
+                  />
+                </CardContent>
+              </section>
+            ) : null}
+          </div>
         }
       />
-      <FunctionMaps ids={["D01"]} />
-
-      {dashboardError ? (
-        <div
-          className=" p-3 text-sm text-status-failed"
-          data-testid="dashboard-load-error"
-          role="alert"
-        >
-          {toUserFacingError(dashboardError, t("dashboard.loadFailed"))}
-        </div>
-      ) : null}
-
-      {!dashboardError && bootstrap && !jobsQ.isLoading && !workflowsQ.isLoading ? (
-        <QuickStart onSubmitted={refresh} />
-      ) : null}
-
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <StatCard
-          title={t("dashboard.activeJobs")}
-          icon={ListTodo}
-          tone="running"
-          value={jobsQ.error ? "—" : activeJobCount(jobs)}
-          hint={
-            jobsQ.error ? t("dashboard.unavailable") : `${jobs?.length ?? 0} ${t("common.total")}`
-          }
-          testId="stat-active-jobs"
-        />
-        <StatCard
-          title={t("dashboard.workflowsInFlight")}
-          icon={GitBranch}
-          tone="running"
-          value={workflowsQ.error ? "—" : activeWorkflowCount(runs)}
-          hint={
-            workflowsQ.error
-              ? t("dashboard.unavailable")
-              : `${runs?.length ?? 0} ${t("common.total")}`
-          }
-          testId="stat-active-workflows"
-        />
-        <StatCard
-          title={t("dashboard.agentsOnline")}
-          icon={Server}
-          value={agentsQ.error ? "—" : onlineAgentCount(agents)}
-          hint={
-            agentsQ.error
-              ? t("dashboard.unavailable")
-              : `${agents.length} ${t("common.registered")}`
-          }
-          testId="stat-agents-online"
-        />
-        <StatCard
-          title={t("dashboard.submissions24h")}
-          icon={Activity}
-          value={jobsQ.error ? "—" : hourlyTotal}
-          hint={jobsQ.error ? t("dashboard.unavailable") : t("dashboard.hourlyBuckets")}
-          testId="stat-throughput-total"
-        />
-      </div>
-
-      <div
-        className={
-          showThroughput ? "grid grid-cols-1 items-start gap-4 lg:grid-cols-3" : "space-y-4"
-        }
-      >
-        {showThroughput ? (
-          <section className="lg:col-span-2" data-testid="throughput-card">
-            <CardHeader>
-              <CardTitle>{t("dashboard.submissionsLast24h")}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {jobsQ.error ? (
-                <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-                  {t("dashboard.unavailable")}
-                </div>
-              ) : (
-                <ThroughputChart data={buckets} />
-              )}
-            </CardContent>
-          </section>
-        ) : null}
-
-        <section data-testid="agents-card">
-          <CardHeader>
-            <CardTitle>{t("dashboard.agents")}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {agentsQ.error ? (
-              <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-                {t("dashboard.unavailable")}
-              </div>
-            ) : (
-              <AgentsTable agents={agents} />
-            )}
-          </CardContent>
-        </section>
-      </div>
-
-      {canViewAuditLog ? (
-        <section data-testid="events-card">
-          <CardHeader>
-            <CardTitle>{t("dashboard.recentActivity")}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <EventsList
-              entries={auditQ.data?.entries ?? []}
-              forbidden={
-                !canViewAuditLog || (auditQ.data as { forbidden?: boolean } | undefined)?.forbidden
-              }
-            />
-          </CardContent>
-        </section>
-      ) : null}
     </PageShell>
   );
 }

@@ -69,18 +69,14 @@ export function ProviderOrganizationSelector() {
   }
 
   return (
-    <label
-      className="flex min-w-0 max-w-full flex-wrap items-center gap-2 text-sm"
-      data-testid="cp-organization-selector"
-    >
-      <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <span className="shrink-0 text-muted-foreground">{t("cp.organizationSelector.label")}</span>
+    <label className="grid w-full min-w-0 gap-2 text-sm" data-testid="cp-organization-selector">
+      <span className="sr-only">{t("cp.organizationSelector.label")}</span>
       <ResourceSelectField
         resourceType="organizations"
         recent
         expandable
         aria-label={t("cp.organizationSelector.ariaLabel")}
-        className="min-w-0 flex-[1_1_12rem]"
+        className="w-full min-w-0"
         disabled={update.isPending}
         value={activeOrganizationId ?? ""}
         onChange={(event) => update.mutate(event.target.value || null)}

@@ -93,7 +93,10 @@ export function CpAttentionCards({ failedJobs, sickAgents, offlineAgents }: CpAt
   const partialFailure = Boolean(query.error) || Boolean(snapshot?.partialFailure);
 
   return (
-    <section className="grid gap-3 xl:grid-cols-2" aria-label={t("cp.dashboard.attention.label")}>
+    <section
+      className="grid items-start gap-3 xl:grid-cols-2"
+      aria-label={t("cp.dashboard.attention.label")}
+    >
       {management.allowed ? (
         <AttentionOverviewCard
           title={t("cp.dashboard.attention.approvals.title")}

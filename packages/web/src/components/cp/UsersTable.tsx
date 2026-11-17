@@ -69,7 +69,10 @@ export function UsersTable() {
             className="font-mono text-[11px] text-muted-foreground tabular-nums"
             data-testid="cp-users-count"
           >
-            {t("cp.users.countHint", { visible: items.length, total })}
+            {t("cp.users.countHint", {
+              visible: canShowMembers && q.data ? items.length : "—",
+              total: canShowMembers && q.data ? total : "—",
+            })}
           </span>
           <Button asChild variant="outline" size="sm" className="min-h-11 min-w-11">
             <a href="/cp/accounts">

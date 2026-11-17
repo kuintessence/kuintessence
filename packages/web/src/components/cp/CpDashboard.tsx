@@ -24,15 +24,7 @@ export function CpDashboard() {
   const { t } = useTranslation();
   const q = useCpDashboard();
 
-  if (q.error) {
-    return (
-      <div className=" p-3 text-sm" data-testid="cp-dashboard-error">
-        {toUserFacingError(q.error, t("cp.dashboard.loadFailed"))}
-      </div>
-    );
-  }
-
-  const k = q.data;
+  const k = q.error ? undefined : q.data;
   const isLoading = q.isLoading || !k;
   const terminalJobs = (k?.jobsCompleted ?? 0) + (k?.jobsFailed ?? 0);
   const agentTotal = (k?.agentsHealthy ?? 0) + (k?.agentsSick ?? 0) + (k?.agentsOffline ?? 0);
@@ -46,169 +38,188 @@ export function CpDashboard() {
   return (
     <div className="space-y-6" data-testid="cp-dashboard">
       <PageHeader title={t("cp.dashboard.title")} />
-      <FunctionMaps ids={["D02"]} />
-
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
-        <KpiTile
-          title={t("cp.dashboard.kpi.jobsCompleted")}
-          titleSuffix={t("cp.dashboard.kpi.period24Hours")}
-          icon={CheckCircle2}
-          tone="succeeded"
-          value={isLoading ? "—" : k.jobsCompleted}
-          testId="cp-kpi-jobsCompleted"
-        />
-        <KpiTile
-          title={t("cp.dashboard.kpi.jobsFailed")}
-          titleSuffix={t("cp.dashboard.kpi.period24Hours")}
-          icon={AlertTriangle}
-          tone="failed"
-          value={isLoading ? "—" : k.jobsFailed}
-          testId="cp-kpi-jobsFailed"
-        />
-        <KpiTile
-          title={t("cp.dashboard.kpi.bytesTransferred")}
-          titleSuffix={t("cp.dashboard.kpi.period24Hours")}
-          icon={HardDrive}
-          value={isLoading ? "—" : formatBytes(k.bytesTransferred)}
-          testId="cp-kpi-bytesTransferred"
-        />
-        <KpiTile
-          title={t("cp.dashboard.kpi.queueDepthPeak")}
-          titleSuffix={t("cp.dashboard.kpi.period24Hours")}
-          icon={Activity}
-          value={isLoading ? "—" : k.queueDepthPeak}
-          testId="cp-kpi-queueDepthPeak"
-        />
-        <KpiTile
-          title={t("cp.dashboard.kpi.agentsHealthy")}
-          icon={Layers}
-          tone="succeeded"
-          value={isLoading ? "—" : k.agentsHealthy}
-          testId="cp-kpi-agentsHealthy"
-        />
-        <KpiTile
-          title={t("cp.dashboard.kpi.agentsSick")}
-          icon={AlertTriangle}
-          tone="failed"
-          value={isLoading ? "—" : k.agentsSick}
-          testId="cp-kpi-agentsSick"
-        />
-        <KpiTile
-          title={t("cp.dashboard.kpi.agentsOffline")}
-          icon={ServerOff}
-          value={isLoading ? "—" : k.agentsOffline}
-          testId="cp-kpi-agentsOffline"
-        />
-      </div>
-
-      <div className="grid gap-2 border-border p-3 sm:grid-cols-3">
-        <OperationalSummary
-          label={t("cp.dashboard.summary.successRate")}
-          value={
-            isLoading
-              ? "—"
-              : terminalJobs > 0
-                ? `${successRate}%`
-                : t("cp.dashboard.summary.noJobs")
-          }
-        />
-        <OperationalSummary
-          label={t("cp.dashboard.summary.agentAvailability")}
-          value={
-            isLoading
-              ? "—"
-              : agentTotal > 0
-                ? `${availableAgentRate}%`
-                : t("cp.dashboard.summary.noAgents")
-          }
-        />
-        <OperationalSummary
-          label={t("cp.dashboard.summary.window")}
-          value={t("cp.dashboard.summary.last24Hours")}
-        />
-      </div>
-
-      <CpAttentionCards
-        failedJobs={isLoading ? null : k.jobsFailed}
-        sickAgents={isLoading ? null : k.agentsSick}
-        offlineAgents={isLoading ? null : k.agentsOffline}
-      />
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card data-testid="cp-top-users">
-          <CardHeader className="p-4 pb-2">
-            <CardTitle>{t("cp.dashboard.topUsers")}</CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-2">
-            {!isLoading && k.topUsers.length === 0 ? (
-              <p className="text-xs text-muted-foreground">{t("cp.dashboard.noTopUsers")}</p>
-            ) : (
-              <ul className="space-y-1 text-sm">
-                {(k?.topUsers ?? []).map((u) => (
-                  <li
-                    key={u.userId}
-                    className="flex items-center justify-between gap-3"
-                    data-testid={`cp-top-user-${u.userId}`}
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-foreground">
-                        <span title={u.userId}>{u.displayName ?? u.email ?? u.userId}</span>
-                      </span>
-                      <span className="block truncate text-[11px] text-muted-foreground">
-                        {[u.organizationName, u.displayName ? u.email : null]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </span>
-                    </span>
-                    <span className="font-mono tabular-nums text-xs text-muted-foreground">
-                      {u.jobs}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card data-testid="cp-top-apps">
-          <CardHeader className="p-4 pb-2">
-            <CardTitle>{t("cp.dashboard.topApps")}</CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-2">
-            {!isLoading && k.topApps.length === 0 ? (
-              <p className="text-xs text-muted-foreground">{t("cp.dashboard.noTopApps")}</p>
-            ) : (
-              <ul className="space-y-1 text-sm">
-                {(k?.topApps ?? []).map((a) => (
-                  <li
-                    key={a.appKey}
-                    className="flex items-center justify-between gap-3"
-                    data-testid={`cp-top-app-${a.appKey}`}
-                  >
-                    <span className="truncate font-mono text-xs text-foreground">{a.appKey}</span>
-                    <span className="font-mono tabular-nums text-xs text-muted-foreground">
-                      {a.jobs}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card data-testid="cp-agents-health">
-          <CardHeader className="p-4 pb-2">
-            <CardTitle>{t("cp.dashboard.agentsHealth")}</CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-2">
-            <AgentsHealthBar
-              healthy={k?.agentsHealthy ?? 0}
-              sick={k?.agentsSick ?? 0}
-              offline={k?.agentsOffline ?? 0}
+      <FunctionMaps
+        ids={["D02"]}
+        common={
+          <>
+            {q.error ? (
+              <p
+                role="alert"
+                className="text-sm text-status-failed"
+                data-testid="cp-dashboard-error"
+              >
+                {toUserFacingError(q.error, t("cp.dashboard.loadFailed"))}
+              </p>
+            ) : null}
+            <CpAttentionCards
+              failedJobs={isLoading ? null : k.jobsFailed}
+              sickAgents={isLoading ? null : k.agentsSick}
+              offlineAgents={isLoading ? null : k.agentsOffline}
             />
-          </CardContent>
-        </Card>
-      </div>
+          </>
+        }
+        dashboard={
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
+              <KpiTile
+                title={t("cp.dashboard.kpi.jobsCompleted")}
+                titleSuffix={t("cp.dashboard.kpi.period24Hours")}
+                icon={CheckCircle2}
+                tone="succeeded"
+                value={isLoading ? "—" : k.jobsCompleted}
+                testId="cp-kpi-jobsCompleted"
+              />
+              <KpiTile
+                title={t("cp.dashboard.kpi.jobsFailed")}
+                titleSuffix={t("cp.dashboard.kpi.period24Hours")}
+                icon={AlertTriangle}
+                tone="failed"
+                value={isLoading ? "—" : k.jobsFailed}
+                testId="cp-kpi-jobsFailed"
+              />
+              <KpiTile
+                title={t("cp.dashboard.kpi.bytesTransferred")}
+                titleSuffix={t("cp.dashboard.kpi.period24Hours")}
+                icon={HardDrive}
+                value={isLoading ? "—" : formatBytes(k.bytesTransferred)}
+                testId="cp-kpi-bytesTransferred"
+              />
+              <KpiTile
+                title={t("cp.dashboard.kpi.queueDepthPeak")}
+                titleSuffix={t("cp.dashboard.kpi.period24Hours")}
+                icon={Activity}
+                value={isLoading ? "—" : k.queueDepthPeak}
+                testId="cp-kpi-queueDepthPeak"
+              />
+              <KpiTile
+                title={t("cp.dashboard.kpi.agentsHealthy")}
+                icon={Layers}
+                tone="succeeded"
+                value={isLoading ? "—" : k.agentsHealthy}
+                testId="cp-kpi-agentsHealthy"
+              />
+              <KpiTile
+                title={t("cp.dashboard.kpi.agentsSick")}
+                icon={AlertTriangle}
+                tone="failed"
+                value={isLoading ? "—" : k.agentsSick}
+                testId="cp-kpi-agentsSick"
+              />
+              <KpiTile
+                title={t("cp.dashboard.kpi.agentsOffline")}
+                icon={ServerOff}
+                value={isLoading ? "—" : k.agentsOffline}
+                testId="cp-kpi-agentsOffline"
+              />
+            </div>
+
+            <div className="grid gap-2 border-border p-3 sm:grid-cols-3">
+              <OperationalSummary
+                label={t("cp.dashboard.summary.successRate")}
+                value={
+                  isLoading
+                    ? "—"
+                    : terminalJobs > 0
+                      ? `${successRate}%`
+                      : t("cp.dashboard.summary.noJobs")
+                }
+              />
+              <OperationalSummary
+                label={t("cp.dashboard.summary.agentAvailability")}
+                value={
+                  isLoading
+                    ? "—"
+                    : agentTotal > 0
+                      ? `${availableAgentRate}%`
+                      : t("cp.dashboard.summary.noAgents")
+                }
+              />
+              <OperationalSummary
+                label={t("cp.dashboard.summary.window")}
+                value={t("cp.dashboard.summary.last24Hours")}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <Card data-testid="cp-top-users">
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle>{t("cp.dashboard.topUsers")}</CardTitle>
+                </CardHeader>
+                <CardContent className="p-4 pt-2">
+                  {!isLoading && k.topUsers.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">{t("cp.dashboard.noTopUsers")}</p>
+                  ) : (
+                    <ul className="space-y-1 text-sm">
+                      {(k?.topUsers ?? []).map((u) => (
+                        <li
+                          key={u.userId}
+                          className="flex items-center justify-between gap-3"
+                          data-testid={`cp-top-user-${u.userId}`}
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium text-foreground">
+                              <span title={u.userId}>{u.displayName ?? u.email ?? u.userId}</span>
+                            </span>
+                            <span className="block truncate text-[11px] text-muted-foreground">
+                              {[u.organizationName, u.displayName ? u.email : null]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </span>
+                          </span>
+                          <span className="font-mono tabular-nums text-xs text-muted-foreground">
+                            {u.jobs}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card data-testid="cp-top-apps">
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle>{t("cp.dashboard.topApps")}</CardTitle>
+                </CardHeader>
+                <CardContent className="p-4 pt-2">
+                  {!isLoading && k.topApps.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">{t("cp.dashboard.noTopApps")}</p>
+                  ) : (
+                    <ul className="space-y-1 text-sm">
+                      {(k?.topApps ?? []).map((a) => (
+                        <li
+                          key={a.appKey}
+                          className="flex items-center justify-between gap-3"
+                          data-testid={`cp-top-app-${a.appKey}`}
+                        >
+                          <span className="truncate font-mono text-xs text-foreground">
+                            {a.appKey}
+                          </span>
+                          <span className="font-mono tabular-nums text-xs text-muted-foreground">
+                            {a.jobs}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card data-testid="cp-agents-health">
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle>{t("cp.dashboard.agentsHealth")}</CardTitle>
+                </CardHeader>
+                <CardContent className="p-4 pt-2">
+                  <AgentsHealthBar
+                    healthy={k?.agentsHealthy ?? 0}
+                    sick={k?.agentsSick ?? 0}
+                    offline={k?.agentsOffline ?? 0}
+                  />
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        }
+      />
     </div>
   );
 }

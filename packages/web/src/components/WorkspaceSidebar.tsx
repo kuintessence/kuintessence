@@ -11,6 +11,7 @@ import defaultLogoUrl from "../assets/logo.svg";
 import type { LocalCapabilities } from "../lib/local-mode";
 import { resolveBrandingForLanguage, resolveImageSource } from "../lib/platform-branding";
 import { cn } from "../lib/utils";
+import { ProviderOrganizationSelector } from "./cp/ProviderOrganizationSelector";
 import {
   canAccessOperationsLink,
   OPERATIONS_AREAS,
@@ -115,7 +116,10 @@ export function WorkspaceSidebar({
           />
         </div>
         {expanded ? (
-          <div className="flex min-w-0 flex-1 items-center px-4 text-base font-semibold tracking-tight">
+          <div
+            data-display-text
+            className="flex min-w-0 flex-1 items-center px-4 text-base font-semibold tracking-tight"
+          >
             {localizedBranding.name}
           </div>
         ) : null}
@@ -197,13 +201,19 @@ export function WorkspaceSidebar({
 
         {expanded ? (
           <div className="flex min-w-0 flex-1 flex-col bg-sidebar">
-            <div className="border-b border-sidebar-border p-3">
+            <div className="space-y-3 border-b border-sidebar-border p-3">
               {activeDomain ? (
                 <WorkspaceContextHeader
                   domain={activeDomain}
                   role={role}
                   serverCapabilities={serverCapabilities}
                 />
+              ) : null}
+              {!local &&
+              (identity.domain === "provider" ||
+                (identity.domain === "platform" &&
+                  serverCapabilities?.has("workspace.platform.operate"))) ? (
+                <ProviderOrganizationSelector />
               ) : null}
             </div>
 

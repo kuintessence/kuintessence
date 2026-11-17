@@ -8,8 +8,6 @@ import {
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
-  ChevronDown,
-  ChevronRight,
   FileIcon,
   FilePlus2,
   FlaskConical,
@@ -39,7 +37,11 @@ import {
   queueEligibility,
   queueTargetMode,
 } from "../../lib/queue-selection";
-import { listUsecasePackages, type UsecasePackage } from "../../lib/software-client";
+import {
+  listUsecasePackages,
+  type TypedUsecaseInput,
+  type UsecasePackage,
+} from "../../lib/software-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { type PathPickerSelection, PathPickerSheet } from "../files/PathPickerSheet";
 import { fmtBytes } from "../files/path-picker-utils";
@@ -166,7 +168,12 @@ function softwareSummary(pkg: UsecasePackage): string {
 function isBatchFileSlot(pkg: UsecasePackage, descriptor: string): boolean {
   const slot = pkg.spec.usecase.inputSlots.find((item) => item.descriptor === descriptor);
   const fileRef = slot?.refMaterials.find((ref) => ref.kind === "FileInputRef");
-  if (!fileRef || fileRef.kind !== "FileInputRef") return false;
+  if (!fileRef || fileRef.kind !== "FileInputRef")
+    return (
+      pkg.spec.inputs?.some(
+        (input) => input.descriptor === descriptor && input.type === "FileBatch",
+      ) ?? false
+    );
   const material = pkg.spec.filesomeInputs.find((item) => item.descriptor === fileRef.descriptor);
   return material?.fileKind.kind === "Batched";
 }
@@ -186,7 +193,24 @@ function isInternalScriptSlot(slot: UsecasePackage["spec"]["usecase"]["inputSlot
 }
 
 function visibleInputSlots(pkg: UsecasePackage) {
-  return pkg.spec.usecase.inputSlots.filter((slot) => !isInternalScriptSlot(slot));
+  const slots = pkg.spec.usecase.inputSlots.filter((slot) => !isInternalScriptSlot(slot));
+  return [
+    ...slots,
+    ...(pkg.spec.inputs ?? [])
+      .filter(
+        (input) =>
+          input.type !== "Dataset" &&
+          !pkg.spec.usecase.inputSlots.some((slot) => slot.descriptor === input.descriptor),
+      )
+      .map((input) => ({
+        descriptor: input.descriptor,
+        kind:
+          input.type === "File" || input.type === "FileBatch"
+            ? ("File" as const)
+            : ("Text" as const),
+        refMaterials: [],
+      })),
+  ];
 }
 
 function isDomainUsecase(pkg: UsecasePackage): boolean {
@@ -272,17 +296,44 @@ function usecaseInputCount(pkg: UsecasePackage): number {
   return visibleInputSlots(pkg).length + datasetInputs(pkg).length;
 }
 
+function hasUnboundInputs(pkg: UsecasePackage): boolean {
+  return visibleInputSlots(pkg).some((slot) => slot.refMaterials.length === 0);
+}
+
+function validTextInput(value: string, contract?: TypedUsecaseInput): boolean {
+  if (!value.trim()) return contract?.required === false;
+  if (!contract) return true;
+  if (contract.type === "Boolean" && !["true", "false"].includes(value)) return false;
+  if (contract.enum && !contract.enum.includes(value)) return false;
+  if (contract.pattern) {
+    try {
+      if (!new RegExp(contract.pattern).test(value)) return false;
+    } catch {
+      return false;
+    }
+  }
+  if (contract.type === "Integer" || contract.type === "Number") {
+    const number = Number(value);
+    if (!Number.isFinite(number) || (contract.type === "Integer" && !Number.isInteger(number)))
+      return false;
+    if (contract.minimum !== undefined && number < contract.minimum) return false;
+    if (contract.maximum !== undefined && number > contract.maximum) return false;
+  }
+  return true;
+}
+
 function usecaseReady(
   pkg: UsecasePackage | null,
   inputs: UsecaseInputs,
   dataInputs: JobDataInputs,
   dataInputValidity: Record<string, boolean>,
 ): boolean {
-  if (!pkg) return false;
+  if (!pkg || hasUnboundInputs(pkg)) return false;
   const materialInputsReady = visibleInputSlots(pkg).every((slot) => {
     const value = inputs[slot.descriptor];
+    const contract = pkg.spec.inputs?.find((input) => input.descriptor === slot.descriptor);
     if (slot.kind === "Text") {
-      return typeof value === "string" && value.trim().length > 0;
+      return validTextInput(typeof value === "string" ? value : "", contract);
     }
     if (isBatchFileSlot(pkg, slot.descriptor)) {
       return Array.isArray(value) && value.length > 0;
@@ -699,7 +750,6 @@ export function SubmitJobDialog({
   const [invalidQueueId, setInvalidQueueId] = useState<string | null>(null);
   const [queueSubmitError, setQueueSubmitError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
   const [usecasePickerOpen, setUsecasePickerOpen] = useState(false);
   const [selectedUsecaseId, setSelectedUsecaseId] = useState<string | null>(null);
   const [usecaseInputs, setUsecaseInputs] = useState<UsecaseInputs>({});
@@ -877,10 +927,25 @@ export function SubmitJobDialog({
       if (!current.trim() || usecaseAutoNames.has(current)) return nextAutoName;
       return current;
     });
-    setUsecaseInputs({});
+    const pkg = selectableUsecases.find((item) => item.id === selectedUsecaseId);
+    const defaults: UsecaseInputs = {};
+    for (const input of pkg?.spec.inputs ?? []) {
+      if (
+        ["string", "number", "boolean"].includes(typeof input.default) &&
+        !["File", "FileBatch", "Dataset"].includes(input.type)
+      )
+        defaults[input.descriptor] = String(input.default);
+    }
+    setUsecaseInputs(defaults);
     setUsecaseDataInputs({});
     setUsecaseDataInputValidity({});
-  }, [selectedUsecaseId, selectedUsecaseName, selectedUsecaseSignature, usecaseAutoNames]);
+  }, [
+    selectableUsecases,
+    selectedUsecaseId,
+    selectedUsecaseName,
+    selectedUsecaseSignature,
+    usecaseAutoNames,
+  ]);
 
   useEffect(() => {
     if (!open || queuesQ.isLoading || queuesQ.error) return;
@@ -964,7 +1029,12 @@ export function SubmitJobDialog({
     return {
       name: name.trim(),
       usecasePackageId: selectedUsecase.id,
-      inputs: usecaseInputs,
+      inputs: Object.fromEntries(
+        visibleInputSlots(selectedUsecase).map((slot) => [
+          slot.descriptor,
+          usecaseInputs[slot.descriptor] ?? "",
+        ]),
+      ),
       ...(Object.keys(usecaseDataInputs).length > 0 ? { dataInputs: usecaseDataInputs } : {}),
       resources: { cpus, memoryMb: memMb },
       ...(schedulingStrategy ? { schedulingStrategy } : {}),
@@ -1226,6 +1296,15 @@ export function SubmitJobDialog({
                           const value = usecaseInputs[slot.descriptor];
                           const batch = isBatchFileSlot(selectedUsecase, slot.descriptor);
                           const fieldId = usecaseFieldId(slot.descriptor);
+                          const contract = selectedUsecase.spec.inputs?.find(
+                            (input) => input.descriptor === slot.descriptor,
+                          );
+                          const required = contract?.required ?? true;
+                          const textValue = typeof value === "string" ? value : "";
+                          const invalid =
+                            slot.kind === "Text" &&
+                            textValue !== "" &&
+                            !validTextInput(textValue, contract);
                           const files = Array.isArray(value)
                             ? value
                             : value && typeof value === "object"
@@ -1240,10 +1319,34 @@ export function SubmitJobDialog({
                                 {slot.descriptor}
                               </label>
                               {slot.kind === "Text" ? (
-                                isStdinTextSlot(selectedUsecase, slot.descriptor) ? (
+                                contract?.type === "Boolean" || contract?.type === "Enum" ? (
+                                  <NativeSelect
+                                    id={fieldId}
+                                    required={required}
+                                    value={textValue}
+                                    onChange={(event) =>
+                                      setTextInput(slot.descriptor, event.target.value)
+                                    }
+                                    data-testid={`submit-usecase-input-${slot.descriptor}`}
+                                  >
+                                    <option value="">{t("ui.choose")}</option>
+                                    {(contract.type === "Boolean"
+                                      ? ["true", "false"]
+                                      : (contract.enum ?? [])
+                                    ).map((option) => (
+                                      <option key={option} value={option}>
+                                        {contract.type === "Boolean"
+                                          ? t(`jobs.usecase.boolean.${option}`)
+                                          : option}
+                                      </option>
+                                    ))}
+                                  </NativeSelect>
+                                ) : isStdinTextSlot(selectedUsecase, slot.descriptor) ? (
                                   <Textarea
                                     id={fieldId}
                                     rows={4}
+                                    required={required}
+                                    aria-invalid={invalid || undefined}
                                     value={typeof value === "string" ? value : ""}
                                     onChange={(event) =>
                                       setTextInput(slot.descriptor, event.target.value)
@@ -1254,6 +1357,22 @@ export function SubmitJobDialog({
                                 ) : (
                                   <Input
                                     id={fieldId}
+                                    required={required}
+                                    type={
+                                      contract?.type === "Integer" || contract?.type === "Number"
+                                        ? "number"
+                                        : "text"
+                                    }
+                                    step={
+                                      contract?.type === "Integer"
+                                        ? 1
+                                        : contract?.type === "Number"
+                                          ? "any"
+                                          : undefined
+                                    }
+                                    min={contract?.minimum}
+                                    max={contract?.maximum}
+                                    aria-invalid={invalid || undefined}
                                     value={typeof value === "string" ? value : ""}
                                     onChange={(event) =>
                                       setTextInput(slot.descriptor, event.target.value)
@@ -1322,9 +1441,27 @@ export function SubmitJobDialog({
                                   ) : null}
                                 </div>
                               )}
+                              {invalid ? (
+                                <p className="text-xs text-status-failed" role="alert">
+                                  {t("jobs.usecase.invalidInput")}
+                                </p>
+                              ) : null}
                             </div>
                           );
                         })}
+                        {usecaseInputCount(selectedUsecase) === 0 ? (
+                          <p
+                            className="text-sm text-muted-foreground"
+                            data-testid="submit-usecase-no-inputs"
+                          >
+                            {t("jobs.usecase.noInputs")}
+                          </p>
+                        ) : null}
+                        {hasUnboundInputs(selectedUsecase) ? (
+                          <p className="text-sm text-status-failed" role="alert">
+                            {t("jobs.usecase.unboundInputs")}
+                          </p>
+                        ) : null}
                         {datasetInputs(selectedUsecase).map((input) => (
                           <div className="space-y-1" key={input.descriptor}>
                             <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
@@ -1691,28 +1828,8 @@ export function SubmitJobDialog({
                 </p>
               ) : null}
             </fieldset>
-            <div className=" border-border pt-3">
-              <button
-                type="button"
-                onClick={() => setPreviewOpen((v) => !v)}
-                className="flex w-full items-center gap-2 text-left text-sm font-medium"
-                aria-expanded={previewOpen}
-                data-testid="placement-preview-toggle"
-              >
-                {previewOpen ? (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                ) : (
-                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                )}
-                {t("scheduler.placement.preview.section", {
-                  defaultValue: "Placement preview",
-                })}
-              </button>
-              {previewOpen ? (
-                <div className="pt-2">
-                  <PlacementPreviewPanel getJobSpec={getJobSpec} canPreview={canPreview} />
-                </div>
-              ) : null}
+            <div className="border-t border-border pt-3">
+              <PlacementPreviewPanel getJobSpec={getJobSpec} canPreview={canPreview} />
             </div>
           </form>
           <PathPickerSheet

@@ -34,7 +34,10 @@ export function AgentsPage() {
             className="font-mono text-[11px] text-muted-foreground tabular-nums"
             data-testid="agents-count"
           >
-            {t("agents.countHint", { online: onlineCount, total: agents.length })}
+            {t("agents.countHint", {
+              online: agentsQ.isSuccess ? onlineCount : "—",
+              total: agentsQ.isSuccess ? agents.length : "—",
+            })}
           </span>
         }
       />

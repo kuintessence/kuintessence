@@ -1,8 +1,18 @@
 import dagre from "@dagrejs/dagre";
-import { ArrowUpRight, ChevronDown, RefreshCw } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { ArrowUpRight, RefreshCw } from "lucide-react";
+import { type CSSProperties, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog";
+import { WORKSPACE_DOMAINS, WORKSPACE_IDENTITIES } from "../workspace-navigation";
 import { FunctionMapIcon } from "./icons";
 import {
   type FunctionMap,
@@ -11,19 +21,90 @@ import {
   type MapRuntime,
   mapText,
 } from "./model";
+import { useMapPreferences } from "./preferences";
 import "./function-maps.css";
 
-const WIDTH = 232;
-const HEIGHT = 112;
-function layout(model: FunctionMap) {
+const WIDTH = 208;
+function layout(model: FunctionMap, height: number) {
   const graph = new dagre.graphlib.Graph({ multigraph: true });
-  graph.setGraph({ rankdir: "LR", ranksep: 80, nodesep: 40, marginx: 24, marginy: 32 });
+  graph.setGraph({ rankdir: "LR", ranksep: 56, nodesep: 24, marginx: 12, marginy: 12 });
   graph.setDefaultEdgeLabel(() => ({}));
-  for (const node of model.nodes) graph.setNode(node.id, { width: WIDTH, height: HEIGHT });
+  for (const node of model.nodes) graph.setNode(node.id, { width: WIDTH, height: height });
   model.edges.forEach((edge, index) => {
     graph.setEdge(edge.source, edge.target, {}, String(index));
   });
   dagre.layout(graph);
+  const ranks = [...new Set(model.nodes.map((node) => graph.node(node.id).x))].sort(
+    (a, b) => a - b,
+  );
+  if (model.type === "process" && ranks.length > 4) {
+    const groups = ranks.map((x) => model.nodes.filter((node) => graph.node(node.id).x === x));
+    const nodeRanks = new Map(
+      groups.flatMap((nodes, rank) => nodes.map((node) => [node.id, rank] as const)),
+    );
+    const rowTops: number[] = [];
+    let top = 12;
+    for (let row = 0; row < Math.ceil(groups.length / 3); row++) {
+      rowTops.push(top);
+      const rowGroups = groups.slice(row * 3, row * 3 + 3);
+      const rowHeight = Math.max(...rowGroups.map((nodes) => nodes.length * (height + 24) - 24));
+      rowGroups.forEach((nodes, column) => {
+        nodes.forEach((node, index) => {
+          Object.assign(graph.node(node.id), {
+            x: 12 + WIDTH / 2 + (row % 2 ? 2 - column : column) * (WIDTH + 88),
+            y: top + rowHeight / 2 + (index - (nodes.length - 1) / 2) * (height + 24),
+          });
+        });
+      });
+      top += rowHeight + 64;
+    }
+    model.edges.forEach((edge, index) => {
+      const source = graph.node(edge.source);
+      const target = graph.node(edge.target);
+      const route = graph.edge({ v: edge.source, w: edge.target, name: String(index) });
+      const sourceRow = Math.floor((nodeRanks.get(edge.source) ?? 0) / 3);
+      const targetRow = Math.floor((nodeRanks.get(edge.target) ?? 0) / 3);
+      if (sourceRow === targetRow) {
+        const direction = Math.sign(target.x - source.x);
+        const middle = (source.x + target.x) / 2;
+        route.points = [
+          { x: source.x + (direction * WIDTH) / 2, y: source.y },
+          { x: middle, y: source.y },
+          { x: middle, y: target.y },
+          { x: target.x - (direction * WIDTH) / 2, y: target.y },
+        ];
+        route.x = middle;
+        route.y = (source.y + target.y) / 2 - 12;
+      } else {
+        const sourceRail = source.x + WIDTH / 2 + 40;
+        const targetRail = target.x + WIDTH / 2 + 40;
+        const bus = (rowTops[Math.max(sourceRow, targetRow)] ?? 0) - 32;
+        route.points = [
+          { x: source.x + WIDTH / 2, y: source.y },
+          { x: sourceRail, y: source.y },
+          { x: sourceRail, y: bus },
+          { x: targetRail, y: bus },
+          { x: targetRail, y: target.y },
+          { x: target.x + WIDTH / 2, y: target.y },
+        ];
+        route.x = targetRail;
+        route.y = target.y - 12;
+      }
+    });
+    graph.graph().width = 3 * WIDTH + 2 * 88 + 104;
+    graph.graph().height = top - 52;
+  }
+  if (!model.edges.length && model.nodes.length) {
+    const columns = Math.min(6, model.nodes.length, Math.ceil(Math.sqrt(model.nodes.length * 1.2)));
+    model.nodes.forEach((node, index) => {
+      Object.assign(graph.node(node.id), {
+        x: 12 + WIDTH / 2 + (index % columns) * (WIDTH + 24),
+        y: 12 + height / 2 + Math.floor(index / columns) * (height + 24),
+      });
+    });
+    graph.graph().width = columns * (WIDTH + 24);
+    graph.graph().height = Math.ceil(model.nodes.length / columns) * (height + 24);
+  }
   if (
     model.nodes.length > 4 &&
     model.edges.length === model.nodes.length - 1 &&
@@ -34,34 +115,34 @@ function layout(model: FunctionMap) {
     if (scope) {
       const root = graph.node(scope.id);
       root.x = 24 + WIDTH / 2 + WIDTH + 40;
-      root.y = 24 + HEIGHT / 2;
+      root.y = 24 + height / 2;
       model.nodes.slice(1).forEach((node, index) => {
         const position = graph.node(node.id);
         position.x = 24 + WIDTH / 2 + (index % columns) * (WIDTH + 40);
-        position.y = 24 + HEIGHT / 2 + 176 + Math.floor(index / columns) * (HEIGHT + 48);
+        position.y = 24 + height / 2 + 136 + Math.floor(index / columns) * (height + 48);
         const edge = graph.edge({ v: scope.id, w: node.id, name: String(index) });
-        const busY = root.y + HEIGHT / 2 + 28;
+        const busY = root.y + height / 2 + 28;
         const railX = position.x - WIDTH / 2 - 16;
         edge.points =
           Math.floor(index / columns) === 0
             ? [
-                { x: root.x, y: root.y + HEIGHT / 2 },
+                { x: root.x, y: root.y + height / 2 },
                 { x: root.x, y: busY },
                 { x: position.x, y: busY },
-                { x: position.x, y: position.y - HEIGHT / 2 },
+                { x: position.x, y: position.y - height / 2 },
               ]
             : [
-                { x: root.x, y: root.y + HEIGHT / 2 },
+                { x: root.x, y: root.y + height / 2 },
                 { x: root.x, y: busY },
                 { x: railX, y: busY },
-                { x: railX, y: position.y - HEIGHT / 2 - 24 },
-                { x: position.x, y: position.y - HEIGHT / 2 - 24 },
-                { x: position.x, y: position.y - HEIGHT / 2 },
+                { x: railX, y: position.y - height / 2 - 24 },
+                { x: position.x, y: position.y - height / 2 - 24 },
+                { x: position.x, y: position.y - height / 2 },
               ];
       });
       graph.graph().width = columns * (WIDTH + 40) + 8;
       graph.graph().height =
-        48 + HEIGHT + 176 + Math.floor((model.nodes.length - 2) / columns) * (HEIGHT + 48);
+        48 + height + 136 + Math.floor((model.nodes.length - 2) / columns) * (height + 48);
     }
   }
   return graph;
@@ -71,43 +152,67 @@ export function FunctionMapView({
   language,
   runtime,
   onOpen,
+  embedded = false,
+  initialNodeId,
 }: {
   model: FunctionMap;
   language: string;
   runtime?: MapRuntime;
-  onOpen: (node: MapNode) => void;
+  onOpen?: (node: MapNode) => void;
+  embedded?: boolean;
+  initialNodeId?: string;
 }) {
   const { t } = useTranslation();
   const marker = useId().replace(/:/g, "");
-  const [expanded, setExpanded] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const graph = useMemo(() => layout(model), [model]);
+  const { prefs } = useMapPreferences();
+  const { flow, color, lineWidth, duration } = prefs.appearance;
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const [selected, setSelected] = useState<string | null>(() =>
+    window.matchMedia("(min-width: 768px)").matches ? (initialNodeId ?? null) : null,
+  );
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 768px)");
+    const closeOnSmallScreen = () => {
+      if (!media.matches) {
+        setSelected(null);
+      }
+    };
+    media.addEventListener("change", closeOnSmallScreen);
+    return () => media.removeEventListener("change", closeOnSmallScreen);
+  }, []);
+  const height = model.type === "runtime" ? 112 : 96;
+  const graph = useMemo(() => layout(model, height), [model, height]);
   const dimensions = graph.graph();
   const node = model.nodes.find((item) => item.id === selected);
   const observations = new Map(runtime?.observations.map((item) => [item.nodeId, item]));
-  const relations = node
-    ? model.edges.filter((edge) => edge.source === node.id || edge.target === node.id)
-    : [];
   const text = (value: Parameters<typeof mapText>[0]) => mapText(value, language);
+  function entrance(item: MapNode) {
+    const [path, hash] = item.route.split("#");
+    const routes = WORKSPACE_IDENTITIES.flatMap((identity) =>
+      identity.sections.flatMap((section) => section.items.map((entry) => ({ identity, entry }))),
+    );
+    const match =
+      routes.find(({ entry }) => entry.to === path && (entry.hash ?? "") === (hash ?? "")) ??
+      routes.find(({ entry }) => entry.to === path) ??
+      routes.find(({ entry }) => path === "/workflows/new" && entry.to === "/workflows");
+    const domain = WORKSPACE_DOMAINS.find((domain) => domain.id === match?.identity.domain);
+    return [
+      domain ? t(domain.labelKey) : null,
+      match ? t(match.entry.labelKey) : text(model.title),
+      item.section.zh ? text(item.section) : null,
+    ]
+      .filter(Boolean)
+      .join(" / ");
+  }
   return (
-    <details className="function-map group" open data-map-id={model.id}>
-      <summary className="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 py-3 text-sm focus-visible:outline-2 focus-visible:outline-ring">
-        <ChevronDown className="h-4 w-4 shrink-0" aria-hidden="true" />
-        <span className="font-semibold">{text(model.title)}</span>
-        <span className="text-muted-foreground">{t(`functionMaps.types.${model.type}`)}</span>
-      </summary>
-      <p className="mb-3 max-w-prose text-sm text-muted-foreground">{text(model.summary)}</p>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span>
-          {t(
-            model.type === "process"
-              ? "functionMaps.template"
-              : model.type === "dependency"
-                ? "functionMaps.designRelations"
-                : "functionMaps.actualSources",
-          )}
-        </span>
-        <div className="flex flex-wrap gap-2">
+    <section className="function-map" data-map-id={model.id}>
+      <div
+        className={
+          embedded && !runtime?.refresh ? "hidden" : "mb-2 flex items-center justify-between gap-3"
+        }
+      >
+        {!embedded ? <h2 className="text-sm font-semibold">{text(model.title)}</h2> : null}
+        <div className="flex shrink-0 items-center gap-1">
           {runtime?.refresh ? (
             <Button
               variant="ghost"
@@ -119,18 +224,9 @@ export function FunctionMapView({
               {t("common.refresh")}
             </Button>
           ) : null}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="hidden sm:inline-flex"
-            aria-pressed={expanded}
-            onClick={() => setExpanded(!expanded)}
-          >
-            {t(expanded ? "functionMaps.compact" : "functionMaps.expand")}
-          </Button>
         </div>
       </div>
-      {runtime ? (
+      {runtime && text(runtime.notice) ? (
         <p role="status" className="mb-3 text-sm">
           {text(runtime.notice)}
         </p>
@@ -138,49 +234,66 @@ export function FunctionMapView({
       {model.nodes.length === 0 ? (
         <p role="status">{t("functionMaps.noData")}</p>
       ) : (
-        <>
-          <section
-            className="function-map-canvas hidden overflow-auto overscroll-contain sm:block"
-            style={{ maxHeight: expanded ? undefined : 560 }}
-            aria-label={t("functionMaps.canvas")}
+        <section
+          className="function-map-canvas"
+          data-flow={flow}
+          style={
+            {
+              "--map-line-color": `var(--${color})`,
+              "--map-line-width": lineWidth,
+              "--map-flow-duration": `${duration}s`,
+            } as CSSProperties
+          }
+          aria-label={t("functionMaps.canvas")}
+        >
+          <svg
+            width={dimensions.width}
+            height={dimensions.height}
+            style={{ maxWidth: dimensions.width, marginInline: "auto" }}
+            viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
+            aria-label={text(model.title)}
           >
-            <svg
-              width={Math.max(dimensions.width ?? 0, WIDTH + 48)}
-              height={Math.max(dimensions.height ?? 0, HEIGHT + 64)}
-              viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
-              style={{
-                width: "100%",
-                minWidth: Math.ceil((dimensions.width ?? WIDTH) * 0.9),
-                maxWidth: dimensions.width,
-                height: "auto",
-              }}
-              aria-label={text(model.title)}
-            >
-              <title>{text(model.title)}</title>
-              <defs>
-                <marker
-                  id={marker}
-                  viewBox="0 0 10 10"
-                  refX="9"
-                  refY="5"
-                  markerWidth="6"
-                  markerHeight="6"
-                  orient="auto-start-reverse"
-                >
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted-foreground)" />
-                </marker>
-              </defs>
-              {model.edges.map((edge, index) => {
-                const points = graph.edge({
-                  v: edge.source,
-                  w: edge.target,
-                  name: String(index),
-                }).points;
-                const middle = points[Math.floor(points.length / 2)];
-                if (!middle) return null;
-                return (
-                  <g key={`${edge.source}:${edge.target}:${edge.kind}:${edge.label.zh}`}>
+            <title>{text(model.title)}</title>
+            <defs>
+              <marker
+                id={marker}
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+              >
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--map-line-color)" />
+              </marker>
+            </defs>
+            {model.edges.map((edge, index) => {
+              const route = graph.edge({ v: edge.source, w: edge.target, name: String(index) });
+              const points = route.points;
+              const fallback = points[Math.floor(points.length / 2)];
+              const middle: { x: number; y: number } | undefined = fallback
+                ? { x: route.x ?? fallback.x, y: route.y ?? fallback.y }
+                : undefined;
+              if (!middle) return null;
+              return (
+                <g key={`${edge.source}:${edge.target}:${edge.kind}:${edge.label.zh}`}>
+                  <path
+                    d={points
+                      .map(
+                        (point: { x: number; y: number }, i: number) =>
+                          `${i ? "L" : "M"}${point.x},${point.y}`,
+                      )
+                      .join(" ")}
+                    className="function-map-connection"
+                    fill="none"
+                    strokeDasharray={
+                      edge.kind === "contains" || edge.kind === "observes" ? "4 4" : undefined
+                    }
+                    markerEnd={`url(#${marker})`}
+                  />
+                  {flow ? (
                     <path
+                      className="function-map-flow"
                       d={points
                         .map(
                           (point: { x: number; y: number }, i: number) =>
@@ -188,215 +301,146 @@ export function FunctionMapView({
                         )
                         .join(" ")}
                       fill="none"
-                      stroke="var(--muted-foreground)"
-                      strokeWidth="1.25"
-                      strokeDasharray={
-                        edge.kind === "contains" || edge.kind === "observes" ? "4 4" : undefined
-                      }
-                      markerEnd={`url(#${marker})`}
                     />
-                    {edge.kind !== "contains" ? (
-                      <foreignObject x={middle.x - 38} y={middle.y - 24} width="76" height="48">
-                        <div
-                          title={text(edge.label)}
-                          className="function-map-edge line-clamp-3 text-center text-[11px] leading-tight"
-                        >
-                          {text(edge.label)}
-                        </div>
-                      </foreignObject>
-                    ) : null}
-                  </g>
-                );
-              })}
-              {model.nodes.map((item) => {
-                const position = graph.node(item.id);
-                const x = position.x - WIDTH / 2;
-                const y = position.y - HEIGHT / 2;
-                return (
-                  <g key={item.id}>
-                    <path
-                      d={`M${x},${y} l8,-8 h${WIDTH} v${HEIGHT} l-8,8 z`}
-                      fill="var(--muted)"
-                      stroke="var(--border)"
-                    />
-                    <path d={`M${x + WIDTH},${y} l8,-8 v${HEIGHT} l-8,8 z`} fill="var(--border)" />
-                    <foreignObject x={x} y={y} width={WIDTH} height={HEIGHT}>
-                      <button
-                        type="button"
-                        className="function-map-node h-full w-full text-left"
-                        aria-pressed={selected === item.id}
-                        onClick={() => setSelected(item.id)}
+                  ) : null}
+                  {edge.kind !== "contains" ? (
+                    <foreignObject x={middle.x - 38} y={middle.y - 24} width="76" height="48">
+                      <div
+                        title={text(edge.label)}
+                        className="function-map-edge line-clamp-3 text-center text-[11px] leading-tight"
                       >
-                        <FunctionMapIcon name={item.icon} />
-                        <span className="function-map-node-content">
-                          {observations.has(item.id) ? (
-                            <>
-                              <span className="line-clamp-2 text-sm font-semibold leading-tight">
-                                {text(item.name)}
-                              </span>
-                              <ObservationSummary observation={observations.get(item.id)} />
-                            </>
-                          ) : (
-                            <>
-                              <span className="block text-[11px] text-muted-foreground">
-                                {t(
-                                  model.type === "process"
-                                    ? `functionMaps.symbols.${item.symbol ?? "task"}`
-                                    : `functionMaps.kinds.${item.kind}`,
-                                )}
-                                {item.lane ? ` · ${t(`functionMaps.lanes.${item.lane}`)}` : ""}
-                              </span>
-                              <span className="mt-1 block text-sm font-semibold">
-                                {text(item.name)}
-                              </span>
-                              <span className="mt-1 line-clamp-2 block text-xs text-muted-foreground">
-                                {text(item.purpose)}
-                              </span>
-                            </>
-                          )}
-                        </span>
-                      </button>
+                        {text(edge.label)}
+                      </div>
                     </foreignObject>
-                  </g>
-                );
-              })}
-            </svg>
-          </section>
-          <section className="space-y-2 sm:hidden" aria-label={t("functionMaps.mobile")}>
-            {model.nodes.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className="function-map-mobile-node block w-full border-b border-border py-3 text-left focus-visible:outline-2 focus-visible:outline-ring"
-                aria-pressed={selected === item.id}
-                onClick={() => setSelected(item.id)}
-              >
-                <FunctionMapIcon name={item.icon} />
-                <span className="function-map-node-content">
-                  <span className="block text-sm font-medium">{text(item.name)}</span>
-                  {observations.has(item.id) ? (
-                    <ObservationSummary observation={observations.get(item.id)} />
-                  ) : (
-                    <span className="block text-xs text-muted-foreground">
-                      {text(item.purpose)}
-                    </span>
-                  )}
-                </span>
-              </button>
-            ))}
-          </section>
-          <p className="mt-3 text-xs text-muted-foreground">
-            {t(
-              model.type === "dependency"
-                ? "functionMaps.dependencyLegend"
-                : model.type === "runtime"
-                  ? "functionMaps.runtimeLegend"
-                  : "functionMaps.processLegend",
-            )}
-          </p>
-          <details className="mt-3 text-sm" open={model.nodes.length <= 3 || undefined}>
-            <summary className="cursor-pointer py-1 focus-visible:outline-2 focus-visible:outline-ring">
-              {t("functionMaps.relations")}
-            </summary>
-            <ul className="mt-2 space-y-2 text-xs text-muted-foreground">
-              {model.edges.map((edge) => (
-                <li key={`${edge.source}:${edge.target}:${edge.kind}:${edge.label.zh}`}>
-                  {text(
-                    model.nodes.find((item) => item.id === edge.source)?.name ?? { zh: "", en: "" },
-                  )}{" "}
-                  →{" "}
-                  {text(
-                    model.nodes.find((item) => item.id === edge.target)?.name ?? { zh: "", en: "" },
-                  )}
-                  ：{text(edge.label)} · {t(`functionMaps.relationsKind.${edge.kind}`)} ·{" "}
-                  {t(`functionMaps.basis.${edge.basis}`)}
-                </li>
-              ))}
-            </ul>
-            {!model.edges.length ? <p>{t("functionMaps.noRelations")}</p> : null}
-          </details>
-        </>
-      )}
-      {node ? (
-        <section
-          className="mt-4 min-w-0 space-y-3 border-t border-border pt-4"
-          aria-label={t("functionMaps.explanation")}
-          aria-live="polite"
-        >
-          <h3 className="font-semibold">{text(node.name)}</h3>
-          <p className="text-sm">{text(node.purpose)}</p>
-          <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[8rem_minmax(0,1fr)]">
-            <dt className="text-muted-foreground">{t("functionMaps.objectType")}</dt>
-            <dd>{t(`functionMaps.kinds.${node.kind}`)}</dd>
-            {node.prerequisites ? (
-              <>
-                <dt className="text-muted-foreground">{t("functionMaps.preconditions")}</dt>
-                <dd>{text(node.prerequisites)}</dd>
-              </>
-            ) : null}
-            {node.input ? (
-              <>
-                <dt className="text-muted-foreground">{t("functionMaps.input")}</dt>
-                <dd>{text(node.input)}</dd>
-              </>
-            ) : null}
-            {node.output ? (
-              <>
-                <dt className="text-muted-foreground">{t("functionMaps.output")}</dt>
-                <dd>{text(node.output)}</dd>
-              </>
-            ) : null}
-            {node.section.zh ? (
-              <>
-                <dt className="text-muted-foreground">{t("functionMaps.pageSection")}</dt>
-                <dd>{text(node.section)}</dd>
-              </>
-            ) : null}
-          </dl>
-          {observations.get(node.id) ? (
-            <ObservationDetails observation={observations.get(node.id)} language={language} />
-          ) : null}
-          {relations.length === 0 ? (
-            <p className="text-xs text-muted-foreground">{t("functionMaps.noRelations")}</p>
-          ) : null}
-          <Button type="button" variant="outline" size="sm" onClick={() => onOpen(node)}>
-            <ArrowUpRight aria-hidden="true" />
-            {t("functionMaps.open")}
-          </Button>
-          <details className="text-xs text-muted-foreground">
-            <summary className="cursor-pointer py-1 focus-visible:outline-2 focus-visible:outline-ring">
-              {t("functionMaps.evidence")}
-            </summary>
-            <ul className="mt-2 space-y-1">
-              {model.sources.map((source) => (
-                <li key={source} className="break-all">
-                  <code>{source}</code>
-                </li>
-              ))}
-            </ul>
-          </details>
+                  ) : null}
+                </g>
+              );
+            })}
+            {model.nodes.map((item) => {
+              const position = graph.node(item.id);
+              const x = position.x - WIDTH / 2;
+              const y = position.y - height / 2;
+              return (
+                <g key={item.id}>
+                  <foreignObject x={x} y={y} width={WIDTH} height={height}>
+                    <button
+                      type="button"
+                      className="function-map-node h-full w-full text-left"
+                      aria-haspopup="dialog"
+                      aria-expanded={selected === item.id}
+                      onClick={(event) => {
+                        trigger.current = event.currentTarget;
+                        setSelected(item.id);
+                      }}
+                    >
+                      <FunctionMapIcon name={item.icon} />
+                      <span className="function-map-node-content">
+                        {observations.has(item.id) ? (
+                          <>
+                            <span className="line-clamp-2 text-sm font-semibold leading-tight">
+                              {text(item.name)}
+                            </span>
+                            <ObservationSummary observation={observations.get(item.id)} />
+                          </>
+                        ) : (
+                          <>
+                            <span className="block line-clamp-2 text-sm font-semibold leading-tight">
+                              {text(item.name)}
+                            </span>
+                            {item.summary ? (
+                              <span className="mt-1 line-clamp-2 text-xs leading-tight text-muted-foreground">
+                                {text(item.summary)}
+                              </span>
+                            ) : null}
+                          </>
+                        )}
+                      </span>
+                    </button>
+                  </foreignObject>
+                </g>
+              );
+            })}
+          </svg>
         </section>
-      ) : (
-        <p className="mt-3 text-xs text-muted-foreground">{t("functionMaps.selectHint")}</p>
       )}
-      {model.type === "process" ? (
-        <dl className="mt-4 grid gap-1 text-xs text-muted-foreground">
-          <dt className="font-medium">{t("functionMaps.roles")}</dt>
-          <dd>{text(model.role)}</dd>
-          <dt className="mt-1 font-medium">{t("functionMaps.startEnd")}</dt>
-          <dd>
-            {text(model.start)} → {text(model.end)}
-          </dd>
-        </dl>
-      ) : null}
-      {model.caution.zh ? (
-        <p className="mt-3 max-w-prose text-xs leading-5 text-muted-foreground">
-          {text(model.caution)}
-        </p>
-      ) : null}
-    </details>
+      <Dialog
+        open={!!node}
+        onOpenChange={(open) => {
+          if (!open) setSelected(null);
+        }}
+      >
+        {node ? (
+          <DialogContent
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              trigger.current?.focus();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{text(node.name)}</DialogTitle>
+              <DialogDescription>{text(model.title)}</DialogDescription>
+            </DialogHeader>
+            <DialogBody className="space-y-4">
+              <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[8rem_minmax(0,1fr)]">
+                <dt className="text-muted-foreground">{t("functionMaps.mainFunction")}</dt>
+                <dd className="leading-6">
+                  {node.id.endsWith(".scope")
+                    ? t("functionMaps.scopeFunction", {
+                        names: model.nodes
+                          .filter((item) => item.id !== node.id)
+                          .map((item) => text(item.name))
+                          .join(language.startsWith("zh") ? "、" : ", "),
+                      })
+                    : text(node.purpose)}
+                </dd>
+                <dt className="text-muted-foreground">{t("functionMaps.entrance")}</dt>
+                <dd className="leading-6">{entrance(node)}</dd>
+                {node.prerequisites ? (
+                  <>
+                    <dt className="text-muted-foreground">{t("functionMaps.preconditions")}</dt>
+                    <dd>{text(node.prerequisites)}</dd>
+                  </>
+                ) : null}
+                {node.input ? (
+                  <>
+                    <dt className="text-muted-foreground">{t("functionMaps.input")}</dt>
+                    <dd>{text(node.input)}</dd>
+                  </>
+                ) : null}
+                {node.output ? (
+                  <>
+                    <dt className="text-muted-foreground">{t("functionMaps.output")}</dt>
+                    <dd>{text(node.output)}</dd>
+                  </>
+                ) : null}
+              </dl>
+              {observations.get(node.id) ? (
+                <ObservationDetails observation={observations.get(node.id)} language={language} />
+              ) : null}
+            </DialogBody>
+            {onOpen ? (
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setSelected(null);
+                    onOpen(node);
+                  }}
+                >
+                  <ArrowUpRight aria-hidden="true" />
+                  {t("functionMaps.open")}
+                </Button>
+              </DialogFooter>
+            ) : null}
+          </DialogContent>
+        ) : null}
+      </Dialog>
+    </section>
   );
 }
+
 function ObservationSummary({ observation }: { observation?: MapObservation }) {
   const { t } = useTranslation();
   return (

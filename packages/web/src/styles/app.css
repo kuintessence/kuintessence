@@ -132,7 +132,7 @@
 
 /* Federation workspace styles stay scoped to this module, including nested tabs. */
 .federation-content {
-  @apply flex min-w-0 flex-1 flex-col rounded-xl border border-border bg-card p-4 text-card-foreground sm:p-6;
+  @apply flex min-w-0 flex-1 flex-col p-4 text-foreground sm:p-6;
 }
 
 .federation-content > :is(div, section):only-child {
@@ -404,5 +404,23 @@ details[open] > .kq-motion--disclosure {
   .kq-motion--tab[data-state],
   details[open] > .kq-motion--disclosure {
     animation: none;
+  }
+}
+
+@layer base {
+  :where(h1, h2, h3, h4, h5, h6, legend, th, dt, [data-display-text]) {
+    cursor: default;
+    user-select: none;
+  }
+}
+
+@layer components {
+  .kq-name-fade {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    mask-image: linear-gradient(to right, #000 calc(100% - 1rem), transparent);
+    padding-right: 1rem;
   }
 }

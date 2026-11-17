@@ -211,7 +211,7 @@ function NodeShell({ data, selected }: NodeRenderProps) {
               <div
                 key={slot.descriptor}
                 className={cn(
-                  "pointer-events-auto absolute right-full z-20 mr-3 flex min-w-max items-center whitespace-nowrap px-2.5 py-1.5 text-[10px] text-popover-foreground opacity-0 transition-opacity group-hover:opacity-100",
+                  "pointer-events-auto absolute right-full z-20 mr-3 flex min-w-max items-center whitespace-nowrap rounded-md border border-brand/30 bg-card px-2.5 py-1.5 text-[10px] text-card-foreground opacity-0 transition-opacity group-hover:opacity-100",
                   (keepInputSlotsVisible || revealed) && "opacity-100",
                   revealed && "text-brand font-semibold",
                 )}
@@ -268,7 +268,7 @@ function NodeShell({ data, selected }: NodeRenderProps) {
               <div
                 key={slot.descriptor}
                 className={cn(
-                  "pointer-events-auto absolute left-full z-20 ml-3 flex min-w-max items-center whitespace-nowrap px-2.5 py-1.5 text-[10px] text-popover-foreground opacity-0 transition-opacity group-hover:opacity-100",
+                  "pointer-events-auto absolute left-full z-20 ml-3 flex min-w-max items-center whitespace-nowrap rounded-md border border-brand/30 bg-card px-2.5 py-1.5 text-[10px] text-card-foreground opacity-0 transition-opacity group-hover:opacity-100",
                   (keepOutputSlotsVisible || revealed) && "opacity-100",
                   revealed && "text-brand font-semibold",
                 )}

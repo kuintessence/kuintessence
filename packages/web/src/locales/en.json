@@ -293,7 +293,7 @@
   "jobs": {
     "title": "Jobs",
     "subtitle": "Auto-refreshes every 5s while any job is pending or running.",
-    "countHint": "{{visible}} visible · {{total}} total",
+    "countHint": "{{visible}}/{{total}} visible",
     "agentFilter": {
       "active": "Showing jobs on Agent {{agentId}}",
       "clear": "Clear Agent filter"
@@ -459,6 +459,13 @@
       "textResultUnavailable": "This text result has not been collected."
     },
     "usecase": {
+      "noInputs": "This usecase declares no configurable input files or parameters.",
+      "unboundInputs": "Usecase inputs are not bound to executable materials. Choose another usecase or contact the publisher.",
+      "invalidInput": "This value does not meet the parameter format or range.",
+      "boolean": {
+        "true": "Yes",
+        "false": "No"
+      },
       "mode": "Usecase",
       "selected": "Selected usecase",
       "chooseUsecase": "Choose usecase",
@@ -548,7 +555,7 @@
   "workflows": {
     "title": "Workflows",
     "subtitle": "Track submitted, queued, running, and terminal workflow runs.",
-    "countHint": "{{visible}} visible · {{total}} total",
+    "countHint": "{{visible}}/{{total}} visible",
     "searchPlaceholder": "Search runs",
     "lastUpdated": "Updated {{time}}",
     "notUpdated": "not yet",
@@ -890,7 +897,7 @@
   "agents": {
     "title": "Agents",
     "subtitle": "One card per registered agent. Auto-refreshes every 10s.",
-    "countHint": "{{online}} online · {{total}} total",
+    "countHint": "{{online}}/{{total}} online",
     "empty": "No agents registered yet. Start one with",
     "loadFailed": "The Agent list is temporarily unavailable. Please try again shortly.",
     "softwareLoadFailed": "The Agent software inventory is temporarily unavailable. Please try again shortly.",
@@ -2311,7 +2318,7 @@
         "section": "Placement preview",
         "title": "Placement preview",
         "subtitle": "Run the queue-aware placement pipeline against this draft.",
-        "button": "Refresh preview",
+        "button": "Check available resources",
         "empty": "Run preview to see how your job will be placed."
       },
       "stages": {
@@ -2730,6 +2737,17 @@
     "unavailable": "This option is currently unavailable. Choose another option."
   },
   "functionMaps": {
+    "appearance": "Appearance",
+    "connection": "Connections",
+    "static": "Static",
+    "flow": "Flowing",
+    "lineColor": "Line color",
+    "neutral": "Neutral",
+    "brand": "Brand",
+    "contrast": "High contrast",
+    "lineWidth": "Line width",
+    "flowDuration": "Flow duration",
+    "related": "Business relationships",
     "portal": "Function and business maps",
     "choose": "Choose a map",
     "permissionFailed": "Cannot verify access. Please retry.",
@@ -2740,8 +2758,8 @@
     "designRelations": "Design relationships: only authorized capabilities or object types are shown.",
     "actualSources": "Runtime data: evaluate individual fields and their timestamps.",
     "compact": "Compact view",
-    "expand": "Expand map",
-    "canvas": "Scrollable map",
+    "expand": "Expand",
+    "canvas": "Business map",
     "mobile": "Text view of map nodes",
     "dependencyLegend": "Lines name their relationship; dashed lines mean containment or observation. Only “depends on” means A depends on B. Reachability does not prove fault propagation.",
     "runtimeLegend": "Lifecycle, progress, health and acquisition are separate. Refresh failure does not mean a resource fault.",
@@ -2826,6 +2844,38 @@
       "unknown": "Health unknown",
       "confirmed-fault": "Confirmed fault",
       "reported-ok": "Probe reports OK"
-    }
+    },
+    "mainFunction": "Main functions",
+    "entrance": "Location",
+    "collapse": "Collapse",
+    "views": {
+      "process": "Business process",
+      "dependency": "Resource relationships",
+      "runtime": "Runtime status",
+      "data": "Data overview"
+    },
+    "preferences": {
+      "title": "Diagrams and view preferences",
+      "scope": "Set connection styling and entry defaults for all diagrams. Preferences are saved per account in this browser.",
+      "mode": "On your next visit",
+      "memory": "Remember my last manual choice",
+      "fixed": "Fixed default",
+      "recommended": "Follow the page recommendation",
+      "default": "Default display",
+      "default_data": "Open data overview by default",
+      "default_diagram": "Open diagram by default",
+      "default_expanded": "Expand diagram by default",
+      "default_collapsed": "Collapse diagram by default",
+      "saved": "Saved. Applies on your next ordinary visit.",
+      "nextEntry": "Saving keeps this view. Defaults apply on your next ordinary visit.",
+      "saveFailed": "Could not save preferences. Check browser storage permissions and retry.",
+      "viewSettings": "View settings",
+      "inherit": "Use shared settings",
+      "centralAppearance": "Set connection styling in Personal center → Appearance and interface.",
+      "dual": "Pages with diagrams and data overviews",
+      "single": "Pages with diagrams only",
+      "overrides": "Settings saved on a page take priority. Choose “Use shared settings” on that page to restore these defaults."
+    },
+    "scopeFunction": "Access the available {{names}} and open their business functions."
   }
 }

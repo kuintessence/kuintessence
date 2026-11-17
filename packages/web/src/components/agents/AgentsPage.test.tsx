@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, opts?: Record<string, unknown>) => {
-      if (key === "agents.countHint") return `${opts?.online} online · ${opts?.total} total`;
+      if (key === "agents.countHint") return `${opts?.online}/${opts?.total} online`;
       return key;
     },
   }),
@@ -106,7 +106,7 @@ describe("AgentsPage", () => {
     expect(screen.getByTestId("agents-list-error").textContent).not.toContain("agents denied");
     expect(screen.queryByTestId("agents-empty")).toBeNull();
     expect(screen.queryByTestId("agents-grid")).toBeNull();
-    expect(screen.getByTestId("agents-count").textContent).toBe("0 online · 0 total");
+    expect(screen.getByTestId("agents-count").textContent).toBe("—/— online");
   });
 
   test("clears stale SSH entrypoints after a list refetch error", async () => {
@@ -135,7 +135,7 @@ describe("AgentsPage", () => {
     expect(screen.getByTestId("agents-list-error").textContent).not.toContain("agents denied");
     expect(screen.queryByTestId("agent-card-agent-1")).toBeNull();
     expect(screen.queryByTestId("agent-open-ssh-agent-1")).toBeNull();
-    expect(screen.getByTestId("agents-count").textContent).toBe("0 online · 0 total");
+    expect(screen.getByTestId("agents-count").textContent).toBe("—/— online");
   });
 
   test("hides SSH entrypoints without the terminal capability", async () => {
@@ -170,7 +170,7 @@ describe("AgentsPage", () => {
     render(<AgentsPage />, { wrapper: makeClientWrapper().wrapper });
 
     await screen.findByTestId("agent-card-agent-1");
-    expect(screen.getByTestId("agents-count").textContent).toBe("1 online · 1 total");
+    expect(screen.getByTestId("agents-count").textContent).toBe("1/1 online");
     expect(screen.getByTestId("agent-queue-depth-agent-1").textContent).toContain("3");
     expect(screen.queryByTestId("agent-open-ssh-agent-1")).toBeNull();
   });
