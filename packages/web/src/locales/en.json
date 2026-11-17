@@ -950,6 +950,33 @@
       "reconcileInstallation": "Inspect the failed software operation. Reconcile retained workers before retrying installation.",
       "resumeTransfer": "Inspect the failed transfer. Resume the same transfer when authorization and source content are still valid.",
       "updateChecked": "Update checked"
+    },
+    "updater": {
+      "title": "Agent updates",
+      "notice": "Platform update notice",
+      "loading": "Loading update history…",
+      "loadFailed": "Could not load update history",
+      "unsupported": "Agent is offline or has no update supervisor. Remote requests wait for a capable Agent to connect.",
+      "empty": "No update requests",
+      "history": "Update history",
+      "release": "Target release digest (SHA-256)",
+      "message": "Update message",
+      "safety": "Only site-trusted signed releases are applied. Restart waits for jobs, transfers and installations to finish. Sites can disable remote updates.",
+      "request": "Request update",
+      "notify": "Send update notice",
+      "sending": "Submitting…",
+      "sent": "Request recorded",
+      "failed": "Could not submit request",
+      "states": {
+        "requested": "Waiting for Agent",
+        "waiting": "Waiting until safe to restart",
+        "applying": "Switching release",
+        "restarting": "Waiting for the new Agent to connect",
+        "succeeded": "Update completed",
+        "failed": "Update failed; inspect site status",
+        "disabled": "Site does not allow remote updates"
+      },
+      "useRelease": "Use this release"
     }
   },
   "software": {

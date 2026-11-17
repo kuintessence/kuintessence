@@ -169,7 +169,13 @@ message ServerMessage {
     FederationMediaImport federation_media_import = 33;
     FederationMediaImportGrantResponse federation_media_import_grant_response = 34;
     FederationMediaUpload federation_media_upload = 35;
+    AgentUpdateRequest agent_update_request = 36;
   }
+}
+
+message AgentUpdateRequest {
+  string request_id = 1;
+  string release = 2;
 }
 
 // CP-local dataset scan command. The path is relative to the Agent-owned
@@ -262,6 +268,8 @@ message RegisterRequest {
   bool federation_media_upload_v1 = 40;
   // Understands target upload/verification negotiation independent of network copying.
   bool federation_target_transfer_v1 = 41;
+  // Local supervisor accepts only signed, pinned site releases.
+  bool agent_update_v1 = 42;
 }
 
 message RegisterResponse {

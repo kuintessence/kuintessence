@@ -3,15 +3,15 @@
 set -eo pipefail
 exec 3<&0
 export KQ_BOOTSTRAP_STDIN_FD=3
-[[ $# -ge 1 && -f $1 ]] || { echo 'Usage: bash bootstrap.sh /absolute/site.env [check|install|stage|prepare-capabilities|activate|rollback|services|doctor|maintain ACTION]' >&2; exit 2; }
+[[ $# -ge 1 && -f $1 ]] || { echo 'Usage: bash bootstrap.sh /absolute/site.env [check|install|stage|prepare-capabilities|activate|rollback|services|run|doctor|maintain ACTION]' >&2; exit 2; }
 export KQ_SITE_ENV="$(realpath "$1")"
 export KQ_BOOTSTRAP_SCRIPT="$(realpath "$0")"
 source "$KQ_SITE_ENV"
 shift
-if [[ -n ${KQ_MODULE_INIT:-} ]]; then source "$KQ_MODULE_INIT"; fi
+if [[ ${1:-check} != run && -n ${KQ_MODULE_INIT:-} ]]; then source "$KQ_MODULE_INIT"; fi
 export KQ_PYTHON_MODULE_STATUS=not-tested
 export KQ_APPTAINER_MODULE_STATUS=not-tested
-if type module >/dev/null 2>&1; then
+if [[ ${1:-check} != run ]] && type module >/dev/null 2>&1; then
   module load "${KQ_PYTHON_MODULE:-bio-python/3.11-2026.07.24}"
   export KQ_PYTHON_MODULE_STATUS=passed
   if [[ ${KQ_ENABLE_SPACK:-0} == 1 ]]; then
@@ -44,6 +44,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import signal
+import uuid
 from urllib.parse import urlsplit
 
 
@@ -236,7 +238,7 @@ def curl_options(url):
     return args
 
 
-def fetch(url, destination, size=None, digest=None):
+def fetch(url, destination, size=None, digest=None, deadline=None):
     destination = Path(destination)
     if destination.exists() and digest and destination.stat().st_size == size and sha(destination) == digest:
         return
@@ -255,7 +257,13 @@ def fetch(url, destination, size=None, digest=None):
         args += ["--max-filesize", "131072"]
     if size is not None:
         args += ["--max-filesize", str(size), "--continue-at", "-"]
-    result = run(args + [url], capture_output=True, text=True)
+    timeout = None
+    if deadline is not None:
+        timeout = deadline - time.monotonic()
+        if timeout <= 0:
+            raise TimeoutError("Startup update download budget exhausted")
+        args += ["--max-time", str(max(.1, timeout)), "--retry", "0"]
+    result = run(args + [url], capture_output=True, text=True, timeout=timeout)
     if result.stdout not in ("200", "206"):
         raise ValueError(f"Download did not return content: HTTP {result.stdout}")
     if digest and (partial.stat().st_size != size or sha(partial) != digest):
@@ -315,9 +323,37 @@ def tunnel():
             process.wait()
 
 
+def server_protocol_range(manifest):
+    if "serverProtocolRange" not in manifest:
+        return None
+    value = manifest["serverProtocolRange"]
+    if (not isinstance(value, dict) or set(value) != {"min", "max"}
+            or any(type(value[key]) is not int or not 1 <= value[key] <= 2147483647 for key in ("min", "max"))
+            or value["min"] > value["max"]):
+        raise ValueError("Invalid signed Server protocol range")
+    return value
+
+
+def validate_server_compatibility(manifest, server):
+    revision = server.get("revision") if isinstance(server, dict) else None
+    if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{40}", revision):
+        raise ValueError("Invalid deployed Server revision")
+    supported = server_protocol_range(manifest)
+    if supported is None:
+        if revision != manifest["serverRevision"]:
+            raise ValueError(f"Site release and deployed Server revisions differ: release={manifest['serverRevision']}, deployed={revision}; legacy release has no signed serverProtocolRange; obtain a compatible signed release and updated bootstrap")
+        return
+    actual = server.get("siteProtocolVersion")
+    if type(actual) is not int or not 1 <= actual <= 2147483647:
+        raise ValueError("Server does not advertise a valid siteProtocolVersion; cannot verify signed compatibility range")
+    if not supported["min"] <= actual <= supported["max"]:
+        raise ValueError(f"Incompatible Server site protocol: release requires {supported['min']}..{supported['max']}, deployed={actual} (revision={revision})")
+
+
 def validate_manifest(manifest):
     if manifest.get("version") != 1 or manifest.get("redistribution") != "unrestricted":
         raise ValueError("Unsupported site release")
+    server_protocol_range(manifest)
     if manifest.get("architecture") != platform.machine():
         raise ValueError("Release architecture mismatch")
     host_glibc = os.confstr("CS_GNU_LIBC_VERSION").split()[1]
@@ -405,7 +441,7 @@ def advance_highest(local, sequence, release_id, rollback=False):
     atomic(local / "highest.json", json.dumps({"sequence": sequence, "release": release_id}))
 
 
-def stage(local):
+def stage(local, target=None, deadline=None):
     spack_managed_memory_mib()
     spack_install_timeout_ms()
     incoming = private_dir(local / "incoming")
@@ -413,27 +449,32 @@ def stage(local):
     channel = os.environ.get("KQ_RELEASE_CHANNEL", "stable")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", channel):
         raise ValueError("Invalid release channel")
-    fetch(f"{base}/site-releases/{channel}/manifest.json", incoming / "manifest.json")
+    if target is not None and not re.fullmatch(r"[a-f0-9]{64}", target):
+        raise ValueError("Invalid pinned update release")
+    manifest_url = f"{base}/site-releases/releases/{target}/manifest.json" if target else f"{base}/site-releases/{channel}/manifest.json"
+    fetch(manifest_url, incoming / "manifest.json", deadline=deadline)
     raw = (incoming / "manifest.json").read_bytes()
     if len(raw) > 128 * 1024:
         raise ValueError("Release manifest too large")
     release_id = hashlib.sha256(raw).hexdigest()
+    if target is not None and target != release_id:
+        raise ValueError("Pinned update manifest digest mismatch")
     release = private_dir(local / "releases" / release_id)
     url = f"{base}/site-releases/releases/{release_id}"
-    fetch(url + "/manifest.sig", incoming / "manifest.sig")
+    fetch(url + "/manifest.sig", incoming / "manifest.sig", deadline=deadline)
     atomic(incoming / "release-key.pem", required("KQ_RELEASE_PUBLIC_KEY_PEM"))
     run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", incoming / "release-key.pem", "-rawin", "-in", incoming / "manifest.json", "-sigfile", incoming / "manifest.sig"], stdout=subprocess.DEVNULL)
     manifest = json.loads(raw)
     validate_manifest(manifest)
+    validate_storage_release(manifest)
     highest = highest_release(local)
     if highest and (manifest["sequence"] < highest["sequence"] or (manifest["sequence"] == highest["sequence"] and release_id != highest["release"])):
         raise ValueError("Release high-water check refused; use explicit local rollback")
-    fetch(base + "/agent-binaries", incoming / "server.json")
-    if json.loads((incoming / "server.json").read_text())["revision"] != manifest["serverRevision"]:
-        raise ValueError("Site release and deployed Server revisions differ")
+    fetch(base + "/agent-binaries", incoming / "server.json", deadline=deadline)
+    validate_server_compatibility(manifest, json.loads((incoming / "server.json").read_text()))
     for item in manifest["files"]:
         target = release / item["name"]
-        fetch(url + "/" + item["name"], target, item["size"], item["sha256"])
+        fetch(url + "/" + item["name"], target, item["size"], item["sha256"], deadline=deadline)
         target.chmod(0o500 if item["executable"] else 0o400)
     atomic(release / "manifest.json", raw, 0o400)
     if os.environ.get("KQ_ENABLE_SPACK") == "1":
@@ -450,6 +491,8 @@ def status(local, phase, **fields):
 
 def record_failure(local, error):
     inspect_directory(local)
+    if state_storage_mode() == "shared-home":
+        bind_state_host(local)
     if local.is_dir() and ((local / "status.json").exists() or (local / "bootstrap.lock").exists()):
         current = local / "current"
         active = current.resolve().name if current.is_symlink() else None
@@ -562,7 +605,7 @@ def switch_release(local, release, rollback, configure=None):
                 atomic(before / name, path.read_bytes())
         configuration_backups = []
         if configure:
-            paths = [local / "run-agent.sh"]
+            paths = [local / "run-agent.sh", local / "run-tunnel.sh"]
             if same_release:
                 paths.append(release / "agent.env")
             for index, path in enumerate(paths):
@@ -615,6 +658,7 @@ def activate(local, release, rollback=False, configure=None):
     spack_managed_memory_mib()
     spack_install_timeout_ms()
     manifest = verify_release(release)
+    validate_storage_release(manifest)
     current = local / "current"
     if current.is_symlink() and not current.exists():
         raise ValueError("Current release pointer is broken; reconcile before activation")
@@ -792,6 +836,7 @@ def registration(local, shared, release):
         (registration_dir / "pending").unlink()
     config.update({"SERVER_HTTP_URL": required("SERVER_HTTP_URL"), "SERVER_GRPC_URL": required("SERVER_GRPC_URL"),
         "AGENT_DB_PATH": str(local / "state" / "agent.db"), "AGENT_SPAWNER_BACKEND": "host",
+        "AGENT_SQLITE_JOURNAL_MODE": "delete" if state_storage_mode() == "shared-home" else "wal",
         "AGENT_JOB_WORK_ROOT": str(shared / "jobs"), "AGENT_DATASET_ROOT": str(shared / "datasets"),
         "AGENT_LICENSED_MATERIAL_ROOT": str(shared / "licensed-materials"), "AGENT_SANDBOX_ROOT": str(shared / "sandbox"),
         "AGENT_SPACK_CACHE_DIR": str(shared / "materials"), "AGENT_SPACK_ENABLED": "false", "AGENT_SPACK_AUDIT_ENABLED": "false", "AGENT_SPACK_INSTALL_ENABLED": "false",
@@ -818,13 +863,24 @@ def registration(local, shared, release):
     # A shell launcher and systemd both consume this generated file through Bash.
     config["KQ_AGENT_EXECUTABLE"] = str(role(release, "agent"))
     atomic(release / "agent.env", "".join(f"export {key}={shlex.quote(value)}\n" for key, value in config.items()))
+    host_guard = ""
+    if state_storage_mode() == "shared-home":
+        # Manual supervisors use exactly the same SSH arguments as bootstrap/systemd.
+        atomic(local / "run-tunnel.sh", "#!/bin/bash\nset -euo pipefail\nexec " + shlex.join(ssh_args()) + "\n", 0o700)
+        host_guard = "[[ $(uname -n) == " + shlex.quote(socket.gethostname()) + " ]] || { echo 'Shared HOME Agent is bound to another host' >&2; exit 75; }\n"
     atomic(local / "run-agent.sh", f"""#!/bin/bash
 set -euo pipefail
+umask 077
+{host_guard}\
+if [[ ${{KQ_AGENT_CHILD:-0}} != 1 ]]; then
+  exec /bin/bash {shlex.quote(required('KQ_BOOTSTRAP_SCRIPT'))} {shlex.quote(required('KQ_SITE_ENV'))} run
+fi
 exec 9>{shlex.quote(str(local / 'state' / 'agent.lock'))}
 flock -n -E 75 9 || exit $?
 [[ ! -f {shlex.quote(str(local / 'restore-intent.json'))} ]] || {{ echo 'Interrupted state restore requires reconciliation' >&2; exit 75; }}
 KQ_MODULE_INIT= KQ_PYTHON_MODULE= KQ_APPTAINER_MODULE=
 source {shlex.quote(str(local / 'current' / 'agent.env'))}
+export KQ_RUNNING_RELEASE="$(basename "$(readlink -f {shlex.quote(str(local / 'current'))})")"
 if [[ -n $KQ_PYTHON_MODULE$KQ_APPTAINER_MODULE ]]; then
   set +u
   if [[ -n $KQ_MODULE_INIT ]]; then source "$KQ_MODULE_INIT"; fi
@@ -858,6 +914,8 @@ def rollback_configuration(local, release):
             raise ValueError("Saved release identity differs; reconcile before rollback")
     if config.get("KQ_AGENT_EXECUTABLE") != str(role(release, "agent")) or config.get("AGENT_DB_PATH") != str(local / "state" / "agent.db"):
         raise ValueError("Saved release entrypoint or state path differs")
+    if state_storage_mode() == "shared-home" and config.get("AGENT_SQLITE_JOURNAL_MODE") != "delete":
+        raise ValueError("Shared HOME requires rollback-journal Agent configuration")
     for key in ("SERVER_HTTP_URL", "SERVER_GRPC_URL"):
         origin(config.get(key, ""))
 
@@ -927,7 +985,44 @@ def doctor(local, release):
         raise ValueError("分通道诊断未全部通过；检查 doctor.json，未测试不等于成功")
 
 
+def state_storage_mode():
+    mode = os.environ.get("KQ_STATE_STORAGE", "local")
+    if mode not in ("local", "shared-home"):
+        raise ValueError("KQ_STATE_STORAGE must be local or shared-home")
+    return mode
+
+
+def validate_storage_release(manifest):
+    # Old Agents ignore the journal setting, so a distinct signed format is mandatory.
+    if state_storage_mode() == "shared-home" and manifest["stateFormat"] != "slurm-site-v5-shared-home-v1":
+        raise ValueError("Shared HOME requires a shared-home-v1 Agent release; legacy WAL releases are refused")
+
+
+def bind_state_host(local, create=False):
+    marker = local / "state-hostname"
+    if marker.is_symlink():
+        raise ValueError("Shared HOME host marker must not be a symlink")
+    if marker.exists():
+        info = marker.stat()
+        if not marker.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077 or marker.read_text() != socket.gethostname() + "\n":
+            raise ValueError("Shared HOME state belongs to another host or has an invalid host marker")
+    elif create:
+        atomic(marker, socket.gethostname() + "\n")
+    elif (local / "state" / "agent.db").exists():
+        raise ValueError("Existing shared HOME database has no host binding; reconcile before continuing")
+
+
 def validate_state_storage(local, ancestor, shared):
+    if state_storage_mode() == "shared-home":
+        home = Path.home().resolve()
+        if local == home or not local.is_relative_to(home) or local == shared or local.is_relative_to(shared) or shared.is_relative_to(local):
+            raise ValueError("Shared HOME state must be a separate directory beneath HOME, outside KQ_SHARED")
+        result = run(["findmnt", "-n", "-o", "FSTYPE,OPTIONS", "-T", ancestor], capture_output=True, text=True, timeout=5)
+        fields = result.stdout.strip().split()
+        if len(fields) != 2 or fields[0] not in ("nfs", "nfs4", "ext4", "xfs", "btrfs", "zfs") or "rw" not in fields[1].split(",") or any(option in fields[1].split(",") for option in ("ro", "nolock", "soft", "softerr")):
+            raise ValueError("Shared HOME requires a writable filesystem with locking and hard NFS mounts")
+        bind_state_host(local)
+        return
     for root in (Path.home().resolve(), shared, Path("/tmp"), Path("/var/tmp"), Path("/run"), Path("/dev/shm")):
         if local == root or local.is_relative_to(root):
             raise ValueError("KQ_LOCAL must be outside HOME, shared data and temporary directories")
@@ -978,7 +1073,7 @@ def readonly_site_checks():
     states = [row.split("|")[1].strip().lower() for row in result.stdout.splitlines() if len(row.split("|")) == 2 and row.split("|")[0].strip().rstrip("*") == partition]
     if not states or any(state != "up" for state in states):
         raise ValueError("Configured Slurm partition is missing or not UP; no jobs were submitted")
-    print("state-mount: passed (local writable mount; retention policy still requires site confirmation)")
+    print("state-mount: passed (" + state_storage_mode() + "; retention policy still requires site confirmation)")
     print("slurm-partition: passed (exists and UP; account/QoS and compute-node execution remain untested)")
     print("python-runtime: passed (Python >= 3.9)")
     print("python-module: " + os.environ.get("KQ_PYTHON_MODULE_STATUS", "not-tested"))
@@ -998,6 +1093,208 @@ def readonly_site_checks():
     print("Login persistence requires linger or the site's approved supervisor; no service was started.")
 
 
+@contextlib.contextmanager
+def update_lock(local):
+    path = local / "bootstrap.lock"
+    if path.is_symlink():
+        raise ValueError("Unsafe bootstrap lock")
+    with path.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise BootstrapBusy("Another bootstrap action is running")
+        yield
+
+
+def update_request(local):
+    path = local / "state/update-request.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    maintenance_module()["private"](path)
+    if path.stat().st_size > 4096:
+        raise ValueError("Oversized update request")
+    value = json.loads(path.read_text())
+    if (not isinstance(value, dict) or set(value) - {"requestId", "release", "state", "source"}
+            or not re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", value.get("requestId", ""))
+            or not re.fullmatch(r"[a-f0-9]{64}", value.get("release", ""))
+            or value.get("state") not in ("requested", "waiting", "applying", "restarting", "succeeded", "failed", "disabled")
+            or value.get("source", "remote") not in ("remote", "startup")):
+        raise ValueError("Invalid Agent update request")
+    return value
+
+
+def update_state(local, request, state):
+    request = {**request, "state": state}
+    atomic(local / "state/update-request.json", json.dumps(request))
+    return request
+
+
+def maintenance_request(local, action, lease):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(10)
+        connection.connect(str(local / "state/maintenance.sock"))
+        connection.sendall((json.dumps({"action": action, "lease": lease}) + "\n").encode())
+        response = b""
+        while b"\n" not in response and len(response) < 4096:
+            chunk = connection.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+    value = json.loads(response)
+    if value.get("lease") != lease:
+        raise ValueError("Maintenance lease mismatch")
+    return value.get("ok") is True
+
+
+def apply_update(local, shared, request, child=None, prepared=None):
+    """Stage first; stop only after a live lease proves every Agent channel idle."""
+    with update_lock(local), tunnel():
+        release = prepared.get(request["requestId"]) if prepared is not None else None
+        if release is None:
+            release = stage(local, request["release"], deadline=time.monotonic() + 60 if child is None else None)
+            if prepared is not None:
+                prepared.clear()
+                prepared[request["requestId"]] = release
+        current = (local / "current").resolve()
+        manifest = json.loads((release / "manifest.json").read_text())
+        if json.loads((current / "manifest.json").read_text())["stateFormat"] != manifest["stateFormat"]:
+            raise ValueError("Automatic update cannot migrate stateFormat")
+        if current == release:
+            update_state(local, request, "restarting")
+            return False
+        lease = uuid.uuid4().hex
+        drained = False
+        try:
+            if child is not None and child.poll() is None:
+                drained = maintenance_request(local, "drain", lease)
+                if not drained:
+                    update_state(local, request, "waiting")
+                    return False
+                fetch(required("SERVER_HTTP_URL").rstrip("/") + "/api/agent-binaries", local / "incoming/server.json")
+                validate_server_compatibility(manifest, json.loads((local / "incoming/server.json").read_text()))
+                update_state(local, request, "applying")
+                if not maintenance_request(local, "stop", lease):
+                    raise ValueError("Agent refused update shutdown")
+                # Never escalate to SIGKILL: the old writer must exit on its own.
+                child.wait(timeout=30)
+            database = local / "state/agent.db"
+            if database.exists():
+                try:
+                    maintenance_module()["idle_database"](database)
+                except ValueError as error:
+                    if child is None and "unfinished" in str(error):
+                        update_state(local, request, "waiting")
+                        return False
+                    raise
+            os.environ["KQ_MAINTENANCE_WINDOW"] = "1"
+            activate(local, release, configure=lambda: registration(local, shared, release))
+            update_state(local, request, "restarting")
+            return True
+        finally:
+            if drained and child is not None and child.poll() is None:
+                maintenance_request(local, "resume", lease)
+
+
+def supervise_agent(local, shared):
+    for key in ("KQ_AGENT_AUTO_UPDATE", "KQ_AGENT_REMOTE_UPDATE"):
+        if os.environ.get(key, "0") not in ("0", "1"):
+            raise ValueError(key + " must be 0 or 1")
+    if not (local / "current").is_symlink():
+        raise ValueError("Install a signed release before running Agent")
+    current = (local / "current").resolve()
+    if current.parent != local / "releases" or not re.fullmatch(r"[a-f0-9]{64}", current.name):
+        raise ValueError("Invalid current release pointer")
+    verify_release(current)
+    if (local / "supervisor.lock").is_symlink():
+        raise ValueError("Unsafe supervisor lock")
+    with (local / "supervisor.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise BootstrapBusy("Agent supervisor is already running")
+        if os.environ.get("KQ_AGENT_AUTO_UPDATE") == "1" and (not update_request(local) or update_request(local)["state"] in ("succeeded", "failed", "disabled")):
+            try:
+                with update_lock(local), tunnel():
+                    release = stage(local, deadline=time.monotonic() + 60)
+                    if release != (local / "current").resolve():
+                        update_state(local, {"requestId": str(uuid.uuid4()), "release": release.name, "source": "startup"}, "requested")
+            except Exception:
+                print("Agent 自动更新检查失败，继续运行已安装版本；检查站点更新状态。", file=sys.stderr)
+        child = None
+        prepared = {}
+        stopping = False
+        def stop(signum, _frame):
+            nonlocal stopping
+            stopping = True
+            if child is not None and child.poll() is None:
+                child.send_signal(signum)
+        previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+        try:
+            while not stopping:
+                if child is None:
+                    request = update_request(local)
+                    if request and request["state"] in ("requested", "waiting", "applying", "restarting"):
+                        try:
+                            allowed = os.environ.get("KQ_AGENT_AUTO_UPDATE" if request.get("source") == "startup" else "KQ_AGENT_REMOTE_UPDATE") == "1"
+                            if not allowed:
+                                update_state(local, request, "disabled")
+                            else:
+                                apply_update(local, shared, request, prepared=prepared)
+                        except Exception:
+                            update_state(local, request, "failed")
+                            print("Agent 更新未完成，保留当前发行和状态。", file=sys.stderr)
+                    child = subprocess.Popen(["/bin/bash", str(local / "run-agent.sh")], env={**os.environ, "KQ_AGENT_CHILD": "1", "KQ_AGENT_SUPERVISED": "1"})
+                code = child.poll()
+                if code is not None:
+                    request = update_request(local)
+                    if request and request["state"] == "restarting":
+                        update_state(local, request, "failed")
+                        # Only restore a saved binary/configuration; never restore the database.
+                        try:
+                            with update_lock(local):
+                                previous_id = (local / "previous").read_text().strip()
+                                if not re.fullmatch(r"[a-f0-9]{64}", previous_id):
+                                    raise ValueError("Invalid previous release")
+                                previous_release = local / "releases" / previous_id
+                                if previous_release.parent != local / "releases" or previous_release == (local / "current").resolve():
+                                    raise ValueError("No safe previous release")
+                                database = local / "state/agent.db"
+                                if database.exists():
+                                    maintenance_module()["idle_database"](database)
+                                os.environ["KQ_MAINTENANCE_WINDOW"] = "1"
+                                activate(local, previous_release, rollback=True, configure=lambda: rollback_configuration(local, previous_release))
+                            child = None
+                            continue
+                        except Exception:
+                            print("新版 Agent 未确认在线且无法安全回退；保留状态供人工处理。", file=sys.stderr)
+                    return code
+                request = update_request(local)
+                if request and request["state"] in ("requested", "waiting"):
+                    try:
+                        if apply_update(local, shared, request, child, prepared=prepared):
+                            child = None
+                            continue
+                    except (OSError, subprocess.TimeoutExpired):
+                        # Unavailable control sockets and live writers never authorize a switch.
+                        update_state(local, request, "waiting")
+                    except Exception:
+                        update_state(local, request, "failed")
+                        print("Agent 更新失败，保留当前发行和状态。", file=sys.stderr)
+                    if child.poll() is not None:
+                        child = None
+                        continue
+                time.sleep(2)
+            if child is not None:
+                child.wait()
+            return 0
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+            if child is not None and child.poll() is None:
+                child.terminate()
+                child.wait()
+
+
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "check"
     if action == "prepare-capabilities":
@@ -1010,6 +1307,8 @@ def main():
     if sys.version_info < (3, 9):
         raise ValueError("Python 3.9 or newer is required")
     if action == "maintain":
+        if state_storage_mode() == "shared-home":
+            bind_state_host(Path(required("KQ_LOCAL")))
         maintenance_module()["main"](sys.argv[2:])
         return
     if action != "check":
@@ -1024,6 +1323,8 @@ def main():
         readonly_site_checks()
         print("本地只读预检完成；未连接云端或创建文件。未测试条件不表示已就绪。")
         return
+    if action == "run":
+        sys.exit(supervise_agent(local, shared))
     private_dir(local)
     private_dir(shared)
     for part in ("state", "releases", "incoming"):
@@ -1036,6 +1337,8 @@ def main():
         except BlockingIOError:
             raise BootstrapBusy("Another bootstrap action is running; retry after it finishes")
         try:
+            if state_storage_mode() == "shared-home":
+                bind_state_host(local, create=True)
             if action in ("install", "stage", "doctor", "prepare-capabilities"):
                 with tunnel():
                     release = stage(local)
@@ -1050,7 +1353,10 @@ def main():
                         doctor(local, release)
                 print(f"已校验暂存 {release.name}。")
                 if action == "install":
-                    print(f"运行 bash {os.environ['KQ_BOOTSTRAP_SCRIPT']} {os.environ['KQ_SITE_ENV']} services 启用常驻与更新检查。")
+                    if state_storage_mode() == "shared-home":
+                        print("按工具包 README 的 tmux 步骤运行 run-tunnel.sh 和 run-agent.sh；本次未启动常驻服务。")
+                    else:
+                        print(f"运行 bash {os.environ['KQ_BOOTSTRAP_SCRIPT']} {os.environ['KQ_SITE_ENV']} services 启用常驻与更新检查。")
             elif action in ("activate", "rollback"):
                 marker = "staged" if action == "activate" else "previous"
                 release_id = (local / marker).read_text().strip()

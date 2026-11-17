@@ -211,10 +211,12 @@ else:
         self.env_file = self.upload / "site.env"
         self.env_file.write_text("".join(f"export {key}={shlex.quote(value)}\n" for key, value in values.items()))
 
-    def publish(self, sequence, version="v1", extra=None, state_format="site-v1"):
+    def publish(self, sequence, version="v1", extra=None, state_format="site-v1", protocol_range=None):
         agent = (f"#!{sys.executable}\nimport json, os\nprint(json.dumps({{'version': {version!r}, 'agentId': os.environ['AGENT_ID'], 'database': os.environ['AGENT_DB_PATH'], 'transport': os.environ['KQ_TRANSPORT_MODE']}}))\n").encode()
         artifacts = {"agent": agent, "kq": self.cli, **(extra or {})}
         manifest = {"version": 1, "redistribution": "unrestricted", "architecture": platform.machine(), "minGlibc": "2.17", "cpuFlags": [], "sequence": sequence, "serverRevision": "a" * 40, "stateFormat": state_format, "files": [{"name": name, "role": "cli" if name == "kq" else "agent" if name == "agent" else "helper", "sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "executable": name in ("agent", "kq")} for name, data in artifacts.items()]}
+        if protocol_range is not None:
+            manifest["serverProtocolRange"] = protocol_range
         raw = json.dumps(manifest, sort_keys=True).encode()
         release_id = hashlib.sha256(raw).hexdigest()
         (self.root / "manifest").write_bytes(raw)
@@ -222,6 +224,7 @@ else:
         base = f"/platform/api/site-releases/releases/{release_id}"
         self.responses.update({f"{base}/{name}": data for name, data in artifacts.items()})
         self.responses[base + "/manifest.sig"] = (self.root / "manifest.sig").read_bytes()
+        self.responses[base + "/manifest.json"] = raw
         self.responses["/platform/api/site-releases/stable/manifest.json"] = raw
         self.responses["/platform/api/agent-binaries"] = json.dumps({"revision": "a" * 40}).encode()
         return release_id, base
@@ -235,9 +238,148 @@ else:
         self.assertNotIn("fixture-registration-secret", result.stdout + result.stderr)
         return result
 
+    def test_signed_protocol_range_accepts_new_revision_and_blocks_breaking_upgrade_before_registration(self):
+        release_id, _ = self.publish(1, protocol_range={"min": 1, "max": 2})
+        self.responses["/platform/api/agent-binaries"] = json.dumps({"revision": "b" * 40, "siteProtocolVersion": 3}).encode()
+        result = self.action("install", success=False)
+        self.assertIn("Incompatible Server site protocol", result.stderr)
+        self.assertFalse(self.log.exists())
+        self.assertFalse((self.local / "current").exists())
+        self.assertFalse((self.local / "highest.json").exists())
+        self.responses["/platform/api/agent-binaries"] = json.dumps({"revision": "b" * 40, "siteProtocolVersion": 2}).encode()
+        self.action("install")
+        self.assertEqual((self.local / "current").resolve().name, release_id)
+        self.assertEqual(self.log.read_text().splitlines(), ["registered"])
+        self.responses["/platform/api/agent-binaries"] = json.dumps({"revision": "c" * 40, "siteProtocolVersion": 3}).encode()
+        self.action("stage", success=False)
+        self.assertEqual((self.local / "current").resolve().name, release_id)
+        self.assertEqual(self.log.read_text().splitlines(), ["registered"])
+
+    def test_legacy_mismatch_and_missing_protocol_cannot_register(self):
+        for signed_range, server in ((None, {"revision": "b" * 40, "siteProtocolVersion": 1}), ({"min": 1, "max": 1}, {"revision": "a" * 40})):
+            with self.subTest(signed_range=signed_range):
+                self.publish(1, protocol_range=signed_range)
+                self.responses["/platform/api/agent-binaries"] = json.dumps(server).encode()
+                self.action("install", success=False)
+                self.assertFalse(self.log.exists())
+                self.assertFalse((self.local / "current").exists())
+                self.assertFalse((self.local / "highest.json").exists())
+
+    def test_shared_home_install_and_update_accept_compatible_server_revisions(self):
+        self.local = self.root / "home/.local/state/kq-agent"
+        self.executable("findmnt", "#!/bin/sh\nprintf 'nfs rw,hard,local_lock=none\\n'\n")
+        self.write_environment(KQ_STATE_STORAGE="shared-home")
+        release_options = {"state_format": "slurm-site-v5-shared-home-v1", "protocol_range": {"min": 1, "max": 1}}
+        first, _ = self.publish(1, **release_options)
+        self.responses["/platform/api/agent-binaries"] = json.dumps({"revision": "b" * 40, "siteProtocolVersion": 1}).encode()
+        self.action("check")
+        self.assertFalse(self.local.exists())
+        self.action("install")
+        self.assertEqual((self.local / "current").resolve().name, first)
+        self.assertIn("export AGENT_SQLITE_JOURNAL_MODE=delete\n", (self.local / "current/agent.env").read_text())
+        self.assertTrue((self.local / "run-tunnel.sh").is_file())
+        binding = (self.local / "state-hostname").read_bytes()
+        self.assertEqual(binding, (socket.gethostname() + "\n").encode())
+        identity = self.run_agent()
+        self.token.unlink()
+        second, _ = self.publish(2, "v2", **release_options)
+        self.responses["/platform/api/agent-binaries"] = json.dumps({"revision": "c" * 40, "siteProtocolVersion": 2}).encode()
+        result = self.action("stage", success=False)
+        self.assertIn("Incompatible Server site protocol", result.stderr)
+        self.assertEqual(json.loads((self.local / "highest.json").read_text())["sequence"], 1)
+        self.assertEqual((self.local / "current").resolve().name, first)
+        self.responses["/platform/api/agent-binaries"] = json.dumps({"revision": "c" * 40, "siteProtocolVersion": 1}).encode()
+        self.action("stage")
+        self.write_environment(KQ_STATE_STORAGE="shared-home", KQ_MAINTENANCE_WINDOW="1")
+        self.action("activate")
+        self.assertEqual((self.local / "current").resolve().name, second)
+        self.assertEqual(self.run_agent(), {**identity, "version": "v2"})
+        self.assertIn("export AGENT_SQLITE_JOURNAL_MODE=delete\n", (self.local / "current/agent.env").read_text())
+        self.action("rollback")
+        self.assertEqual(self.run_agent(), identity)
+        self.assertEqual((self.local / "state-hostname").read_bytes(), binding)
+        self.assertEqual(self.log.read_text(), "registered\n")
+
     def run_agent(self):
-        result = subprocess.run(["bash", str(self.local / "run-agent.sh")], env=self.environment, check=True, capture_output=True, text=True, timeout=5)
+        result = subprocess.run(["bash", str(self.local / "run-agent.sh")], env=self.environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def updated_agent_fixture(self):
+        return (f"#!{sys.executable}\n" + '''import json, os
+from pathlib import Path
+request = Path(os.environ['AGENT_DB_PATH']).parent / 'update-request.json'
+value = json.loads(request.read_text())
+if value['state'] == 'restarting':
+    assert value['release'] == os.environ['KQ_RUNNING_RELEASE']
+    value['state'] = 'succeeded'
+    request.write_text(json.dumps(value))
+print(json.dumps({'version': 'v2'}))
+''').encode()
+
+    def test_startup_auto_update_and_failed_candidate_return_to_previous_release(self):
+        first, _ = self.publish(1)
+        self.action("install")
+        self.publish(2, "v2", extra={"agent": self.updated_agent_fixture()})
+        self.write_environment(KQ_AGENT_AUTO_UPDATE="1")
+        self.assertEqual(self.run_agent()["version"], "v2")
+        self.assertEqual(self.log.read_text(), "registered\n")
+        active = (self.local / "current").resolve().name
+        self.assertNotEqual(active, first)
+        self.publish(3, "broken", extra={"agent": b"#!/bin/sh\nexit 9\n"})
+        # The previous signed fixture confirms its identity and connection on fallback.
+        self.assertEqual(self.run_agent()["version"], "v2")
+        self.assertEqual((self.local / "current").resolve().name, active)
+        self.assertEqual(json.loads((self.local / "state/update-request.json").read_text())["state"], "failed")
+
+    def test_remote_update_waits_for_idle_and_keeps_the_same_registration(self):
+        # Linux Unix sockets have a 108-byte address limit; keep this fixture short.
+        short = tempfile.TemporaryDirectory(prefix=".kq-up-", dir=ROOT.parent)
+        self.addCleanup(short.cleanup)
+        self.local = Path(short.name) / "a"
+        self.write_environment()
+        old = (f"#!{sys.executable}\n" + '''import json, os, socket, uuid
+from pathlib import Path
+state = Path(os.environ['AGENT_DB_PATH']).parent
+request = {'requestId': str(uuid.uuid4()), 'release': os.environ['KQ_TEST_UPDATE_RELEASE'], 'state': 'requested', 'source': 'remote'}
+(state / 'update-request.json').write_text(json.dumps(request))
+server = socket.socket(socket.AF_UNIX)
+server.bind(str(state / 'maintenance.sock'))
+server.listen()
+drains = 0
+while True:
+    connection, _ = server.accept()
+    with connection:
+        data = b''
+        while b'\\n' not in data:
+            data += connection.recv(4096)
+        value = json.loads(data)
+        if value['action'] == 'drain':
+            drains += 1
+        ok = drains > 1
+        connection.sendall((json.dumps({'ok': ok, 'lease': value['lease']}) + '\\n').encode())
+        if value['action'] == 'stop' and ok:
+            server.close()
+            break
+''').encode()
+        self.publish(1, extra={"agent": old})
+        self.action("install")
+        target, _ = self.publish(2, extra={"agent": self.updated_agent_fixture()})
+        self.environment["KQ_TEST_UPDATE_RELEASE"] = target
+        self.write_environment(KQ_AGENT_REMOTE_UPDATE="1")
+        self.assertEqual(self.run_agent()["version"], "v2")
+        self.assertEqual((self.local / "current").resolve().name, target)
+        self.assertEqual(self.log.read_text(), "registered\n")
+
+    def test_startup_incompatible_update_preserves_running_release_and_identity(self):
+        first, _ = self.publish(1)
+        self.action("install")
+        self.publish(2, protocol_range={"min": 2, "max": 2})
+        self.responses["/platform/api/agent-binaries"] = json.dumps({"revision": "b" * 40, "siteProtocolVersion": 1}).encode()
+        self.write_environment(KQ_AGENT_AUTO_UPDATE="1")
+        self.assertEqual(self.run_agent()["version"], "v1")
+        self.assertEqual((self.local / "current").resolve().name, first)
+        self.assertEqual(self.log.read_text(), "registered\n")
 
     def test_forwarded_registration_request_preserves_http_url_and_tls_sni(self):
         self.environment["KQ_TEST_REGISTRATION_HTTP"] = "1"

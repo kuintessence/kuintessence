@@ -951,6 +951,33 @@
       "reconcileInstallation": "查看软件操作失败记录；残留构建须先执行恢复对账，再重试安装。",
       "resumeTransfer": "在文件传输记录中查看失败原因；权限与原文件有效时可恢复同一传输。",
       "updateChecked": "更新检查时间"
+    },
+    "updater": {
+      "title": "Agent 更新",
+      "notice": "平台更新通知",
+      "loading": "正在读取更新记录…",
+      "loadFailed": "更新记录加载失败",
+      "unsupported": "Agent 离线或尚未启用更新启动器；远程请求将等待支持此能力的 Agent 连接。",
+      "empty": "暂无更新记录",
+      "history": "更新记录",
+      "release": "目标发行摘要（SHA-256）",
+      "message": "更新说明",
+      "safety": "仅应用站点信任的签名发行。等待作业、传输和安装结束后安全重启；站点可关闭远程更新。",
+      "request": "请求更新",
+      "notify": "发送更新通知",
+      "sending": "正在提交…",
+      "sent": "请求已记录",
+      "failed": "请求提交失败",
+      "states": {
+        "requested": "等待 Agent 接收",
+        "waiting": "等待安全空闲点",
+        "applying": "正在切换发行",
+        "restarting": "等待新版 Agent 确认在线",
+        "succeeded": "更新完成",
+        "failed": "更新失败，请检查站点状态",
+        "disabled": "站点未允许远程更新"
+      },
+      "useRelease": "使用此发行"
     }
   },
   "software": {

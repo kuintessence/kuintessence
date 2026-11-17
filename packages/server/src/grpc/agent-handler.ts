@@ -286,6 +286,7 @@ export interface AgentMetricsRecorder {
 }
 
 export interface AgentHandlerDeps {
+  agentUpdates?: Pick<import("../services/agent-update").AgentUpdateService, "deliver" | "report">;
   federationMediaExports?: Pick<FederationMediaExportTransport, "grant" | "report">;
   federationMediaImports?: Pick<FederationMediaImportTransport, "grant" | "report">;
   federationResults?: Pick<FederationResultTransport, "grant" | "report" | "canCopy">;
@@ -430,6 +431,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
       const requestIterator = requests[Symbol.asyncIterator]();
 
       const channel = {
+        agentUpdateV1: false,
         spackMaterialDeliveryV1: false,
         spackPinnedExecutionV1: false,
         softwareOperationReplayV1: false,
@@ -594,6 +596,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.verifiedCertFingerprint =
                 mtlsContext.getStore()?.fingerprintSha256 ?? undefined;
               dispatcher.register(registeredAgentId, channel);
+              channel.agentUpdateV1 = reg.agentUpdateV1;
               await jobCancellations?.redeliver(registeredAgentId);
               await dataDeliveryRevocations?.redeliver(registeredAgentId);
               await jobWorkRootReleases?.redeliver(registeredAgentId);
@@ -718,6 +721,17 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 ...sandboxCapabilityFacts(hb.sandboxCapability),
                 ...(computeHealthV1 ? computeHealthFacts(hb.computeHealth) : {}),
               });
+              try {
+                if (siteOperations?.update.request) {
+                  await deps.agentUpdates?.report(registeredAgentId, siteOperations.update.request);
+                }
+                await deps.agentUpdates?.deliver(registeredAgentId);
+              } catch (err) {
+                logger.warn(
+                  { err, agentId: registeredAgentId },
+                  "Agent update delivery will retry",
+                );
+              }
             } catch (err) {
               logger.warn({ err, agentId: registeredAgentId }, "Heartbeat for unknown agent");
               continue;

@@ -247,6 +247,7 @@ import { QueueWaitAggregator } from "./scheduler/queue-wait-aggregator";
 import { reconcileStaleAgentHeartbeats } from "./services/agent-heartbeat-sweeper";
 import { AgentManager } from "./services/agent-manager";
 import { AgentRegistrationService } from "./services/agent-registration";
+import { AgentUpdateService } from "./services/agent-update";
 import { writeAudit } from "./services/audit-log-writer";
 import { ClusterFileRootService } from "./services/cluster-file-root";
 import { ComputeProviderService } from "./services/compute-providers";
@@ -414,6 +415,7 @@ const eventBus = new EventBus();
 
 const preferenceService = new PreferenceService(db);
 const dispatcher = new AgentDispatcher();
+const agentUpdates = new AgentUpdateService(db, dispatcher);
 const jobCancellationOutbox = new JobCancellationOutbox(db, dispatcher);
 let federationDispatchAuthorization: FederationDispatchAuthorization | undefined;
 let federationDataDispatch = new FederationDataDispatch(db);
@@ -2163,7 +2165,15 @@ protectedApi.route(
   }),
 );
 protectedApi.route("/", createAdminBrandingRoutes(db, { authz: authzService }));
-protectedApi.route("/", createAgentRoutes(agentManager, { authz: authzService }));
+protectedApi.route(
+  "/",
+  createAgentRoutes(agentManager, {
+    authz: authzService,
+    updates: agentUpdates,
+    dispatcher,
+    siteReleasesDir: config.SITE_RELEASES_DIR,
+  }),
+);
 protectedApi.route(
   "/",
   createJobRoutes(jobService, db, orchestrator, {
@@ -2752,6 +2762,7 @@ app.route("/api", protectedApi);
 
 // connectRPC server for Agent bidirectional streaming.
 const grpcDeps = {
+  agentUpdates,
   agentManager,
   jobService,
   logger,

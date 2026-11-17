@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SITE_PROTOCOL_VERSION } from "@kuintessence/shared";
 import { Hono } from "hono";
 import { createAgentBinaryRoutes } from "./agent-binaries";
 
@@ -42,7 +43,10 @@ describe("Server-matched Agent downloads", () => {
   test("public manifest reports revision, architectures and hashes before the authentication gate", async () => {
     const response = await app.request("/api/agent-binaries");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(manifest);
+    expect(await response.json()).toEqual({
+      ...manifest,
+      siteProtocolVersion: SITE_PROTOCOL_VERSION,
+    });
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect((await app.request("/api/agents")).status).toBe(401);
   });

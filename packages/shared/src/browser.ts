@@ -1,3 +1,4 @@
+export * from "./agent-update";
 export * from "./auth/ownership";
 export * from "./compute-providers";
 export * from "./constants/errors";

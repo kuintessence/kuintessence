@@ -18,6 +18,128 @@ spec.loader.exec_module(module)
 
 
 class BootstrapTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict(os.environ, {"KQ_BOOTSTRAP_SCRIPT": str(ROOT / "examples/slurm-user-site/bootstrap.sh"), "KQ_SITE_ENV": "/fixture/site.env", "KQ_AGENT_CHILD": "1"})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_startup_download_has_a_shared_deadline_and_no_long_retry(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(module, "reserve_capacity"), patch.object(module, "curl_options", return_value=["curl"]), patch.object(module.time, "monotonic", return_value=100):
+            destination = Path(directory) / "manifest.json"
+            with patch.object(module, "run", side_effect=subprocess.TimeoutExpired("curl", 5)) as command:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    module.fetch("https://platform.invalid/manifest.json", destination, deadline=105)
+                self.assertEqual(command.call_args.kwargs["timeout"], 5)
+                self.assertEqual(command.call_args.args[0][-5:-1], ["--max-time", "5", "--retry", "0"])
+            with patch.object(module, "run") as command:
+                with self.assertRaises(TimeoutError):
+                    module.fetch("https://platform.invalid/manifest.json", destination, deadline=99)
+                command.assert_not_called()
+
+    def test_server_compatibility_uses_signed_range_and_retains_strict_legacy_fallback(self):
+        legacy = {"serverRevision": "a" * 40}
+        module.validate_server_compatibility(legacy, {"revision": "a" * 40})
+        with self.assertRaisesRegex(ValueError, "legacy release has no signed serverProtocolRange"):
+            module.validate_server_compatibility(legacy, {"revision": "b" * 40, "siteProtocolVersion": 1})
+        manifest = {**legacy, "serverProtocolRange": {"min": 2, "max": 3}}
+        for actual in (2, 3):
+            module.validate_server_compatibility(manifest, {"revision": "b" * 40, "siteProtocolVersion": actual})
+        for actual in (1, 4):
+            with self.subTest(actual=actual), self.assertRaisesRegex(ValueError, "Incompatible Server site protocol"):
+                # Even equal revisions cannot override a declared protocol mismatch.
+                module.validate_server_compatibility(manifest, {"revision": "a" * 40, "siteProtocolVersion": actual})
+        for actual in (None, True, "2", 2.0, 0, 2147483648):
+            with self.subTest(actual=actual), self.assertRaisesRegex(ValueError, "valid siteProtocolVersion"):
+                module.validate_server_compatibility(manifest, {"revision": "a" * 40, "siteProtocolVersion": actual})
+        for server in ({}, {"revision": "unknown"}, {"revision": "a" * 39}, [], None):
+            with self.subTest(server=server), self.assertRaisesRegex(ValueError, "Invalid deployed Server revision"):
+                module.validate_server_compatibility(manifest, server)
+
+    def test_invalid_signed_protocol_ranges_are_rejected_even_with_matching_revision(self):
+        for value in (None, {}, {"min": 2, "max": 1}, {"min": 0, "max": 1}, {"min": 1, "max": 2147483648}, {"min": 1.5, "max": 2}, {"min": True, "max": 2}, {"min": "1", "max": 2}, {"min": 1, "max": 2, "skipRevisionCheck": True}):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "Invalid signed Server protocol range"):
+                module.validate_server_compatibility({"serverRevision": "a" * 40, "serverProtocolRange": value}, {"revision": "a" * 40, "siteProtocolVersion": 1})
+
+    def test_shared_home_requires_explicit_mode_private_separate_state_and_locking_mount(self):
+        from subprocess import CompletedProcess
+        with patch.dict(os.environ, {"KQ_STATE_STORAGE": "shared-home"}), patch.object(module.Path, "home", return_value=Path("/site/home/user")):
+            local, shared = Path("/site/home/user/.local/state/kq"), Path("/site/home/user/kq-test")
+            with patch.object(module, "run", return_value=CompletedProcess([], 0, "nfs rw,hard,local_lock=none")):
+                module.validate_state_storage(local, local.parent, shared)
+            for mount in ("nfs rw,nolock", "nfs rw,soft", "nfs rw,softerr", "nfs ro,hard", "tmpfs rw", "nfs rw,ro"):
+                with self.subTest(mount=mount), patch.object(module, "run", return_value=CompletedProcess([], 0, mount)):
+                    with self.assertRaisesRegex(ValueError, "locking"):
+                        module.validate_state_storage(local, local.parent, shared)
+            for invalid in (Path("/site/home/user"), shared / "state", Path("/tmp/kq"), shared.parent):
+                with self.subTest(path=invalid):
+                    with self.assertRaisesRegex(ValueError, "separate directory"):
+                        module.validate_state_storage(invalid, invalid.parent, shared)
+
+    def test_shared_home_refuses_other_hosts_symlink_markers_and_unbound_existing_database(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"KQ_STATE_STORAGE": "shared-home"}):
+            local = Path(directory)
+            module.bind_state_host(local)
+            self.assertFalse((local / "state-hostname").exists())
+            module.bind_state_host(local, create=True)
+            original = (local / "state-hostname").read_bytes()
+            module.bind_state_host(local)
+            with patch.object(module.socket, "gethostname", return_value="another-login-node"):
+                with self.assertRaisesRegex(ValueError, "another host"):
+                    module.bind_state_host(local, create=True)
+                with self.assertRaisesRegex(ValueError, "another host"):
+                    module.record_failure(local, ValueError("must not write status"))
+            self.assertEqual((local / "state-hostname").read_bytes(), original)
+            self.assertFalse((local / "status.json").exists())
+            (local / "state-hostname").unlink()
+            (local / "state-hostname").symlink_to(local / "missing")
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                module.bind_state_host(local, create=True)
+            (local / "state-hostname").unlink()
+            (local / "state").mkdir()
+            (local / "state/agent.db").touch()
+            with self.assertRaisesRegex(ValueError, "no host binding"):
+                module.bind_state_host(local)
+
+    def test_shared_home_refuses_legacy_release_before_activation_or_registration(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"KQ_STATE_STORAGE": "shared-home"}):
+            local = Path(directory)
+            with patch.object(module, "verify_release", return_value={"stateFormat": "slurm-site-v5"}):
+                with self.assertRaisesRegex(ValueError, "legacy WAL"):
+                    module.activate(local, local / "release", configure=lambda: self.fail("must not register"))
+            module.validate_storage_release({"stateFormat": "slurm-site-v5-shared-home-v1"})
+            self.assertFalse((local / "current").exists())
+
+    def test_shared_home_generates_delete_journal_and_host_bound_manual_launchers(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"KQ_STATE_STORAGE": "shared-home", "KQ_ENABLE_SPACK": "0", "SERVER_HTTP_URL": "https://platform.invalid", "SERVER_GRPC_URL": "https://agent.invalid", "KQ_MODULE_INIT": "", "KQ_PYTHON_MODULE": "", "KQ_APPTAINER_MODULE": ""}):
+            local = Path(directory) / "state"
+            shared = Path(directory) / "shared"
+            release = local / "releases/test"
+            release.mkdir(parents=True, mode=0o700)
+            (local / "state").mkdir(mode=0o700)
+            registration = local / "registration"
+            registration.mkdir(mode=0o700)
+            (registration / "agent.env").write_text("existing identity fixture")
+            agent = release / "agent"
+            agent.write_text("#!/bin/bash\necho agent-fixture\n")
+            agent.chmod(0o700)
+            (local / "current").symlink_to(release)
+            with patch.object(module, "registration_config", return_value={"AGENT_ID": "fixture"}), patch.object(module, "role", return_value=agent), patch.object(module, "ssh_args", return_value=["ssh", "-N", "fixture"]):
+                module.registration(local, shared, release)
+            env = (release / "agent.env").read_text()
+            self.assertIn("export AGENT_SQLITE_JOURNAL_MODE=delete\n", env)
+            self.assertIn("exec ssh -N fixture", (local / "run-tunnel.sh").read_text())
+            launcher = local / "run-agent.sh"
+            result = subprocess.run(["bash", str(launcher)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("agent-fixture", result.stdout)
+            tools = Path(directory) / "tools"
+            tools.mkdir()
+            (tools / "uname").write_text("#!/bin/sh\necho another-login-node\n")
+            (tools / "uname").chmod(0o700)
+            result = subprocess.run(["bash", str(launcher)], env={**os.environ, "PATH": str(tools) + ":" + os.environ["PATH"]}, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 75, result.stderr)
+            self.assertNotIn("agent-fixture", result.stdout)
+
     def test_prepare_capabilities_copies_verified_runtime_without_registration(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -111,7 +233,7 @@ class BootstrapTests(unittest.TestCase):
                 local = Path(directory) / "local"
                 (local / "registration").mkdir(parents=True, mode=0o700)
                 (local / "registration/agent.env").write_text("existing identity")
-                env = {"KQ_ENABLE_SPACK": "1", "SERVER_HTTP_URL": "https://example.test", "SERVER_GRPC_URL": "https://example.test", "PATH": os.environ["PATH"]}
+                env = {"KQ_ENABLE_SPACK": "1", "SERVER_HTTP_URL": "https://example.test", "SERVER_GRPC_URL": "https://example.test", "PATH": os.environ["PATH"], "KQ_BOOTSTRAP_SCRIPT": "/fixture/bootstrap.sh", "KQ_SITE_ENV": "/fixture/site.env"}
                 if budget is not None:
                     env["KQ_SPACK_MANAGED_MEMORY_MIB"] = budget
                 if timeout is not None:
@@ -571,15 +693,17 @@ with socket.socket() as listener:
             local = Path(directory)
             release = local / "release"
             release.mkdir()
-            env, launcher = release / "agent.env", local / "run-agent.sh"
+            env, launcher, tunnel = release / "agent.env", local / "run-agent.sh", local / "run-tunnel.sh"
             env.write_text("old configuration")
             launcher.write_text("old launcher")
             launcher.chmod(0o700)
+            tunnel.write_text("old tunnel")
             (local / "current").symlink_to(release)
             replace = module.os.replace
             def configure():
                 module.atomic(env, "new configuration")
                 module.atomic(launcher, "new launcher", 0o700)
+                module.atomic(tunnel, "new tunnel", 0o700)
             def fail_status(source, destination):
                 if Path(source).name == "status.json" and Path(source).parent.name == "after":
                     raise OSError(errno.ENOSPC, "disk full")
@@ -589,6 +713,7 @@ with socket.socket() as listener:
                     module.switch_release(local, release, False, configure=configure)
             self.assertEqual(env.read_text(), "old configuration")
             self.assertEqual(launcher.read_text(), "old launcher")
+            self.assertEqual(tunnel.read_text(), "old tunnel")
             self.assertEqual(launcher.stat().st_mode & 0o777, 0o700)
             self.assertEqual((local / "current").resolve(), release)
 

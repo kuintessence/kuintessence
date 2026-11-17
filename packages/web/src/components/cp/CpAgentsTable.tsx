@@ -15,6 +15,7 @@ import {
 import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { AgentCertRevokeDialog } from "../agent/AgentCertRevokeDialog";
+import { AgentUpdates } from "../agents/AgentUpdates";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
@@ -171,6 +172,11 @@ export function CpAgentsTable() {
                           {t("cp.agents.certs.button")}
                         </Button>
                       </div>
+                    </TableCell>
+                  </TableRow>
+                  <TableRow className="block sm:table-row">
+                    <TableCell colSpan={5} className="block px-4 pb-3 sm:table-cell sm:px-3">
+                      <AgentUpdates agentId={a.id} />
                     </TableCell>
                   </TableRow>
                   {rootsAgentId === a.id ? (

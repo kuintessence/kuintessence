@@ -1,4 +1,8 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
+  AgentUpdateRequestSchema,
   AppError,
   authorizeResourceAccess,
   ErrorCode,
@@ -11,12 +15,19 @@ import {
   assertOwnedResourceAccess,
   ownershipPrincipalFromContext,
 } from "../auth/ownership";
+import { requirePlatformPermission } from "../authz/platform-guard";
 import type { AuthzCheck, AuthzService } from "../authz/service";
+import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import type { AgentManager } from "../services/agent-manager";
+import type { AgentUpdateService } from "../services/agent-update";
+import { siteReleaseSchema } from "./site-releases";
 
 export interface AgentRouteOptions {
   authz?: AuthzService;
+  updates?: Pick<AgentUpdateService, "list" | "request">;
+  dispatcher?: Pick<AgentDispatcher, "getChannel">;
+  siteReleasesDir?: string;
 }
 
 interface AgentAuthzTarget {
@@ -85,6 +96,80 @@ export function createAgentRoutes(agentManager: AgentManager, options: AgentRout
     return c.json(agent);
   });
 
+  routes.get("/agents/:id/updates", async (c) => {
+    const agent = await updateTarget(c, "read");
+    return c.json({
+      requests: ((await options.updates?.list(agent.agentId)) ?? []).map((entry) => ({
+        requestId: entry.requestId,
+        kind: entry.kind,
+        release: entry.release,
+        message: entry.message,
+        state: entry.state,
+        createdAt: entry.createdAt.toISOString(),
+      })),
+      supported: options.dispatcher?.getChannel(agent.agentId)?.agentUpdateV1 ?? false,
+    });
+  });
+
+  routes.post("/agents/:id/updates", async (c) => {
+    const agent = await updateTarget(c, "manage");
+    const principal = requireAgentPrincipal(c);
+    const body = AgentUpdateRequestSchema.safeParse(await c.req.json().catch(() => null));
+    if (!body.success)
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Invalid update request", 400);
+    if (body.data.kind === "notice")
+      await requirePlatformPermission(c, options.authz, "operate", "agent-update-notice");
+    if (!options.updates || !options.siteReleasesDir)
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Site release updates are unavailable", 409);
+    const raw = await readFile(
+      join(options.siteReleasesDir, "releases", body.data.release, "manifest.json"),
+    ).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    let valid = false;
+    if (raw && raw.length <= 131072) {
+      try {
+        valid = siteReleaseSchema.safeParse(JSON.parse(raw.toString())).success;
+      } catch {
+        valid = false;
+      }
+    }
+    if (
+      !raw ||
+      raw.length > 131072 ||
+      createHash("sha256").update(raw).digest("hex") !== body.data.release ||
+      !valid
+    )
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Published site release is unavailable", 400);
+    const request = await options.updates.request(agent.agentId, principal.userId, body.data);
+    return c.json(request, 202);
+  });
+
+  async function updateTarget(c: Context, action: "read" | "manage") {
+    const principal = requireAgentPrincipal(c);
+    const agent = await agentManager.getById(c.req.param("id") ?? "");
+    const resource =
+      agent && agentResourceFromProviderOrg(agent.agentId, "agent", agent.providerOrgId);
+    if (!agent || !resource) throw new AppError(ErrorCode.NOT_FOUND, "Agent not found", 404);
+    if (hasRole(principal.role as RoleName, "operator")) {
+      await requirePlatformPermission(c, options.authz, "operate", "agent-update");
+    } else {
+      assertOwnedResourceAccess(c, resource, action);
+      if (
+        !(await checkAgentThroughSpice(
+          options.authz,
+          c,
+          agent,
+          true,
+          action === "manage" ? "manage" : "view",
+        ))
+      )
+        throw new AppError(ErrorCode.FORBIDDEN, "Agent access denied", 403);
+    }
+    return agent;
+  }
+
   return routes;
 }
 
@@ -93,9 +178,11 @@ async function checkAgentThroughSpice(
   c: Context,
   agent: AgentAuthzTarget,
   localAllowed: boolean,
+  permission: "view" | "manage" = "view",
 ): Promise<boolean> {
   if (!authz || authz.mode === "off") return localAllowed;
   const check = agentViewCheck(c, agent, localAllowed);
+  check.permission = permission;
   if (authz.mode === "shadow") {
     await authz.shadowCheck(check);
     return localAllowed;

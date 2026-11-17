@@ -968,3 +968,62 @@ test("accounting responses require registration and capability and carry the pin
     expect(seen).toEqual(advertised ? ["original-agent:probe"] : []);
   }
 });
+
+test("update heartbeats use the registered identity and delivery failures preserve heartbeat ACKs", async () => {
+  const calls: string[] = [];
+  const report = { requestId: crypto.randomUUID(), release: "a".repeat(64), state: "waiting" };
+  const { router, handlers } = createMockRouter();
+  const dispatcher = new AgentDispatcher();
+  registerAgentHandler(router, {
+    agentManager: {
+      register: async () => undefined,
+      heartbeat: async (input: { agentId: string }) => {
+        calls.push(`heartbeat:${input.agentId}`);
+      },
+    } as unknown as AgentManager,
+    jobService: {} as unknown as JobService,
+    logger: silent,
+    dispatcher,
+    agentUpdates: {
+      report: async (agentId, value) => {
+        calls.push(`report:${agentId}:${value.requestId}`);
+      },
+      deliver: async (agentId) => {
+        calls.push(`deliver:${agentId}:${dispatcher.getChannel(agentId)?.agentUpdateV1}`);
+        throw new Error("temporary update storage failure");
+      },
+    },
+  });
+  const heartbeat = create(AgentMessageSchema, {
+    payload: {
+      case: "heartbeat",
+      value: create(HeartbeatSchema, {
+        agentId: "forged-agent",
+        sequence: 1n,
+        siteOperationsJson: JSON.stringify({
+          version: 1,
+          observedAt: Date.now(),
+          transport: "direct",
+          trust: "single-user",
+          executor: "slurm",
+          materials: { state: "idle" },
+          installation: { state: "idle" },
+          jobs: { state: "idle" },
+          transfers: { state: "idle" },
+          update: { phase: "staged", request: report },
+        }),
+      }),
+    },
+  });
+  const registration = registerMsg("registered-agent");
+  if (registration.payload.case !== "register" || !handlers.connect)
+    throw new Error("Missing fixture");
+  registration.payload.value.agentUpdateV1 = true;
+  const responses = await collectServer(handlers.connect(iter(heartbeat, registration, heartbeat)));
+  expect(calls).toEqual([
+    "heartbeat:registered-agent",
+    `report:registered-agent:${report.requestId}`,
+    "deliver:registered-agent:true",
+  ]);
+  expect(responses.some((message) => message.payload.case === "heartbeatAck")).toBe(true);
+});

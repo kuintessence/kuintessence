@@ -132,6 +132,7 @@ const AgentConfigSchema = z
     AGENT_SCHEDULER_VERSION: z.string().min(1).optional(),
     AGENT_SLURM_TERMINAL_STATUS_BACKEND: z.enum(["sacct", "scontrol"]).default("sacct"),
     AGENT_DB_PATH: z.string().default("./agent.db"),
+    AGENT_SQLITE_JOURNAL_MODE: z.enum(["wal", "delete"]).default("wal"),
     HEARTBEAT_INTERVAL_SEC: positiveInt(30),
     AGENT_GRPC_PING_INTERVAL_SEC: boundedPositiveInt(30, 7_200),
     AGENT_GRPC_PING_TIMEOUT_SEC: boundedPositiveInt(10, 300),

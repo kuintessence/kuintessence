@@ -40,6 +40,7 @@ test("prepare builds standalone artifacts, verifies supplied inputs and produces
     await writeFile(join(root, "runtime.sif"), inputBytes);
     const request = {
       ...metadata,
+      serverProtocolRange: { min: 1, max: 1 },
       inputs: [
         {
           path: "runtime.sif",
@@ -56,6 +57,7 @@ test("prepare builds standalone artifacts, verifies supplied inputs and produces
     const output = join(root, "prepared");
     const prepared = await prepareSiteRelease(requestPath, output, fakeBuild);
     expect(siteReleaseSchema.parse(prepared.manifest).files).toHaveLength(3);
+    expect(prepared.manifest.serverProtocolRange).toEqual({ min: 1, max: 1 });
     const receipt = JSON.parse(await readFile(join(output, "prepare.json"), "utf8"));
     expect(receipt).toMatchObject({
       channel: "review",

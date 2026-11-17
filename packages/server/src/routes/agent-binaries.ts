@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { SITE_PROTOCOL_VERSION } from "@kuintessence/shared";
 import { Hono } from "hono";
 import { z } from "zod";
 
@@ -38,7 +39,7 @@ export function createAgentBinaryRoutes(directory: string) {
     if (!(await file.exists())) return c.json({ error: "Agent binaries are not bundled" }, 404);
     const manifest = manifestSchema.parse(await file.json());
     c.header("Cache-Control", "no-store");
-    return c.json(manifest);
+    return c.json({ ...manifest, siteProtocolVersion: SITE_PROTOCOL_VERSION });
   });
 
   routes.on(["GET", "HEAD"], "/agent-binaries/:filename", async (c) => {

@@ -1,10 +1,11 @@
 import { chmod, lstat, realpath, unlink } from "node:fs/promises";
 import { createConnection, createServer, type Socket } from "node:net";
 import { dirname, resolve } from "node:path";
+import { createLogger } from "@kuintessence/shared";
 
 export const MAINTENANCE_LEASE_MS = 120_000;
 export interface MaintenanceRequest {
-  action: "drain" | "resume";
+  action: "drain" | "resume" | "stop";
   lease: string;
 }
 export interface MaintenanceResponse {
@@ -15,6 +16,7 @@ export interface MaintenanceResponse {
 export interface MaintenanceCallbacks {
   drain: (lease: string) => Promise<boolean>;
   resume: (lease: string) => void;
+  stop?: () => Promise<void>;
 }
 
 /** A lease can only release its own gate; expiry also releases a disconnected client. */
@@ -34,12 +36,17 @@ export class MaintenanceLease {
       !("action" in input) ||
       !("lease" in input) ||
       Object.keys(input).length !== 2 ||
-      !["drain", "resume"].includes(String(input.action)) ||
+      !["drain", "resume", "stop"].includes(String(input.action)) ||
       typeof input.lease !== "string" ||
       !/^[a-f0-9]{32}$/.test(input.lease)
     )
       return { ok: false, lease: "", reason: "MAINTENANCE_INVALID" };
     const lease = input.lease;
+    if (input.action === "stop") {
+      if (!this.current?.granted || this.current.lease !== lease || !this.callbacks.stop)
+        return { ok: false, lease, reason: "MAINTENANCE_LEASE_MISMATCH" };
+      return { ok: true, lease, reason: "MAINTENANCE_STOPPED" };
+    }
     if (input.action === "resume") {
       if (this.current?.lease !== lease)
         return { ok: false, lease, reason: "MAINTENANCE_LEASE_MISMATCH" };
@@ -86,6 +93,12 @@ export class MaintenanceLease {
 
   close(): void {
     if (this.current) this.release(this.current.lease);
+  }
+
+  async stop(lease: string): Promise<void> {
+    if (!this.current?.granted || this.current.lease !== lease || !this.callbacks.stop)
+      throw new Error("MAINTENANCE_LEASE_MISMATCH");
+    await this.callbacks.stop();
   }
 }
 
@@ -169,7 +182,14 @@ export async function startMaintenanceControl(
       void lease
         .request(input)
         .then((response) => {
-          if (!socket.destroyed) socket.end(`${JSON.stringify(response)}\n`);
+          if (!socket.destroyed)
+            socket.end(`${JSON.stringify(response)}\n`, () => {
+              if (response.reason === "MAINTENANCE_STOPPED") {
+                void lease.stop(response.lease).catch((error: unknown) => {
+                  createLogger("maintenance").error({ err: error }, "Agent update shutdown failed");
+                });
+              }
+            });
         })
         .catch(() => socket.destroy());
     });
