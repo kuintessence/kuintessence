@@ -750,6 +750,9 @@ export function CpQueuesPage() {
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const providerOrgs = registrationContext.data?.providerOrgs ?? [];
   const agents = agentsQuery.data ?? [];
+  const formAgents = agentsQuery.isError
+    ? []
+    : agents.filter((agent) => agent.providerOrgId === form.providerOrgId);
   const selectedInventoryQuery = useCpQueueInventory(form.agentId || null, dialogMode !== null);
   const selectedInventory = selectedInventoryQuery.data;
   const schedulerType = selectedInventory?.schedulerType ?? form.schedulerType;
@@ -786,6 +789,12 @@ export function CpQueuesPage() {
     setExpandedQueueId(null);
     setTogglingQueueIds(new Set());
   }, [loadError]);
+
+  useEffect(() => {
+    const defaultProviderOrgId = providerOrgs[0]?.id;
+    if (dialogMode !== "create" || form.providerOrgId || !defaultProviderOrgId) return;
+    setForm((current) => ({ ...current, providerOrgId: defaultProviderOrgId }));
+  }, [dialogMode, form.providerOrgId, providerOrgs]);
 
   useEffect(() => {
     if (!selectedInventory || selectedInventory.agentId !== form.agentId) return;
@@ -839,8 +848,20 @@ export function CpQueuesPage() {
   }
 
   function changeAgent(agentId: string) {
-    setForm((current) => ({ ...current, agentId, queueName: "", targetMode: "named" }));
+    setForm((current) => ({
+      ...current,
+      agentId,
+      queueName: "",
+      qos: "",
+      schedulerType: "slurm",
+      targetMode: "named",
+    }));
     setFormErrors((current) => ({ ...current, agentId: "", queueName: "" }));
+  }
+
+  function changeProviderOrg(providerOrgId: string) {
+    setForm((current) => ({ ...current, providerOrgId }));
+    changeAgent("");
   }
 
   function changeTargetMode(targetMode: QueueTargetMode) {
@@ -859,7 +880,8 @@ export function CpQueuesPage() {
     if (loadError) return;
     const nextErrors: Record<string, string> = {};
     const discovered = selectedInventory?.queues.map((fact) => fact.queueName) ?? [];
-    if (!form.agentId) nextErrors.agentId = t("cp.queues.validation.agentRequired");
+    if (!formAgents.some((agent) => agent.id === form.agentId))
+      nextErrors.agentId = t("cp.queues.validation.agentRequired");
     if (!selectedInventory) nextErrors.agentId = t("cp.queues.validation.inventoryRequired");
     const staleNamedFact =
       dialogMode === "create" &&
@@ -1074,7 +1096,7 @@ export function CpQueuesPage() {
         onOpenChange={(open) => !open && closeDialog()}
       >
         <DialogContent>
-          <form onSubmit={onSubmit} noValidate>
+          <form className="flex min-h-0 flex-col" onSubmit={onSubmit} noValidate>
             <DialogHeader>
               <DialogTitle>{t(titleKey)}</DialogTitle>
               <DialogDescription>{t("cp.queues.dialog.description")}</DialogDescription>
@@ -1109,9 +1131,8 @@ export function CpQueuesPage() {
                     id="cp-queue-field-provider-org-id"
                     value={form.providerOrgId}
                     required
-                    onChange={(event) =>
-                      setForm({ ...form, providerOrgId: event.currentTarget.value })
-                    }
+                    disabled={dialogMode === "edit"}
+                    onChange={(event) => changeProviderOrg(event.currentTarget.value)}
                     data-testid="cp-queue-field-provider-org-id"
                     className="flex h-11 w-full sm:h-9"
                   >
@@ -1131,10 +1152,12 @@ export function CpQueuesPage() {
               )}
               <Field htmlFor="cp-queue-field-agent-id" label={t("cp.queues.field.agentId")}>
                 <ResourceSelectField
+                  key={form.providerOrgId}
                   resourceType="agents"
                   id="cp-queue-field-agent-id"
                   value={form.agentId}
                   required
+                  disabled={!form.providerOrgId || agentsQuery.isLoading || agentsQuery.isError}
                   aria-invalid={Boolean(formErrors.agentId)}
                   aria-describedby={formErrors.agentId ? "cp-queue-agent-error" : undefined}
                   onChange={(event) => changeAgent(event.currentTarget.value)}
@@ -1142,7 +1165,7 @@ export function CpQueuesPage() {
                   className="flex h-11 w-full sm:h-9"
                 >
                   <option value="">{t("cp.queues.field.chooseAgent")}</option>
-                  {agents.map((agent) => (
+                  {formAgents.map((agent) => (
                     <option key={agent.id} value={agent.id}>
                       {agent.hostname} · {agent.id}
                     </option>
@@ -1225,6 +1248,7 @@ export function CpQueuesPage() {
                   label={t("cp.queues.field.queueName")}
                 >
                   <ResourceSelectField
+                    key={form.agentId}
                     resourceType="agents"
                     id="cp-queue-field-queue-name"
                     value={form.queueName}

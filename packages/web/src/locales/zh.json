@@ -2341,7 +2341,9 @@
     "phone": "电话",
     "address": "地址",
     "website": "网站",
-    "centers": "算力中心",
+    "centers": "中心站点",
+    "centersHint": "中心站点在算网一览中维护，点击数量查看或配置。",
+    "viewCenters": "查看{{name}}的中心站点（{{count}}）",
     "agents": "Agent",
     "members": "成员",
     "actions": "操作",
@@ -2380,6 +2382,7 @@
     "compiler": "编译器"
   },
   "interconnect": {
+    "allOrganizations": "全部组织",
     "missing": "未提供",
     "empty": "暂无数据",
     "noMatches": "没有符合条件的记录",

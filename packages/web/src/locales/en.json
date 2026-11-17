@@ -2340,7 +2340,9 @@
     "phone": "Phone",
     "address": "Address",
     "website": "Website",
-    "centers": "Centers",
+    "centers": "Center sites",
+    "centersHint": "Center sites are managed in Network overview. Select a count to view or configure them.",
+    "viewCenters": "View center sites for {{name}} ({{count}})",
     "agents": "Agents",
     "members": "Members",
     "actions": "Actions",
@@ -2379,6 +2381,7 @@
     "compiler": "Compiler"
   },
   "interconnect": {
+    "allOrganizations": "All organizations",
     "missing": "Not provided",
     "empty": "No data",
     "noMatches": "No matching records",

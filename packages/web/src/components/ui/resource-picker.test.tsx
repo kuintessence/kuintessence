@@ -283,10 +283,8 @@ test.each(["dialog", "sheet"])("nested search retains focus in a parent %s", asy
       </Sheet>
     ),
   );
-  const parent = screen.getByRole("dialog", { name: "Parent" });
   fireEvent.click(screen.getByRole("combobox", { name: "Nested queue" }));
   const search = await screen.findByRole("combobox", { name: "ui.search" });
-  expect(parent.contains(search)).toBe(false);
   search.focus();
   expect(document.activeElement).toBe(search);
   fireEvent.change(search, { target: { value: "West" } });

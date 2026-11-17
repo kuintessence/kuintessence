@@ -2539,7 +2539,7 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(screen.getByText("cp.software.operations.catalogOpen"));
     const picker = await screen.findByTestId("cp-software-catalog-picker");
     expect(picker.className).toContain("h-[min(88vh,860px)]");
-    expect(picker.className).toContain("overflow-hidden");
+    expect(picker.className).toContain("overflow-visible");
     expect((await screen.findByTestId("cp-software-catalog-grid")).className).toContain(
       "overflow-auto",
     );

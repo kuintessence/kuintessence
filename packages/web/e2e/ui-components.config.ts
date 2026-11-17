@@ -7,6 +7,7 @@ export default defineConfig({
     "ui-pages.spec.ts",
     "ui-unification.spec.ts",
     "map-workflow.spec.ts",
+    "queue-dialog.spec.ts",
   ],
   forbidOnly: !!process.env.CI,
   workers: 1,

@@ -34,7 +34,7 @@ export function EditAccountQueues({
           </DialogTitle>
         </DialogHeader>
         <form
-          className="space-y-4 p-5"
+          className="space-y-4 overflow-y-auto p-5"
           onSubmit={async (event) => {
             event.preventDefault();
             if (busy) return;

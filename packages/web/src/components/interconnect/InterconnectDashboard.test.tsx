@@ -41,6 +41,55 @@ afterEach(() => {
 test.each([
   "provider",
   "operator",
+] as const)("%s scopes center management and new-center ownership to the organization in the entry link", async (mode) => {
+  const orgA = "00000000-0000-4000-8000-000000000001";
+  const orgB = "00000000-0000-4000-8000-000000000002";
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  api.get.mockResolvedValue({
+    ...snapshot,
+    organizations: [
+      { id: orgA, name: "组织 A" },
+      { id: orgB, name: "组织 B" },
+    ],
+    centers: [orgA, orgB].map((orgId) => ({
+      id: `center-${orgId}`,
+      orgId,
+      updatedAt: snapshot.generatedAt,
+      metadata: {
+        name: `站点 ${orgId}`,
+        country: "中国",
+        province: "",
+        city: "",
+        longitude: null,
+        latitude: null,
+        status: "unknown",
+      },
+    })),
+  });
+  const { unmount } = render(
+    <QueryClientProvider client={client}>
+      <InterconnectDashboard mode={mode} organizationId={orgB} />
+    </QueryClientProvider>,
+  );
+  await screen.findByText("组织 B");
+  expect(screen.queryByText(`站点 ${orgA}`)).toBeNull();
+  expect(screen.getByRole("link", { name: "全部组织" }).getAttribute("href")).toBe(
+    mode === "operator" ? "/interconnect" : "/cp/interconnect",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "新增中心" }));
+  const organization = nativeControl(
+    screen.getByRole("combobox", { name: "所属组织" }),
+  ) as HTMLSelectElement;
+  expect(organization.value).toBe(orgB);
+  expect(Array.from(organization.options, (option) => option.value)).toEqual([orgB]);
+  expect(api.post).not.toHaveBeenCalled();
+  unmount();
+  client.clear();
+});
+
+test.each([
+  "provider",
+  "operator",
 ] as const)("%s closes a metadata editor on revocation and starts a fresh edit after regrant", async (mode) => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   api.get.mockResolvedValue(snapshot);

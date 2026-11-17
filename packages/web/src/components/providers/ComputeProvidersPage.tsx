@@ -78,7 +78,7 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
   const title = t(mode === "operator" ? "providers.title" : "providers.selfTitle");
   return (
     <PageShell data-testid="compute-providers-page">
-      <PageHeader title={title} />
+      <PageHeader title={title} subtitle={t("providers.centersHint")} />
       <div className="kq-fill-row">
         <form
           className="flex min-w-0 basis-full gap-2 sm:basis-80"
@@ -158,7 +158,18 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                     <TableCell className="px-4 py-3">
                       {provider.profile.contactName || "—"}
                     </TableCell>
-                    <TableCell className="px-4 py-3 tabular-nums">{provider.centerCount}</TableCell>
+                    <TableCell className="px-4 py-3 tabular-nums">
+                      <a
+                        className="text-brand underline underline-offset-4"
+                        href={`${mode === "operator" ? "/interconnect" : "/cp/interconnect"}?organizationId=${encodeURIComponent(provider.id)}`}
+                        aria-label={t("providers.viewCenters", {
+                          name: provider.name,
+                          count: provider.centerCount,
+                        })}
+                      >
+                        {provider.centerCount}
+                      </a>
+                    </TableCell>
                     <TableCell className="px-4 py-3 tabular-nums">{provider.agentCount}</TableCell>
                     <TableCell className="px-4 py-3 tabular-nums">{provider.memberCount}</TableCell>
                     <TableCell className="px-4 py-3">

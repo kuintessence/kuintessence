@@ -9,7 +9,7 @@ export const Command = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <CommandPrimitive
     ref={ref}
-    className={cn("flex flex-col overflow-hidden", className)}
+    className={cn("flex min-h-0 flex-col overflow-hidden", className)}
     {...props}
   />
 ));
@@ -19,7 +19,7 @@ export const CommandInput = React.forwardRef<
   React.ComponentRef<typeof CommandPrimitive.Input>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
 >(({ className, ...props }, ref) => (
-  <div className="flex items-center gap-2 border-b border-border px-3">
+  <div className="flex shrink-0 items-center gap-2 border-b border-border px-3">
     <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
     <CommandPrimitive.Input
       ref={ref}
@@ -39,7 +39,7 @@ export const CommandList = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <CommandPrimitive.List
     ref={ref}
-    className={cn("max-h-72 overflow-y-auto p-1", className)}
+    className={cn("min-h-0 max-h-72 overflow-y-auto p-1", className)}
     {...props}
   />
 ));
