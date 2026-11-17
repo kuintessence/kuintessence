@@ -8,6 +8,7 @@ import { SurfaceBoundary } from "./surface";
 export const Dialog = DialogPrimitive.Root;
 export const DialogTrigger = DialogPrimitive.Trigger;
 export const DialogClose = DialogPrimitive.Close;
+export const DialogPortalContainerContext = React.createContext<HTMLElement | null>(null);
 
 export const DialogOverlay = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Overlay>,
@@ -51,15 +52,25 @@ export const DialogContent = React.forwardRef<
     ref,
   ) => {
     const { t } = useTranslation();
+    const [container, setContainer] = React.useState<HTMLDivElement | null>(null);
+    const contentRef = React.useCallback(
+      (node: HTMLDivElement | null) => {
+        setContainer(node);
+        if (typeof ref === "function") ref(node);
+        else if (ref) ref.current = node;
+      },
+      [ref],
+    );
     return (
       <DialogPrimitive.Portal>
         <DialogOverlay />
         <DialogPrimitive.Content
-          ref={ref}
+          ref={contentRef}
           data-kq-surface="region"
           className={cn(
-            "fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-1.5rem)] w-[min(calc(100vw-1rem),42rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-md border border-border bg-card text-card-foreground shadow-2xl shadow-black/15 outline-none",
+            "fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-1.5rem)] w-[min(calc(100vw-1rem),42rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-clip rounded-md border border-border bg-card text-card-foreground shadow-2xl shadow-black/15 outline-none",
             "kq-motion kq-motion--dialog",
+            "[&>form]:min-h-0",
             className,
           )}
           onInteractOutside={(event) => {
@@ -84,7 +95,9 @@ export const DialogContent = React.forwardRef<
           }}
           {...props}
         >
-          <SurfaceBoundary>{children}</SurfaceBoundary>
+          <DialogPortalContainerContext.Provider value={container}>
+            <SurfaceBoundary>{children}</SurfaceBoundary>
+          </DialogPortalContainerContext.Provider>
           <DialogPrimitive.Close
             aria-label={t("common.close")}
             disabled={!dismissible}

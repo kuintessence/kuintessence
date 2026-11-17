@@ -180,7 +180,13 @@ function Distribution({
   );
 }
 
-export function InterconnectDashboard({ mode }: { mode: "provider" | "operator" }) {
+export function InterconnectDashboard({
+  mode,
+  organizationId,
+}: {
+  mode: "provider" | "operator";
+  organizationId?: string;
+}) {
   const { t } = useTranslation();
   const orgId = useActiveOrganizationId();
   const access = usePlatformCapability(
@@ -197,18 +203,21 @@ export function InterconnectDashboard({ mode }: { mode: "provider" | "operator" 
   if (!access.allowed) return <p>{t("interconnect.denied")}</p>;
   return (
     <DashboardContent
-      key={`${mode}:${orgId}:${getAuthState().revision}`}
+      key={`${mode}:${orgId}:${organizationId}:${getAuthState().revision}`}
       mode={mode}
       orgId={orgId}
+      organizationId={organizationId}
     />
   );
 }
 function DashboardContent({
   mode,
   orgId,
+  organizationId,
 }: {
   mode: "provider" | "operator";
   orgId: string | null;
+  organizationId?: string;
 }) {
   const { t, i18n } = useTranslation();
   const statusLabels = getStatusLabels(t);
@@ -270,7 +279,21 @@ function DashboardContent({
       </div>
     );
   }
-  const data = query.data;
+  const snapshot = query.data;
+  const scopedCenters = snapshot.centers.filter((center) => center.orgId === organizationId);
+  const centerIds = new Set(scopedCenters.map((center) => center.id));
+  const data = organizationId
+    ? {
+        ...snapshot,
+        organizations: snapshot.organizations.filter((org) => org.id === organizationId),
+        centers: scopedCenters,
+        clusters: snapshot.clusters.filter((cluster) => centerIds.has(cluster.centerId)),
+        agents: snapshot.agents.filter((agent) => agent.orgId === organizationId),
+        links: snapshot.links.filter(
+          (link) => centerIds.has(link.fromCenterId) && centerIds.has(link.toCenterId),
+        ),
+      }
+    : snapshot;
   const summary = summarizeInterconnect(data.centers, data.clusters);
   const centerName = (id: string) => data.centers.find((c) => c.id === id)?.metadata.name ?? id;
   const clusterName = (id: string) => data.clusters.find((c) => c.id === id)?.metadata.name ?? id;
@@ -538,7 +561,22 @@ function DashboardContent({
   );
   return (
     <div className="space-y-5" data-testid="interconnect-dashboard">
-      <PageHeader title={t("workspace.nav.interconnect")} />
+      <PageHeader
+        title={t("workspace.nav.interconnect")}
+        meta={
+          organizationId ? (
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <span>{data.organizations[0]?.name ?? organizationId}</span>
+              <a
+                className="text-brand underline underline-offset-4"
+                href={mode === "operator" ? "/interconnect" : "/cp/interconnect"}
+              >
+                {t("interconnect.allOrganizations")}
+              </a>
+            </div>
+          ) : undefined
+        }
+      />
       <div className="kq-fill-row text-sm">
         <span className="mr-auto text-muted-foreground">
           {mode === "operator"

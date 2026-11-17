@@ -122,7 +122,7 @@ function makeWrapper() {
   return makeClientWrapper().wrapper;
 }
 
-function installFetch() {
+function installFetch(platformWide = false) {
   const queue = {
     queueId: "queue-1",
     name: "CPU normal",
@@ -148,8 +148,31 @@ function installFetch() {
         new Response(
           JSON.stringify({
             items: [
-              { id: "agent-slurm", hostname: "slurm", siteId: "site-a", status: "online" },
-              { id: "agent-gpu", hostname: "gpu", siteId: "site-b", status: "online" },
+              {
+                providerOrgId: "11111111-1111-4111-8111-111111111111",
+                id: "agent-slurm",
+                hostname: "slurm",
+                siteId: "site-a",
+                status: "online",
+              },
+              {
+                providerOrgId: "11111111-1111-4111-8111-111111111111",
+                id: "agent-gpu",
+                hostname: "gpu",
+                siteId: "site-b",
+                status: "online",
+              },
+              ...(platformWide
+                ? [
+                    {
+                      providerOrgId: "33333333-3333-4333-8333-333333333333",
+                      id: "agent-other",
+                      hostname: "other",
+                      siteId: "site-c",
+                      status: "online",
+                    },
+                  ]
+                : []),
             ],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -164,7 +187,7 @@ function installFetch() {
               { id: "11111111-1111-4111-8111-111111111111", name: "Provider" },
               { id: "33333333-3333-4333-8333-333333333333", name: "Consumer" },
             ],
-            isPlatformWide: false,
+            isPlatformWide: platformWide,
             schedulers: ["slurm", "pbs-pro"],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -176,6 +199,9 @@ function installFetch() {
     }
     if (url === "/platform/api/admin/agents/agent-gpu/queue-inventory" && method === "GET") {
       return inventoryResponse("agent-gpu", "pbs-pro", "gpu");
+    }
+    if (url === "/platform/api/admin/agents/agent-other/queue-inventory" && method === "GET") {
+      return inventoryResponse("agent-other", "torque", "other");
     }
     if (url === "/platform/api/admin/queues" && method === "POST") {
       return Promise.resolve(
@@ -218,6 +244,49 @@ afterEach(() => {
 });
 
 describe("CpQueuesPage", () => {
+  test("filters agents by provider and clears dependent fields when the provider changes", async () => {
+    const fetchMock = installFetch(true);
+    render(<CpQueuesPage />, { wrapper: makeWrapper() });
+    fireEvent.click(await screen.findByTestId("cp-queues-create"));
+    const provider = await screen.findByTestId("cp-queue-field-provider-org-id");
+    let agent = screen.getByTestId("cp-queue-field-agent-id") as HTMLSelectElement;
+    await waitFor(() =>
+      expect(Array.from(agent.options, (option) => option.value)).toEqual([
+        "",
+        "agent-slurm",
+        "agent-gpu",
+      ]),
+    );
+    fireEvent.change(agent, { target: { value: "agent-gpu" } });
+    await waitFor(() =>
+      expect(screen.getByTestId("cp-queue-field-scheduler-type").textContent).toBe("pbs-pro"),
+    );
+    fireEvent.change(screen.getByTestId("cp-queue-field-queue-name"), { target: { value: "gpu" } });
+    fireEvent.change(screen.getByTestId("cp-queue-field-qos"), { target: { value: "gold" } });
+    fireEvent.change(provider, { target: { value: "33333333-3333-4333-8333-333333333333" } });
+    agent = screen.getByTestId("cp-queue-field-agent-id") as HTMLSelectElement;
+    expect(Array.from(agent.options, (option) => option.value)).toEqual(["", "agent-other"]);
+    expect(agent.value).toBe("");
+    expect(screen.getByTestId("cp-queue-field-queue-name")).toHaveProperty("value", "");
+    expect(screen.getByTestId("cp-queue-field-qos")).toHaveProperty("value", "");
+    expect(screen.getByTestId("cp-queue-field-scheduler-type").textContent).toBe("slurm");
+    fireEvent.click(screen.getByTestId("cp-queue-submit"));
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    fireEvent.change(agent, { target: { value: "agent-other" } });
+    await waitFor(() =>
+      expect(screen.getByTestId("cp-queue-field-scheduler-type").textContent).toBe("torque"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "cp.common.cancel" }));
+    fireEvent.click(screen.getByTestId("cp-queue-edit-queue-1"));
+    expect(screen.getByTestId("cp-queue-field-provider-org-id")).toHaveProperty("disabled", true);
+    expect(
+      Array.from(
+        (screen.getByTestId("cp-queue-field-agent-id") as HTMLSelectElement).options,
+        (option) => option.value,
+      ),
+    ).toEqual(["", "agent-slurm", "agent-gpu"]);
+  });
+
   test("shows an empty state when the provider has no queues", async () => {
     vi.stubGlobal(
       "fetch",
@@ -533,8 +602,15 @@ describe("CpQueuesPage", () => {
             new Response(
               JSON.stringify({
                 items: [
-                  { id: "agent-pbs", hostname: "pbs", siteId: "site-pbs", status: "online" },
                   {
+                    providerOrgId: "11111111-1111-4111-8111-111111111111",
+                    id: "agent-pbs",
+                    hostname: "pbs",
+                    siteId: "site-pbs",
+                    status: "online",
+                  },
+                  {
+                    providerOrgId: "11111111-1111-4111-8111-111111111111",
                     id: "agent-torque",
                     hostname: "torque",
                     siteId: "site-torque",
@@ -661,7 +737,15 @@ describe("CpQueuesPage", () => {
           return Promise.resolve(
             new Response(
               JSON.stringify({
-                items: [{ id: "agent-stale", hostname: "stale", siteId: "site", status: "online" }],
+                items: [
+                  {
+                    providerOrgId: "11111111-1111-4111-8111-111111111111",
+                    id: "agent-stale",
+                    hostname: "stale",
+                    siteId: "site",
+                    status: "online",
+                  },
+                ],
               }),
               { status: 200, headers: { "Content-Type": "application/json" } },
             ),
@@ -739,7 +823,15 @@ describe("CpQueuesPage", () => {
         return Promise.resolve(
           new Response(
             JSON.stringify({
-              items: [{ id: "agent-stale", hostname: "stale", siteId: "site", status: "online" }],
+              items: [
+                {
+                  providerOrgId: "11111111-1111-4111-8111-111111111111",
+                  id: "agent-stale",
+                  hostname: "stale",
+                  siteId: "site",
+                  status: "online",
+                },
+              ],
             }),
             { status: 200, headers: { "Content-Type": "application/json" } },
           ),
@@ -892,6 +984,7 @@ describe("CpQueuesPage", () => {
             JSON.stringify({
               items: [
                 {
+                  providerOrgId: "11111111-1111-4111-8111-111111111111",
                   id: "agent-slurm",
                   hostname: "slurm",
                   siteId: "site-a",

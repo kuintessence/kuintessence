@@ -41,9 +41,9 @@ afterEach(() => {
   vi.restoreAllMocks();
   sessionStorage.clear();
 });
-function setup(mode: "provider" | "operator") {
+function setup(mode: "provider" | "operator", response = directory) {
   setLang("zh");
-  api.get.mockResolvedValue(directory);
+  api.get.mockResolvedValue(response);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
@@ -52,6 +52,24 @@ function setup(mode: "provider" | "operator") {
   );
   return { client, ...view };
 }
+test.each([
+  "provider",
+  "operator",
+] as const)("%s links center counts to the organization's existing resource management, including zero", async (mode) => {
+  const { client, unmount } = setup(mode, {
+    ...directory,
+    canManage: false,
+    items: directory.items.map((provider) => ({ ...provider, centerCount: 0 })),
+  });
+  expect(await screen.findByRole("columnheader", { name: "中心站点" })).toBeTruthy();
+  const link = await screen.findByRole("link", { name: "查看研究中心的中心站点（0）" });
+  expect(link.getAttribute("href")).toBe(
+    `${mode === "operator" ? "/interconnect" : "/cp/interconnect"}?organizationId=org-a`,
+  );
+  expect(screen.getByText("中心站点在算网一览中维护，点击数量查看或配置。")).toBeTruthy();
+  unmount();
+  client.clear();
+});
 test("provider edits its profile without create/delete controls and refreshes organization names", async () => {
   const { client, unmount } = setup("provider");
   expect(await screen.findByText("研究中心")).toBeTruthy();

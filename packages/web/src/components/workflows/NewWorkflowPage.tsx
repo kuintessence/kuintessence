@@ -678,8 +678,8 @@ export function NewWorkflowPage() {
   return (
     <WorkflowCreationLayout
       header={
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-          <div className="min-w-0">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="min-w-0 flex-[1_1_12rem]">
             <input
               aria-label={t("workflows.creation.workflowName")}
               className="min-w-0 max-w-full border-0 bg-transparent p-0 text-2xl font-semibold tracking-tight rounded-sm outline-none ring-0 focus-visible:ring-2 focus-visible:ring-ring sm:text-3xl"
@@ -693,7 +693,7 @@ export function NewWorkflowPage() {
             />
           </div>
           <div
-            className="flex flex-wrap items-center gap-2 xl:justify-end"
+            className="flex max-w-full flex-wrap items-center gap-2"
             data-testid="workflow-title-actions"
           >
             <SubmissionReadinessStatus

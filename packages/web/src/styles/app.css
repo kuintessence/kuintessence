@@ -235,6 +235,10 @@ samp {
   outline-offset: 2px;
 }
 
+[cmdk-input]:focus-visible {
+  outline: none;
+}
+
 .kq-motion--dialog[data-state="open"] {
   animation: kq-dialog-enter var(--kq-motion-enter) var(--kq-motion-ease-enter);
 }

@@ -46,6 +46,32 @@ async function open(page: Page, query: string, theme: string) {
   await page.addStyleTag({ content: css });
   await page.addScriptTag({ content: javascript });
 }
+for (const lang of ["zh", "en"]) {
+  test(`workflow title actions share available desktop space ${lang}`, async ({ page }, info) => {
+    await page.setViewportSize({ width: 1161, height: 770 });
+    await open(page, `draftId=demo&lang=${lang}`, "light");
+    await page.addStyleTag({ content: "main { width: calc(100% - 256px); margin-left: 256px; }" });
+    const name = page.getByTestId("workflow-name-input");
+    await name.fill("风道 CFD");
+    await name.press("Tab");
+    for (const step of ["edit", "inputs", "resources", "review"]) {
+      if (step !== "edit") await page.getByTestId(`workflow-step-${step}`).click();
+      const confirm = page.getByTestId("workflow-association-confirm-continue");
+      if (await confirm.isVisible()) await confirm.click();
+      const title = await name.boundingBox();
+      const actions = await page.getByTestId("workflow-title-actions").boundingBox();
+      expect(title).not.toBeNull();
+      expect(actions).not.toBeNull();
+      expect(Math.abs((title?.y ?? 0) - (actions?.y ?? 0))).toBeLessThan(16);
+      expect((title?.x ?? 0) + (title?.width ?? 0)).toBeLessThanOrEqual(actions?.x ?? 0);
+      await expect(page.getByTestId("workflow-save-draft")).toBeInViewport();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+        true,
+      );
+    }
+    await page.screenshot({ path: info.outputPath("title-actions.png") });
+  });
+}
 for (const width of [390, 974, 1449])
   for (const theme of ["light", "dark"])
     for (const lang of ["zh", "en"]) {
