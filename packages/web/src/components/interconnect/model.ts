@@ -97,3 +97,17 @@ export function computeTypeLabel(value: string, t: TFunction): string {
   if (value === "其他") return t("interconnect.computeType.other");
   return value;
 }
+
+export type InterconnectResource = "centers" | "clusters" | "links";
+export function resolveInterconnectResource(hash: string): InterconnectResource | undefined {
+  switch (hash.replace(/^#/, "")) {
+    case "availability-zones":
+      return "centers";
+    case "clusters":
+      return "clusters";
+    case "links":
+      return "links";
+    default:
+      return undefined;
+  }
+}

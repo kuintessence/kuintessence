@@ -1,6 +1,11 @@
 import type { InterconnectCenter, InterconnectCluster } from "@kuintessence/shared/browser";
 import { describe, expect, test } from "vitest";
-import { clusterSymbol, filterClusters, groupNearbyCenters } from "./model";
+import {
+  clusterSymbol,
+  filterClusters,
+  groupNearbyCenters,
+  resolveInterconnectResource,
+} from "./model";
 
 const center = (id: string): InterconnectCenter => ({
   id,
@@ -76,4 +81,12 @@ describe("interconnect drilldown and map grouping", () => {
     expect(result).toContain('stroke-dasharray="50 50"');
     expect(result).not.toContain("<script>");
   });
+});
+
+test("resolves independent resource pages and falls back to overview", () => {
+  expect(resolveInterconnectResource("#availability-zones")).toBe("centers");
+  expect(resolveInterconnectResource("clusters")).toBe("clusters");
+  expect(resolveInterconnectResource("#links")).toBe("links");
+  expect(resolveInterconnectResource("#overview")).toBeUndefined();
+  expect(resolveInterconnectResource("unknown")).toBeUndefined();
 });

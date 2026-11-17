@@ -164,7 +164,7 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                     <TableCell className="px-4 py-3 tabular-nums">
                       <a
                         className="text-brand underline underline-offset-4"
-                        href={`${mode === "operator" ? "/interconnect" : "/cp/interconnect"}?organizationId=${encodeURIComponent(provider.id)}`}
+                        href={`${mode === "operator" ? "/interconnect" : "/cp/interconnect"}?organizationId=${encodeURIComponent(provider.id)}#availability-zones`}
                         aria-label={t("providers.viewCenters", {
                           name: provider.name,
                           count: provider.centerCount,

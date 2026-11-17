@@ -74,7 +74,9 @@ describe("workspace navigation", () => {
   test("separates the operations overview from platform technical settings", () => {
     const operationsItems = getWorkspaceIdentity("platform-operations").sections[0]?.items ?? [];
     const technicalItems = getWorkspaceIdentity("platform-technical").sections[0]?.items ?? [];
-    const overviewItem = operationsItems.find((item) => item.hash === "overview");
+    const overviewItem = operationsItems.find(
+      (item) => item.to === "/operations" && item.hash === "overview",
+    );
     const securityItem = technicalItems.find((item) => item.hash === "security");
     expect(overviewItem).toBeDefined();
     expect(securityItem).toBeDefined();
@@ -173,7 +175,7 @@ test("platform operators reach resource management without entering the provider
     (section) => section.items,
   );
   for (const area of ["clusters", "accounts", "software", "users", "queues"]) {
-    const item = items.find((item) => item.hash === area);
+    const item = items.find((item) => item.to === "/operations" && item.hash === area);
     expect(item?.to).toBe("/operations");
     expect(item?.serverCapability).toBe("workspace.platform.operate");
     expect(inferWorkspaceIdentity("/operations", `#${area}`)).toBe("platform-operations");
@@ -208,4 +210,19 @@ test("federation has a standalone domain, stable module links and protected admi
       new Set(),
     ),
   ).toBe(false);
+});
+
+test.each([
+  "platform-operations",
+  "provider-operations",
+] as const)("%s exposes distinct resource pages and highlights only the current view", (identity) => {
+  const base = identity === "platform-operations" ? "/interconnect" : "/cp/interconnect";
+  const items = getWorkspaceIdentity(identity)
+    .sections.flatMap((section) => section.items)
+    .filter((item) => item.to === base);
+  for (const hash of ["", "#overview", "#availability-zones", "#clusters", "#links"]) {
+    const active = items.filter((item) => isWorkspaceNavItemActive(item, base, hash));
+    expect(active).toHaveLength(1);
+    expect(active[0]?.hash).toBe(hash.replace(/^#/, "") || "overview");
+  }
 });
