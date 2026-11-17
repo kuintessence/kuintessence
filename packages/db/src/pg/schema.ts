@@ -3358,7 +3358,7 @@ export const computeInterconnects = pgTable(
   (t) => ({
     differentEnds: check(
       "compute_interconnects_different_ends",
-      sql`${t.fromCenterId} <> ${t.toCenterId}`,
+      sql`${t.fromCenterId} <> ${t.toCenterId} OR COALESCE(${t.metadata}->>'networkType' IN ('high-speed', 'dedicated'), false)`,
     ),
   }),
 );

@@ -13,6 +13,7 @@ import { type ApiOrganizationScope, api } from "../../lib/api-client";
 import { federationReadFailed } from "../../lib/federation-query-state";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { RefreshButton } from "../ui/refresh-button";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import {
   FederationEmpty,
@@ -56,15 +57,14 @@ function MediaAccess({ scope, switching }: { scope: ApiOrganizationScope; switch
     return (
       <div role="alert">
         <p>{t("federation.loadFailed")}</p>
-        <Button
+        <RefreshButton
           variant="outline"
           onClick={() => {
             void capabilities.refetch();
             void context.refetch();
           }}
-        >
-          {t("federation.refresh")}
-        </Button>
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
     );
   if (capabilities.isPending) return <p role="status">{t("federation.loading")}</p>;

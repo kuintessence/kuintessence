@@ -10,6 +10,7 @@ import { CpQueuesPage } from "../cp/CpQueuesPage";
 import { SoftwarePolicyTable } from "../cp/SoftwarePolicyTable";
 import { Button } from "../ui/button";
 import { PageHeader } from "../ui/page";
+import { RefreshButton } from "../ui/refresh-button";
 import { OperationsAttentionCards } from "./OperationsAttentionCards";
 import { PlatformUsersTable } from "./PlatformUsersTable";
 
@@ -72,9 +73,11 @@ function OperationsOverview() {
       {query.error ? (
         <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-status-failed">
           <span>{toUserFacingError(query.error, t("cp.dashboard.loadFailed"))}</span>
-          <Button variant="outline" onClick={() => void query.refetch()}>
-            {t("cp.common.refresh")}
-          </Button>
+          <RefreshButton
+            variant="outline"
+            onClick={() => void query.refetch()}
+            label={t("cp.common.refresh")}
+          ></RefreshButton>
         </div>
       ) : null}
       <dl className="grid grid-cols-2 gap-5 border-border py-5 md:grid-cols-4">

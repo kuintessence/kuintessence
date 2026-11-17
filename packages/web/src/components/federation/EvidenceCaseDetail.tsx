@@ -18,6 +18,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { ArbitrationDecisionPanel } from "./ArbitrationDecisionPanel";
 import { checkEvidenceScope, type EvidenceCase, EvidenceCaseSchema } from "./evidence-case-view";
 import { FederationRefreshNotice } from "./FederationLayout";
@@ -187,15 +188,14 @@ export function EvidenceCaseDetail({
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="font-medium">{t("federation.evidence.materials")}</h3>
-          <Button
+          <RefreshButton
             variant="outline"
             disabled={refreshing}
             onClick={() => {
               void materials.refetch();
             }}
-          >
-            {t("federation.refresh")}
-          </Button>
+            label={t("federation.refresh")}
+          ></RefreshButton>
         </div>
         {allowed.current ? (
           <form

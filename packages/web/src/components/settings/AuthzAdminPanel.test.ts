@@ -108,7 +108,7 @@ describe("AuthzAdminPanel", () => {
     expect(screen.getByText("agent:agent-1")).toBeTruthy();
     expect(screen.getByText("agent:agent-1#provider")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("刷新"));
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
 
     await waitFor(() => screen.getByTestId("authz-refresh-error"));
     expect(screen.getByTestId("authz-refresh-error").textContent).toMatch(
@@ -195,8 +195,11 @@ test("mobile authorization keeps refresh available and blocks advanced mutations
   for (const name of ["重建 SpiceDB 关系", "写入授权关系", "清理", "立即投递", "重试"]) {
     expect(screen.getByText(name).closest("button")).toHaveProperty("disabled", true);
   }
-  expect(screen.getByText("刷新").closest("button")).toHaveProperty("disabled", false);
-  fireEvent.click(screen.getByText("刷新"));
+  expect(screen.getByRole("button", { name: "刷新" }).closest("button")).toHaveProperty(
+    "disabled",
+    false,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "刷新" }));
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
 });
 

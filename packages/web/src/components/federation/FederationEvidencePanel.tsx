@@ -13,6 +13,7 @@ import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked"
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { EvidenceCaseDetail } from "./EvidenceCaseDetail";
 import { type EvidenceCase, EvidenceCaseSchema } from "./evidence-case-view";
 import {
@@ -111,9 +112,11 @@ function EvidencePanel({ scope, switching }: { scope: ApiOrganizationScope; swit
     return (
       <div role="alert">
         <p>{t("federation.loadFailed")}</p>
-        <Button variant="outline" onClick={() => void capabilities.refetch()}>
-          {t("federation.refresh")}
-        </Button>
+        <RefreshButton
+          variant="outline"
+          onClick={() => void capabilities.refetch()}
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
     );
   if (!canRead) return <p>{t("federation.agreements.noPermission")}</p>;

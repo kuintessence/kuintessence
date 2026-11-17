@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { AgreementFact } from "./AgreementTerms";
 
 const prefix = "federation.historyRecovery";
@@ -253,13 +254,12 @@ function HistoryRecovery({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="font-semibold">{t(`${prefix}.title`)}</h3>
         <div className="flex flex-wrap gap-2">
-          <Button
+          <RefreshButton
             variant="outline"
             disabled={blocked || attach.isPending}
             onClick={() => void history.refetch()}
-          >
-            {t("federation.refresh")}
-          </Button>
+            label={t("federation.refresh")}
+          ></RefreshButton>
           <Button variant="ghost" disabled={actionPending} onClick={onClose}>
             {t("federation.cancel")}
           </Button>

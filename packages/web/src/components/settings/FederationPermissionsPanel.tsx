@@ -32,6 +32,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 
 const root = "/admin/federation/capabilities";
 const key = ["federation", "grants"] as const;
@@ -73,15 +74,14 @@ function PermissionsPanel() {
     <Card data-testid="federation-permissions-panel" aria-label={t("federation.permissions.title")}>
       <CardHeader className="flex flex-row items-center justify-between gap-3">
         <FederationSectionTitle title={t("federation.permissions.title")} />
-        <Button
-          size="sm"
+        <RefreshButton
           variant="outline"
           disabled={directory.isFetching}
           onClick={() => void directory.refetch()}
+          label={t("federation.refresh")}
         >
           <RefreshCw className="h-4 w-4" />
-          {t("federation.refresh")}
-        </Button>
+        </RefreshButton>
       </CardHeader>
       <CardContent className="space-y-4">
         <FederationRefreshNotice query={directory} onRetry={() => void directory.refetch()} />
@@ -187,15 +187,14 @@ function OrganizationGrants({
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
         <FederationSectionTitle title={t("federation.permissions.title")} />
         <div className="flex gap-2">
-          <Button
+          <RefreshButton
             variant="outline"
-            size="sm"
             disabled={mutation.isPending || adding || grants.isFetching}
             onClick={() => void grants.refetch()}
+            label={t("federation.refresh")}
           >
             <RefreshCw className="h-4 w-4" />
-            {t("federation.refresh")}
-          </Button>
+          </RefreshButton>
           <Button
             size="sm"
             disabled={disabled || adding}

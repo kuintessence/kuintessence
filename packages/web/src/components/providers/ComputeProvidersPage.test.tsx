@@ -61,12 +61,14 @@ test.each([
     canManage: false,
     items: directory.items.map((provider) => ({ ...provider, centerCount: 0 })),
   });
-  expect(await screen.findByRole("columnheader", { name: "中心站点" })).toBeTruthy();
-  const link = await screen.findByRole("link", { name: "查看研究中心的中心站点（0）" });
+  expect(await screen.findByRole("columnheader", { name: "可用区" })).toBeTruthy();
+  const link = await screen.findByRole("link", { name: "查看研究中心的可用区（0）" });
   expect(link.getAttribute("href")).toBe(
     `${mode === "operator" ? "/interconnect" : "/cp/interconnect"}?organizationId=org-a`,
   );
-  expect(screen.getByText("中心站点在算网一览中维护，点击数量查看或配置。")).toBeTruthy();
+  expect(
+    screen.getByText("算力中心下设可用区，集群归属于可用区。点击数量查看或配置。"),
+  ).toBeTruthy();
   unmount();
   client.clear();
 });
@@ -141,6 +143,29 @@ test("mobile policy keeps profile reads available without opening forbidden edit
   fireEvent.click(screen.getByRole("button", { name: "研究中心" }));
   expect(screen.getByRole("dialog")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "编辑资料" })).toBeNull();
+  unmount();
+  client.clear();
+});
+
+test.each([
+  "provider",
+  "operator",
+] as const)("%s links agent/member counts and offers view for read-only users", async (mode) => {
+  const { client, unmount } = setup(mode, { ...directory, canManage: false });
+  const agents = await screen.findByRole("link", { name: "查看研究中心的集群（4）" });
+  const members = screen.getByRole("link", { name: "查看研究中心的成员（2）" });
+  expect(agents.getAttribute("href")).toBe(
+    mode === "operator"
+      ? "/operations?organizationId=org-a#clusters"
+      : "/cp/agents?organizationId=org-a",
+  );
+  expect(members.getAttribute("href")).toBe(
+    mode === "operator"
+      ? "/operations?organizationId=org-a#users"
+      : "/cp/users?organizationId=org-a",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "查看" }));
+  expect(await screen.findByRole("dialog")).toBeTruthy();
   unmount();
   client.clear();
 });

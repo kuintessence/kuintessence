@@ -61,7 +61,7 @@ function actorLabel(actor: string): string | null {
   return actor.length > 0 ? actor : null;
 }
 
-function describeEvent(entry: AuditEntry): EventCopy {
+export function describeEvent(entry: AuditEntry): EventCopy {
   const path = filePath(entry);
   const actor = actorLabel(entry.actor);
   const subject = path ?? actor ?? "平台记录";
@@ -73,7 +73,7 @@ function describeEvent(entry: AuditEntry): EventCopy {
     const kind = resource[1] === "compute-provider" ? "provider" : resource[2];
     const labels: Record<string, string> = {
       provider: "算力中心",
-      center: "算力中心",
+      center: "可用区",
       cluster: "集群",
       link: "互联链路",
     };

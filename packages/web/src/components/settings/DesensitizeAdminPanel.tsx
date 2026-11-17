@@ -9,6 +9,7 @@ import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input, Textarea } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { RefreshButton } from "../ui/refresh-button";
 
 type RuleScope = "global" | "provider" | "cluster";
 type RuleAction = "passthrough" | "hash" | "alias" | "redact" | "hide";
@@ -158,9 +159,12 @@ export function DesensitizeAdminPanel() {
         ) : loadError ? (
           <div className="space-y-3" data-testid="desensitize-load-error">
             <div className="text-sm text-status-failed">{loadError}</div>
-            <Button type="button" variant="outline" onClick={() => void refresh()}>
-              {t("common.refresh")}
-            </Button>
+            <RefreshButton
+              type="button"
+              variant="outline"
+              onClick={() => void refresh()}
+              label={t("common.refresh")}
+            ></RefreshButton>
           </div>
         ) : (
           <fieldset disabled={mobileReadOnly || saving} className="min-w-0 space-y-5">

@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { CommercialPaymentTerms } from "./CommercialPaymentTerms";
 import { FederationEmpty } from "./FederationLayout";
 
@@ -394,9 +395,12 @@ function PaymentPanel({
       {list.isError ? (
         <div role="alert" className="space-y-3">
           <p>{t("federation.loadFailed")}</p>
-          <Button variant="outline" disabled={list.isFetching} onClick={() => void list.refetch()}>
-            {t("federation.refresh")}
-          </Button>
+          <RefreshButton
+            variant="outline"
+            disabled={list.isFetching}
+            onClick={() => void list.refetch()}
+            label={t("federation.refresh")}
+          ></RefreshButton>
         </div>
       ) : null}
       {creating && writable ? (

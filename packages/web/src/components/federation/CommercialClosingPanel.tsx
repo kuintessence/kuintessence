@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 
 type Kind = ClosingPolicyInput["kind"];
 type Intent =
@@ -268,13 +269,12 @@ function ClosingPanel({ approval, scope, canBill, canSettle, busy, onOpenRecord 
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-base font-semibold">{t("federation.closing.policies")}</h3>
           <div className="flex flex-wrap gap-2">
-            <Button
+            <RefreshButton
               variant="outline"
               disabled={blocked || policies.isFetching || tasks.isFetching}
               onClick={() => void refresh()}
-            >
-              {t("federation.refresh")}
-            </Button>
+              label={t("federation.refresh")}
+            ></RefreshButton>
             {(["bill", "settlement", "refund"] as const).filter(allowed).map((kind) => (
               <Button
                 key={kind}

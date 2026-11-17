@@ -22,6 +22,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Textarea } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { OrganizationMembershipPanel } from "./OrganizationMembershipPanel";
 
@@ -358,11 +359,14 @@ function ScopedAuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: bo
                 {t("adminAccess.serviceTitle")}
               </CardTitle>
             </div>
-            <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
+            <RefreshButton
+              variant="outline"
+              onClick={refresh}
+              disabled={loading}
+              label={t("adminAccess.refresh")}
+            >
               {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-
-              {t("adminAccess.refresh")}
-            </Button>
+            </RefreshButton>
           </CardHeader>
           <CardContent className="space-y-5">
             <Button

@@ -227,8 +227,8 @@ export function MeteringPage({
       ) : null}
 
       <section>
-        <CardContent className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="flex flex-col gap-1">
+        <CardContent className="grid grid-cols-1 gap-3 py-3 sm:grid-cols-2 lg:grid-cols-[minmax(6rem,1fr)_minmax(6rem,1fr)_minmax(0,1.5fr)_minmax(0,1.5fr)]">
+          <div className="flex min-w-0 flex-col gap-1">
             <label htmlFor="metering-period" className="text-xs font-medium">
               {t("cp.metering.periodLabel")}
             </label>
@@ -245,7 +245,7 @@ export function MeteringPage({
               ))}
             </NativeSelect>
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex min-w-0 flex-col gap-1">
             <label htmlFor="metering-grouping" className="text-xs font-medium">
               {t("cp.metering.groupingLabel")}
             </label>
@@ -262,7 +262,7 @@ export function MeteringPage({
               ))}
             </NativeSelect>
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex min-w-0 flex-col gap-1">
             <label htmlFor="metering-from" className="text-xs font-medium">
               {t("cp.metering.from")}
             </label>
@@ -274,7 +274,7 @@ export function MeteringPage({
               onChange={(e) => setFrom(e.target.value)}
             />
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex min-w-0 flex-col gap-1">
             <label htmlFor="metering-to" className="text-xs font-medium">
               {t("cp.metering.to")}
             </label>

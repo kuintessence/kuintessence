@@ -101,6 +101,7 @@ import { ListToolbar } from "../ui/list-toolbar";
 import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
 import { PaginationControls } from "../ui/pagination-controls";
+import { RefreshButton } from "../ui/refresh-button";
 import { SearchInput } from "../ui/search-input";
 import {
   Sheet,
@@ -619,16 +620,15 @@ export function SoftwarePage() {
                 </Button>
               )
             ) : null}
-            <Button
+            <RefreshButton
               variant="outline"
-              size="sm"
               onClick={refreshAll}
               disabled={isFetching}
               data-testid="software-refresh"
+              label={t("common.refresh", { defaultValue: "刷新" })}
             >
               <RefreshCw className={cn(isFetching && "animate-spin")} />
-              {t("common.refresh", { defaultValue: "刷新" })}
-            </Button>
+            </RefreshButton>
           </>
         }
       />

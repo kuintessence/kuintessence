@@ -13,6 +13,7 @@ import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 
 export function FederationTaskCreate({
   scope,
@@ -150,16 +151,15 @@ export function FederationTaskCreate({
       {agreements.isError || materials.isError ? (
         <div role="alert" className="space-y-2 text-sm">
           <p>{t("federation.tasks.optionsFailed")}</p>
-          <Button
+          <RefreshButton
             type="button"
             variant="outline"
             onClick={() => {
               void agreements.refetch();
               void materials.refetch();
             }}
-          >
-            {t("federation.refresh")}
-          </Button>
+            label={t("federation.refresh")}
+          ></RefreshButton>
         </div>
       ) : null}
       <fieldset disabled={busy} className="space-y-5">

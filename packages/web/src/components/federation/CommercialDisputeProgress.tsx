@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { ApiError, type ApiOrganizationScope, api } from "../../lib/api-client";
 import { Button } from "../ui/button";
+import { RefreshButton } from "../ui/refresh-button";
 
 const sync = z.object({
   state: z.enum(["pending", "received", "needs_review", "confirmed", "ledger_pending"]),
@@ -84,13 +85,12 @@ export function CommercialDisputeProgress({
     <section className="space-y-3 border-y border-border py-4">
       <div className="flex items-center justify-between gap-3">
         <h4 className="font-semibold">{t("federation.dispute.progress.title")}</h4>
-        <Button
+        <RefreshButton
           variant="ghost"
           disabled={busy || progress.isFetching || retry.isPending}
           onClick={() => void progress.refetch()}
-        >
-          {t("federation.refresh")}
-        </Button>
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
       {progress.isError ? (
         <p role="alert">{t("federation.loadFailed")}</p>

@@ -253,7 +253,7 @@ describe("ClusterFileRootsPanel", () => {
     mount();
 
     expect(await screen.findByTestId(`cluster-file-root-row-${rootA.id}`)).toBeTruthy();
-    fireEvent.click(screen.getByText("common.refresh"));
+    fireEvent.click(screen.getByRole("button", { name: "common.refresh" }));
 
     const error = await screen.findByTestId("cluster-file-roots-error");
     expect(error.textContent).toMatch(/没有执行此操作的权限|does not have permission/);

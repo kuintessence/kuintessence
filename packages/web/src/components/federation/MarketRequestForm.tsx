@@ -12,6 +12,7 @@ import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { buildMarketRequest, policyUsable } from "./market-request-view";
 
 export function MarketRequestForm({
@@ -115,16 +116,15 @@ export function MarketRequestForm({
       {policies.isError || materials.isError ? (
         <div role="alert" className="space-y-2">
           <p>{t("federation.tasks.optionsFailed")}</p>
-          <Button
+          <RefreshButton
             type="button"
             variant="outline"
             onClick={() => {
               void policies.refetch();
               void materials.refetch();
             }}
-          >
-            {t("federation.refresh")}
-          </Button>
+            label={t("federation.refresh")}
+          ></RefreshButton>
         </div>
       ) : null}
       <fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">

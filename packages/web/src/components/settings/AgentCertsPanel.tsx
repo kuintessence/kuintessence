@@ -10,6 +10,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 
 interface AgentCertView {
   id: string;
@@ -110,15 +111,15 @@ export function AgentCertsPanel() {
             placeholder={t("settings.agentCerts.agentPlaceholder")}
             data-testid="agent-certs-agent-id"
           />
-          <Button
+          <RefreshButton
             type="submit"
             variant="outline"
             disabled={loading || agentId.trim() === ""}
             data-testid="agent-certs-load"
+            label={t("common.refresh", { defaultValue: "Refresh" })}
           >
             {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-            {t("common.refresh", { defaultValue: "Refresh" })}
-          </Button>
+          </RefreshButton>
         </form>
 
         <p className="text-[11px] text-muted-foreground">{t("settings.agentCerts.description")}</p>
@@ -211,16 +212,15 @@ export function AgentCertsPanel() {
         />
 
         {certs !== null ? (
-          <Button
+          <RefreshButton
             type="button"
             variant="ghost"
-            size="sm"
             disabled={loading || !loadedAgentId}
             onClick={() => void refresh(loadedAgentId)}
+            label={t("common.refresh", { defaultValue: "Refresh" })}
           >
             <RefreshCcw className="h-3.5 w-3.5" />
-            {t("common.refresh", { defaultValue: "Refresh" })}
-          </Button>
+          </RefreshButton>
         ) : null}
       </CardContent>
     </Card>

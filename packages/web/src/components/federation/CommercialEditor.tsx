@@ -14,6 +14,7 @@ import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
 import { Button } from "../ui/button";
 import { Input, Textarea } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { commercialMetric, commercialUnit } from "./commercial-format";
 
 export function CommercialEditor({
@@ -217,13 +218,12 @@ export function CommercialEditor({
                 </div>
               ) : null}
               {agreements.isError ? (
-                <Button
+                <RefreshButton
                   variant="outline"
                   disabled={disabled || agreements.isFetching}
                   onClick={() => void agreements.refetch()}
-                >
-                  {t("federation.refresh")}
-                </Button>
+                  label={t("federation.refresh")}
+                ></RefreshButton>
               ) : null}
             </>
           ) : (

@@ -22,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { RefreshButton } from "../ui/refresh-button";
 import { EditAccountQueues } from "./EditAccountQueues";
 import { RegisterExecutionAccount } from "./RegisterExecutionAccount";
 import { SandboxMappingReviewPanel } from "./SandboxMappingReviewPanel";
@@ -84,9 +85,11 @@ export function CpAccountsPage() {
           <h2 className="text-2xl font-semibold tracking-tight">{t("cp.accounts.title")}</h2>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => void accountsQuery.refetch()}>
-            {t("cp.common.refresh")}
-          </Button>
+          <RefreshButton
+            variant="outline"
+            onClick={() => void accountsQuery.refetch()}
+            label={t("cp.common.refresh")}
+          ></RefreshButton>
           {canRegister && (
             <Button onClick={() => setRegistering(true)}>{t("cp.accounts.register")}</Button>
           )}

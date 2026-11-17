@@ -60,60 +60,82 @@ export function CpDashboard() {
         }
         dashboard={
           <div className="space-y-6">
-            <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
-              <KpiTile
-                title={t("cp.dashboard.kpi.jobsCompleted")}
-                titleSuffix={t("cp.dashboard.kpi.period24Hours")}
-                icon={CheckCircle2}
-                tone="succeeded"
-                value={isLoading ? "—" : k.jobsCompleted}
-                testId="cp-kpi-jobsCompleted"
-              />
-              <KpiTile
-                title={t("cp.dashboard.kpi.jobsFailed")}
-                titleSuffix={t("cp.dashboard.kpi.period24Hours")}
-                icon={AlertTriangle}
-                tone="failed"
-                value={isLoading ? "—" : k.jobsFailed}
-                testId="cp-kpi-jobsFailed"
-              />
-              <KpiTile
-                title={t("cp.dashboard.kpi.bytesTransferred")}
-                titleSuffix={t("cp.dashboard.kpi.period24Hours")}
-                icon={HardDrive}
-                value={isLoading ? "—" : formatBytes(k.bytesTransferred)}
-                testId="cp-kpi-bytesTransferred"
-              />
-              <KpiTile
-                title={t("cp.dashboard.kpi.queueDepthPeak")}
-                titleSuffix={t("cp.dashboard.kpi.period24Hours")}
-                icon={Activity}
-                value={isLoading ? "—" : k.queueDepthPeak}
-                testId="cp-kpi-queueDepthPeak"
-              />
-              <KpiTile
-                title={t("cp.dashboard.kpi.agentsHealthy")}
-                icon={Layers}
-                tone="succeeded"
-                value={isLoading ? "—" : k.agentsHealthy}
-                testId="cp-kpi-agentsHealthy"
-              />
-              <KpiTile
-                title={t("cp.dashboard.kpi.agentsSick")}
-                icon={AlertTriangle}
-                tone="failed"
-                value={isLoading ? "—" : k.agentsSick}
-                testId="cp-kpi-agentsSick"
-              />
-              <KpiTile
-                title={t("cp.dashboard.kpi.agentsOffline")}
-                icon={ServerOff}
-                value={isLoading ? "—" : k.agentsOffline}
-                testId="cp-kpi-agentsOffline"
-              />
+            <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+              <section className="min-w-0 space-y-2" aria-labelledby="cp-jobs-heading">
+                <h2 id="cp-jobs-heading" className="text-sm font-semibold">
+                  {t("cp.dashboard.groups.jobs")}
+                </h2>
+                <div className="grid gap-1 border-y border-border py-2 sm:grid-cols-3">
+                  <KpiTile
+                    title={t("cp.dashboard.kpi.jobsCompleted")}
+                    titleSuffix={t("cp.dashboard.kpi.period24Hours")}
+                    icon={CheckCircle2}
+                    tone="succeeded"
+                    value={isLoading ? "—" : k.jobsCompleted}
+                    testId="cp-kpi-jobsCompleted"
+                  />
+                  <KpiTile
+                    title={t("cp.dashboard.kpi.jobsFailed")}
+                    titleSuffix={t("cp.dashboard.kpi.period24Hours")}
+                    icon={AlertTriangle}
+                    tone="failed"
+                    value={isLoading ? "—" : k.jobsFailed}
+                    testId="cp-kpi-jobsFailed"
+                  />
+                  <KpiTile
+                    title={t("cp.dashboard.kpi.queueDepthPeak")}
+                    titleSuffix={t("cp.dashboard.kpi.period24Hours")}
+                    icon={Activity}
+                    value={isLoading ? "—" : k.queueDepthPeak}
+                    testId="cp-kpi-queueDepthPeak"
+                  />
+                </div>
+              </section>
+              <section className="min-w-0 space-y-2" aria-labelledby="cp-transfer-heading">
+                <h2 id="cp-transfer-heading" className="text-sm font-semibold">
+                  {t("cp.dashboard.groups.transfers")}
+                </h2>
+                <div className="border-y border-border py-2">
+                  {" "}
+                  <KpiTile
+                    title={t("cp.dashboard.kpi.bytesTransferred")}
+                    titleSuffix={t("cp.dashboard.kpi.period24Hours")}
+                    icon={HardDrive}
+                    value={isLoading ? "—" : formatBytes(k.bytesTransferred)}
+                    testId="cp-kpi-bytesTransferred"
+                  />
+                </div>
+              </section>
             </div>
+            <section className="space-y-2" aria-labelledby="cp-health-heading">
+              <h2 id="cp-health-heading" className="text-sm font-semibold">
+                {t("cp.dashboard.groups.clusters")}
+              </h2>
+              <div className="grid grid-cols-1 gap-1 border-y border-border py-2 sm:grid-cols-3">
+                <KpiTile
+                  title={t("cp.dashboard.kpi.agentsHealthy")}
+                  icon={Layers}
+                  tone="succeeded"
+                  value={isLoading ? "—" : k.agentsHealthy}
+                  testId="cp-kpi-agentsHealthy"
+                />
+                <KpiTile
+                  title={t("cp.dashboard.kpi.agentsSick")}
+                  icon={AlertTriangle}
+                  tone="failed"
+                  value={isLoading ? "—" : k.agentsSick}
+                  testId="cp-kpi-agentsSick"
+                />
+                <KpiTile
+                  title={t("cp.dashboard.kpi.agentsOffline")}
+                  icon={ServerOff}
+                  value={isLoading ? "—" : k.agentsOffline}
+                  testId="cp-kpi-agentsOffline"
+                />
+              </div>
+            </section>
 
-            <div className="grid gap-2 border-border p-3 sm:grid-cols-3">
+            <div className="grid gap-x-6 gap-y-1 sm:grid-cols-3">
               <OperationalSummary
                 label={t("cp.dashboard.summary.successRate")}
                 value={
@@ -140,7 +162,7 @@ export function CpDashboard() {
               />
             </div>
 
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-6 border-t border-border pt-4 lg:grid-cols-3">
               <Card data-testid="cp-top-users">
                 <CardHeader className="p-4 pb-2">
                   <CardTitle>{t("cp.dashboard.topUsers")}</CardTitle>
@@ -245,10 +267,22 @@ function AgentsHealthBar({ healthy, sick, offline }: AgentsHealthBarProps) {
   const pct = (n: number) => `${Math.round((n / total) * 100)}%`;
   return (
     <div className="space-y-2 text-xs">
-      <div className="flex h-2 overflow-hidden ">
-        <div data-testid="cp-agents-health-healthy" className="" style={{ width: pct(healthy) }} />
-        <div data-testid="cp-agents-health-sick" className="" style={{ width: pct(sick) }} />
-        <div data-testid="cp-agents-health-offline" className="" style={{ width: pct(offline) }} />
+      <div className="flex h-2 overflow-hidden rounded-sm bg-muted">
+        <div
+          data-testid="cp-agents-health-healthy"
+          className="bg-status-succeeded"
+          style={{ width: pct(healthy) }}
+        />
+        <div
+          data-testid="cp-agents-health-sick"
+          className="bg-status-failed"
+          style={{ width: pct(sick) }}
+        />
+        <div
+          data-testid="cp-agents-health-offline"
+          className="bg-muted-foreground"
+          style={{ width: pct(offline) }}
+        />
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground tabular-nums">
         <span data-testid="cp-agents-health-label-healthy">

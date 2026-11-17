@@ -30,6 +30,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { RefreshButton } from "../ui/refresh-button";
 import {
   FederationCertificateForm,
   FederationKeyForm,
@@ -138,9 +139,8 @@ function TrustPanel() {
           <FederationSectionTitle title={t("federation.title")} />
         )}
         <div className="flex flex-wrap gap-2">
-          <Button
+          <RefreshButton
             variant="outline"
-            size="sm"
             disabled={
               change.isPending ||
               (editor !== null && !list.isError && !detail.isError) ||
@@ -148,10 +148,10 @@ function TrustPanel() {
               detail.isFetching
             }
             onClick={() => void client.invalidateQueries({ queryKey })}
+            label={t("federation.refresh")}
           >
             <RefreshCw className="h-4 w-4" />
-            {t("federation.refresh")}
-          </Button>
+          </RefreshButton>
           <Button
             size="sm"
             disabled={readOnly || editor !== null || list.isError || list.isPending}

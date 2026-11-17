@@ -8,6 +8,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { PageHeader, PageShell } from "../ui/page";
+import { RefreshButton } from "../ui/refresh-button";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { SessionPane } from "./SessionPane";
 
@@ -103,15 +104,15 @@ export function TerminalPage() {
                 <ArrowRight />
               </a>
             </Button>
-            <Button
+            <RefreshButton
               variant="outline"
               data-testid="terminal-refresh"
               onClick={refresh}
               disabled={sessionsQ.isFetching}
+              label={t("terminal.refresh")}
             >
               <RefreshCw className={cn(sessionsQ.isFetching ? "animate-spin" : "")} />
-              {t("terminal.refresh")}
-            </Button>
+            </RefreshButton>
             <Button
               data-testid="terminal-open-shell"
               onClick={() => setNewOpen(true)}

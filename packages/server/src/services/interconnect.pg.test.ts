@@ -259,3 +259,46 @@ test("audit preserves resource metadata and records deletion as deletion", async
   });
   expect(entries.some((e) => e.action.endsWith("delete.update"))).toBe(false);
 });
+
+test("configures same-zone high-speed links and validates cluster endpoints and dependencies", async () => {
+  const other = await service.saveCluster(scope, null, clusterInput(centerA, []));
+  const extraZone = await service.saveCenter(scope, null, centerInput(orgA, "Branch"));
+  createdIds.push(other.id, extraZone.id);
+  const input: LinkInput = {
+    fromCenterId: centerA,
+    toCenterId: centerA,
+    metadata: {
+      name: "Private LAN",
+      networkType: "high-speed",
+      configuredBandwidthMbps: 10000,
+      fromClusterId: clusterId,
+      toClusterId: other.id,
+      status: "unknown",
+      bandwidthMbps: null,
+      throughputMbps: null,
+      latencyMs: null,
+      packetLossPercent: null,
+      observedAt: null,
+      source: "",
+    },
+  };
+  const result = await service.saveLink(scope, null, input);
+  createdIds.push(result.id);
+  expect(
+    (await service.snapshot(scope)).links.find((link) => link.id === result.id)?.metadata
+      .configuredBandwidthMbps,
+  ).toBe(10000);
+  await expect(service.remove(scope, "cluster", other.id)).rejects.toThrow("请先移除");
+  await expect(
+    service.saveCluster(scope, other.id, clusterInput(extraZone.id, [])),
+  ).rejects.toThrow("请先移除");
+  await expect(
+    service.saveLink(globalScope, null, { ...input, toCenterId: centerB }),
+  ).rejects.toThrow("必须属于");
+  await expect(service.saveLink({ ...scope, canManage: false }, null, input)).rejects.toThrow(
+    "无权维护",
+  );
+  await service.remove(scope, "link", result.id);
+  await service.remove(scope, "cluster", other.id);
+  await service.remove(scope, "center", extraZone.id);
+});

@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { RefreshButton } from "../ui/refresh-button";
 import { WORKSPACE_DOMAINS, WORKSPACE_IDENTITIES } from "../workspace-navigation";
 import { FunctionMapIcon } from "./icons";
 import {
@@ -214,15 +215,14 @@ export function FunctionMapView({
         {!embedded ? <h2 className="text-sm font-semibold">{text(model.title)}</h2> : null}
         <div className="flex shrink-0 items-center gap-1">
           {runtime?.refresh ? (
-            <Button
+            <RefreshButton
               variant="ghost"
-              size="sm"
               disabled={runtime.refreshing}
               onClick={runtime.refresh}
+              label={t("common.refresh")}
             >
               <RefreshCw aria-hidden="true" />
-              {t("common.refresh")}
-            </Button>
+            </RefreshButton>
           ) : null}
         </div>
       </div>

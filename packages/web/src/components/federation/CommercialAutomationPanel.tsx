@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 
 type Kind = "reservation" | "terminal";
@@ -261,14 +262,13 @@ function AutomationPanel({ approval, scope, grants, writable, busy }: Props) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-lg font-semibold">{t("federation.automation.title")}</h3>
         <div className="flex flex-wrap gap-2">
-          <Button
+          <RefreshButton
             ref={refreshFocus}
             variant="outline"
             disabled={busy || mutation.isPending || policies.isFetching}
             onClick={() => void refresh()}
-          >
-            {t("federation.refresh")}
-          </Button>
+            label={t("federation.refresh")}
+          ></RefreshButton>
           {writable && !editing ? (
             <Button
               disabled={

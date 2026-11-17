@@ -29,6 +29,7 @@ afterEach(() => {
 describe("AuditLogPanel", () => {
   test("loads the global audit feed and supports an explicit refresh", async () => {
     apiGet.mockResolvedValue({
+      total: 1,
       entries: [
         {
           id: "audit-1",
@@ -42,8 +43,8 @@ describe("AuditLogPanel", () => {
 
     render(<AuditLogPanel />, { wrapper });
 
-    expect(await screen.findByTestId("events-list")).toBeTruthy();
-    expect(apiGet).toHaveBeenCalledWith("/audit-log?limit=100");
+    expect(await screen.findByTestId("log-viewer-records")).toBeTruthy();
+    expect(apiGet).toHaveBeenCalledWith("/audit-log?limit=25&offset=0");
 
     fireEvent.click(screen.getByTestId("platform-audit-refresh"));
     await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
@@ -57,12 +58,13 @@ describe("AuditLogPanel", () => {
     const error = await screen.findByTestId("platform-audit-error");
     expect(error.textContent).toContain("settings.operations.auditLog.loadFailed");
     expect(error.textContent).not.toContain("audit unavailable");
-    expect(screen.queryByTestId("events-empty")).toBeNull();
+    expect(screen.queryByTestId("log-viewer-records")).toBeNull();
   });
 });
 
 test("platform log displays more than ten records", async () => {
   apiGet.mockResolvedValue({
+    total: 25,
     entries: Array.from({ length: 25 }, (_, i) => ({
       id: `audit-${i}`,
       actor: "admin@example.test",
@@ -72,6 +74,41 @@ test("platform log displays more than ten records", async () => {
     })),
   });
   render(<AuditLogPanel />, { wrapper });
-  await screen.findByTestId("events-list");
-  expect(screen.getAllByRole("listitem")).toHaveLength(25);
+  await screen.findByTestId("log-viewer-records");
+  expect(screen.getAllByRole("row").slice(1)).toHaveLength(25);
+});
+
+test("search and date range are sent to the server and reset pagination", async () => {
+  apiGet.mockResolvedValue({
+    total: 51,
+    entries: [
+      {
+        id: "audit",
+        actor: "admin@example.test",
+        action: "job.submit",
+        target: "job-1",
+        createdAt: "2026-11-03T00:00:00Z",
+      },
+    ],
+  });
+  render(<AuditLogPanel />, { wrapper });
+  await screen.findByTestId("log-viewer-records");
+  fireEvent.click(screen.getByRole("button", { name: "common.pagination.next" }));
+  await waitFor(() => expect(apiGet).toHaveBeenLastCalledWith("/audit-log?limit=25&offset=25"));
+  fireEvent.change(screen.getByRole("searchbox"), { target: { value: "job.submit" } });
+  fireEvent.click(screen.getByRole("button", { name: "logViewer.searchButton" }));
+  await waitFor(() =>
+    expect(apiGet).toHaveBeenLastCalledWith("/audit-log?limit=25&offset=0&search=job.submit"),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "logViewer.clear" }));
+  await waitFor(() => expect(apiGet).toHaveBeenLastCalledWith("/audit-log?limit=25&offset=0"));
+});
+
+test("renders records with hidden fields and invalid dates without crashing", async () => {
+  apiGet.mockResolvedValue({ total: 2, entries: [{}, { action: "job.submit", createdAt: "***" }] });
+  render(<AuditLogPanel />, { wrapper });
+  await screen.findByTestId("log-viewer-records");
+  expect(screen.getAllByRole("row").slice(1)).toHaveLength(2);
+  expect(screen.queryByText("Invalid Date")).toBeNull();
+  expect(screen.getAllByText("—").length).toBeGreaterThan(0);
 });

@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
-import { Button } from "../ui/button";
+import { RefreshButton } from "../ui/refresh-button";
 import { AgreementFact } from "./AgreementTerms";
 
 export function AgreementBacklog({
@@ -44,9 +44,12 @@ export function AgreementBacklog({
         <h3 id={id} className="text-sm font-semibold">
           {t("federation.agreements.backlog.title")}
         </h3>
-        <Button variant="outline" disabled={query.isFetching} onClick={() => void query.refetch()}>
-          {t("federation.refresh")}
-        </Button>
+        <RefreshButton
+          variant="outline"
+          disabled={query.isFetching}
+          onClick={() => void query.refetch()}
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
       {query.isError ? (
         <p role="alert" className="text-sm text-status-failed">
