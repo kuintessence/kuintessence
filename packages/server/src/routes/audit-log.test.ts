@@ -127,4 +127,31 @@ describe("Audit log routes", () => {
   test("desensitization viewer role does not trust JWT role without a bound principal", () => {
     expect(auditLogViewerRole({ role: "platform_admin" }, undefined)).toBe("guest");
   });
+  test("searches and paginates all matching audit rows with stable totals", async () => {
+    const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    await db.insert(auditLog).values(
+      ids.map((id, index) => ({
+        id,
+        actor: "audit-test-actor",
+        action: "paged_test_action",
+        target: `audit-page-${index}`,
+        createdAt: new Date("2026-01-01T12:00:00Z"),
+      })),
+    );
+    const url =
+      "/api/audit-log?search=audit-page-&action=paged_test_action&from=2026-01-01T00:00:00Z&to=2026-01-02T00:00:00Z&limit=2";
+    const first = await makeApp("platform_admin").request(url);
+    expect(first.status).toBe(200);
+    const page1 = (await first.json()) as { total: number; entries: { id: string }[] };
+    const second = await makeApp("platform_admin").request(`${url}&offset=2`);
+    const page2 = (await second.json()) as { total: number; entries: { id: string }[] };
+    expect(page1.total).toBe(3);
+    expect(page2.total).toBe(3);
+    expect(page1.entries).toHaveLength(2);
+    expect(page2.entries).toHaveLength(1);
+    expect([...page1.entries, ...page2.entries].map((e) => e.id)).toEqual(ids.sort().reverse());
+    const literal = await makeApp("platform_admin").request("/api/audit-log?search=audit-page-%25");
+    expect(((await literal.json()) as { total: number }).total).toBe(0);
+    expect((await makeApp("platform_admin").request("/api/audit-log?limit=NaN")).status).toBe(400);
+  });
 });

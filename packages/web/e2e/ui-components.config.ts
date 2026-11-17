@@ -8,6 +8,7 @@ export default defineConfig({
     "ui-unification.spec.ts",
     "map-workflow.spec.ts",
     "queue-dialog.spec.ts",
+    "operations-review.spec.ts",
   ],
   forbidOnly: !!process.env.CI,
   workers: 1,

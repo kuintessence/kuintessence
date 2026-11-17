@@ -17,6 +17,7 @@ import { z } from "zod";
 import { api } from "../../lib/api-client";
 import { Button } from "../ui/button";
 import { Input, Textarea } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import type { MediaScope } from "./MediaLogisticsShared";
 import { type MediaOption, MediaOptionPicker, type MediaTaskOption } from "./MediaOptionPicker";
 
@@ -435,7 +436,7 @@ export function MediaDeliveryForm({
           </Button>
         )}
         {send.isError ? (
-          <Button
+          <RefreshButton
             type="button"
             variant="outline"
             disabled={send.isPending}
@@ -444,9 +445,8 @@ export function MediaDeliveryForm({
                 queryKey: ["federation", "media", scope.organizationId, scope.authRevision],
               })
             }
-          >
-            {t("federation.refresh")}
-          </Button>
+            label={t("federation.refresh")}
+          ></RefreshButton>
         ) : null}
         <Button type="button" variant="outline" disabled={send.isPending} onClick={onCancel}>
           {t("federation.cancel")}

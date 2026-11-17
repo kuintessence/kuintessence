@@ -38,7 +38,7 @@ function placementReason(reason: string, t: ReturnType<typeof useTranslation>["t
     return normalized;
   }
   return t("scheduler.placement.rejected.generic", {
-    defaultValue: "该计算节点未通过此阶段筛选，请调整资源或队列约束后重试。",
+    defaultValue: "该集群未通过此阶段筛选，请调整资源或队列约束后重试。",
   });
 }
 

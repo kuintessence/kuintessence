@@ -83,6 +83,7 @@ import {
 import { Input, Textarea } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
+import { RefreshButton } from "../ui/refresh-button";
 import { ResourceSelectField } from "../ui/resource-select-field";
 import { SearchInput } from "../ui/search-input";
 import {
@@ -283,16 +284,15 @@ export function SoftwarePolicyTable({
       <PageHeader
         title={t("cp.software.title")}
         actions={
-          <Button
+          <RefreshButton
             variant="outline"
-            size="sm"
             onClick={() => overviewQuery.refetch()}
             disabled={overviewQuery.isFetching}
             title={t("cp.software.refresh")}
+            label={t("cp.software.refresh")}
           >
             <RefreshCw className={overviewQuery.isFetching ? "animate-spin" : ""} />
-            {t("cp.software.refresh")}
-          </Button>
+          </RefreshButton>
         }
       />
       <FunctionMaps ids={["G08"]} />
@@ -397,18 +397,14 @@ function SummaryCards({ overview }: { overview: CpSoftwareOverview }) {
     { key: "overrides", value: overview.summary.overrides },
   ];
   return (
-    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+    <dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-y border-border py-4 sm:grid-cols-3">
       {items.map((item) => (
-        <Card key={item.key}>
-          <CardHeader>
-            <CardTitle>{t(`cp.software.summary.${item.key}`)}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-semibold tabular-nums">{item.value}</div>
-          </CardContent>
-        </Card>
+        <div key={item.key} className="flex min-w-0 items-baseline justify-between gap-2">
+          <dt className="text-sm text-muted-foreground">{t(`cp.software.summary.${item.key}`)}</dt>
+          <dd className="text-lg font-semibold tabular-nums">{item.value}</dd>
+        </div>
       ))}
-    </div>
+    </dl>
   );
 }
 
@@ -1693,7 +1689,7 @@ function PolicyRejectionHint({ reason }: { reason: string }) {
 function PolicyDigest({ policy }: { policy: PolicyOverlayInput }) {
   const { t } = useTranslation();
   return (
-    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+    <div className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
       <DigestCell label={t("cp.software.col.installMode")}>
         {t(`cp.software.installMode.${policy.installMode}`)}
       </DigestCell>
@@ -1724,7 +1720,7 @@ function PolicyDigest({ policy }: { policy: PolicyOverlayInput }) {
 
 function DigestCell({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex min-h-14 items-center justify-between gap-2 border-border px-3 py-2">
+    <div className="flex min-h-10 items-center justify-between gap-2 border-border px-3 py-1">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="shrink-0 text-sm font-semibold tabular-nums">{children}</div>
     </div>
@@ -2320,17 +2316,16 @@ function OperationHistoryToolbar({
             </option>
           ))}
         </NativeSelect>
-        <Button
+        <RefreshButton
           type="button"
           variant="outline"
-          size="sm"
           onClick={onRefresh}
           disabled={refreshing}
           title={t("cp.software.operations.historyRefresh")}
+          label={t("cp.software.operations.historyRefresh")}
         >
           <RefreshCw className={refreshing ? "animate-spin" : ""} />
-          {t("cp.software.operations.historyRefresh")}
-        </Button>
+        </RefreshButton>
       </div>
     </div>
   );

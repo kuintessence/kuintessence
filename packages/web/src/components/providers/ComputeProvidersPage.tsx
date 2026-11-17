@@ -19,6 +19,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { PageHeader, PageShell } from "../ui/page";
 import { PaginationControls } from "../ui/pagination-controls";
+import { RefreshButton } from "../ui/refresh-button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 const fields = ["description", "contactName", "email", "phone", "address", "website"] as const;
@@ -102,9 +103,11 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
             {t("providers.searchButton")}
           </Button>
         </form>
-        <Button variant="outline" onClick={() => query.refetch()}>
-          {t("providers.refresh")}
-        </Button>
+        <RefreshButton
+          variant="outline"
+          onClick={() => query.refetch()}
+          label={t("providers.refresh")}
+        ></RefreshButton>
         {mode === "operator" && canEdit && !query.error && (
           <Button
             onClick={() => {
@@ -170,10 +173,32 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                         {provider.centerCount}
                       </a>
                     </TableCell>
-                    <TableCell className="px-4 py-3 tabular-nums">{provider.agentCount}</TableCell>
-                    <TableCell className="px-4 py-3 tabular-nums">{provider.memberCount}</TableCell>
+                    <TableCell className="px-4 py-3 tabular-nums">
+                      <a
+                        className="text-brand underline underline-offset-4"
+                        href={`${mode === "operator" ? "/operations" : "/cp/agents"}?organizationId=${encodeURIComponent(provider.id)}${mode === "operator" ? "#clusters" : ""}`}
+                        aria-label={t("providers.viewAgents", {
+                          name: provider.name,
+                          count: provider.agentCount,
+                        })}
+                      >
+                        {provider.agentCount}
+                      </a>
+                    </TableCell>
+                    <TableCell className="px-4 py-3 tabular-nums">
+                      <a
+                        className="text-brand underline underline-offset-4"
+                        href={`${mode === "operator" ? "/operations" : "/cp/users"}?organizationId=${encodeURIComponent(provider.id)}${mode === "operator" ? "#users" : ""}`}
+                        aria-label={t("providers.viewMembers", {
+                          name: provider.name,
+                          count: provider.memberCount,
+                        })}
+                      >
+                        {provider.memberCount}
+                      </a>
+                    </TableCell>
                     <TableCell className="px-4 py-3">
-                      {canEdit && (
+                      {canEdit ? (
                         <Button
                           variant="ghost"
                           size="sm"
@@ -183,6 +208,17 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                           }}
                         >
                           {t("providers.edit")}
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setSelected(provider.id);
+                            setEditing(false);
+                          }}
+                        >
+                          {t("providers.view")}
                         </Button>
                       )}
                     </TableCell>

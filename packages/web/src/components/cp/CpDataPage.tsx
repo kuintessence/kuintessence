@@ -18,6 +18,7 @@ import { Button } from "../ui/button";
 import { CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { PageHeader, PageShell } from "../ui/page";
+import { RefreshButton } from "../ui/refresh-button";
 import { ResourceSelectField } from "../ui/resource-select-field";
 import { DataDisclosurePolicyPanel } from "./DataDisclosurePolicyPanel";
 
@@ -434,9 +435,12 @@ function QueryFeedback({
       <span className="min-w-0 break-words">
         {toUserFacingError(query.error, t("cp.data.failed"))}
       </span>
-      <Button onClick={onRetry} size="sm" type="button" variant="outline">
-        {t("common.refresh")}
-      </Button>
+      <RefreshButton
+        onClick={onRetry}
+        type="button"
+        variant="outline"
+        label={t("common.refresh")}
+      ></RefreshButton>
     </div>
   );
 }

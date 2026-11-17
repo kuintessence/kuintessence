@@ -43,6 +43,10 @@ export const ClusterMetadataSchema = z
   .strict();
 export const LinkMetadataSchema = z
   .object({
+    networkType: z.enum(["standard", "high-speed", "dedicated"]).optional(),
+    configuredBandwidthMbps: nullableMetric.optional(),
+    fromClusterId: z.string().uuid().nullable().optional(),
+    toClusterId: z.string().uuid().nullable().optional(),
     name: label,
     status: ResourceStatusSchema,
     bandwidthMbps: nullableMetric,
@@ -95,7 +99,15 @@ export const LinkInputSchema = z
     metadata: LinkMetadataSchema,
   })
   .strict()
-  .refine((v) => v.fromCenterId !== v.toCenterId, "链路两端必须不同");
+  .refine((v) => {
+    if (v.fromCenterId !== v.toCenterId) return true;
+    const { networkType, fromClusterId, toClusterId } = v.metadata;
+    return (
+      (networkType === "high-speed" || networkType === "dedicated") &&
+      ((!fromClusterId && !toClusterId) ||
+        (Boolean(fromClusterId && toClusterId) && fromClusterId !== toClusterId))
+    );
+  }, "链路两端必须不同");
 export type ResourceStatus = z.infer<typeof ResourceStatusSchema>;
 export type CenterMetadata = z.infer<typeof CenterMetadataSchema>;
 export type ClusterMetadata = z.infer<typeof ClusterMetadataSchema>;

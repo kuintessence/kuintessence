@@ -68,15 +68,6 @@ const INFRASTRUCTURE_SECTIONS = ["cluster-file-roots", "cost-rates"];
 
 const ROLES = ["user", "org_admin", "operator", "platform_admin", "super_admin"] as const;
 
-function fmtDuration(ms: number): string {
-  if (ms <= 0) return "expired";
-  const seconds = Math.floor(ms / 1000);
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  if (m === 0) return `${s}s`;
-  return `${m}m ${s}s`;
-}
-
 function ThemeRow() {
   const { t } = useTranslation();
   const { theme, setTheme } = useTheme();
@@ -189,7 +180,9 @@ function ExpiryRow({ expiresAt }: ExpiryRowProps) {
     >
       <span>{t("settings.tokenExpiresIn")}</span>
       <span className="font-mono tabular-nums" data-testid="settings-expiry-value">
-        {fmtDuration(remaining)}
+        {remaining <= 0
+          ? t("settings.sessionExpired")
+          : t("settings.sessionMinutes", { count: Math.ceil(remaining / 60_000) })}
       </span>
     </div>
   );

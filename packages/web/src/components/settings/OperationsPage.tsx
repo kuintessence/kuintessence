@@ -6,6 +6,7 @@ import { isLocalMode } from "../../lib/local-mode";
 import { toCapabilitySet, useMeCapabilities } from "../../lib/platform-capabilities";
 import { MeteringPage } from "../cp/MeteringPage";
 import { FunctionMaps } from "../function-maps/FunctionMaps";
+import { OrganizationQueryScope } from "../OrganizationQueryScope";
 import { PageHeader, PageShell } from "../ui/page";
 import { AuditCapabilityPanel } from "./AuditCapabilityPanel";
 import { AuditLogPanel } from "./AuditLogPanel";
@@ -83,9 +84,11 @@ export function OperationsPage() {
     return (
       <PageShell data-testid="operations-page">
         {resourceArea === "accounts" ? <FunctionMaps ids={["G29"]} /> : null}
-        <OperationsResources
-          area={isOperationsResourceArea(resourceArea) ? resourceArea : "overview"}
-        />
+        <OrganizationQueryScope>
+          <OperationsResources
+            area={isOperationsResourceArea(resourceArea) ? resourceArea : "overview"}
+          />
+        </OrganizationQueryScope>
       </PageShell>
     );
   }

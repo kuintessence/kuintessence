@@ -71,14 +71,14 @@ test.each([
       <InterconnectDashboard mode={mode} organizationId={orgB} />
     </QueryClientProvider>,
   );
-  await screen.findByText("组织 B");
+  await screen.findAllByText("组织 B");
   expect(screen.queryByText(`站点 ${orgA}`)).toBeNull();
   expect(screen.getByRole("link", { name: "全部组织" }).getAttribute("href")).toBe(
     mode === "operator" ? "/interconnect" : "/cp/interconnect",
   );
-  fireEvent.click(screen.getByRole("button", { name: "新增中心" }));
+  fireEvent.click(screen.getByRole("button", { name: "新增可用区" }));
   const organization = nativeControl(
-    screen.getByRole("combobox", { name: "所属组织" }),
+    screen.getByRole("combobox", { name: "所属算力中心" }),
   ) as HTMLSelectElement;
   expect(organization.value).toBe(orgB);
   expect(Array.from(organization.options, (option) => option.value)).toEqual([orgB]);
@@ -98,7 +98,7 @@ test.each([
       <InterconnectDashboard mode={mode} />
     </QueryClientProvider>,
   );
-  fireEvent.click(await screen.findByRole("button", { name: "新增中心" }));
+  fireEvent.click(await screen.findByRole("button", { name: "新增可用区" }));
   fireEvent.change(nativeControl(screen.getByLabelText("名称")), {
     target: { value: "未保存草稿" },
   });
@@ -107,11 +107,11 @@ test.each([
   await act(() => client.invalidateQueries({ queryKey: ["interconnect"] }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(screen.getByTestId("interconnect-dashboard")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "新增中心" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "新增可用区" })).toBeNull();
 
   api.get.mockResolvedValue(snapshot);
   await act(() => client.invalidateQueries({ queryKey: ["interconnect"] }));
-  const add = await screen.findByRole("button", { name: "新增中心" });
+  const add = await screen.findByRole("button", { name: "新增可用区" });
   expect(screen.queryByRole("dialog")).toBeNull();
   fireEvent.click(add);
   expect(nativeControl(screen.getByLabelText("名称"))).toHaveProperty("value", "");
@@ -122,7 +122,7 @@ test.each([
   expect(screen.queryByRole("dialog")).toBeNull();
   api.get.mockResolvedValue(snapshot);
   fireEvent.click(screen.getByRole("button", { name: "重试" }));
-  await screen.findByRole("button", { name: "新增中心" });
+  await screen.findByRole("button", { name: "新增可用区" });
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(api.post).not.toHaveBeenCalled();
   unmount();

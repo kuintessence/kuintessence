@@ -99,7 +99,13 @@
       },
       "noTopUsers": "No user activity in this window.",
       "noTopApps": "No app activity in this window.",
-      "loadFailed": "Failed to load dashboard"
+      "loadFailed": "Failed to load dashboard",
+      "groups": {
+        "jobs": "Jobs and scheduling",
+        "transfers": "Data transfers",
+        "clusters": "Cluster health",
+        "activity": "Users and applications"
+      }
     },
     "queues": {
       "title": "Queue registry",
@@ -231,8 +237,8 @@
       "subtitle": "Manage install modes, allow/deny lists, mirrors, and preinstalled mappings by provider, cluster, and agent.",
       "refresh": "Refresh",
       "summary": {
-        "clusters": "Clusters",
-        "agents": "Agents",
+        "clusters": "Cluster groups",
+        "agents": "Connected clusters",
         "lockedAgents": "Locked agents",
         "installedSpecs": "Installed software",
         "mirrors": "Mirrors",
@@ -356,7 +362,7 @@
         "specPlaceholder": "gromacs@2024.1 +mpi",
         "specRequired": "Enter a Spack spec.",
         "batchInstallTitle": "Batch install",
-        "batchInstallSubtitle": "Install Spack repository packages line by line so administrators can prepare node environments ahead of time.",
+        "batchInstallSubtitle": "Install Spack repository packages line by line so administrators can prepare cluster environments ahead of time.",
         "batchInstallPlaceholder": "gromacs@2024.1 +mpi\nopenmpi@4.1.6\nhdf5@1.14.3 +mpi",
         "batchImportTitle": "Import preinstalled list",
         "batchImportSubtitle": "Import software already preinstalled on the agent; the agent verifies each spec before refreshing Server installed records.",

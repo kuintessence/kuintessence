@@ -19,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { RefreshButton } from "../ui/refresh-button";
 import { AgreementFact } from "./AgreementTerms";
 import { FederationEmpty } from "./FederationLayout";
 import { MarketRequestForm } from "./MarketRequestForm";
@@ -240,16 +241,15 @@ function RequestsPanel({ approval, scope, grants, readOnly, busy }: Props) {
       <div className="flex flex-wrap justify-between gap-2">
         <h3 className="font-semibold">{t("federation.marketRequest.title")}</h3>
         <div className="flex flex-wrap gap-2">
-          <Button
+          <RefreshButton
             variant="outline"
             disabled={blocked}
             onClick={() => {
               void records.refetch();
               if (selected) void detail.refetch();
             }}
-          >
-            {t("federation.refresh")}
-          </Button>
+            label={t("federation.refresh")}
+          ></RefreshButton>
           {canCreate && !creating && !intent ? (
             <Button
               disabled={blocked}

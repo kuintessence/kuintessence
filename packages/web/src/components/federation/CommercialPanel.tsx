@@ -27,6 +27,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { RefreshButton } from "../ui/refresh-button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { CommercialAdjustmentPanel } from "./CommercialAdjustmentPanel";
 import { CommercialAutomationPanel } from "./CommercialAutomationPanel";
@@ -223,9 +224,11 @@ export function CommercialPanel({
     return (
       <div role="alert">
         <p>{t("federation.loadFailed")}</p>
-        <Button variant="outline" onClick={refresh}>
-          {t("federation.refresh")}
-        </Button>
+        <RefreshButton
+          variant="outline"
+          onClick={refresh}
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
     );
   if (!canRead)

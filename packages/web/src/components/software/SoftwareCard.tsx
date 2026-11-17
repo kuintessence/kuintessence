@@ -96,26 +96,31 @@ export function SoftwareCard({
             <CalendarClock className="h-3 w-3" />
             {formatCreatedAt(template.createdAt)}
           </span>
+          {view.isValidWorkflow && view.nodeCount !== null && view.edgeCount !== null ? (
+            <dl className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1">
+              <GraphMetric label={t("software.card.nodes")} value={view.nodeCount} />
+              <GraphMetric label={t("software.card.edges")} value={view.edgeCount} />
+            </dl>
+          ) : null}
         </div>
         {template.description?.trim() && template.description.trim() !== template.name.trim() ? (
           <p className="line-clamp-2 text-muted-foreground">{template.description}</p>
         ) : null}
-        {view.isValidWorkflow && view.nodeCount !== null && view.edgeCount !== null ? (
-          <dl className="flex flex-wrap items-center gap-x-4 gap-y-2 border-border pt-3">
-            <GraphMetric label={t("software.card.nodes")} value={view.nodeCount} />
-            <GraphMetric label={t("software.card.edges")} value={view.edgeCount} />
-          </dl>
-        ) : (
+        {!view.isValidWorkflow ? (
           <div className="flex items-center gap-2 text-status-failed">
             <CircleAlert className="h-4 w-4 shrink-0" />
             {t("software.card.invalidWorkflow")}
           </div>
-        )}
+        ) : null}
         {view.nodeTypes.length > 0 ? (
           <div className="flex flex-wrap gap-1" data-testid={`software-node-types-${template.id}`}>
             {view.nodeTypes.map((type) => (
               <Badge key={type} variant="outline" className="max-w-full">
-                <span className="truncate">{type}</span>
+                <span className="truncate">
+                  {t(`workflow.editor.nodeTypes.${type}`, {
+                    defaultValue: t("software.card.workflowStep"),
+                  })}
+                </span>
               </Badge>
             ))}
           </div>

@@ -167,12 +167,21 @@ async function expectFilledRows(container: Locator) {
 }
 
 for (const width of [320, 360, 390, 480, 640, 768, 1024, 1280]) {
-  test(`wrapped controls fill each row at ${width}px`, async ({ page }) => {
+  test(`wrapped controls and compact tabs fit at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 960 });
     await expectFilledRows(page.getByTestId("jobs-search").locator("../.."));
     await expectFilledRows(page.getByTestId("jobs-submit-button").locator(".."));
     if (width >= 640) await expectFilledRows(page.getByTestId("jobs-status-filter"));
-    await expectFilledRows(page.getByRole("tablist", { name: "演示详情" }));
+    const tablist = page.getByRole("tablist", { name: "演示详情" });
+    const bounds = await tablist.boundingBox();
+    if (!bounds) throw new Error("Missing tab list");
+    for (const tab of await tablist.getByRole("tab").all()) {
+      await expect(tab).toBeInViewport();
+      const box = await tab.boundingBox();
+      if (!box) throw new Error("Missing tab");
+      expect(box.x).toBeGreaterThanOrEqual(bounds.x);
+      expect(box.x + box.width).toBeLessThanOrEqual(bounds.x + bounds.width);
+    }
     await expectFilledRows(page.getByRole("radiogroup", { name: "传输列表" }));
     await expectFilledRows(page.getByRole("button", { name: "下一页", exact: true }).locator(".."));
     await expectFilledRows(page.getByTestId("demo-footer"));

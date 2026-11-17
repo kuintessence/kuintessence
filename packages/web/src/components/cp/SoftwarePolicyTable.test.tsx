@@ -217,7 +217,7 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(screen.getByText("cp.software.agent.inspect"));
     expect(await screen.findByTestId("cp-software-agent-sheet")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("cp.software.refresh"));
+    fireEvent.click(screen.getByLabelText("cp.software.refresh"));
 
     expect(await screen.findByText("cp.software.loadFailed")).toBeTruthy();
     expect(screen.queryByText("Authorization principal is not bound")).toBeNull();
@@ -663,7 +663,7 @@ describe("SoftwarePolicyTable", () => {
       expect(screen.getAllByText("agent-b").length).toBeGreaterThan(1);
     });
 
-    fireEvent.click(screen.getByText("cp.software.refresh"));
+    fireEvent.click(screen.getByLabelText("cp.software.refresh"));
 
     await waitFor(() => {
       expect(screen.queryAllByText("agent-b")).toHaveLength(0);
@@ -1638,7 +1638,9 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     expect(await screen.findByText("zlib")).toBeTruthy();
-    fireEvent.click(await screen.findByText("cp.software.operations.historyRefresh"));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "cp.software.operations.historyRefresh" }),
+    );
 
     await waitFor(() => {
       expect(cpClient.listSoftwareOperations).toHaveBeenCalledTimes(2);
@@ -1672,7 +1674,7 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     expect(await screen.findByText("cp.software.operations.failed")).toBeTruthy();
     expect(screen.queryByText("history unavailable")).toBeNull();
-    fireEvent.click(screen.getByText("cp.software.operations.historyRefresh"));
+    fireEvent.click(screen.getByRole("button", { name: "cp.software.operations.historyRefresh" }));
 
     expect(await screen.findByText("zlib")).toBeTruthy();
     expect(cpClient.listSoftwareOperations).toHaveBeenCalledTimes(2);
@@ -1704,7 +1706,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     expect(await screen.findByText("zlib")).toBeTruthy();
-    fireEvent.click(screen.getByText("cp.software.operations.historyRefresh"));
+    fireEvent.click(screen.getByRole("button", { name: "cp.software.operations.historyRefresh" }));
 
     await waitFor(() => {
       expect(cpClient.listSoftwareOperations).toHaveBeenCalledTimes(2);
@@ -1740,7 +1742,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     expect(await screen.findByText("zlib")).toBeTruthy();
-    fireEvent.click(screen.getByText("cp.software.operations.historyRefresh"));
+    fireEvent.click(screen.getByRole("button", { name: "cp.software.operations.historyRefresh" }));
 
     expect(
       await screen.findByTestId("cp-software-operation-error-summary-op-stale-retry-denied"),

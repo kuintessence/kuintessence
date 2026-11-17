@@ -23,6 +23,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { ResourceSelectField } from "../ui/resource-select-field";
 import { ClusterStoragePolicyEditor } from "./ClusterStoragePolicyEditor";
 
@@ -257,10 +258,14 @@ export function ClusterFileRootsPanel() {
             {t("settings.clusterFileRoots.description")}
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
+        <RefreshButton
+          variant="outline"
+          onClick={refresh}
+          disabled={loading}
+          label={t("common.refresh")}
+        >
           {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw />}
-          {t("common.refresh")}
-        </Button>
+        </RefreshButton>
       </CardHeader>
       <CardContent className="space-y-4">
         {mobileReadOnly && (

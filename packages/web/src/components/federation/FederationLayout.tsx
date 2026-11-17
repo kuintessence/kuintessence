@@ -3,7 +3,7 @@ import { Children, createContext, type ReactNode, useContext, useSyncExternalSto
 import { useTranslation } from "react-i18next";
 import { getAuthState, subscribeAuthState } from "../../lib/auth";
 import { federationReadFailed } from "../../lib/federation-query-state";
-import { Button } from "../ui/button";
+import { RefreshButton } from "../ui/refresh-button";
 
 const PageTitle = createContext<string | null>(null);
 export const FederationPageTitle = PageTitle.Provider;
@@ -47,9 +47,11 @@ export function FederationLoadError({
   return (
     <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">
       <p>{message ?? t("federation.loadFailed")}</p>
-      <Button variant="outline" size="sm" onClick={onRetry}>
-        {t("federation.refresh")}
-      </Button>
+      <RefreshButton
+        variant="outline"
+        onClick={onRetry}
+        label={t("federation.refresh")}
+      ></RefreshButton>
     </div>
   );
 }
@@ -66,9 +68,11 @@ export function FederationRefreshNotice({
   return (
     <div role="status" className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
       <p>{t("federation.refreshFailed")}</p>
-      <Button variant="ghost" size="sm" onClick={onRetry}>
-        {t("federation.refresh")}
-      </Button>
+      <RefreshButton
+        variant="ghost"
+        onClick={onRetry}
+        label={t("federation.refresh")}
+      ></RefreshButton>
     </div>
   );
 }

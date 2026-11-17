@@ -16,6 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
+import { RefreshButton } from "../ui/refresh-button";
 
 export function DataMarketPage() {
   const { t } = useTranslation();
@@ -105,14 +106,13 @@ export function DataMarketPage() {
         title={t("dataMarket.title")}
         subtitle={t("dataMarket.subtitle")}
         actions={
-          <Button
+          <RefreshButton
             variant="outline"
-            size="sm"
             onClick={() => void Promise.all([catalog.refetch(), myAccessRequests.refetch()])}
+            label={t("common.refresh")}
           >
             <RefreshCw />
-            {t("common.refresh")}
-          </Button>
+          </RefreshButton>
         }
       />
       <FunctionMaps ids={["G04"]} />

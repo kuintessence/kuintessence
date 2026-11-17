@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { AgreementFact } from "./AgreementTerms";
 import { commercialMetric, commercialUnit } from "./commercial-format";
 import { FederationEmpty } from "./FederationLayout";
@@ -239,13 +240,12 @@ export function CommercialUsagePanel({
         list.isError ? (
           <div role="alert" className="space-y-3">
             <p>{t("federation.loadFailed")}</p>
-            <Button
+            <RefreshButton
               variant="outline"
               disabled={blocked || list.isFetching}
               onClick={() => void list.refetch()}
-            >
-              {t("federation.refresh")}
-            </Button>
+              label={t("federation.refresh")}
+            ></RefreshButton>
           </div>
         ) : list.isPending ? (
           <p role="status">{t("federation.loading")}</p>
@@ -316,13 +316,12 @@ export function CommercialUsagePanel({
           {detail.isError ? (
             <div role="alert" className="space-y-3">
               <p>{t("federation.loadFailed")}</p>
-              <Button
+              <RefreshButton
                 variant="outline"
                 disabled={blocked || detail.isFetching}
                 onClick={() => void detail.refetch()}
-              >
-                {t("federation.refresh")}
-              </Button>
+                label={t("federation.refresh")}
+              ></RefreshButton>
             </div>
           ) : detail.isPending ? (
             <p role="status">{t("federation.loading")}</p>

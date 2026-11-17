@@ -25,6 +25,7 @@ import {
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { RefreshButton } from "../ui/refresh-button";
 import { checkCaseBinding, DecisionViewSchema, type EvidenceCase } from "./evidence-case-view";
 
 const LedgerViewSchema = z.object({
@@ -333,9 +334,12 @@ export function ArbitrationDecisionPanel({
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="font-medium">{t("federation.evidence.arbitration")}</h3>
-        <Button variant="outline" disabled={blocked} onClick={refresh}>
-          {t("federation.refresh")}
-        </Button>
+        <RefreshButton
+          variant="outline"
+          disabled={blocked}
+          onClick={refresh}
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
       {decision.isError ? (
         <p role="alert">{t("federation.loadFailed")}</p>

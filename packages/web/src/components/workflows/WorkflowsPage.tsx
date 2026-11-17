@@ -13,6 +13,7 @@ import { ErrorState } from "../ui/content-state";
 import { ListToolbar } from "../ui/list-toolbar";
 import { PageHeader, PageShell } from "../ui/page";
 import { PaginationControls } from "../ui/pagination-controls";
+import { RefreshButton } from "../ui/refresh-button";
 import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 import { DeleteWorkflowDraftDialog } from "./DeleteWorkflowDraftDialog";
 import { type WorkflowRunRow, WorkflowsTable } from "./WorkflowsTable";
@@ -193,19 +194,18 @@ export function WorkflowsPage() {
             >
               {t("workflows.countHint", { visible: visibleValue, total: totalValue })}
             </span>
-            <Button
+            <RefreshButton
               type="button"
               variant="outline"
-              size="sm"
               onClick={() => void Promise.all([runsQ.refetch(), draftsQ.refetch()])}
               ref={refreshButton}
               data-testid="workflows-refresh"
+              label={t("common.refresh", { defaultValue: "Refresh" })}
             >
               <RefreshCw
                 className={cn((runsQ.isFetching || draftsQ.isFetching) && "animate-spin")}
               />
-              {t("common.refresh", { defaultValue: "Refresh" })}
-            </Button>
+            </RefreshButton>
             {loadError ? (
               <Button disabled data-testid="workflows-new">
                 <Plus />
@@ -282,10 +282,14 @@ export function WorkflowsPage() {
               }),
             )}
           </span>
-          <Button type="button" variant="outline" size="sm" onClick={() => draftsQ.refetch()}>
+          <RefreshButton
+            type="button"
+            variant="outline"
+            onClick={() => draftsQ.refetch()}
+            label={t("common.refresh")}
+          >
             <RefreshCw />
-            {t("common.refresh")}
-          </Button>
+          </RefreshButton>
         </div>
       ) : null}
 

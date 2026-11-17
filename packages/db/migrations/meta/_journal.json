@@ -575,6 +575,13 @@
       "when": 1794880205651,
       "tag": "0081_agent_updates",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1794895087933,
+      "tag": "0082_wakeful_night_thrasher",
+      "breakpoints": true
     }
   ]
 }

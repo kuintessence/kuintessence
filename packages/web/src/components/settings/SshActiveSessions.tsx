@@ -7,6 +7,7 @@ import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked"
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { RefreshButton } from "../ui/refresh-button";
 
 /**
  * live SSH session monitoring (PRD F17).
@@ -76,16 +77,15 @@ export function SshActiveSessions() {
         <CardTitle>
           {t("settings.sshSess.title", { defaultValue: "Active SSH sessions" })}
         </CardTitle>
-        <Button
+        <RefreshButton
           type="button"
           variant="outline"
-          size="sm"
           data-testid="ssh-sess-refresh"
           onClick={() => void refresh()}
+          label={t("common.refresh", { defaultValue: "Refresh" })}
         >
           <RefreshCcw className="h-3.5 w-3.5" />
-          {t("common.refresh", { defaultValue: "Refresh" })}
-        </Button>
+        </RefreshButton>
       </CardHeader>
       <CardContent className="space-y-2">
         {loadError ? (

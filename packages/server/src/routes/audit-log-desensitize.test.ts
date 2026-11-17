@@ -48,6 +48,7 @@ describe("Audit log routes — desensitize integration", () => {
   async function clearAllB5Config(): Promise<void> {
     await db.delete(cfgTable).where(eq(cfgTable.fieldPath, "__enabled__"));
     await db.delete(cfgTable).where(eq(cfgTable.fieldPath, "actor"));
+    await db.delete(cfgTable).where(eq(cfgTable.fieldPath, "createdAt"));
   }
 
   beforeAll(async () => {
@@ -88,6 +89,26 @@ describe("Audit log routes — desensitize integration", () => {
     expect(body.entries.length).toBeGreaterThan(0);
     for (const entry of body.entries) {
       expect(entry.actor).toBe("***");
+    }
+    const filtered = await makeApp().request(
+      `/api/audit-log?search=${encodeURIComponent(ACTOR_PREFIX)}`,
+    );
+    expect(((await filtered.json()) as { total: number }).total).toBe(0);
+    const actorFilter = await makeApp().request(
+      `/api/audit-log?actor=${encodeURIComponent(ACTOR_PREFIX)}`,
+    );
+    expect(((await actorFilter.json()) as { total: number }).total).toBe(0);
+  });
+
+  test("hidden timestamps cannot be inferred with date filters", async () => {
+    await db.insert(cfgTable).values([
+      { scope: "global", fieldPath: "__enabled__", action: "hide" },
+      { scope: "global", fieldPath: "createdAt", action: "hide" },
+    ]);
+    for (const query of ["from=2000-01-01T00:00:00Z", "to=2100-01-01T00:00:00Z"]) {
+      const response = await makeApp().request(`/api/audit-log?${query}`);
+      expect(response.status).toBe(200);
+      expect(((await response.json()) as { total: number }).total).toBe(0);
     }
   });
 

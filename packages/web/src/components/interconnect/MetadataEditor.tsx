@@ -55,6 +55,11 @@ export function MetadataEditor({
     links: t("interconnect.linkRecord"),
   }[target.kind];
   const defaults = link?.metadata;
+  const [networkType, setNetworkType] = useState(defaults?.networkType ?? "standard");
+  const [fromCenterId, setFromCenterId] = useState(link?.fromCenterId ?? "");
+  const [toCenterId, setToCenterId] = useState(link?.toCenterId ?? "");
+  const [fromClusterId, setFromClusterId] = useState(defaults?.fromClusterId ?? "");
+  const [toClusterId, setToClusterId] = useState(defaults?.toClusterId ?? "");
   return (
     <Dialog
       open
@@ -122,10 +127,14 @@ export function MetadataEditor({
                       },
                     })
                   : LinkInputSchema.safeParse({
-                      fromCenterId: text("fromCenterId"),
-                      toCenterId: text("toCenterId"),
+                      fromCenterId,
+                      toCenterId,
                       metadata: {
                         ...common,
+                        networkType,
+                        fromClusterId: fromClusterId || null,
+                        toClusterId: toClusterId || null,
+                        configuredBandwidthMbps: number("configuredBandwidthMbps"),
                         bandwidthMbps: number("bandwidthMbps"),
                         throughputMbps: number("throughputMbps"),
                         latencyMs: number("latencyMs"),
@@ -168,6 +177,9 @@ export function MetadataEditor({
                           applications: t("interconnect.applicationsField"),
                           fromCenterId: t("interconnect.from"),
                           toCenterId: t("interconnect.to"),
+                          configuredBandwidthMbps: t("interconnect.configuredBandwidth"),
+                          fromClusterId: t("interconnect.fromCluster"),
+                          toClusterId: t("interconnect.toCluster"),
                           bandwidthMbps: t("interconnect.bandwidthMbps"),
                           throughputMbps: t("interconnect.throughputMbps"),
                           latencyMs: t("interconnect.latencyMs"),
@@ -386,29 +398,80 @@ export function MetadataEditor({
             )}
             {target.kind === "links" && (
               <>
+                <p className="text-xs text-muted-foreground">{t("interconnect.networkHint")}</p>
+                <Field label={t("interconnect.connectionType")}>
+                  <NativeSelect
+                    value={networkType}
+                    onChange={(event) => setNetworkType(event.target.value as typeof networkType)}
+                  >
+                    <option value="standard">{t("interconnect.standard")}</option>
+                    <option value="high-speed">{t("interconnect.highSpeed")}</option>
+                    <option value="dedicated">{t("interconnect.dedicated")}</option>
+                  </NativeSelect>
+                </Field>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {["fromCenterId", "toCenterId"].map((name, index) => (
-                    <Field
-                      key={name}
-                      label={index === 0 ? t("interconnect.from") : t("interconnect.to")}
-                    >
-                      <ResourceSelectField
-                        resourceType="compute-centers"
-                        className="w-full"
-                        name={name}
-                        required
-                        defaultValue={index === 0 ? link?.fromCenterId : link?.toCenterId}
-                      >
-                        <option value="">{t("interconnect.chooseCenter")}</option>
-                        {snapshot.centers.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.metadata.name}
-                          </option>
-                        ))}
-                      </ResourceSelectField>
-                    </Field>
-                  ))}
+                  {(["from", "to"] as const).map((side) => {
+                    const zoneId = side === "from" ? fromCenterId : toCenterId;
+                    return (
+                      <div key={side} className="space-y-3">
+                        <Field label={t(`interconnect.${side}`)}>
+                          <ResourceSelectField
+                            resourceType="compute-centers"
+                            value={zoneId}
+                            required
+                            onChange={(event) => {
+                              if (side === "from") {
+                                setFromCenterId(event.target.value);
+                                setFromClusterId("");
+                              } else {
+                                setToCenterId(event.target.value);
+                                setToClusterId("");
+                              }
+                            }}
+                          >
+                            <option value="">{t("interconnect.chooseCenter")}</option>
+                            {snapshot.centers.map((zone) => (
+                              <option key={zone.id} value={zone.id}>
+                                {snapshot.organizations.find((org) => org.id === zone.orgId)?.name}{" "}
+                                / {zone.metadata.name}
+                              </option>
+                            ))}
+                          </ResourceSelectField>
+                        </Field>
+                        <Field label={t(`interconnect.${side}Cluster`)}>
+                          <ResourceSelectField
+                            resourceType="clusters"
+                            disabled={!zoneId}
+                            value={side === "from" ? fromClusterId : toClusterId}
+                            onChange={(event) =>
+                              (side === "from" ? setFromClusterId : setToClusterId)(
+                                event.target.value,
+                              )
+                            }
+                          >
+                            <option value="">{t("interconnect.allZoneClusters")}</option>
+                            {snapshot.clusters
+                              .filter((cluster) => cluster.centerId === zoneId)
+                              .map((cluster) => (
+                                <option key={cluster.id} value={cluster.id}>
+                                  {cluster.metadata.name}
+                                </option>
+                              ))}
+                          </ResourceSelectField>
+                        </Field>
+                      </div>
+                    );
+                  })}
                 </div>
+                <Field label={t("interconnect.configuredBandwidth")}>
+                  <Input
+                    name="configuredBandwidthMbps"
+                    type="number"
+                    min={0}
+                    step="any"
+                    defaultValue={defaults?.configuredBandwidthMbps ?? ""}
+                  />
+                </Field>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   {(
                     [

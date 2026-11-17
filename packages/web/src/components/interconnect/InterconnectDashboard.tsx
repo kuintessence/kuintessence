@@ -20,6 +20,7 @@ import { useTheme } from "../ThemeProvider";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { PageHeader } from "../ui/page";
+import { RefreshButton } from "../ui/refresh-button";
 import { ResourceSelectField } from "../ui/resource-select-field";
 import {
   TableBody,
@@ -579,19 +580,16 @@ function DashboardContent({
       />
       <div className="kq-fill-row text-sm">
         <span className="mr-auto text-muted-foreground">
-          {mode === "operator"
-            ? t("interconnect.platformScope")
-            : t("interconnect.organizationScope")}{" "}
-          · {t("interconnect.updated", { time: time(data.generatedAt) })}
+          {data.organizations.length === 1
+            ? data.organizations[0]?.name
+            : t("interconnect.platformScope")}
         </span>
-        <Button
+        <RefreshButton
           variant="outline"
-          size="sm"
           disabled={query.isFetching}
           onClick={() => void query.refetch()}
-        >
-          {t("interconnect.refresh")}
-        </Button>
+          label={t("interconnect.refresh")}
+        ></RefreshButton>
         {data.canManage &&
           (
             [
@@ -604,7 +602,7 @@ function DashboardContent({
               key={kind}
               variant="outline"
               size="sm"
-              disabled={kind !== "centers" && data.centers.length < (kind === "links" ? 2 : 1)}
+              disabled={kind !== "centers" && data.centers.length < 1}
               onClick={() => setEditor({ kind })}
             >
               {label}
@@ -945,9 +943,29 @@ function DashboardContent({
                   >
                     {l.metadata.name}
                   </button>
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      l.metadata.networkType === "high-speed"
+                        ? "interconnect.highSpeed"
+                        : l.metadata.networkType === "dedicated"
+                          ? "interconnect.dedicated"
+                          : "interconnect.standard",
+                    )}
+                  </p>
+                  {l.metadata.configuredBandwidthMbps != null && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("interconnect.configuredBandwidth")}: {l.metadata.configuredBandwidthMbps}
+                    </p>
+                  )}
                 </TableCell>
-                <TableCell>{centerName(l.fromCenterId)}</TableCell>
-                <TableCell>{centerName(l.toCenterId)}</TableCell>
+                <TableCell>
+                  {centerName(l.fromCenterId)}
+                  {l.metadata.fromClusterId ? ` / ${clusterName(l.metadata.fromClusterId)}` : ""}
+                </TableCell>
+                <TableCell>
+                  {centerName(l.toCenterId)}
+                  {l.metadata.toClusterId ? ` / ${clusterName(l.metadata.toClusterId)}` : ""}
+                </TableCell>
                 <TableCell>
                   {status(
                     isObservationStale(l.metadata.observedAt) ? "unknown" : l.metadata.status,
@@ -1074,6 +1092,32 @@ function DashboardContent({
                       })}
                   </p>
                   <dl className="grid grid-cols-2 gap-3">
+                    <dt>{t("interconnect.connectionType")}</dt>
+                    <dd>
+                      {t(
+                        selectedLink.metadata.networkType === "high-speed"
+                          ? "interconnect.highSpeed"
+                          : selectedLink.metadata.networkType === "dedicated"
+                            ? "interconnect.dedicated"
+                            : "interconnect.standard",
+                      )}
+                    </dd>
+                    <dt>{t("interconnect.configuredBandwidth")}</dt>
+                    <dd>
+                      {selectedLink.metadata.configuredBandwidthMbps ?? t("interconnect.missing")}
+                    </dd>
+                    <dt>{t("interconnect.fromCluster")}</dt>
+                    <dd>
+                      {selectedLink.metadata.fromClusterId
+                        ? clusterName(selectedLink.metadata.fromClusterId)
+                        : t("interconnect.allZoneClusters")}
+                    </dd>
+                    <dt>{t("interconnect.toCluster")}</dt>
+                    <dd>
+                      {selectedLink.metadata.toClusterId
+                        ? clusterName(selectedLink.metadata.toClusterId)
+                        : t("interconnect.allZoneClusters")}
+                    </dd>
                     {(
                       [
                         ["bandwidthMbps", t("interconnect.bandwidth"), "Mbps"],

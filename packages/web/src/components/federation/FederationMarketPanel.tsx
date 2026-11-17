@@ -26,6 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { RefreshButton } from "../ui/refresh-button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { AgreementFact } from "./AgreementTerms";
 import { materialDigest } from "./asset-material";
@@ -426,9 +427,11 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
         <p role={capabilities.isError ? "alert" : "status"}>
           {t(capabilities.isError ? "federation.loadFailed" : "federation.market.noPermission")}
         </p>
-        <Button variant="outline" onClick={refresh}>
-          {t("federation.refresh")}
-        </Button>
+        <RefreshButton
+          variant="outline"
+          onClick={refresh}
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
     );
   return (

@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
 import { Button } from "../ui/button";
+import { RefreshButton } from "../ui/refresh-button";
 import {
   type GovernanceKind,
   type GovernanceRow,
@@ -146,7 +147,7 @@ export function GovernanceProgress({
     <section className="space-y-3 border-t border-border pt-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h4 className="text-sm font-medium">{t("federation.governance.progress")}</h4>
-        <Button
+        <RefreshButton
           variant="outline"
           disabled={busy}
           onClick={() => {
@@ -155,9 +156,8 @@ export function GovernanceProgress({
             if (row.revokedAt && (kind === "publication" || kind === "arbitration"))
               void revocations.refetch();
           }}
-        >
-          {t("federation.refresh")}
-        </Button>
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
       {exchange.isError ? (
         <p role="alert">{t("federation.loadFailed")}</p>

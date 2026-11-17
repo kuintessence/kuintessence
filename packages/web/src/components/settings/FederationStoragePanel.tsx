@@ -32,6 +32,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 
 const root = "/admin/federation/input-reconciliation";
 const queryKey = ["federation", "input-reconciliation"] as const;
@@ -75,15 +76,14 @@ function StoragePanel() {
     <Card data-testid="federation-storage-panel" aria-label={t("federation.storage.title")}>
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
         <FederationSectionTitle title={t("federation.storage.title")} />
-        <Button
+        <RefreshButton
           variant="outline"
-          size="sm"
           disabled={busy || list.isFetching || detail.isFetching}
           onClick={() => void client.invalidateQueries({ queryKey })}
+          label={t("federation.refresh")}
         >
           <RefreshCw className="h-4 w-4" />
-          {t("federation.refresh")}
-        </Button>
+        </RefreshButton>
       </CardHeader>
       <CardContent className="space-y-5">
         <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
