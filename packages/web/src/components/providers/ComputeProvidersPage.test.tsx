@@ -64,7 +64,7 @@ test.each([
   expect(await screen.findByRole("columnheader", { name: "可用区" })).toBeTruthy();
   const link = await screen.findByRole("link", { name: "查看研究中心的可用区（0）" });
   expect(link.getAttribute("href")).toBe(
-    `${mode === "operator" ? "/interconnect" : "/cp/interconnect"}?organizationId=org-a`,
+    `${mode === "operator" ? "/interconnect" : "/cp/interconnect"}?organizationId=org-a#availability-zones`,
   );
   expect(
     screen.getByText("算力中心下设可用区，集群归属于可用区。点击数量查看或配置。"),

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test } from "patchright/test";
+import { resources } from "./fixtures/interconnect-resources";
 import { overview } from "./fixtures/software-overview";
 
 const root = resolve(import.meta.dirname, "..");
@@ -32,7 +33,20 @@ test.beforeAll(() => {
 });
 
 for (const width of [1161, 390]) {
-  for (const scenario of ["dashboard", "software", "metering", "audit", "template", "network"]) {
+  for (const scenario of [
+    "dashboard",
+    "software",
+    "metering",
+    "audit",
+    "template",
+    "network",
+    "operator-centers",
+    "operator-clusters",
+    "operator-links",
+    "provider-centers",
+    "provider-clusters",
+    "provider-links",
+  ]) {
     test(`${scenario} at ${width}`, async ({ page }, info) => {
       await page.setViewportSize({ width, height: 770 });
       const errors: string[] = [];
@@ -70,6 +84,7 @@ for (const width of [1161, 390]) {
               organizations: [{ orgId: organizationId, name: "研究算力中心", role: "owner" }],
             },
           });
+        if (url.pathname.endsWith("/snapshot")) return route.fulfill({ json: resources });
         if (url.pathname.endsWith("/cp/dashboard"))
           return route.fulfill({
             json: {
@@ -166,6 +181,37 @@ for (const width of [1161, 390]) {
           const nodes = await page.getByText("节点", { exact: true }).boundingBox();
           expect(Math.abs((date?.y ?? 0) - (nodes?.y ?? 0))).toBeLessThan(3);
         }
+      }
+      if (scenario.startsWith("operator-") || scenario.startsWith("provider-")) {
+        const kind = scenario.split("-")[1];
+        const label = kind === "centers" ? "可用区" : kind === "clusters" ? "集群" : "传输链路";
+        await expect(page.getByRole("heading", { name: label, exact: true })).toBeVisible();
+        await expect(page.getByRole("row")).toHaveCount(3);
+        if (width === 390) {
+          const table = page.getByRole("table");
+          expect(await table.evaluate((element) => element.clientWidth)).toBeGreaterThanOrEqual(
+            768,
+          );
+          expect(
+            await table.evaluate((element) => {
+              const container = element.parentElement;
+              return container ? container.scrollWidth > container.clientWidth : false;
+            }),
+          ).toBe(true);
+        }
+        await expect(page.getByText("资源分布", { exact: true })).toHaveCount(0);
+        await expect(page.getByText("查看数值", { exact: true })).toHaveCount(0);
+        await page.getByRole("searchbox").fill("北京");
+        await expect(page.getByRole("row")).toHaveCount(2);
+        const status = page.getByRole("combobox", { name: "状态", exact: true });
+        await status.selectOption(kind === "links" ? "operational" : "offline");
+        await expect(page.getByText("没有符合条件的记录", { exact: true })).toBeVisible();
+        await page.getByRole("button", { name: "清除筛选" }).click();
+        await expect(page.getByRole("row")).toHaveCount(3);
+        await page.getByRole("button", { name: `新增${label}`, exact: true }).click();
+        await expect(page.getByRole("dialog")).toBeVisible();
+        await page.getByRole("button", { name: "取消", exact: true }).click();
+        await expect(page.getByRole("dialog")).toHaveCount(0);
       }
       if (scenario === "network") {
         await page.getByLabel("名称", { exact: true }).fill("同城高速网");

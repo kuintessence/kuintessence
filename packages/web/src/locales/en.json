@@ -2414,11 +2414,14 @@
     "compiler": "Compiler"
   },
   "interconnect": {
+    "searchResources": "Search name, ID or location",
+    "allStatuses": "All statuses",
+    "allNetworkTypes": "All network types",
+    "pageSummary": "{{total}} records · Page {{page}} / {{pages}}",
     "allOrganizations": "All organizations",
     "missing": "Not provided",
     "empty": "No data",
     "noMatches": "No matching records",
-    "showValues": "View values",
     "loadingAccess": "Checking access…",
     "accessFailed": "Could not check access",
     "denied": "You do not have access to this dashboard",

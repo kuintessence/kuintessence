@@ -11,6 +11,7 @@ import { createRoot } from "react-dom/client";
 import { CpDashboard } from "../../src/components/cp/CpDashboard";
 import { MeteringPage } from "../../src/components/cp/MeteringPage";
 import { SoftwarePolicyTable } from "../../src/components/cp/SoftwarePolicyTable";
+import { InterconnectDashboard } from "../../src/components/interconnect/InterconnectDashboard";
 import { MetadataEditor } from "../../src/components/interconnect/MetadataEditor";
 import { AuditLogPanel } from "../../src/components/settings/AuditLogPanel";
 import { SoftwareCard } from "../../src/components/software/SoftwareCard";
@@ -78,6 +79,14 @@ function Fixture() {
     <QueryClientProvider client={client}>
       <ThemeProvider>
         <main style={{ marginLeft: window.innerWidth >= 768 ? 240 : 0 }} className="min-w-0 p-4">
+          {(["operator", "provider"] as const).flatMap((mode) =>
+            (["centers", "clusters", "links"] as const).map(
+              (resource) =>
+                scenario === `${mode}-${resource}` && (
+                  <InterconnectDashboard key={scenario} mode={mode} resource={resource} />
+                ),
+            ),
+          )}
           {scenario === "dashboard" && <CpDashboard />}
           {scenario === "software" && <SoftwarePolicyTable canManage />}
           {scenario === "metering" && <MeteringPage showWebhooks={false} />}

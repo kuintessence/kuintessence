@@ -1139,7 +1139,10 @@ async function listAgentsThroughSpice(
     return [];
   }
   const visible = new Set(visibleIds);
-  return deps.consoleService.listAgentsByIds([...visible]);
+  const agents = await deps.consoleService.listAgentsByIds([...visible]);
+  return scope.activeOrganizationId
+    ? agents.filter((agent) => agent.providerOrgId === scope.activeOrganizationId)
+    : agents;
 }
 
 function isDeferredCpAgentAuthorizationRoute(request: {

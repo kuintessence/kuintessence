@@ -1113,6 +1113,35 @@ describe("CP software operation routes", () => {
     expect(agentIdInputs).toEqual([["agent-b"]]);
   });
 
+  test("applies active organization after SpiceDB authorization without widening visibility", async () => {
+    const agents = [
+      { id: "agent-a", hostname: "a", siteId: "a", status: "online", providerOrgId: "org-a" },
+      { id: "agent-b", hostname: "b", siteId: "b", status: "offline", providerOrgId: "org-b" },
+      { id: "hidden", hostname: "hidden", siteId: "a", status: "online", providerOrgId: "org-a" },
+    ] satisfies CpAgentList;
+    const app = makeApp(
+      { requestOperation: async () => operationView("unexpected") },
+      { listAgentsByIds: async (ids) => agents.filter((agent) => ids.includes(agent.id)) },
+      {
+        mode: "enforce",
+        lookupResources: async () => ["agent-a", "agent-b"],
+      } as unknown as AuthzService,
+    );
+    for (const [organization, expected] of [
+      ["org-a", ["agent-a"]],
+      ["org-b", ["agent-b"]],
+      ["empty", []],
+      ["", ["agent-a", "agent-b"]],
+    ] as const) {
+      const response = await app.request("/api/cp/agents", {
+        headers: organization ? { "x-kq-active-organization": organization } : {},
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { items: CpAgentList };
+      expect(body.items.map((agent) => agent.id)).toEqual([...expected]);
+    }
+  });
+
   test("rejects an organization member with only agent view permission", async () => {
     const lookupInputs: LookupResourcesInput[] = [];
     const app = makeApp(

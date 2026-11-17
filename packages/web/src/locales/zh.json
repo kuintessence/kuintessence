@@ -2415,11 +2415,14 @@
     "compiler": "编译器"
   },
   "interconnect": {
+    "searchResources": "搜索名称、ID 或位置",
+    "allStatuses": "全部状态",
+    "allNetworkTypes": "全部网络类型",
+    "pageSummary": "共 {{total}} 条 · 第 {{page}} / {{pages}} 页",
     "allOrganizations": "全部组织",
     "missing": "未提供",
     "empty": "暂无数据",
     "noMatches": "没有符合条件的记录",
-    "showValues": "查看数值",
     "loadingAccess": "加载权限…",
     "accessFailed": "权限加载失败",
     "denied": "无权访问此仪表盘",

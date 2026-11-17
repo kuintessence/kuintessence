@@ -192,7 +192,25 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
         labelKey: "workspace.section.operations",
         items: [
           { to: "/cp", exact: true, labelKey: "cp.nav.dashboard", icon: Gauge },
-          { to: "/cp/interconnect", labelKey: "workspace.nav.interconnect", icon: Activity },
+          {
+            to: "/cp/interconnect",
+            hash: "overview",
+            labelKey: "workspace.nav.interconnect",
+            icon: Activity,
+          },
+          {
+            to: "/cp/interconnect",
+            hash: "availability-zones",
+            labelKey: "interconnect.centers",
+            icon: Building2,
+          },
+          {
+            to: "/cp/interconnect",
+            hash: "clusters",
+            labelKey: "interconnect.clusters",
+            icon: Server,
+          },
+          { to: "/cp/interconnect", hash: "links", labelKey: "interconnect.links", icon: Network },
           { to: "/cp/profile", labelKey: "providers.selfTitle", icon: Building2 },
           { to: "/cp/metering", labelKey: "cp.nav.metering", icon: ReceiptText },
           {
@@ -273,7 +291,25 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
       {
         labelKey: "workspace.section.platformOperations",
         items: [
-          { to: "/interconnect", labelKey: "workspace.nav.interconnect", icon: Activity },
+          {
+            to: "/interconnect",
+            hash: "overview",
+            labelKey: "workspace.nav.interconnect",
+            icon: Activity,
+          },
+          {
+            to: "/interconnect",
+            hash: "availability-zones",
+            labelKey: "interconnect.centers",
+            icon: Building2,
+          },
+          {
+            to: "/interconnect",
+            hash: "clusters",
+            labelKey: "interconnect.clusters",
+            icon: Server,
+          },
+          { to: "/interconnect", hash: "links", labelKey: "interconnect.links", icon: Network },
           { to: "/providers", labelKey: "providers.title", icon: Building2 },
           {
             to: "/operations",
@@ -605,7 +641,8 @@ export function isWorkspaceNavItemActive(
   if (!normalizedHash) {
     return (
       (item.to === "/settings" && item.hash === "personal/account") ||
-      (item.to === "/operations" && item.hash === "overview")
+      (item.to === "/operations" && item.hash === "overview") ||
+      ((item.to === "/interconnect" || item.to === "/cp/interconnect") && item.hash === "overview")
     );
   }
   if (item.hash.includes("/")) return normalizedHash === item.hash;
