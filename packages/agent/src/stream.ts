@@ -586,6 +586,8 @@ export interface AgentStreamDeps {
   federationMediaImport?: FederationMediaImportConfig;
   assertFederationRuntimeWatchdog?: () => Promise<void>;
   readSiteOperations?: () => Promise<SiteOperations>;
+  receiveAgentUpdate?: (requestId: string, release: string) => Promise<void>;
+  confirmAgentUpdate?: () => Promise<boolean>;
   client: ServerClient;
   /**
    * Rebuilds the HTTP/2 transport for each reconnect attempt. A transport
@@ -2416,6 +2418,7 @@ export class AgentStream {
         case: "register",
         value: create(RegisterRequestSchema, {
           agentId: this.deps.agentId,
+          agentUpdateV1: !!this.deps.receiveAgentUpdate,
           siteName: this.deps.siteName,
           schedulerType: schedulerTypeToProto(this.deps.adapter.type),
           schedulerVersion: this.deps.adapter.version,
@@ -3557,6 +3560,15 @@ export class AgentStream {
       return;
     }
 
+    if (payload.case === "agentUpdateRequest") {
+      try {
+        await this.deps.receiveAgentUpdate?.(payload.value.requestId, payload.value.release);
+      } catch (err) {
+        this.logger.warn({ err }, "Agent update request was not accepted");
+      }
+      return;
+    }
+
     if (payload.case === "registerResponse") {
       const r = payload.value;
       this.logger.info({ accepted: r.accepted, message: r.message }, "Registration response");
@@ -3569,7 +3581,15 @@ export class AgentStream {
     }
 
     if (payload.case === "heartbeatAck") {
+      const pending = this.pendingHeartbeatAcks.has(payload.value.sequence);
       this.acknowledgeHeartbeat(payload.value.sequence);
+      if (pending && this.deps.confirmAgentUpdate) {
+        try {
+          if (await this.deps.confirmAgentUpdate()) this.enqueueHeartbeat();
+        } catch (err) {
+          this.logger.warn({ err }, "Agent update confirmation was not persisted");
+        }
+      }
       return;
     }
 

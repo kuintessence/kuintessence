@@ -15,6 +15,7 @@ test("immutable signed release routes bind artifacts and correctly serve resumes
         version: 1,
         sequence: 1,
         serverRevision: "a".repeat(40),
+        serverProtocolRange: { min: 1, max: 2 },
         stateFormat: "v1",
         architecture: "x86_64",
         minGlibc: "2.28",

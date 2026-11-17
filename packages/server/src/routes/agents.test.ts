@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentUpdateListSchema, type AgentUpdateRequest } from "@kuintessence/shared";
 import { Hono } from "hono";
 import pino from "pino";
 import { createErrorHandler } from "../middleware/error-handler";
 import type { AgentManager } from "../services/agent-manager";
-import { createAgentRoutes } from "./agents";
+import type { AgentUpdateService } from "../services/agent-update";
+import { type AgentRouteOptions, createAgentRoutes } from "./agents";
 
 const testLogger = pino({ level: "silent" });
 
@@ -63,6 +69,7 @@ describe("Agent routes", () => {
   function appFor(
     role: "platform_admin" | "org_admin" | "operator" | "user",
     orgId: string | null = null,
+    options: AgentRouteOptions = {},
   ) {
     const app = new Hono();
     app.use("*", async (c, next) => {
@@ -78,7 +85,7 @@ describe("Agent routes", () => {
       await next();
     });
     app.onError(createErrorHandler(testLogger));
-    app.route("/api", createAgentRoutes(manager));
+    app.route("/api", createAgentRoutes(manager, options));
     return app;
   }
 
@@ -87,6 +94,89 @@ describe("Agent routes", () => {
     expect(response.status).toBe(200);
     expect(((await response.json()) as { agents: unknown[] }).agents).toHaveLength(2);
     expect((await appFor("operator").request("/api/agents/route-test-agent-b")).status).toBe(200);
+  });
+
+  test("platform notices and remote updates preserve provider ownership and pinned release validation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kq-update-routes-"));
+    const entries: Awaited<ReturnType<AgentUpdateService["list"]>> = [];
+    const updates = {
+      list: async (agentId: string) => entries.filter((entry) => entry.agentId === agentId),
+      request: async (agentId: string, requestedBy: string, input: AgentUpdateRequest) => {
+        const entry = {
+          ...input,
+          agentId,
+          requestedBy,
+          state: "requested",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        entries.push(entry);
+        return entry;
+      },
+    };
+    const manifest = JSON.stringify({
+      version: 1,
+      sequence: 1,
+      serverRevision: "a".repeat(40),
+      stateFormat: "v1",
+      architecture: "x86_64",
+      minGlibc: "2.34",
+      cpuFlags: [],
+      redistribution: "unrestricted",
+      files: ["agent", "cli"].map((role) => ({
+        name: role,
+        role,
+        size: 1,
+        sha256: "b".repeat(64),
+        executable: true,
+      })),
+    });
+    const release = createHash("sha256").update(manifest).digest("hex");
+    await mkdir(join(root, "releases", release), { recursive: true });
+    await writeFile(join(root, "releases", release, "manifest.json"), manifest);
+    const options = { updates, siteReleasesDir: root };
+    const post = (
+      role: "platform_admin" | "operator" | "org_admin" | "user",
+      orgId: string | null,
+      kind = "update",
+      target = release,
+    ) =>
+      appFor(role, orgId, options).request("/api/agents/route-test-agent/updates", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          requestId: crypto.randomUUID(),
+          kind,
+          release: target,
+          message: "Please update",
+        }),
+      });
+    try {
+      expect((await post("org_admin", orgB)).status).toBe(404);
+      expect((await post("user", orgA)).status).toBe(404);
+      expect((await post("org_admin", orgA, "notice")).status).toBe(403);
+      expect((await post("operator", null, "notice")).status).toBe(202);
+      expect((await post("org_admin", orgA)).status).toBe(202);
+      expect((await post("platform_admin", null)).status).toBe(202);
+      expect((await post("platform_admin", null, "update", "0".repeat(64))).status).toBe(400);
+      expect((await post("platform_admin", null, "update", "../../agent")).status).toBe(400);
+      expect(entries).toHaveLength(3);
+      const result = await appFor("org_admin", orgA, options).request(
+        "/api/agents/route-test-agent/updates",
+      );
+      expect(result.status).toBe(200);
+      expect(AgentUpdateListSchema.parse(await result.json()).requests).toHaveLength(3);
+      expect(
+        (await appFor("org_admin", orgB, options).request("/api/agents/route-test-agent/updates"))
+          .status,
+      ).toBe(404);
+      expect(
+        (await appFor("operator", null, options).request("/api/agents/route-test-agent/updates"))
+          .status,
+      ).toBe(200);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("GET /api/agents returns all agents for platform admin", async () => {

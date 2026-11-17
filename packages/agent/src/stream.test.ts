@@ -11478,3 +11478,94 @@ test("detached software policy work remains busy after its incoming handler retu
   await stream.stop();
   await running;
 });
+
+test("supervised Agents advertise updates and persist received requests without stopping work", async () => {
+  for (const supervised of [false, true]) {
+    const { client, sent } = makeMockClient(
+      [
+        create(ServerMessageSchema, {
+          payload: {
+            case: "registerResponse",
+            value: create(RegisterResponseSchema, { accepted: true }),
+          },
+        }),
+      ],
+      100,
+    );
+    const requests: string[] = [];
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter(),
+      agentId: "agent-update",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      reconnectBackoffMs: 1,
+      ...(supervised
+        ? {
+            receiveAgentUpdate: async (id: string, release: string) => {
+              requests.push(`${id}:${release}`);
+            },
+          }
+        : {}),
+    });
+    activeStreams.push(stream);
+    const running = stream.start();
+    await settle();
+    expect(sent[0]).toMatchObject({
+      payload: { case: "register", value: { agentUpdateV1: supervised } },
+    });
+    const id = crypto.randomUUID();
+    const release = "a".repeat(64);
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, {
+        payload: { case: "agentUpdateRequest", value: { requestId: id, release } },
+      }),
+    );
+    expect(requests).toEqual(supervised ? [`${id}:${release}`] : []);
+    expect(await stream.drainForMaintenance("a".repeat(32), () => true)).toBe(true);
+    stream.resumeAfterMaintenance("a".repeat(32));
+    await stream.stop();
+    await running;
+  }
+});
+
+test("only a pending heartbeat ACK can confirm an updated Agent", async () => {
+  const sequences: bigint[] = [];
+  let confirmations = 0;
+  const client = makePendingRegisteredClient(true, false, {
+    supported: false,
+    onMessage: async (message) => {
+      if (message.payload.case === "heartbeat") sequences.push(message.payload.value.sequence);
+    },
+  });
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "agent-update-confirmation",
+    siteName: "test-site",
+    heartbeatIntervalMs: 5,
+    heartbeatAckTimeoutMs: 1000,
+    logger: silent,
+    reconnectBackoffMs: 1,
+    confirmAgentUpdate: async () => {
+      confirmations += 1;
+      return confirmations === 1;
+    },
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  await waitForCondition(() => sequences.length > 0);
+  await deliverServerMessage(stream, heartbeatAck(0n));
+  await deliverServerMessage(stream, heartbeatAck(999999n));
+  expect(confirmations).toBe(0);
+  const sequence = sequences[0];
+  if (sequence === undefined) throw new Error("Missing heartbeat");
+  await deliverServerMessage(stream, heartbeatAck(sequence));
+  expect(confirmations).toBe(1);
+  await deliverServerMessage(stream, heartbeatAck(sequence));
+  expect(confirmations).toBe(1);
+  await stream.stop();
+  await running;
+});

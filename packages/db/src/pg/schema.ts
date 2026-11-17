@@ -383,6 +383,33 @@ export const agents = pgTable(
   }),
 );
 
+export const agentUpdateRequests = pgTable(
+  "agent_update_requests",
+  {
+    requestId: uuid("request_id").primaryKey(),
+    agentId: varchar("agent_id", { length: 255 })
+      .notNull()
+      .references(() => agents.agentId),
+    requestedBy: uuid("requested_by")
+      .notNull()
+      .references(() => users.id),
+    kind: varchar("kind", { length: 16 }).notNull(),
+    release: varchar("release", { length: 64 }).notNull(),
+    message: text("message").notNull().default(""),
+    state: varchar("state", { length: 16 }).notNull().default("requested"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => ({
+    agentCreatedIdx: index("agent_update_requests_agent_created_idx").on(t.agentId, t.createdAt),
+    kindCheck: check("agent_update_requests_kind_check", sql`${t.kind} IN ('notice', 'update')`),
+    stateCheck: check(
+      "agent_update_requests_state_check",
+      sql`${t.state} IN ('requested', 'waiting', 'applying', 'restarting', 'succeeded', 'failed', 'disabled')`,
+    ),
+  }),
+);
+
 export const agentRegistrationIntents = pgTable(
   "agent_registration_intents",
   {

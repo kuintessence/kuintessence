@@ -15,6 +15,7 @@ import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader } from "../ui/card";
 import { AgentSiteOperations } from "./AgentSiteOperations";
+import { AgentUpdates } from "./AgentUpdates";
 
 export interface AgentRow {
   agentId: string;
@@ -140,6 +141,7 @@ export function AgentCard({ agent, canOpenSsh }: { agent: AgentRow; canOpenSsh: 
           </span>
         </div>
         <AgentSiteOperations value={agent.siteOperations} online={agent.status === "online"} />
+        <AgentUpdates agentId={agent.agentId} />
         <div className="mt-auto flex flex-wrap gap-3 pt-2">
           <Link
             to="/jobs"

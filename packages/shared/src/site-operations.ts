@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentUpdateReportSchema } from "./agent-update";
 import { SpackAuditContextSchema } from "./spack-source-audit";
 
 export const SiteChannelStateSchema = z.enum([
@@ -27,6 +28,7 @@ export const SiteOperationsSchema = z
     transfers: SiteChannelSchema,
     update: z
       .object({
+        request: AgentUpdateReportSchema.optional(),
         phase: z.enum(["unknown", "staged", "activated", "rolled-back", "failed"]),
         checkedAt: z.number().int().nonnegative().optional(),
         release: z

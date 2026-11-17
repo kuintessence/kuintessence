@@ -12,6 +12,7 @@ import { FederationRuntimeWatchdog } from "./queue/federation-runtime-watchdog";
 
 const WatchdogConfig = z.object({
   AGENT_DB_PATH: z.string().min(1),
+  AGENT_SQLITE_JOURNAL_MODE: z.enum(["wal", "delete"]).default("wal"),
   AGENT_SCHEDULER_TYPE: SchedulerTypeEnum.optional(),
   AGENT_SCHEDULER_VERSION: z.string().min(1).optional(),
   AGENT_SPAWNER_BACKEND: z.enum(["host", "container"]).default("host"),
@@ -53,7 +54,12 @@ export async function runFederationWatchdog(): Promise<void> {
       "Independent federation watchdog requires Slurm, PBS Pro, Torque or Kubernetes",
     );
   const sqlite = new Database(path, { readwrite: true });
-  sqlite.exec("PRAGMA busy_timeout = 5000; PRAGMA synchronous = FULL;");
+  sqlite.exec("PRAGMA busy_timeout = 5000;");
+  sqlite.exec(
+    config.AGENT_SQLITE_JOURNAL_MODE === "delete"
+      ? "PRAGMA synchronous = EXTRA;"
+      : "PRAGMA synchronous = FULL;",
+  );
   const watchdog = new FederationRuntimeWatchdog(drizzle(sqlite, { schema }), adapter, logger);
   let running = true;
   const stop = () => {
@@ -70,7 +76,15 @@ export async function runFederationWatchdog(): Promise<void> {
       logger.info("Waiting for Agent database initialization");
       while (running && !initialized.get()) await Bun.sleep(250);
     }
-    if (running) logger.info("Federation watchdog database ready");
+    if (running) {
+      if (
+        sqlite.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get()?.journal_mode !==
+        config.AGENT_SQLITE_JOURNAL_MODE
+      ) {
+        throw new Error("Federation watchdog journal mode differs from its Agent configuration");
+      }
+      logger.info("Federation watchdog database ready");
+    }
     while (running) {
       await watchdog.tick();
       if (running) await Bun.sleep(250);

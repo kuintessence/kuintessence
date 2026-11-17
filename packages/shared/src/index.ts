@@ -1,3 +1,4 @@
+export * from "./agent-update";
 export * from "./auth/ownership";
 export * from "./authz-projection";
 export * from "./compute-providers";
@@ -32,6 +33,7 @@ export * from "./schemas/sso";
 export * from "./schemas/template";
 export * from "./schemas/terminal";
 export * from "./site-operations";
+export * from "./site-protocol";
 export * from "./software-governance";
 export * from "./spack";
 export * from "./spack-install-bindings";

@@ -29,6 +29,17 @@ function mockChannel() {
 }
 
 describe("AgentDispatcher", () => {
+  test("update commands require the negotiated supervisor capability", () => {
+    const dispatcher = new AgentDispatcher();
+    const legacy = mockChannel();
+    dispatcher.register("a", legacy);
+    expect(dispatcher.pushAgentUpdate("a", "request", "a".repeat(64))).toBe(false);
+    expect(legacy.messages).toHaveLength(0);
+    const capable = { ...mockChannel(), agentUpdateV1: true };
+    dispatcher.register("a", capable);
+    expect(dispatcher.pushAgentUpdate("a", "request", "a".repeat(64))).toBe(true);
+    expect(capable.messages[0]?.payload.case).toBe("agentUpdateRequest");
+  });
   test("forwards structured Spack intent while leaving the legacy command fail-closed", () => {
     const dispatcher = new AgentDispatcher();
     const channel = mockChannel();

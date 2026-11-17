@@ -9,6 +9,7 @@ import type { PbsProAdapterDeps } from "./adapters/pbs-pro";
 import type { SlurmAdapterDeps } from "./adapters/slurm";
 import { ContainerSpawner } from "./adapters/spawner-container";
 import type { TorqueAdapterDeps } from "./adapters/torque";
+import { AgentUpdateController, agentUpdatePath } from "./agent-update";
 import { ensureCertBundle } from "./auth/bootstrap";
 import { createHttpEnrollmentClient } from "./auth/enrollment-client";
 import { fingerprintOfPem } from "./auth/fingerprint";
@@ -78,7 +79,7 @@ async function main() {
   logger.info({ agentId: config.AGENT_ID, site: config.AGENT_SITE_NAME }, "Agent starting");
 
   // Open local SQLite (initializes schema via runSqliteMigrations)
-  const db = createSqliteDb(config.AGENT_DB_PATH);
+  const db = createSqliteDb(config.AGENT_DB_PATH, config.AGENT_SQLITE_JOURNAL_MODE);
   logger.info({ path: config.AGENT_DB_PATH }, "Local SQLite ready");
 
   // Persistent outbound spillover for offline windows. The heartbeat cap
@@ -618,7 +619,19 @@ async function main() {
       : undefined;
 
   // Start bidirectional stream loop
+  const updateController = new AgentUpdateController(
+    agentUpdatePath(config.AGENT_DB_PATH),
+    process.env.KQ_AGENT_REMOTE_UPDATE === "1" && process.env.KQ_AGENT_SUPERVISED === "1",
+    process.env.KQ_RUNNING_RELEASE,
+  );
   const stream = new AgentStream({
+    ...(process.env.KQ_AGENT_SUPERVISED === "1"
+      ? {
+          confirmAgentUpdate: () => updateController.confirm(),
+          receiveAgentUpdate: (requestId: string, release: string) =>
+            updateController.receive(requestId, release),
+        }
+      : {}),
     federationResultCopy: config.AGENT_FEDERATION_RESULT_COPY ?? undefined,
     federationInputCopy: config.AGENT_FEDERATION_INPUT_COPY ?? undefined,
     federationMediaExport: config.AGENT_FEDERATION_MEDIA_EXPORT
@@ -647,7 +660,10 @@ async function main() {
       installation: { state: config.AGENT_SPACK_INSTALL_ENABLED ? "idle" : "disabled", active: 0 },
       jobs: { state: "unknown", active: 0 },
       transfers: { state: "unknown", active: 0 },
-      update: await readSiteUpdate(config.AGENT_DB_PATH),
+      update: {
+        ...(await readSiteUpdate(config.AGENT_DB_PATH)),
+        request: await updateController.report(),
+      },
       auditContext: await materialAuditor?.context().catch(() => undefined),
     }),
     adapter,
@@ -742,6 +758,7 @@ async function main() {
           return true;
         }),
       resume: (lease) => stream.resumeAfterMaintenance(lease),
+      stop: () => stream.stop(),
     },
   ).catch(() => {
     logger.warn("Maintenance socket unavailable; automatic maintenance permission is disabled");

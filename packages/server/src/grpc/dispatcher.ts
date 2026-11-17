@@ -1,6 +1,7 @@
 import { create } from "@bufbuild/protobuf";
 import { jobCancellations, jobWorkRootReleases, type PgDb } from "@kuintessence/db";
 import {
+  AgentUpdateRequestSchema,
   CancelJobSchema,
   DataDeliveryBindingSchema,
   DataDeliveryEntrySchema,
@@ -151,6 +152,7 @@ export function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
 }
 
 export interface AgentChannel {
+  agentUpdateV1?: boolean;
   push(msg: ServerMessage): void;
   close(): void;
   spackMaterialDeliveryV1?: boolean;
@@ -191,6 +193,19 @@ export interface AgentChannel {
  */
 export class AgentDispatcher {
   private channels = new Map<string, AgentChannel>();
+
+  pushAgentUpdate(agentId: string, requestId: string, release: string): boolean {
+    if (!this.getChannel(agentId)?.agentUpdateV1) return false;
+    return this.pushToAgent(
+      agentId,
+      create(ServerMessageSchema, {
+        payload: {
+          case: "agentUpdateRequest",
+          value: create(AgentUpdateRequestSchema, { requestId, release }),
+        },
+      }),
+    );
+  }
 
   register(agentId: string, channel: AgentChannel): void {
     const existing = this.channels.get(agentId);

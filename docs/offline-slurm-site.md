@@ -59,6 +59,10 @@ Web path 部署在上述地址前加 `/platform`。这些接口与既有 Agent �
 
 manifest v1 必须包括 `sequence`（单调递增）、`serverRevision`（真实 40 位构建提交）、`stateFormat`、`architecture`、`minGlibc`、`cpuFlags`、`redistribution: unrestricted`，以及文件数组。每项包含 `name/role/size/sha256/executable`；必须各有一个 `agent` 和 `cli`。Spack 接入再提供 `runtime-sif`、`site-profile` 和可执行 `spack` 入口。
 
+可选的签名字段 `serverProtocolRange: {"min":1,"max":1}` 表示发行支持的 Server 站点协议闭区间。Server 的 `GET /api/agent-binaries` 实时响应增加 `siteProtocolVersion`，来自运行代码的协议常量，不从磁盘上的二进制 manifest 或环境变量读取。新版 bootstrap 按协议范围判断兼容，`serverRevision` 保留构建来源含义；产品包版本和 Git commit 不用来推断协议兼容。协议版本须在破坏站点 HTTP/connectRPC/注册/传输契约时提升，`stateFormat` 继续单独约束状态迁移。范围只能覆盖实际验证过的协议，具体发布顺序见[准备手册](site-release-preparation.md)。
+
+旧发行缺少该字段时仍严格要求 revision 相等；有范围但 Server 未报告协议或超出范围时拒绝安装和暂存，不消费注册 token、不切换当前发行。旧 bootstrap 不会自动获得此能力，须通过可信渠道更新。遇到 `Site release and deployed Server revisions differ`，核对报错中的两端 revision，再由发行方验证兼容并重新签名发布；不要手改已签名清单或删除已有注册身份。`GET /api/agent-binaries/manifest.json` 仍是原始构建文件，实时协议字段只在 `/api/agent-binaries` 响应提供。
+
 失败安装依赖复用、旧 worker 停止证明及恢复验证证据使用 `slurm-site-v5`。旧 `slurm-site-v4` 已包含作业提交中标记、持久终态快照和 Slurm worker generation，但不能读取新增安装记录。初始化继续拒绝 v4→v5 原地激活及 v5→v4 普通回滚；旧站点须另行审查迁移，新站点可首次安装 v5。此字段是发行契约，不能为了允许切换而伪造相同值。
 
 `spack` 入口可作为与同目录 SIF 配套的可移植启动脚本，支持平台现有 `SpackManager` 的版本/查询调用。其自身也需摘要校验。SIF 内的固定 `/opt/spack` 必须包含离线 solver/bootstrap 依赖；仅提供 Spack 源码压缩包不足以初始化受管运行环境。
@@ -88,9 +92,9 @@ Forge OCI 源码布局不等于 runtime SIF。科学软件的 recipe、lock、�
 
 初始化配置 `KQ_SPACK_MANAGED_MEMORY_MIB` 默认为 4096，允许 1024..1048576 MiB（1 TiB），贯通 Agent、Slurm、Apptainer 与 worker。Slurm 申请 `max(2048, budget)+512` MiB，必须不超过站点显式填写的 `KQ_SLURM_MEMORY_LIMIT_MIB`；对应 Agent 配置为 `AGENT_SPACK_SLURM_MEMORY_LIMIT_MIB`。小节点可按实际负载与容量明确配置，例如预算 2816 对应申请 3328 MiB，不降低容器隔离。新版普通用户受管初始化还要求新鲜、绑定分区/runtime/预算的计算节点隔离与能力报告。controller 保留明确终态时可在未开启 accounting 的站点完成维护对账；controller 与 accounting 均无记录时仍须保留现场，不推断作业已结束。
 
-材料、SIF、site profile 和 worker staging 必须在共享盘。初始化复制 SIF/profile/Spack 时采用同目录临时文件、摘要校验和原子发布，中断重跑不会复用半件文件。SQLite/WAL 和 Agent 锁必须放可靠持久本地盘。初始化对共享或未知类型的状态盘报错，不静默写入共享 HOME。
+材料、SIF、site profile 和 worker staging 必须在共享盘。初始化复制 SIF/profile/Spack 时采用同目录临时文件、摘要校验和原子发布，中断重跑不会复用半件文件。默认 SQLite/WAL 和 Agent 锁放可靠持久本地盘。仅有共享 HOME 的站点可显式使用[回滚日志与 tmux 模式](../examples/slurm-user-site/SHARED-HOME.md)，它绑定单一主机并拒绝旧 WAL 发行；不静默更改既有数据库的存储方式。
 
-`bootstrap ... check` 只读确认状态路径不位于 HOME、配置的共享根或常见临时目录，挂载可写且为允许的本地文件系统；同时有界查询所选 Slurm 分区是否存在且 UP，并分别报告 Python/Apptainer module、user-systemd、linger 的观测结果。它不提交作业、不建立云端连接，也不证明本地盘保留期限、account/QoS 授权或计算节点能力；这些仍须现场运行检查。
+`bootstrap ... check` 只读核验选定存储模式的目录、挂载和已有主机绑定；默认 local 模式拒绝 HOME、共享根和临时盘。同时有界查询所选 Slurm 分区是否存在且 UP，并分别报告 Python/Apptainer module、user-systemd、linger 的观测结果。它不提交作业、不建立云端连接，也不证明保留期限、account/QoS 授权或计算节点能力；这些仍须现场运行检查。
 
 Slurm 构建先 `sbatch --hold`，保存带唯一 job name 的 `slurm.json`，再 release；身份未知、取消结果未确认时保留 staging 和 writer lock，不重复提交。worker 在计算节点采集 namespace 元数据。Apptainer 的网络隔离、PID namespace、cgroup 限额仍强制验证，未提供所需能力的集群会明确失败。
 
