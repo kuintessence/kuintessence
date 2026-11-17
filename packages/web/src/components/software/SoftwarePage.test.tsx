@@ -1444,7 +1444,7 @@ advanced:
     const picker = await screen.findByTestId("software-usecase-package-picker");
     expect(picker.getAttribute("role")).toBe("dialog");
     expect(picker.className).toContain("h-[min(88vh,900px)]");
-    expect(picker.className).toContain("overflow-clip");
+    expect(picker.className).toContain("overflow-visible");
     expect((await screen.findByTestId("software-usecase-catalog-grid")).className).toContain(
       "overflow-auto",
     );
