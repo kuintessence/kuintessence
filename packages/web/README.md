@@ -40,6 +40,19 @@ bun run --filter @kuintessence/web test
 在 Vite dev/build 时生成并纳入版本控制。修改 `src/routes/` 后，在仓库根目录执行
 `bun run --filter @kuintessence/web build` 更新路由树，提交生成结果。
 
+## 软件中心组件
+
+软件创建页的路由编排和提交逻辑位于 `src/components/software/SoftwareCreatePages.tsx`。
+同目录的 `WorkflowTemplateForm.tsx`、`UsecasePackageForm.tsx` 和 `SpackCatalogPackageForm.tsx`
+分别管理工作流模板、用例和 Spack 包的创建表单。创建页直接引用这些模块。
+创建和编辑用例共用 `SpackCatalogPicker.tsx` 的目录选择器，以及 `SpackSpecPicker.tsx` 的 spec 配置与编译器解析。
+`software-fields.ts`、`spack-catalog.ts` 和 `spack-spec.ts` 提供共享字段、目录标识、分页常量及 spec 组装。
+
+算力中心的 `src/components/cp/SoftwarePolicyTable.tsx` 保留软件概览和策略编辑。
+同目录的 `SoftwarePolicyAgentDetailSheet.tsx` 管理 Agent 详情及操作请求，
+`SoftwareInstalledSpecList.tsx` 和 `SoftwareOperations.tsx` 分别呈现安装列表与操作历史，
+`SoftwarePolicySummary.tsx` 提供共享摘要，`SpackCatalogPickerDialog.tsx` 负责目录选择。
+
 ## 当前界面
 
 - Dashboard、Jobs、Agents、Workflows、Software、Files、Terminal、算力中心控制台、Settings、Auth。
@@ -50,6 +63,7 @@ bun run --filter @kuintessence/web test
 - 作业列表首次加载有状态提示，失败可原地重试；作业和工作流名称支持键盘操作。主要运行状态及相对时间支持中英文。
 - 标签页和管理区域使用短淡入反馈，系统减少动态效果设置会关闭这些动画。
 - 工作流创建页使用 YAML/React Flow 双向编辑器；草稿删除需确认，失败保留草稿并支持重试。
+- 工作流编辑器侧栏支持拖拽调整宽度。拖拽取消、窗口失焦或尺寸变化、折叠正在拖拽的侧栏、离开编辑器时，拖拽结束并恢复页面原有的鼠标样式和文本选择设置。
 - 打开草稿时先加载再编辑，加载失败可重试。保存期间的新编辑会保留，成功后草稿列表自动刷新；预算必须为有限非负数，名称不可为空。
 - 作业与工作流状态筛选提供选中语义，便于辅助技术识别；等待预算审批的详情保持刷新并允许取消，审批操作仍需既有 API。
 - 节点注册页对不可用接口提供配置提示与重试，有效期限制为 60 秒至 30 天，签发/撤销/复制失败可见。
@@ -58,9 +72,17 @@ bun run --filter @kuintessence/web test
 - 运行详情读取失败可重试；关联作业读取失败显示提示，并使用可用的持久化状态。运行及已读取作业均结束后停止轮询；取消成功刷新列表缓存。
 - 作业实时通知触发完整详情读取，完成时间、退出码等诊断字段与终态一起更新；服务端关闭 WebSocket 时触发 REST 刷新。
 - SSH 走 Server gateway 与 Agent relay；通用 `/terminal` shell 执行是独立的 HTTP polling 界面。
+- 通用终端可用左右方向键、Home 和 End 切换会话标签。关闭焦点所在会话后，焦点转到当前标签或新建会话按钮，列表刷新失败时转到刷新按钮；审计筛选向辅助技术提供按下状态和搜索框名称。
+- 通用终端会话关闭失败时保留当前选择并提示重试；审计数据读取失败可重试，恢复成功后才显示数据帧、计数并开放导出。
+- SSH 录制回放只接收最近一次播放请求的结果，切换录制或离开页面会取消旧请求并清理回放定时器。
+- 删除录制成功后会清理同一录制的播放和在途重播；期间切换到其他录制时，保留其播放、加载或错误状态。
 - 登录页支持 SSO/OIDC，非生产模式另提供开发登录。平台管理员可在 Settings/Operations 的 Security 区域配置中英文品牌文案、Logo 与 favicon；空值使用内置默认，图片支持随 Web 镜像发布的 `/branding/logo.svg`、`/branding/favicon.svg` 或安全 HTTPS URL。
 - 算力中心控制台 包含 Agent registration token 签发、metering 查询、导出和 webhook 管理界面。
 - 平台与算力中心 材料面板共用 [Spack 安装绑定编辑器](docs/spack-install-bindings.md)，支持精确 spec 的查询、绑定、停用与审计；实际安装需由目标 Agent 完成。
+- 创建 Spack 目录包时，只有最近发起且对应当前 `package.py` 文本的解析可以回填；修改文本会清除旧解析预览和错误，解析期间编辑的名称、描述和标签会保留。
+- 编译器解析只接受最近请求的结果；修改解析文本会清除旧选项和错误，已显式选中的编译器保持不变。
+- 软件中心各目录根据当前标签的请求显示加载状态，等待期间仍可切换标签和搜索，数据处理脚本目录独立加载。
+- 脚本编辑器按需加载 Monaco；加载失败时可继续用纯文本编辑并重试，草稿在加载、失败和恢复期间保持。部署换版或浏览器缓存的模块错误可能需要刷新才能恢复 Monaco，刷新前应先保存草稿。
 - 本地 GUI 模式可通过 `kq gui serve` 注入 `window.__KQ_LOCAL__` 复用同一 SPA。
 - 作业日志避免请求重叠，切换主题或错误恢复后保留完整日志，切换作业时清空旧终端；失败可重试。
 - 作业与工作流取消响应绑定发起时的记录，详情读取失败隐藏旧名称和取消入口。文件页读取完整分页结果，状态变化时刷新，也支持手动刷新和重试；验证失败隐藏旧下载链接。
@@ -92,6 +114,7 @@ bun run --filter @kuintessence/web test
 ### 资源管理与日志
 
 算力中心下设可用区，集群归属于一个可用区。目录中的可用区、集群和成员数量提供组织范围入口；集群和成员入口通过现有组织切换 API 校验权限后再加载目标页面。算网一览支持可用区内高速网络以及跨可用区的高速网络／专线配置，可选择整个可用区或具体集群；配置带宽独立于观测指标，不会创建实际网络或改写传输路由。
+集群和成员入口完成组织选择后会移除 URL 中的 `organizationId` 参数，之后刷新页面或手动切换时沿用当前组织。
 
 `LogViewer` 复用 `GET /audit-log` 的关键词、起止时间、`limit`／`offset` 与总数，提供服务端分页、检索及脱敏详情。`RefreshButton` 统一图标刷新入口，保留读屏名称、提示和加载状态。资源页签采用紧凑的选中背景，窄屏允许换行；计量筛选在桌面优先同行展示。
 

@@ -16,6 +16,7 @@ const PROMPT_GUESS_RE = /\]\$\s*$/;
 
 export interface SessionPaneProps {
   session: TerminalSession;
+  closing: boolean;
   onClose: (session: TerminalSession) => void;
 }
 
@@ -24,7 +25,7 @@ interface ExecResp {
   session: TerminalSession;
 }
 
-export function SessionPane({ session, onClose }: SessionPaneProps) {
+export function SessionPane({ session, closing, onClose }: SessionPaneProps) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -171,14 +172,8 @@ export function SessionPane({ session, onClose }: SessionPaneProps) {
             className="gap-1"
             data-testid="terminal-close"
             aria-label={t("terminal.closeSession", { siteId: session.siteId })}
-            onClick={() => {
-              api
-                .delete<TerminalSession>(`/terminal/sessions/${session.id}`)
-                .then((closed) => onClose(closed))
-                .catch((err) => {
-                  toast.error(toUserFacingError(err, t("terminal.closeFailed")));
-                });
-            }}
+            disabled={closing}
+            onClick={() => onClose(session)}
           >
             <X className="h-3.5 w-3.5" />
             {t("terminal.close")}

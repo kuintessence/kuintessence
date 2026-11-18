@@ -18,7 +18,9 @@ import {
   type KeyboardEvent,
   type PointerEvent,
   type ReactNode,
+  type RefObject,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -131,6 +133,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
   );
   const [paletteWidth, setPaletteWidth] = useState(PALETTE_WIDTH.default);
   const [propertiesWidth, setPropertiesWidth] = useState(PROPERTIES_WIDTH.default);
+  const activeResize = useRef<PanelResize>(null);
   const [pendingNode, setPendingNode] = useState<NodeCreationRequest | null>(null);
   const [scriptBindingBusy, setScriptBindingBusy] = useState(false);
   const gridTemplateColumns = `${paletteCollapsed ? "36px 0px" : `${paletteWidth}px 6px`} minmax(0,1fr) ${
@@ -551,6 +554,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           }
         />
         <PanelResizeHandle
+          activeResize={activeResize}
           side="left"
           value={paletteWidth}
           limits={PALETTE_WIDTH}
@@ -575,6 +579,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           </ReactFlowProvider>
         </div>
         <PanelResizeHandle
+          activeResize={activeResize}
           side="right"
           value={propertiesWidth}
           limits={PROPERTIES_WIDTH}
@@ -696,7 +701,10 @@ export function buildUsecaseInputSlots(
   });
 }
 
+type PanelResize = { side: "left" | "right"; stop: () => void };
+
 function PanelResizeHandle({
+  activeResize,
   hidden,
   label,
   limits,
@@ -704,35 +712,62 @@ function PanelResizeHandle({
   side,
   value,
 }: {
+  activeResize: RefObject<PanelResize | null>;
   hidden: boolean;
   label: string;
   limits: { min: number; max: number };
   onChange: (value: number) => void;
-  side: "left" | "right";
+  side: PanelResize["side"];
   value: number;
 }) {
+  useLayoutEffect(() => {
+    if (hidden) return;
+    return () => {
+      if (activeResize.current?.side === side) activeResize.current.stop();
+    };
+  }, [activeResize, hidden, side]);
+
   function clamp(next: number) {
     return Math.min(limits.max, Math.max(limits.min, next));
   }
 
   function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (hidden) return;
     event.preventDefault();
-    const startX = event.clientX;
+    activeResize.current?.stop();
+
+    const { clientX: startX, pointerId } = event;
+    const { style } = document.body;
+    const previousCursor = style.cursor;
+    const previousUserSelect = style.userSelect;
     const startValue = value;
     const move = (moveEvent: globalThis.PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
       const delta = moveEvent.clientX - startX;
       onChange(clamp(startValue + (side === "left" ? delta : -delta)));
     };
-    const stop = () => {
-      document.removeEventListener("pointermove", move);
-      document.removeEventListener("pointerup", stop);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
+    const finish = (endEvent: globalThis.PointerEvent) => {
+      if (endEvent.pointerId === pointerId) stop();
     };
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+    const stop = () => {
+      if (activeResize.current?.stop !== stop) return;
+      activeResize.current = null;
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", finish);
+      document.removeEventListener("pointercancel", finish);
+      window.removeEventListener("blur", stop);
+      window.removeEventListener("resize", stop);
+      style.cursor = previousCursor;
+      style.userSelect = previousUserSelect;
+    };
+    activeResize.current = { side, stop };
+    style.cursor = "col-resize";
+    style.userSelect = "none";
     document.addEventListener("pointermove", move);
-    document.addEventListener("pointerup", stop);
+    document.addEventListener("pointerup", finish);
+    document.addEventListener("pointercancel", finish);
+    window.addEventListener("blur", stop);
+    window.addEventListener("resize", stop);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
