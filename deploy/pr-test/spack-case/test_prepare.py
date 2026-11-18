@@ -702,13 +702,15 @@ class SourceTests(unittest.TestCase):
                     self.fetch([node], create)
                 create.assert_not_called()
 
-    def test_pinned_zlib_uses_https_without_changing_its_checksum(self):
+    def test_pinned_zlib_uses_official_release_without_changing_its_checksum(self):
         digest = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
         zlib = self.URL(digest, "http://zlib.net/fossils/zlib-1.3.1.tar.gz")
         other = self.URL(url="http://example.test/source.tar.gz")
 
         def create(_mirror, _nodes):
-            self.assertEqual(zlib.url, "https://zlib.net/fossils/zlib-1.3.1.tar.gz")
+            self.assertEqual(
+                zlib.url, "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
+            )
             self.assertEqual(zlib.digest, digest)
             self.assertEqual(other.url, "http://example.test/source.tar.gz")
             return [], [], []
