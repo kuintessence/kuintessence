@@ -22,6 +22,12 @@
 
 已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
 
+## packages/web/src/components/OrganizationQueryScope.tsx
+
+容器：继承父容器 / 无独立容器。
+
+已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
+
 ## packages/web/src/components/ProtectedRoute.tsx
 
 容器：继承父容器 / 无独立容器。
@@ -204,14 +210,6 @@
 | 89 | NativeSelect · "edit-policy-list" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
 | 104 | Textarea · "edit-policy-specs" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
 
-## packages/web/src/components/cp/EditQuotaDialog.tsx
-
-容器：继承父容器 / 无独立容器。
-
-| 行 | 控件 / 字段 | 状态 | 原因 |
-| --- | --- | --- | --- |
-| 79 | Input · "edit-quota-input" | 保留 | 数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。 |
-
 ## packages/web/src/components/cp/KpiTile.tsx
 
 容器：Card:33。
@@ -272,30 +270,63 @@
 
 已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
 
-## packages/web/src/components/cp/SoftwarePolicyTable.tsx
+## packages/web/src/components/cp/SoftwareInstalledSpecList.tsx
 
-容器：PageShell:281、Card:400、Card:424、Card:822、SheetContent:1315、DialogContent:2691、SheetContent:3064。
+容器：继承父容器 / 无独立容器。
+
+已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
+
+## packages/web/src/components/cp/SoftwareOperations.tsx
+
+容器：继承父容器 / 无独立容器。
 
 | 行 | 控件 / 字段 | 状态 | 原因 |
 | --- | --- | --- | --- |
-| 838 | Input · "cp-software-preview-spec" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 850 | Input · "cp-software-preview-usecase" | 保留 | 策略预览接受用例或版本标识/匹配模式；当前目录不能完整枚举策略对象，保留原查询契约。 |
-| 862 | Input · "cp-software-preview-usecase-version" | 保留 | 策略预览接受用例或版本标识/匹配模式；当前目录不能完整枚举策略对象，保留原查询契约。 |
-| 1370 | NativeSelect · "cp-software-operation-action" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
-| 1383 | Input · "cp-software-operation-spec" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1437 | NativeSelect · "cp-software-batch-action" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
-| 1450 | Textarea · "cp-software-batch-specs" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 2306 | NativeSelect · "cp-software-operation-action-filter" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
-| 2825 | ResourceSelectField · "cp-spack-catalog-version" | 已替换 | 共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。 |
-| 2870 | NativeSelect · {variantInputId} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
-| 2891 | Input · {variantInputId} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 2931 | Input · "cp-spack-catalog-spec" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3080 | ResourceSelectField · {draft.providerOrgId} | 已替换 | 共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。 |
-| 3096 | NativeSelect · {draft.installMode} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
-| 3111 | input · input | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
-| 3119 | input · input | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
-| 3161 | input · input | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
-| 3247 | Textarea · {id} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 401 | NativeSelect · "cp-software-operation-action-filter" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+
+## packages/web/src/components/cp/SoftwarePolicyAgentDetailSheet.tsx
+
+容器：SheetContent:494。
+
+| 行 | 控件 / 字段 | 状态 | 原因 |
+| --- | --- | --- | --- |
+| 549 | NativeSelect · "cp-software-operation-action" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+| 562 | Input · "cp-software-operation-spec" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 616 | NativeSelect · "cp-software-batch-action" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+| 629 | Textarea · "cp-software-batch-specs" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+
+## packages/web/src/components/cp/SoftwarePolicySummary.tsx
+
+容器：继承父容器 / 无独立容器。
+
+已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
+
+## packages/web/src/components/cp/SoftwarePolicyTable.tsx
+
+容器：PageShell:219、Card:358、Card:630、SheetContent:796。
+
+| 行 | 控件 / 字段 | 状态 | 原因 |
+| --- | --- | --- | --- |
+| 646 | Input · "cp-software-preview-spec" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 658 | Input · "cp-software-preview-usecase" | 保留 | 策略预览接受用例或版本标识/匹配模式；当前目录不能完整枚举策略对象，保留原查询契约。 |
+| 670 | Input · "cp-software-preview-usecase-version" | 保留 | 策略预览接受用例或版本标识/匹配模式；当前目录不能完整枚举策略对象，保留原查询契约。 |
+| 812 | ResourceSelectField · {draft.providerOrgId} | 已替换 | 共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。 |
+| 828 | NativeSelect · {draft.installMode} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+| 843 | input · input | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
+| 851 | input · input | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
+| 893 | input · input | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
+| 979 | Textarea · {id} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+
+## packages/web/src/components/cp/SpackCatalogPickerDialog.tsx
+
+容器：DialogContent:153。
+
+| 行 | 控件 / 字段 | 状态 | 原因 |
+| --- | --- | --- | --- |
+| 287 | ResourceSelectField · "cp-spack-catalog-version" | 已替换 | 共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。 |
+| 332 | NativeSelect · {variantInputId} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+| 353 | Input · {variantInputId} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 393 | Input · "cp-spack-catalog-spec" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
 
 ## packages/web/src/components/cp/UsersTable.tsx
 
@@ -1361,12 +1392,12 @@
 
 ## packages/web/src/components/settings/SshRecordingPlayer.tsx
 
-容器：Card:193。
+容器：Card:225。
 
 | 行 | 控件 / 字段 | 状态 | 原因 |
 | --- | --- | --- | --- |
-| 252 | Input · "ssh-rec-agent" | 保留 | 录像按历史 Agent 标识查询；当前目录不能可靠枚举已移除节点，保留历史 ID 过滤。 |
-| 266 | Input · "ssh-rec-session" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 284 | Input · "ssh-rec-agent" | 保留 | 录像按历史 Agent 标识查询；当前目录不能可靠枚举已移除节点，保留历史 ID 过滤。 |
+| 298 | Input · "ssh-rec-session" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
 
 ## packages/web/src/components/software/CatalogEmptyState.tsx
 
@@ -1393,6 +1424,12 @@
 | 597 | Input · {t("software.license.materialVersion")} | 保留 | 材料的外部版本标识，与平台软件版本目录语义不同，没有权威候选来源。 |
 | 603 | Input · {t("software.license.elements")} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
 | 609 | Input · {t("software.license.fingerprint")} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+
+## packages/web/src/components/software/FormHeader.tsx
+
+容器：继承父容器 / 无独立容器。
+
+已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
 
 ## packages/web/src/components/software/MaterialCatalog.tsx
 
@@ -1541,26 +1578,33 @@
 
 ## packages/web/src/components/software/SandboxScriptStudio.tsx
 
-容器：PageShell:370、DialogContent:419、Card:766。
+容器：PageShell:430、DialogContent:479、Card:827。
 
 | 行 | 控件 / 字段 | 状态 | 原因 |
 | --- | --- | --- | --- |
-| 455 | Input · {draft.name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 463 | Input · {draft.version} | 保留 | 发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。 |
-| 472 | ResourceSelectField · {selectedRevision ?? ""} | 已替换 | 共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。 |
-| 492 | Textarea · {draft.inputsText} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 502 | Textarea · {draft.outputsText} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 532 | Input · {draft.changelog} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 546 | NativeSelect · {draft.language} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
-| 557 | ResourceSelectField · {draft.runtimeProfileId} | 已替换 | 共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。 |
-| 576 | Input · {draft.entrypoint} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 642 | Textarea · {draft.fixturesText} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 653 | Input · {mappingId} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 684 | Input · {promptSource} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 690 | Input · {promptTarget} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 696 | Input · {promptUsecase} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 711 | Textarea · {renderedPrompt} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 738 | NativeSelect · {plannerMode} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+| 203 | Textarea · {entrypoint \|\| t("sandbox.studio.entrypoint")} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 515 | Input · {draft.name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 523 | Input · {draft.version} | 保留 | 发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。 |
+| 532 | ResourceSelectField · {selectedRevision ?? ""} | 已替换 | 共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。 |
+| 552 | Textarea · {draft.inputsText} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 562 | Textarea · {draft.outputsText} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 593 | Input · {draft.changelog} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 607 | NativeSelect · {draft.language} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+| 618 | ResourceSelectField · {draft.runtimeProfileId} | 已替换 | 共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。 |
+| 637 | Input · {draft.entrypoint} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 703 | Textarea · {draft.fixturesText} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 714 | Input · {mappingId} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 745 | Input · {promptSource} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 751 | Input · {promptTarget} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 757 | Input · {promptUsecase} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 772 | Textarea · {renderedPrompt} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 799 | NativeSelect · {plannerMode} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+
+## packages/web/src/components/software/SmallEmpty.tsx
+
+容器：继承父容器 / 无独立容器。
+
+已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
 
 ## packages/web/src/components/software/SoftwareCard.tsx
 
@@ -1576,7 +1620,7 @@
 
 ## packages/web/src/components/software/SoftwareCreatePages.tsx
 
-容器：PageShell:43。
+容器：PageShell:41。
 
 已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
 
@@ -1588,50 +1632,47 @@
 
 ## packages/web/src/components/software/SoftwarePage.tsx
 
-容器：PageShell:601、SheetContent:1481、SheetContent:1793、SheetContent:2185、DialogContent:2451、SheetContent:2980、DialogContent:3007。
+容器：PageShell:570、SheetContent:1458、SheetContent:1699、SheetContent:2084、DialogContent:2111。
 
 | 行 | 控件 / 字段 | 状态 | 原因 |
 | --- | --- | --- | --- |
-| 1574 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1578 | Input · {version} | 保留 | 发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。 |
-| 1584 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1588 | Input · {tags} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1592 | Textarea · {yamlContent} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1647 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1651 | Input · {version} | 保留 | 发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。 |
-| 1657 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1661 | Input · {tags} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1665 | Textarea · {yamlContent} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1926 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1930 | Input · {version} | 保留 | 发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。 |
-| 1936 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1941 | Input · {commandFile} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 1991 | Input · {inputDescriptor} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 2000 | Input · {argumentFormat} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 2211 | Input · "software-usecase-spec-version" | 保留 | 发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。 |
-| 2221 | Input · "software-usecase-spec-compiler" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 2231 | Input · "software-usecase-spec-module" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 2241 | Input · "software-usecase-spec-variants" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 2387 | Textarea · "software-usecase-compiler-source" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3107 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3111 | NativeSelect · {`${id}-source`} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
-| 3129 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3134 | Textarea · {`${id}-packageFile`} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3159 | Input · {tags} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3246 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3250 | NativeSelect · {`${id}-source`} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
-| 3263 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3267 | Input · {tags} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3436 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3440 | Input · {version} | 保留 | 发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。 |
-| 3446 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3451 | Input · {commandFile} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3495 | Input · {inputDescriptor} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
-| 3504 | Input · {argumentFormat} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 1553 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 1557 | Input · {version} | 保留 | 发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。 |
+| 1563 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 1567 | Input · {tags} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 1571 | Textarea · {yamlContent} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 2195 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 2199 | NativeSelect · {`${id}-source`} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+| 2212 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 2216 | Input · {tags} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 2385 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 2389 | Input · {version} | 保留 | 发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。 |
+| 2395 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 2400 | Input · {commandFile} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 2444 | Input · {inputDescriptor} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 2453 | Input · {argumentFormat} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
 
 ## packages/web/src/components/software/SoftwarePublisherRoute.tsx
 
 容器：PageShell:25、PageShell:43。
+
+已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
+
+## packages/web/src/components/software/SpackCatalogPackageForm.tsx
+
+容器：继承父容器 / 无独立容器。
+
+| 行 | 控件 / 字段 | 状态 | 原因 |
+| --- | --- | --- | --- |
+| 88 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 100 | NativeSelect · {`${id}-source`} | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+| 118 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 130 | Textarea · {`${id}-packageFile`} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 161 | Input · {tags} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+
+## packages/web/src/components/software/SpackCatalogPicker.tsx
+
+容器：DialogContent:99。
 
 已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
 
@@ -1675,6 +1716,43 @@
 | --- | --- | --- | --- |
 | 131 | input · {t(`spackOnline.${kind}Manifest`)} | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
 
+## packages/web/src/components/software/SpackSpecPicker.tsx
+
+容器：SheetContent:138。
+
+| 行 | 控件 / 字段 | 状态 | 原因 |
+| --- | --- | --- | --- |
+| 164 | Input · "software-usecase-spec-version" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 174 | Input · "software-usecase-spec-compiler" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 184 | Input · "software-usecase-spec-module" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 194 | Input · "software-usecase-spec-variants" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 352 | Textarea · "software-usecase-compiler-source" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+
+## packages/web/src/components/software/UsecasePackageForm.tsx
+
+容器：继承父容器 / 无独立容器。
+
+| 行 | 控件 / 字段 | 状态 | 原因 |
+| --- | --- | --- | --- |
+| 121 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 125 | Input · {version} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 131 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 136 | Input · {commandFile} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 186 | Input · {inputDescriptor} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 195 | Input · {argumentFormat} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+
+## packages/web/src/components/software/WorkflowTemplateForm.tsx
+
+容器：继承父容器 / 无独立容器。
+
+| 行 | 控件 / 字段 | 状态 | 原因 |
+| --- | --- | --- | --- |
+| 44 | Input · {name} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 48 | Input · {version} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 54 | Input · {description} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 58 | Input · {tags} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 62 | Textarea · {yamlContent} | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+
 ## packages/web/src/components/ssh/SshTerminal.tsx
 
 容器：继承父容器 / 无独立容器。
@@ -1683,11 +1761,11 @@
 
 ## packages/web/src/components/terminal/AuditDrawer.tsx
 
-容器：SheetContent:64。
+容器：SheetContent:65。
 
 | 行 | 控件 / 字段 | 状态 | 原因 |
 | --- | --- | --- | --- |
-| 127 | Input · "terminal-audit-search" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
+| 130 | Input · "terminal-audit-search" | 保留 | 自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。 |
 
 ## packages/web/src/components/terminal/NewSessionDialog.tsx
 
@@ -1706,7 +1784,7 @@
 
 ## packages/web/src/components/terminal/TerminalPage.tsx
 
-容器：PageShell:70。
+容器：PageShell:168。
 
 已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
 
@@ -1801,8 +1879,8 @@
 
 | 行 | 控件 / 字段 | 状态 | 原因 |
 | --- | --- | --- | --- |
-| 476 | NativeSelect · "rf-shell-flow-animation" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
-| 519 | input · input | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
+| 480 | NativeSelect · "rf-shell-flow-animation" | 保留 | 少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。 |
+| 523 | input · input | 保留 | 勾选、单选、文件上传或隐藏表单值，保留原生语义。 |
 
 ## packages/web/src/components/workflow/WorkflowSlotMappingDialog.tsx
 
@@ -1849,12 +1927,6 @@
 ## packages/web/src/components/workflows/WorkflowDagView.tsx
 
 容器：Card:336、Card:361、DialogContent:443、Card:491、Card:507、Card:557、Card:571、Card:584、Card:629。
-
-已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
-
-## packages/web/src/components/workflows/WorkflowEditor.tsx
-
-容器：继承父容器 / 无独立容器。
 
 已检查：无独立填写字段。复用共用组件或保留业务列表/展示、画布、权限及错误边界。
 
