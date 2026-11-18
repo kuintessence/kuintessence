@@ -6,6 +6,7 @@ import {
   orgs,
   userOrgMemberships,
   users,
+  workflowDrafts,
 } from "@kuintessence/db";
 import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
@@ -71,7 +72,7 @@ describe("platform user operations", () => {
     await db.insert(userOrgMemberships).values({ userId, orgId, role: "member" });
   });
   afterAll(async () => {
-    await db.delete(auditLog).where(eq(auditLog.actor, actorId));
+    await db.delete(auditLog).where(inArray(auditLog.actor, [actorId, adminId]));
     await db.delete(authSessions).where(inArray(authSessions.userId, [actorId, userId, adminId]));
     await db.delete(userOrgMemberships).where(eq(userOrgMemberships.orgId, orgId));
     await db.delete(users).where(inArray(users.id, [actorId, userId, adminId]));
@@ -141,5 +142,64 @@ describe("platform user operations", () => {
       sessionId: crypto.randomUUID(),
       refreshTokenId: crypto.randomUUID(),
     });
+  });
+  test("admins can provision and edit a user, and deletion preserves linked work", async () => {
+    const email = "ops-provisioned@test.invalid";
+    const provision = (role: string, id: string) =>
+      app(role, id).request("/api/platform/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-KQ-Active-Organization": orgId },
+        body: JSON.stringify({ email, displayName: " New user " }),
+      });
+    expect((await provision("operator", actorId)).status).toBe(403);
+    const response = await provision("platform_admin", adminId);
+    expect(response.status).toBe(201);
+    const { id } = (await response.json()) as { id: string };
+    const admin = app("platform_admin", adminId);
+    const path = `/api/platform/users/${id}`;
+    try {
+      expect((await provision("platform_admin", adminId)).status).toBe(409);
+      const list = await admin.request(`/api/platform/users?search=${email}`, {
+        headers: { "X-KQ-Active-Organization": orgId },
+      });
+      expect(await list.json()).toMatchObject({
+        canCreate: true,
+        items: [
+          {
+            id,
+            displayName: "New user",
+            role: "user",
+            canEdit: true,
+            organizations: [{ id: orgId }],
+          },
+        ],
+      });
+
+      const edit = (target: string) =>
+        admin.request(target, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ displayName: "Renamed" }),
+        });
+      expect((await edit(`/api/platform/users/${adminId}`)).status).toBe(403);
+      expect(await (await edit(path)).json()).toMatchObject({ id, displayName: "Renamed" });
+
+      await db.insert(workflowDrafts).values({ ownerId: id, name: "Draft", yaml: "{}" });
+      const blocked = await admin.request(path, { method: "DELETE" });
+      expect(blocked.status).toBe(409);
+      expect(await blocked.json()).toMatchObject({
+        error: { details: { reason: "USER_HAS_HISTORY" } },
+      });
+      expect(
+        await db.select().from(workflowDrafts).where(eq(workflowDrafts.ownerId, id)),
+      ).toHaveLength(1);
+      await db.delete(workflowDrafts).where(eq(workflowDrafts.ownerId, id));
+
+      expect((await admin.request(path, { method: "DELETE" })).status).toBe(200);
+      expect(await db.select().from(users).where(eq(users.id, id))).toHaveLength(0);
+      expect((await admin.request(path, { method: "DELETE" })).status).toBe(404);
+    } finally {
+      await db.delete(users).where(eq(users.id, id));
+    }
   });
 });

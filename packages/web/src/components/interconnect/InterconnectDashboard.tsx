@@ -897,7 +897,7 @@ function DashboardContent({
                 <TableRow key={c.id}>
                   <TableCell>
                     <button
-                      className="text-brand underline-offset-4 hover:underline"
+                      className="text-left text-brand underline-offset-4 hover:underline"
                       type="button"
                       onClick={() =>
                         resource

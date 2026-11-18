@@ -119,12 +119,15 @@
       "scheduling": "Scheduling and queues",
       "platformOperations": "Platform operations",
       "audit": "Audit and metering",
-      "platformTechnical": "Platform technical operations",
+      "platformTechnical": "Platform settings",
       "softwareAssets": "Software assets",
       "personal": "Account and preferences",
-      "computeResources": "Resources",
+      "computeResources": "Resource operations",
       "federationCollaboration": "Collaboration",
-      "federationAdministration": "Administration"
+      "federationAdministration": "Administration",
+      "overview": "Overview",
+      "computeNetwork": "Compute network",
+      "platformIdentity": "User management"
     },
     "nav": {
       "operationsOverview": "Operations overview",
@@ -132,7 +135,8 @@
       "operationsCompute": "Compute and software",
       "operationsMetering": "Metering and cost",
       "operationsGovernance": "Governance and audit",
-      "interconnect": "Compute & Network Overview"
+      "interconnect": "Compute & Network Overview",
+      "clusterAccess": "Cluster connections"
     }
   },
   "dataMarket": {
@@ -1563,7 +1567,8 @@
     "tabs": {
       "personal": "Personal and preferences",
       "security": "Platform security",
-      "infrastructure": "Infrastructure"
+      "infrastructure": "Infrastructure",
+      "branding": "Platform branding"
     },
     "personalNav": {
       "account": "Account and session",
@@ -1825,7 +1830,7 @@
       "secretStored": "Secret stored (encrypted)"
     },
     "branding": {
-      "titleCard": "Platform branding",
+      "titleCard": "Appearance and sign-in branding",
       "description": "Configure platform identity, login copy, and image assets for each supported language. Empty fields use the built-in defaults.",
       "languages": {
         "zh": "中文（zh）",
@@ -1934,7 +1939,8 @@
       "invalidCapacity": "Capacity must be a valid positive number. Leave blank for unknown capacity.",
       "organizationSearchPlaceholder": "Name or known organization UUID",
       "addOrganizationId": "Add this organization ID",
-      "path": "Root path"
+      "path": "Root path",
+      "quotaPolicy": "Quota policy"
     },
     "agentCerts": {
       "title": "Agent cert ledger",
@@ -2736,7 +2742,17 @@
       "updateFailed": "Could not update account status. Try again.",
       "previous": "Previous",
       "next": "Next",
-      "desktopManage": "Use a desktop to change account status."
+      "desktopManage": "Use a desktop to change account status.",
+      "create": "Add user",
+      "edit": "Edit profile",
+      "delete": "Delete user",
+      "email": "Sign-in email",
+      "displayName": "Display name",
+      "platformScope": "Platform-wide",
+      "createHint": "Provision an account in {{scope}}. The user activates it through single sign-on.",
+      "deleteHint": "Permanently delete the platform account for {{email}} and end its sessions. If automatic account creation is enabled, the next single sign-on can recreate the account. Disable it to block access.",
+      "emailInUse": "This email address is already in use. Check the address or find the existing account.",
+      "hasHistory": "This account is linked to platform records and cannot be deleted. Disable it to block access."
     },
     "accounts": {
       "disableConfirm": "Disable execution account {{name}}? New jobs will no longer be able to use this identity."
@@ -2755,7 +2771,8 @@
     "expand": "Expand selection",
     "resultCount": "{{count}} results",
     "clearFilters": "Clear filters",
-    "unavailable": "This option is currently unavailable. Choose another option."
+    "unavailable": "This option is currently unavailable. Choose another option.",
+    "resizeColumn": "Resize {{column}} column"
   },
   "functionMaps": {
     "appearance": "Appearance",

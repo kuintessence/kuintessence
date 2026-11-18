@@ -403,18 +403,14 @@ describe("CpQueuesPage", () => {
     await waitFor(() => screen.getByTestId("cp-queue-row-queue-1"));
     expect(screen.getByText("CPU normal")).toBeTruthy();
     const scroller = screen.getByTestId("cp-queues-table-scroll");
-    expect(scroller.className).toContain("sm:overflow-x-auto");
-    expect(scroller.querySelector("table")?.className).toContain("sm:min-w-[76rem]");
+    expect(scroller.className).toContain("overflow-x-auto");
     const row = screen.getByTestId("cp-queue-row-queue-1");
-    expect(row.className).toContain("grid");
+    expect(row.lastElementChild?.className).toContain("kq-pinned-end");
     expect(screen.getByTestId("cp-queue-edit-queue-1").className).toContain("min-h-11");
-    const details = screen.getByTestId("cp-queue-details-queue-1");
-    expect(details.getAttribute("aria-expanded")).toBe("false");
-    expect(details.getAttribute("aria-controls")).toBeNull();
-    fireEvent.click(details);
-    expect(details.getAttribute("aria-expanded")).toBe("true");
-    expect(details.getAttribute("aria-controls")).toBe("cp-queue-detail-queue-1");
-    expect(document.getElementById("cp-queue-detail-queue-1")?.textContent).toContain("queue-1");
+    fireEvent.click(screen.getByRole("button", { name: "cp.queues.col.queue" }));
+    expect(
+      screen.getByRole("columnheader", { name: /cp.queues.col.queue/ }).getAttribute("aria-sort"),
+    ).toBe("ascending");
     fireEvent.click(screen.getByTestId("cp-queue-toggle-queue-1"));
 
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("cp.queues.toast.disabled"));

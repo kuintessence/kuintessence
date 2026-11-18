@@ -675,6 +675,8 @@ describe("SoftwarePolicyTable", () => {
     cpClient.getSoftwareOverview.mockResolvedValue(overview);
     cpClient.previewSoftwareAvailability.mockResolvedValue(preview);
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
+    const tab = await screen.findByRole("tab", { name: "cp.software.preview.title" });
+    fireEvent.mouseDown(tab, { button: 0, ctrlKey: false });
 
     const input = await screen.findByTestId("cp-software-preview-input");
     fireEvent.change(nativeControl(input), { target: { value: "openmpi@4.1.6" } });
@@ -695,6 +697,8 @@ describe("SoftwarePolicyTable", () => {
     cpClient.getSoftwareOverview.mockResolvedValue(overview);
     cpClient.previewSoftwareAvailability.mockResolvedValue(preview);
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
+    const tab = await screen.findByRole("tab", { name: "cp.software.preview.title" });
+    fireEvent.mouseDown(tab, { button: 0, ctrlKey: false });
 
     fireEvent.change(nativeControl(await screen.findByTestId("cp-software-preview-input")), {
       target: { value: "openfoam@11" },

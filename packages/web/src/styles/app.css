@@ -428,3 +428,22 @@ details[open] > .kq-motion--disclosure {
     padding-right: 1rem;
   }
 }
+
+@media (min-width: 768px) {
+  /* The opaque surface keeps scrolled cells from showing through row actions. */
+  .kq-pinned-end {
+    position: sticky;
+    right: 0;
+    z-index: 2;
+    background: var(--background);
+  }
+
+  .kq-pinned-end::before {
+    position: absolute;
+    inset: 0 100% 0 auto;
+    width: 1rem;
+    pointer-events: none;
+    background: linear-gradient(to right, transparent, var(--background));
+    content: "";
+  }
+}

@@ -4050,7 +4050,7 @@
           "en": "Brand and display settings"
         },
         "kind": "capability",
-        "route": "/settings#security/branding",
+        "route": "/settings#branding",
         "section": {
           "zh": "",
           "en": ""

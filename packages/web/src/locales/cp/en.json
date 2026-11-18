@@ -230,7 +230,8 @@
         "enabled": "Queue enabled",
         "disabled": "Queue disabled",
         "failed": "Queue operation failed"
-      }
+      },
+      "allPublicationStates": "All publication states"
     },
     "software": {
       "title": "Software governance",
@@ -495,7 +496,11 @@
       },
       "empty": "No registered agents in scope.",
       "loadFailed": "Software governance data could not be loaded. Refresh and try again.",
-      "desktopManage": "Use a desktop to change software policies or install software."
+      "desktopManage": "Use a desktop to change software policies or install software.",
+      "views": {
+        "clusters": "Cluster policies",
+        "runtime": "Runtime and materials"
+      }
     },
     "infrastructure": {
       "title": "Cluster infrastructure",
@@ -569,7 +574,10 @@
       "noQueues": "No named queues authorized",
       "queuesNotApplicable": "Not applicable",
       "editQueues": "Edit queue access",
-      "queuesSaveFailed": "Could not save queue access. Please retry."
+      "queuesSaveFailed": "Could not save queue access. Please retry.",
+      "search": "Search accounts, providers or identities",
+      "allBackends": "All backends",
+      "allStatuses": "All statuses"
     },
     "users": {
       "title": "Organization members",

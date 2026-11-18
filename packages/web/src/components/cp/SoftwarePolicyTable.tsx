@@ -43,6 +43,7 @@ import {
   SheetTitle,
 } from "../ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { AgentDetailSheet } from "./SoftwarePolicyAgentDetailSheet";
 import {
   ControlChannelBadge,
@@ -231,7 +232,6 @@ export function SoftwarePolicyTable({
           </RefreshButton>
         }
       />
-      <FunctionMaps ids={["G08"]} />
       {mobileReadOnly && (
         <p className="text-sm text-muted-foreground">{t("cp.software.desktopManage")}</p>
       )}
@@ -245,39 +245,50 @@ export function SoftwarePolicyTable({
       {overviewQuery.isLoading ? (
         <div className="text-sm text-muted-foreground">{t("cp.common.loading")}</div>
       ) : overview ? (
-        <>
-          <ControlChannelNotice overview={overview} />
-          <SummaryCards overview={overview} />
-          {overview.providerOrgIds.length === 1 && (
-            <ProviderPolicyCard
+        <Tabs defaultValue="clusters">
+          <TabsList aria-label={t("cp.software.title")}>
+            <TabsTrigger value="clusters">{t("cp.software.views.clusters")}</TabsTrigger>
+            <TabsTrigger value="preview">{t("cp.software.preview.title")}</TabsTrigger>
+            <TabsTrigger value="runtime">{t("cp.software.views.runtime")}</TabsTrigger>
+          </TabsList>
+          <TabsContent value="clusters" className="min-w-0 space-y-4">
+            <ControlChannelNotice overview={overview} />
+            <SummaryCards overview={overview} />
+            {overview.providerOrgIds.length === 1 && (
+              <ProviderPolicyCard
+                overview={overview}
+                onEdit={canManage ? openProviderEditor : undefined}
+              />
+            )}
+            <ClusterAgentTable
               overview={overview}
-              onEdit={canManage ? openProviderEditor : undefined}
+              onInspect={(agent) => setSelectedAgentId(agent.agentId)}
+              onEdit={canManage ? openAgentEditor : undefined}
+              onEditCluster={
+                canManage && overview.providerOrgIds.length === 1 ? openClusterEditor : undefined
+              }
             />
-          )}
-          <AvailabilityPreviewForm
-            rawSpec={rawSpec}
-            setRawSpec={setRawSpec}
-            usecase={previewUsecase}
-            setUsecase={setPreviewUsecase}
-            usecaseVersion={previewUsecaseVersion}
-            setUsecaseVersion={setPreviewUsecaseVersion}
-            onPreview={handlePreview}
-            result={preview.data ?? null}
-            error={preview.error ?? null}
-            isPending={preview.isPending}
-          />
-          <ClusterAgentTable
-            overview={overview}
-            onInspect={(agent) => setSelectedAgentId(agent.agentId)}
-            onEdit={canManage ? openAgentEditor : undefined}
-            onEditCluster={
-              canManage && overview.providerOrgIds.length === 1 ? openClusterEditor : undefined
-            }
-          />
-        </>
+          </TabsContent>
+          <TabsContent value="preview" className="min-w-0">
+            <AvailabilityPreviewForm
+              rawSpec={rawSpec}
+              setRawSpec={setRawSpec}
+              usecase={previewUsecase}
+              setUsecase={setPreviewUsecase}
+              usecaseVersion={previewUsecaseVersion}
+              setUsecaseVersion={setPreviewUsecaseVersion}
+              onPreview={handlePreview}
+              result={preview.data ?? null}
+              error={preview.error ?? null}
+              isPending={preview.isPending}
+            />
+          </TabsContent>
+          <TabsContent value="runtime" className="min-w-0">
+            <RuntimeAndMaterialPanel canManage={canManage} />
+          </TabsContent>
+        </Tabs>
       ) : null}
-
-      <RuntimeAndMaterialPanel canManage={canManage && !!overview} />
+      <FunctionMaps ids={["G08"]} />
 
       <AgentDetailSheet
         agent={selectedAgent}
@@ -433,7 +444,7 @@ function ClusterAgentTable({
       {overview.clusters.map((cluster) => (
         <div
           key={`${cluster.providerOrgId}:${cluster.cluster}`}
-          className="overflow-hidden border-border"
+          className="overflow-hidden rounded-md border border-border"
         >
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
             <div>
