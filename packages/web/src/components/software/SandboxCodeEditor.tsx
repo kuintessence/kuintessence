@@ -1,6 +1,7 @@
 import type { SandboxLanguage } from "@kuintessence/shared/browser";
 import * as monaco from "monaco-editor";
 import { useEffect, useRef } from "react";
+import "../../lib/monaco-env";
 import { useTheme } from "../ThemeProvider";
 
 export function SandboxCodeEditor({
