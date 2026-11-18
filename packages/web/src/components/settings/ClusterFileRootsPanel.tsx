@@ -2,7 +2,9 @@ import type {
   ClusterFileRootCheckResponse,
   ClusterFileRootView,
 } from "@kuintessence/shared/browser";
-import { useQuery } from "@tanstack/react-query";
+import { ApiError } from "@kuintessence/shared/browser";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Activity, HardDrive, Loader2, Plus, RefreshCw, Save } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -22,6 +24,16 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader } from "../ui/card";
+import { DataTable } from "../ui/data-table";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog";
 import { Input } from "../ui/input";
 import { RefreshButton } from "../ui/refresh-button";
 import { ResourceSelectField } from "../ui/resource-select-field";
@@ -109,6 +121,12 @@ export function ClusterFileRootsPanel() {
     organizations.find((org) => org.orgId === id)?.name ?? id;
   const { t } = useTranslation();
   const mobileReadOnly = useMobileMutationBlocked("/admin/cluster-file-roots");
+  const queryClient = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ClusterFileRootView | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const [roots, setRoots] = useState<ClusterFileRootView[]>([]);
   const [drafts, setDrafts] = useState<Record<string, RootDraft>>({});
   const [newRoot, setNewRoot] = useState<NewRootDraft>(EMPTY_NEW_ROOT);
@@ -247,6 +265,105 @@ export function ClusterFileRootsPanel() {
       setCreating(false);
     }
   };
+
+  const selectedRoot = roots.find((root) => root.id === selectedId);
+  const openRoot = (root: ClusterFileRootView) => {
+    setDrafts((prev) => ({ ...prev, [root.id]: rootToDraft(root) }));
+    setSelectedId(root.id);
+  };
+  const removeRoot = async () => {
+    if (!deleteTarget || mobileReadOnly || deleting) return;
+    const id = deleteTarget.id;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await api.delete(`/admin/cluster-file-roots/${id}`);
+      setRoots((current) => current.filter((root) => root.id !== id));
+      if (selectedId === id) setSelectedId(null);
+      setDeleteTarget(null);
+      await queryClient.invalidateQueries({ queryKey: ["cp", "agents"] });
+      toast.success(t("settings.clusterFileRoots.deleted"));
+    } catch (err) {
+      const details = err instanceof ApiError ? err.details : null;
+      const reason =
+        details && typeof details === "object" && "reason" in details ? details.reason : null;
+      setDeleteError(
+        reason === "ROOT_IN_USE"
+          ? t("settings.clusterFileRoots.inUse")
+          : reason === "LAST_CONFIGURED_ROOT"
+            ? t("settings.clusterFileRoots.lastRoot")
+            : toUserFacingError(err, t("settings.clusterFileRoots.deleteFailed")),
+      );
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const columns: ColumnDef<ClusterFileRootView>[] = [
+    {
+      accessorKey: "label",
+      header: t("settings.clusterFileRoots.label"),
+      size: 212,
+      cell: ({ row: { original: root } }) => (
+        <button
+          className="text-left font-medium text-brand hover:underline"
+          type="button"
+          onClick={() => openRoot(root)}
+        >
+          {root.label}
+        </button>
+      ),
+    },
+    {
+      id: "organization",
+      accessorFn: (root) => organizationName(root.providerOrgId),
+      header: t("settings.clusterFileRoots.providerOrgId"),
+      size: 150,
+    },
+    {
+      accessorKey: "path",
+      header: t("settings.clusterFileRoots.path"),
+      size: 215,
+      cell: ({ row }) => <span className="font-mono text-xs">{row.original.path}</span>,
+    },
+    {
+      id: "status",
+      accessorFn: (root) => Number(root.enabled),
+      header: t("operations.users.status"),
+      size: 100,
+      cell: ({ row }) => (
+        <Badge variant={row.original.enabled ? "running" : "cancelled"}>
+          {t(row.original.enabled ? "cp.common.enabled" : "cp.common.disabled")}
+        </Badge>
+      ),
+    },
+    {
+      id: "actions",
+      header: t("cp.agents.col.actions"),
+      size: 128,
+      enableResizing: false,
+      cell: ({ row: { original: root } }) => (
+        <div className="flex gap-1">
+          <Button variant="outline" size="sm" className="px-2" onClick={() => openRoot(root)}>
+            {t(mobileReadOnly ? "software.manage.view" : "cp.common.edit")}
+          </Button>
+          {!mobileReadOnly && (
+            <Button
+              variant="ghost"
+              className="px-2 text-status-failed"
+              size="sm"
+              onClick={() => {
+                setDeleteError("");
+                setDeleteTarget(root);
+              }}
+            >
+              {t("operations.users.deleteAction")}
+            </Button>
+          )}
+        </div>
+      ),
+    },
+  ];
 
   return (
     <Card data-testid="cluster-file-roots-panel">
@@ -427,150 +544,199 @@ export function ClusterFileRootsPanel() {
               </form>
             )}
 
-            {roots.length === 0 && !loading ? (
-              <div className=" p-4 text-sm text-muted-foreground">
-                {t("settings.clusterFileRoots.empty")}
-              </div>
-            ) : null}
-            <div className="divide-y divide-border border-y border-border">
-              {roots.map((root) => {
-                const draft = drafts[root.id] ?? rootToDraft(root);
-                return (
-                  <details key={root.id} data-testid={`cluster-file-root-row-${root.id}`}>
-                    <summary className="cursor-pointer px-2 py-3 text-sm hover:bg-muted/60">
-                      <span className="ml-2 font-medium [overflow-wrap:anywhere]">
-                        {root.label}
-                      </span>
-                      <span className="ml-3 text-xs text-muted-foreground [overflow-wrap:anywhere]">
-                        {organizationName(root.providerOrgId)} · {root.path}
-                      </span>
-                      <Badge className="ml-3" variant={root.enabled ? "running" : "cancelled"}>
-                        {t(root.enabled ? "cp.common.enabled" : "cp.common.disabled")}
-                      </Badge>
-                    </summary>
-                    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] items-start gap-3 px-4 pb-4">
-                      <RootField
-                        id={`cluster-file-root-label-${root.id}`}
-                        label={t("settings.clusterFileRoots.label")}
-                      >
-                        <Input
-                          disabled={mobileReadOnly}
-                          value={draft.label}
-                          onChange={(event) => updateDraft(root.id, "label", event.target.value)}
-                          id={`cluster-file-root-label-${root.id}`}
-                          data-testid={`cluster-file-root-label-${root.id}`}
-                        />
-                      </RootField>
-                      <div className=" border-border px-3 py-2 text-xs" title={root.providerOrgId}>
-                        {organizationName(root.providerOrgId)}
-                      </div>
-                      <RootAgentSelect
-                        agents={agents}
-                        providerOrgId={root.providerOrgId}
-                        value={draft.agentId}
-                        disabled={directoryUnavailable || mobileReadOnly}
-                        onChange={(agentId) => updateDraft(root.id, "agentId", agentId)}
-                        testId={`cluster-file-root-agent-${root.id}`}
-                      />
-                      <RootField
-                        id={`cluster-file-root-path-${root.id}`}
-                        label={t("settings.clusterFileRoots.path")}
-                      >
-                        <Input
-                          disabled={mobileReadOnly}
-                          value={draft.path}
-                          onChange={(event) => updateDraft(root.id, "path", event.target.value)}
-                          className="font-mono text-xs"
-                          id={`cluster-file-root-path-${root.id}`}
-                          data-testid={`cluster-file-root-path-${root.id}`}
-                        />
-                      </RootField>
-                      <RootField
-                        id={`cluster-file-root-capacity-${root.id}`}
-                        label={t("settings.clusterFileRoots.capacityGb")}
-                      >
-                        <Input
-                          disabled={mobileReadOnly}
-                          type="number"
-                          min="0.01"
-                          step="0.01"
-                          value={draft.capacityGb}
-                          onChange={(event) =>
-                            updateDraft(root.id, "capacityGb", event.target.value)
-                          }
-                          placeholder={t("settings.clusterFileRoots.capacityGb")}
-                          id={`cluster-file-root-capacity-${root.id}`}
-                          data-testid={`cluster-file-root-capacity-${root.id}`}
-                        />
-                      </RootField>
-                      <RootOrganizationSelection
-                        organizations={organizations}
-                        value={draft.visibleOrgIdsText}
-                        disabled={directoryUnavailable || mobileReadOnly}
-                        onChange={(value) => updateDraft(root.id, "visibleOrgIdsText", value)}
-                        testId={`cluster-file-root-visible-orgs-${root.id}`}
-                      />
-                      <RootCheckBadge check={checks[root.id]} />
-                      <div className="col-span-full flex flex-wrap items-center justify-end gap-2">
-                        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <input
-                            type="checkbox"
-                            disabled={mobileReadOnly}
-                            checked={draft.enabled}
-                            onChange={(event) =>
-                              updateDraft(root.id, "enabled", event.target.checked)
-                            }
-                            data-testid={`cluster-file-root-enabled-${root.id}`}
-                          />
-                          {t("settings.clusterFileRoots.enabledToggle")}
-                        </label>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => togglePolicy(root.id)}
-                          aria-expanded={expandedPolicyRootIds.has(root.id)}
-                        >
-                          <HardDrive />
-                          {t("settings.clusterFileRoots.quotaPolicy")}
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => checkRoot(root.id)}
-                          disabled={mobileReadOnly || checkingId === root.id}
-                          data-testid={`cluster-file-root-check-${root.id}`}
-                        >
-                          {checkingId === root.id ? (
-                            <Loader2 className="animate-spin" />
-                          ) : (
-                            <Activity />
-                          )}
-                          {t("settings.clusterFileRoots.check")}
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          onClick={() => saveRoot(root.id)}
-                          disabled={mobileReadOnly || savingId === root.id}
-                          data-testid={`cluster-file-root-save-${root.id}`}
-                        >
-                          {savingId === root.id ? <Loader2 className="animate-spin" /> : <Save />}
-                          {t("settings.clusterFileRoots.save")}
-                        </Button>
-                      </div>
-                    </div>
-                    {expandedPolicyRootIds.has(root.id) ? (
-                      <ClusterStoragePolicyEditor rootId={root.id} />
-                    ) : null}
-                  </details>
-                );
-              })}
-            </div>
+            <Input
+              type="search"
+              className="max-w-sm"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              aria-label={t("settings.clusterFileRoots.search")}
+              placeholder={t("settings.clusterFileRoots.search")}
+            />
+            <DataTable
+              columns={columns}
+              data={roots}
+              globalFilter={search.trim()}
+              getRowId={(root) => root.id}
+              rowDataTestId={(root) => `cluster-file-root-row-${root.id}`}
+              resizable
+              caption={t("settings.sections.cluster-file-roots")}
+              emptyState={t(
+                loading
+                  ? "common.loading"
+                  : search
+                    ? "common.empty"
+                    : "settings.clusterFileRoots.empty",
+              )}
+            />
           </>
         ) : null}
       </CardContent>
+      <Dialog
+        open={!!selectedRoot && !loadError}
+        onOpenChange={(open) => {
+          if (!open && !savingId) setSelectedId(null);
+        }}
+      >
+        {selectedRoot &&
+          (() => {
+            const root = selectedRoot;
+            const draft = drafts[root.id] ?? rootToDraft(root);
+            return (
+              <DialogContent dismissible={!savingId}>
+                <DialogHeader>
+                  <DialogTitle>{root.label}</DialogTitle>
+                  <DialogDescription>{root.path}</DialogDescription>
+                </DialogHeader>
+                <DialogBody className="space-y-4">
+                  <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] items-start gap-3 px-4 pb-4">
+                    <RootField
+                      id={`cluster-file-root-label-${root.id}`}
+                      label={t("settings.clusterFileRoots.label")}
+                    >
+                      <Input
+                        disabled={mobileReadOnly}
+                        value={draft.label}
+                        onChange={(event) => updateDraft(root.id, "label", event.target.value)}
+                        id={`cluster-file-root-label-${root.id}`}
+                        data-testid={`cluster-file-root-label-${root.id}`}
+                      />
+                    </RootField>
+                    <div className=" border-border px-3 py-2 text-xs" title={root.providerOrgId}>
+                      {organizationName(root.providerOrgId)}
+                    </div>
+                    <RootAgentSelect
+                      agents={agents}
+                      providerOrgId={root.providerOrgId}
+                      value={draft.agentId}
+                      disabled={directoryUnavailable || mobileReadOnly}
+                      onChange={(agentId) => updateDraft(root.id, "agentId", agentId)}
+                      testId={`cluster-file-root-agent-${root.id}`}
+                    />
+                    <RootField
+                      id={`cluster-file-root-path-${root.id}`}
+                      label={t("settings.clusterFileRoots.path")}
+                    >
+                      <Input
+                        disabled={mobileReadOnly}
+                        value={draft.path}
+                        onChange={(event) => updateDraft(root.id, "path", event.target.value)}
+                        className="font-mono text-xs"
+                        id={`cluster-file-root-path-${root.id}`}
+                        data-testid={`cluster-file-root-path-${root.id}`}
+                      />
+                    </RootField>
+                    <RootField
+                      id={`cluster-file-root-capacity-${root.id}`}
+                      label={t("settings.clusterFileRoots.capacityGb")}
+                    >
+                      <Input
+                        disabled={mobileReadOnly}
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={draft.capacityGb}
+                        onChange={(event) => updateDraft(root.id, "capacityGb", event.target.value)}
+                        placeholder={t("settings.clusterFileRoots.capacityGb")}
+                        id={`cluster-file-root-capacity-${root.id}`}
+                        data-testid={`cluster-file-root-capacity-${root.id}`}
+                      />
+                    </RootField>
+                    <RootOrganizationSelection
+                      organizations={organizations}
+                      value={draft.visibleOrgIdsText}
+                      disabled={directoryUnavailable || mobileReadOnly}
+                      onChange={(value) => updateDraft(root.id, "visibleOrgIdsText", value)}
+                      testId={`cluster-file-root-visible-orgs-${root.id}`}
+                    />
+                    <RootCheckBadge check={checks[root.id]} />
+                    <div className="col-span-full flex flex-wrap items-center justify-end gap-2">
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          disabled={mobileReadOnly}
+                          checked={draft.enabled}
+                          onChange={(event) =>
+                            updateDraft(root.id, "enabled", event.target.checked)
+                          }
+                          data-testid={`cluster-file-root-enabled-${root.id}`}
+                        />
+                        {t("settings.clusterFileRoots.enabledToggle")}
+                      </label>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => togglePolicy(root.id)}
+                        aria-expanded={expandedPolicyRootIds.has(root.id)}
+                      >
+                        <HardDrive />
+                        {t("settings.clusterFileRoots.quotaPolicy")}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => checkRoot(root.id)}
+                        disabled={mobileReadOnly || checkingId === root.id}
+                        data-testid={`cluster-file-root-check-${root.id}`}
+                      >
+                        {checkingId === root.id ? (
+                          <Loader2 className="animate-spin" />
+                        ) : (
+                          <Activity />
+                        )}
+                        {t("settings.clusterFileRoots.check")}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => saveRoot(root.id)}
+                        disabled={mobileReadOnly || savingId === root.id}
+                        data-testid={`cluster-file-root-save-${root.id}`}
+                      >
+                        {savingId === root.id ? <Loader2 className="animate-spin" /> : <Save />}
+                        {t("settings.clusterFileRoots.save")}
+                      </Button>
+                    </div>
+                  </div>
+                  {expandedPolicyRootIds.has(root.id) ? (
+                    <ClusterStoragePolicyEditor rootId={root.id} />
+                  ) : null}
+                </DialogBody>
+              </DialogContent>
+            );
+          })()}
+      </Dialog>
+      <Dialog
+        open={!!deleteTarget && !loadError && !mobileReadOnly}
+        onOpenChange={(open) => {
+          if (!open && !deleting) setDeleteTarget(null);
+        }}
+      >
+        <DialogContent dismissible={!deleting}>
+          <DialogHeader>
+            <DialogTitle>{t("settings.clusterFileRoots.delete")}</DialogTitle>
+            <DialogDescription>
+              {t("settings.clusterFileRoots.deleteHint", { name: deleteTarget?.label })}
+            </DialogDescription>
+          </DialogHeader>
+          {deleteError && (
+            <DialogBody>
+              <p role="alert" className="text-sm text-status-failed">
+                {deleteError}
+              </p>
+            </DialogBody>
+          )}
+          <DialogFooter>
+            <Button variant="outline" disabled={deleting} onClick={() => setDeleteTarget(null)}>
+              {t("cp.common.cancel")}
+            </Button>
+            <Button variant="destructive" disabled={deleting} onClick={removeRoot}>
+              {t("operations.users.deleteAction")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

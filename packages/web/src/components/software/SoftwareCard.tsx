@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { stashPendingTemplate, type WorkflowTemplate } from "../../lib/software-client";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader } from "../ui/card";
+import { CardContent, CardHeader } from "../ui/card";
 import {
   cardActionLayerClass,
   cardContentLayerClass,
@@ -49,7 +49,7 @@ export function SoftwareCard({
   const navigate = useNavigate();
   const { template } = view;
   return (
-    <Card
+    <article
       data-testid={`software-card-${template.id}`}
       className={`flex h-full min-w-0 flex-col ${clickableCardClass}`}
     >
@@ -61,7 +61,7 @@ export function SoftwareCard({
         data-testid={`software-card-surface-${template.id}`}
       />
       <CardHeader
-        className={`flex flex-row items-start justify-between gap-2 space-y-0 ${cardContentLayerClass}`}
+        className={`flex flex-row items-start justify-between gap-2 space-y-0 p-3 pb-1 ${cardContentLayerClass}`}
       >
         <div className="flex min-w-0 items-start gap-2">
           <Box className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -90,7 +90,9 @@ export function SoftwareCard({
           </Badge>
         </div>
       </CardHeader>
-      <CardContent className={`flex flex-1 flex-col gap-3 text-xs ${cardContentLayerClass}`}>
+      <CardContent
+        className={`flex flex-1 flex-col gap-2 p-3 pt-1 text-xs ${cardContentLayerClass}`}
+      >
         <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
           <span className="flex items-center gap-1">
             <CalendarClock className="h-3 w-3" />
@@ -140,7 +142,7 @@ export function SoftwareCard({
             ))}
           </div>
         ) : null}
-        <div className={`mt-auto kq-fill-row pt-2 ${cardActionLayerClass}`}>
+        <div className={`mt-auto flex flex-wrap gap-1.5 pt-1 ${cardActionLayerClass}`}>
           <Button asChild variant="outline" size="sm" data-testid={`software-view-${template.id}`}>
             <Link
               to="/software/workflow-templates/$templateId"
@@ -180,7 +182,7 @@ export function SoftwareCard({
           </Button>
         </div>
       </CardContent>
-    </Card>
+    </article>
   );
 }
 

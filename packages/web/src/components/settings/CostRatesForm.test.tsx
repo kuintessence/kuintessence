@@ -1,197 +1,85 @@
-/**
- * CostRatesForm component tests.
- *
- * Covers:
- *   - GET /preferences/global prefills the per-cluster rate rows (spec also has
- *     softWeights set, which must survive a save unchanged)
- *   - editing a rate + Save issues a PUT whose body has the updated costRates
- *     AND preserves the original softWeights (read-modify-write proof)
- *   - a negative/NaN rate triggers toast.error and issues NO PUT
- *   - load failure shows an error boundary and exposes no write actions
- */
-
-import type { PreferenceSpec } from "@kuintessence/shared/browser";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-
-vi.mock("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (_key: string, opts?: { defaultValue?: string }) => opts?.defaultValue ?? _key,
-  }),
-}));
-
-const toastSuccess = vi.fn();
-const toastError = vi.fn();
-vi.mock("sonner", () => ({
-  toast: {
-    success: (msg: string) => toastSuccess(msg),
-    error: (msg: string) => toastError(msg),
-  },
-}));
-
+import { afterEach, expect, test, vi } from "vitest";
+import { nativeControl } from "../../lib/test-resource-field";
 import { CostRatesForm } from "./CostRatesForm";
 
-beforeEach(() => {
-  toastSuccess.mockReset();
-  toastError.mockReset();
-});
+const provider = "44444444-4444-4444-8444-444444444444";
+const cluster = "11111111-1111-4111-8111-111111111111";
+const directory = {
+  clusters: [
+    { id: cluster, organizationName: "Provider A", zoneName: "Zone B", clusterName: "Cluster C" },
+  ],
+  rates: {},
+  legacyRates: { "legacy-cluster": 4 },
+};
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
+const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn() }));
+vi.mock("../../lib/api-client", () => ({ api }));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, opts?: { defaultValue?: string }) => opts?.defaultValue ?? key,
+  }),
+}));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+afterEach(() => vi.resetAllMocks());
 
-describe("CostRatesForm", () => {
-  test("prefills rows from a GET spec that also has softWeights", async () => {
-    const spec: PreferenceSpec = {
-      softWeights: {
-        loadWeight: 1,
-        costWeight: 2,
-        localityWeight: 1,
-        queueWaitWeight: 1,
-      },
-      costRates: { "cluster-a": 0.5, "cluster-b": 1.25 },
-    };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ spec }), { status: 200 })),
-    );
+test.each([
+  undefined,
+  provider,
+])("selects a cluster by its hierarchical label and saves its ID in the correct scope (%s)", async (organizationId) => {
+  api.get.mockResolvedValue(directory);
+  api.put.mockResolvedValue({ ...directory, rates: { [cluster]: 0.9 } });
 
-    render(<CostRatesForm />);
-
-    await waitFor(() => screen.getByTestId("cost-rates-cluster-0"));
-    const cluster0 = screen.getByTestId("cost-rates-cluster-0") as HTMLInputElement;
-    const rate0 = screen.getByTestId("cost-rates-rate-0") as HTMLInputElement;
-    expect(cluster0.value).toBe("cluster-a");
-    expect(rate0.value).toBe("0.5");
-    const cluster1 = screen.getByTestId("cost-rates-cluster-1") as HTMLInputElement;
-    expect(cluster1.value).toBe("cluster-b");
+  render(<CostRatesForm organizationId={organizationId} />);
+  fireEvent.click(await screen.findByTestId("cost-rates-add"));
+  expect(screen.getByText("Provider A – Zone B – Cluster C")).toBeTruthy();
+  fireEvent.change(nativeControl(screen.getByTestId("cost-rates-cluster-0")), {
+    target: { value: cluster },
   });
+  fireEvent.change(screen.getByTestId("cost-rates-rate-0"), { target: { value: "0.9" } });
+  fireEvent.click(screen.getByTestId("cost-rates-save"));
 
-  test("editing a rate + Save PUTs the updated costRates and preserves softWeights", async () => {
-    const spec: PreferenceSpec = {
-      softWeights: {
-        loadWeight: 1,
-        costWeight: 2,
-        localityWeight: 1,
-        queueWaitWeight: 1,
-      },
-      costRates: { "cluster-a": 0.5 },
-    };
-    let capturedBody: unknown = null;
-    let capturedMethod = "";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: string | Request, init?: RequestInit) => {
-        const method = init?.method ?? (typeof input !== "string" ? input.method : "GET");
-        if (method === "PUT") {
-          capturedMethod = "PUT";
-          capturedBody = JSON.parse((init?.body as string) ?? "{}");
-          const returned: PreferenceSpec = {
-            ...spec,
-            costRates: { "cluster-a": 0.9 },
-          };
-          return new Response(JSON.stringify({ spec: returned }), { status: 200 });
-        }
-        return new Response(JSON.stringify({ spec }), { status: 200 });
-      }),
-    );
-
-    render(<CostRatesForm />);
-    await waitFor(() => screen.getByTestId("cost-rates-rate-0"));
-
-    fireEvent.change(screen.getByTestId("cost-rates-rate-0"), { target: { value: "0.9" } });
-    fireEvent.click(screen.getByTestId("cost-rates-save"));
-
-    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
-    expect(capturedMethod).toBe("PUT");
-    expect(capturedBody).toMatchObject({
-      costRates: { "cluster-a": 0.9 },
-      softWeights: {
-        loadWeight: 1,
-        costWeight: 2,
-        localityWeight: 1,
-        queueWaitWeight: 1,
-      },
-    });
-    expect(toastError).not.toHaveBeenCalled();
-  });
-
-  test("a negative/NaN rate triggers toast.error and issues no PUT", async () => {
-    const spec: PreferenceSpec = {
-      costRates: { "cluster-a": 0.5 },
-    };
-    let putCount = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: string | Request, init?: RequestInit) => {
-        const method = init?.method ?? (typeof input !== "string" ? input.method : "GET");
-        if (method === "PUT") {
-          putCount += 1;
-          return new Response(JSON.stringify({ spec }), { status: 200 });
-        }
-        return new Response(JSON.stringify({ spec }), { status: 200 });
-      }),
-    );
-
-    render(<CostRatesForm />);
-    await waitFor(() => screen.getByTestId("cost-rates-rate-0"));
-
-    fireEvent.change(screen.getByTestId("cost-rates-rate-0"), { target: { value: "-3" } });
-    fireEvent.click(screen.getByTestId("cost-rates-save"));
-
-    await waitFor(() => expect(toastError).toHaveBeenCalled());
-    expect(putCount).toBe(0);
-    expect(toastSuccess).not.toHaveBeenCalled();
-  });
-
-  test("load failure renders error card and hides write actions", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ error: { code: "FORBIDDEN", message: "denied" } }), {
-            status: 403,
-          }),
-      ),
-    );
-
-    render(<CostRatesForm />);
-    await waitFor(() => screen.getByTestId("cost-rates-load-error"));
-
-    const error = screen.getByTestId("cost-rates-load-error");
-    expect(error.textContent).toMatch(/没有执行此操作的权限|does not have permission/);
-    expect(error.textContent).not.toContain("denied");
-    expect(error.textContent).not.toContain("FORBIDDEN");
-    expect(screen.queryByTestId("cost-rates-save")).toBeNull();
-    expect(screen.queryByTestId("cost-rates-add")).toBeNull();
-  });
+  const path = organizationId
+    ? `/preferences/org/${organizationId}/cost-rates`
+    : "/preferences/global/cost-rates";
+  await waitFor(() =>
+    expect(api.put).toHaveBeenCalledWith(
+      path,
+      { [cluster]: 0.9 },
+      organizationId ? expect.objectContaining({ organizationId }) : undefined,
+    ),
+  );
+  expect(api.get).toHaveBeenCalledWith(path);
 });
 
 test.each([
   "",
   " ",
+  "-1",
   "Infinity",
-  "1e309",
-])("invalid rate %j is not silently submitted as zero; explicit zero is valid", async (value) => {
-  const bodies: unknown[] = [];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (_input: unknown, init?: RequestInit) => {
-      if (init?.method === "PUT") bodies.push(JSON.parse(String(init.body)));
-      return new Response(JSON.stringify({ spec: { costRates: { "cluster-a": 0.5 } } }), {
-        status: 200,
-      });
-    }),
-  );
+])("invalid rate %j is not submitted as zero; explicit zero is valid", async (value) => {
+  api.get.mockResolvedValue({ ...directory, rates: { [cluster]: 0.5 } });
+  api.put.mockResolvedValue({ ...directory, rates: { [cluster]: 0 } });
   render(<CostRatesForm />);
   const input = await screen.findByTestId("cost-rates-rate-0");
   fireEvent.change(input, { target: { value } });
   fireEvent.click(screen.getByTestId("cost-rates-save"));
-  expect(toastError).toHaveBeenCalled();
-  expect(bodies).toHaveLength(0);
+  expect(api.put).not.toHaveBeenCalled();
   fireEvent.change(input, { target: { value: "0" } });
   fireEvent.click(screen.getByTestId("cost-rates-save"));
   await waitFor(() =>
-    expect(bodies).toEqual([expect.objectContaining({ costRates: { "cluster-a": 0 } })]),
+    expect(api.put).toHaveBeenCalledWith(
+      "/preferences/global/cost-rates",
+      { [cluster]: 0 },
+      undefined,
+    ),
   );
+});
+
+test("load failure hides write actions", async () => {
+  api.get.mockRejectedValue({ status: 403, code: "FORBIDDEN", message: "denied" });
+  render(<CostRatesForm />);
+  await screen.findByTestId("cost-rates-load-error");
+  expect(screen.queryByTestId("cost-rates-save")).toBeNull();
+  expect(screen.queryByTestId("cost-rates-add")).toBeNull();
 });

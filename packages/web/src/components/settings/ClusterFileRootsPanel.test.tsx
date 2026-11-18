@@ -108,7 +108,8 @@ describe("ClusterFileRootsPanel", () => {
 
     mount();
 
-    expect(await screen.findByTestId(`cluster-file-root-row-${rootA.id}`)).toBeTruthy();
+    const row = await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    fireEvent.click(within(row).getByRole("button", { name: "Scratch" }));
     expect(calls[0]).toMatchObject({
       method: "GET",
       url: "/platform/api/admin/cluster-file-roots",
@@ -167,6 +168,26 @@ describe("ClusterFileRootsPanel", () => {
     expect(await screen.findByTestId(`cluster-file-root-row-${created.id}`)).toBeTruthy();
   });
 
+  test("removes a root only after confirmation", async () => {
+    const calls = installFetch([() => json({ roots: [rootA] }), () => json({ id: rootA.id })]);
+    mount();
+    const row = await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    fireEvent.click(within(row).getByRole("button", { name: "operations.users.deleteAction" }));
+    expect(calls).toHaveLength(1);
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "operations.users.deleteAction",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId(`cluster-file-root-row-${rootA.id}`)).toBeNull(),
+    );
+    expect(calls[1]).toMatchObject({
+      method: "DELETE",
+      url: `/platform/api/admin/cluster-file-roots/${rootA.id}`,
+    });
+  });
+
   test("saves root edits with enabled state", async () => {
     const updated = { ...rootA, path: "/work/me", visibleOrgIds: [], enabled: false };
     const calls = installFetch([() => json({ roots: [rootA] }), () => json(updated)]);
@@ -178,7 +199,7 @@ describe("ClusterFileRootsPanel", () => {
     fireEvent.change(nativeControl(screen.getByTestId(`cluster-file-root-path-${rootA.id}`)), {
       target: { value: "/work/me" },
     });
-    await within(row).findByRole("checkbox", { name: "Consumer One", hidden: true });
+    await screen.findByRole("checkbox", { name: "Consumer One", hidden: true });
     fireEvent.click(
       within(screen.getByTestId(`cluster-file-root-visible-orgs-${rootA.id}`)).getByRole(
         "checkbox",
@@ -215,7 +236,8 @@ describe("ClusterFileRootsPanel", () => {
 
     mount();
 
-    await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    const row = await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    fireEvent.click(within(row).getByRole("button", { name: "Scratch" }));
     fireEvent.click(screen.getByTestId(`cluster-file-root-check-${rootA.id}`));
 
     expect(await screen.findByTestId(`cluster-file-root-check-status-${rootA.id}`)).toHaveProperty(
@@ -292,7 +314,8 @@ test("unknown sharing identifiers survive an unrelated edit and invalid capacity
   const root = { ...rootA, visibleOrgIds: ["00000000-0000-0000-0000-00000000ffff"] };
   const calls = installFetch([() => json({ roots: [root] }), () => json(root)]);
   mount();
-  await screen.findByTestId(`cluster-file-root-row-${root.id}`);
+  const row = await screen.findByTestId(`cluster-file-root-row-${root.id}`);
+  fireEvent.click(within(row).getByRole("button", { name: "Scratch" }));
   const capacity = screen.getByTestId(`cluster-file-root-capacity-${root.id}`);
   fireEvent.change(nativeControl(capacity), { target: { value: "-1" } });
   fireEvent.click(screen.getByTestId(`cluster-file-root-save-${root.id}`));
@@ -357,7 +380,7 @@ test("sharing can add a known organization outside the readable directory withou
   mount();
   const row = await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
   fireEvent.click(within(row).getByText("Scratch"));
-  await within(row).findByRole("checkbox", { name: "Consumer One", hidden: true });
+  await screen.findByRole("checkbox", { name: "Consumer One", hidden: true });
   const sharing = within(screen.getByTestId(`cluster-file-root-visible-orgs-${rootA.id}`));
   fireEvent.change(
     nativeControl(sharing.getByLabelText("settings.clusterFileRoots.searchOrganizations")),

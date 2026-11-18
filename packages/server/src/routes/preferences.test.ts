@@ -1,6 +1,11 @@
 // Test isolation: uses email prefix "preftest-*@kuintessence.test", org "preftest-org"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  agents,
+  auditLog,
+  computeCenters,
+  computeClusterAgents,
+  computeClusters,
   createPgDb,
   orgs,
   type PgDb,
@@ -140,6 +145,135 @@ describe("Preferences routes", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { spec: { softWeights?: { loadWeight: number } } };
     expect(body.spec?.softWeights?.loadWeight).toBe(3);
+  });
+
+  test("provider cluster rates use stable IDs, preserve preferences, and take precedence for bound Agents", async () => {
+    const other = crypto.randomUUID();
+    const zones = [crypto.randomUUID(), crypto.randomUUID()] as const;
+    const [cluster, foreign] = [crypto.randomUUID(), crypto.randomUUID()];
+    const agentId = `pricing-${cluster}`;
+    const provider = makeApp(db, service, "org_admin", "preftest-admin@kuintessence.test", {
+      userId: orgAdminUserId,
+      orgIds: [testOrgId],
+    });
+    const operator = makeApp(db, service, "operator", "preftest-admin@kuintessence.test", {
+      userId: orgAdminUserId,
+      orgIds: [testOrgId],
+    });
+    const route = `/api/preferences/org/${testOrgId}/cost-rates`;
+    const save = (app: Hono, rates: Record<string, number>, path = route) =>
+      app.request(path, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rates),
+      });
+    try {
+      await db.insert(orgs).values({ id: other, name: "Other provider" });
+      await db.insert(computeCenters).values([
+        {
+          id: zones[0],
+          orgId: testOrgId,
+          metadata: {
+            name: "Zone A",
+            status: "operational",
+            country: "Test",
+            province: "",
+            city: "",
+            longitude: null,
+            latitude: null,
+          },
+        },
+        {
+          id: zones[1],
+          orgId: other,
+          metadata: {
+            name: "Zone B",
+            status: "operational",
+            country: "Test",
+            province: "",
+            city: "",
+            longitude: null,
+            latitude: null,
+          },
+        },
+      ]);
+      await db.insert(computeClusters).values([
+        {
+          id: cluster,
+          centerId: zones[0],
+          metadata: {
+            name: "Same cluster name",
+            status: "operational",
+            computeTypes: [],
+            cpuCores: null,
+            storageBytes: null,
+            storageTypes: [],
+            applications: [],
+          },
+        },
+        {
+          id: foreign,
+          centerId: zones[1],
+          metadata: {
+            name: "Same cluster name",
+            status: "operational",
+            computeTypes: [],
+            cpuCores: null,
+            storageBytes: null,
+            storageTypes: [],
+            applications: [],
+          },
+        },
+      ]);
+      await db.insert(agents).values({
+        agentId,
+        providerOrgId: testOrgId,
+        siteName: "legacy-name",
+        clusterId: "agent-reported-id",
+        schedulerType: "slurm",
+        schedulerVersion: "23.11",
+        topology: {},
+      });
+      await db.insert(computeClusterAgents).values({ agentId, clusterId: cluster });
+      await service.upsertScoped("org", testOrgId, { hardLimits: { maxCpus: 32 } });
+      await service.saveClusterRates(null, { [cluster]: 2, [foreign]: 8 }, orgAdminUserId);
+      expect(await service.resolveAgentCostRates([agentId])).toEqual({ [agentId]: 2 });
+      expect((await save(operator, { [cluster]: 1 })).status).toBe(403);
+      expect((await save(provider, { [foreign]: 1 })).status).toBe(400);
+      expect(
+        (await save(provider, { [foreign]: 1 }, `/api/preferences/org/${other}/cost-rates`)).status,
+      ).toBe(403);
+      const saved = await save(provider, { [cluster]: 1.5 });
+      expect(saved.status).toBe(200);
+      expect(await saved.json()).toMatchObject({
+        clusters: [
+          {
+            id: cluster,
+            organizationName: "preftest-org",
+            zoneName: "Zone A",
+            clusterName: "Same cluster name",
+          },
+        ],
+        rates: { [cluster]: 1.5 },
+      });
+      expect(await service.resolveAgentCostRates([agentId], { "agent-reported-id": 7 })).toEqual({
+        [agentId]: 1.5,
+      });
+      expect(await service.loadScoped("org", testOrgId)).toEqual({ hardLimits: { maxCpus: 32 } });
+      expect((await save(provider, {})).status).toBe(200);
+      expect(await service.resolveAgentCostRates([agentId])).toEqual({ [agentId]: 2 });
+    } finally {
+      await db.delete(auditLog).where(eq(auditLog.action, "preferences.cluster_cost_rates.update"));
+      await db
+        .delete(schedulingPreferences)
+        .where(eq(schedulingPreferences.name, "cluster-cost-rates"));
+      await db.delete(agents).where(eq(agents.agentId, agentId));
+      await db.delete(computeClusters).where(eq(computeClusters.id, cluster));
+      await db.delete(computeClusters).where(eq(computeClusters.id, foreign));
+      await db.delete(computeCenters).where(eq(computeCenters.id, zones[0]));
+      await db.delete(computeCenters).where(eq(computeCenters.id, zones[1]));
+      await db.delete(orgs).where(eq(orgs.id, other));
+    }
   });
 
   // ── Org preferences ───────────────────────────────────────────────────

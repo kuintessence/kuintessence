@@ -168,7 +168,6 @@ export function TerminalPage() {
     <PageShell className="min-w-0" data-testid="terminal-page">
       <PageHeader
         title={t("terminal.title")}
-        subtitle={t("terminal.subtitle")}
         meta={
           <div className="flex flex-wrap gap-2 text-xs">
             <span

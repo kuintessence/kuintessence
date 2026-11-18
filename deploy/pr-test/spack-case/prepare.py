@@ -299,10 +299,10 @@ def fetch_sources(mirror: Path, nodes: list, strategies, create) -> None:
                     and fetcher.digest and not stage.skip_checksum_for_mirror),
                 "Unchecksummed or unsupported source",
             )
-            # The pinned zlib recipe's HTTP endpoint serves HTML; retain its digest and recipe.
+            # The fossil endpoint can return HTML in CI; use the official release with the same digest.
             if (not bundle
                     and fetcher.url == "http://zlib.net/fossils/zlib-1.3.1.tar.gz"):
-                fetcher.url = "https://zlib.net/fossils/zlib-1.3.1.tar.gz"
+                fetcher.url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
     _, _, errors = create(str(mirror), nodes)
     require(not errors, "Native mirror creation failed")
 

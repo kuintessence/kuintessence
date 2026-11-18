@@ -8,6 +8,7 @@ export interface PlacementContext {
   job: JobSubmit;
   /** Resolved preferences (already merged global -> org -> user). */
   preferences: PreferenceSpec;
+  agentCostRates?: Record<string, number>;
   /** Submitting user's role (RBAC). */
   userRole: RoleName;
   /** Submitting user's id. */

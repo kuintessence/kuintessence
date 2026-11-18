@@ -94,6 +94,38 @@ describe("platform user operations", () => {
     expect((await status(adminId, true)).status).toBe(403);
     expect((await status(userId, true, "operator", " ")).status).toBe(400);
   });
+  test("applies status and role filters before sorting and paginating users", async () => {
+    const regular = crypto.randomUUID();
+    const disabled = crypto.randomUUID();
+    await db.insert(users).values([
+      { id: regular, email: "zz-sorted@example.test", displayName: "Alpha", role: "user" },
+      {
+        id: disabled,
+        email: "aa-sorted@example.test",
+        displayName: "Aardvark",
+        role: "user",
+        suspended: true,
+      },
+    ]);
+    try {
+      await db.insert(userOrgMemberships).values([
+        { userId: regular, orgId, role: "member" },
+        { userId: disabled, orgId, role: "member" },
+      ]);
+      const path = "/api/platform/users?role=user&status=enabled&sort=member&direction=asc&limit=1";
+      const request = (url: string) =>
+        app().request(url, { headers: { "X-KQ-Active-Organization": orgId } });
+      const response = await request(path);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ total: 2, items: [{ id: regular }] });
+      expect(await (await request(`${path}&offset=1`)).json()).toMatchObject({
+        items: [{ id: userId }],
+      });
+    } finally {
+      await db.delete(users).where(inArray(users.id, [regular, disabled]));
+    }
+  });
+
   test("suspension revokes sessions, blocks existing tokens and new sessions, and is audited; enable permits a new login", async () => {
     const input = {
       sessionId,

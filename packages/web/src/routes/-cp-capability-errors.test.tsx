@@ -10,6 +10,7 @@ const access = vi.hoisted(() => ({
 
 vi.mock("@tanstack/react-router", () => ({
   createFileRoute: () => (options: unknown) => ({ options }),
+  useRouterState: () => ({ location: { hash: "" } }),
 }));
 
 vi.mock("react-i18next", () => ({

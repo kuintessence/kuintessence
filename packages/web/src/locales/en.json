@@ -1885,19 +1885,23 @@
     },
     "costRates": {
       "title": "Cluster cost rates",
-      "description": "Per-cluster cost per CPU-hour. Feeds the scheduler's cost scorer. Applies platform-wide.",
+      "description": "Set the default cost per CPU-hour. Compute providers can set rates for their own clusters.",
       "empty": "No cluster rates configured yet.",
-      "clusterPlaceholder": "cluster-name",
+      "clusterPlaceholder": "Select a cluster",
       "ratePlaceholder": "0.00",
       "addRow": "Add cluster",
       "save": "Save",
       "saved": "Cost rates saved",
       "saveFailed": "Save failed",
       "loadFailed": "Failed to load cost rates",
-      "errorEmptyCluster": "Cluster name cannot be empty",
+      "errorEmptyCluster": "Select an available cluster",
       "errorDuplicateCluster": "Duplicate cluster name: {{cluster}}",
       "errorInvalidRate": "Rate for {{cluster}} must be a non-negative number",
-      "rateLabel": "Rate per CPU-hour"
+      "rateLabel": "Rate per CPU-hour",
+      "providerDescription": "Set the cost per CPU-hour for this provider. These rates take precedence over platform defaults.",
+      "legacyRates": "Legacy rates still in use",
+      "unavailableCluster": "Cluster unavailable ({{id}})",
+      "selectOrganization": "Select a compute provider you can manage."
     },
     "clusterFileRoots": {
       "title": "Cluster file roots",
@@ -1940,7 +1944,14 @@
       "organizationSearchPlaceholder": "Name or known organization UUID",
       "addOrganizationId": "Add this organization ID",
       "path": "Root path",
-      "quotaPolicy": "Quota policy"
+      "quotaPolicy": "Quota policy",
+      "search": "Search names, paths or providers",
+      "delete": "Delete file root",
+      "deleteHint": "Delete the configuration for {{name}}. Files on the cluster are kept.",
+      "deleted": "File root deleted",
+      "inUse": "This root is linked to transfer, data, or quota records. Disable it to block new access.",
+      "lastRoot": "Disable the last root to keep the current access restrictions in place.",
+      "deleteFailed": "File root could not be deleted"
     },
     "agentCerts": {
       "title": "Agent cert ledger",
@@ -2752,7 +2763,13 @@
       "createHint": "Provision an account in {{scope}}. The user activates it through single sign-on.",
       "deleteHint": "Permanently delete the platform account for {{email}} and end its sessions. If automatic account creation is enabled, the next single sign-on can recreate the account. Disable it to block access.",
       "emailInUse": "This email address is already in use. Check the address or find the existing account.",
-      "hasHistory": "This account is linked to platform records and cannot be deleted. Disable it to block access."
+      "hasHistory": "This account is linked to platform records and cannot be deleted. Disable it to block access.",
+      "editAction": "Edit",
+      "disableAction": "Disable",
+      "enableAction": "Enable",
+      "deleteAction": "Delete",
+      "allRoles": "All roles",
+      "allStatuses": "All statuses"
     },
     "accounts": {
       "disableConfirm": "Disable execution account {{name}}? New jobs will no longer be able to use this identity."

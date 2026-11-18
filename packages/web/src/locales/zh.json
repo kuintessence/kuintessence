@@ -1886,19 +1886,23 @@
     },
     "costRates": {
       "title": "集群成本费率",
-      "description": "按集群设置的每 CPU 小时成本，供调度器成本评分使用，全平台生效。",
+      "description": "为集群设置每 CPU 小时的默认成本。算力中心可以为自己的集群设置费率。",
       "empty": "尚未配置任何集群费率。",
-      "clusterPlaceholder": "集群名称",
+      "clusterPlaceholder": "选择集群",
       "ratePlaceholder": "0.00",
       "addRow": "添加集群",
       "save": "保存",
       "saved": "成本费率已保存",
       "saveFailed": "保存失败",
       "loadFailed": "加载成本费率失败",
-      "errorEmptyCluster": "集群名称不能为空",
+      "errorEmptyCluster": "请选择可用的集群",
       "errorDuplicateCluster": "集群名称重复：{{cluster}}",
       "errorInvalidRate": "{{cluster}} 的费率必须为非负数",
-      "rateLabel": "每 CPU 小时费率"
+      "rateLabel": "每 CPU 小时费率",
+      "providerDescription": "设置当前算力中心的每 CPU 小时成本。这里的费率优先于平台默认值。",
+      "legacyRates": "仍有效的历史费率",
+      "unavailableCluster": "集群已不可用（{{id}}）",
+      "selectOrganization": "请选择有管理权限的算力中心。"
     },
     "clusterFileRoots": {
       "title": "集群文件根目录",
@@ -1941,7 +1945,14 @@
       "organizationSearchPlaceholder": "名称或已知组织 UUID",
       "addOrganizationId": "添加该组织标识",
       "path": "根目录路径",
-      "quotaPolicy": "配额策略"
+      "quotaPolicy": "配额策略",
+      "search": "搜索目录名称、路径或算力中心",
+      "delete": "删除文件根目录",
+      "deleteHint": "删除「{{name}}」的配置。集群中的文件会保留。",
+      "deleted": "文件根目录已删除",
+      "inUse": "该目录关联了传输、数据或配额记录。可停用目录以阻止新增访问。",
+      "lastRoot": "请停用最后一个文件根目录，以继续使用当前的访问限制。",
+      "deleteFailed": "删除文件根目录失败"
     },
     "agentCerts": {
       "title": "接入代理证书台账",
@@ -2753,7 +2764,13 @@
       "createHint": "在「{{scope}}」建立用户记录。用户通过单点登录激活账号。",
       "deleteHint": "将永久删除 {{email}} 的平台账号并结束其会话。若开启单点登录自动开户，用户下次登录时可能重新建立账号。若需阻止登录，请停用账号。",
       "emailInUse": "该邮箱已被使用，请检查邮箱或搜索现有账号。",
-      "hasHistory": "此账号关联了平台记录，无法删除。可停用账号来禁止访问。"
+      "hasHistory": "此账号关联了平台记录，无法删除。可停用账号来禁止访问。",
+      "editAction": "编辑",
+      "disableAction": "停用",
+      "enableAction": "启用",
+      "deleteAction": "删除",
+      "allRoles": "全部角色",
+      "allStatuses": "全部状态"
     },
     "accounts": {
       "disableConfirm": "停用执行账号 {{name}}？后续作业将无法使用此身份。"
