@@ -341,6 +341,7 @@ function ManagedQueueTable({
         emptyState={<span data-testid="cp-queues-empty">{empty}</span>}
         data={queues}
         getRowId={(queue) => queue.queueId}
+        onRowClick={actions.onEdit}
         rowDataTestId={(queue) => `cp-queue-row-${queue.queueId}`}
         scrollTestId="cp-queues-table-scroll"
         caption={t("cp.queues.managedTableCaption")}

@@ -327,84 +327,90 @@ function WorkspaceContextHeader({
 
   if (domain.id === "platform") {
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            data-testid="workspace-platform-capabilities-trigger"
-            className="group flex w-full items-center gap-2.5 rounded-lg border bg-card px-3 py-3 shadow-sm transition-colors hover:bg-muted/45 data-[state=open]:border-brand data-[state=open]:bg-brand-soft"
+      <div className="flex w-full items-center gap-2.5 px-2 py-1">
+        {content}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              data-testid="workspace-platform-capabilities-trigger"
+              aria-label={t("settings.operations.title")}
+              className="group flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
+            >
+              <ChevronDown
+                className="size-4 transition-transform group-data-[state=open]:rotate-180"
+                aria-hidden="true"
+              />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            side="right"
+            align="start"
+            className="max-h-[min(38rem,calc(100vh-2rem))] w-[min(44rem,calc(100vw-2rem))] overflow-y-auto p-3"
+            data-testid="workspace-platform-capabilities-menu"
           >
-            {content}
-            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          side="right"
-          align="start"
-          className="max-h-[min(38rem,calc(100vh-2rem))] w-[min(44rem,calc(100vw-2rem))] overflow-y-auto p-3"
-          data-testid="workspace-platform-capabilities-menu"
-        >
-          <div className="mb-2 px-1">
-            <div className="text-sm font-semibold">{t("settings.operations.title")}</div>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              {t("settings.operations.popupSubtitle")}
-            </p>
-          </div>
-          <DropdownMenuSeparator />
-          <div className="grid gap-3 md:grid-cols-2">
-            {OPERATIONS_AREAS.map((area) => (
-              <div key={area}>
-                <DropdownMenuLabel>{t(`settings.operations.area.${area}`)}</DropdownMenuLabel>
-                <div className="space-y-1">
-                  {OPERATIONS_LINKS.filter((item) => item.area === area).map((item) => {
-                    const ItemIcon = item.icon;
-                    const allowed = canAccessOperationsLink(role, item, serverCapabilities);
-                    const itemContent = (
-                      <>
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-background">
-                          <ItemIcon className="h-4 w-4" />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate font-medium">
-                            {t(`settings.operations.link.${item.key}.title`)}
+            <div className="mb-2 px-1">
+              <div className="text-sm font-semibold">{t("settings.operations.title")}</div>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {t("settings.operations.popupSubtitle")}
+              </p>
+            </div>
+            <DropdownMenuSeparator />
+            <div className="grid gap-3 md:grid-cols-2">
+              {OPERATIONS_AREAS.map((area) => (
+                <div key={area}>
+                  <DropdownMenuLabel>{t(`settings.operations.area.${area}`)}</DropdownMenuLabel>
+                  <div className="space-y-1">
+                    {OPERATIONS_LINKS.filter((item) => item.area === area).map((item) => {
+                      const ItemIcon = item.icon;
+                      const allowed = canAccessOperationsLink(role, item, serverCapabilities);
+                      const itemContent = (
+                        <>
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-background">
+                            <ItemIcon className="h-4 w-4" />
                           </span>
-                          <span className="block truncate text-[11px] text-muted-foreground">
-                            {allowed
-                              ? t(`settings.operations.link.${item.key}.description`)
-                              : t("settings.operations.requiresRole", {
-                                  role: item.requiredRole,
-                                })}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">
+                              {t(`settings.operations.link.${item.key}.title`)}
+                            </span>
+                            <span className="block truncate text-[11px] text-muted-foreground">
+                              {allowed
+                                ? t(`settings.operations.link.${item.key}.description`)
+                                : t("settings.operations.requiresRole", {
+                                    role: item.requiredRole,
+                                  })}
+                            </span>
                           </span>
-                        </span>
-                        {allowed ? (
-                          <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
-                        ) : null}
-                      </>
-                    );
-                    return allowed ? (
-                      <DropdownMenuItem key={item.key} asChild>
-                        <a
-                          href={operationsHrefForRole(role, item, serverCapabilities)}
-                          target="_blank"
-                          rel="noreferrer"
-                          data-testid={`platform-capability-${item.key}`}
-                          className="min-h-12"
-                        >
+                          {allowed ? (
+                            <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+                          ) : null}
+                        </>
+                      );
+                      return allowed ? (
+                        <DropdownMenuItem key={item.key} asChild>
+                          <a
+                            href={operationsHrefForRole(role, item, serverCapabilities)}
+                            target="_blank"
+                            rel="noreferrer"
+                            data-testid={`platform-capability-${item.key}`}
+                            className="min-h-12"
+                          >
+                            {itemContent}
+                          </a>
+                        </DropdownMenuItem>
+                      ) : (
+                        <DropdownMenuItem key={item.key} disabled className="min-h-12">
                           {itemContent}
-                        </a>
-                      </DropdownMenuItem>
-                    ) : (
-                      <DropdownMenuItem key={item.key} disabled className="min-h-12">
-                        {itemContent}
-                      </DropdownMenuItem>
-                    );
-                  })}
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        </DropdownMenuContent>
-      </DropdownMenu>
+              ))}
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     );
   }
 

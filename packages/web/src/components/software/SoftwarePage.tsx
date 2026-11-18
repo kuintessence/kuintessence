@@ -629,7 +629,7 @@ export function SoftwarePage() {
       ) : null}
 
       <details className="border-b border-border" data-testid="software-management">
-        <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
+        <summary className="cursor-pointer px-2 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
           {t("software.management")}
         </summary>
         <div className="kq-motion--disclosure space-y-4 border-border p-4">
@@ -748,7 +748,7 @@ export function SoftwarePage() {
             className="mb-4 border-b border-border"
             data-testid="software-material-management"
           >
-            <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
+            <summary className="cursor-pointer px-2 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
               {t("software.materialManagement")}
             </summary>
             <div className="kq-motion--disclosure space-y-4 border-border p-4">
@@ -1669,18 +1669,20 @@ function UsecasePackagesPanel({
               shown={usecases.length}
               total={total}
             />
-            {usecases.map((pkg) => {
-              const key = favoriteKey("usecase", pkg.id);
-              return (
-                <UsecaseCard
-                  key={pkg.id}
-                  favorite={favorites.has(key)}
-                  onEdit={canManage ? () => setEditingId(pkg.id) : undefined}
-                  onToggleFavorite={() => toggleFavorite(key)}
-                  pkg={pkg}
-                />
-              );
-            })}
+            <SoftwareCardGrid>
+              {usecases.map((pkg) => {
+                const key = favoriteKey("usecase", pkg.id);
+                return (
+                  <UsecaseCard
+                    key={pkg.id}
+                    favorite={favorites.has(key)}
+                    onEdit={canManage ? () => setEditingId(pkg.id) : undefined}
+                    onToggleFavorite={() => toggleFavorite(key)}
+                    pkg={pkg}
+                  />
+                );
+              })}
+            </SoftwareCardGrid>
             <ServerPagination
               hasNext={hasNext}
               page={page}
@@ -1931,7 +1933,7 @@ function SpackCatalogPackageList({
             return (
               <div
                 key={`${pkg.source}:${pkg.id ?? pkg.name}`}
-                className={`grid min-w-0 gap-2 border-border p-2.5 ${clickableCardClass}`}
+                className={`grid min-w-0 content-start gap-2 p-3 ${clickableCardClass}`}
                 data-testid={`software-spack-catalog-package-${pkg.source}-${pkg.name}`}
               >
                 <Link
@@ -2247,14 +2249,12 @@ function UsecaseCard({
       : pkg.spec.software.kind === "Singularity"
         ? `${pkg.spec.software.image}:${pkg.spec.software.tag}`
         : "Bare";
-  const moduleName =
-    pkg.spec.software.kind === "Spack" ? (pkg.spec.software.moduleName ?? "—") : "—";
-  const compiler = pkg.spec.software.kind === "Spack" ? (pkg.spec.software.compiler ?? "—") : "—";
-  const variantRef =
-    pkg.spec.software.kind === "Spack" ? (pkg.spec.software.variantRef ?? "—") : "—";
+  const moduleName = pkg.spec.software.kind === "Spack" ? pkg.spec.software.moduleName : null;
+  const compiler = pkg.spec.software.kind === "Spack" ? pkg.spec.software.compiler : null;
+  const variantRef = pkg.spec.software.kind === "Spack" ? pkg.spec.software.variantRef : null;
   return (
-    <div
-      className={` border-border p-3 ${clickableCardClass}`}
+    <article
+      className={`flex min-w-0 flex-col gap-2 p-3 ${clickableCardClass}`}
       data-testid={`software-usecase-card-${pkg.id}`}
     >
       <Link
@@ -2267,24 +2267,25 @@ function UsecaseCard({
       <div className={`flex items-start justify-between gap-3 ${cardContentLayerClass}`}>
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold">{pkg.name}</div>
-          <div className="mt-1 font-mono text-[11px] text-muted-foreground">{shortId(pkg.id)}</div>
         </div>
         <div className={`flex shrink-0 items-center gap-1 ${cardActionLayerClass}`}>
           <FavoriteButton active={favorite} onClick={onToggleFavorite} />
           <Badge variant="outline">v{pkg.version}</Badge>
         </div>
       </div>
-      <p className={`mt-2 line-clamp-2 text-xs text-muted-foreground ${cardContentLayerClass}`}>
-        {pkg.description ?? t("software.card.noDescription")}
-      </p>
-      <div className={`mt-3 grid gap-2 text-xs md:grid-cols-2 ${cardContentLayerClass}`}>
+      {pkg.description && (
+        <p className={`line-clamp-2 text-xs text-muted-foreground ${cardContentLayerClass}`}>
+          {pkg.description}
+        </p>
+      )}
+      <div className={`grid grid-cols-2 gap-2 text-xs ${cardContentLayerClass}`}>
         <InfoTile label={t("software.manage.commandFile")} value={pkg.spec.usecase.commandFile} />
         <InfoTile label={t("software.manage.boundSoftware")} value={softwareLabel} />
-        <InfoTile label={t("software.manage.compiler")} value={compiler} />
-        <InfoTile label={t("software.manage.module")} value={moduleName} />
-        <InfoTile label={t("software.manage.variantRef")} value={variantRef} />
+        {compiler && <InfoTile label={t("software.manage.compiler")} value={compiler} />}
+        {moduleName && <InfoTile label={t("software.manage.module")} value={moduleName} />}
+        {variantRef && <InfoTile label={t("software.manage.variantRef")} value={variantRef} />}
       </div>
-      <div className={`mt-3 kq-fill-row ${cardActionLayerClass}`}>
+      <div className={`mt-auto flex flex-wrap gap-1.5 pt-1 ${cardActionLayerClass}`}>
         <Button asChild variant="outline" size="sm" data-testid={`software-view-usecase-${pkg.id}`}>
           <Link to="/software/usecases/$usecaseId" params={{ usecaseId: pkg.id }}>
             <Eye />
@@ -2298,7 +2299,7 @@ function UsecaseCard({
           </Button>
         ) : null}
       </div>
-    </div>
+    </article>
   );
 }
 
@@ -2474,7 +2475,7 @@ function UsecasePackageEditForm({
 
 function InfoTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 border-border px-2 py-1.5">
+    <div className="min-w-0">
       <div className="text-[11px] text-muted-foreground">{label}</div>
       <div className="truncate font-mono text-xs" title={value}>
         {value}
@@ -2513,10 +2514,6 @@ function findCatalogPackage(
     source,
     tags: [],
   };
-}
-
-function shortId(id: string): string {
-  return id.length > 12 ? id.slice(0, 12) : id;
 }
 
 function SoftwareEmptyState({ canCreate }: { canCreate: boolean }) {

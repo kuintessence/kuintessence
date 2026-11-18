@@ -4,6 +4,7 @@ const POLICY_KEY = "kq.mobile-management-policy";
 const HIGH_RISK_PATHS = [
   /^\/platform\/users(?:\/|$)/,
   /^\/preferences\/global(?:\/|$)/,
+  /^\/preferences\/org\/[^/]+\/cost-rates$/,
   /^\/sandbox\/accounts(?:\/|$)/,
   /^\/compute-providers\/(?:provider|operator)\/organizations(?:\/|$)/,
   /^\/interconnect\/(?:provider|operator)\/(?:centers|clusters|links)(?:\/|$)/,

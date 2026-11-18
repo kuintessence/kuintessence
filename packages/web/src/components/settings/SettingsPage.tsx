@@ -574,8 +574,8 @@ export function SettingsPage() {
               {selectedSection === "cluster-file-roots" &&
               canAccessOperation(auth.role, "org_admin") ? (
                 <section id="cluster-file-roots" className="min-w-0 scroll-mt-4">
-                  <ClusterFileRootsPanel />
                   <FunctionMaps ids={["G15"]} />
+                  <ClusterFileRootsPanel />
                 </section>
               ) : null}
               {selectedSection === "cost-rates" && canManageCost ? (

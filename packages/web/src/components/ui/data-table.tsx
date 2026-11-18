@@ -13,7 +13,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type MouseEvent, type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { Button } from "./button";
@@ -48,6 +48,21 @@ export interface DataTableProps<TData, TValue> {
   hidePagination?: boolean;
   tableClassName?: string;
   renderRow?: (row: TData) => ReactNode;
+}
+
+function isRowClick(event: MouseEvent<HTMLTableRowElement>, ignoreSelection = false) {
+  const target = event.target;
+  if (!(target instanceof Element) || !event.currentTarget.contains(target)) return false;
+  if (
+    target.closest(
+      "a, button, input, select, textarea, label, summary, [role=button], [role=link], [contenteditable=true]",
+    )
+  )
+    return false;
+  const selection = window.getSelection();
+  return (
+    ignoreSelection || !selection?.toString() || !event.currentTarget.contains(selection.anchorNode)
+  );
 }
 
 export function DataTable<TData, TValue>({
@@ -98,6 +113,7 @@ export function DataTable<TData, TValue>({
     manualFiltering,
     rowCount,
     enableSorting: !manualSorting || !!onSortingChange,
+    enableMultiSort: !manualSorting,
     onGlobalFilterChange,
     ...(globalFilterFn ? { globalFilterFn } : {}),
     getCoreRowModel: getCoreRowModel(),
@@ -112,7 +128,10 @@ export function DataTable<TData, TValue>({
 
   return (
     <div className="space-y-3">
-      <div className="min-w-0 overflow-x-auto overscroll-x-contain" data-testid={scrollTestId}>
+      <div
+        className="isolate min-w-0 overflow-x-auto overscroll-x-contain"
+        data-testid={scrollTestId}
+      >
         <Table
           className={cn(
             "w-full text-sm",
@@ -230,10 +249,34 @@ export function DataTable<TData, TValue>({
                   data-testid={rowDataTestId ? rowDataTestId(row.original) : undefined}
                   className={cn(
                     "border-t border-border last:border-b-0",
-                    onRowClick && "cursor-pointer transition-colors hover:text-brand",
+                    onRowClick &&
+                      "cursor-pointer hover:bg-muted/50 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
                   )}
-                  onClick={() => onRowClick?.(row.original)}
-                  onDoubleClick={() => onRowDoubleClick?.(row.original)}
+                  tabIndex={onRowClick ? 0 : undefined}
+                  onClick={
+                    onRowClick &&
+                    ((event) => {
+                      if (isRowClick(event)) onRowClick(row.original);
+                    })
+                  }
+                  onDoubleClick={
+                    onRowDoubleClick &&
+                    ((event) => {
+                      if (isRowClick(event, true)) onRowDoubleClick(row.original);
+                    })
+                  }
+                  onKeyDown={
+                    onRowClick &&
+                    ((event) => {
+                      if (
+                        event.target !== event.currentTarget ||
+                        (event.key !== "Enter" && event.key !== " ")
+                      )
+                        return;
+                      event.preventDefault();
+                      onRowClick(row.original);
+                    })
+                  }
                 >
                   {renderRow ? (
                     <TableCell colSpan={columns.length}>{renderRow(row.original)}</TableCell>
@@ -261,7 +304,9 @@ export function DataTable<TData, TValue>({
       <p className="text-xs text-muted-foreground" aria-live="polite">
         {t("ui.resultCount", { count: total })}
       </p>
-      {!hidePagination && (total > pageSize || table.getPageCount() > 1) ? (
+      {!hidePagination &&
+      total > 0 &&
+      (total > pagination.pageSize || pagination.pageSize !== pageSize || total > pageSize) ? (
         <div className="kq-fill-row gap-3 text-xs text-muted-foreground">
           <label className="flex items-center gap-2">
             {t("common.pagination.rowsPerPage")}

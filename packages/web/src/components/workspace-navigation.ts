@@ -253,7 +253,14 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
         labelKey: "workspace.section.audit",
         items: [
           { to: "/cp/audit", labelKey: "cp.nav.audit", icon: ScrollText },
-          { to: "/cp/metering", labelKey: "cp.nav.metering", icon: ReceiptText },
+          { to: "/cp/metering", hash: "overview", labelKey: "cp.nav.metering", icon: ReceiptText },
+          {
+            to: "/cp/metering",
+            hash: "cost-rates",
+            labelKey: "settings.sections.cost-rates",
+            icon: ReceiptText,
+            serverCapability: "workspace.provider.manage",
+          },
         ],
       },
     ],
@@ -676,7 +683,7 @@ export function isWorkspaceNavItemActive(
   if (!normalizedHash) {
     return (
       (item.to === "/settings" && item.hash === "personal/account") ||
-      (item.to === "/operations" && item.hash === "overview") ||
+      ((item.to === "/operations" || item.to === "/cp/metering") && item.hash === "overview") ||
       ((item.to === "/interconnect" || item.to === "/cp/interconnect") && item.hash === "overview")
     );
   }

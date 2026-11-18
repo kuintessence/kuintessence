@@ -33,6 +33,7 @@ interface ClusterFileRootRouteService {
     options?: { agentId?: string; siteId?: string },
   ): Promise<AllowedClusterFileRoots>;
   listAdmin(ctx: ClusterFileRootAccessContext): Promise<unknown[]>;
+  remove(id: string, ctx: ClusterFileRootAccessContext): Promise<void>;
   getAdmin(
     id: string,
     ctx: ClusterFileRootAccessContext,
@@ -203,6 +204,17 @@ export function createFileRoutes(service: FileService, options: FileRouteOptions
         return c.json(root, 201);
       },
     );
+
+    routes.get("/admin/cluster-file-roots/:id", async (c) => {
+      const id = ClusterFileRootIdSchema.parse(c.req.param("id"));
+      return c.json(await clusterFileRootService.getAdmin(id, clusterFileRootAccessContext(c)));
+    });
+
+    routes.delete("/admin/cluster-file-roots/:id", async (c) => {
+      const id = ClusterFileRootIdSchema.parse(c.req.param("id"));
+      await clusterFileRootService.remove(id, clusterFileRootAccessContext(c));
+      return c.json({ id });
+    });
 
     routes.post("/admin/cluster-file-roots/:id/check", async (c) => {
       assertClusterFileRouteAccess(c, options);

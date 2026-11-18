@@ -1,5 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { agents, clusterFileRoots, createPgDb, orgs, type PgDb } from "@kuintessence/db";
+import {
+  agents,
+  clusterFileRoots,
+  createPgDb,
+  orgs,
+  type PgDb,
+  storageQuotaPolicies,
+} from "@kuintessence/db";
 import { eq, inArray } from "drizzle-orm";
 import type { AuthzService } from "../authz/service";
 import { ClusterFileRootService } from "./cluster-file-root";
@@ -111,6 +118,35 @@ describe("ClusterFileRootService", () => {
       { agentId },
     );
     expect(hidden).toEqual({ paths: [], hasConfiguredRoots: true, roots: [] });
+  });
+
+  test("removes an unused root while preserving linked configuration and denying another provider", async () => {
+    const root = await service.create(
+      { label: "Retired root", path: "/cfr-remove", visibleOrgIds: [], enabled: false },
+      { role: "org_admin", orgId: providerOrgId },
+    );
+    try {
+      await expect(
+        service.remove(root.id, { role: "org_admin", orgId: otherOrgId }),
+      ).rejects.toMatchObject({ statusCode: 403 });
+      await db.insert(storageQuotaPolicies).values({
+        scope: "cluster_root",
+        scopeId: root.id,
+        providerOrgId,
+        defaultQuotaBytes: 1024,
+      });
+      await expect(
+        service.remove(root.id, { role: "org_admin", orgId: providerOrgId }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      await db.delete(storageQuotaPolicies).where(eq(storageQuotaPolicies.scopeId, root.id));
+      await service.remove(root.id, { role: "org_admin", orgId: providerOrgId });
+      await expect(
+        service.getAdmin(root.id, { role: "org_admin", orgId: providerOrgId }),
+      ).rejects.toMatchObject({ statusCode: 404 });
+    } finally {
+      await db.delete(storageQuotaPolicies).where(eq(storageQuotaPolicies.scopeId, root.id));
+      await db.delete(clusterFileRoots).where(eq(clusterFileRoots.id, root.id));
+    }
   });
 
   test("uses all bound organization memberships for visible roots", async () => {

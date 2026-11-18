@@ -46,8 +46,17 @@ test("shows provider ownership and requires a reason before changing a user's st
     </QueryClientProvider>,
   );
   await screen.findByText("研究中心");
-  expect(screen.getAllByRole("button", { name: "停用账号" })).toHaveLength(1);
-  fireEvent.click(screen.getByRole("button", { name: "停用账号" }));
+  fireEvent.click(screen.getByRole("button", { name: "成员" }));
+  await waitFor(() => expect(api.get).toHaveBeenCalledWith(expect.stringContaining("sort=member")));
+  fireEvent.change(screen.getByRole("combobox", { name: "状态" }), {
+    target: { value: "enabled" },
+  });
+  await waitFor(() =>
+    expect(api.get).toHaveBeenCalledWith(expect.stringContaining("status=enabled")),
+  );
+  await screen.findByText("研究中心");
+  expect(screen.getAllByRole("button", { name: "停用" })).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "停用" }));
   expect(screen.getByRole("button", { name: "确认" }).hasAttribute("disabled")).toBe(true);
   fireEvent.change(nativeControl(screen.getByLabelText("操作原因")), {
     target: { value: "账号访问审查" },
@@ -110,7 +119,7 @@ test("provisions an account, edits its name and confirms its deletion", async ()
   );
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
-  fireEvent.click(screen.getByRole("button", { name: "编辑资料" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑" }));
   fireEvent.change(nativeControl(screen.getByLabelText("显示名称")), {
     target: { value: "新名称" },
   });
@@ -122,10 +131,10 @@ test("provisions an account, edits its name and confirms its deletion", async ()
   );
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
-  fireEvent.click(screen.getByRole("button", { name: "删除用户" }));
+  fireEvent.click(screen.getByRole("button", { name: "删除" }));
   expect(api.delete).not.toHaveBeenCalled();
   const dialog = screen.getByRole("dialog");
-  fireEvent.click(within(dialog).getByRole("button", { name: "删除用户" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
   await waitFor(() => expect(api.delete).toHaveBeenCalledWith("/platform/users/researcher"));
   view.unmount();
   client.clear();

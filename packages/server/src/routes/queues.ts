@@ -14,6 +14,7 @@ import type { FederationClusterQueueService } from "../federation/cluster-queues
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { assertRole } from "../middleware/rbac";
 import { kqValidator } from "../middleware/validator";
+import type { PreferenceService } from "../preferences/preference-service";
 import type { QueueAccessContext, QueueRegistryService } from "../services/queue-registry";
 
 async function resolveQueueContext(
@@ -61,6 +62,7 @@ async function resolveQueueContext(
 export interface QueueRouteOptions {
   authz?: AuthzService;
   federationClusters?: FederationClusterQueueService;
+  preferences?: PreferenceService;
 }
 
 export function createQueueRoutes(
@@ -80,7 +82,19 @@ export function createQueueRoutes(
       service.listVisible(ctx),
       options.federationClusters?.listVisible(ctx) ?? [],
     ]);
-    const queues = [...local, ...remote];
+    const globalRates = await options.preferences?.loadGlobal();
+    const rates = await options.preferences?.resolveAgentCostRates(
+      [...new Set(local.map((queue) => queue.agentId))],
+      globalRates?.costRates,
+    );
+    const queues = [
+      ...local.map((queue) =>
+        rates && Object.hasOwn(rates, queue.agentId)
+          ? { ...queue, costRate: rates[queue.agentId] }
+          : queue,
+      ),
+      ...remote,
+    ];
     return c.json({ queues });
   });
 

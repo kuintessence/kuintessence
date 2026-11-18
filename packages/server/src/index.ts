@@ -2190,7 +2190,11 @@ protectedApi.route(
 protectedApi.route("/", createPreferenceRoutes(preferenceService, db, { authz: authzService }));
 protectedApi.route(
   "/",
-  createQueueRoutes(queueRegistry, db, { authz: authzService, federationClusters }),
+  createQueueRoutes(queueRegistry, db, {
+    authz: authzService,
+    federationClusters,
+    preferences: preferenceService,
+  }),
 );
 // placement-preview endpoint (POST /api/scheduler/preview-placement).
 // Reuses the same orchestrator instance as the dispatch path, so preview

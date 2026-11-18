@@ -8,11 +8,13 @@ import {
 } from "@kuintessence/shared";
 import { eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
+import { z } from "zod";
 import { requirePlatformPermission } from "../authz/platform-guard";
 import type { AuthzService } from "../authz/service";
+import { CpRbacError, deriveCpScope } from "../middleware/cp-rbac";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
-import type { PreferenceService } from "../preferences/preference-service";
+import { ClusterRateSpec, type PreferenceService } from "../preferences/preference-service";
 
 /**
  * REST endpoints for scheduling preferences.
@@ -113,6 +115,51 @@ export function createPreferenceRoutes(
       return c.json({ spec: spec ?? null });
     },
   );
+
+  for (const scope of ["global", "org"] as const) {
+    const path =
+      scope === "global" ? "/preferences/global/cost-rates" : "/preferences/org/:orgId/cost-rates";
+    const authorize = async (c: Context) => {
+      if (scope === "global") {
+        const actor = requireCanonicalSuperAdmin(c);
+        await requirePlatformPermission(c, options.authz, "manage", "cluster-cost-rates");
+        return { actor, orgId: null };
+      }
+      const orgId = z.string().uuid().parse(c.req.param("orgId"));
+      const principal = c.get("principal" as never) as BoundPrincipal | undefined;
+      if (!principal?.userId)
+        throw new AppError(ErrorCode.FORBIDDEN, "Authorization principal is not bound", 403);
+      let localAllowed: boolean;
+      try {
+        const scope = deriveCpScope(principal, { activeOrganizationId: orgId });
+        const membership = principal.memberships.find((item) => item.orgId === orgId);
+        localAllowed = hasRole(principal.role as RoleName, "operator")
+          ? hasRole(principal.role as RoleName, "platform_admin")
+          : scope.orgIds.includes(orgId) &&
+            scope.canManage === true &&
+            (!membership || membership.role === "owner" || membership.role === "admin");
+      } catch (error) {
+        if (error instanceof CpRbacError)
+          throw new AppError(ErrorCode.FORBIDDEN, error.message, error.status);
+        throw error;
+      }
+      if (
+        !localAllowed ||
+        !(await authorizeOrgPreference(c, options.authz, orgId, "manage", localAllowed))
+      )
+        throw new AppError(ErrorCode.FORBIDDEN, "Cannot configure pricing for this provider", 403);
+      return { actor: principal.userId, orgId };
+    };
+    r.get(path, async (c) => {
+      const { orgId } = await authorize(c);
+      return c.json(await service.readClusterRates(orgId));
+    });
+    r.put(path, kqValidator("json", ClusterRateSpec, "Invalid cluster cost rates"), async (c) => {
+      const { actor, orgId } = await authorize(c);
+      await service.saveClusterRates(orgId, c.req.valid("json"), actor);
+      return c.json(await service.readClusterRates(orgId));
+    });
+  }
 
   return r;
 }

@@ -16,11 +16,14 @@ export const costScorer: Scorer = {
   name: "cost",
   weight: 0.2,
   score(candidate, ctx) {
-    const rate = ctx.costRates[candidate.clusterName];
+    const rates = ctx.agentCostRates ?? ctx.costRates;
+    const key = ctx.agentCostRates ? candidate.agentId : candidate.clusterName;
+    const rate = Object.hasOwn(rates, key) ? rates[key] : undefined;
+    if (ctx.agentCostRates && rate === 0) return 100;
     if (rate === undefined || rate <= 0) return NEUTRAL_SCORE;
 
     const myCost = rate * ctx.expectedCpuHours;
-    const allRates = Object.values(ctx.costRates).filter((r) => r > 0);
+    const allRates = Object.values(rates).filter((r) => r > 0);
     if (allRates.length === 0) return NEUTRAL_SCORE;
     const minRate = Math.min(...allRates);
     const minCost = minRate * ctx.expectedCpuHours;

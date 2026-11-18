@@ -47,6 +47,7 @@ export function toScoringContext(ctx: PipelinePlacementContext): ScoringPlacemen
   return {
     dataSites: job.requires?.locality?.dataSites ?? [],
     costRates: prefs.costRates ?? {},
+    ...(ctx.agentCostRates ? { agentCostRates: ctx.agentCostRates } : {}),
     expectedCpuHours,
     expectedWallSec: wallSec,
   };

@@ -16,7 +16,7 @@ import {
   workflowDrafts,
 } from "@kuintessence/db";
 import { AppError, ErrorCode, hasRole, Role, type RoleName } from "@kuintessence/shared";
-import { and, asc, count, eq, exists, ilike, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { insertAuthzOutboxRows } from "../authz/enqueue";
@@ -35,6 +35,12 @@ const Query = z.object({
   search: z.string().trim().max(200).default(""),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).default(0),
+  sort: z.enum(["member", "organization", "role", "status"]).optional(),
+  direction: z.enum(["asc", "desc"]).default("asc"),
+  role: z
+    .enum(["guest", "user", "org_admin", "operator", "platform_admin", "super_admin"])
+    .optional(),
+  status: z.enum(["enabled", "suspended"]).optional(),
 });
 const Decision = z.strictObject({
   suspended: z.boolean(),
@@ -159,6 +165,8 @@ export function createPlatformUserRoutes(db: PgDb, authz?: AuthzService) {
     const q = Query.parse(c.req.query());
     const orgId = OrgId.parse(c.req.header("x-kq-active-organization"));
     const filter = and(
+      q.role ? eq(users.role, q.role) : undefined,
+      q.status ? eq(users.suspended, q.status === "suspended") : undefined,
       q.search
         ? or(ilike(users.email, `%${q.search}%`), ilike(users.displayName, `%${q.search}%`))
         : undefined,
@@ -173,6 +181,19 @@ export function createPlatformUserRoutes(db: PgDb, authz?: AuthzService) {
           )
         : undefined,
     );
+    const sortColumn =
+      q.sort === "member"
+        ? sql`lower(coalesce(nullif(${users.displayName}, ''), ${users.email}))`
+        : q.sort === "organization"
+          ? sql`coalesce((select min(${orgs.name}) from ${userOrgMemberships}
+          join ${orgs} on ${orgs.id} = ${userOrgMemberships.orgId}
+          where ${userOrgMemberships.userId} = ${users.id}), '')`
+          : q.sort === "role"
+            ? users.role
+            : q.sort === "status"
+              ? users.suspended
+              : users.email;
+    const order = q.direction === "desc" ? desc(sortColumn) : asc(sortColumn);
     const [rows, totals] = await Promise.all([
       db
         .select({
@@ -185,7 +206,7 @@ export function createPlatformUserRoutes(db: PgDb, authz?: AuthzService) {
         })
         .from(users)
         .where(filter)
-        .orderBy(asc(users.email), asc(users.id))
+        .orderBy(order, asc(users.id))
         .limit(q.limit)
         .offset(q.offset),
       db.select({ total: count() }).from(users).where(filter),
@@ -201,6 +222,7 @@ export function createPlatformUserRoutes(db: PgDb, authz?: AuthzService) {
               rows.map((row) => row.id),
             ),
           )
+          .orderBy(asc(orgs.name), asc(orgs.id))
       : [];
     const actor = c.get("principal" as never) as BoundPrincipal;
     return c.json({

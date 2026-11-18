@@ -534,6 +534,10 @@ export class PlacementOrchestrator {
     }
 
     const preferences = await this.deps.preferenceService.resolveEffective(orgId, userId);
+    const agentCostRates = await this.deps.preferenceService.resolveAgentCostRates(
+      candidates.map((candidate) => candidate.agentId),
+      preferences.costRates,
+    );
     const schedulingIntent = scoped
       ? {
           queueSelection:
@@ -581,6 +585,7 @@ export class PlacementOrchestrator {
         context: {
           job: placedJob,
           preferences,
+          agentCostRates,
           userRole,
           userId,
           orgId,
@@ -1071,6 +1076,10 @@ export class PlacementOrchestrator {
       candidates = candidates.filter((candidate) => eligible.has(candidate.agentId));
     }
     const preferences = await this.deps.preferenceService.resolveEffective(orgId, userId);
+    const agentCostRates = await this.deps.preferenceService.resolveAgentCostRates(
+      candidates.map((candidate) => candidate.agentId),
+      preferences.costRates,
+    );
     const schedulingIntent = await this.validateSchedulingIntent({ job, userId, userRole, orgId });
 
     const agentIds = candidates.map((a) => a.agentId);
@@ -1100,6 +1109,7 @@ export class PlacementOrchestrator {
         context: {
           job,
           preferences,
+          agentCostRates,
           userRole,
           userId,
           orgId,

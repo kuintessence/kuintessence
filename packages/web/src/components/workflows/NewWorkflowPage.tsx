@@ -132,7 +132,8 @@ async function loadVisibleQueues(): Promise<VisibleQueuesResp> {
       return {
         ...queue,
         clusterName,
-        costRate: clusterName === null ? null : (costRates[clusterName] ?? null),
+        costRate:
+          queue.costRate ?? (clusterName === null ? null : (costRates[clusterName] ?? null)),
       };
     }),
   };

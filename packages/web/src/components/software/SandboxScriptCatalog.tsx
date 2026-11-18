@@ -85,7 +85,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
         />
       )}
 
-      <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <label htmlFor="sandbox-script-search" className="grid gap-1 text-xs text-muted-foreground">
           <span>{t("sandbox.catalog.search")}</span>
           <SearchInput
@@ -134,7 +134,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
           description={t("sandbox.catalog.emptyHint")}
         />
       ) : (
-        <SoftwareCardGrid className="gap-4">
+        <SoftwareCardGrid>
           {visible.map((script) => (
             <section
               key={script.id}
@@ -149,7 +149,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
                 data-testid={`sandbox-script-card-surface-${script.id}`}
               />
               <CardHeader
-                className={`flex flex-row items-start justify-between gap-3 space-y-0 ${cardContentLayerClass}`}
+                className={`flex flex-row items-start justify-between gap-2 space-y-0 p-3 pb-1 ${cardContentLayerClass}`}
               >
                 <div className="min-w-0">
                   <div className="flex items-start gap-2 [&>svg]:mt-0.5 [&>svg]:shrink-0">
@@ -167,7 +167,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
                 </Badge>
               </CardHeader>
               <CardContent
-                className={`flex flex-1 flex-col gap-3 text-xs ${cardContentLayerClass}`}
+                className={`flex flex-1 flex-col gap-2 p-3 pt-1 text-xs ${cardContentLayerClass}`}
               >
                 <div className="flex flex-wrap gap-1.5">
                   <Badge variant="brand">{script.payload.language}</Badge>
@@ -197,7 +197,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
                     <div className="tabular-nums">{Object.keys(script.payload.outputs).length}</div>
                   </div>
                 </div>
-                <div className={`mt-auto kq-fill-row pt-1 ${cardActionLayerClass}`}>
+                <div className={`mt-auto flex flex-wrap gap-2 pt-1 ${cardActionLayerClass}`}>
                   <Button asChild variant="outline" size="sm">
                     <Link to="/software/scripts/$scriptId" params={{ scriptId: script.id }}>
                       {t("sandbox.catalog.open")}

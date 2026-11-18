@@ -214,6 +214,14 @@ test("queue list sorts, filters and resizes while keeping actions readable", asy
   await resize.press("Home");
   await expect(resize).toHaveAttribute("aria-valuenow", String(width));
 
+  await rows.first().getByText("Alpha", { exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await rows.first().press("Enter");
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+
   const actionCell = rows.first().locator("td").last();
   await table.evaluate((element) => {
     element.scrollLeft = 120;
@@ -225,6 +233,13 @@ test("queue list sorts, filters and resizes while keeping actions readable", asy
   }));
   expect(style.background).not.toBe("rgba(0, 0, 0, 0)");
   expect(style.edge).toContain("linear-gradient");
+  const actionsHeader = table.getByRole("columnheader", { name: "操作", exact: true });
+  const headerStyle = await actionsHeader.evaluate((cell) => ({
+    zIndex: Number(getComputedStyle(cell).zIndex),
+    edge: getComputedStyle(cell, "::before").backgroundImage,
+  }));
+  expect(headerStyle.zIndex).toBeGreaterThan(10);
+  expect(headerStyle.edge).toContain("linear-gradient");
   await expect(actionCell.getByRole("button", { name: "编辑" })).toBeInViewport();
   await page.screenshot({ path: info.outputPath("queue-list-desktop.png") });
 

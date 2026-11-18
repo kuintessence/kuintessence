@@ -198,6 +198,7 @@ function makeAppWithRootResolver(
       clusterFileRootService: {
         resolveAllowedRootPaths,
         listAdmin: options.listAdmin ?? (async () => []),
+        remove: async () => {},
         getAdmin:
           options.getAdmin ??
           (async (id: string) => ({
