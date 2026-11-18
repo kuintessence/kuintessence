@@ -108,11 +108,17 @@ describe("platform user operations", () => {
       },
     ]);
     try {
+      await db.insert(userOrgMemberships).values([
+        { userId: regular, orgId, role: "member" },
+        { userId: disabled, orgId, role: "member" },
+      ]);
       const path = "/api/platform/users?role=user&status=enabled&sort=member&direction=asc&limit=1";
-      const response = await app().request(path);
+      const request = (url: string) =>
+        app().request(url, { headers: { "X-KQ-Active-Organization": orgId } });
+      const response = await request(path);
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ total: 2, items: [{ id: regular }] });
-      expect(await (await app().request(`${path}&offset=1`)).json()).toMatchObject({
+      expect(await (await request(`${path}&offset=1`)).json()).toMatchObject({
         items: [{ id: userId }],
       });
     } finally {
