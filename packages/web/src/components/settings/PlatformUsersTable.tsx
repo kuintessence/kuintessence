@@ -1,9 +1,13 @@
+import { ApiError } from "@kuintessence/shared/browser";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Plus } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useActiveOrganizationId } from "../../lib/active-organization";
 import { api } from "../../lib/api-client";
+import { getAuthState } from "../../lib/auth";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
+import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -27,38 +31,84 @@ interface PlatformUser {
   role: string;
   suspended: boolean;
   canManage: boolean;
+  canEdit: boolean;
   organizations: Array<{ id: string; name: string }>;
 }
+
+type UserAction = { type: "create" } | { type: "edit" | "status" | "delete"; user: PlatformUser };
 
 export function PlatformUsersTable() {
   const { t } = useTranslation();
   const organizationId = useActiveOrganizationId();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
-  const [target, setTarget] = useState<PlatformUser | null>(null);
+  const organizationName = useOrganizationName(!!organizationId);
+  const [action, setAction] = useState<UserAction | null>(null);
+  const [email, setEmail] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [reason, setReason] = useState("");
   const client = useQueryClient();
   const mobileReadOnly = useMobileMutationBlocked("/platform/users/example/status");
   const query = useQuery({
-    queryKey: ["platform-users", organizationId ?? "all", search, page],
+    queryKey: ["platform-users", organizationId ?? "all", getAuthState().revision, search, page],
     queryFn: () =>
-      api.get<{ items: PlatformUser[]; total: number }>(
+      api.get<{ items: PlatformUser[]; total: number; canCreate: boolean }>(
         `/platform/users?${new URLSearchParams({ search, offset: String(page * 50), limit: "50" })}`,
       ),
   });
+  const items = query.error ? [] : (query.data?.items ?? []);
   const update = useMutation({
-    mutationFn: (user: PlatformUser) =>
-      api.patch(`/platform/users/${user.id}/status`, { suspended: !user.suspended, reason }),
-    onSuccess: async () => {
+    mutationFn: async (intent: UserAction) => {
+      if (intent.type === "create") {
+        await api.post("/platform/users", { email: email.trim(), displayName });
+        return;
+      }
+      const path = `/platform/users/${intent.user.id}`;
+      if (intent.type === "edit") await api.patch(path, { displayName });
+      if (intent.type === "delete") await api.delete(path);
+      if (intent.type === "status")
+        await api.patch(`${path}/status`, { suspended: !intent.user.suspended, reason });
+    },
+    onSuccess: async (_result, intent) => {
+      if (intent.type === "delete" && items.length === 1 && page > 0) {
+        setPage((current) => Math.max(0, current - 1));
+      }
       await client.invalidateQueries({ queryKey: ["platform-users"] });
-      setTarget(null);
-      setReason("");
+      setAction(null);
     },
   });
-  const items = query.error ? [] : (query.data?.items ?? []);
+  function open(intent: UserAction) {
+    update.reset();
+    setEmail(intent.type === "create" ? "" : intent.user.email);
+    setDisplayName(intent.type === "edit" ? (intent.user.displayName ?? "") : "");
+    setReason("");
+    setAction(intent);
+  }
+  const editingProfile = action?.type === "create" || action?.type === "edit";
+  const title =
+    action?.type === "status"
+      ? t(action.user.suspended ? "operations.users.enable" : "operations.users.disable")
+      : t(`operations.users.${action?.type ?? "edit"}`);
+  const errorDetails = update.error instanceof ApiError ? update.error.details : null;
+  const errorReason =
+    typeof errorDetails === "object" && errorDetails && "reason" in errorDetails
+      ? errorDetails.reason
+      : null;
   return (
     <div className="space-y-4" data-testid="platform-users">
-      <PageHeader title={t("operations.resources.users")} />
+      <PageHeader
+        title={t("operations.resources.users")}
+        actions={
+          query.data?.canCreate &&
+          !query.error &&
+          !mobileReadOnly && (
+            <Button className="sm:flex-none" onClick={() => open({ type: "create" })}>
+              <Plus aria-hidden="true" />
+              {t("operations.users.create")}
+            </Button>
+          )
+        }
+      />
       {mobileReadOnly && (
         <p className="text-sm text-muted-foreground">{t("operations.users.desktopManage")}</p>
       )}
@@ -67,6 +117,7 @@ export function PlatformUsersTable() {
           className="w-full sm:max-w-sm"
           aria-label={t("cp.users.searchLabel")}
           placeholder={t("cp.users.searchPlaceholder")}
+          maxLength={200}
           value={search}
           onChange={(event) => {
             setSearch(event.target.value);
@@ -131,19 +182,43 @@ export function PlatformUsersTable() {
                     </Badge>
                   </TableCell>
                   <TableCell className="lg:px-4 lg:py-3">
-                    {user.canManage && !mobileReadOnly && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="min-h-11 lg:min-h-9"
-                        onClick={() => {
-                          setReason("");
-                          update.reset();
-                          setTarget(user);
-                        }}
-                      >
-                        {t(user.suspended ? "operations.users.enable" : "operations.users.disable")}
-                      </Button>
+                    {(user.canManage || user.canEdit) && !mobileReadOnly ? (
+                      <div className="flex flex-wrap gap-2">
+                        {user.canEdit && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => open({ type: "edit", user })}
+                          >
+                            {t("operations.users.edit")}
+                          </Button>
+                        )}
+                        {user.canManage && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => open({ type: "status", user })}
+                          >
+                            {t(
+                              user.suspended
+                                ? "operations.users.enable"
+                                : "operations.users.disable",
+                            )}
+                          </Button>
+                        )}
+                        {user.canEdit && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-status-failed"
+                            onClick={() => open({ type: "delete", user })}
+                          >
+                            {t("operations.users.delete")}
+                          </Button>
+                        )}
+                      </div>
+                    ) : (
+                      "—"
                     )}
                   </TableCell>
                 </TableRow>
@@ -170,48 +245,101 @@ export function PlatformUsersTable() {
         </div>
       )}
       <Dialog
-        open={target !== null}
+        open={action !== null}
         onOpenChange={(open) => {
-          if (!open && !update.isPending) setTarget(null);
+          if (!open && !update.isPending) setAction(null);
         }}
       >
-        <DialogContent>
+        <DialogContent dismissible={!update.isPending}>
           <DialogHeader>
-            <DialogTitle>
-              {t(target?.suspended ? "operations.users.enable" : "operations.users.disable")}
-            </DialogTitle>
+            <DialogTitle>{title}</DialogTitle>
             <DialogDescription>
-              {target?.email}
-              {!target?.suspended && ` — ${t("operations.users.revokeSessions")}`}
+              {action?.type === "create" ? (
+                t("operations.users.createHint", {
+                  scope: organizationId
+                    ? organizationName(organizationId)
+                    : t("operations.users.platformScope"),
+                })
+              ) : action?.type === "delete" ? (
+                t("operations.users.deleteHint", { email })
+              ) : action?.type === "status" && !action.user.suspended ? (
+                <>
+                  {email} · {t("operations.users.revokeSessions")}
+                </>
+              ) : (
+                email
+              )}
             </DialogDescription>
           </DialogHeader>
-          <DialogBody className="space-y-3">
-            <label htmlFor="platform-user-status-reason" className="grid gap-2 text-sm">
-              {t("operations.users.reason")}
-              <Textarea
-                id="platform-user-status-reason"
-                value={reason}
-                maxLength={500}
-                onChange={(event) => setReason(event.target.value)}
-              />
-            </label>
-            {update.error && (
-              <p role="alert" className="text-sm text-status-failed">
-                {toUserFacingError(update.error, t("operations.users.updateFailed"))}
-              </p>
-            )}
+          <DialogBody>
+            <form
+              id="platform-user-form"
+              className="space-y-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (action && !update.isPending) update.mutate(action);
+              }}
+            >
+              {action?.type === "create" && (
+                <label className="grid gap-2 text-sm">
+                  {t("operations.users.email")}
+                  <Input
+                    type="email"
+                    required
+                    maxLength={255}
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                  />
+                </label>
+              )}
+              {editingProfile && (
+                <label className="grid gap-2 text-sm">
+                  {t("operations.users.displayName")}
+                  <Input
+                    maxLength={255}
+                    value={displayName}
+                    onChange={(event) => setDisplayName(event.target.value)}
+                  />
+                </label>
+              )}
+              {action?.type === "status" && (
+                <label htmlFor="platform-user-status-reason" className="grid gap-2 text-sm">
+                  {t("operations.users.reason")}
+                  <Textarea
+                    id="platform-user-status-reason"
+                    value={reason}
+                    maxLength={500}
+                    onChange={(event) => setReason(event.target.value)}
+                    required
+                  />
+                </label>
+              )}
+              {update.error && (
+                <p role="alert" className="text-sm text-status-failed">
+                  {errorReason === "EMAIL_IN_USE"
+                    ? t("operations.users.emailInUse")
+                    : errorReason === "USER_HAS_HISTORY"
+                      ? t("operations.users.hasHistory")
+                      : toUserFacingError(update.error, t("operations.users.updateFailed"))}
+                </p>
+              )}
+            </form>
           </DialogBody>
           <DialogFooter className="flex justify-end gap-2">
-            <Button variant="outline" disabled={update.isPending} onClick={() => setTarget(null)}>
+            <Button variant="outline" disabled={update.isPending} onClick={() => setAction(null)}>
               {t("cp.common.cancel")}
             </Button>
             <Button
-              disabled={!reason.trim() || update.isPending || !target}
-              onClick={() => {
-                if (target) update.mutate(target);
-              }}
+              type="submit"
+              form="platform-user-form"
+              variant={action?.type === "delete" ? "destructive" : "default"}
+              disabled={!action || update.isPending || (action.type === "status" && !reason.trim())}
             >
-              {t("common.confirm")}
+              {action?.type === "delete"
+                ? t("operations.users.delete")
+                : editingProfile
+                  ? t("cp.common.save")
+                  : t("common.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>

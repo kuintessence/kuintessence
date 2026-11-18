@@ -104,11 +104,19 @@ describe("SettingsPage deep links", () => {
     const section = await screen.findByTestId(panel);
     expect(section.closest("section")?.id).toBe(sectionId);
     expect(section.closest("section")?.hidden).toBe(false);
-    const other = document.getElementById(
-      sectionId === "cluster-file-roots" ? "cost-rates" : "branding",
-    );
-    expect(other?.hidden).toBe(true);
+    expect(document.getElementById("branding")).toBeNull();
     await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
+  });
+
+  test.each([
+    "#branding",
+    "#security/branding",
+  ])("opens branding outside security at %s", (hash) => {
+    router.hash = hash;
+    render(<SettingsPage />);
+    expect(screen.getByRole("heading", { name: "settings.tabs.branding" })).toBeTruthy();
+    expect(document.getElementById("branding")).toBeTruthy();
+    expect(screen.queryByTestId("settings-section-navigation")).toBeNull();
   });
 
   test("ships localized agent labels in both supported CP locales", () => {

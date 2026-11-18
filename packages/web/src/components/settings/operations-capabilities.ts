@@ -76,8 +76,8 @@ export const OPERATIONS_LINKS: ReadonlyArray<OperationsLink> = [
   },
   {
     key: "branding",
-    area: "security",
-    href: "/settings#security/branding",
+    area: "governance",
+    href: "/settings#branding",
     requiredRole: "platform_admin",
     icon: Palette,
   },

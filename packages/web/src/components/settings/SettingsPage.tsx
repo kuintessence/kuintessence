@@ -50,10 +50,9 @@ import { SshCredentialsForm } from "./SshCredentialsForm";
 import { SshRecordingPlayer } from "./SshRecordingPlayer";
 
 const SECURITY_SECTIONS = [
-  "branding",
-  "sandbox-security",
   "authz",
   "sso",
+  "sandbox-security",
   "desensitize",
   "ssh-vault",
   "agent-certs",
@@ -291,9 +290,12 @@ export function SettingsPage() {
   );
   const [requestedTab, requestedSection] = locationHash.split("/");
   const requestedPlatformTab =
-    requestedTab === "security" || requestedTab === "infrastructure" ? requestedTab : null;
-  const requestedPlatformSection =
-    requestedPlatformTab && requestedSection ? requestedSection : null;
+    requestedTab === "branding" || locationHash === "security/branding"
+      ? "branding"
+      : requestedTab === "security" || requestedTab === "infrastructure"
+        ? requestedTab
+        : null;
+  const restrictedPlatformPage = requestedPlatformTab !== null && !canManagePlatform;
   const activeTab = canManagePlatform && requestedPlatformTab ? requestedPlatformTab : "personal";
   const personalSection =
     requestedSection === "execution-accounts" || requestedSection === "appearance"
@@ -306,11 +308,12 @@ export function SettingsPage() {
     ? requestedSection
     : sections[0];
   const federationSection = selectedSection?.startsWith("federation-") ?? false;
-  const pageTitle = federationSection
-    ? t(`settings.sections.${selectedSection}`)
-    : activeTab === "personal"
+  const pageTitle =
+    activeTab === "personal"
       ? t(`settings.personalSections.${personalSection}.title`)
-      : t(`settings.tabs.${activeTab}`);
+      : federationSection || activeTab === "infrastructure"
+        ? t(`settings.sections.${selectedSection}`)
+        : t(`settings.tabs.${activeTab}`);
   useEffect(() => subscribeAuthState(() => setAuthRevision((value) => value + 1)), []);
 
   useEffect(() => {
@@ -321,7 +324,7 @@ export function SettingsPage() {
   }, [activeTab, requestedPlatformTab, requestedSection]);
   return (
     <PageShell data-testid="settings-page">
-      {requestedPlatformSection && !canManagePlatform ? (
+      {restrictedPlatformPage ? (
         <div data-testid="settings-restricted-deep-link" className="space-y-4">
           <PageHeader
             title={t("settings.restrictedDeepLink.title")}
@@ -359,9 +362,6 @@ export function SettingsPage() {
           ) : null}
           {activeTab === "security" && selectedSection === "federation-trust" ? (
             <FunctionMaps ids={["T05"]} />
-          ) : null}
-          {activeTab === "infrastructure" && selectedSection === "cluster-file-roots" ? (
-            <FunctionMaps ids={["G15"]} />
           ) : null}
 
           {activeTab === "personal" ? (
@@ -427,7 +427,7 @@ export function SettingsPage() {
             </div>
           ) : null}
 
-          {activeTab !== "personal" && !federationSection ? (
+          {activeTab === "security" && !federationSection ? (
             <nav
               aria-label={pageTitle}
               className="flex flex-wrap gap-1.5"
@@ -486,15 +486,6 @@ export function SettingsPage() {
                   <FederationPageTitle value={pageTitle}>
                     <FederationTrustPanel />
                   </FederationPageTitle>
-                </section>
-              ) : null}
-              {canManagePlatform ? (
-                <section
-                  id="branding"
-                  hidden={selectedSection !== "branding"}
-                  className="min-w-0 scroll-mt-4"
-                >
-                  <PlatformBrandingForm />
                 </section>
               ) : null}
               {canManagePlatform ? (
@@ -572,23 +563,23 @@ export function SettingsPage() {
             </div>
           ) : null}
 
+          {activeTab === "branding" && (
+            <section id="branding" className="min-w-0">
+              <PlatformBrandingForm />
+            </section>
+          )}
+
           {activeTab === "infrastructure" ? (
             <div className="space-y-4">
-              {canAccessOperation(auth.role, "org_admin") ? (
-                <section
-                  id="cluster-file-roots"
-                  hidden={selectedSection !== "cluster-file-roots"}
-                  className="min-w-0 scroll-mt-4"
-                >
+              {selectedSection === "cluster-file-roots" &&
+              canAccessOperation(auth.role, "org_admin") ? (
+                <section id="cluster-file-roots" className="min-w-0 scroll-mt-4">
                   <ClusterFileRootsPanel />
+                  <FunctionMaps ids={["G15"]} />
                 </section>
               ) : null}
-              {canManageCost ? (
-                <section
-                  id="cost-rates"
-                  hidden={selectedSection !== "cost-rates"}
-                  className="min-w-0 scroll-mt-4"
-                >
+              {selectedSection === "cost-rates" && canManageCost ? (
+                <section id="cost-rates" className="min-w-0 scroll-mt-4">
                   <CostRatesForm />
                 </section>
               ) : null}

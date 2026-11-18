@@ -230,7 +230,8 @@
         "enabled": "队列已启用",
         "disabled": "队列已禁用",
         "failed": "队列操作失败"
-      }
+      },
+      "allPublicationStates": "全部发布状态"
     },
     "software": {
       "title": "软件治理",
@@ -495,7 +496,11 @@
       },
       "empty": "范围内暂无注册集群。",
       "loadFailed": "软件治理数据暂时无法加载，请刷新后重试。",
-      "desktopManage": "请在电脑端修改软件策略或安装软件。"
+      "desktopManage": "请在电脑端修改软件策略或安装软件。",
+      "views": {
+        "clusters": "集群策略",
+        "runtime": "运行契约与材料"
+      }
     },
     "infrastructure": {
       "title": "集群基础设施",
@@ -569,7 +574,10 @@
       "noQueues": "未授权具名队列",
       "queuesNotApplicable": "不适用",
       "editQueues": "修改队列授权",
-      "queuesSaveFailed": "队列授权保存失败，请重试。"
+      "queuesSaveFailed": "队列授权保存失败，请重试。",
+      "search": "搜索账号、算力中心或执行身份",
+      "allBackends": "全部后端",
+      "allStatuses": "全部状态"
     },
     "users": {
       "title": "组织成员",

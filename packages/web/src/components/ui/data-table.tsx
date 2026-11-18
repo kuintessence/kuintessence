@@ -23,6 +23,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 
 export interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
+  resizable?: boolean;
+  pinnedEndColumn?: string;
+  caption?: string;
+  scrollTestId?: string;
   data: TData[];
   globalFilter?: string;
   globalFilterFn?: FilterFn<TData>;
@@ -48,6 +52,10 @@ export interface DataTableProps<TData, TValue> {
 
 export function DataTable<TData, TValue>({
   columns,
+  resizable = false,
+  pinnedEndColumn,
+  caption,
+  scrollTestId,
   data,
   globalFilter,
   globalFilterFn,
@@ -82,6 +90,9 @@ export function DataTable<TData, TValue>({
     },
     onSortingChange: onSortingChange ?? setSorting,
     ...(onPaginationChange ? { onPaginationChange } : {}),
+    enableColumnResizing: resizable,
+    columnResizeMode: "onChange",
+    defaultColumn: { minSize: 96, maxSize: 640 },
     manualPagination,
     manualSorting,
     manualFiltering,
@@ -101,8 +112,23 @@ export function DataTable<TData, TValue>({
 
   return (
     <div className="space-y-3">
-      <div className="overflow-x-auto">
-        <Table className={cn("w-full text-sm", total > 0 && "min-w-[640px]", tableClassName)}>
+      <div className="min-w-0 overflow-x-auto overscroll-x-contain" data-testid={scrollTestId}>
+        <Table
+          className={cn(
+            "w-full text-sm",
+            resizable ? "table-fixed" : total > 0 && "min-w-[640px]",
+            tableClassName,
+          )}
+          style={resizable ? { minWidth: table.getTotalSize() } : undefined}
+        >
+          {caption && <caption className="sr-only">{caption}</caption>}
+          {resizable && (
+            <colgroup>
+              {table.getVisibleLeafColumns().map((column) => (
+                <col key={column.id} style={{ width: column.getSize() }} />
+              ))}
+            </colgroup>
+          )}
           <TableHeader className="border-b border-border text-left text-xs text-muted-foreground">
             {table.getHeaderGroups().map((hg) => (
               <TableRow key={hg.id}>
@@ -111,7 +137,10 @@ export function DataTable<TData, TValue>({
                   return (
                     <TableHead
                       key={header.id}
-                      className="px-4 py-3 font-medium"
+                      className={cn(
+                        "relative px-4 py-2 font-medium",
+                        header.column.id === pinnedEndColumn && "kq-pinned-end",
+                      )}
                       scope="col"
                       aria-sort={
                         sorted === "asc"
@@ -126,7 +155,7 @@ export function DataTable<TData, TValue>({
                           type="button"
                           variant="ghost"
                           size="sm"
-                          className="-ml-2 h-auto min-h-8 whitespace-normal px-2 text-left font-medium"
+                          className="-ml-2 h-auto min-h-8 max-w-full justify-start whitespace-normal px-2 text-left font-medium"
                           onClick={header.column.getToggleSortingHandler()}
                         >
                           {flexRender(header.column.columnDef.header, header.getContext())}
@@ -140,6 +169,44 @@ export function DataTable<TData, TValue>({
                         </Button>
                       ) : (
                         flexRender(header.column.columnDef.header, header.getContext())
+                      )}
+                      {header.column.getCanResize() && !header.isPlaceholder && (
+                        <hr
+                          tabIndex={0}
+                          aria-label={t("ui.resizeColumn", {
+                            column:
+                              typeof header.column.columnDef.header === "string"
+                                ? header.column.columnDef.header
+                                : header.column.id,
+                          })}
+                          aria-orientation="vertical"
+                          aria-valuemin={header.column.columnDef.minSize}
+                          aria-valuemax={header.column.columnDef.maxSize}
+                          aria-valuenow={Math.round(header.getSize())}
+                          className="absolute inset-y-0 right-0 z-10 m-0 h-full w-3 cursor-col-resize touch-none select-none border-0 border-r border-border hover:border-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+                          onMouseDown={header.getResizeHandler()}
+                          onTouchStart={header.getResizeHandler()}
+                          onDoubleClick={() => header.column.resetSize()}
+                          onKeyDown={(event) => {
+                            if (event.key === "Home") {
+                              event.preventDefault();
+                              header.column.resetSize();
+                              return;
+                            }
+                            const delta =
+                              event.key === "ArrowLeft" ? -16 : event.key === "ArrowRight" ? 16 : 0;
+                            if (!delta) return;
+                            event.preventDefault();
+                            const { minSize = 96, maxSize = 640 } = header.column.columnDef;
+                            table.setColumnSizing((sizes) => ({
+                              ...sizes,
+                              [header.column.id]: Math.min(
+                                maxSize,
+                                Math.max(minSize, header.getSize() + delta),
+                              ),
+                            }));
+                          }}
+                        />
                       )}
                     </TableHead>
                   );
@@ -172,7 +239,14 @@ export function DataTable<TData, TValue>({
                     <TableCell colSpan={columns.length}>{renderRow(row.original)}</TableCell>
                   ) : (
                     row.getVisibleCells().map((cell) => (
-                      <TableCell key={cell.id} className="px-4 py-3">
+                      <TableCell
+                        key={cell.id}
+                        className={cn(
+                          "px-4 py-3",
+                          resizable && "[overflow-wrap:anywhere]",
+                          cell.column.id === pinnedEndColumn && "kq-pinned-end",
+                        )}
+                      >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </TableCell>
                     ))

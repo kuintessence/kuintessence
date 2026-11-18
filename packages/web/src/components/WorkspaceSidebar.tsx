@@ -229,7 +229,7 @@ export function WorkspaceSidebar({
                 return (
                   <section
                     key={`${identityId}:${section.labelKey}`}
-                    className="mb-5 border-b border-sidebar-border pb-5 last:mb-0 last:border-b-0 last:pb-0"
+                    className="mb-3 border-b border-sidebar-border pb-3 last:mb-0 last:border-b-0 last:pb-0"
                   >
                     <h2 className="mb-1.5 px-2 text-[11px] font-medium tracking-wide text-muted-foreground">
                       {t(section.labelKey)}
@@ -243,6 +243,8 @@ export function WorkspaceSidebar({
                             key={`${item.to}:${item.hash ?? ""}`}
                             to={item.to}
                             hash={item.hash}
+                            activeOptions={{ exact: true, includeHash: !!item.hash }}
+                            aria-current={active ? "page" : undefined}
                             data-testid={`workspace-nav-${item.labelKey.replace(/\./g, "-")}`}
                             onClick={() => {
                               if (collapseOnNavigate) onNavigate();

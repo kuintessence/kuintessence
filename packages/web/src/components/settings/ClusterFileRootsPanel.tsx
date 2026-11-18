@@ -3,7 +3,7 @@ import type {
   ClusterFileRootView,
 } from "@kuintessence/shared/browser";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, FolderTree, HardDrive, Loader2, Plus, RefreshCw, Save } from "lucide-react";
+import { Activity, HardDrive, Loader2, Plus, RefreshCw, Save } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -21,7 +21,7 @@ import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked"
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Card, CardContent, CardHeader } from "../ui/card";
 import { Input } from "../ui/input";
 import { RefreshButton } from "../ui/refresh-button";
 import { ResourceSelectField } from "../ui/resource-select-field";
@@ -117,6 +117,7 @@ export function ClusterFileRootsPanel() {
   const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [checkingId, setCheckingId] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [expandedPolicyRootIds, setExpandedPolicyRootIds] = useState<Set<string>>(new Set());
   const loadFailedLabel = t("settings.clusterFileRoots.loadFailed");
@@ -238,6 +239,7 @@ export function ClusterFileRootsPanel() {
       setRoots((prev) => [...prev, created]);
       setDrafts((prev) => ({ ...prev, [created.id]: rootToDraft(created) }));
       setNewRoot(EMPTY_NEW_ROOT);
+      setShowCreate(false);
       toast.success(t("settings.clusterFileRoots.created"));
     } catch (err) {
       toast.error(`${t("settings.clusterFileRoots.createFailed")}: ${formatError(err, "")}`);
@@ -248,26 +250,43 @@ export function ClusterFileRootsPanel() {
 
   return (
     <Card data-testid="cluster-file-roots-panel">
-      <CardHeader className="flex-row items-center justify-between space-y-0">
+      <CardHeader className="flex-row flex-wrap items-start justify-between gap-3 space-y-0 px-0">
         <div>
-          <CardTitle className="flex items-center gap-2">
-            <FolderTree className="h-4 w-4" />
-            {t("settings.clusterFileRoots.title")}
-          </CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
             {t("settings.clusterFileRoots.description")}
           </p>
         </div>
-        <RefreshButton
-          variant="outline"
-          onClick={refresh}
-          disabled={loading}
-          label={t("common.refresh")}
-        >
-          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw />}
-        </RefreshButton>
+        <div className="flex flex-wrap items-center gap-2">
+          <RefreshButton
+            variant="outline"
+            onClick={refresh}
+            disabled={loading}
+            label={t("common.refresh")}
+          >
+            {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw />}
+          </RefreshButton>
+          {!mobileReadOnly && !loadError && (
+            <Button
+              type="button"
+              onClick={() => setShowCreate(!showCreate)}
+              aria-expanded={showCreate}
+              aria-controls={showCreate ? "cluster-file-root-create" : undefined}
+              disabled={creating}
+              data-testid="cluster-file-root-create-toggle"
+            >
+              {showCreate ? (
+                t("cp.common.cancel")
+              ) : (
+                <>
+                  <Plus />
+                  {t("settings.clusterFileRoots.create")}
+                </>
+              )}
+            </Button>
+          )}
+        </div>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4 px-0">
         {mobileReadOnly && (
           <p className="text-sm text-muted-foreground">{t("settings.desktopManage")}</p>
         )}
@@ -297,9 +316,10 @@ export function ClusterFileRootsPanel() {
               </Badge>
             </div>
 
-            {!mobileReadOnly && (
+            {!mobileReadOnly && showCreate && (
               <form
-                className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,24rem),1fr))] gap-2 border-b border-border p-3"
+                id="cluster-file-root-create"
+                className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] items-start gap-3 border-b border-border px-2 pb-4"
                 onSubmit={createRoot}
                 data-testid="cluster-file-root-create-form"
               >
@@ -398,6 +418,7 @@ export function ClusterFileRootsPanel() {
                 />
                 <Button
                   type="submit"
+                  className="self-end justify-self-start"
                   disabled={creating || directoryUnavailable || !newRoot.providerOrgId}
                 >
                   {creating ? <Loader2 className="animate-spin" /> : <Plus />}
@@ -411,15 +432,23 @@ export function ClusterFileRootsPanel() {
                 {t("settings.clusterFileRoots.empty")}
               </div>
             ) : null}
-            <div className="space-y-2">
+            <div className="divide-y divide-border border-y border-border">
               {roots.map((root) => {
                 const draft = drafts[root.id] ?? rootToDraft(root);
                 return (
-                  <div key={root.id} className="space-y-2">
-                    <div
-                      className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,24rem),1fr))] gap-2 border-border p-3"
-                      data-testid={`cluster-file-root-row-${root.id}`}
-                    >
+                  <details key={root.id} data-testid={`cluster-file-root-row-${root.id}`}>
+                    <summary className="cursor-pointer px-2 py-3 text-sm hover:bg-muted/60">
+                      <span className="ml-2 font-medium [overflow-wrap:anywhere]">
+                        {root.label}
+                      </span>
+                      <span className="ml-3 text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                        {organizationName(root.providerOrgId)} · {root.path}
+                      </span>
+                      <Badge className="ml-3" variant={root.enabled ? "running" : "cancelled"}>
+                        {t(root.enabled ? "cp.common.enabled" : "cp.common.disabled")}
+                      </Badge>
+                    </summary>
+                    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] items-start gap-3 px-4 pb-4">
                       <RootField
                         id={`cluster-file-root-label-${root.id}`}
                         label={t("settings.clusterFileRoots.label")}
@@ -482,7 +511,7 @@ export function ClusterFileRootsPanel() {
                         testId={`cluster-file-root-visible-orgs-${root.id}`}
                       />
                       <RootCheckBadge check={checks[root.id]} />
-                      <div className="flex flex-wrap items-center justify-end gap-2">
+                      <div className="col-span-full flex flex-wrap items-center justify-end gap-2">
                         <label className="flex items-center gap-2 text-xs text-muted-foreground">
                           <input
                             type="checkbox"
@@ -503,7 +532,7 @@ export function ClusterFileRootsPanel() {
                           aria-expanded={expandedPolicyRootIds.has(root.id)}
                         >
                           <HardDrive />
-                          配额策略
+                          {t("settings.clusterFileRoots.quotaPolicy")}
                         </Button>
                         <Button
                           type="button"
@@ -535,7 +564,7 @@ export function ClusterFileRootsPanel() {
                     {expandedPolicyRootIds.has(root.id) ? (
                       <ClusterStoragePolicyEditor rootId={root.id} />
                     ) : null}
-                  </div>
+                  </details>
                 );
               })}
             </div>
