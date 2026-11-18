@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
 import { relativeFromNow } from "../../lib/format";
+import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -41,7 +42,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
     refetchInterval: open && session.state === "open" ? 5_000 : false,
   });
 
-  const frames = auditQ.data?.frames ?? [];
+  const frames = auditQ.isSuccess ? auditQ.data.frames : [];
   const counts = useMemo(() => {
     const out: Record<string, number> = { ALL: frames.length };
     for (const f of frames) out[f.kind] = (out[f.kind] ?? 0) + 1;
@@ -110,6 +111,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
                     <button
                       key={k}
                       type="button"
+                      aria-pressed={active}
                       data-testid={`terminal-audit-filter-${k}`}
                       onClick={() => setFilter(k)}
                       className={cn(
@@ -119,12 +121,15 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
                           : "border-border text-muted-foreground hover:bg-muted/60",
                       )}
                     >
-                      {k} ({n})
+                      {k}
+                      {auditQ.isSuccess && ` (${n})`}
                     </button>
                   );
                 })}
               </div>
               <Input
+                type="search"
+                aria-label={t("terminal.auditTitle")}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="grep…"
@@ -137,7 +142,19 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
               className="max-h-[50vh] overflow-auto border-border"
               data-testid="terminal-audit-list"
             >
-              {auditQ.isLoading ? (
+              {auditQ.isError ? (
+                <div className="space-y-2 px-3 py-6 text-center text-xs text-status-failed">
+                  <p role="alert">{toUserFacingError(auditQ.error)}</p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={auditQ.isFetching}
+                    onClick={() => void auditQ.refetch()}
+                  >
+                    {t("common.retry")}
+                  </Button>
+                </div>
+              ) : auditQ.isPending ? (
                 <div className="px-3 py-6 text-center text-xs text-muted-foreground">
                   {t("terminal.auditLoading")}
                 </div>
@@ -193,7 +210,10 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
                 size="sm"
                 variant="outline"
                 data-testid="terminal-audit-export"
-                onClick={() => exportFrames(session, frames)}
+                disabled={!auditQ.isSuccess}
+                onClick={() => {
+                  if (auditQ.isSuccess) exportFrames(session, frames);
+                }}
               >
                 <Download />
                 {t("terminal.auditExport")}
@@ -203,15 +223,17 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
         </SheetBody>
 
         <SheetFooter className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <span
-            className="font-mono text-[11px] text-muted-foreground tabular-nums"
-            data-testid="terminal-audit-summary"
-          >
-            {t("terminal.auditSummary", {
-              count: frames.length,
-              size: Math.round(totalBytes / 1024),
-            })}
-          </span>
+          {auditQ.isSuccess && (
+            <span
+              className="font-mono text-[11px] text-muted-foreground tabular-nums"
+              data-testid="terminal-audit-summary"
+            >
+              {t("terminal.auditSummary", {
+                count: frames.length,
+                size: Math.round(totalBytes / 1024),
+              })}
+            </span>
+          )}
           <span className="ml-auto flex gap-2">
             <Button
               variant="outline"
