@@ -319,7 +319,7 @@ export function ClusterFileRootsPanel() {
             {!mobileReadOnly && showCreate && (
               <form
                 id="cluster-file-root-create"
-                className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] items-start gap-3 rounded-md border border-border p-4"
+                className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] items-start gap-3 border-b border-border px-2 pb-4"
                 onSubmit={createRoot}
                 data-testid="cluster-file-root-create-form"
               >
@@ -448,7 +448,7 @@ export function ClusterFileRootsPanel() {
                         {t(root.enabled ? "cp.common.enabled" : "cp.common.disabled")}
                       </Badge>
                     </summary>
-                    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] items-start gap-3 bg-muted/30 p-4">
+                    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] items-start gap-3 px-4 pb-4">
                       <RootField
                         id={`cluster-file-root-label-${root.id}`}
                         label={t("settings.clusterFileRoots.label")}
