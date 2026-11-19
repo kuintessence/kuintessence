@@ -84,11 +84,13 @@ export function CollectionView<T>({
         </ErrorState>
       ) : loading ? (
         <LoadingState>{t("common.loading")}</LoadingState>
-      ) : columns ? (
+      ) : columns && (!renderItem || filtered.length > 0) ? (
         <DataTable
           {...table}
           columns={columns}
           renderRow={renderItem}
+          rowGridClassName={contentClassName}
+          rowGridTestId={props["data-testid"]}
           data={filtered}
           getRowId={getKey}
           globalFilter={matches || server ? undefined : query}

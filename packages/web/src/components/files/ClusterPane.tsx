@@ -1,5 +1,5 @@
 import type { ClusterEntry } from "@kuintessence/shared/browser";
-import { ArrowUp, Download, EllipsisVertical, File, Folder, RefreshCw } from "lucide-react";
+import { ArrowUp, Check, Download, EllipsisVertical, File, Folder, RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -185,7 +185,7 @@ export function ClusterPane({
             </ResourceSelectField>
           ) : null}
           <div
-            className="min-w-0 flex-1 break-all font-mono text-[11px] leading-4 text-muted-foreground"
+            className="min-w-0 flex-1 break-all font-mono text-xs text-brand"
             title={path}
             data-testid="files-cluster-path"
           >
@@ -241,8 +241,9 @@ export function ClusterPane({
             </TableHeader>
             <TableBody>
               {visibleEntries.map((e) => {
-                const isSelected = selected === e.name;
                 const isFile = e.kind === "file";
+                const entryPath = joinClusterPath(path, e.name);
+                const isSelected = isFile && selected === e.name;
                 return (
                   <TableRow
                     key={e.name}
@@ -255,7 +256,7 @@ export function ClusterPane({
                         return;
                       }
                       onSelect(null);
-                      onPathChange(joinClusterPath(path, e.name));
+                      onPathChange(entryPath);
                     }}
                     onContextMenu={(event) => {
                       event.preventDefault();
@@ -264,16 +265,20 @@ export function ClusterPane({
                         x: event.clientX,
                         y: event.clientY,
                         label: `${e.name}${e.kind === "dir" ? "/" : ""}`,
-                        path: joinClusterPath(path, e.name),
+                        path: entryPath,
                         kind: e.kind,
                       });
                     }}
-                    className={`cursor-pointer border-b border-border ${isSelected ? "text-brand font-semibold" : ""}`}
+                    className="kq-file-row cursor-pointer"
+                    data-selected={isSelected || undefined}
+                    data-context-active={contextTarget?.path === entryPath || undefined}
                   >
                     <TableCell className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
-                        {e.kind === "dir" ? (
-                          <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        {isSelected ? (
+                          <Check className="h-3.5 w-3.5 shrink-0 text-brand" />
+                        ) : !isFile ? (
+                          <Folder className="h-3.5 w-3.5 shrink-0 text-brand" />
                         ) : (
                           <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         )}
@@ -287,7 +292,7 @@ export function ClusterPane({
                             if (isFile) onSelect(isSelected ? null : e.name);
                             else {
                               onSelect(null);
-                              onPathChange(joinClusterPath(path, e.name));
+                              onPathChange(entryPath);
                             }
                           }}
                         >

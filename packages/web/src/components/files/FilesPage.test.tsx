@@ -174,6 +174,7 @@ describe("FilesPage transfer direction", () => {
 
     const row = await screen.findByTestId("files-cluster-row-result.txt");
     fireEvent.click(row);
+    expect(row.getAttribute("data-selected")).toBe("true");
     fireEvent.click(screen.getByTestId("files-pull"));
     expect((await screen.findByTestId("files-new-transfer-source")).textContent).toContain(
       "/scratch/me/inputs/result.txt",
@@ -1542,7 +1543,9 @@ describe("FilesPage transfer direction", () => {
 
     render(withQueryClient(<FilesPage />));
     fireEvent.click(await screen.findByTestId("files-cloud-dir-shared"));
-    fireEvent.click(await screen.findByTestId("files-cloud-row-view-only-file"));
+    const row = await screen.findByTestId("files-cloud-row-view-only-file");
+    fireEvent.click(row);
+    expect(row.getAttribute("data-selected")).toBe("true");
 
     expect(screen.getByTestId("files-cloud-view-only-view-only-file")).toBeTruthy();
     expect(screen.queryByTestId("files-cloud-download-view-only-file")).toBeNull();
@@ -1764,8 +1767,11 @@ describe("FilesPage transfer direction", () => {
     render(withQueryClient(<FilesPage />));
     fireEvent.click(await screen.findByTestId("files-cloud-more-dir-inputs"));
     expect(await screen.findByTestId("files-context-copy")).toBeTruthy();
+    const folder = screen.getByTestId("files-cloud-dir-inputs");
+    expect(folder.getAttribute("data-context-active")).toBe("true");
     expect(screen.queryByTestId("files-context-delete")).toBeNull();
     fireEvent.keyDown(window, { key: "Escape" });
+    expect(folder.hasAttribute("data-context-active")).toBe(false);
 
     fireEvent.click(await screen.findByTestId("files-cloud-more-shared-file"));
     expect(await screen.findByTestId("files-context-copy")).toBeTruthy();

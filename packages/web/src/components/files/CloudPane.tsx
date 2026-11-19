@@ -1,6 +1,7 @@
 import type { CloudObject } from "@kuintessence/shared/browser";
 import {
   ArrowUp,
+  Check,
   Download,
   EllipsisVertical,
   File,
@@ -13,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { relativeFromNow } from "../../lib/format";
+import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
@@ -151,7 +153,7 @@ export function CloudPane({
         if (!uploading && event.dataTransfer.files.length > 0) onUpload(event.dataTransfer.files);
       }}
     >
-      <div className="flex h-10 items-center justify-between gap-2 border-b border-border px-3">
+      <div className="flex min-h-11 items-center justify-between gap-2 border-b border-border px-3">
         <div className="flex min-w-0 flex-1 items-center gap-1">
           {canGoUp ? (
             <Button
@@ -165,12 +167,12 @@ export function CloudPane({
               <ArrowUp />
             </Button>
           ) : null}
-          <span
-            className="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
-            title={prefix}
-          >
-            {title} · {prefix || "/"}
-          </span>
+          <div className="min-w-0">
+            <div className="text-sm font-medium">{title}</div>
+            <div className="truncate font-mono text-xs text-brand" title={prefix}>
+              {prefix || "/"}
+            </div>
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {onUpload ? (
@@ -299,11 +301,12 @@ export function CloudPane({
                           kind: "dir",
                         });
                       }}
-                      className="cursor-pointer border-border "
+                      className="kq-file-row cursor-pointer"
+                      data-context-active={contextTarget?.path === r.fullPath || undefined}
                     >
                       <TableCell className="min-w-0 px-3 py-2 font-medium">
                         <div className="flex min-w-0 items-center gap-2">
-                          <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <Folder className="h-3.5 w-3.5 shrink-0 text-brand" />
                           <button
                             type="button"
                             className="kq-name-fade flex-1 text-left text-sm focus-visible:outline-2 focus-visible:outline-brand"
@@ -373,16 +376,21 @@ export function CloudPane({
                         resourceId: r.obj.id,
                       });
                     }}
-                    className={
-                      (newEntryIds.has(r.obj.id) ? "kq-motion kq-motion--item " : "") +
-                      "cursor-pointer border-border " +
-                      (isSelected ? "" : "")
-                    }
+                    className={cn(
+                      "kq-file-row cursor-pointer",
+                      newEntryIds.has(r.obj.id) && "kq-motion kq-motion--item",
+                    )}
+                    data-selected={isSelected || undefined}
+                    data-context-active={contextTarget?.resourceId === r.obj.id || undefined}
                     data-state={newEntryIds.has(r.obj.id) ? "open" : undefined}
                   >
                     <TableCell className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
-                        <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        {isSelected ? (
+                          <Check className="h-3.5 w-3.5 shrink-0 text-brand" />
+                        ) : (
+                          <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        )}
                         <button
                           type="button"
                           className="kq-name-fade flex-1 text-left text-sm focus-visible:outline-2 focus-visible:outline-brand"
