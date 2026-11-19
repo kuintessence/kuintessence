@@ -908,6 +908,9 @@
     "softwareLoadFailed": "暂时无法加载集群软件清单，请稍后重试。",
     "computeHealth": "计算健康",
     "queueDepth": "队列深度",
+    "details": "详情",
+    "clusterDetails": "集群详情",
+    "openDetails": "查看{{name}}的详情",
     "openSsh": "打开 SSH",
     "viewJobs": "查看此接入代理上的作业",
     "healthStatus": {

@@ -59,7 +59,7 @@ export function AgentsPage() {
         loading={agentsQ.isLoading}
         error={loadError ? toUserFacingError(loadError, t("agents.loadFailed")) : undefined}
         onRetry={() => void agentsQ.refetch()}
-        contentClassName="grid grid-cols-[repeat(auto-fill,minmax(min(100%,16rem),1fr))] items-start gap-3"
+        contentClassName="grid auto-rows-fr grid-cols-[repeat(auto-fill,minmax(min(100%,15rem),1fr))] gap-3"
         data-testid="agents-grid"
       />
     </PageShell>
