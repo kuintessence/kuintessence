@@ -19,16 +19,6 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
   const columns = useMemo<ColumnDef<JobRow>[]>(
     () => [
       {
-        accessorKey: "accessScope",
-        header: t("jobs.scope.label"),
-        cell: ({ row }) =>
-          row.original.accessScope ? (
-            <Badge variant="outline" className="whitespace-nowrap">
-              {t(`jobs.scope.${row.original.accessScope}`)}
-            </Badge>
-          ) : null,
-      },
-      {
         accessorKey: "name",
         header: t("jobs.overview.name"),
         cell: ({ row }) => (
@@ -95,16 +85,9 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
                 </div>
               </div>
               <div className="flex items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Badge className="whitespace-nowrap" variant={statusToBadgeVariant(job.status)}>
-                    {statusLabel(job.status, language)}
-                  </Badge>
-                  {job.accessScope ? (
-                    <Badge variant="outline" className="max-w-36 truncate">
-                      {t(`jobs.scope.${job.accessScope}`)}
-                    </Badge>
-                  ) : null}
-                </div>
+                <Badge className="whitespace-nowrap" variant={statusToBadgeVariant(job.status)}>
+                  {statusLabel(job.status, language)}
+                </Badge>
                 <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
                   {relativeFromNow(job.submittedAt, undefined, language)}
                 </span>

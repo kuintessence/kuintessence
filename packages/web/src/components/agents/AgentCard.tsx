@@ -13,7 +13,6 @@ import { useTranslation } from "react-i18next";
 import { relativeFromNow, statusLabel } from "../../lib/format";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
-import { Card, CardContent, CardHeader } from "../ui/card";
 import { AgentSiteOperations } from "./AgentSiteOperations";
 import { AgentUpdates } from "./AgentUpdates";
 
@@ -70,36 +69,38 @@ export function AgentCard({ agent, canOpenSsh }: { agent: AgentRow; canOpenSsh: 
       ? `${agent.computeHealthOperationalNodeCount}/${agent.computeHealthNodeCount}`
       : null;
   return (
-    <Card data-testid={`agent-card-${agent.agentId}`} className="flex h-full flex-col">
-      <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
-        <div className="flex items-center gap-2">
-          {Icon ? <Icon className="h-4 w-4 text-muted-foreground" /> : null}
-          <span className="text-sm font-semibold">{agent.siteName}</span>
+    <article
+      data-testid={`agent-card-${agent.agentId}`}
+      className="min-w-0 space-y-2 rounded-md border border-border bg-card p-3"
+    >
+      <header className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 items-start gap-2">
+          {Icon ? <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" /> : null}
+          <h2 className="text-sm font-semibold [overflow-wrap:anywhere]">{agent.siteName}</h2>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <span
             data-testid={`agent-status-${agent.agentId}`}
             className={cn("h-2 w-2 rounded-full", statusDot(agent.status))}
           />
-          <Badge variant="outline" className="text-[10px]">
+          <Badge variant="outline" className="text-xs">
             {statusLabel(agent.status, language)}
           </Badge>
         </div>
-      </CardHeader>
-      <CardContent className="flex flex-1 flex-col gap-2 text-xs">
-        <div
-          className="font-mono text-[11px] text-muted-foreground tabular-nums"
-          title={agent.agentId}
-        >
-          {agent.agentId.length > 12 ? agent.agentId.slice(0, 12) : agent.agentId}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-muted-foreground">{t("agents.scheduler")}</span>
-          <span className="font-mono">
-            {agent.schedulerType} {agent.schedulerVersion}
+      </header>
+      <div className="space-y-2 text-xs">
+        <div className="flex flex-wrap gap-x-2 gap-y-1 text-muted-foreground">
+          <span className="max-w-full truncate font-mono" title={agent.agentId}>
+            {agent.agentId}
+          </span>
+          <span className="min-w-0 [overflow-wrap:anywhere]">
+            {t("agents.scheduler")}{" "}
+            <span className="font-mono">
+              {agent.schedulerType} {agent.schedulerVersion}
+            </span>
           </span>
         </div>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <div className="flex items-center gap-1.5">
             <Cpu className="h-3 w-3 text-muted-foreground" />
             <span className="tabular-nums">
@@ -113,20 +114,20 @@ export function AgentCard({ agent, canOpenSsh }: { agent: AgentRow; canOpenSsh: 
             </span>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-2 border-border pt-2 text-[11px]">
+        <div className="grid grid-cols-2 gap-2 text-xs">
           <div className="min-w-0" data-testid={`agent-health-${agent.agentId}`}>
             <div className="flex items-center gap-1 text-muted-foreground">
               <Activity className="h-3 w-3" />
               {t("agents.computeHealth")}
             </div>
-            <div className="mt-0.5 truncate font-mono tabular-nums">
+            <div className="break-words font-mono tabular-nums">
               {t(`agents.healthStatus.${healthStatus}`)}
               {healthNodes ? ` · ${healthNodes}` : ""}
             </div>
           </div>
           <div className="min-w-0" data-testid={`agent-queue-depth-${agent.agentId}`}>
             <div className="text-muted-foreground">{t("agents.queueDepth")}</div>
-            <div className="mt-0.5 font-mono tabular-nums">{agent.queueDepth ?? "—"}</div>
+            <div className="font-mono tabular-nums">{agent.queueDepth ?? "—"}</div>
           </div>
         </div>
         <div
@@ -140,9 +141,11 @@ export function AgentCard({ agent, canOpenSsh }: { agent: AgentRow; canOpenSsh: 
               : t("agents.never")}
           </span>
         </div>
-        <AgentSiteOperations value={agent.siteOperations} online={agent.status === "online"} />
-        <AgentUpdates agentId={agent.agentId} />
-        <div className="mt-auto flex flex-wrap gap-3 pt-2">
+        <div className="[&>details]:pt-1 [&>details>summary]:text-xs">
+          <AgentSiteOperations value={agent.siteOperations} online={agent.status === "online"} />
+          <AgentUpdates agentId={agent.agentId} />
+        </div>
+        <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border pt-2">
           <Link
             to="/jobs"
             search={{ agentId: agent.agentId }}
@@ -164,7 +167,7 @@ export function AgentCard({ agent, canOpenSsh }: { agent: AgentRow; canOpenSsh: 
             </Link>
           ) : null}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </article>
   );
 }

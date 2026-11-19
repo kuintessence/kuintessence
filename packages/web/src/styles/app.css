@@ -419,6 +419,17 @@ details[open] > .kq-motion--disclosure {
 }
 
 @layer components {
+  .kq-file-row:hover,
+  .kq-file-row:focus-within {
+    background-color: var(--muted);
+  }
+
+  .kq-file-row[data-context-active],
+  .kq-file-row[data-selected] {
+    background-color: var(--brand-soft);
+    box-shadow: inset 1px 0 var(--brand);
+  }
+
   .kq-name-fade {
     display: block;
     min-width: 0;

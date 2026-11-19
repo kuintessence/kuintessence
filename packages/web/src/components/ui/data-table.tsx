@@ -6,6 +6,7 @@ import {
   getFilteredRowModel,
   getPaginationRowModel,
   getSortedRowModel,
+  type Header,
   type OnChangeFn,
   type PaginationState,
   type Row,
@@ -48,6 +49,33 @@ export interface DataTableProps<TData, TValue> {
   hidePagination?: boolean;
   tableClassName?: string;
   renderRow?: (row: TData) => ReactNode;
+  rowGridClassName?: string;
+  rowGridTestId?: string;
+}
+
+function renderColumnHeader<TData, TValue>(header: Header<TData, TValue>, hasRows: boolean) {
+  if (header.isPlaceholder) return null;
+  const label = flexRender(header.column.columnDef.header, header.getContext());
+  if (!header.column.getCanSort() || !hasRows) return label;
+  const sorted = header.column.getIsSorted();
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="-ml-2 h-auto min-h-8 max-w-full justify-start whitespace-normal px-2 text-left font-medium"
+      onClick={header.column.getToggleSortingHandler()}
+    >
+      {label}
+      {sorted === "asc" ? (
+        <ArrowUp aria-hidden="true" />
+      ) : sorted === "desc" ? (
+        <ArrowDown aria-hidden="true" />
+      ) : (
+        <ArrowUpDown aria-hidden="true" className="opacity-50" />
+      )}
+    </Button>
+  );
 }
 
 function isRowClick(event: MouseEvent<HTMLTableRowElement>, ignoreSelection = false) {
@@ -92,6 +120,8 @@ export function DataTable<TData, TValue>({
   hidePagination = false,
   tableClassName,
   renderRow,
+  rowGridClassName,
+  rowGridTestId,
 }: DataTableProps<TData, TValue>) {
   const { t } = useTranslation();
   const [localSorting, setSorting] = useState<SortingState>([]);
@@ -126,8 +156,8 @@ export function DataTable<TData, TValue>({
   const total = rowCount ?? table.getFilteredRowModel().rows.length;
   const pagination = table.getState().pagination;
 
-  return (
-    <div className="space-y-3">
+  function renderTable() {
+    return (
       <div
         className="isolate min-w-0 overflow-x-auto overscroll-x-contain"
         data-testid={scrollTestId}
@@ -169,26 +199,7 @@ export function DataTable<TData, TValue>({
                             : undefined
                       }
                     >
-                      {header.isPlaceholder ? null : header.column.getCanSort() && total > 0 ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="-ml-2 h-auto min-h-8 max-w-full justify-start whitespace-normal px-2 text-left font-medium"
-                          onClick={header.column.getToggleSortingHandler()}
-                        >
-                          {flexRender(header.column.columnDef.header, header.getContext())}
-                          {sorted === "asc" ? (
-                            <ArrowUp aria-hidden="true" />
-                          ) : sorted === "desc" ? (
-                            <ArrowDown aria-hidden="true" />
-                          ) : (
-                            <ArrowUpDown aria-hidden="true" className="opacity-50" />
-                          )}
-                        </Button>
-                      ) : (
-                        flexRender(header.column.columnDef.header, header.getContext())
-                      )}
+                      {renderColumnHeader(header, total > 0)}
                       {header.column.getCanResize() && !header.isPlaceholder && (
                         <hr
                           tabIndex={0}
@@ -278,28 +289,49 @@ export function DataTable<TData, TValue>({
                     })
                   }
                 >
-                  {renderRow ? (
-                    <TableCell colSpan={columns.length}>{renderRow(row.original)}</TableCell>
-                  ) : (
-                    row.getVisibleCells().map((cell) => (
-                      <TableCell
-                        key={cell.id}
-                        className={cn(
-                          "px-4 py-3",
-                          resizable && "[overflow-wrap:anywhere]",
-                          cell.column.id === pinnedEndColumn && "kq-pinned-end",
-                        )}
-                      >
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </TableCell>
-                    ))
-                  )}
+                  {row.getVisibleCells().map((cell) => (
+                    <TableCell
+                      key={cell.id}
+                      className={cn(
+                        "px-4 py-3",
+                        resizable && "[overflow-wrap:anywhere]",
+                        cell.column.id === pinnedEndColumn && "kq-pinned-end",
+                      )}
+                    >
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </TableCell>
+                  ))}
                 </TableRow>
               ))
             )}
           </TableBody>
         </Table>
       </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {renderRow ? (
+        <div className="min-w-0 space-y-2">
+          <div className="flex flex-wrap gap-2 px-2 text-xs text-muted-foreground">
+            {table.getLeafHeaders().map((header) => (
+              <div key={header.id} className="[&_button]:whitespace-nowrap">
+                {renderColumnHeader(header, total > 0)}
+              </div>
+            ))}
+          </div>
+          <div className={rowGridClassName} data-testid={rowGridTestId}>
+            {table.getRowModel().rows.map((row) => (
+              <div key={row.id} className="min-w-0">
+                {renderRow(row.original)}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        renderTable()
+      )}
 
       <p className="text-xs text-muted-foreground" aria-live="polite">
         {t("ui.resultCount", { count: total })}

@@ -47,7 +47,7 @@ export function AgentsPage() {
         emptyTestId="agents-empty"
         data={agents}
         columns={[{ accessorKey: "siteName", header: t("ui.name") }]}
-        table={{ pageSize: 10, tableClassName: "min-w-0" }}
+        table={{ pageSize: 10 }}
         getKey={(agent) => agent.agentId}
         matches={(agent, query) =>
           [agent.agentId, agent.siteName, agent.schedulerType, agent.status]
@@ -59,7 +59,7 @@ export function AgentsPage() {
         loading={agentsQ.isLoading}
         error={loadError ? toUserFacingError(loadError, t("agents.loadFailed")) : undefined}
         onRetry={() => void agentsQ.refetch()}
-        contentClassName="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
+        contentClassName="grid grid-cols-[repeat(auto-fill,minmax(min(100%,16rem),1fr))] items-start gap-3"
         data-testid="agents-grid"
       />
     </PageShell>

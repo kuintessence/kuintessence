@@ -546,7 +546,7 @@ export function FilesPage() {
         onRetrySummary={() => void storageSummaryQ.refetch()}
       />
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <CloudPane
           title={t("files.netdriveTitle")}
           emptyMessage={t("files.netdriveEmpty")}

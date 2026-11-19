@@ -126,6 +126,9 @@ describe("JobsPage pagination", () => {
     });
 
     await screen.findByTestId("jobs-agent-filter");
+    await screen.findByTestId("job-row-00000000-0000-0000-0000-000000000001");
+    expect(screen.queryByRole("columnheader", { name: "jobs.scope.label" })).toBeNull();
+    expect(screen.queryByText("jobs.scope.owner")).toBeNull();
     expect(screen.getByTestId("jobs-agent-filter").textContent).toContain("agent-a/b");
     expect(
       fetchMock.mock.calls.some(([input]) => String(input).includes("agentId=agent-a%2Fb")),
