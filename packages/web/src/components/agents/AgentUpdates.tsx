@@ -8,25 +8,32 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 
-export function AgentUpdates({ agentId }: { agentId: string }) {
-  const { t } = useTranslation();
-  const id = useId();
-  const auth = getAuthState();
-  const role = auth.role;
-  const platform = ["operator", "platform_admin", "super_admin"].includes(role ?? "");
-  const canManage = platform || role === "org_admin";
-  const [release, setRelease] = useState("");
-  const [message, setMessage] = useState("");
-  const client = useQueryClient();
-  const key = ["agent-updates", agentId, auth.revision];
-  const query = useQuery({
-    queryKey: key,
+function agentUpdatesKey(agentId: string) {
+  return ["agent-updates", agentId, getAuthState().revision];
+}
+
+export function useAgentUpdates(agentId: string) {
+  return useQuery({
+    queryKey: agentUpdatesKey(agentId),
     queryFn: async () =>
       AgentUpdateListSchema.parse(
         await api.get<unknown>(`/agents/${encodeURIComponent(agentId)}/updates`),
       ),
     refetchInterval: 10_000,
   });
+}
+
+export function AgentUpdates({ agentId }: { agentId: string }) {
+  const { t } = useTranslation();
+  const id = useId();
+  const role = getAuthState().role;
+  const platform = ["operator", "platform_admin", "super_admin"].includes(role ?? "");
+  const canManage = platform || role === "org_admin";
+  const [release, setRelease] = useState("");
+  const [message, setMessage] = useState("");
+  const client = useQueryClient();
+  const key = agentUpdatesKey(agentId);
+  const query = useAgentUpdates(agentId);
   const mutation = useMutation({
     mutationFn: (kind: "notice" | "update") =>
       api.post(`/agents/${encodeURIComponent(agentId)}/updates`, {

@@ -190,6 +190,40 @@ describe("AgentsPage", () => {
     );
   });
 
+  test("keeps full cluster identifiers and update notices accessible from details", async () => {
+    const longName = "Scientific computing cluster ".repeat(6).trim();
+    const longId = "scientific-computing-cluster-".repeat(6);
+    vi.mocked(api.get).mockImplementation(async (path) => {
+      if (path === "/agents") {
+        return { agents: [{ ...agent, agentId: longId, siteName: longName }] };
+      }
+      return {
+        supported: true,
+        requests: [
+          {
+            requestId: crypto.randomUUID(),
+            kind: "notice",
+            release: "a".repeat(64),
+            message: "Update recommended",
+            state: "requested",
+            createdAt: "2026-11-19T00:00:00.000Z",
+          },
+        ],
+      };
+    });
+    render(<AgentsPage />, { wrapper: makeClientWrapper().wrapper });
+
+    const details = await screen.findByTitle("agents.updater.notice");
+    fireEvent.click(details);
+
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(dialog.getByRole("heading", { name: longName })).toBeTruthy();
+    expect(dialog.getByText(longId)).toBeTruthy();
+    expect(dialog.getByText("agents.operations.notReported")).toBeTruthy();
+    fireEvent.click(dialog.getByText(/agents\.updater\.title/));
+    expect(await dialog.findByText("Update recommended")).toBeTruthy();
+  });
+
   test("shows local Agent status and queue without a remote SSH entrypoint", async () => {
     mocks.isLocalMode.mockReturnValue(true);
     vi.mocked(api.get).mockResolvedValueOnce({ agents: [{ ...agent, queueDepth: 3 }] });

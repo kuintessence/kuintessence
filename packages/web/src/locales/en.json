@@ -907,6 +907,9 @@
     "softwareLoadFailed": "The Agent software inventory is temporarily unavailable. Please try again shortly.",
     "computeHealth": "Compute health",
     "queueDepth": "Queue depth",
+    "details": "Details",
+    "clusterDetails": "Agent details",
+    "openDetails": "View details for {{name}}",
     "openSsh": "Open SSH",
     "viewJobs": "View jobs on this Agent",
     "healthStatus": {
