@@ -1,7 +1,7 @@
 import type { JobSpec, SchedulerAdapter } from "../adapters/base";
 import type { ExpectedOutput } from "../output-collector";
-import type { CompletedJobSnapshot } from "../queue/active-remote-jobs";
 import { JobRunner, type JobRunnerDeps, type JobStatusReport } from "./job-executor";
+import type { CompletedJobSnapshot } from "./job-snapshot";
 
 export interface ExecutorPoolDeps {
   adapter: SchedulerAdapter;

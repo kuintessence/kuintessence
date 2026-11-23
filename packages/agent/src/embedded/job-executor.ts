@@ -20,7 +20,7 @@ import {
   type OutputCollectionOptions,
 } from "../output-collector";
 
-import { type CompletedJobSnapshot, validateCompletionSnapshot } from "../queue/active-remote-jobs";
+import { type CompletedJobSnapshot, validateCompletionSnapshot } from "./job-snapshot";
 
 const moduleLogger = createLogger("job-runner");
 const STDOUT_CAPTURE_LINES = 200;
