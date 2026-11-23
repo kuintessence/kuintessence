@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { create } from "@bufbuild/protobuf";
 import {
   agentCerts,
   agents,
@@ -25,11 +26,15 @@ import {
   REPLICA_RANGE_BYTES,
   type ReplicaRangeRead,
   type ReplicaRangeResult,
+  ReplicaRangeResultSchema,
   type ServerMessage,
 } from "@kuintessence/proto";
 import { eq } from "drizzle-orm";
 import { AgentReplicaStore } from "../../packages/agent/src/data-market/data-replica";
 import { AgentDataRoots } from "../../packages/agent/src/data-market/local-data-security";
+import { AgentSessions } from "../../packages/server/src/grpc/agent-sessions";
+import { AgentDispatcher } from "../../packages/server/src/grpc/dispatcher";
+import { InteractionRelay } from "../../packages/server/src/grpc/interaction-relay";
 import { deriveDataSites } from "../../packages/server/src/scheduler/data-locality";
 import { PgDataMarketRepository } from "../../packages/server/src/services/data-market-repository-drizzle";
 import { PgDataPrerequisiteRepository } from "../../packages/server/src/services/data-prerequisite-repository-drizzle";
@@ -71,7 +76,11 @@ describe.skipIf(!databaseUrl)("managed object replicas", () => {
     offset: number;
   let coordinator: DataReplicaCoordinator;
   const commands: DataReplicaCommand[] = [];
+  const relays = new Map<string, InteractionRelay>();
+  const deliveries: Promise<void>[] = [];
   const dispatch = {
+    replicaRangePeer: (id: string) =>
+      online ? (id === sourceAgent ? sourceCert : cert) : undefined,
     replicaChannel: (id: string) => (online ? (id === sourceAgent ? sourceCert : cert) : undefined),
     pushReplicaRange: (
       id: string,
@@ -208,6 +217,9 @@ describe.skipIf(!databaseUrl)("managed object replicas", () => {
     });
   });
   afterEach(async () => {
+    for (const relay of relays.values()) relay.stop();
+    relays.clear();
+    deliveries.length = 0;
     await rm(directory, { force: true, recursive: true });
     await db.delete(netdriveTransferLog).where(eq(netdriveTransferLog.actorId, user));
     await db.delete(dataAssets).where(eq(dataAssets.id, asset));
@@ -459,6 +471,7 @@ describe.skipIf(!databaseUrl)("managed object replicas", () => {
   });
   test.each([
     "copy",
+    "cross-server",
     "revoke",
     "replace",
     "wrong-sender",
@@ -525,8 +538,99 @@ describe.skipIf(!databaseUrl)("managed object replicas", () => {
       .update(dataAssetManifestEntries)
       .set({ sizeBytes: bytes.length, digest: sha })
       .where(eq(dataAssetManifestEntries.dataAssetVersionId, version));
-    coordinator = new DataReplicaCoordinator(db, undefined, dispatch, clock);
+    const sourceOrigin = "wss://source.example",
+      targetOrigin = "wss://target.example";
+    const remoteServer = async (agentId: string, fingerprint: string, origin: string) => {
+      const sessions = new AgentSessions(db, 90, origin);
+      const sessionId = randomUUID();
+      await sessions.claim(agentId, sessionId, {
+        schedulerLimits: false,
+        pinnedSpack: false,
+        replicaRangeFingerprint: fingerprint,
+      });
+      const dispatcher = new AgentDispatcher();
+      dispatcher.register(agentId, {
+        controlSessionId: sessionId,
+        verifiedCertFingerprint: fingerprint,
+        dataReplicaCopy: true,
+        replicaRangeTransfer: true,
+        close: () => {},
+        push: ({ payload }) => {
+          switch (payload.case) {
+            case "dataReplicaCommand":
+              commands.push(payload.value);
+              break;
+            case "replicaRangeRead":
+              reads.push(payload.value);
+              break;
+            case "replicaRangeResult":
+              replies.push(payload.value);
+              break;
+          }
+        },
+      });
+      const relay = new InteractionRelay({
+        sessions,
+        secret: "range-relay-fixture",
+        origins: [sourceOrigin, targetOrigin],
+        local: (id) => dispatcher.getChannel(id),
+        receive: async () => {},
+        connect: (url, token) => {
+          const peer = relays.get(new URL(url).origin);
+          const binding = peer?.authorize("Bearer " + token);
+          if (!binding || !peer) throw new Error("Peer rejected signed route");
+          const socket = {
+            readyState: 1 as const,
+            bufferedAmount: 0,
+            binaryType: "arraybuffer" as const,
+            onopen: () => {},
+            onclose: () => {},
+            onmessage: () => {},
+            onerror: () => {},
+            close: () => {},
+            send: (data: unknown) => {
+              if (!(data instanceof Uint8Array) || !flow) throw new Error("Missing relay frame");
+              deliveries.push(flow.command(Uint8Array.from(data).buffer));
+            },
+          };
+          const flow = peer.accept(binding, {
+            bufferedAmount: 0,
+            send: () => {},
+            close: () => socket.onclose(),
+          });
+          queueMicrotask(() => socket.onopen());
+          return socket;
+        },
+      });
+      dispatcher.interactionRelay = relay;
+      relays.set(origin, relay);
+      return {
+        coordinator: new DataReplicaCoordinator(db, undefined, dispatcher, clock),
+        sessions,
+        dispatcher,
+      };
+    };
+    let sourceCoordinator: DataReplicaCoordinator;
+    let sourceOwner: Awaited<ReturnType<typeof remoteServer>> | undefined;
+    let targetOwner: Awaited<ReturnType<typeof remoteServer>> | undefined;
+    if (mode === "cross-server") {
+      sourceOwner = await remoteServer(sourceAgent, sourceCert, sourceOrigin);
+      targetOwner = await remoteServer(agent, cert, targetOrigin);
+      for (const relay of relays.values()) await relay.refresh();
+      coordinator = targetOwner.coordinator;
+      sourceCoordinator = sourceOwner.coordinator;
+    } else {
+      coordinator = new DataReplicaCoordinator(db, undefined, dispatch, clock);
+      sourceCoordinator = coordinator;
+    }
+    const drain = async () => {
+      await Promise.all(deliveries.splice(0));
+    };
     const task = await createReplica();
+    if (sourceOwner) {
+      await sourceOwner.coordinator.tick(sourceOwner.sessions.serverId);
+      expect(commands).toHaveLength(0);
+    }
     const command = await next();
     expect(command.managedSource).toBe(true);
     let interrupted = false;
@@ -537,6 +641,7 @@ describe.skipIf(!databaseUrl)("managed object replicas", () => {
           throw new Error("connection lost");
         }
         await coordinator.relay(agent, cert, range);
+        await drain();
         const read = reads.shift();
         if (!read) throw new Error("missing source read");
         if (mode === "replace" && range.offset > 0n)
@@ -547,12 +652,13 @@ describe.skipIf(!databaseUrl)("managed object replicas", () => {
             .update(dataAccessPolicies)
             .set({ status: "revoked" })
             .where(eq(dataAccessPolicies.dataAssetId, asset));
-        await coordinator.relay(
+        await sourceCoordinator.relay(
           mode === "wrong-sender" ? agent : sourceAgent,
           mode === "wrong-sender" ? cert : sourceCert,
           range,
           result,
         );
+        await drain();
         const reply = replies.shift();
         if (!reply) throw new Error("no authorized reply");
         return reply;
@@ -566,12 +672,35 @@ describe.skipIf(!databaseUrl)("managed object replicas", () => {
     }
     await coordinator.accept(agent, cert, receipt);
     const target = join(directory, "data", ".kq-replicas", task.id, "inputs", "x");
-    if (["copy", "empty", "resume"].includes(mode)) {
+    if (["copy", "empty", "resume", "cross-server"].includes(mode)) {
       expect(receipt.outcome).toBe("copied");
       expect(await status(task.id)).toBe("available");
       expect(await readFile(target)).toEqual(bytes);
       await coordinator.accept(agent, cert, receipt);
       expect((await visible()).some((r) => r.agentId === agent)).toBe(true);
+      if (sourceOwner && targetOwner) {
+        // The sender still caches the old route while the old owner still has the physical socket.
+        await targetOwner.sessions.claim(sourceAgent, randomUUID(), {
+          schedulerLimits: false,
+          pinnedSpack: false,
+          replicaRangeFingerprint: sourceCert,
+        });
+        const range = {
+          replicaId: task.id,
+          attemptId: command.attemptId,
+          requestId: randomUUID(),
+          path: "inputs/x",
+          offset: 0n,
+        };
+        expect(
+          targetOwner.dispatcher.pushReplicaRange(sourceAgent, sourceCert, {
+            case: "replicaRangeResult",
+            value: create(ReplicaRangeResultSchema, { range, outcome: "retry" }),
+          }),
+        ).toBe(true);
+        await drain();
+        expect(replies).toHaveLength(0);
+      }
     } else {
       expect(receipt.outcome).toBe(mode === "replace" ? "mismatch" : "retry");
       expect(replies).toHaveLength(0);

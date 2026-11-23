@@ -1786,7 +1786,27 @@ export const agentControlSessions = pgTable("agent_control_sessions", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   schedulerLimits: boolean("scheduler_limits").notNull(),
   pinnedSpack: boolean("pinned_spack").notNull(),
+  replicaRangeFingerprint: text("replica_range_fingerprint"),
 });
+
+export const sshLiveSessions = pgTable(
+  "ssh_live_sessions",
+  {
+    sessionId: uuid("session_id").primaryKey(),
+    serverId: uuid("server_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    user: text("user").notNull(),
+    sourceIp: text("source_ip"),
+    openedAt: timestamp("opened_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    closeReason: text("close_reason"),
+    closed: boolean("closed").notNull().default(false),
+  },
+  (t) => [
+    index("ssh_live_sessions_owner_idx").on(t.serverId),
+    index("ssh_live_sessions_expiry_idx").on(t.expiresAt),
+  ],
+);
 
 export const sshCredentials = pgTable("ssh_credentials", {
   agentId: varchar("agent_id", { length: 255 }).primaryKey(),

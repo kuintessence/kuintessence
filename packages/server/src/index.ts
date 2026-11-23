@@ -325,6 +325,7 @@ import { createSiteDiagnosticsService } from "./services/site-diagnostics";
 import { SoftwareAvailabilityService } from "./services/software-availability";
 import { SshGateway } from "./services/ssh-gateway";
 import { makeObjectStoreRecordingSink } from "./services/ssh-recording";
+import { SshSessionDirectory } from "./services/ssh-session-directory";
 import { captureDailyStorage } from "./services/storage-metering";
 import { StorageQuotaService } from "./services/storage-quota";
 import { TerminalService } from "./services/terminal-service";
@@ -1064,6 +1065,9 @@ const sshGateway = new SshGateway({
     await authzService.enqueueMany(tuples);
   },
 });
+const sshDirectory = relay
+  ? new SshSessionDirectory(db, agentSessions.serverId, sshGateway)
+  : undefined;
 // periodic sweep enforcing idle timeout and/or absolute max-duration
 // when either is configured. Cadence tracks the tighter of the two bounds.
 if (config.SSH_IDLE_TIMEOUT_SEC > 0 || config.SSH_MAX_SESSION_SEC > 0) {
@@ -2425,7 +2429,10 @@ protectedApi.route(
   }),
 );
 // live SSH session monitoring + force-disconnect (platform_admin).
-protectedApi.route("/", createAdminSshSessionRoutes(db, sshGateway, { authz: authzService }));
+protectedApi.route(
+  "/",
+  createAdminSshSessionRoutes(db, sshDirectory ?? sshGateway, { authz: authzService }),
+);
 protectedApi.route(
   "/",
   createAdminDesensitizeRoutes(db, {
@@ -2743,7 +2750,7 @@ const replicaCoordinator = new DataReplicaCoordinator(
     if (running) return;
     running = true;
     try {
-      await replicaCoordinator.tick();
+      await replicaCoordinator.tick(agentSessions.serverId);
     } catch (err) {
       logger.error({ err }, "Replica dispatch failed");
     } finally {
@@ -3063,6 +3070,7 @@ if (mtlsMode === "trusted-proxy" && config.MTLS_TRUSTED_PROXY_CIDRS.trim().lengt
   throw new Error("MTLS_TRUSTED_PROXY_CIDRS is required when MTLS_MODE=trusted-proxy");
 }
 await relay?.start();
+sshDirectory?.start();
 const grpcHandler = createGrpcConnectNodeHandler(grpcDeps, {
   enabled: mtlsEnabled,
   fingerprintHeader: config.MTLS_HEADER_FINGERPRINT,
@@ -3273,6 +3281,7 @@ async function shutdown(signal: string): Promise<void> {
   try {
     clearInterval(terminalExpiryTimer);
     relay?.stop();
+    await sshDirectory?.stop();
     grpcServer.close();
     await federationJobs.stop();
     await federationCancellationMonitor.stop();

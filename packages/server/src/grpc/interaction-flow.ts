@@ -6,7 +6,14 @@ import {
   ServerMessageSchema,
 } from "@kuintessence/proto";
 
-export type InteractionKind = "ssh" | "shell" | "logs" | "transfer" | "accounting";
+export type InteractionKind =
+  | "ssh"
+  | "shell"
+  | "logs"
+  | "transfer"
+  | "accounting"
+  | "replica-read"
+  | "replica-result";
 export interface Interaction {
   kind: InteractionKind;
   id: string;
@@ -25,6 +32,14 @@ function accountingId(json: string, response: boolean): string | undefined {
 }
 export function commandFlow({ payload: p }: ServerMessage): Interaction | undefined {
   switch (p.case) {
+    case "replicaRangeRead":
+    case "replicaRangeResult":
+      return {
+        kind: p.case === "replicaRangeRead" ? "replica-read" : "replica-result",
+        id: p.value.range?.requestId ?? "",
+        open: true,
+        terminal: true,
+      };
     case "sshRouteOpen":
       return { kind: "ssh", id: p.value.destination?.sessionId ?? "", open: true };
     case "sftpOpen":

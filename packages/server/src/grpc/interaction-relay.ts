@@ -21,14 +21,30 @@ export const relayPath = "/internal/agent-interactions";
 const limit = 4 * 1024 * 1024;
 const maxFlows = 1024;
 // Bound silent peers even if the Agent stays connected after a caller times out.
-const replyTimeoutMs = { shell: 30_000, logs: 10_000, transfer: 600_000, accounting: 60_000 };
+const replyTimeoutMs = {
+  shell: 30_000,
+  logs: 10_000,
+  transfer: 600_000,
+  accounting: 60_000,
+  "replica-read": 15_000,
+  "replica-result": 15_000,
+};
 const bindingSchema = z.strictObject({
   origin: z.uuid(),
   owner: z.uuid(),
   session: z.uuid(),
   agent: z.string().min(1).max(255),
-  kind: z.enum(["ssh", "shell", "logs", "transfer", "accounting"]),
+  kind: z.enum([
+    "ssh",
+    "shell",
+    "logs",
+    "transfer",
+    "accounting",
+    "replica-read",
+    "replica-result",
+  ]),
   id: z.string().min(1).max(128),
+  fingerprint: z.string().min(1).max(255).optional(),
   nonce: z.uuid(),
   until: z.number().int(),
 });
@@ -37,6 +53,7 @@ interface Route {
   serverId: string;
   sessionId: string;
   relayOrigin: string | null;
+  replicaRangeFingerprint?: string | null;
   expiresAt: Date;
 }
 export interface RelaySocket {
@@ -64,7 +81,7 @@ export class InteractionRelay {
   private timer?: ReturnType<typeof setInterval>;
   constructor(
     private readonly options: {
-      sessions: Pick<AgentSessions, "live" | "serverId">;
+      sessions: Pick<AgentSessions, "live" | "serverId" | "enter">;
       origins: readonly string[];
       secret: string;
       local: (agent: string) => AgentChannel | undefined;
@@ -73,7 +90,21 @@ export class InteractionRelay {
         message: AgentMessage,
         send: (response: ServerMessage) => void,
       ) => Promise<void>;
-      connect?: (url: string, token: string) => WebSocket;
+      connect?: (
+        url: string,
+        token: string,
+      ) => Pick<
+        WebSocket,
+        | "send"
+        | "close"
+        | "bufferedAmount"
+        | "readyState"
+        | "binaryType"
+        | "onopen"
+        | "onclose"
+        | "onerror"
+        | "onmessage"
+      >;
     },
   ) {}
   async refresh() {
@@ -128,6 +159,8 @@ export class InteractionRelay {
     if (!route) return;
     return {
       controlSessionId: route.sessionId,
+      verifiedCertFingerprint: route.replicaRangeFingerprint ?? undefined,
+      replicaRangeTransfer: !!route.replicaRangeFingerprint,
       close: () => {},
       push: (m) => this.push(agent, route, m),
     };
@@ -161,6 +194,7 @@ export class InteractionRelay {
       owner: route.serverId,
       origin: this.options.sessions.serverId,
       session: route.sessionId,
+      ...(desc.terminal ? { fingerprint: route.replicaRangeFingerprint ?? undefined } : {}),
       nonce: crypto.randomUUID(),
       until: Date.now() + 15000,
     };
@@ -305,7 +339,7 @@ export class InteractionRelay {
     let deadline = setTimeout(finish, 15000);
     return {
       finish,
-      command: (data: unknown) => {
+      command: async (data: unknown) => {
         if (this.incoming.get(k) !== flow) return;
         try {
           if (
@@ -322,6 +356,27 @@ export class InteractionRelay {
             (desc?.kind === "accounting" && !channel.federationAccountingV1)
           )
             throw new Error();
+          if (desc?.terminal) {
+            if (
+              !binding.fingerprint ||
+              !channel.dataReplicaCopy ||
+              !channel.replicaRangeTransfer ||
+              channel.verifiedCertFingerprint !== binding.fingerprint
+            )
+              throw new Error("Replica channel changed");
+            opened = true;
+            const leave = await this.options.sessions.enter(binding.agent, binding.session);
+            if (!leave) throw new Error("Replica owner lease expired");
+            try {
+              if (this.incoming.get(k) !== flow || this.options.local(binding.agent) !== channel)
+                return;
+              channel.push(message);
+              flow.complete();
+            } finally {
+              await leave();
+            }
+            return;
+          }
           channel.push(message);
           if (!opened) {
             opened = true;

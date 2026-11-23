@@ -578,13 +578,18 @@ export class AgentDispatcher {
     );
   }
 
+  replicaRangePeer(agentId: string) {
+    const channel = this.interactionChannel(agentId);
+    return channel?.replicaRangeTransfer ? channel.verifiedCertFingerprint : undefined;
+  }
+
   pushReplicaRange(
     agentId: string,
     fingerprint: string,
     payload: Extract<ServerMessage["payload"], { case: "replicaRangeRead" | "replicaRangeResult" }>,
   ) {
-    if (this.replicaChannel(agentId, true) !== fingerprint) return false;
-    return this.pushToAgent(agentId, create(ServerMessageSchema, { payload }));
+    if (this.replicaRangePeer(agentId) !== fingerprint) return false;
+    return this.pushInteraction(agentId, create(ServerMessageSchema, { payload }));
   }
 
   pushDataScanRequest(

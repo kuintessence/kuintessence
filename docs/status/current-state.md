@@ -103,7 +103,7 @@ Recipe 仓库支持按账号授予读写权限、跨 namespace 迁移，以及�
 
 ## 部署约束
 
-Server 使用 PostgreSQL 在实例间广播作业和工作流事件。Agent 长连接以数据库租约确定归属，普通与联邦作业由持有连接的 Server 派发。配置逐实例 WSS 入口后，其他副本可转发 SSH/SFTP、命令、日志、文件传输和联邦计量请求。生产部署需要正式 OIDC、SpiceDB、TLS、持久存储和备份。direct 与 fabric 共用基础镜像，测试调度器属于可选组件，机构密钥和密码独立配置。
+Server 使用 PostgreSQL 在实例间广播作业和工作流事件。Agent 长连接以数据库租约确定归属，普通与联邦作业由持有连接的 Server 派发。配置逐实例 WSS 入口后，其他副本可转发 SSH/SFTP、命令、日志、文件传输、受管数据副本分块和联邦计量请求。管理员可跨实例查看和关闭 SSH 会话。生产部署需要正式 OIDC、SpiceDB、TLS、持久存储和备份。direct 与 fabric 共用基础镜像，测试调度器属于可选组件，机构密钥和密码独立配置。
 
 离线交付先在构建端准备镜像和材料，按固定提交、镜像身份与 SHA-256 加载，目标端使用 `--no-build --pull never`。部署迁移、应用回退、目录版本回退与 Fabric 数据恢复分别处理，不通过删库或删卷恢复服务。详见[部署](../deployment.md)及[联邦部署](../../deploy/federation/deployment.md)。
 

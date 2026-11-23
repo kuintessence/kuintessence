@@ -610,6 +610,10 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 logger.info({ agentId: reg.agentId }, "Agent registered via gRPC");
                 await deps.sessions?.claim(reg.agentId, sessionId, {
                   schedulerLimits: reg.jobSchedulerLimits,
+                  replicaRangeFingerprint:
+                    reg.dataReplicaCopy && reg.replicaRangeTransfer
+                      ? mtlsContext.getStore()?.fingerprintSha256
+                      : null,
                   pinnedSpack:
                     reg.spackPinnedExecutionV1 &&
                     Boolean(mtlsContext.getStore()?.fingerprintSha256),

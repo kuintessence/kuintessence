@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { create } from "@bufbuild/protobuf";
 import {
   agentCerts,
+  agentControlSessions,
   agents,
   clusterFileRoots,
   dataAssetFiles,
@@ -381,7 +382,7 @@ export class DataReplicaCoordinator {
     private readonly storage: SourceStore | undefined,
     private readonly dispatcher: Pick<
       AgentDispatcher,
-      "replicaChannel" | "pushReplica" | "pushReplicaRange"
+      "replicaChannel" | "pushReplica" | "pushReplicaRange" | "replicaRangePeer"
     >,
     private readonly clock = () => new Date(),
   ) {}
@@ -479,13 +480,20 @@ export class DataReplicaCoordinator {
     });
   }
 
-  async tick() {
+  async tick(serverId?: string) {
     const now = this.clock();
     const rows = await this.db
       .select({ id: dataReplicas.id })
       .from(dataReplicas)
+      .innerJoin(dataLocations, eq(dataLocations.id, dataReplicas.targetLocationId))
       .where(
         and(
+          serverId
+            ? sql`not exists (select 1 from ${agentControlSessions}
+            where ${agentControlSessions.agentId} = ${dataLocations.agentId}
+              and ${agentControlSessions.serverId} <> ${serverId}
+              and ${agentControlSessions.expiresAt} > clock_timestamp())`
+            : undefined,
           or(inArray(dataReplicas.status, active), eq(dataReplicas.cleanupPending, true)),
           or(isNull(dataReplicas.leaseUntil), lt(dataReplicas.leaseUntil, now)),
         ),
@@ -652,7 +660,7 @@ export class DataReplicaCoordinator {
       )
         return;
       const peer = response ? row.location.agentId : origin.agentId;
-      const cert = this.dispatcher.replicaChannel(peer, true);
+      const cert = this.dispatcher.replicaRangePeer(peer);
       if (!cert || !(await validCertificate(tx, peer, cert, now))) {
         if (!response)
           this.dispatcher.pushReplicaRange(agentId, fingerprint, {

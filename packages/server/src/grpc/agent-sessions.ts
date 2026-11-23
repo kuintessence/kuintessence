@@ -11,7 +11,11 @@ export class AgentSessions {
   async claim(
     agentId: string,
     sessionId: string,
-    capabilities: { schedulerLimits: boolean; pinnedSpack: boolean },
+    capabilities: {
+      schedulerLimits: boolean;
+      pinnedSpack: boolean;
+      replicaRangeFingerprint?: string | null;
+    },
   ) {
     const row = {
       agentId,
@@ -19,6 +23,7 @@ export class AgentSessions {
       serverId: this.serverId,
       relayOrigin: this.relayOrigin,
       ...capabilities,
+      replicaRangeFingerprint: capabilities.replicaRangeFingerprint ?? null,
       expiresAt: sql`clock_timestamp() + ${this.ttlSeconds} * interval '1 second'`,
     };
     await this.db

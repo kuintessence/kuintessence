@@ -6,6 +6,8 @@ Server 使用共享 PostgreSQL 保存 Agent 会话归属、待派发作业和 HT
 
 多实例部署中，每个 Server 配置指向本实例的 `AGENT_RELAY_ORIGIN`（例如 `wss://server-a.peer.example.org`），通过 `AGENT_RELAY_PEERS` 列出可访问的实例 WSS origin，以逗号分隔。为所有实例提供同一份至少 32 字符的专用 `AGENT_RELAY_SECRET`、同一 JWT 密钥和持久的 Agent CA。TLS 入口按主机名转发 WebSocket 升级到对应实例的 `/internal/agent-interactions`，客户端须信任其证书。SSH/SFTP、命令、日志、文件传输和联邦计量回执可以通过此通道返回请求发起方。连接中断会终止该交互，SSH 客户端需重新连接。
 
+受管数据副本的分块请求和返回数据沿 Agent 当前控制连接转发。接管连接后，原连接的会话和证书绑定随之失效。SSH 管理页面汇总各 Server 最近一秒同步的活动会话。管理员关闭会话后，接口等待持有连接的 Server 确认，超时返回 503。目录租约为 30 秒；持有连接的 Server 持续无法续租时会关闭本机 SSH 会话。
+
 HTTP 命令终端按用户和会话加密保存最近 200 条审计帧。`TERMINAL_RETENTION_DAYS` 默认 7 天，从最近一次会话写入起算。交互式 PTY 和 SFTP 走 SSH 网关。
 
 自托管对象存储使用 RustFS，旧 MinIO 数据不自动迁移；升级前先阅读
