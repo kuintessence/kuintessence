@@ -46,6 +46,12 @@ class MemoryArtifactStore implements ArtifactStore {
     return { artifact: this.artifact, replica: this.local };
   }
 
+  async publishedArtifact(id: string) {
+    return this.artifact?.id === id && this.artifact.persistentAt && this.artifact.netdriveFileId
+      ? this.artifact
+      : undefined;
+  }
+
   async pendingPersistence(workflowRunId: string) {
     if (
       !this.artifact ||

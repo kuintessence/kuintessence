@@ -14,7 +14,7 @@ import {
   type ScriptIoType,
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
-import { and, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, not, or, sql } from "drizzle-orm";
 
 import { validateArtifactMembers } from "./artifact-members";
 
@@ -72,6 +72,7 @@ export interface PendingArtifactPersistence {
 }
 
 export interface ArtifactStore {
+  publishedArtifact(id: string, ownerId: string): Promise<ArtifactRecord | undefined>;
   pendingPersistence(workflowRunId: string): Promise<PendingArtifactPersistence[]>;
   registerLocal(
     input: LocalArtifactRegistration,
@@ -93,6 +94,10 @@ export interface ArtifactStore {
 }
 
 export interface ArtifactPersister {
+  receiptSource?(
+    artifact: ArtifactRecord,
+    ownerId: string,
+  ): Promise<ArtifactReplicaRecord | undefined>;
   persist(input: {
     artifact: ArtifactRecord;
     localReplica: ArtifactReplicaRecord;
@@ -108,7 +113,7 @@ function artifactRecord(row: typeof workflowArtifacts.$inferSelect): ArtifactRec
   };
 }
 
-function replicaRecord(row: typeof artifactReplicas.$inferSelect): ArtifactReplicaRecord {
+export function replicaRecord(row: typeof artifactReplicas.$inferSelect): ArtifactReplicaRecord {
   return {
     id: row.id,
     artifactId: row.artifactId,
@@ -122,6 +127,28 @@ function replicaRecord(row: typeof artifactReplicas.$inferSelect): ArtifactRepli
     expiresAt: row.expiresAt,
     failureReason: row.failureReason,
   };
+}
+
+// A soft-deleted file keeps its foreign key. Check the live file backing every manifest entry.
+function hasPublishedFiles(owner: string | typeof workflowRuns.submittedBy) {
+  return sql`case when ${workflowArtifacts.ioType} = 'FileBatch' then
+    ${workflowArtifacts.fileMembers} is not null and not exists (
+      select 1 from jsonb_array_elements(${workflowArtifacts.fileMembers}) member
+      where not exists (
+        select 1 from ${workflowArtifactFiles}
+        join ${netdriveFiles} on ${netdriveFiles.id} = ${workflowArtifactFiles.netdriveFileId}
+        where ${workflowArtifactFiles.artifactId} = ${workflowArtifacts.id}
+          and ${workflowArtifactFiles.relativePath} = member->>'relativePath'
+          and ${netdriveFiles.ownerId} = ${owner} and ${netdriveFiles.deletedAt} is null
+          and ${netdriveFiles.sha256} = member->>'sha256'
+          and to_jsonb(${netdriveFiles.size}) = member->'sizeBytes'))
+    else exists (
+      select 1 from ${netdriveFiles}
+      where ${netdriveFiles.id} = ${workflowArtifacts.netdriveFileId}
+        and ${netdriveFiles.ownerId} = ${owner} and ${netdriveFiles.deletedAt} is null
+        and ${netdriveFiles.sha256} = ${workflowArtifacts.contentHash}
+        and ${netdriveFiles.size} = ${workflowArtifacts.sizeBytes})
+    end`;
 }
 
 export class PgArtifactStore implements ArtifactStore {
@@ -240,6 +267,22 @@ export class PgArtifactStore implements ArtifactStore {
     });
   }
 
+  async publishedArtifact(id: string, ownerId: string) {
+    const [row] = await this.db
+      .select({ artifact: workflowArtifacts })
+      .from(workflowArtifacts)
+      .innerJoin(workflowRuns, eq(workflowRuns.id, workflowArtifacts.workflowRunId))
+      .where(
+        and(
+          eq(workflowArtifacts.id, id),
+          eq(workflowRuns.submittedBy, ownerId),
+          isNotNull(workflowArtifacts.persistentAt),
+          hasPublishedFiles(ownerId),
+        ),
+      );
+    return row && artifactRecord(row.artifact);
+  }
+
   async pendingPersistence(workflowRunId: string): Promise<PendingArtifactPersistence[]> {
     const rows = await this.db
       .select({ artifact: workflowArtifacts, ownerId: workflowRuns.submittedBy })
@@ -251,20 +294,7 @@ export class PgArtifactStore implements ArtifactStore {
           inArray(workflowArtifacts.durability, ["Checkpoint", "Persistent"]),
           or(
             isNull(workflowArtifacts.persistentAt),
-            and(
-              ne(workflowArtifacts.ioType, "FileBatch"),
-              isNull(workflowArtifacts.netdriveFileId),
-            ),
-            and(
-              eq(workflowArtifacts.ioType, "FileBatch"),
-              or(
-                isNull(workflowArtifacts.fileMembers),
-                sql`(SELECT count(*) FROM ${workflowArtifactFiles}
-                JOIN ${netdriveFiles} ON ${netdriveFiles.id} = ${workflowArtifactFiles.netdriveFileId}
-                WHERE ${workflowArtifactFiles.artifactId} = ${workflowArtifacts.id}
-                  AND ${netdriveFiles.deletedAt} IS NULL) < jsonb_array_length(${workflowArtifacts.fileMembers})`,
-              ),
-            ),
+            not(hasPublishedFiles(workflowRuns.submittedBy)),
           ),
         ),
       );
@@ -379,7 +409,11 @@ export class PgArtifactStore implements ArtifactStore {
           .select()
           .from(netdriveFiles)
           .where(
-            and(eq(netdriveFiles.id, artifact.netdriveFileId), isNull(netdriveFiles.deletedAt)),
+            and(
+              eq(netdriveFiles.id, artifact.netdriveFileId),
+              eq(netdriveFiles.ownerId, run.ownerId),
+              isNull(netdriveFiles.deletedAt),
+            ),
           );
         if (existing) {
           if (existing.sha256 !== artifact.contentHash || existing.size !== artifact.sizeBytes)
@@ -409,7 +443,7 @@ export class PgArtifactStore implements ArtifactStore {
     await this.db
       .update(artifactReplicas)
       .set({ status: "failed", failureReason: reason, updatedAt: new Date() })
-      .where(eq(artifactReplicas.id, replicaId));
+      .where(and(eq(artifactReplicas.id, replicaId), eq(artifactReplicas.status, "persisting")));
   }
 
   async expireEphemeral(workflowRunId: string, expiresAt: Date): Promise<void> {
@@ -490,16 +524,18 @@ export class WorkflowArtifactService {
       throw new Error("artifact size must be a non-negative safe integer");
     }
     const registered = await this.store.registerLocal(input);
-    if (
-      input.durability === "Ephemeral" ||
-      ((registered.artifact.ioType === "FileBatch" || registered.artifact.netdriveFileId) &&
-        registered.artifact.persistentAt)
-    )
-      return registered.artifact;
+    if (input.durability === "Ephemeral") return registered.artifact;
+    if (registered.artifact.persistentAt) {
+      const saved = await this.store.publishedArtifact(registered.artifact.id, input.ownerId);
+      if (saved) return saved;
+    }
     if (!this.persister) throw new Error("durable artifacts require a NetDrive persister");
     const task = this.persist(registered, input.ownerId);
     if (input.durability === "Persistent") {
       await task;
+      const saved = await this.store.publishedArtifact(registered.artifact.id, input.ownerId);
+      if (!saved) throw new WorkflowExecutionInterrupted("Published artifact is unavailable");
+      return saved;
     } else {
       this.trackCheckpoint(input.workflowRunId, task);
     }
@@ -515,8 +551,7 @@ export class WorkflowArtifactService {
     if (failed?.status === "rejected") throw failed.reason;
     for (const pending of await this.store.pendingPersistence(workflowRunId)) {
       if (!pending.ownerId) throw new Error("Durable artifact has no workflow owner");
-      if (!pending.replica) throw new Error("Durable artifact has no verified local replica");
-      await this.persist({ artifact: pending.artifact, replica: pending.replica }, pending.ownerId);
+      await this.persist(pending, pending.ownerId);
     }
   }
 
@@ -547,7 +582,7 @@ export class WorkflowArtifactService {
   }
 
   persist(
-    registered: { artifact: ArtifactRecord; replica: ArtifactReplicaRecord },
+    registered: { artifact: ArtifactRecord; replica: ArtifactReplicaRecord | null },
     ownerId: string,
   ): Promise<void> {
     const key = `${ownerId}:${registered.artifact.id}`;
@@ -564,18 +599,21 @@ export class WorkflowArtifactService {
   }
 
   private async publish(
-    registered: { artifact: ArtifactRecord; replica: ArtifactReplicaRecord },
+    registered: { artifact: ArtifactRecord; replica: ArtifactReplicaRecord | null },
     ownerId: string,
   ): Promise<void> {
     if (!this.persister) throw new Error("artifact persister is unavailable");
-    const persistentReplica = await this.store.beginPersistence(
-      registered.artifact,
-      registered.replica,
-    );
+    const localReplica =
+      registered.replica ?? (await this.persister.receiptSource?.(registered.artifact, ownerId));
+    if (!localReplica)
+      throw new WorkflowExecutionInterrupted(
+        "Durable artifact has no verified local replica or committed receipt",
+      );
+    const persistentReplica = await this.store.beginPersistence(registered.artifact, localReplica);
     try {
       const result = await this.persister.persist({
         artifact: registered.artifact,
-        localReplica: registered.replica,
+        localReplica,
         ownerId,
       });
       await this.store.completePersistence(registered.artifact.id, persistentReplica.id, result);

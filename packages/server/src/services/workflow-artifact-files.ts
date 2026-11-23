@@ -1,6 +1,7 @@
 import { posix } from "node:path";
 import {
   artifactReplicas,
+  fileTransfers,
   jobs,
   netdriveFiles,
   type PgDb,
@@ -16,17 +17,23 @@ import {
   type NetDriveFile,
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { type OutputTransferInput, sandboxArtifactTransferId } from "../workflow/output-transfer";
 import { validateArtifactMembers } from "./artifact-members";
-import type {
-  ArtifactPersister,
-  ArtifactRecord,
-  WorkflowArtifactService,
+import {
+  type ArtifactPersister,
+  type ArtifactRecord,
+  replicaRecord,
+  type WorkflowArtifactService,
 } from "./workflow-artifact";
 
 type Publication = Parameters<ArtifactPersister["persist"]>[0];
+type CommittedCopy = {
+  netdriveFileId: string;
+  storageRef: string;
+  replica: Publication["localReplica"];
+};
 type FilePublication = {
   transferId: string;
   artifact: ArtifactRecord;
@@ -97,9 +104,96 @@ export class WorkflowArtifactFiles implements ArtifactPersister {
     }
   }
 
+  private async committedCopies(artifact: ArtifactRecord, ownerId: string) {
+    const copies = new Map<string, CommittedCopy>();
+    if (!artifact.producerJobId) return copies;
+    const prefix = `workflow-runs/${artifact.workflowRunId}/artifacts/${artifact.id}/copies/`;
+    const rows = await this.db
+      .select({
+        fileId: netdriveFiles.id,
+        path: netdriveFiles.path,
+        sha256: netdriveFiles.sha256,
+        size: netdriveFiles.size,
+        source: fileTransfers.source,
+        replica: artifactReplicas,
+      })
+      .from(fileTransfers)
+      .innerJoin(
+        netdriveFiles,
+        and(
+          eq(netdriveFiles.path, fileTransfers.target),
+          eq(netdriveFiles.ownerId, ownerId),
+          isNull(netdriveFiles.deletedAt),
+          sql`${fileTransfers.netdriveFileIds} @> jsonb_build_array(${netdriveFiles.id}::text)`,
+        ),
+      )
+      .innerJoin(
+        artifactReplicas,
+        and(
+          eq(artifactReplicas.artifactId, artifact.id),
+          eq(artifactReplicas.storageKind, "agent-local"),
+          eq(artifactReplicas.agentId, fileTransfers.agentId),
+        ),
+      )
+      .where(
+        and(
+          eq(fileTransfers.workflowRunId, artifact.workflowRunId),
+          eq(fileTransfers.jobId, artifact.producerJobId),
+          eq(fileTransfers.userId, ownerId),
+          eq(fileTransfers.direction, "cluster_to_cloud"),
+          eq(fileTransfers.state, "succeeded"),
+          sql`starts_with(${fileTransfers.target},${prefix})`,
+        ),
+      )
+      .orderBy(fileTransfers.createdAt, fileTransfers.id);
+    const members = validateArtifactMembers(artifact);
+    const singleName = artifact.descriptor.replace(/[^a-zA-Z0-9._-]/g, "_");
+    for (const row of rows) {
+      const path = row.path.slice(prefix.length);
+      const separator = path.indexOf("/");
+      if (separator < 0 || !z.uuid().safeParse(path.slice(0, separator)).success) continue;
+      const name = path.slice(separator + 1);
+      const member = members?.find((item) => item.relativePath === name);
+      if (members ? !member : name !== singleName) continue;
+      const source = member ? posix.join(row.replica.storageRef, name) : row.replica.storageRef;
+      if (
+        row.source !== source ||
+        row.size !== (member?.sizeBytes ?? artifact.sizeBytes) ||
+        row.sha256 !== (member?.sha256 ?? artifact.contentHash) ||
+        copies.has(name)
+      )
+        continue;
+      copies.set(name, {
+        netdriveFileId: row.fileId,
+        storageRef: row.path,
+        replica: replicaRecord(row.replica),
+      });
+    }
+    return copies;
+  }
+
+  async receiptSource(artifact: ArtifactRecord, ownerId: string) {
+    return (await this.committedCopies(artifact, ownerId)).values().next().value?.replica;
+  }
+
   private async publish({ artifact, localReplica, ownerId }: Publication) {
     // Separate upload targets cannot overwrite a file already referenced by a concurrent reader.
     const base = `workflow-runs/${artifact.workflowRunId}/artifacts/${artifact.id}`;
+    let copies: Map<string, CommittedCopy> | undefined;
+    const copy = async (name: string, input: FilePublication) => {
+      copies ??= await this.committedCopies(artifact, ownerId);
+      const saved = copies.get(name);
+      if (saved) return { netdriveFileId: saved.netdriveFileId, storageRef: saved.storageRef };
+      if (
+        localReplica.status !== "available" ||
+        !localReplica.verifiedAt ||
+        (localReplica.expiresAt && localReplica.expiresAt.getTime() <= Date.now())
+      )
+        throw new WorkflowExecutionInterrupted(
+          "Workflow file artifact awaits a verified local replica",
+        );
+      return this.publishFile(input);
+    };
     if (artifact.ioType !== "FileBatch") {
       // A delayed resolver may still hold the snapshot from before another publication finished.
       const [existing] = await this.db
@@ -122,13 +216,14 @@ export class WorkflowArtifactFiles implements ArtifactPersister {
         return { netdriveFileId: existing.file.id, storageRef: existing.file.path };
       }
       const transferId = sandboxArtifactTransferId(artifact.id, localReplica.id);
-      return this.publishFile({
+      const name = artifact.descriptor.replace(/[^a-zA-Z0-9._-]/g, "_");
+      return copy(name, {
         transferId,
         artifact,
         ownerId,
         agentId: localReplica.agentId,
         source: localReplica.storageRef,
-        target: `${base}/copies/${transferId}/${artifact.descriptor.replace(/[^a-zA-Z0-9._-]/g, "_")}`,
+        target: `${base}/copies/${transferId}/${name}`,
         sha256: artifact.contentHash,
         sizeBytes: artifact.sizeBytes,
       });
@@ -142,7 +237,7 @@ export class WorkflowArtifactFiles implements ArtifactPersister {
         localReplica.id,
         member.relativePath,
       );
-      const uploaded = await this.publishFile({
+      const uploaded = await copy(member.relativePath, {
         transferId,
         artifact,
         ownerId,
@@ -243,13 +338,9 @@ export class WorkflowArtifactFiles implements ArtifactPersister {
     const replica = replicas.find(
       (item) => item.verifiedAt && (!item.expiresAt || item.expiresAt.getTime() > Date.now()),
     );
-    if (!replica)
-      throw new WorkflowExecutionInterrupted(
-        "Workflow file artifact awaits a verified local replica",
-      );
     try {
       await service.persist(
-        { artifact, replica: { ...replica, storageKind: "agent-local", status: "available" } },
+        { artifact, replica: replica ? replicaRecord(replica) : null },
         scope.ownerId,
       );
     } catch (cause) {

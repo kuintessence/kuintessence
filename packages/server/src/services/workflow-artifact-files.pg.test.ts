@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   agents,
+  artifactReplicas,
   createPgDb,
   fileTransfers,
   jobs,
@@ -43,7 +44,10 @@ afterAll(async () => {
   await db.delete(users).where(eq(users.id, ownerId));
   await db.$client.end({ timeout: 5 });
 });
-async function fixture(batch: boolean) {
+async function fixture(
+  batch: boolean,
+  durability: "Ephemeral" | "Persistent" | "Checkpoint" = "Ephemeral",
+) {
   const workflowRunId = randomUUID();
   runIds.push(workflowRunId);
   await db.insert(workflowRuns).values({
@@ -79,7 +83,7 @@ async function fixture(batch: boolean) {
     ioType: batch ? ("FileBatch" as const) : ("File" as const),
     contentHash: fileMembers ? artifactBatchHash(fileMembers) : "c".repeat(64),
     sizeBytes: fileMembers ? 5 : 4,
-    durability: "Ephemeral" as const,
+    durability,
     ownerId,
     agentId,
     siteId: "site",
@@ -126,6 +130,9 @@ async function fixture(batch: boolean) {
             state: "succeeded",
             direction: "cluster_to_cloud",
             source: transfer.source,
+            workflowRunId: transfer.workflowRunId,
+            agentId: transfer.agentId,
+            jobId: transfer.jobId,
             target: transfer.target,
             netdriveFileIds: [file.id],
           });
@@ -174,6 +181,110 @@ async function fixture(batch: boolean) {
     },
   };
 }
+
+async function orphan(
+  f: Awaited<ReturnType<typeof fixture>>,
+  name: string,
+  sha256: string,
+  size: number,
+  source: string,
+) {
+  const path = `workflow-runs/${f.workflowRunId}/artifacts/${f.artifact.id}/copies/${randomUUID()}/${name}`;
+  const [file] = await db
+    .insert(netdriveFiles)
+    .values({ ownerId, path, storageKey: randomUUID(), size, sha256 })
+    .returning();
+  if (!file) throw new Error("Missing fixture file");
+  await db.insert(fileTransfers).values({
+    id: randomUUID(),
+    userId: ownerId,
+    state: "succeeded",
+    direction: "cluster_to_cloud",
+    agentId,
+    workflowRunId: f.workflowRunId,
+    jobId: f.producer.id,
+    source,
+    target: path,
+    netdriveFileIds: [file.id],
+  });
+  return file;
+}
+
+test("a successful transfer with a random copy path restores an unmapped file after its local replica expires", async () => {
+  const f = await fixture(false, "Checkpoint");
+  const { contentHash, sizeBytes } = f.artifact;
+  const unrelated = await orphan(f, "result", contentHash, sizeBytes, f.replica.storageRef);
+  await db
+    .update(fileTransfers)
+    .set({ netdriveFileIds: [randomUUID()] })
+    .where(eq(fileTransfers.target, unrelated.path));
+  await orphan(f, "result", contentHash, sizeBytes, "/another/source");
+  await orphan(f, "result.extra", contentHash, sizeBytes, f.replica.storageRef);
+  await orphan(f, "result", "a".repeat(64), sizeBytes, f.replica.storageRef);
+  await db
+    .update(artifactReplicas)
+    .set({ status: "expired" })
+    .where(eq(artifactReplicas.id, f.replica.id));
+  await expect(f.make().resolve(f.ref)).rejects.toThrow("no verified local replica");
+  const file = await orphan(f, "result", contentHash, sizeBytes, f.replica.storageRef);
+  await f.make().service.awaitCheckpointPersistence(f.workflowRunId);
+  expect(await f.make().resolve(f.ref)).toEqual({
+    fileMetadataId: file.id,
+    fileMetadataName: "result",
+  });
+  expect(await store.pendingPersistence(f.workflowRunId)).toEqual([]);
+  expect(f.attempts).toEqual([]);
+});
+
+test("partial batch recovery reuses verified nested receipts and waits for a live source for missing members", async () => {
+  const f = await fixture(true);
+  const file = await orphan(f, "nested/b.dat", "b".repeat(64), 3, "/isolated/result/nested/b.dat");
+  await db
+    .update(artifactReplicas)
+    .set({ expiresAt: new Date(0) })
+    .where(eq(artifactReplicas.id, f.replica.id));
+  await expect(f.make().resolve(f.ref)).rejects.toThrow("awaits a verified local replica");
+  expect(f.attempts).toEqual([]);
+  await store.registerLocal(f.registration);
+  const files = await f.make().resolve(f.ref);
+  expect(files).toContainEqual({
+    fileMetadataId: file.id,
+    fileMetadataName: "nested/b.dat",
+    relativePath: "nested/b.dat",
+  });
+  expect(f.attempts).toEqual(["/isolated/result/a.dat"]);
+});
+
+test.each([
+  false,
+  true,
+])("soft-deleted persistent files are repaired on job replay (batch=%s)", async (batch) => {
+  const f = await fixture(batch, "Persistent");
+  const result = await f.make().resolve(f.ref);
+  const id = (Array.isArray(result) ? result[0] : result) as { fileMetadataId: string };
+  await db
+    .update(netdriveFiles)
+    .set({ deletedAt: new Date() })
+    .where(eq(netdriveFiles.id, id.fileMetadataId));
+  expect(await store.pendingPersistence(f.workflowRunId)).toHaveLength(1);
+  const before = f.attempts.length;
+  const repaired = await f.make().service.registerLocal(f.registration);
+  expect(repaired.persistentAt).toBeInstanceOf(Date);
+  if (!batch) expect(repaired.netdriveFileId).not.toBe(id.fileMetadataId);
+  expect(f.attempts.length).toBe(before + 1);
+  expect(await store.pendingPersistence(f.workflowRunId)).toHaveLength(0);
+  expect(await f.make().resolve(f.ref)).not.toEqual(result);
+});
+
+test("a late failure from a concurrent publisher leaves the committed replica available", async () => {
+  const f = await fixture(false);
+  const attempt = await store.beginPersistence(f.artifact, f.replica);
+  await f.make().resolve(f.ref);
+  await store.failPersistence(attempt.id, "delayed failure");
+  expect(
+    (await store.availableReplicas([f.artifact.id])).some((replica) => replica.id === attempt.id),
+  ).toBe(true);
+});
 
 test("single-file bridge shares concurrent publication, keeps references stable, and checks scope and export policy", async () => {
   const f = await fixture(false);
