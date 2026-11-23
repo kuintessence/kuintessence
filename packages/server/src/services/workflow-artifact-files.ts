@@ -17,7 +17,7 @@ import {
   type NetDriveFile,
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { type OutputTransferInput, sandboxArtifactTransferId } from "../workflow/output-transfer";
 import { validateArtifactMembers } from "./artifact-members";
@@ -104,10 +104,59 @@ export class WorkflowArtifactFiles implements ArtifactPersister {
     }
   }
 
+  private async restoreTransferReceipts(scope: SQL) {
+    // A restart can interrupt the transfer after NetDrive has committed its unique object key.
+    const session = fileTransfers.resumeSession;
+    const now = new Date();
+    await this.db
+      .update(fileTransfers)
+      .set({
+        state: "succeeded",
+        copiedBytes: netdriveFiles.size,
+        netdriveFileIds: sql`jsonb_build_array(${netdriveFiles.id}::text)`,
+        error: null,
+        finishedAt: now,
+        updatedAt: now,
+      })
+      .from(netdriveFiles)
+      .where(
+        and(
+          scope,
+          eq(fileTransfers.state, "failed"),
+          isNull(fileTransfers.dispatchOwner),
+          isNull(fileTransfers.cancelRequest),
+          sql`${fileTransfers.netdriveFileIds} = '[]'::jsonb`,
+          eq(netdriveFiles.ownerId, fileTransfers.userId),
+          eq(netdriveFiles.path, fileTransfers.target),
+          isNull(netdriveFiles.deletedAt),
+          eq(netdriveFiles.contentType, "application/octet-stream"),
+          sql`${netdriveFiles.storageKey} = ${session}->>'storageKey'`,
+          sql`length(${session}->>'uploadId') > 0`,
+          sql`jsonb_typeof(${session}->'completion'->'parts'->0) = 'object'`,
+          sql`${session} @> jsonb_build_object(
+            'agentId', ${fileTransfers.agentId},
+            'source', ${fileTransfers.source},
+            'target', ${fileTransfers.target},
+            'completion', jsonb_build_object('copiedBytes', ${netdriveFiles.size})
+          )`,
+          sql`lower(${session}->'completion'->>'sha256') = ${netdriveFiles.sha256}`,
+          sql`(${fileTransfers.totalBytes} is null or ${fileTransfers.totalBytes} = ${netdriveFiles.size})`,
+          sql`(${session}->'size' = to_jsonb(${netdriveFiles.size}) or
+            (${fileTransfers.totalBytes} is null and ${session}->'size' = '0'::jsonb))`,
+        ),
+      );
+  }
+
   private async committedCopies(artifact: ArtifactRecord, ownerId: string) {
     const copies = new Map<string, CommittedCopy>();
     if (!artifact.producerJobId) return copies;
     const prefix = `workflow-runs/${artifact.workflowRunId}/artifacts/${artifact.id}/copies/`;
+    const scope = sql`${fileTransfers.workflowRunId} = ${artifact.workflowRunId}
+      and ${fileTransfers.jobId} = ${artifact.producerJobId}
+      and ${fileTransfers.userId} = ${ownerId}
+      and ${fileTransfers.direction} = 'cluster_to_cloud'
+      and starts_with(${fileTransfers.target}, ${prefix})`;
+    await this.restoreTransferReceipts(scope);
     const rows = await this.db
       .select({
         fileId: netdriveFiles.id,
@@ -135,16 +184,7 @@ export class WorkflowArtifactFiles implements ArtifactPersister {
           eq(artifactReplicas.agentId, fileTransfers.agentId),
         ),
       )
-      .where(
-        and(
-          eq(fileTransfers.workflowRunId, artifact.workflowRunId),
-          eq(fileTransfers.jobId, artifact.producerJobId),
-          eq(fileTransfers.userId, ownerId),
-          eq(fileTransfers.direction, "cluster_to_cloud"),
-          eq(fileTransfers.state, "succeeded"),
-          sql`starts_with(${fileTransfers.target},${prefix})`,
-        ),
-      )
+      .where(and(scope, eq(fileTransfers.state, "succeeded")))
       .orderBy(fileTransfers.createdAt, fileTransfers.id);
     const members = validateArtifactMembers(artifact);
     const singleName = artifact.descriptor.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -173,6 +213,7 @@ export class WorkflowArtifactFiles implements ArtifactPersister {
   }
 
   async receiptSource(artifact: ArtifactRecord, ownerId: string) {
+    await this.assertExportAllowed(artifact, ownerId);
     return (await this.committedCopies(artifact, ownerId)).values().next().value?.replica;
   }
 

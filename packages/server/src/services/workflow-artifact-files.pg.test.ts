@@ -236,6 +236,125 @@ test("a successful transfer with a random copy path restores an unmapped file af
   expect(f.attempts).toEqual([]);
 });
 
+async function interruptedUpload(
+  f: Awaited<ReturnType<typeof fixture>>,
+  member: { relativePath: string; sha256: string; sizeBytes: number },
+  source: string,
+  totalBytes: number | null,
+) {
+  const file = await orphan(f, member.relativePath, member.sha256, member.sizeBytes, source);
+  const session = {
+    storageKey: file.storageKey,
+    uploadId: randomUUID(),
+    partSize: 5242880,
+    agentId,
+    source,
+    target: file.path,
+    size: totalBytes ?? 0,
+    completion: {
+      copiedBytes: file.size,
+      sha256: file.sha256,
+      parts: [{ partNumber: 1, etag: "part" }],
+    },
+  };
+  await db
+    .update(fileTransfers)
+    .set({
+      state: "failed",
+      totalBytes: totalBytes,
+      netdriveFileIds: [],
+      error: "TRANSFER_INTERRUPTED_BY_SERVER_RESTART",
+      resumeSession: session,
+    })
+    .where(eq(fileTransfers.target, file.path));
+  return { file, session };
+}
+
+test.each([
+  false,
+  true,
+])("recovers the committed upload before its transfer receipt was saved (batch=%s)", async (batch) => {
+  const f = await fixture(batch, "Checkpoint");
+  const members = f.registration.fileMembers ?? [
+    { relativePath: "result", sha256: f.artifact.contentHash, sizeBytes: f.artifact.sizeBytes },
+  ];
+  const expected = [];
+  for (const member of members) {
+    const source = batch ? `${f.replica.storageRef}/${member.relativePath}` : f.replica.storageRef;
+    const { file } = await interruptedUpload(f, member, source, batch ? member.sizeBytes : null);
+    expected.push({
+      fileMetadataId: file.id,
+      fileMetadataName: member.relativePath,
+      ...(batch ? { relativePath: member.relativePath } : {}),
+    });
+  }
+  await db
+    .update(artifactReplicas)
+    .set({ status: "expired" })
+    .where(eq(artifactReplicas.id, f.replica.id));
+  await Promise.all([
+    f.make().service.awaitCheckpointPersistence(f.workflowRunId),
+    f.make().resolve(f.ref),
+  ]);
+  expect(await f.make().resolve(f.ref)).toEqual(batch ? expected : expected[0]);
+  const receipts = await db
+    .select()
+    .from(fileTransfers)
+    .where(eq(fileTransfers.workflowRunId, f.workflowRunId));
+  expect(receipts).toHaveLength(expected.length);
+  for (const item of expected)
+    expect(receipts).toContainEqual(
+      expect.objectContaining({
+        state: "succeeded",
+        error: null,
+        netdriveFileIds: [item.fileMetadataId],
+      }),
+    );
+  expect(f.attempts).toEqual([]);
+});
+
+test("a matching path alone cannot recover an interrupted or cancelled transfer", async () => {
+  const f = await fixture(false, "Checkpoint");
+  const { file, session } = await interruptedUpload(
+    f,
+    { relativePath: "result", sha256: f.artifact.contentHash, sizeBytes: f.artifact.sizeBytes },
+    f.replica.storageRef,
+    f.artifact.sizeBytes,
+  );
+  await db
+    .update(artifactReplicas)
+    .set({ status: "expired" })
+    .where(eq(artifactReplicas.id, f.replica.id));
+  const target = eq(fileTransfers.target, file.path);
+  for (const change of [
+    { resumeSession: { ...session, storageKey: randomUUID() } },
+    { resumeSession: { ...session, source: "/another/source" } },
+    {
+      resumeSession: { ...session, completion: { ...session.completion, sha256: "0".repeat(64) } },
+    },
+    { resumeSession: { ...session, completion: undefined } },
+    { cancelRequest: randomUUID() },
+    { dispatchOwner: randomUUID() },
+    { state: "cancelled" },
+  ]) {
+    await db
+      .update(fileTransfers)
+      .set({
+        state: "failed",
+        cancelRequest: null,
+        dispatchOwner: null,
+        resumeSession: session,
+        ...change,
+      })
+      .where(target);
+    await expect(f.make().resolve(f.ref)).rejects.toThrow("no verified local replica");
+    const [transfer] = await db.select().from(fileTransfers).where(target);
+    expect(transfer?.state).toBe(change.state ?? "failed");
+    expect(transfer?.netdriveFileIds).toEqual([]);
+  }
+  expect(f.attempts).toEqual([]);
+});
+
 test("partial batch recovery reuses verified nested receipts and waits for a live source for missing members", async () => {
   const f = await fixture(true);
   const file = await orphan(f, "nested/b.dat", "b".repeat(64), 3, "/isolated/result/nested/b.dat");
