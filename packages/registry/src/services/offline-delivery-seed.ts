@@ -13,10 +13,13 @@ async function importSeed(
   if (!isAbsolute(path) || resolve(path) !== path) throw new Error("DELIVERY_SEED_PATH_INVALID");
   const root = dirname(path);
   const signal = AbortSignal.timeout(24 * 60 * 60_000);
-  const plan = service.parse(
-    await readMaterialImportManifest(root, basename(path), OFFLINE_DELIVERY_MAX_BYTES, signal),
+  const input = await readMaterialImportManifest(
+    root,
+    basename(path),
+    OFFLINE_DELIVERY_MAX_BYTES,
+    signal,
   );
-  service.authorize(plan, await service.principal(subject));
+  const plan = await service.verify(input, subject);
   // Validate every local byte before writing any Registry upload receipt.
   for (const file of plan.files) {
     const stream = await openMaterialImportFile(
@@ -44,7 +47,7 @@ async function importSeed(
   for (;;) {
     signal.throwIfAborted();
     try {
-      return await service.run(plan, subject);
+      return await service.run(input, subject);
     } catch (error) {
       if (!(error instanceof Error) || error.message !== "DELIVERY_BUSY") throw error;
       await delay(1000, undefined, { signal });

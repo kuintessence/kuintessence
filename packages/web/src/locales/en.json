@@ -1,4 +1,14 @@
 {
+  "notifications": {
+    "title": "Notifications",
+    "email": "Email notifications",
+    "webhook": "Webhook URL",
+    "secret": "Webhook signing secret",
+    "failed": "Unable to load or save notifications.",
+    "saved": "Delivery settings saved.",
+    "empty": "No notifications.",
+    "read": "Mark as read"
+  },
   "common": {
     "retry": "Retry",
     "loading": "Loading…",
@@ -425,7 +435,6 @@
     },
     "logs": {
       "connecting": "Connecting to log feed…",
-      "notImplemented": "The log endpoint is unavailable.",
       "unavailable": "The log has not been created yet or has been cleaned.",
       "loadFailed": "Failed to load logs"
     },
@@ -1065,6 +1074,7 @@
       "grantsCompleted": "Completed {{count}} downstream grants",
       "actionFailed": "Action failed",
       "kind": {
+        "site-runtime": "Site runtime",
         "spack-package": "Spack package",
         "usecase": "Usecase",
         "workflow-template": "Workflow template"
@@ -1228,6 +1238,8 @@
       "catalogPackageDescription": "Custom package description",
       "catalogPackageTags": "Custom tags, comma-separated",
       "packageFilePlaceholder": "Paste official package.py content to extract versions, variants, dependencies, provides, maintainers, and license",
+      "recipeFields": "Edit directive fields",
+      "noRecipeFields": "This class has no editable string directives. Edit the Python source directly.",
       "parsePackageFile": "Parse package.py",
       "packageMetadata": "package.py metadata",
       "versions": "Versions",
@@ -1802,7 +1814,7 @@
       "meteringSettings": "Storage quotas and cost settings"
     },
     "sso": {
-      "title": "Single Sign-On (OIDC)",
+      "title": "Single Sign-On",
       "loginDisplayTitle": "Login page display",
       "loginDisplayDescription": "Configure the user-facing identity provider name and platform welcome message. Empty fields use the defaults.",
       "providerDisplayName": "Identity provider name",
@@ -1815,6 +1827,7 @@
       "saved": "SSO configuration saved",
       "saveFailed": "保存 SSO 配置失败，请稍后重试。",
       "enabled": "Enable SSO for this platform",
+      "connectorHelp": "Enter the Dex issuer URL and configure its upstream connector with ID {{id}}.",
       "providerType": "Provider type",
       "issuerUrl": "Issuer URL",
       "clientId": "Client ID",
@@ -2005,6 +2018,7 @@
       "passphrase": "Key passphrase (optional)",
       "secretHelp": "Auth material is encrypted at rest and never read back.",
       "hostKey": "Host-key pin (base64 SHA-256)",
+      "jumps": "Jump credential Agent IDs in connection order (comma-separated)",
       "hostKeyHelp": "Optional. When set, the agent rejects a mismatched host key (MITM defense). Empty = unverified.",
       "save": "Save credentials"
     },
@@ -2377,7 +2391,15 @@
         "title": "No agent passed the placement pipeline",
         "body": "Expand the stages below to see which filter rejected each candidate."
       },
-      "score": "score"
+      "score": "score",
+      "scoreDetails": "Score details",
+      "rawScore": "Raw score",
+      "weightedScore": "Weighted score",
+      "ranking": {
+        "composite": "Composite ranking",
+        "workflow-plan": "Workflow priority",
+        "preferred-queue": "Queue preference"
+      }
     }
   },
   "providers": {

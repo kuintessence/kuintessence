@@ -46,6 +46,7 @@ export interface WsConnectionLike {
 }
 
 export interface SshCredentials {
+  jumps?: Omit<SshCredentials, "jumps">[];
   host: string;
   port: number;
   username: string;
@@ -57,6 +58,7 @@ export interface SshCredentials {
 }
 
 interface SessionEntry {
+  channel: import("../grpc/dispatcher").AgentChannel;
   sessionId: string;
   agentId: string;
   ws: WsConnectionLike;
@@ -156,6 +158,7 @@ export class SshRateLimitError extends SshLimitError {}
 export type SshAuditEvent =
   | {
       kind: "session_open";
+      subsystem?: "sftp";
       sessionId: string;
       agentId: string;
       user: string;
@@ -234,6 +237,7 @@ export class SshGateway {
    */
   openSession(input: {
     sessionId?: string;
+    sftp?: boolean;
     agentId: string;
     ws: WsConnectionLike;
     credentials: SshCredentials;
@@ -241,13 +245,15 @@ export class SshGateway {
     actorUserId?: string | null;
     sourceIp?: string;
   }): string {
-    if (!this.dispatcher.isOnline(input.agentId)) {
+    const channel = this.dispatcher.interactionChannel(input.agentId);
+    if (!channel) {
       throw new Error(`agent ${input.agentId} is not online`);
     }
     this.enforceLimits(input.user, input.agentId);
     this.enforceOpenRate(input.user);
     const sessionId = input.sessionId ?? this.newSessionId();
     const entry: SessionEntry = {
+      channel,
       sessionId,
       agentId: input.agentId,
       ws: input.ws,
@@ -256,29 +262,48 @@ export class SshGateway {
       sourceIp: input.sourceIp,
       openedAtMs: this.now(),
       lastActivityMs: this.now(),
-      events: this.recordSink ? [] : undefined,
+      events: this.recordSink && !input.sftp ? [] : undefined,
       recordedBytes: this.recordSink ? 0 : undefined,
     };
     this.sessions.set(sessionId, entry);
 
-    const open = create(ServerMessageSchema, {
-      payload: {
-        case: "sshOpen",
-        value: create(SshOpenSchema, {
-          sessionId,
-          host: input.credentials.host,
-          port: input.credentials.port,
-          username: input.credentials.username,
-          hostKeySha256: input.credentials.hostKeySha256 ?? "",
-          auth: create(SshAuthSchema, {
-            password: input.credentials.password ?? "",
-            privateKey: input.credentials.privateKey ?? "",
-            passphrase: input.credentials.passphrase ?? "",
-          }),
-        }),
-      },
+    const value = create(SshOpenSchema, {
+      sessionId,
+      host: input.credentials.host,
+      port: input.credentials.port,
+      username: input.credentials.username,
+      hostKeySha256: input.credentials.hostKeySha256 ?? "",
+      auth: create(SshAuthSchema, {
+        password: input.credentials.password ?? "",
+        privateKey: input.credentials.privateKey ?? "",
+        passphrase: input.credentials.passphrase ?? "",
+      }),
     });
-    const ok = this.pushToAgent(input.agentId, open);
+    const open = create(ServerMessageSchema, {
+      payload: input.credentials.jumps?.length
+        ? {
+            case: "sshRouteOpen",
+            value: {
+              destination: value,
+              sftp: input.sftp ?? false,
+              jumps: input.credentials.jumps.map((hop) => ({
+                host: hop.host,
+                port: hop.port,
+                username: hop.username,
+                hostKeySha256: hop.hostKeySha256,
+                auth: {
+                  password: hop.password,
+                  privateKey: hop.privateKey,
+                  passphrase: hop.passphrase,
+                },
+              })),
+            },
+          }
+        : input.sftp
+          ? { case: "sftpOpen", value }
+          : { case: "sshOpen", value },
+    });
+    const ok = this.pushToAgent(entry, open);
     if (!ok) {
       this.sessions.delete(sessionId);
       throw new Error(`agent ${input.agentId} channel disappeared mid-open`);
@@ -287,6 +312,7 @@ export class SshGateway {
     if (this.auditLog) {
       this.auditLog({
         kind: "session_open",
+        ...(input.sftp ? { subsystem: "sftp" as const } : {}),
         sessionId,
         agentId: input.agentId,
         user: input.user,
@@ -316,7 +342,7 @@ export class SshGateway {
         }),
       },
     });
-    this.pushToAgent(entry.agentId, msg);
+    if (!this.pushToAgent(entry, msg)) this.finalizeSession(entry, "Agent connection lost", false);
   }
 
   /** Forward a PTY window-resize from the WS client to the Agent. */
@@ -335,7 +361,7 @@ export class SshGateway {
         value: create(SshResizeSchema, { sessionId, cols, rows }),
       },
     });
-    this.pushToAgent(entry.agentId, msg);
+    if (!this.pushToAgent(entry, msg)) this.finalizeSession(entry, "Agent connection lost", false);
   }
 
   /**
@@ -344,13 +370,13 @@ export class SshGateway {
    * handler can short-circuit and skip its own dispatch fallback. The
    * connectRPC handler is the only caller — see grpc/agent-handler.ts.
    */
-  handleAgentMessage(msg: AgentMessage): boolean {
+  handleAgentMessage(agentId: string, msg: AgentMessage): boolean {
     const payload = msg.payload;
     if (!payload || payload.case === undefined) return false;
     if (payload.case === "sshOutput") {
       const out = payload.value;
       const entry = this.sessions.get(out.sessionId);
-      if (!entry) {
+      if (!entry || entry.agentId !== agentId) {
         this.logger.debug({ sessionId: out.sessionId }, "sshOutput for unknown session");
         return true;
       }
@@ -384,7 +410,7 @@ export class SshGateway {
     if (payload.case === "sshClosed") {
       const closed = payload.value;
       const entry = this.sessions.get(closed.sessionId);
-      if (!entry) return true;
+      if (!entry || entry.agentId !== agentId) return true;
       this.finalizeSession(entry, closed.reason || "agent closed", /* notifyAgent */ false);
       return true;
     }
@@ -476,10 +502,14 @@ export class SshGateway {
    * concurrent-session slot. The agent is not notified (it is offline); the
    * client gets a clean WS close. Returns the number closed.
    */
-  closeSessionsForAgent(agentId: string, reason = "agent disconnected"): number {
+  closeSessionsForAgent(
+    agentId: string,
+    reason = "agent disconnected",
+    channel?: SessionEntry["channel"],
+  ): number {
     const ids: string[] = [];
     for (const e of this.sessions.values()) {
-      if (e.agentId === agentId) ids.push(e.sessionId);
+      if (e.agentId === agentId && (!channel || e.channel === channel)) ids.push(e.sessionId);
     }
     for (const id of ids) {
       const entry = this.sessions.get(id);
@@ -508,7 +538,7 @@ export class SshGateway {
           value: create(SshCloseSchema, { sessionId: entry.sessionId, reason }),
         },
       });
-      this.pushToAgent(entry.agentId, close);
+      this.pushToAgent(entry, close);
     }
     try {
       entry.ws.close(1000, reason);
@@ -612,10 +642,12 @@ export class SshGateway {
     this.openLog.set(user, recent);
   }
 
-  private pushToAgent(agentId: string, msg: ServerMessage): boolean {
-    const ch = this.dispatcher.getChannel(agentId);
-    if (!ch) return false;
-    ch.push(msg);
-    return true;
+  private pushToAgent(entry: SessionEntry, msg: ServerMessage): boolean {
+    try {
+      entry.channel.push(msg);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

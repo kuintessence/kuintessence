@@ -10,7 +10,7 @@
 // `preferences.softWeights` (translated by `softWeightsToOverrides`).
 
 import { createLogger } from "@kuintessence/shared";
-import { CompositeScorer, defaultScorers, type ScoreBreakdown } from "../scoring";
+import { CompositeScorer, defaultScorers } from "../scoring";
 import {
   softWeightsToOverrides,
   toAgentCandidate,
@@ -22,14 +22,6 @@ const logger = createLogger("placement-pipeline");
 
 export class AutoFilter implements FilterStage {
   readonly name = "auto";
-
-  /**
-   * Most recent breakdowns (keyed by agentId) so callers that wire up a
-   * trace channel can pick up per-scorer contributions. Not part of the
-   * `FilterStage` contract — `placement-trace.ts` reads the score sink and
-   * the trace UI degrades gracefully if breakdowns are absent.
-   */
-  readonly breakdowns: Map<string, ScoreBreakdown> = new Map();
 
   constructor(
     /** Mutate this map keyed by agentId to store final 0..100 scores. */
@@ -62,13 +54,6 @@ export class AutoFilter implements FilterStage {
           ? 10_000 - preferredIndex
           : breakdown.finalScore;
     this.scoreSink.set(agent.agentId, finalScore);
-    this.breakdowns.set(agent.agentId, breakdown);
-
-    // Surface the breakdown via the existing pipeline logger. The shared
-    // `PlacementTrace` schema does not yet have a `scoreBreakdowns` channel,
-    // so this is the cheapest hook that keeps the data observable.
-    // TODO: extend `PlacementTrace` with per-agent score breakdowns and
-    // populate them from this map in `placement-trace.ts`.
     logger.debug(
       {
         stage: this.name,
@@ -79,6 +64,18 @@ export class AutoFilter implements FilterStage {
       "auto-stage score breakdown",
     );
 
-    return { kind: "pass" };
+    return {
+      kind: "pass",
+      scoreBreakdown: {
+        composite: breakdown.finalScore,
+        ranking:
+          plannedIndex >= 0
+            ? "workflow-plan"
+            : preferredIndex !== undefined && preferredIndex >= 0
+              ? "preferred-queue"
+              : "composite",
+        contributions: breakdown.contributions,
+      },
+    };
   }
 }

@@ -22,7 +22,10 @@ import type { FederationArbitrationDecisionDelivery } from "../federation/arbitr
 import type { FederationArbitrationReviewService } from "../federation/arbitration-review";
 import type { FederationCaseArbitrationDecisionService } from "../federation/case-arbitration-decisions";
 import type { FederationCaseSubmissionService } from "../federation/case-submissions";
-import type { FederationEvidenceService } from "../federation/disclosure-delivery";
+import {
+  EvidenceRetentionChangeSchema,
+  type FederationEvidenceService,
+} from "../federation/disclosure-delivery";
 import { FederationDeliveryError } from "../federation/outbound-client";
 import type { FederationActor } from "../federation/permissions";
 import type { BoundPrincipal } from "../middleware/principal-binder";
@@ -82,6 +85,19 @@ export function createFederationEvidenceRoutes(
     kqValidator("param", id),
     kqValidator("json", z.strictObject({})),
     async (c) => c.json(await service.close(c.get("federationActor"), c.req.valid("param").caseId)),
+  );
+  r.post(
+    `${path}/:caseId/retention`,
+    kqValidator("param", id),
+    kqValidator("json", EvidenceRetentionChangeSchema),
+    async (c) =>
+      c.json(
+        await service.changeRetention(
+          c.get("federationActor"),
+          c.req.valid("param").caseId,
+          c.req.valid("json"),
+        ),
+      ),
   );
   r.get(
     `${path}/:caseId/disclosures`,

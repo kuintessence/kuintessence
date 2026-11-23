@@ -1,0 +1,1 @@
+ALTER TABLE "spack_package" ALTER COLUMN "repository_name" SET NOT NULL;

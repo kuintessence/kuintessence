@@ -60,6 +60,7 @@ describe("SandboxNodeExecutor", () => {
     { pendingDelivery: false, constraint: "self-account" },
     { pendingDelivery: false, constraint: "wrong-runtime" },
     { pendingDelivery: false, constraint: "excess-cpu" },
+    { pendingDelivery: false, constraint: "invalid-output" },
   ])("signed manifest delivery: $constraint, pending=$pendingDelivery", async ({
     pendingDelivery,
     constraint,
@@ -82,6 +83,10 @@ describe("SandboxNodeExecutor", () => {
           type: "JSON",
           durability: "Ephemeral",
           sizeHint: { type: "FixedBytes", bytes: 128 },
+          validator: {
+            kind: "cel",
+            expr: constraint === "invalid-output" ? "value.ok == false" : "value.ok == true",
+          },
         },
       },
     });
@@ -276,6 +281,13 @@ describe("SandboxNodeExecutor", () => {
       );
       expect(signedManifest).toBeUndefined();
       if (constraint === "excess-cpu") expect(lifecycle).toEqual([]);
+      return;
+    }
+    if (constraint === "invalid-output") {
+      await expect(executor.execute(node, { nodes: {}, params: {} })).rejects.toThrow(
+        "failed its cel validator",
+      );
+      expect(registered).toHaveLength(0);
       return;
     }
     const result = await executor.execute(node, { nodes: {}, params: {} });

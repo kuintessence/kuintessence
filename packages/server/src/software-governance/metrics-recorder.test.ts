@@ -42,6 +42,16 @@ describe("PgAgentMetricsRecorder", () => {
     expect(rows).toEqual([]);
   });
 
+  test("prunes only metrics older than seven days", async () => {
+    await recorder.record([
+      { agentId: AGENT_ID, metric: "gpu", value: 1, ts: new Date("1900-01-01T23:59:59.999Z") },
+      { agentId: AGENT_ID, metric: "gpu", value: 2, ts: new Date("1900-01-02T00:00:00Z") },
+    ]);
+    await recorder.prune(new Date("1900-01-09T00:00:00Z"));
+    const rows = await db.select().from(agentMetrics).where(eq(agentMetrics.agentId, AGENT_ID));
+    expect(rows.map((row) => row.value)).toEqual([2]);
+  });
+
   test("record() inserts samples with payload", async () => {
     await recorder.record([
       { agentId: AGENT_ID, metric: "disk_used_percent", value: 55 },

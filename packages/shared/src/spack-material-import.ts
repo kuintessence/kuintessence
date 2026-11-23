@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
+  SpackMaterialBindingSchema,
   SpackMaterialBlobSchema,
+  SpackMaterialDigestSchema,
   SpackMaterialPathSchema,
   SpackMaterialPublishSchema,
   spackMaterialInputBlobs,
@@ -74,3 +76,12 @@ export const SpackMaterialImportSchema = z
   });
 
 export type SpackMaterialImport = z.infer<typeof SpackMaterialImportSchema>;
+
+export const SpackMaterialImportStatusSchema = z.discriminatedUnion("state", [
+  z.strictObject({
+    state: z.literal("pending"),
+    missing: z.array(SpackMaterialDigestSchema).max(20_000),
+  }),
+  z.strictObject({ state: z.literal("published"), binding: SpackMaterialBindingSchema }),
+]);
+export type SpackMaterialImportStatus = z.infer<typeof SpackMaterialImportStatusSchema>;

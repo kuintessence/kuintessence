@@ -1348,6 +1348,22 @@ async function run() {
           commercial(a, "ReserveExecution", task.reservation.reservationId, task.signed).endorse(),
           rejected("OPERATION_CONFLICT"),
         );
+        const successor = {
+          ...task.demand,
+          demandId: randomUUID(),
+          reopens: { demandId: task.demand.demandId, version: closed.version },
+        };
+        const competitor = { ...successor, demandId: randomUUID() };
+        const publish = (value: typeof successor) =>
+          market(am, "PublishDemand", value.demandId, value).endorse();
+        const [first, second] = await Promise.all([publish(successor), publish(competitor)]);
+        assert((await commit(first)).successful);
+        assert.equal((await commit(second)).code, peer.TxValidationCode.MVCC_READ_CONFLICT);
+        assert((await commit(await publish(successor))).successful);
+        assert.deepEqual(await current(task.demand.demandId), closed);
+        passed.push(
+          "reopen checks the original commercial discharge and native MVCC admits exactly one successor",
+        );
         passed.push(
           "provider closes unreserved claim with A/C endorsement: concurrent private reserve is INVALID, closure replay is stable and late funding is denied",
         );

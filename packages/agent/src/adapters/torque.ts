@@ -31,6 +31,7 @@ import {
   schedulerCommand,
   shellQuote,
   unknownComputeHealth,
+  validateSchedulerLimits,
 } from "./base";
 import {
   availableQueueInventory,
@@ -263,6 +264,8 @@ export class TorqueAdapter implements SchedulerAdapter {
   }
 
   buildSubmitScript(spec: JobSpec): string {
+    validateSchedulerLimits(spec, "torque");
+    const nodes = spec.schedulerLimits?.nodeCount ?? 1;
     assertSandboxSchedulerMetadata(spec);
     const lines: string[] = ["#!/bin/bash"];
     const executionRoot = spec.workingDir || this.logDir;
@@ -273,7 +276,7 @@ export class TorqueAdapter implements SchedulerAdapter {
     lines.push(`#PBS -e ${join(logRoot, `kq-torque-${spec.jobId}.err`)}`);
     // Torque uses nodes=N:ppn=N rather than select=
     lines.push(
-      `#PBS -l nodes=${spec.sandbox ? spec.sandbox.attestedNodes?.[0] : 1}:ppn=${spec.cpus}`,
+      `#PBS -l nodes=${spec.sandbox ? spec.sandbox.attestedNodes?.[0] : nodes}:ppn=${spec.cpus / nodes}`,
     );
     lines.push(`#PBS -l mem=${spec.memoryMb}mb`);
     if (spec.queueName) {
@@ -285,6 +288,8 @@ export class TorqueAdapter implements SchedulerAdapter {
     if (spec.sandbox?.identity.backend === "Unix" && spec.sandbox.identity.schedulerAccount) {
       lines.push(`#PBS -A ${spec.sandbox.identity.schedulerAccount}`);
     }
+    if (spec.schedulerLimits?.maxCpuTime)
+      lines.push(`#PBS -l cput=${this.formatWallTime(spec.schedulerLimits.maxCpuTime)}`);
     if (spec.wallTimeSec > 0) {
       lines.push(`#PBS -l walltime=${this.formatWallTime(spec.wallTimeSec)}`);
     }

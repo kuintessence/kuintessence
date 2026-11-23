@@ -69,10 +69,15 @@ const digest = (jws: string) => {
 const connections: { gateway: ReturnType<typeof connect>; client: Client }[] = [];
 const passed: string[] = [];
 const site = (name: string) => CaseSite.parse(network.sites.find((site) => site.name === name));
-async function connection(name: string, endpointName = name, commercial = false) {
+async function connection(
+  name: string,
+  endpointName = name,
+  commercial = false,
+  custodian = false,
+) {
   const member = site(name),
     endpoint = site(endpointName),
-    user = commercial ? "User1" : "User2",
+    user = commercial ? "User1" : custodian ? "User3" : "User2",
     mspDir = commercial
       ? member.userMsp
       : join(member.userMsp, "..", "..", `${user}@${name.toLowerCase()}.kq.test`, "msp");
@@ -546,6 +551,88 @@ async function verify() {
       `real MVCC conflict and permanent publication refusal with ${first} committed first`,
     );
   }
+  stage = "custodian retention";
+  const retained = await fresh();
+  const original = await (await (await propose(retained).endorse()).submit()).getStatus();
+  assert(original.successful);
+  const args = [domain.domainId, retained.recordId];
+  const custodians = await Promise.all(
+    ["A", "B", "R"].map(async (name) =>
+      (await connection(name, name, false, true))
+        .getNetwork(network.channel)
+        .getContract("kq-cases"),
+    ),
+  );
+  const retentionPolicy = z.object({
+    revision: z.number(),
+    digest: z.string(),
+    purged: z.boolean(),
+    receipt: z.object({ recordId: z.string(), digest: z.string() }),
+  });
+  const inspectPolicy = async (index: number) =>
+    retentionPolicy.parse(
+      JSON.parse(
+        Buffer.from(
+          await custodians[index]!.evaluateTransaction("InspectCaseRetention", ...args),
+        ).toString(),
+      ),
+    );
+  const update = async (index: number, action: string, values: { retainUntil?: string } = {}) => {
+    const state = await inspectPolicy(index);
+    return custodians[index]!.newProposal("ChangeCaseRetention", {
+      arguments: args,
+      endorsingOrganizations: members,
+      transientData: {
+        retention: JSON.stringify({
+          revision: state.revision,
+          digest: state.digest,
+          action,
+          ...values,
+        }),
+      },
+    }).endorse();
+  };
+  let retainUntil = 0;
+  for (const i of [0, 1, 2]) {
+    stage = "archive " + i;
+    retainUntil = Date.now() + 1800;
+    assert.deepEqual((await inspectPolicy(i)).receipt, stored(retained).receipt);
+    assert(
+      (
+        await (
+          await (
+            await update(i, "archive", { retainUntil: new Date(retainUntil).toISOString() })
+          ).submit()
+        ).getStatus()
+      ).successful,
+    );
+  }
+  stage = "hold conflict";
+  const concurrent = await Promise.all([update(0, "hold"), update(1, "hold")]);
+  assert((await (await concurrent[0].submit()).getStatus()).successful);
+  assert.equal(
+    (await (await concurrent[1].submit()).getStatus()).code,
+    peer.TxValidationCode.MVCC_READ_CONFLICT,
+  );
+  assert(
+    (await (await (await propose(await revoke(retained)).endorse()).submit()).getStatus())
+      .successful,
+  );
+  await assert.rejects(update(2, "purge"), chainRejection("POLICY_DENIED"));
+  assert((await (await (await update(0, "release-hold")).submit()).getStatus()).successful);
+  stage = "purge expired publication";
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, retainUntil - Date.now() + 100)));
+  assert((await (await (await update(2, "purge")).submit()).getStatus()).successful);
+  for (const i of [0, 1, 2]) {
+    const state = await inspectPolicy(i);
+    assert(state.purged);
+    assert.deepEqual(state.receipt, stored(retained).receipt);
+  }
+  // Re-read this publication's original block from each peer after physical purge.
+  blocks.push({ block: String(original.blockNumber), chaincode: "kq-cases", expected: [] });
+  passed.push(
+    "A/B/R custodians archive the same publication, MVCC fences simultaneous holds, and all three peers retain only the receipt after purge",
+  );
   const recovery = await fresh();
   await write(join(root, "case-proposal.json"), recovery);
   await writeFile(join(root, "case-recovery.key"), randomBytes(32), { mode: 0o600 });

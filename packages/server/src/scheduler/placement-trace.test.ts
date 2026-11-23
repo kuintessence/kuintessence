@@ -100,6 +100,11 @@ describe("runPlacementWithTrace — happy path", () => {
       preview: true,
     });
     const auto = trace.stages.find((s) => s.name === "auto");
+    expect(auto?.passed[0]?.scoreBreakdown).toMatchObject({
+      composite: auto?.passed[0]?.score,
+      ranking: "composite",
+      contributions: expect.arrayContaining([expect.objectContaining({ name: "load" })]),
+    });
     expect(auto?.passed).toHaveLength(2);
     for (const a of auto?.passed ?? []) {
       expect(typeof a.score).toBe("number");

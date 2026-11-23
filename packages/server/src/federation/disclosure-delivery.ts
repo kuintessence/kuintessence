@@ -28,6 +28,7 @@ import {
   verifyCommercialDisclosure,
 } from "@kuintessence/shared/federation/disclosure-authorization";
 import { and, desc, eq, sql } from "drizzle-orm";
+import { z } from "zod";
 import {
   FederationDisclosureReadClient,
   FederationDisclosureReadResponder,
@@ -131,6 +132,18 @@ export class FederationDisclosureDownloadResponder {
     });
   }
 }
+
+export const EvidenceRetentionChangeSchema = z.discriminatedUnion("action", [
+  z.strictObject({
+    action: z.literal("archive"),
+    revision: z.number().int().nonnegative(),
+    retainUntil: z.iso.datetime(),
+  }),
+  z.strictObject({
+    action: z.enum(["hold", "release-hold", "purge"]),
+    revision: z.number().int().nonnegative(),
+  }),
+]);
 
 /** Receiver organization scope is independent of A/B commercial ownership. Never reads cached values offline. */
 export class FederationEvidenceService {
@@ -242,6 +255,59 @@ export class FederationEvidenceService {
         orgId: actor.orgId,
         action: "federation.evidence.close",
         target: caseId,
+      });
+      return saved;
+    });
+  }
+  async changeRetention(
+    actor: FederationActor,
+    caseId: string,
+    input: z.infer<typeof EvidenceRetentionChangeSchema>,
+  ) {
+    const change = EvidenceRetentionChangeSchema.parse(input);
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "case.retain");
+      const [row] = await tx
+        .select()
+        .from(cases)
+        .where(and(this.key(caseId), eq(cases.localOrgId, actor.orgId)))
+        .for("update");
+      if (!row) throw new FederationError("POLICY_DENIED");
+      if (row.retentionRevision !== change.revision || row.purgedAt)
+        throw new FederationError("OPERATION_CONFLICT");
+      const now = new Date();
+      const update: Partial<typeof cases.$inferInsert> = {
+        retentionRevision: row.retentionRevision + 1,
+      };
+      switch (change.action) {
+        case "archive": {
+          const until = new Date(change.retainUntil);
+          if (!row.closedAt || until < now || (row.retainUntil && until < row.retainUntil))
+            throw new FederationError("POLICY_DENIED");
+          update.retainUntil = until;
+          break;
+        }
+        case "hold":
+        case "release-hold":
+          update.retentionHold = change.action === "hold";
+          break;
+        case "purge":
+          if (!row.closedAt || !row.retainUntil || row.retainUntil > now || row.retentionHold)
+            throw new FederationError("POLICY_DENIED");
+          await tx
+            .update(received)
+            .set({ evidence: null })
+            .where(and(eq(received.localSiteId, this.signing.siteId), eq(received.caseId, caseId)));
+          update.purgedAt = now;
+          break;
+      }
+      const [saved] = await tx.update(cases).set(update).where(this.key(caseId)).returning();
+      await tx.insert(auditLog).values({
+        actor: actor.userId,
+        orgId: actor.orgId,
+        action: "federation.evidence." + change.action,
+        target: caseId,
+        diff: { after: change },
       });
       return saved;
     });
@@ -499,8 +565,8 @@ export class FederationEvidenceService {
             eq(received.grantId, grantId),
           ),
         );
-      if (!row) throw new FederationError("ASSET_UNAVAILABLE");
-      return row;
+      if (!row?.evidence) throw new FederationError("ASSET_UNAVAILABLE");
+      return { ...row, evidence: row.evidence };
     });
     const current = await new FederationDisclosureReadClient(
       this.db,

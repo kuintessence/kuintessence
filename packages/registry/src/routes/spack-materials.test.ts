@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { readdir } from "node:fs/promises";
+import { readdir, unlink } from "node:fs/promises";
+import { join } from "node:path";
 import {
   SPACK_LOCK_MAX_BYTES,
   type SpackMaterialBinding,
   type SpackMaterialManifest,
 } from "@kuintessence/shared";
 import { MATERIAL_METADATA_BYTES, materialDigest } from "../services/spack-material-storage";
+import { SpackMaterialStore } from "../services/spack-material-store";
 import {
   BASE,
   cleanupMaterials,
@@ -53,6 +55,7 @@ describe("material routes authentication and isolation", () => {
     { path: `${BASE}/blobs?repository=public/test&digest=${SOURCE_BLOB.digest}`, method: "POST" },
     { path: `${BASE}/releases`, method: "POST" },
     { path: `${BASE}/lock-preflight`, method: "POST" },
+    { path: `${BASE}/imports/status`, method: "POST" },
     { path: `${BASE}/${"a".repeat(64)}/releases/${SOURCE_BLOB.digest}`, method: "GET" },
     {
       path: `${BASE}/${"a".repeat(64)}/releases/${SOURCE_BLOB.digest}/blobs/${LOCK_BLOB.digest}`,
@@ -66,6 +69,70 @@ describe("material routes authentication and isolation", () => {
     const app = materialApp(undefined);
     await expectError(await app.request(path, { method }), 401);
     await expectError(await app.request(path, { method, headers: headers() }), 503);
+  });
+
+  test("recovers partial uploads and lost publication responses from shared storage", async () => {
+    const f = await materialFixture();
+    const restart = () => materialApp(new SpackMaterialStore(f.root, f.recipes));
+    const status = (actor = OWNER, release = f.input) =>
+      restart().request(`${BASE}/imports/status`, {
+        method: "POST",
+        headers: headers(actor),
+        body: JSON.stringify(release),
+      });
+    expect(await (await status()).json()).toEqual({
+      state: "pending",
+      missing: [LOCK_BLOB.digest, SOURCE_BLOB.digest],
+    });
+    await f.upload(LOCK);
+    expect(await (await status()).json()).toEqual({
+      state: "pending",
+      missing: [SOURCE_BLOB.digest],
+    });
+    await f.upload();
+    const response = await f.publish();
+    expect(response.status).toBe(201);
+    const binding = (await response.json()) as SpackMaterialBinding;
+    await f.store.releaseReceipt(f.input.repository, SOURCE_BLOB.digest);
+    expect(await (await status()).json()).toEqual({ state: "published", binding });
+    const other = await status(SUPER);
+    expect(await other.json()).toEqual({ state: "pending", missing: [SOURCE_BLOB.digest] });
+    await expectError(await status(USER), 403);
+    expect(await (await status(OWNER, { ...f.input, target: "other" })).json()).toMatchObject({
+      state: "pending",
+    });
+    // Emulate an interrupted publication with an intent but no committed manifest.
+    await unlink(
+      join(f.root, "manifests", binding.repositoryId, `${binding.manifestDigest.slice(7)}.json`),
+    );
+    expect(await (await status()).json()).toEqual({
+      state: "pending",
+      missing: [SOURCE_BLOB.digest],
+    });
+    await f.store.collect();
+    expect(await readdir(join(f.root, "imports", binding.repositoryId))).toEqual([]);
+    await f.upload();
+    expect(await (await f.publish()).json()).toEqual(binding);
+  });
+
+  test("a missing stored blob with a surviving receipt can be uploaded again", async () => {
+    const f = await materialFixture();
+    await f.seed();
+    const hex = SOURCE_BLOB.digest.slice(7);
+    await unlink(join(f.root, "blobs", hex.slice(0, 2), hex));
+    const status = () =>
+      f.app.request(`${BASE}/imports/status`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(f.input),
+      });
+    expect(await (await status()).json()).toEqual({
+      state: "pending",
+      missing: [SOURCE_BLOB.digest],
+    });
+    expect((await f.upload()).status).toBe(201);
+    expect(await (await status()).json()).toEqual({ state: "pending", missing: [] });
+    expect((await f.publish()).status).toBe(201);
   });
 
   test("does not attach authentication to unrelated routes", async () => {

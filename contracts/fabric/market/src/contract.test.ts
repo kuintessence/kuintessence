@@ -818,3 +818,44 @@ test("unreserved closure binds the claimant and explicit absence; either partici
     await expect(f.invoke("ClaimDemand", f.claim(2), 2)).rejects.toThrow("OPERATION_CONFLICT");
   }
 });
+
+test("reopening requires a terminal parent, a verified discharge and one fresh demand and claim identity", async () => {
+  const f = await fixture();
+  const parent = { ...f.demand };
+  await f.invoke("PublishDemand", parent);
+  const claim = { ...f.claim(), commercialDomainId: randomUUID() };
+  await f.invoke("ClaimDemand", claim, 1);
+  const closure = {
+    closureId: randomUUID(),
+    demandId: parent.demandId,
+    claimId: claim.claimId,
+    commercialDomainId: claim.commercialDomainId,
+    issuerSiteId: sites[0],
+    expectedVersion: 2,
+  };
+  f.stub.onInvoke = async () => ({ status: 200, payload: Buffer.from('{"hash":null}') });
+  await f.invoke("CloseUnreservedDemand", closure);
+  f.demand.demandId = randomUUID();
+  const next = { ...f.demand, reopens: { demandId: parent.demandId, version: 3 } };
+  f.stub.onInvoke = async () => ({ status: 200, payload: Buffer.from('{"state":"settled"}') });
+  await expect(f.invoke("PublishDemand", next)).rejects.toThrow("OPERATION_CONFLICT");
+  f.stub.onInvoke = async (_name, args) => {
+    expect(args).toEqual([
+      "GetClaimDischarge",
+      claim.commercialDomainId,
+      claim.claimId,
+      parent.demandId,
+    ]);
+    return { status: 200, payload: Buffer.from('{"state":"unreserved"}') };
+  };
+  const result = await f.invoke("PublishDemand", next);
+  expect(await f.invoke("PublishDemand", next)).toEqual(result);
+  await expect(
+    f.invoke("ClaimDemand", { ...f.claim(), claimId: claim.claimId }, 1),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await f.invoke("ClaimDemand", f.claim(), 1);
+  f.demand.demandId = randomUUID();
+  await expect(f.invoke("PublishDemand", { ...next, demandId: f.demand.demandId })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+});

@@ -6,7 +6,7 @@ Registry 提供空内容 recipe 仓库，由运维导入官方或自定义 Git b
 本地 bare Git 保存完整目录及历史，快照以 commit 固定；初始化和 Web 共用导入逻辑。
 导入不会执行 Python、concretize、编译或安装软件，也不会自动激活。
 
-现有 Spack catalog 继续兼容保留。目录中的 metadata 不证明 recipe、源码或安装环境已存在。
+Spack catalog 展示软件元数据。可用的 recipe、源码和安装环境分别由快照、材料清单和站点安装记录确定。
 本功能与现有软件资产授权并行：recipe namespace 不会自动授予软件使用权或创建 trusted asset。
 
 支持：
@@ -21,14 +21,12 @@ Registry 提供空内容 recipe 仓库，由运维导入官方或自定义 Git b
 - 单个或多个 bundle 的 Web 顺序上传、失败项重试、初始化 manifest 批量导入、历史查看、
   显式激活、回滚、停用和固定快照导出。
 
-尚未完成：
+### Recipe 导入与材料发布
 
-- 跨 recipe 仓库组合、目标环境的实际依赖 concretize，以及完整 Python 语义验证。
-- Recipe 仓库本身不执行安装；材料下载、源码审计和实验性受管安装分别见[材料发布与 Agent 下载](spack-material-delivery.md)。
-- 源码/厂商二进制/buildcache 的统一手动导入与恢复上传。
-  新增 Spack 专用代理只用于上述受控导入，真实代理与部署验证以对应提交的 CI 为准。
-- 按具体用户授权或在 namespace 间迁移；沿用 Registry public/org/user 的权限矩阵。
-- 物理删除 Git 历史和垃圾回收。停用不删历史，不自动卸载已安装软件。
+- Recipe 导入只对本次 bundle 做静态诊断。材料发布清单可选择最多 32 份固定的 recipe 快照及其根目录，目标环境中的依赖求解由受管安装 worker 执行。完整 Python 语义超出静态诊断范围。
+- 重选源码材料清单后，Web 按仓库回执列出缺件。重选中断的大文件后，可从已确认的 8 MiB 分段继续上传。厂商安装包和原生 buildcache 使用[离线交付清单](offline-delivery.md)。参见[材料发布与 Agent 下载](spack-material-delivery.md)。
+- 仓库按 public/org/user namespace 授权，管理员也可向单个账号开放指定仓库。材料发布和下载仍受材料及来源 namespace 的可见范围约束。
+- 仓库迁移后，已发布材料继续按原仓库 ID 和 commit 下载。回收历史快照前，Registry 会核对材料清单。
 
 ## 存储与持久卷
 
@@ -40,6 +38,7 @@ $SPACK_RECIPE_STORE_DIR/
     refs/kq/audit/head
     kq-repository.json
   manifests/<repository-id>/<commit>.json
+  migration/                       # 仅在跨仓库迁移进行中存在
   staging/
 ```
 
@@ -186,6 +185,20 @@ Bootstrap 仅在启动时读取清单；运行中的仓库可通过 Web/API 导�
 | `PUT /spack/recipe-repositories/:id/active` | 显式确认信任并 CAS 激活/回滚 |
 | `DELETE /spack/recipe-repositories/:id/active` | CAS 停用 |
 | `GET /spack/recipe-repositories/:id/snapshots/:commit/archive` | 完整固定 tree 的 tar |
+
+| 管理 API（相对于 `/api/spack/recipe-repositories/:id`） | 操作 |
+|---|---|
+| `GET /grants` | 列出本仓库的个人授权 |
+| `PUT /grants` | 写入或替换一人的授权，例如 `{"subject":"55555555-5555-4555-8555-555555555555","access":"read"}` |
+| `DELETE /grants/:subject` | 撤销该账号的个人授权，namespace 本身授予的权限继续生效 |
+| `POST /migrate` | 提交目标仓库名，例如 `{"repository":"org/provider-example/science"}`，返回目标仓库 |
+| `DELETE /snapshots/:commit` | 回收指定的 40 位 commit 快照，成功返回 204，可重试 |
+
+管理 API 要求操作者具有 publisher 角色以及仓库所在 namespace 的读写权限。个人 `read` 授权可查看仓库历史并下载 tar。`write` 包含读取，拥有 publisher 角色时还可上传 bundle、激活、回滚和停用。个人授权只适用于指定仓库。受控上游导入、离线交付和材料发布分别检查各自的 namespace 权限。
+
+迁移要求操作者同时管理源和目标 namespace，目标仓库名须空闲。从私有范围迁往 `public/` 时，请求还须包含 `"acknowledgePublicHistory":true`，因为目标读者可以看到历次快照、导入者及文件。目标保留快照、原导入记录、审计历史和迁移时的 active commit，按目标 namespace 授权。源仓库停用并冻结导入与激活，原访问权限继续保护旧地址。重新提交同一目标可取回目标仓库。进程中断后，下一次写入先完成已登记的迁移。备份应包含整个 recipe 卷，含进行中的 `migration/` 目录。
+
+回收前，Registry 独占材料卷并检查每份 manifest。当前激活的快照和仍有材料引用的快照返回 409。已下架的材料在物理清除 manifest 前仍占用引用。未配置材料存储或材料卷正忙时返回 503。回收会删除快照入口并运行 Git 对象回收，其他快照历史可达的祖先和共享文件仍会保留，审计事件可继续查询。
 
 Web 网关对应 `/software/api`。上述 API 不提供 Git smart HTTP，也不接受任意 ref、远端 URL 或服务端目录。
 远端 bundle 只能通过独立的 [受控上游导入](spack-upstream-import.md) 入口提交，

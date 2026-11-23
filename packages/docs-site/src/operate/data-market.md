@@ -1,6 +1,6 @@
 # Data Market 算力中心运维
 
-Compute Center 的数据管理员通过 `/cp/data` 管理 provider 数据资产、导入、版本、副本和 access request 审批。该入口处理 metadata，不传输科学数据或受限材料文件。
+Compute Center 的数据管理员通过 `/cp/data` 管理 provider 数据资产、导入、版本、副本和 access request 审批。本机文件通过上传会话的签名地址写入对象存储。使用受管目录时，Agent 在目标中心扫描文件并返回清单。
 
 ## 算力中心数据对象
 
@@ -21,9 +21,9 @@ POST /api/cp/data/imports
 
 | source.kind | 必填字段 | 当前行为 |
 |---|---|---|
-| `cp-local` | `agentId`、`managedRootId`、`relativePath` | 创建 import 并请求 Agent scan。相对路径禁止绝对路径和 `..` traversal。 |
-| `netdrive` | `netdriveFileId` | 复制执行器尚未配置，Server 返回 `503 DATA_IMPORT_UNAVAILABLE`；页面显示 UNAVAILABLE，不生成 manifest。 |
-| `platform-object` | `uploadSessionId` | 先完成对象 upload session、浏览器 PUT 与 SHA-256 commit；当前后续 import worker 未配置时也返回 `503 DATA_IMPORT_UNAVAILABLE`。已 commit 的持久版本仍可查询。 |
+| `cp-local` | `agentId`、`managedRootId`、`relativePath` | 创建 import 并请求 Agent scan。管理员可以从导入记录取消排队或扫描中的任务。相对路径禁止绝对路径和 `..` traversal。 |
+| `netdrive` | `netdriveFileId` | 校验当前用户及固定对象版本，复制到 staging，校验内容摘要并发布不可变版本。 |
+| `platform-object` | `uploadSessionId` | 先完成对象 upload session、浏览器 PUT 与 SHA-256 commit；再用同一管理者、资产和版本提交会话 ID。导入回执引用已校验的不可变版本，重复请求返回原回执。 |
 
 `/api/data-market/cp/assets/:assetId/versions` 不接受直接创建 manifest，请使用 `/api/cp/data/imports`。
 
@@ -50,10 +50,14 @@ scan request、deadline、attempt、状态、attestation payload 与 signature �
 为版本创建 replica 时使用：
 
 ```text
-POST /api/data-market/cp/versions/:versionId/replicas
+POST /api/cp/data/versions/:versionId/replicas
 ```
 
-请求需携带 `agentId`、`siteId`、`clusterId`、`locationKind`；CP-local 还需提供 `managedRootId` 和 `relativePath`。scheduler 优先选择拥有 `available` replica 且满足许可条件的中心。登记副本不会自动授予数据复制权限。
+请求头提供 `Idempotency-Key`，正文提供 `agentId`、`managedRootId` 和 `locationKind: "cp-local"`。Server 从注册记录确定站点和集群。来源必须是本组织已发布资产的就绪版本，平台对象来源要求清单中的固定对象版本。CP-local 来源要求原扫描 Agent 的证明、当前组织和启用的受管根。管理员在版本的披露策略中授权导出，并设置到期时间。同一版本、同一目标站点只能有一个活动副本。
+
+固定平台对象通过短时下载地址交付。对于 CP-local 来源，目标 Agent 经 mTLS 请求文件范围，Server 在授权有效期内将请求发往源 Agent，转交每块数据前复查披露策略和源、目标绑定。源 Agent 先核对完整文件摘要，再验证发出的数据块。重连从目标私有暂存目录的已写偏移继续。目标 Agent，按文件续传并校验长度和 SHA-256。目标文件放在所选受管根下的私有目录 `.kq-replicas/<replicaId>`。Server 核对当前授权、目标绑定、领取批次及回执清单后，将副本与位置一并发布。调度时重新核对授权，验证时效为 24 小时。到期后副本退出调度候选，目标 Agent 重连时逐文件复查目录。新回执的大小与摘要匹配后恢复调度，发现文件被改写时转入回收。
+
+复制期间可调用 `POST /api/cp/data/versions/:versionId/replicas/:replicaId/cancel`。任务状态可在同一版本的副本列表中查询。取消或验证失败后，目标位置保持不可用，Agent 上线后按任务目录回收文件。
 
 ## 审批与排障
 
@@ -86,7 +90,7 @@ POST /api/admin/data-market/owner-entitlements/:grantId/revoke
 
 重点故障码：
 
-- `DATA_IMPORT_UNAVAILABLE`：NetDrive promote 或 platform-object import worker 未部署，导入未完成。
+- `DATA_IMPORT_UNAVAILABLE`：对象存储或本地扫描协调器未配置。
 - `Authorization denied`：算力中心 scope、manage 或审批权限不足。
 - `Data asset version not found`：asset/version 归属不匹配，或版本尚未由 commit/scan 产生。
 - 上传 commit 的 blob missing、size/hash mismatch：检查浏览器 PUT、RustFS CORS、presigned URL 与 SHA-256。

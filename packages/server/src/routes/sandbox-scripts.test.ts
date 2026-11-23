@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   auditLog,
   createPgDb,
@@ -153,6 +154,55 @@ describe("sandbox script routes", () => {
     expect(detail.data.asset.name).toBe(`${NAME_PREFIX}renamed`);
     expect(detail.data.asset.version).toBe("0.2.0");
     expect(detail.data.revisions).toHaveLength(2);
+  });
+
+  test("checks the Git blob before storing private drafts and preserves per-revision provenance", async () => {
+    const app = makeApp(db);
+    const body = scriptBody(`${NAME_PREFIX}git`);
+    const source = {
+      repository: "https://git.example.test/team/tools.git",
+      commit: "e".repeat(40),
+      path: "tools/main.py",
+      blob: createHash("sha1")
+        .update(`blob ${Buffer.byteLength(body.content)}\0${body.content}`)
+        .digest("hex"),
+    };
+    const write = (path: string, value: object) =>
+      app.request(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(value),
+      });
+    const root = "/api/sandbox/scripts";
+    const created = await write(root, { ...body, gitSource: source });
+    expect(created.status).toBe(201);
+    type Asset = typeof softwareAssets.$inferSelect;
+    type Revision = typeof softwareAssetRevisions.$inferSelect;
+    const { data } = (await created.json()) as { data: { asset: Asset; revision: Revision } };
+    expect(data.asset).toMatchObject({
+      visibility: "private",
+      lifecycle: "draft",
+      trustedForGlobalUse: false,
+    });
+    expect(data.revision.provenance).toEqual({ source: "git", ...source });
+    const revisions = `${root}/${data.asset.id}/revisions`;
+    expect(
+      (await write(revisions, { ...body, content: "changed", gitSource: source })).status,
+    ).toBe(400);
+    expect(
+      (await write(revisions, { ...body, gitSource: { ...source, repository: "invalid" } })).status,
+    ).toBe(400);
+    const renewed = await Promise.all([
+      write(revisions, { ...body, gitSource: source }),
+      write(revisions, body),
+    ]);
+    expect(renewed.map((r) => r.status)).toEqual([201, 201]);
+    const detail = (await (await app.request(`${root}/${data.asset.id}`)).json()) as {
+      data: { asset: Asset; revisions: Revision[] };
+    };
+    expect(detail.data.revisions.map((r) => r.revision)).toEqual([3, 2, 1]);
+    expect(detail.data.asset.provenance.source).toBe(detail.data.revisions[0]?.provenance.source);
+    expect(detail.data.revisions[2]?.provenance).toEqual(data.revision.provenance);
   });
 
   test("catalog omits retired scripts while owners retain historical access and drafts", async () => {

@@ -25,12 +25,14 @@ interface SshCredentialView {
   port: number;
   username: string;
   hasSecret: boolean;
+  jumpAgentIds?: string[];
   hostKeySha256: string;
   updatedAt: string | null;
   updatedBy: string | null;
 }
 
 interface FormState {
+  jumps: string;
   agentId: string;
   host: string;
   port: string;
@@ -42,6 +44,7 @@ interface FormState {
 }
 
 const EMPTY_FORM: FormState = {
+  jumps: "",
   agentId: "",
   host: "",
   port: "22",
@@ -111,6 +114,7 @@ export function SshCredentialsForm() {
       privateKey: "",
       passphrase: "",
       hostKeySha256: row.hostKeySha256,
+      jumps: row.jumpAgentIds?.join(", ") ?? "",
     });
   }
 
@@ -137,6 +141,10 @@ export function SshCredentialsForm() {
       if (form.password) body.password = form.password;
       if (form.privateKey) body.privateKey = form.privateKey;
       if (form.passphrase) body.passphrase = form.passphrase;
+      body.jumpAgentIds = form.jumps
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean);
       body.hostKeySha256 = form.hostKeySha256; // sent verbatim ("" clears the pin)
       await api.put(`/admin/ssh-credentials/${encodeURIComponent(agentId)}`, body);
       toast.success(t("settings.ssh.saved", { defaultValue: "SSH credentials saved" }));
@@ -327,6 +335,12 @@ export function SshCredentialsForm() {
                 defaultValue: "Auth material is encrypted at rest and never read back.",
               })}
             </p>
+            <LabeledInput
+              id="ssh-jumps"
+              label={t("settings.ssh.jumps")}
+              value={form.jumps}
+              onChange={(v) => update("jumps", v)}
+            />
             <LabeledInput
               id="ssh-host-key"
               label={t("settings.ssh.hostKey", { defaultValue: "Host-key pin (base64 SHA-256)" })}

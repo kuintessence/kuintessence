@@ -178,11 +178,20 @@ describe("SpackMaterialReferences (real PG)", () => {
     const input = await operation(release);
     await references.registerBindings({ [input.spec]: release });
     await Promise.all([
-      references.acquireOperation(input),
+      references.acquireOperation(input, [
+        { repositoryId: "a".repeat(64), commit: "b".repeat(40) },
+      ]),
       peer.acquireOperation(input),
       references.acquireOperation(input),
       peer.acquireOperation(input),
     ]);
+    expect(
+      (
+        await db.query.softwareOperations.findFirst({
+          where: eq(softwareOperations.id, input.operationId),
+        })
+      )?.recipeSnapshots,
+    ).toEqual([{ repositoryId: "a".repeat(64), commit: "b".repeat(40) }]);
     const before = await db.query.spackMaterialOperationReferences.findFirst({
       where: eq(spackMaterialOperationReferences.operationId, input.operationId),
     });

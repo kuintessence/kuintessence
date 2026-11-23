@@ -25,6 +25,7 @@ export interface JobSubmitterDeps {
     softwareRequirements: JobSubmission["softwareRequirements"],
     schedulingStrategy: JobSubmission["schedulingStrategy"] | undefined,
     spackExecution?: JobSubmission["spackExecution"],
+    forEachGroup?: string,
   ): Promise<void>;
   awaitCompletion(jobId: string): Promise<{
     status: JobStatusName;
@@ -43,7 +44,10 @@ export interface JobSubmitterDeps {
 }
 
 /** Build the usecase executor's `submitJob`: submit → dispatch → await. */
-export function createJobSubmitter(deps: JobSubmitterDeps): (spec: JobSubmission) => Promise<{
+export function createJobSubmitter(deps: JobSubmitterDeps): (
+  spec: JobSubmission,
+  forEachGroup?: string,
+) => Promise<{
   jobId: string;
   status: JobStatusName;
   collected: Record<string, string>;
@@ -52,7 +56,7 @@ export function createJobSubmitter(deps: JobSubmitterDeps): (spec: JobSubmission
   reason?: string;
   exitCode?: number;
 }> {
-  return async (spec) => {
+  return async (spec, forEachGroup) => {
     const prepared = (await deps.prepare?.(spec)) ?? spec;
     const job = await deps.submit(prepared);
     await deps.onSubmitted?.(prepared.nodeId, job.id);
@@ -65,6 +69,7 @@ export function createJobSubmitter(deps: JobSubmitterDeps): (spec: JobSubmission
       prepared.softwareRequirements,
       prepared.schedulingStrategy,
       prepared.spackExecution,
+      forEachGroup,
     );
     const { status, collected, collectedFiles, errorMessage, reason, exitCode } =
       await deps.awaitCompletion(job.id);

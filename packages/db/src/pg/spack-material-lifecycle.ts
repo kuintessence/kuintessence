@@ -168,6 +168,27 @@ export class SpackMaterialLifecycle {
     });
   }
 
+  async purgeWithdrawn(
+    binding: SpackMaterialReferenceBinding,
+    subject: string,
+    revision: number,
+    removeManifest: () => Promise<void>,
+  ) {
+    const value = parseBinding(binding);
+    await this.transaction(async (tx) => {
+      await this.requireReady(tx);
+      await authorizeCanonical(tx, subject, async (actor) => {
+        if (actor.role !== "super_admin")
+          throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
+      });
+      const current = await readSpackMaterialLifecycle(tx, value);
+      if (!current || current.state !== "withdrawn" || current.revision !== revision)
+        throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_CONFLICT");
+      await requireUnreferenced(tx, value);
+      await removeManifest();
+    });
+  }
+
   private async requireReady(tx: Transaction) {
     await assertSpackMaterialRuntime(tx, this.epoch);
     const rollout = await readSpackMaterialRollout(tx);

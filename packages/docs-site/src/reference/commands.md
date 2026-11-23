@@ -69,9 +69,14 @@ kq list
 kq status <job-id>
 kq logs <job-id>
 kq workflow cancel <run-id>
-kq ssh <agent-id>
+kq ssh <agent-id> [--record <new-file.cast>]
+kq sftp <agent-id> [--batch <commands.txt>]
+kq scp [-r] <local-path> <agent-id>:<remote-path>
+kq scp [-r] <agent-id>:<remote-path> <local-path>
 kq metering query
 ```
+
+文件传输使用本机 OpenSSH 客户端（scp 需要 9.0 或以上）和目标登录节点的 SFTP 子系统。三条命令通过同一网关检查 Agent 权限，并使用站点配置的 SSH 凭据。SFTP 会话保留开启和关闭的审计记录，文件字节不会进入终端录像。
 
 远程 `kq submit` 接收 JSON spec 文件，不支持 `--agent` 和 `--command` 选项。提交成功后，用输出的 Job ID 调用 `kq status` 和 `kq logs`。字段示例见[最小 smoke spec](https://github.com/kuintessence/kuintessence/blob/main/docs/manuals/examples/job-smoke.json)。
 

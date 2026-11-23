@@ -10,7 +10,7 @@ import {
   users,
 } from "@kuintessence/db";
 import { ErrorCode } from "@kuintessence/shared";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { StorageQuotaService } from "./storage-quota";
 
 const TEST_DB_URL = process.env.DATABASE_URL ?? "postgres://kq:kq@localhost:5432/kuintessence";
@@ -25,7 +25,7 @@ describe("StorageQuotaService", () => {
   let service: StorageQuotaService;
 
   beforeAll(async () => {
-    db = createPgDb(TEST_DB_URL);
+    db = createPgDb(TEST_DB_URL, { max: 4 });
     service = new StorageQuotaService(db, () => NOW);
     await db
       .insert(users)
@@ -148,6 +148,39 @@ describe("StorageQuotaService", () => {
     );
   });
 
+  test("a failed grant insert rolls back automatic and manual approvals", async () => {
+    const input = {
+      scope: "cluster_root" as const,
+      scopeId: AUTO_SCOPE_ID,
+      requestedQuotaBytes: 2048,
+      reason: "grant rollback",
+    };
+    await db.transaction(async (tx) => {
+      // Fault injection stays on this connection and affects only the grant insert.
+      await tx.execute(sql`create temporary table storage_quota_grants
+        (like public.storage_quota_grants including all, constraint test_failure check (quota_bytes <> 2048))
+        on commit drop`);
+      const transactional = new StorageQuotaService(tx, () => NOW);
+      const request = await transactional.createRequest(USER_ID, input);
+      await expect(
+        transactional.decideRequest(request.id, ADMIN_ID, { decision: "approved", note: "" }),
+      ).rejects.toThrow();
+      expect((await transactional.getRequest(request.id))?.status).toBe("pending");
+      await transactional.decideRequest(request.id, ADMIN_ID, { decision: "rejected", note: "" });
+      await transactional.upsertPolicy(ADMIN_ID, {
+        scope: input.scope,
+        scopeId: input.scopeId,
+        defaultQuotaBytes: 1024,
+        requestMode: "auto",
+        enabled: true,
+      });
+      await expect(transactional.createRequest(USER_ID, input)).rejects.toThrow();
+      expect(await transactional.listUserRequests(USER_ID)).toMatchObject([{ status: "rejected" }]);
+      await tx.execute(sql`alter table pg_temp.storage_quota_grants drop constraint test_failure`);
+      expect((await transactional.createRequest(USER_ID, input)).status).toBe("approved");
+    });
+  });
+
   test("rejects manual grants that have already expired", async () => {
     await expect(
       service.createGrant(ADMIN_ID, {
@@ -161,18 +194,34 @@ describe("StorageQuotaService", () => {
     ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
   });
 
-  test("rejects a second pending request for the same storage scope", async () => {
+  test("serializes concurrent requests and concurrent decisions for the same storage scope", async () => {
     const input = {
       scope: "cloud" as const,
       scopeId: "global",
       requestedQuotaBytes: 60 * 1024 * 1024 * 1024,
       reason: "first request",
     };
-    await service.createRequest(USER_ID, input);
-
-    await expect(
-      service.createRequest(USER_ID, { ...input, reason: "duplicate request" }),
-    ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR, statusCode: 409 });
+    const attempts = await Promise.allSettled([
+      service.createRequest(USER_ID, input),
+      service.createRequest(USER_ID, input),
+    ]);
+    expect(attempts.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(attempts.find((r) => r.status === "rejected")).toMatchObject({
+      reason: { statusCode: 409 },
+    });
+    const requests = await service.listUserRequests(USER_ID);
+    expect(requests).toHaveLength(1);
+    const id = requests[0]?.id;
+    if (!id) throw new Error("Missing pending request");
+    const approve = () => service.decideRequest(id, ADMIN_ID, { decision: "approved", note: "" });
+    const decisions = await Promise.allSettled([approve(), approve()]);
+    expect(decisions.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(decisions.find((r) => r.status === "rejected")).toMatchObject({
+      reason: { statusCode: 409 },
+    });
+    expect(
+      await db.select().from(storageQuotaGrants).where(eq(storageQuotaGrants.requestId, id)),
+    ).toHaveLength(1);
   });
 
   test("rechecks the current policy limit before approving a pending request", async () => {

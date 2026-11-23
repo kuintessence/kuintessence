@@ -1,10 +1,4 @@
-import {
-  AppError,
-  type DataInputRef,
-  ErrorCode,
-  usecase,
-  type workflowDsl,
-} from "@kuintessence/shared";
+import { AppError, type DataInputRef, ErrorCode, usecase, workflowDsl } from "@kuintessence/shared";
 
 export interface DatasetPreflightDeps {
   loadUsecasePackage(usecaseVersionId: string): Promise<unknown | null>;
@@ -40,7 +34,8 @@ async function validateSpec(
   principal: { userId: string | null; orgId: string | null; sub?: string | null } | undefined,
   visitedWorkflowVersions: ReadonlySet<string>,
 ): Promise<void> {
-  for (const node of spec.nodeDrafts) {
+  for (const draft of spec.nodeDrafts) {
+    const node = workflowDsl.commandExecutionNode(draft) ?? draft;
     if (node.type === "Loop") {
       await validateSpec(deps, node.body, principal, visitedWorkflowVersions);
       continue;

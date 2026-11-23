@@ -19,6 +19,7 @@ export interface FileStagerDeps {
         targetPath?: string;
         totalBytes: number;
         expectedSha256?: string;
+        workflowInput: true;
       },
     ): boolean;
   };
@@ -78,6 +79,7 @@ export function createFileStager(
       const queued = deps.dispatcher.pushFileTransfer(agentId, transferId, {
         direction: "cloud_to_cluster",
         sourceUrl: downloadUrl,
+        workflowInput: true,
         targetPath,
         totalBytes: size ?? 0,
         ...(sha256 ? { expectedSha256: sha256 } : {}),

@@ -47,7 +47,9 @@ class FakeQuery implements MeteringQueryPort {
       return this.resultByPeriod[req.period] ?? { rows: [], total: 0 };
     }
     const org = scope.kind === "orgs" ? (scope.orgIds[0] ?? "") : "*";
-    return this.resultByOrg[org] ?? makeResult(org);
+    return req.period === "raw"
+      ? (this.resultByOrg[org] ?? makeResult(org))
+      : { rows: [], total: 0 };
   }
 }
 
@@ -93,7 +95,7 @@ describe("MeteringWebhookEmitter", () => {
     expect(query.calls.length).toBe(0);
   });
 
-  it("queries once per org with the org scope and the prev-day window", async () => {
+  it("queries each applicable tier per org with the org scope and the prev-day window", async () => {
     const hookA1 = webhook({ orgId: ORG_A });
     const hookA2 = webhook({ orgId: ORG_A });
     const hookB = webhook({ orgId: ORG_B });
@@ -113,19 +115,19 @@ describe("MeteringWebhookEmitter", () => {
 
     const report = await emitter.emitDailySummary(DAY_START, DAY_END);
 
-    // Two orgs => two queries (deduplicated by orgId).
-    expect(query.calls.length).toBe(2);
+    // Multiple subscribers share the same per-org queries.
+    expect(query.calls.length).toBe(6);
     for (const call of query.calls) {
       expect(call.scope.kind).toBe("orgs");
-      expect(call.req.period).toBe("raw");
+      expect(["raw", "hourly", "daily"]).toContain(call.req.period);
       expect(call.req.grouping).toBe("org");
       expect(call.req.from).toBe(DAY_START.toISOString());
-      expect(call.req.to).toBe(DAY_END.toISOString());
+      expect(call.req.to).toBe(new Date(DAY_END.getTime() - 1).toISOString());
     }
     const scopedOrgs = query.calls
       .map((c) => (c.scope.kind === "orgs" ? c.scope.orgIds[0] : null))
       .sort();
-    expect(scopedOrgs).toEqual([ORG_A, ORG_B].sort());
+    expect([...new Set(scopedOrgs)]).toEqual([ORG_A, ORG_B].sort());
 
     // 3 webhooks all delivered (2 for A, 1 for B).
     expect(report).toEqual({ orgs: 2, sent: 3, failed: 0 });
@@ -172,7 +174,7 @@ describe("MeteringWebhookEmitter", () => {
     });
     const report = await emitter.emitDailySummary(DAY_START, DAY_END);
     // Org A failed at the query stage (no dispatch), org B succeeded.
-    expect(report).toEqual({ orgs: 2, sent: 1, failed: 0 });
+    expect(report).toEqual({ orgs: 2, sent: 1, failed: 1 });
     expect(repo.recorded).toEqual([{ id: hookB.id, ok: true }]);
   });
 });
@@ -229,7 +231,7 @@ describe("MeteringWebhookEmitter monthly (cross-tier)", () => {
       expect(call.scope.kind).toBe("orgs");
       expect(call.req.grouping).toBe("org");
       expect(call.req.from).toBe(MONTH_START.toISOString());
-      expect(call.req.to).toBe(MONTH_END.toISOString());
+      expect(call.req.to).toBe(new Date(MONTH_END.getTime() - 1).toISOString());
     }
 
     expect(report).toEqual({ orgs: 1, sent: 1, failed: 0 });

@@ -51,6 +51,7 @@ vi.mock("../../lib/spack-material-lifecycle-client", () => ({
 }));
 vi.mock("../../lib/spack-materials-client", () => ({
   uploadSpackMaterial: vi.fn(),
+  getSpackMaterialImportStatus: vi.fn(),
   publishSpackMaterial: vi.fn(),
   getSpackMaterial: vi.fn(),
   listSpackMaterials: vi.fn(),
@@ -271,7 +272,10 @@ test.each([
   expect(screen.getByLabelText(labels.repositoryId)).toHaveProperty("value", "");
   expect(screen.getByLabelText(labels.manifestDigest)).toHaveProperty("value", "");
   await waitFor(() => expect(materials.listSpackMaterials).toHaveBeenCalledTimes(2));
-  expect(materials.listSpackMaterials).toHaveBeenLastCalledWith({}, expect.any(AbortSignal));
+  expect(materials.listSpackMaterials).toHaveBeenLastCalledWith(
+    { limit: 20 },
+    expect.any(AbortSignal),
+  );
   expect(materials.getSpackMaterial).toHaveBeenCalledExactlyOnceWith(
     f.binding,
     expect.any(AbortSignal),

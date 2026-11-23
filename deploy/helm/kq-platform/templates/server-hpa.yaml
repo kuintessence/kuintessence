@@ -9,7 +9,7 @@ metadata:
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
-    kind: Deployment
+    kind: {{ ternary "StatefulSet" "Deployment" (ne .Values.server.relay.domain "") }}
     name: {{ include "kq-platform.fullname" . }}-server
   minReplicas: {{ .Values.server.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.server.autoscaling.maxReplicas }}

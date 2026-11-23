@@ -17,7 +17,7 @@ Kuintessence 是统一算力服务与科学计算工作流平台，将 Slurm、P
 | CLI | `kq` 远程命令、本地调度器 TUI 与 GUI |
 
 Server 使用 PostgreSQL；Agent 使用 SQLite。Server 与 Agent 通过 connectRPC 通信。
-文件服务使用 S3/RustFS。Redis 在部署配置中预留，当前 Server 事件总线仍在进程内。
+文件服务使用 S3/RustFS。Server 使用 PostgreSQL LISTEN/NOTIFY 在进程间传递作业和工作流状态事件。
 Web 中的“软件生态”提供软件、用例和模板入口；Registry 是支撑这些功能的软件仓库服务。
 
 ## 快速开始

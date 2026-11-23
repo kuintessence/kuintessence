@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import {
   type MaterialImportProgress,
   MaterialPackError,
+  MissingMaterialFiles,
   matchMaterialFiles,
   readMaterialPack,
   runMaterialImport,
@@ -36,7 +37,11 @@ export function MaterialPackImport({
   const id = useId();
   const [pack, setPack] = useState<SpackMaterialImport | null>(null);
   const [manifestName, setManifestName] = useState("");
-  const [selection, setSelection] = useState<{ files: File[]; mode: "files" | "directory" }>({
+  const [selection, setSelection] = useState<{
+    files: File[];
+    mode: "files" | "directory";
+    retained?: ReadonlyMap<string, File>;
+  }>({
     files: [],
     mode: "files",
   });
@@ -62,9 +67,10 @@ export function MaterialPackImport({
       totalFiles: 0,
     }));
   const matched = useMemo<{ files: Map<string, File> } | { error: true } | null>(() => {
-    if (!pack || selection.files.length === 0) return null;
+    if (!pack) return null;
     try {
-      return { files: matchMaterialFiles(pack, selection.files, selection.mode, manifestName) };
+      const files = matchMaterialFiles(pack, selection.files, selection.mode, manifestName);
+      return { files: selection.retained ? new Map([...selection.retained, ...files]) : files };
     } catch {
       return { error: true as const };
     }
@@ -89,6 +95,7 @@ export function MaterialPackImport({
     setConfirmed(false);
     setError(null);
     setReading(!!file);
+    if (manifestName || !file) setSelection({ files: [], mode: "files" });
     setManifestName(file?.name ?? "");
     if (!file) {
       active.current = null;
@@ -112,7 +119,11 @@ export function MaterialPackImport({
 
   function selectFiles(files: File[], mode: "files" | "directory") {
     if (!current() || running) return;
-    setSelection({ files, mode });
+    setSelection((previous) => ({
+      files,
+      mode,
+      retained: files.length ? previous.retained : undefined,
+    }));
     setConfirmed(false);
     setError(null);
   }
@@ -133,9 +144,10 @@ export function MaterialPackImport({
         canWriteRepository: (repository) => current() && canWriteRepository(repository),
         onProgress: ({ index, error: failure, ...progress }) => {
           if (!current()) return;
-          const safeError = failure
-            ? toUserFacingError(failure, t("materials.itemFailed"))
-            : undefined;
+          const safeError =
+            failure && !(failure instanceof MissingMaterialFiles)
+              ? toUserFacingError(failure, t("materials.itemFailed"))
+              : undefined;
           setRows((previous) =>
             previous.map((row, rowIndex) =>
               rowIndex === index
@@ -154,13 +166,12 @@ export function MaterialPackImport({
       });
     } catch (failure) {
       if (current()) {
-        setError(
-          controller.signal.aborted
-            ? t("materials.stopped")
-            : failure instanceof MaterialPackError
-              ? t(`materials.${failure.code}`)
-              : toUserFacingError(failure, t("materials.itemFailed")),
-        );
+        if (controller.signal.aborted) setError(t("materials.stopped"));
+        else if (failure instanceof MissingMaterialFiles) {
+          setSelection({ files: [], mode: "files", retained: matched.files });
+          setError(t("materials.missingFiles", { paths: failure.paths.join("\n") }));
+        } else if (failure instanceof MaterialPackError) setError(t(`materials.${failure.code}`));
+        else setError(toUserFacingError(failure, t("materials.itemFailed")));
       }
     } finally {
       if (active.current === controller) {
@@ -234,7 +245,7 @@ export function MaterialPackImport({
           {t("materials.packSummary", {
             releases: pack.releases.length,
             files: pack.files.length,
-            selected: selection.files.length,
+            selected: matched && "files" in matched ? matched.files.size : selection.files.length,
           })}
         </p>
       ) : null}
@@ -249,7 +260,7 @@ export function MaterialPackImport({
         </p>
       ) : null}
       {error ? (
-        <p role="alert" className="text-xs text-status-failed">
+        <p role="alert" className="whitespace-pre-line break-all text-xs text-status-failed">
           {error}
         </p>
       ) : null}

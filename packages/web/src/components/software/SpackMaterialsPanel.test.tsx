@@ -36,6 +36,7 @@ vi.mock("react-i18next", () => ({
 }));
 vi.mock("../../lib/spack-materials-client", () => ({
   uploadSpackMaterial: vi.fn(),
+  getSpackMaterialImportStatus: vi.fn(),
   publishSpackMaterial: vi.fn(),
   getSpackMaterial: vi.fn(),
   listSpackMaterials: vi.fn(),
@@ -77,6 +78,7 @@ test("requires redistribution confirmation and uploads original files sequential
     f.lock,
     f.lockFile,
     signal,
+    expect.any(Function),
   );
   expect(client.publishSpackMaterial).not.toHaveBeenCalled();
   expect(screen.getByLabelText("Material files (flat paths)")).toHaveProperty("disabled", true);
@@ -89,12 +91,84 @@ test("requires redistribution confirmation and uploads original files sequential
     f.source,
     f.sourceFile,
     signal,
+    expect.any(Function),
   );
   expect(client.publishSpackMaterial).toHaveBeenCalledExactlyOnceWith(f.pack.releases[0], signal);
   expect(screen.getByRole("button", { name: "Retry unfinished releases" })).toHaveProperty(
     "disabled",
     true,
   );
+});
+
+test("reopening the panel recovers the original binding after losing a publication response", async () => {
+  const f = materialFixture();
+  vi.mocked(client.publishSpackMaterial).mockRejectedValueOnce(
+    new SoftwareError(503, "UNAVAILABLE"),
+  );
+  const first = mount();
+  await prepareImport(f);
+  confirmImport();
+  await screen.findByText("0 published, 0 failed, 1 unconfirmed");
+  first.unmount();
+  vi.mocked(client.getSpackMaterialImportStatus).mockResolvedValueOnce({
+    state: "published",
+    binding: f.binding,
+  });
+  mount();
+  await selectManifest(f.pack);
+  confirmImport();
+  await screen.findByText("1 published, 0 failed, 0 unconfirmed");
+  expect(screen.getByRole("button", { name: "Copy release binding" })).toBeTruthy();
+  expect(client.uploadSpackMaterial).toHaveBeenCalledTimes(2);
+  expect(client.publishSpackMaterial).toHaveBeenCalledTimes(1);
+});
+
+test("lists missing paths from the manifest and resumes with only the requested file", async () => {
+  const f = materialFixture();
+  vi.mocked(client.getSpackMaterialImportStatus).mockResolvedValue({
+    state: "pending",
+    missing: [f.source.digest],
+  });
+  mount();
+  await selectManifest(f.pack);
+  confirmImport();
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("source.tar.gz");
+  expect(alert.textContent).not.toContain("root.lock");
+  expectNoWrites();
+  selectFiles([f.sourceFile]);
+  expect(screen.getByRole("checkbox")).toHaveProperty("checked", false);
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "Retry unfinished releases" }));
+  await screen.findByText("1 published, 0 failed, 0 unconfirmed");
+  expect(client.uploadSpackMaterial).toHaveBeenCalledExactlyOnceWith(
+    f.manifest.repository,
+    f.source,
+    f.sourceFile,
+    expect.any(AbortSignal),
+    expect.any(Function),
+  );
+});
+
+test("adding a requested file keeps the selected file only for the current manifest", async () => {
+  const f = materialFixture();
+  mount();
+  await selectManifest(f.pack);
+  selectFiles([f.lockFile]);
+  confirmImport();
+  expect((await screen.findByRole("alert")).textContent).toContain("source.tar.gz");
+  expectNoWrites();
+  selectFiles([f.sourceFile]);
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "Retry unfinished releases" }));
+  await screen.findByText("1 published, 0 failed, 0 unconfirmed");
+  expect(client.uploadSpackMaterial).toHaveBeenCalledTimes(2);
+  await selectManifest(f.pack);
+  confirmImport();
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("source.tar.gz");
+  expect(alert.textContent).toContain("root.lock");
+  expect(client.uploadSpackMaterial).toHaveBeenCalledTimes(2);
 });
 
 test("imports a directory using relative paths and ignores only its selected manifest", async () => {
@@ -115,11 +189,11 @@ test("imports a directory using relative paths and ignores only its selected man
     f.source,
     f.sourceFile,
     expect.any(AbortSignal),
+    expect.any(Function),
   );
 });
 
 test.each([
-  "missing",
   "wrong-size",
   "extra",
   "duplicate",
@@ -128,7 +202,6 @@ test.each([
   mount();
   await selectManifest(f.pack);
   const files = [f.sourceFile, f.lockFile];
-  if (kind === "missing") files.pop();
   if (kind === "wrong-size") files[0] = new File(["bad"], "source.tar.gz");
   if (kind === "extra") files.push(new File(["extra"], "extra.tar.gz"));
   if (kind === "duplicate") files.push(f.sourceFile);
@@ -189,6 +262,9 @@ test("reselecting files requires fresh redistribution confirmation", async () =>
 
 test("continues a partially failed batch and retries only unfinished releases", async () => {
   const f = materialFixture("public/materials", 3);
+  vi.mocked(client.getSpackMaterialImportStatus)
+    .mockResolvedValueOnce({ state: "pending", missing: [f.lock.digest, f.source.digest] })
+    .mockResolvedValue({ state: "pending", missing: [] });
   vi.mocked(client.publishSpackMaterial)
     .mockResolvedValueOnce(f.binding)
     .mockRejectedValueOnce(new SoftwareError(422, "VALIDATION_ERROR", "invalid release"))
@@ -215,7 +291,7 @@ test("continues a partially failed batch and retries only unfinished releases", 
     f.pack.releases[1],
     expect.any(AbortSignal),
   );
-  expect(client.uploadSpackMaterial).toHaveBeenCalledTimes(4);
+  expect(client.uploadSpackMaterial).toHaveBeenCalledTimes(2);
 });
 
 test("replacing files in the same manifest retains successful bindings and only retries unfinished releases", async () => {

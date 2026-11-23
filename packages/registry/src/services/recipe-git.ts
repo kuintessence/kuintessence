@@ -11,6 +11,7 @@ export class RecipeStoreError extends Error {
   constructor(
     public readonly status: 400 | 403 | 404 | 409 | 413 | 422 | 429 | 500 | 503,
     message: string,
+    readonly code?: "RECIPE_MIGRATION_CONFLICT" | "RECIPE_SNAPSHOT_IN_USE",
   ) {
     super(message);
     this.name = "RecipeStoreError";

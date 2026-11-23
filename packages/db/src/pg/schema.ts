@@ -1,6 +1,7 @@
 import type {
   CenterMetadata,
   ClusterMetadata,
+  JobSchedulerLimits,
   LinkMetadata,
   MapView,
   ProviderProfile,
@@ -52,6 +53,54 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+export const notificationPreferences = pgTable("notification_preferences", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  emailEnabled: boolean("email_enabled").notNull().default(false),
+  webhookUrl: text("webhook_url"),
+  webhookSecret: text("webhook_secret"),
+});
+
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    orgId: uuid("org_id").references(() => orgs.id, { onDelete: "set null" }),
+    eventKey: text("event_key").notNull(),
+    kind: varchar("kind", { length: 64 }).notNull(),
+    message: text("message").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    readAt: timestamp("read_at"),
+  },
+  (t) => ({
+    event: uniqueIndex("notifications_user_event_idx").on(t.userId, t.eventKey),
+    inbox: index("notifications_user_time_idx").on(t.userId, t.createdAt, t.id),
+  }),
+);
+
+export const notificationDeliveries = pgTable(
+  "notification_deliveries",
+  {
+    notificationId: uuid("notification_id")
+      .notNull()
+      .references(() => notifications.id, { onDelete: "cascade" }),
+    channel: varchar("channel", { length: 16 }).$type<"email" | "webhook">().notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at").defaultNow(),
+    deliveredAt: timestamp("delivered_at"),
+  },
+  (t) => ({
+    key: primaryKey({ columns: [t.notificationId, t.channel] }),
+    due: index("notification_delivery_due_idx")
+      .on(t.nextAttemptAt)
+      .where(sql`${t.nextAttemptAt} IS NOT NULL`),
+  }),
+);
 
 export const automationCredentials = pgTable(
   "automation_credentials",
@@ -274,6 +323,28 @@ export const jobWorkRootReleases = pgTable(
   },
   (t) => ({
     pendingAgentIdx: index("job_work_root_releases_pending_agent_idx").on(
+      t.agentId,
+      t.acknowledgedAt,
+      t.createdAt,
+    ),
+  }),
+);
+
+export const sandboxPvcReleases = pgTable(
+  "sandbox_pvc_releases",
+  {
+    jobId: uuid("job_id")
+      .primaryKey()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    agentId: varchar("agent_id", { length: 255 })
+      .references(() => agents.agentId, { onDelete: "cascade" })
+      .notNull(),
+    lastAttemptAt: timestamp("last_attempt_at"),
+    acknowledgedAt: timestamp("acknowledged_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => ({
+    pendingAgentIdx: index("sandbox_pvc_releases_pending_agent_idx").on(
       t.agentId,
       t.acknowledgedAt,
       t.createdAt,
@@ -601,6 +672,7 @@ export const jobs = pgTable(
     cpus: integer("cpus").notNull(),
     memoryMb: bigint("memory_mb", { mode: "number" }).notNull(),
     gpus: integer("gpus").default(0),
+    schedulerLimits: jsonb("scheduler_limits").$type<JobSchedulerLimits>(),
     wallTimeSec: bigint("wall_time_sec", { mode: "number" }),
     workingDir: text("working_dir"),
     envVars: jsonb("env_vars").$type<Record<string, string>>(),
@@ -627,6 +699,7 @@ export const jobs = pgTable(
           assetId?: string;
           spec?: string;
           operationId?: string;
+          siteRuntimeRevisionId?: string;
         }>
       >(),
     usecasePackageId: uuid("usecase_package_id").references(() => usecasePackages.id),
@@ -796,7 +869,7 @@ export const appTemplates = pgTable(
     version: varchar("version", { length: 50 }).notNull(),
     description: text("description"),
     /** Spack spec or container image reference, e.g. "wrf@4.4 +netcdf". */
-    spec: varchar("spec", { length: 500 }).notNull(),
+    spec: text("spec").notNull(),
     /** "spack" | "oci" | "module". */
     specKind: varchar("spec_kind", { length: 20 }).notNull(),
     tags: jsonb("tags").$type<string[]>().notNull().default([]),
@@ -812,6 +885,14 @@ export const appTemplates = pgTable(
     ),
   }),
 );
+
+export const spackCatalogSources = pgTable("spack_catalog_sources", {
+  packageId: uuid("package_id")
+    .primaryKey()
+    .references(() => appTemplates.id, { onDelete: "cascade" }),
+  content: text("content").notNull(),
+  digest: varchar("digest", { length: 64 }).notNull(),
+});
 
 export const usecasePackages = pgTable(
   "usecase_packages",
@@ -934,7 +1015,7 @@ export const softwareAssets = pgTable(
     officialForkIdx: index("software_assets_official_fork_idx").on(t.officialForkOfAssetId),
     kindCheck: check(
       "software_assets_kind_check",
-      sql`${t.kind} IN ('spack-package', 'usecase', 'workflow-template', 'sandbox-script')`,
+      sql`${t.kind} IN ('site-runtime', 'spack-package', 'usecase', 'workflow-template', 'sandbox-script')`,
     ),
     lifecycleCheck: check(
       "software_assets_lifecycle_check",
@@ -1090,7 +1171,7 @@ export const ecosystemReleaseAssets = pgTable(
     ),
     kindCheck: check(
       "ecosystem_release_assets_kind_check",
-      sql`${t.kind} IN ('data-product', 'spack-package', 'usecase', 'workflow-template', 'sandbox-script')`,
+      sql`${t.kind} IN ('data-product', 'site-runtime', 'spack-package', 'usecase', 'workflow-template', 'sandbox-script')`,
     ),
   }),
 );
@@ -1507,8 +1588,7 @@ export const workflowDrafts = pgTable(
  * verifier matches incoming client certs by `fingerprintSha256` and rejects
  * revoked rows.
  *
- * Revocation uses the single-Server lookup backed by this table.
- * CRL/OCSP distribution is not implemented.
+ * Revocations feed the mTLS verifier and signed CRL/OCSP status endpoints.
  */
 export const agentCerts = pgTable(
   "agent_certs",
@@ -1610,8 +1690,7 @@ export const desensitizeConfig = pgTable(
  * OIDC callback resolves the highest-priority role from the user's
  * group claims via `shared.resolveRoleFromGroups()`.
  *
- * `providerType` supports `'oidc'`; `'saml'` and `'ldap'` are reserved
- * placeholders so the column can stay stable when those are added.
+ * The LDAP and SAML selections require a connector-bound identity token.
  */
 export const ssoConfig = pgTable(
   "sso_config",
@@ -1676,13 +1755,59 @@ export const platformBranding = pgTable(
 /**
  * SSH credential vault (PRD F17).
  *
- * Replaces the not-for-production `SSH_CRED_<AGENT_ID>` env resolver. One row
+ * One row
  * per agent: host/port/username are stored in the clear (not secret, useful for
  * audit); the authentication material (password / private key / passphrase) is
  * encrypted at rest as a JSON blob via `secret-cipher` under the dedicated
  * `kq-ssh-cred-v1` domain label, so an SSO-key compromise cannot read it.
  * One credential set is stored per agent, gated at the gateway by org_admin+ RBAC.
  */
+export const terminalSessions = pgTable(
+  "terminal_sessions",
+  {
+    id: uuid("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    state: jsonb("state").notNull(),
+    audit: text("audit_encrypted").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index("terminal_sessions_user_idx").on(t.userId),
+    index("terminal_sessions_expiry_idx").on(t.expiresAt),
+  ],
+);
+export const agentControlSessions = pgTable("agent_control_sessions", {
+  agentId: varchar("agent_id", { length: 255 })
+    .primaryKey()
+    .references(() => agents.agentId, { onDelete: "cascade" }),
+  serverId: uuid("server_id").notNull(),
+  relayOrigin: text("relay_origin"),
+  sessionId: uuid("session_id").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  schedulerLimits: boolean("scheduler_limits").notNull(),
+  pinnedSpack: boolean("pinned_spack").notNull(),
+  replicaRangeFingerprint: text("replica_range_fingerprint"),
+});
+
+export const sshLiveSessions = pgTable(
+  "ssh_live_sessions",
+  {
+    sessionId: uuid("session_id").primaryKey(),
+    serverId: uuid("server_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    user: text("user").notNull(),
+    sourceIp: text("source_ip"),
+    openedAt: timestamp("opened_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    closeReason: text("close_reason"),
+    closed: boolean("closed").notNull().default(false),
+  },
+  (t) => [
+    index("ssh_live_sessions_owner_idx").on(t.serverId),
+    index("ssh_live_sessions_expiry_idx").on(t.expiresAt),
+  ],
+);
+
 export const sshCredentials = pgTable("ssh_credentials", {
   agentId: varchar("agent_id", { length: 255 }).primaryKey(),
   host: text("host").notNull(),
@@ -1691,6 +1816,7 @@ export const sshCredentials = pgTable("ssh_credentials", {
   /** Base64 AES-GCM ciphertext of `{ password?, privateKey?, passphrase? }`. Empty when unset. */
   secretEncrypted: text("secret_encrypted").notNull().default(""),
   /** Base64 SHA-256 host-key pin (not secret); empty = host key unverified. */
+  jumpAgentIds: jsonb("jump_agent_ids").$type<string[]>().notNull().default([]),
   hostKeySha256: varchar("host_key_sha256", { length: 255 }).notNull().default(""),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   updatedBy: varchar("updated_by", { length: 255 }),
@@ -1728,11 +1854,9 @@ export const sshRecordings = pgTable(
 /**
  * software governance policies (PRD F19).
  *
- * One row per (scope, agentId) tuple. `scope` is `'global'` (agentId NULL),
- * `'org'` (agentId NULL, scopeId set elsewhere — TODO when org-scoping
- * lands), or `'agent'` (agentId set). The push side reads the most-specific
- * matching row at dispatch time and stamps a monotonic `version` so the
- * agent can dedupe re-broadcasts.
+ * Agent policy rows contribute to the effective policy alongside the provider,
+ * cluster, and agent settings in softwarePolicyOverlays. A version stamp lets
+ * the agent deduplicate broadcasts.
  *
  * `mirrors`, `allowList`, `denyList`, and `preinstallList` are JSONB
  * arrays — schema validation lives in @kuintessence/shared
@@ -1817,6 +1941,8 @@ export const softwareOperations = pgTable(
     // Retain the authority identity even after Job cleanup; missing Jobs cannot renew it.
     federationJobId: uuid("federation_job_id"),
     nextDispatchAt: timestamp("next_dispatch_at"),
+    recipeSnapshots:
+      jsonb("recipe_snapshots").$type<Array<{ repositoryId: string; commit: string }>>(),
     manifestDigest: varchar("manifest_digest", { length: 71 }),
     status: varchar("status", { length: 32 }).notNull().default("queued"),
     stdout: text("stdout"),
@@ -1865,8 +1991,7 @@ export const softwareOperations = pgTable(
  *  - metric='scheduler_queued_jobs' → value=count, payload={}
  *  - metric='gpu' → value=util_percent, payload={index, model, memUsedMb, memTotalMb}
  *
- * TODO: 7-day retention via a daily DELETE WHERE ts < now() - '7 days'
- * cron, or TimescaleDB compression policy when the hypertable lands.
+ * The server prunes samples older than seven days using the timestamp index.
  */
 export const agentMetrics = pgTable(
   "agent_metrics",
@@ -1907,14 +2032,31 @@ export const schedulingPreferences = pgTable(
   }),
 );
 
+export const netdriveUploadReservations = pgTable(
+  "netdrive_upload_reservations",
+  {
+    storageKey: text("storage_key").primaryKey(),
+    ownerId: uuid("owner_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    path: text("path").notNull(),
+    size: bigint("size", { mode: "number" }).notNull(),
+    generated: boolean("generated").notNull().default(false),
+    expiresAt: timestamp("expires_at").notNull(),
+  },
+  (t) => [
+    index("netdrive_upload_reservations_owner_path_idx").on(t.ownerId, t.path),
+    index("netdrive_upload_reservations_expiry_idx").on(t.expiresAt),
+  ],
+);
+
 /**
  * NetDrive file-metadata ledger (PRD F18).
  *
  * One row per durable, named user-owned blob. The bytes live in MinIO/S3
  * under the synthetic `storage_key` (a UUID under a `netdrive/` prefix);
  * the table holds the user-visible `(owner_id, path)` pair plus integrity
- * fields so a future cross-site replicator and download flow can verify
- * what they fetched matches what was committed.
+ * fields for checking copies against the committed file.
  *
  * Soft-delete via `deleted_at` keeps the (owner_id, path) "unique-by-live"
  * invariant simple to enforce in the service layer (filter `deletedAt IS
@@ -1944,8 +2086,12 @@ export const netdriveFiles = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
     /** Soft-delete tombstone. NULL for live rows. */
     deletedAt: timestamp("deleted_at"),
+    cleanupAfter: timestamp("cleanup_after"),
   },
   (t) => ({
+    cleanupIdx: index("netdrive_files_cleanup_idx")
+      .on(t.cleanupAfter)
+      .where(sql`${t.cleanupAfter} IS NOT NULL`),
     ownerPathIdx: index("netdrive_files_owner_path_idx").on(t.ownerId, t.path),
     ownerCreatedIdx: index("netdrive_files_owner_created_idx").on(t.ownerId, t.createdAt),
   }),
@@ -2342,6 +2488,12 @@ export const dataReplicas = pgTable(
     targetLocationId: uuid("target_location_id").references(() => dataLocations.id, {
       onDelete: "set null",
     }),
+    requestedBy: uuid("requested_by").references(() => users.id, { onDelete: "set null" }),
+    idempotencyKey: varchar("idempotency_key", { length: 255 }),
+    targetClusterId: varchar("target_cluster_id", { length: 255 }),
+    attemptId: uuid("attempt_id"),
+    leaseUntil: timestamp("lease_until"),
+    cleanupPending: boolean("cleanup_pending").notNull().default(false),
     targetSiteId: varchar("target_site_id", { length: 255 }).notNull(),
     manifestDigest: varchar("manifest_digest", { length: 128 }),
     status: varchar("status", { length: 32 }).notNull().default("pending"),
@@ -2353,10 +2505,13 @@ export const dataReplicas = pgTable(
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => ({
-    versionTargetIdx: uniqueIndex("data_replicas_version_target_site_idx").on(
-      t.dataAssetVersionId,
-      t.targetSiteId,
+    requesterKeyIdx: uniqueIndex("data_replicas_requester_key_idx").on(
+      t.requestedBy,
+      t.idempotencyKey,
     ),
+    versionTargetIdx: uniqueIndex("data_replicas_version_target_site_idx")
+      .on(t.dataAssetVersionId, t.targetSiteId)
+      .where(sql`${t.status} IN ('pending','syncing','available')`),
     statusIdx: index("data_replicas_status_idx").on(t.status, t.targetSiteId),
     statusCheck: check(
       "data_replicas_status_check",
@@ -2612,29 +2767,7 @@ export const jobDataBindings = pgTable(
   }),
 );
 
-/**
- * NetDrive transfer log (migration 0014).
- *
- * Replaces the cp-bindings approximation that summed `netdrive_files.size`
- * by `created_at` (which conflated upload bytes with all-direction transfer
- * bytes). NetDriveService now appends one row per finalized op so byte
- * accounting on the CP Console reflects real upload + download (and, when
- * wired, mirror) traffic. Insertions are best-effort — the user-facing
- * NetDrive request is never failed because the audit insert tripped.
- *
- * `direction`:
- *   - 'upload'   — client→object-store finalize via commitFile()
- *   - 'download' — Server→client presigned-GET via mintDownloadUrl()
- *   - 'mirror'   — cross-site replication (TODO: no call site yet)
- *
- * `siteId` is only meaningful for `direction='mirror'` (destination site).
- *
- * FKs are `ON DELETE SET NULL` so soft-deleting a file or removing a user
- * preserves the historical row for audit, even if the joined entity is
- * gone. The downside is the dashboard can show an orphaned NULL — that is
- * acceptable; the alternative (cascade) would lose real bytes-transferred
- * data.
- */
+/** Upload commits, issued download URLs and confirmed copies. Mirror rows carry the destination site. */
 export const netdriveTransferLog = pgTable(
   "netdrive_transfer_log",
   {
@@ -2823,6 +2956,9 @@ export const fileTransfers = pgTable(
     siteId: varchar("site_id", { length: 255 }),
     totalBytes: bigint("total_bytes", { mode: "number" }),
     resumeSession: jsonb("resume_session").$type<unknown>(),
+    dispatchOwner: uuid("dispatch_owner"),
+    dispatchExpiresAt: timestamp("dispatch_expires_at", { withTimezone: true }),
+    cancelRequest: uuid("cancel_request"),
     copiedBytes: bigint("copied_bytes", { mode: "number" }).notNull().default(0),
     state: varchar("state", { length: 32 }).notNull(),
     startedAt: timestamp("started_at"),
@@ -2843,6 +2979,15 @@ export const fileTransfers = pgTable(
   },
   (t) => ({
     userCreatedIdx: index("file_transfers_user_created_idx").on(t.userId, t.createdAt),
+    ownerLeaseIdx: index("file_transfers_owner_lease_idx")
+      .on(t.dispatchOwner, t.dispatchExpiresAt)
+      .where(sql`dispatch_owner is not null`),
+    pendingCancelIdx: index("file_transfers_pending_cancel_idx")
+      .on(t.dispatchOwner)
+      .where(sql`cancel_request is not null`),
+    terminalCheckpointIdx: index("file_transfers_terminal_checkpoint_idx")
+      .on(sql`encode(sha256(${t.id}::text::bytea), 'hex')`)
+      .where(sql`direction = 'cluster_to_cloud' and state in ('succeeded', 'cancelled')`),
     stateIdx: index("file_transfers_state_idx").on(t.state),
     clusterRootStateIdx: index("file_transfers_cluster_root_state_idx").on(
       t.clusterRootId,

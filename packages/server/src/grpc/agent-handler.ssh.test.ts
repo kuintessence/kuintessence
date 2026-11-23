@@ -53,15 +53,17 @@ describe("agent-handler SSH reverse dispatch", () => {
   test("routes sshOutput and sshClosed AgentMessages to the gateway", async () => {
     const seen: string[] = [];
     const fakeGateway = {
-      handleAgentMessage: (m: AgentMessage) => {
+      handleAgentMessage: (agentId: string, m: AgentMessage) => {
+        expect(agentId).toBe("agent-9");
         seen.push(m.payload.case ?? "");
         return true;
       },
+      closeSessionsForAgent: () => 0,
     } as unknown as SshGateway;
 
     const { router, handlers } = createMockRouter();
     registerAgentHandler(router, {
-      agentManager: {} as unknown as AgentManager,
+      agentManager: { register: async () => undefined } as unknown as AgentManager,
       jobService: {} as unknown as JobService,
       logger: silent,
       dispatcher: new AgentDispatcher(),
@@ -82,7 +84,18 @@ describe("agent-handler SSH reverse dispatch", () => {
     });
 
     if (!handlers.connect) throw new Error("connect handler not registered");
-    await drain(handlers.connect(iter(outputMsg, closedMsg)));
+    const registration = create(AgentMessageSchema, {
+      payload: {
+        case: "register",
+        value: create(RegisterRequestSchema, {
+          agentId: "agent-9",
+          siteName: "site-9",
+          schedulerType: SchedulerType.SLURM,
+          schedulerVersion: "23",
+        }),
+      },
+    });
+    await drain(handlers.connect(iter(outputMsg, registration, outputMsg, closedMsg)));
 
     expect(seen).toEqual(["sshOutput", "sshClosed"]);
   });

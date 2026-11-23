@@ -7,15 +7,22 @@ import {
   dataAssets,
   dataAssetVersions,
   dataScanRequests,
+  netdriveFiles,
   orgs,
   type PgDb,
   users,
 } from "@kuintessence/db";
 import { eq, inArray } from "drizzle-orm";
+import { FakeMinioBackend } from "../storage/minio-client.test";
 import { PgDataImportCoordinator } from "./data-import-coordinator-drizzle";
 import { type DataMarketActor, DataMarketService, type DataUploadPort } from "./data-market";
 import { PgDataMarketRepository } from "./data-market-repository-drizzle";
+import {
+  DataMarketObjectUploadService,
+  PgDataMarketObjectUploadRepository,
+} from "./data-market-upload";
 import { DataScanCoordinator } from "./data-scan-coordinator";
+import { NetDriveService } from "./netdrive";
 
 const TEST_DB_URL = process.env.DATABASE_URL ?? "postgres://kq:kq@localhost:5432/kuintessence";
 const ASSET_IDS = [
@@ -82,6 +89,118 @@ describe("PgDataMarketRepository", () => {
   afterAll(async () => {
     await db.delete(dataAssets).where(inArray(dataAssets.id, [...ASSET_IDS]));
     await db.delete(orgs).where(eq(orgs.id, providerOrgId));
+  });
+
+  test("imports only the exact committed upload and replays the same receipt under concurrency", async () => {
+    const [owner] = await db
+      .insert(users)
+      .values({ email: `${crypto.randomUUID()}@test.invalid`, displayName: "Owner", role: "user" })
+      .returning();
+    if (!owner) throw new Error("Missing test owner");
+    try {
+      const backend = new FakeMinioBackend();
+      const upload = new DataMarketObjectUploadService(
+        new PgDataMarketObjectUploadRepository(db, backend.dataMarketImmutableBucket),
+        backend,
+      );
+      const session = await upload.createUploadSession({
+        assetId: ASSET_IDS[0],
+        version: "uploaded",
+        ownerUserId: owner.id,
+        locationKind: "platform-object",
+        objectPath: "sample",
+        sizeBytes: 4,
+        mediaType: "text/plain",
+      });
+      await backend.putStagingBlob(session.objectKey, Buffer.from("good"), "text/plain");
+      const version = await upload.commitUploadSession({
+        sessionId: session.id,
+        ownerUserId: owner.id,
+      });
+      const input = {
+        assetId: ASSET_IDS[0],
+        version: version.version,
+        requesterId: owner.id,
+        sessionId: session.id,
+        idempotencyKey: "upload",
+      };
+      const pair = await Promise.all([
+        repository.importCommittedUpload(input),
+        repository.importCommittedUpload(input),
+      ]);
+      expect(pair.map((r) => r.replayed).sort()).toEqual([false, true]);
+      expect(pair[0].dataImport.id).toBe(pair[1].dataImport.id);
+      expect(pair[0].dataImport.sourceKind).toBe("platform-object");
+      for (const change of [
+        { requesterId: crypto.randomUUID() },
+        { assetId: ASSET_IDS[1] },
+        { version: "different" },
+      ]) {
+        await expect(
+          repository.importCommittedUpload({ ...input, ...change }),
+        ).rejects.toMatchObject({ statusCode: 409 });
+      }
+    } finally {
+      await db.delete(users).where(eq(users.id, owner.id));
+    }
+  });
+
+  test("publishes a pinned NetDrive upload once and retains its referenced source", async () => {
+    const [owner] = await db
+      .insert(users)
+      .values({ email: `${crypto.randomUUID()}@test.invalid`, role: "user" })
+      .returning();
+    if (!owner) throw new Error("Missing test owner");
+    const backend = new FakeMinioBackend();
+    const drive = new NetDriveService(db, backend, {
+      commitSecret: "test-secret-test-secret-test-secret",
+    });
+    const market = new PgDataMarketRepository(db, { backend, retentionDays: 365 });
+    try {
+      const path = "inputs/sample.txt";
+      const contentType = "text/plain";
+      const upload = await drive.mintUploadUrl(owner.id, { path, size: 4, contentType });
+      await backend.putBlob(upload.storageKey, Buffer.from("good"), contentType);
+      const sha256 = await backend.sha256(upload.storageKey);
+      if (!sha256) throw new Error("Missing test digest");
+      const file = await drive.commitFile(owner.id, {
+        path,
+        contentType,
+        storageKey: upload.storageKey,
+        commitToken: upload.commitToken,
+        size: 4,
+        sha256,
+      });
+      const input = {
+        assetId: ASSET_IDS[1],
+        requesterId: owner.id,
+        netdriveFileId: file.id,
+        version: "from-drive",
+        idempotencyKey: "copy",
+      };
+      await expect(
+        market.importNetDriveFile({ ...input, requesterId: crypto.randomUUID() }),
+      ).rejects.toMatchObject({ statusCode: 404 });
+      const pair = await Promise.all([
+        market.importNetDriveFile(input),
+        market.importNetDriveFile(input),
+      ]);
+      expect(pair.map((r) => r.replayed).sort()).toEqual([false, true]);
+      expect(pair[0].version.manifestDigest).toBe(sha256);
+      expect(pair[0].dataImport.sourceKind).toBe("netdrive");
+      expect(backend.copyAttempts).toHaveLength(1);
+      await drive.deleteFile(owner.id, file.id);
+      await drive.cleanDeletedVersions();
+      expect(await backend.head(upload.storageKey)).not.toBeNull();
+      expect((await market.importNetDriveFile(input)).dataImport.id).toBe(pair[0].dataImport.id);
+      await expect(market.importNetDriveFile({ ...input, version: "other" })).rejects.toMatchObject(
+        { statusCode: 409 },
+      );
+    } finally {
+      await db.delete(dataAssetImports).where(eq(dataAssetImports.requesterUserId, owner.id));
+      await db.delete(netdriveFiles).where(eq(netdriveFiles.ownerId, owner.id));
+      await db.delete(users).where(eq(users.id, owner.id));
+    }
   });
 
   test("filters provider assets by tag before stable pagination and count", async () => {
@@ -266,6 +385,71 @@ describe("PgDataMarketRepository", () => {
           },
           "cp-import-replay-key",
         ),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      const cancelInput = { assetId: asset.id, source, version: "cancel-test" };
+      const pending = await createService().startProviderImport(
+        actor,
+        cancelInput,
+        "cancel-import",
+      );
+      await expect(
+        createService().cancelProviderImport(
+          { ...actor, orgIds: [], orgId: null },
+          asset.id,
+          pending.dataImport.id,
+        ),
+      ).rejects.toThrow();
+      await createService().cancelProviderImport(actor, asset.id, pending.dataImport.id);
+      await createService().cancelProviderImport(actor, asset.id, pending.dataImport.id);
+      const canceled = await createService().startProviderImport(
+        actor,
+        cancelInput,
+        "cancel-import",
+      );
+      expect(canceled).toMatchObject({
+        replayed: true,
+        version: { status: "failed" },
+        dataImport: { status: "canceled" },
+      });
+      const scan = await new PgDataImportCoordinator(db).getCpLocalScan(pending.dataImport.id);
+      expect(scan?.status).toBe("failed");
+      const withdrawn = await createService().startProviderImport(
+        actor,
+        { assetId: asset.id, source, version: "withdrawn-root" },
+        "withdrawn-root",
+      );
+      await db
+        .update(clusterFileRoots)
+        .set({ enabled: false })
+        .where(eq(clusterFileRoots.id, root.id));
+      const scanStore = new PgDataImportCoordinator(db);
+      const receipt = {
+        requestId: withdrawn.dataImport.id,
+        importId: withdrawn.dataImport.id,
+        providerOrgId,
+        agentId,
+        managedRootId: root.id,
+        relativePath: source.relativePath,
+        manifestDigest: "a".repeat(64),
+        contentHash: "a".repeat(64),
+        sizeBytes: 1,
+        format: "file",
+        entries: [{ path: "x", digest: "a".repeat(64), sizeBytes: 1 }],
+        scannedAt: new Date(),
+        attestationPayload: "fixture",
+        attestationSignature: "fixture",
+      };
+      await scanStore.acceptCpLocalScanAttestation(receipt);
+      expect((await scanStore.getCpLocalScan(withdrawn.dataImport.id))?.status).toBe("failed");
+      expect(
+        await new PgDataMarketRepository(db).getVersionById(withdrawn.version.id),
+      ).toMatchObject({ status: "failed", manifestDigest: null });
+      await expect(
+        scanStore.acceptCpLocalScanAttestation({
+          ...receipt,
+          requestId: pending.dataImport.id,
+          importId: pending.dataImport.id,
+        }),
       ).rejects.toMatchObject({ statusCode: 409 });
     } finally {
       await db.delete(dataAssets).where(eq(dataAssets.id, asset.id));

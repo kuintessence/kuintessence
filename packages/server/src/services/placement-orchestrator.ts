@@ -22,6 +22,7 @@ import { createLogger, WorkflowExecutionInterrupted } from "@kuintessence/shared
 import type { FederationExecutionTarget } from "@kuintessence/shared/federation";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { resolveFederationTargets } from "../federation/execution-targets";
+import type { AgentSessions } from "../grpc/agent-sessions";
 import type { AgentDispatcher, JobCancellationOutbox } from "../grpc/dispatcher";
 import type { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
 import type { PreferenceService } from "../preferences/preference-service";
@@ -37,7 +38,7 @@ import { LoadFilter } from "../scheduler/filters/load";
 import { ManualFilter } from "../scheduler/filters/manual";
 import { PermissionFilter } from "../scheduler/filters/permission";
 import { QueueFilter } from "../scheduler/filters/queue";
-import { SoftwareFilter } from "../scheduler/filters/software";
+import { SoftwareFilter, softwareAvailabilityKey } from "../scheduler/filters/software";
 import { UrgencyFilter } from "../scheduler/filters/urgency";
 import { runPlacementWithTrace } from "../scheduler/placement-trace";
 import type { AgentRow, FilterStage, RejectionTrace } from "../scheduler/types";
@@ -94,6 +95,7 @@ export type DispatchInputStaging = {
 };
 
 export interface PlaceAndDispatchInput {
+  forEachGroup?: string;
   jobId: string;
   workflowRunId?: string;
   executionLease?: LeasedWorkflowJournal;
@@ -206,6 +208,7 @@ export class PlacementOrchestrator {
       jobService: JobService;
       preferenceService: PreferenceService;
       dispatcher: AgentDispatcher;
+      sessions?: Pick<AgentSessions, "live">;
       dispatchOutbox?: Pick<JobDispatchOutbox, "enqueue">;
       jobCancellations?: Pick<JobCancellationOutbox, "enqueue" | "redeliver">;
       queueRegistry?: QueueRegistryService;
@@ -319,29 +322,22 @@ export class PlacementOrchestrator {
     };
   }
 
-  /**
-   * Auto-fill `requires.locality.dataSites` from NetDrive mirror records when
-   * the submitter left it unset and the job stages input files. Returns the
-   * job unchanged when there's nothing to derive (no db, no inputStaging, or an
-   * explicit dataSites already present). Immutable — never mutates `job`.
-   *
-   * Dormant until cross-site mirroring writes `netdrive_transfer_log` mirror
-   * rows; the explicit submit-time field is the active locality path.
-   */
-  private async withDerivedDataSites(job: JobSubmit): Promise<JobSubmit> {
+  private async withDerivedDataSites(
+    job: JobSubmit,
+    userId: string,
+    orgId: string | null,
+  ): Promise<JobSubmit> {
     if (!this.deps.db) return job;
     if (job.requires?.locality?.dataSites !== undefined) return job;
-    const files = job.inputStaging ?? [];
-    if (files.length === 0) return job;
-    // Locality is a soft scoring hint — derivation MUST NOT block placement.
-    // `fileMetadataId` is `z.string()` (not UUID-validated), so a malformed id
-    // makes the uuid-column query throw; a transient DB blip can too. Either way
-    // we degrade to "no derived sites" rather than failing the job's placement.
+    const fileIds = [
+      ...(job.inputStaging ?? []).map((file) => file.fileMetadataId),
+      ...Object.values(job.dataInputs ?? {}).flatMap((input) =>
+        input.source === "netdrive" ? [input.fileMetadataId] : [],
+      ),
+    ];
+    // A missing locality observation may not block submission.
     try {
-      const dataSites = await deriveDataSites(
-        this.deps.db,
-        files.map((f) => f.fileMetadataId),
-      );
+      const dataSites = await deriveDataSites(this.deps.db, fileIds, userId, orgId);
       if (dataSites.length === 0) return job;
       return { ...job, requires: { ...job.requires, locality: { dataSites } } };
     } catch (err) {
@@ -414,9 +410,14 @@ export class PlacementOrchestrator {
         { retryable: false },
       );
     const onlineCandidates = await this.deps.agentManager.listOnline();
+    const sessions = await this.deps.sessions?.live();
     const liveCandidates = onlineCandidates.filter(
       (agent) =>
-        this.deps.dispatcher.isOnline(agent.agentId) &&
+        (sessions ? sessions.has(agent.agentId) : this.deps.dispatcher.isOnline(agent.agentId)) &&
+        (!job.resources.schedulerLimits ||
+          (sessions
+            ? sessions.get(agent.agentId)?.schedulerLimits
+            : this.deps.dispatcher.getChannel(agent.agentId)?.jobSchedulerLimits) === true) &&
         (!scoped || scoped.selections.some((queue) => queue.agentId === agent.agentId)) &&
         (!fixedAgentId || agent.agentId === fixedAgentId),
     );
@@ -440,7 +441,9 @@ export class PlacementOrchestrator {
       : liveCandidates;
     if (input.spackExecution?.pin) {
       candidates = candidates.filter((agent) =>
-        this.deps.dispatcher.supportsPinnedSpack(agent.agentId),
+        sessions
+          ? sessions.get(agent.agentId)?.pinnedSpack
+          : this.deps.dispatcher.supportsPinnedSpack(agent.agentId),
       );
       if (candidates.length === 0 && liveCandidates.length > 0) {
         const reason =
@@ -548,7 +551,7 @@ export class PlacementOrchestrator {
         }
       : await this.validateSchedulingIntent({ job, userId, userRole, orgId });
 
-    const placedJob = await this.withDerivedDataSites(job);
+    const placedJob = await this.withDerivedDataSites(job, userId, orgId);
 
     // Load data needed by the real filter implementations
     const agentIds = candidates.map((a) => a.agentId);
@@ -884,6 +887,7 @@ export class PlacementOrchestrator {
       qos: dispatchQueue?.qos,
       sandboxExecution: signedSandbox,
       spackExecution: input.spackExecution,
+      forEachGroup: input.forEachGroup,
       licensedMaterialMounts,
       restrictedNoEgress,
       dataDeliveries,
@@ -1059,10 +1063,12 @@ export class PlacementOrchestrator {
     orgId: string | null;
     preview: boolean;
   }): Promise<PlacementTrace> {
-    const { job, userId, userRole, orgId, preview } = input;
+    const { userId, userRole, orgId, preview } = input;
+    const job = await this.withDerivedDataSites(input.job, userId, orgId);
 
+    const sessions = await this.deps.sessions?.live();
     let candidates = (await this.deps.agentManager.listOnline()).filter((agent) =>
-      this.deps.dispatcher.isOnline(agent.agentId),
+      sessions ? sessions.has(agent.agentId) : this.deps.dispatcher.isOnline(agent.agentId),
     );
     const dataRequirements = dataRequirementsFromJob(job);
     if (this.deps.dataPrerequisites && dataRequirements.length > 0) {
@@ -1257,7 +1263,7 @@ export class PlacementOrchestrator {
 
     await Promise.all(
       (job.softwareRequirements ?? []).map(async (req) => {
-        const key = req.version ? `${req.name}@${req.version}` : req.name;
+        const key = softwareAvailabilityKey(req);
         const response = await this.deps.softwareAvailability?.resolve(
           availabilityRequestForRequirement(req, agentIds),
           {
@@ -1373,8 +1379,18 @@ export function availabilityRequestForRequirement(
     (requirement.version ? `${requirement.name}@${requirement.version}` : requirement.name);
   return {
     rawSpec,
+    ...(requirement.siteRuntimeRevisionId
+      ? { siteRuntimeRevisionId: requirement.siteRuntimeRevisionId }
+      : {}),
     ...(requirement.assetId
-      ? { assetRef: { kind: "spack-package" as const, id: requirement.assetId } }
+      ? {
+          assetRef: {
+            kind: requirement.siteRuntimeRevisionId
+              ? ("site-runtime" as const)
+              : ("spack-package" as const),
+            id: requirement.assetId,
+          },
+        }
       : {}),
     targetAgentIds: agentIds,
     installable: requirement.installable ?? false,

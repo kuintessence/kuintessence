@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { createPgDb } from "@kuintessence/db";
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import { Hono } from "hono";
 import pino from "pino";
@@ -9,6 +10,12 @@ import { ShellExecRegistry } from "../services/shell-exec-registry";
 import { TerminalService } from "../services/terminal-service";
 import { createTerminalRoutes } from "./terminal";
 
+const url = process.env.DATABASE_URL;
+if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
+  throw new Error("Terminal tests require an isolated unit database");
+const db = createPgDb(url, { max: 3 });
+afterAll(() => db.$client.end());
+const terminal = () => new TerminalService(db, "test-terminal-cipher-key-at-least-32-chars", 7);
 const silent = pino({ level: "silent" });
 
 function makeApp(
@@ -52,7 +59,7 @@ function makeApp(
   app.onError(createErrorHandler(silent));
   app.route(
     "/api",
-    createTerminalRoutes(new TerminalService(), {
+    createTerminalRoutes(terminal(), {
       dispatcher,
       shellExecRegistry,
       authz,
@@ -82,7 +89,7 @@ describe("terminal routes", () => {
   test("session ownership uses canonical principal user id instead of token email", async () => {
     const dispatcher = new AgentDispatcher();
     const shellExecRegistry = new ShellExecRegistry();
-    const service = new TerminalService();
+    const service = terminal();
     dispatcher.register("agent-a", {
       push: (message) => {
         if (message.payload.case === "shellExecRequest") {
@@ -520,5 +527,33 @@ describe("terminal routes", () => {
     expect(exec.status).toBe(504);
     expect(response.error?.code).toBe("AGENT_OFFLINE");
     expect(response.error?.details?.reason).toBe("TERMINAL_EXEC_TIMEOUT");
+  });
+});
+
+test("another Server reads the encrypted audit, closes admission, and records an already admitted reply", async () => {
+  const first = terminal(),
+    second = terminal();
+  const owner = crypto.randomUUID();
+  const session = await first.create(owner, {
+    siteId: "site-a",
+    agentId: "agent-a",
+    remoteUser: "me",
+    authMethod: "key",
+  });
+  await first.admitExec(owner, session.id, "pwd");
+  await second.close(owner, session.id);
+  await expect(first.admitExec(owner, session.id, "date")).rejects.toMatchObject({
+    statusCode: 409,
+  });
+  await first.recordOutput(owner, session.id, "/scratch");
+  expect((await second.get(owner, session.id)).state).toBe("closed");
+  expect((await second.audit(owner, session.id)).map((f) => f.kind)).toEqual([
+    "stdout",
+    "stdin",
+    "exit",
+    "stdout",
+  ]);
+  await expect(first.audit(crypto.randomUUID(), session.id)).rejects.toMatchObject({
+    statusCode: 404,
   });
 });

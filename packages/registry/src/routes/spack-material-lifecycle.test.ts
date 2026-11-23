@@ -555,7 +555,15 @@ describe("material lifecycle state and delivery", () => {
       downloads.push({ path, bytes: new Uint8Array(await response.arrayBuffer()) });
     }
     expect(await (await f.request("GET")).json()).toEqual({ ...INITIAL, ...f.identity });
+    const importStatus = () =>
+      f.app.request(`${BASE}/imports/status`, {
+        method: "POST",
+        headers: headers(SUPER),
+        body: JSON.stringify(f.input),
+      });
+    expect(await (await importStatus()).json()).toEqual({ state: "published", binding: f.binding });
     const withdrawn = await f.request("POST");
+    await expectError(await importStatus(), 404, "NOT_FOUND", f.identity);
     expect(withdrawn.status).toBe(200);
     expect(withdrawn.headers.get("Cache-Control")).toBe("private, no-store");
     const status = await withdrawn.json();

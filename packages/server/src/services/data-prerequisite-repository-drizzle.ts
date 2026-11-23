@@ -20,6 +20,7 @@ import type {
   DataPrerequisiteRepository,
   DataRequirement,
 } from "./data-prerequisite";
+import { eligibleReplicaIds, REPLICA_VERIFICATION_TTL_MS } from "./data-replica";
 
 export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository {
   private readonly replicaMaxAgeMs: number;
@@ -30,7 +31,7 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
     private readonly db: PgDb | PgTransaction,
     options: DataPrerequisiteRepositoryOptions = {},
   ) {
-    this.replicaMaxAgeMs = options.replicaMaxAgeMs ?? DEFAULT_REPLICA_MAX_AGE_MS;
+    this.replicaMaxAgeMs = options.replicaMaxAgeMs ?? REPLICA_VERIFICATION_TTL_MS;
     this.now = options.now ?? (() => new Date(Date.now()));
     this.evaluateAccess = options.evaluateAccess ?? evaluateActiveDataAccess;
   }
@@ -71,6 +72,7 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
         versionManifestDigest: dataAssetVersions.manifestDigest,
         replicaId: dataReplicas.id,
         replicaStatus: dataReplicas.status,
+        replicaClusterId: dataReplicas.targetClusterId,
         replicaManifestDigest: dataReplicas.manifestDigest,
         replicaVerifiedAt: dataReplicas.verifiedAt,
       })
@@ -80,11 +82,17 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
       .where(
         and(eq(dataLocations.dataAssetVersionId, versionId), eq(dataLocations.status, "available")),
       );
+    const live = await eligibleReplicaIds(
+      this.db,
+      rows.map((r) => r.replicaId),
+      this.now(),
+    );
     const first = rows[0];
     const source = first
       ? await datasetSourceAuthority(this.db, { assetId: first.assetId, versionId }, this.now())
       : null;
     return rows.flatMap((row) => {
+      if (row.replicaId && !live.has(row.replicaId)) return [];
       if (source && !source.locationIds.includes(row.locationId)) return [];
       if (
         row.replicaId !== null &&
@@ -107,7 +115,7 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
           locationId: row.locationId,
           agentId: row.agentId ?? "",
           siteId: row.siteId ?? "global-object-store",
-          clusterId: row.siteId ?? "global-object-store",
+          clusterId: row.replicaClusterId ?? row.siteId ?? "global-object-store",
           kind: row.kind === "cp-local" ? "cp-local" : "object",
           ...(row.managedRootId ? { managedRootId: row.managedRootId } : {}),
           ...(row.relativePath ? { relativePath: row.relativePath } : {}),
@@ -142,6 +150,11 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
         ),
       );
     const now = this.now();
+    const live = await eligibleReplicaIds(
+      this.db,
+      rows.map((r) => r.replicaId),
+      now,
+    );
     const sources = new Map<string, Awaited<ReturnType<typeof datasetSourceAuthority>>>();
     for (const row of rows)
       if (!sources.has(row.versionId))
@@ -156,6 +169,7 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
     return new Set(
       rows.flatMap((row) => {
         const source = sources.get(row.versionId);
+        if (row.replicaId && !live.has(row.replicaId)) return [];
         if (source && !source.locationIds.includes(row.locationId)) return [];
         if (
           row.replicaId !== null &&
@@ -484,8 +498,6 @@ export interface DataAccessCandidate {
   visibility: string;
   lifecycle: string;
 }
-
-const DEFAULT_REPLICA_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface DataPrerequisiteRepositoryOptions {
   replicaMaxAgeMs?: number;

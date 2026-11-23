@@ -555,6 +555,30 @@ describe("AgentDispatcher", () => {
   });
 });
 
+test("keeps scheduler limits on the wire and rechecks the channel before dispatch", () => {
+  const dispatcher = new AgentDispatcher();
+  const request = dispatcher.buildDispatchJob("j", {
+    jobIdInternal: "j",
+    forEachGroup: "a".repeat(64),
+    name: "test",
+    command: "true",
+    resources: {
+      cpus: 4,
+      memoryMb: 256,
+      schedulerLimits: { nodeCount: 2, stopTime: 4_000_000_000 },
+    },
+  });
+  const message = fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, request));
+  expect(message.payload.value).toHaveProperty("forEachGroup", "a".repeat(64));
+  expect(
+    message.payload.case === "dispatchJob" && message.payload.value.schedulerLimits,
+  ).toMatchObject({ nodeCount: 2, stopTime: 4_000_000_000n });
+  dispatcher.register("a", { ...mockChannel(), jobSchedulerLimits: true });
+  expect(dispatcher.pushPreparedDispatch("a", message)).toBe(true);
+  dispatcher.register("a", mockChannel());
+  expect(dispatcher.pushPreparedDispatch("a", message)).toBe(false);
+});
+
 test("pinned dispatch survives encoding and refuses a legacy or unverified replacement channel", () => {
   const dispatcher = new AgentDispatcher();
   const pin = {

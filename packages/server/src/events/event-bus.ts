@@ -29,22 +29,18 @@ export interface WorkflowStateChangedEvent {
 type JobListener = (evt: JobStatusChangedEvent) => void;
 type WorkflowListener = (evt: WorkflowStateChangedEvent) => void;
 
-/**
- * In-process pub/sub for Server→Web fan-out.
- *
- * Why a custom class instead of Node's `EventEmitter`:
- *   - keys are dynamic (per jobId / per runId) and we want subscriber
- *     bookkeeping per-key without leaking listener-count caps;
- *   - we want a typed publish/subscribe API instead of stringly-named events;
- *   - we want subscriber errors isolated (one buggy WS handler must not abort
- *     fan-out to siblings);
- *   - this is single-Server only; multiple Servers require a shared pub/sub adapter.
- *
- * The bus is intentionally synchronous; subscribers (e.g. WebSocket `send`)
- * must be cheap. If a subscriber wants to do async work it should schedule
- * its own task.
- */
+export type ServerEvent =
+  | { kind: "job"; value: JobStatusChangedEvent }
+  | { kind: "workflow"; value: WorkflowStateChangedEvent };
+
 export class EventBus {
+  constructor(private readonly broadcast?: (event: ServerEvent) => void) {}
+
+  receive(event: ServerEvent) {
+    if (event.kind === "job") this.dispatchJob(event.value);
+    else this.dispatchWorkflow(event.value);
+  }
+
   private jobSubs = new Map<string, Set<JobListener>>();
   private workflowSubs = new Map<string, Set<WorkflowListener>>();
 
@@ -82,6 +78,11 @@ export class EventBus {
 
   /** Publish a job status delta. No-op if no subscribers for this jobId. */
   publishJobStatus(evt: JobStatusChangedEvent): void {
+    this.dispatchJob(evt);
+    this.broadcast?.({ kind: "job", value: evt });
+  }
+
+  private dispatchJob(evt: JobStatusChangedEvent) {
     const set = this.jobSubs.get(evt.jobId);
     if (!set) return;
     // Snapshot to allow listeners to unsubscribe themselves during dispatch.
@@ -96,6 +97,11 @@ export class EventBus {
 
   /** Publish a workflow step state delta. No-op if no subscribers for this runId. */
   publishWorkflowState(evt: WorkflowStateChangedEvent): void {
+    this.dispatchWorkflow(evt);
+    this.broadcast?.({ kind: "workflow", value: evt });
+  }
+
+  private dispatchWorkflow(evt: WorkflowStateChangedEvent) {
     const set = this.workflowSubs.get(evt.runId);
     if (!set) return;
     for (const listener of [...set]) {

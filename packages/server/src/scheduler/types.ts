@@ -1,5 +1,10 @@
 import type { agents } from "@kuintessence/db";
-import type { JobSubmit, PreferenceSpec, RoleName } from "@kuintessence/shared";
+import type {
+  JobSubmit,
+  PlacementAgentSummary,
+  PreferenceSpec,
+  RoleName,
+} from "@kuintessence/shared";
 import type { QueueSelection } from "../services/queue-registry";
 
 export type AgentRow = typeof agents.$inferSelect;
@@ -34,7 +39,9 @@ export interface ScoredAgent {
   score: number;
 }
 
-export type StageResult = { kind: "pass" } | { kind: "reject"; reason: string };
+export type StageResult =
+  | { kind: "pass"; scoreBreakdown?: PlacementAgentSummary["scoreBreakdown"] }
+  | { kind: "reject"; reason: string };
 
 export interface FilterStage {
   readonly name: string;

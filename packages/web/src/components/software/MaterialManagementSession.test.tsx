@@ -52,6 +52,7 @@ vi.mock("../../lib/spack-material-management-client", () => ({
 }));
 vi.mock("../../lib/spack-materials-client", () => ({
   uploadSpackMaterial: vi.fn(),
+  getSpackMaterialImportStatus: vi.fn(),
   publishSpackMaterial: vi.fn(),
   getSpackMaterial: vi.fn(),
   listSpackMaterials: vi.fn(),

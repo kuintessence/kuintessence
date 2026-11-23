@@ -1,5 +1,8 @@
 import { posix } from "node:path";
 import {
+  EnvironmentNameSchema,
+  type JobSchedulerLimits,
+  JobSchedulerLimitsSchema,
   type QueueFailureCode,
   type QueueTargetMode,
   type QueueValidationMode,
@@ -10,6 +13,7 @@ import {
   type SandboxTrustedExecutionProfile,
   type SchedulerAccounting,
   type SchedulerQueueInventory,
+  schedulerLimitRejection,
 } from "@kuintessence/shared";
 import {
   buildHpcCgroupCommand,
@@ -25,12 +29,14 @@ export interface JobSpec {
   memoryMb: number;
   gpus: number;
   wallTimeSec: number;
+  schedulerLimits?: JobSchedulerLimits;
   workingDir: string;
   envVars: Record<string, string>;
   queueName?: string;
   queueTargetMode?: QueueTargetMode;
   queueValidationMode?: QueueValidationMode;
   schedulerName?: string;
+  forEachGroup?: string;
   federationDispatchEpoch?: number;
   qos?: string;
   stdinText?: string;
@@ -46,6 +52,15 @@ export interface JobSpec {
     sourcePath: string;
   }>;
   sandbox?: SandboxJobSpec;
+}
+
+export function validateSchedulerLimits(spec: JobSpec, scheduler: string) {
+  if (!spec.schedulerLimits) return;
+  JobSchedulerLimitsSchema.parse(spec.schedulerLimits);
+  if (spec.sandbox && (spec.schedulerLimits.nodeCount ?? 1) > 1)
+    throw new Error("Sandbox execution requires a single attested node");
+  const reason = schedulerLimitRejection(scheduler, spec);
+  if (reason) throw new Error(reason);
 }
 
 export interface SandboxJobMount {
@@ -106,10 +121,24 @@ export interface SandboxJobSpec {
   executionProfile?: SandboxTrustedExecutionProfile;
   identity: SandboxJobIdentity;
   mounts: SandboxJobMount[];
+  licensedInputs?: Array<{ hostPath: string; containerPath: string; sha256: string }>;
   /** Legacy running jobs may be monitored, but cannot be submitted without signed resources. */
   resources?: SandboxComputeResources;
   limits: { pids: number; outputBytes: number; logBytes: number };
   kubernetesArtifactPvc?: string;
+  kubernetesArtifactPvcUid?: string;
+}
+
+export interface SandboxPvcPreparation {
+  jobId: string;
+  preparationId: string;
+  binding: {
+    namespace: string;
+    serviceAccount: string;
+    claim: string;
+    claimUid: string;
+    image: string;
+  };
 }
 
 export interface JobResult {
@@ -256,6 +285,7 @@ export function appendEnvAndCommand(
   lines.push("");
   if (!spec.sandbox) {
     for (const [k, v] of Object.entries(spec.envVars)) {
+      EnvironmentNameSchema.parse(k);
       const escaped = v.replace(/'/g, `'\\''`);
       lines.push(`export ${k}='${escaped}'`);
     }
@@ -437,7 +467,35 @@ export function buildApptainerSandboxArgv(sandbox: SandboxJobSpec): string[] {
   ) {
     throw new Error("HPC Sandbox outputs require a prepared job output directory");
   }
+  const licensed = sandbox.licensedInputs ?? [];
+  const inputs = sandbox.mounts.filter((m) => m.mode === "ReadOnly");
+  const targets = new Set(inputs.map((m) => m.containerPath));
+  const validInput = /^\/kq\/inputs\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,128}$/;
+  if (inputs.some((m) => !validInput.test(m.containerPath)) || targets.size !== inputs.length)
+    throw new Error("Invalid Sandbox input bind destination");
+  if (
+    licensed.length &&
+    (!sandbox.executionProfile ||
+      sandbox.executionMode !== "RootImpersonation" ||
+      sandbox.identity.backend !== "Unix" ||
+      sandbox.identity.mode !== "MappedAccount" ||
+      outputs.length)
+  )
+    throw new Error("Licensed inputs require an output-free mapped trusted profile");
+  for (const mount of licensed) {
+    if (
+      !validInput.test(mount.containerPath) ||
+      targets.has(mount.containerPath) ||
+      !mount.hostPath.startsWith("/") ||
+      /[:,\r\n]/.test(mount.hostPath) ||
+      mount.hostPath.includes("\0") ||
+      !/^[a-f0-9]{64}$/.test(mount.sha256)
+    )
+      throw new Error("Invalid licensed Sandbox input binding");
+    targets.add(mount.containerPath);
+  }
   const binds = [
+    ...licensed.map((m) => `${m.hostPath}:${m.containerPath}:ro`),
     `${sandbox.scriptHostPath}:/kq/script/${sandbox.entrypoint}:ro`,
     `${sandbox.contextHostPath}:/kq/context.json:ro`,
     ...sandbox.mounts
@@ -481,6 +539,8 @@ export function buildApptainerSandboxCommand(
   const argv = buildTrustedSandboxArgv(sandbox, apptainerArgv).map(shellQuote).join(" ");
   const resourceCheck = `${buildHpcCgroupCommand(sandbox.cgroupCheck, sandbox.resources, scheduler)} >/dev/null || exit 126; `;
   const nodeCheck = `[[ $(/usr/bin/hostname) == ${shellQuote(sandbox.attestedNodes?.[0] as string)} ]] || exit 126; `;
+  if (sandbox.licensedInputs?.length)
+    return `(ulimit -u ${sandbox.limits.pids}; ulimit -f ${fileBlocks}; ${nodeCheck}${resourceCheck}exec ${argv}) </dev/null >/dev/null 2>&1`;
   return `set -o pipefail; (ulimit -u ${sandbox.limits.pids}; ulimit -f ${fileBlocks}; ${nodeCheck}${resourceCheck}exec ${argv}) 2>&1 | head -c ${sandbox.limits.logBytes}`;
 }
 
@@ -515,6 +575,7 @@ export function buildTrustedSandboxArgv(
     String(resources.cpus),
     "--memory-mb",
     String(resources.memoryMb),
+    ...(sandbox.licensedInputs ?? []).flatMap((m) => ["--licensed-input", m.hostPath, m.sha256]),
     "--",
     ...apptainerArgv,
   ];
@@ -534,8 +595,12 @@ export function commandWithOptionalStdin(spec: JobSpec): string {
   ].join("\n");
 }
 
-function heredocDelimiter(value: string, jobId: string): string {
-  const base = `__KQ_STDIN_${jobId.replace(/[^A-Za-z0-9_]/g, "_")}__`;
+export function heredocDelimiter(
+  value: string,
+  jobId: string,
+  purpose: "STDIN" | "SCRIPT" = "STDIN",
+): string {
+  const base = `__KQ_${purpose}_${jobId.replace(/[^A-Za-z0-9_]/g, "_")}__`;
   let delimiter = base;
   let i = 0;
   while (value.split("\n").includes(delimiter)) {
@@ -676,6 +741,11 @@ export interface SchedulerAdapter {
     schedulerUid?: string,
   ): void | Promise<void>;
   releaseJob?(schedulerJobId: string): void | Promise<void>;
+  identifySandboxPvc?(
+    sandbox: SandboxJobSpec,
+    jobId: string,
+  ): Promise<SandboxPvcPreparation | undefined>;
+  releaseSandboxPvc?(preparation: SandboxPvcPreparation): Promise<void>;
   stageSandboxInputs?(sandbox: SandboxJobSpec, jobId: string): Promise<void>;
   stageSandboxOutputs?(sandbox: SandboxJobSpec, schedulerJobId: string): Promise<void>;
 }

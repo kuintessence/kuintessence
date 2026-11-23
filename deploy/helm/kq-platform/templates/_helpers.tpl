@@ -177,3 +177,11 @@ imagePullSecrets: {{- toYaml . | nindent 2 }}
 {{ printf "%s:%s" $repository (required "image.tag or image.digest is required" .tag) }}
 {{- end -}}
 {{- end }}
+
+{{- define "kq.serverRelaySlots" -}}
+{{- if .Values.server.autoscaling.enabled -}}
+{{ max (int .Values.server.autoscaling.maxReplicas) (int .Values.server.replicas) }}
+{{- else -}}
+{{ .Values.server.replicas }}
+{{- end -}}
+{{- end -}}

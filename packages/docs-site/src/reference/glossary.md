@@ -27,7 +27,7 @@
 | Resolver | `resolve-availability` 服务，负责解释软件在节点上的可运行性。 |
 | 算力中心软件策略覆盖 | provider、cluster、agent 三层软件策略覆盖。 |
 | Buildcache | Spack 二进制缓存。 |
-| Air-gap Bundle | 旧 signed air-gap bundle 格式，执行器未开放；现有离线交付按 recipe、材料清单和签名 Ecosystem Release 分别导入。 |
+| Air-gap Bundle | 用离线介质传递的清单和材料文件。Registry 可验证整份交付的 Ed25519 签名、文件摘要及生态发行包签名。 |
 
 ## 调度与运行
 

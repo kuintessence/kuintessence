@@ -337,6 +337,75 @@ describe("createUsecaseExecutor", () => {
     expect(res.values?.residual).toBe(0.001);
   });
 
+  test("materializes a managed Command collection as a JSON text argument", async () => {
+    const capture: { spec?: JobSubmission } = {};
+    const base = deps(capture);
+    const executor = createUsecaseExecutor({
+      ...base,
+      resolvePackage: async (...args) => {
+        const pkg = await base.resolvePackage(...args);
+        return {
+          ...pkg,
+          usecase: {
+            ...pkg.usecase,
+            inputSlots: [
+              {
+                kind: "Text",
+                descriptor: "items",
+                refMaterials: [{ kind: "ArgRef", descriptor: "endTime", sort: 0 }],
+              },
+            ],
+          },
+        };
+      },
+    });
+    const command = workflowDsl.WorkflowNodeSchema.parse({
+      type: "Reduce",
+      id: "summary",
+      name: "summary",
+      from: { loop: "sweep", output: "values" },
+      reducer: { kind: "Command", usecaseRef: { usecaseVersionId: UUID, softwareVersionId: UUID } },
+      output: { kind: "Value", descriptor: "residual" },
+    });
+    const leaf = workflowDsl.commandExecutionNode(command);
+    if (!leaf) throw new Error("Missing managed Command leaf");
+    const result = await executor(
+      leaf,
+      { nodes: { sweep: { values: { values: [3, 1] } } } },
+      { path: "summary" },
+    );
+    expect(capture.spec?.command).toContain("[3,1]");
+    expect(capture.spec?.invocation).toEqual({ path: "summary" });
+    expect(result.values?.residual).toBe(0.001);
+  });
+
+  test("applies governed package resources and checks the extracted output", async () => {
+    const capture: { spec?: JobSubmission } = {};
+    const base = deps(capture);
+    const executor = (expr: string) =>
+      createUsecaseExecutor({
+        ...base,
+        resolvePackage: async (...args) => ({
+          ...(await base.resolvePackage(...args)),
+          resources: { cpu: 4, memoryMiB: 512, gpus: 2, walltimeSeconds: 42 },
+          outputs: [
+            {
+              descriptor: "residual",
+              type: "Number",
+              validators: [{ kind: "finite" }, { kind: "cel", expr }],
+            },
+          ],
+        }),
+      });
+    expect((await executor("value > 0")(node, { params: { endTime: "500" } })).status).toBe(
+      "Succeeded",
+    );
+    expect(capture.spec?.resources).toEqual({ cpus: 4, memoryMb: 512, gpus: 2, wallTimeSec: 42 });
+    await expect(executor("value == 0")(node, { params: { endTime: "500" } })).rejects.toThrow(
+      "residual",
+    );
+  });
+
   test("maps node.requirements (cpuCores / maxWallTime) into the job resources", async () => {
     const capture: { spec?: JobSubmission } = {};
     const exec = createUsecaseExecutor(deps(capture));
@@ -346,11 +415,15 @@ describe("createUsecaseExecutor", () => {
       name: "solve",
       usecaseVersionId: UUID,
       softwareVersionId: UUID,
-      requirements: { cpuCores: 8, maxWallTime: 3600 },
+      requirements: { cpuCores: 8, maxWallTime: 3600, nodeCount: 2, maxCpuTime: 600 },
       inputSlots: [{ type: "Text", descriptor: "endTime", from: { expr: "params.endTime" } }],
     });
     await exec(withReqs, { params: { endTime: "500" }, nodes: {} });
-    expect(capture.spec?.resources).toEqual({ cpus: 8, wallTimeSec: 3600 });
+    expect(capture.spec?.resources).toEqual({
+      cpus: 8,
+      wallTimeSec: 3600,
+      schedulerLimits: { nodeCount: 2, maxCpuTime: 600 },
+    });
   });
 
   test.each([

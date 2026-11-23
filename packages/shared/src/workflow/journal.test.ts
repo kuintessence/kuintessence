@@ -94,7 +94,7 @@ describe("workflow durable journal", () => {
             kind: "ExtractTable",
             columns: [{ name: "text", type: "string", source: { collectedOut: "log" } }],
           },
-          output: { kind: "SingleFile", descriptor: "csv" },
+          output: { kind: "Value", descriptor: "csv" },
         },
       ],
       [edge("loop", "table")],

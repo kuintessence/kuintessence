@@ -17,7 +17,7 @@ import { FederationError } from "./errors";
 export { FederationError } from "./errors";
 
 import { z } from "zod";
-import { FederationInputPolicySchema } from "./input-files";
+import { FederationInputPolicySchema, FederationInputSelectionSchema } from "./input-files";
 import {
   type FederationAssetRef,
   FederationAssetRefSchema,
@@ -204,6 +204,11 @@ export const FederationDelegationSchema = z
       ctx.addIssue({ code: "custom", message: "Media inputs require a signed file inventory" });
   });
 export type FederationDelegation = z.infer<typeof FederationDelegationSchema>;
+// Source-site API only. Local file identities never enter the signed delegation.
+export const FederationSubmissionSchema = FederationDelegationSchema.safeExtend({
+  localInputFiles: FederationInputSelectionSchema.optional(),
+});
+export type FederationSubmission = z.infer<typeof FederationSubmissionSchema>;
 
 export const FederationAcceptanceSchema = z.strictObject({
   ...OperationFields,

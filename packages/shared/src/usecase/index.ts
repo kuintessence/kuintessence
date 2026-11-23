@@ -36,4 +36,4 @@ export {
 } from "./package";
 export { renderTemplate } from "./template";
 export { coerceTyped, extractTyped, extractValue, extractValues } from "./value-extract";
-export { wrapCommand } from "./wrap-command";
+export { assertSiteRuntimeMatches, wrapCommand, wrapSiteRuntime } from "./wrap-command";

@@ -34,7 +34,9 @@ describe("material catalog contracts", () => {
     { repository: "/tmp/materials" },
     { repository: "public/../materials" },
     { repository: ["public/materials"] },
-    { limit: 1 },
+    { limit: 0 },
+    { limit: 201 },
+    { after: `${"a".repeat(64)}.${"b".repeat(64)}` },
     { cursor: "guessed" },
     { url: "https://example.test" },
   ])("rejects ambiguous or unsupported queries: %j", (query) => {

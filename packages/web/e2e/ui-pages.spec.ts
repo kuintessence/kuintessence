@@ -16,6 +16,9 @@ test.beforeAll(() => {
       "e2e/fixtures/ui-pages.tsx",
       "--target=browser",
       "--format=iife",
+      // These offline list pages must never request the lazy Vite/Monaco editor chunk.
+      "--external",
+      "*/SandboxCodeEditor",
       "--define",
       'import.meta.env={"MODE":"test"}',
       "--outdir",

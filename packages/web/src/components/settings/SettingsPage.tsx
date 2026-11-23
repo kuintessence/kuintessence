@@ -32,6 +32,7 @@ import { FederationClustersPanel } from "./FederationClustersPanel";
 import { FederationPermissionsPanel } from "./FederationPermissionsPanel";
 import { FederationStoragePanel } from "./FederationStoragePanel";
 import { FederationTrustPanel } from "./FederationTrustPanel";
+import { NotificationsPanel } from "./NotificationsPanel";
 import {
   canAccessOperation,
   canAccessOperationsLink,
@@ -392,6 +393,7 @@ export function SettingsPage() {
                       <LogOut className="h-3.5 w-3.5" />
                       {t("common.signOut")}
                     </Button>
+                    <NotificationsPanel account={auth.email ?? ""} />
                   </CardContent>
                 </section>
               ) : null}

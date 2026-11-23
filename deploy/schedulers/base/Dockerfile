@@ -14,7 +14,8 @@ LABEL org.kuintessence.spack.version="${SPACK_REF}"
 ARG TARGETOS
 ARG TARGETARCH
 
-RUN if [[ -n "${APT_MIRROR}" ]]; then sed -i "s|http://ports.ubuntu.com/ubuntu-ports|${APT_MIRROR}|g" /etc/apt/sources.list; fi \
+RUN printf '%s\n' 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80kq-retries \
+  && if [[ -n "${APT_MIRROR}" ]]; then sed -i "s|http://ports.ubuntu.com/ubuntu-ports|${APT_MIRROR}|g" /etc/apt/sources.list; fi \
   && apt-get update && apt-get install -y --no-install-recommends \
     bash \
     build-essential \

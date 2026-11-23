@@ -1,7 +1,5 @@
 import {
   AppError,
-  CloudObjectCreateSchema,
-  CloudObjectRenameSchema,
   type ClusterFileRootCheckResponse,
   type ClusterFileRootCreate,
   ClusterFileRootCreateSchema,
@@ -78,38 +76,6 @@ export function createFileRoutes(service: FileService, options: FileRouteOptions
   const routes = new Hono();
   const clusterFileRootService = options.clusterFileRootService;
   const clusterFileRoots = normalizeRoots(options.clusterFileRoots ?? []);
-
-  // -------- Cloud objects --------
-
-  routes.get("/files/cloud", (c) => {
-    const actorUserId = requireLegacyFileActorUserId(c);
-    const prefix = c.req.query("prefix") ?? "";
-    return c.json({ entries: service.listCloud(actorUserId, prefix) });
-  });
-
-  routes.post(
-    "/files/cloud",
-    kqValidator("json", CloudObjectCreateSchema, "Invalid cloud object body"),
-    (c) => {
-      const actorUserId = requireLegacyFileActorUserId(c);
-      return c.json(service.createCloud(actorUserId, c.req.valid("json")), 201);
-    },
-  );
-
-  routes.post(
-    "/files/cloud/:id/rename",
-    kqValidator("json", CloudObjectRenameSchema, "Invalid cloud rename body"),
-    (c) => {
-      const actorUserId = requireLegacyFileActorUserId(c);
-      return c.json(service.rename(actorUserId, c.req.param("id"), c.req.valid("json")));
-    },
-  );
-
-  routes.delete("/files/cloud/:id", (c) => {
-    const actorUserId = requireLegacyFileActorUserId(c);
-    service.deleteCloud(actorUserId, c.req.param("id"));
-    return c.json({ ok: true });
-  });
 
   // -------- Cluster listings --------
 
@@ -312,23 +278,22 @@ export function createFileRoutes(service: FileService, options: FileRouteOptions
 
   routes.post("/files/transfers/:id/resume", async (c) => {
     const actorUserId = requireLegacyFileActorUserId(c);
-    const transfer = (await service.listTransfers(actorUserId)).find(
-      (item) => item.id === c.req.param("id"),
-    );
-    if (!transfer) throw new AppError(ErrorCode.NOT_FOUND, "Transfer not found", 404);
-    const data = TransferCreateSchema.parse({
-      ...transfer,
-      totalBytes: transfer.totalBytes ?? undefined,
-      agentId: transfer.agentId ?? undefined,
-      siteId: transfer.siteId ?? undefined,
-    });
-    await requireTransferAgentExists(options.resolveAgentProviderOrg, data.agentId ?? null);
-    await resolveCloudTransferSource(c, actorUserId, options, data);
     const context = clusterFileRootAccessContext(c);
-    await requireTransferClusterPath(context, service, options, clusterFileRoots, data);
     return c.json(
-      await service.resumeTransfer(actorUserId, transfer.id, {
-        beforeDispatch: () =>
+      await service.resumeTransfer(actorUserId, c.req.param("id"), {
+        preflight: async (data, completionOnly) => {
+          await requireTransferAgentExists(options.resolveAgentProviderOrg, data.agentId ?? null);
+          await resolveCloudTransferSource(c, actorUserId, options, data);
+          await requireTransferClusterPath(
+            context,
+            service,
+            options,
+            clusterFileRoots,
+            data,
+            completionOnly,
+          );
+        },
+        beforeDispatch: (data) =>
           requireTransferRootAuthorization(context, options, clusterFileRoots, data),
       }),
     );
@@ -336,12 +301,6 @@ export function createFileRoutes(service: FileService, options: FileRouteOptions
 
   routes.post("/files/transfers/:id/cancel", async (c) => {
     const actorUserId = requireLegacyFileActorUserId(c);
-    const transfer = (await service.listTransfers(actorUserId)).find(
-      (item) => item.id === c.req.param("id"),
-    );
-    if (!transfer) {
-      throw new AppError(ErrorCode.NOT_FOUND, "Transfer not found", 404);
-    }
     return c.json(await service.cancelTransfer(actorUserId, c.req.param("id")));
   });
 
@@ -398,6 +357,7 @@ async function requireTransferClusterPath(
     agentId?: string;
     siteId?: string;
   },
+  completionOnly = false,
 ): Promise<void> {
   const clusterPath =
     data.direction === "cloud_to_cluster"
@@ -418,6 +378,7 @@ async function requireTransferClusterPath(
       allowedRoots,
     });
   }
+  if (completionOnly) return;
   const check = await service.checkClusterTransferPath(data.direction, clusterPath, {
     agentId: data.agentId,
     siteId: data.siteId,
@@ -610,7 +571,10 @@ function normalizeRoots(roots: string[]): string[] {
 }
 
 function isUnderAllowedRoot(path: string, roots: string[]): boolean {
-  return roots.some((root) => path === root || path.startsWith(`${root}/`));
+  return (
+    !path.split("/").includes(".kq-replicas") &&
+    roots.some((root) => path === root || path.startsWith(`${root}/`))
+  );
 }
 
 export function fallbackClusterFileRootAccessContext(

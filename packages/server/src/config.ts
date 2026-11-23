@@ -46,6 +46,25 @@ const federationStorageOrigins = z
   .pipe(z.array(FederationDataOriginSchema).max(16));
 
 const ServerConfigSchema = z.object({
+  AGENT_RELAY_ORIGIN: z
+    .url()
+    .refine((v) => new URL(v).protocol === "wss:" && new URL(v).origin === v)
+    .optional(),
+  AGENT_RELAY_PEERS: z
+    .string()
+    .default("")
+    .transform((v) =>
+      v
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean),
+    )
+    .pipe(
+      z
+        .array(z.url().refine((v) => new URL(v).protocol === "wss:" && new URL(v).origin === v))
+        .max(128),
+    ),
+  AGENT_RELAY_SECRET: z.string().min(32).optional(),
   DATABASE_URL: z.string().url(),
   FEDERATION_ENABLED: envBool(false),
   FEDERATION_PERMISSION_PRESET: z.enum(["explicit", "lab"]).default("explicit"),
@@ -77,6 +96,8 @@ const ServerConfigSchema = z.object({
   REDIS_URL: z.string(),
   JWT_SECRET: z.string().min(32),
   REGISTRY_PUBLISHER_ROLES: registryPublisherRolesConfigSchema,
+  SOFTWARE_MIRROR_DIR: z.string().min(1).optional(),
+  SOFTWARE_MIRROR_ORIGINS: z.string().default(""),
   SPACK_MATERIAL_DELIVERY_ENABLED: envBool(false),
   SPACK_MATERIAL_EPOCH: z.preprocess(
     (value) => (value === "" ? undefined : value),
@@ -157,6 +178,12 @@ const ServerConfigSchema = z.object({
   DESENSITIZE_EXPORT_KEY: z.string().min(32).optional(),
   SERVER_PORT: positiveInt(3000),
   SERVER_GRPC_PORT: positiveInt(3001),
+  NOTIFICATION_SMTP_URL: z
+    .string()
+    .url()
+    .regex(/^smtps?:\/\//)
+    .optional(),
+  NOTIFICATION_MAIL_FROM: z.string().email().optional(),
   LOG_LEVEL: logLevelSchema,
   /**
    * Server mTLS for the Agent connectRPC stream.
@@ -177,6 +204,10 @@ const ServerConfigSchema = z.object({
   /** PEM private key matching SERVER_GRPC_TLS_CERT_FILE. */
   SERVER_GRPC_TLS_KEY_FILE: z.string().min(1).optional(),
   /** Where the Server CA cert+key live on disk. Auto-generated on first start. */
+  AGENT_PKI_PUBLIC_ORIGIN: z
+    .url({ protocol: /^https?$/ })
+    .refine((value) => new URL(value).origin === value, "Expected a public HTTP(S) origin")
+    .optional(),
   SERVER_CA_DIR: z.string().default("./server-ca"),
   SITE_RELEASES_DIR: z.string().min(1).optional(),
   AGENT_BINARIES_DIR: z.string().min(1).default("/opt/kuintessence/agent"),
@@ -197,6 +228,7 @@ const ServerConfigSchema = z.object({
    * a different origin from the Server.
    */
   WEB_BASE_URL: z.string().default("/"),
+  SSO_BOOTSTRAP_PROVIDER_TYPE: z.enum(["oidc", "saml", "ldap"]).default("oidc"),
   SSO_BOOTSTRAP_ENABLED: envBool(false),
   SSO_BOOTSTRAP_FORCE: envBool(false),
   SSO_BOOTSTRAP_ISSUER_URL: z.string().default(""),
@@ -308,6 +340,7 @@ const ServerConfigSchema = z.object({
    * Reuses the NetDrive MinIO backend, so it is only active when NetDrive is
    * also enabled. Opt-in: terminal transcripts are sensitive and storage-heavy.
    */
+  TERMINAL_RETENTION_DAYS: positiveInt(7),
   SSH_SESSION_RECORDING: envBool(false),
   /**
    * idle timeout (seconds) for SSH sessions. A session with no
@@ -382,6 +415,18 @@ const ServerConfigSchema = z.object({
 });
 
 const ValidatedServerConfigSchema = ServerConfigSchema.superRefine((cfg, ctx) => {
+  if (
+    (cfg.AGENT_RELAY_ORIGIN || cfg.AGENT_RELAY_SECRET || cfg.AGENT_RELAY_PEERS.length) &&
+    (!cfg.AGENT_RELAY_ORIGIN ||
+      !cfg.AGENT_RELAY_SECRET ||
+      !cfg.AGENT_RELAY_PEERS.length ||
+      cfg.AGENT_RELAY_SECRET === cfg.JWT_SECRET)
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["AGENT_RELAY_ORIGIN"],
+      message: "Configure a WSS origin, allowed peer origins and a separate relay secret",
+    });
   if (
     cfg.FEDERATION_CASE_SOCKET_PATH &&
     (!cfg.FEDERATION_ENABLED || !cfg.FEDERATION_CASE_TRUST_FILE)

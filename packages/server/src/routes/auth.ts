@@ -128,12 +128,7 @@ export interface AuthRouteOptions {
 }
 
 function isSsoFullyConfigured(cfg: SsoConfigRow): boolean {
-  return (
-    cfg.enabled &&
-    cfg.providerType === "oidc" &&
-    cfg.issuerUrl.length > 0 &&
-    cfg.clientId.length > 0
-  );
+  return cfg.enabled && cfg.issuerUrl.length > 0 && cfg.clientId.length > 0;
 }
 
 export function createAuthRoutes(jwtSecret: string, db: PgDb, options: AuthRouteOptions): Hono {
@@ -466,7 +461,10 @@ export function createAuthRoutes(jwtSecret: string, db: PgDb, options: AuthRoute
 
     const cliRequest = readCliLoginRequest(c);
     const redirectUri = cfg.redirectUri.length > 0 ? cfg.redirectUri : defaultRedirectUri(c);
-    const built = await buildOidcAuthUrl(discovered.config, { redirectUri });
+    const built = await buildOidcAuthUrl(discovered.config, {
+      redirectUri,
+      providerType: cfg.providerType,
+    });
 
     setCookie(c, OIDC_STATE_COOKIE, built.state, {
       httpOnly: true,
@@ -552,6 +550,7 @@ export function createAuthRoutes(jwtSecret: string, db: PgDb, options: AuthRoute
         expectedState,
         codeVerifier,
         groupMapping: cfg.groupMapping,
+        providerType: cfg.providerType,
       });
     } catch (err) {
       log?.warn({ err: String(err) }, "OIDC callback failed");

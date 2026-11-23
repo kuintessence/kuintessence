@@ -42,6 +42,7 @@ export interface SshHandlerDeps {
 }
 
 export interface SshOpenInput {
+  jumps?: import("./client").SshOpenParams["jumps"];
   sessionId: string;
   host: string;
   port: number;
@@ -51,6 +52,7 @@ export interface SshOpenInput {
   passphrase?: string;
   /** Base64 SHA-256 host-key pin; when set the ssh2 connect is verified. */
   expectedHostKeySha256?: string;
+  sftp?: boolean;
 }
 
 export class SshHandler {
@@ -96,6 +98,8 @@ export class SshHandler {
       "Opening SSH session",
     );
     this.client.open(input.sessionId, {
+      sftp: input.sftp,
+      jumps: input.jumps,
       host: input.host,
       port: input.port,
       username: input.username,

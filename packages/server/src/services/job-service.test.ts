@@ -22,14 +22,19 @@ import {
   softwareAssets,
   userOrgMemberships,
   users,
+  workflowExecutionJobs,
   workflowRuns,
 } from "@kuintessence/db";
-import { ErrorCode, JobStatus } from "@kuintessence/shared";
+import { ErrorCode, extractRunGraph, JobStatus, workflowDsl } from "@kuintessence/shared";
 import { eq, like } from "drizzle-orm";
+import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
+import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { hasActiveDataAccess } from "./data-access-decision";
 import { type JobMeteringRecorder, JobService } from "./job-service";
 import type { JobUsageRecord } from "./metering";
 import { createMeteringBundle } from "./metering-binding";
+import { SandboxExecutionResolver } from "./sandbox-execution-resolver";
+import { SandboxNodeExecutor, type SandboxNodeExecutorOptions } from "./sandbox-node-executor";
 
 /** Recorder spy: captures every call so tests can assert the produced record. */
 class FakeRecorder implements JobMeteringRecorder {
@@ -586,6 +591,87 @@ describe("JobService", () => {
     };
     const restrictedService = new JobService(db, undefined, undefined, trustedKeys);
 
+    const materials = [
+      { selector: "licensed", targetPath: "inputs/material", requiredElements: ["Si"] },
+    ];
+    const profileId = crypto.randomUUID();
+    const node = workflowDsl.WorkflowNodeSchema.parse({
+      type: "Script",
+      id: "licensed",
+      name: "Licensed",
+      runtimeProfileId: profileId,
+      source: {
+        type: "AssetRevision",
+        assetId: sandboxAssetId,
+        assetRevisionId: sandboxRevisionId,
+        revision: 1,
+        sha256: scriptSha256,
+      },
+      licensedMaterials: materials,
+      outputs: {},
+    });
+    if (node.type !== "Script") throw new Error("Expected Script");
+    const graph = extractRunGraph(
+      workflowDsl.WorkflowSchema.parse({ name: "licensed", spec: { nodeDrafts: [node] } }),
+    );
+    const runs = new WorkflowRunRegistry(db);
+    const runId = await runs.createRun("licensed", testUserId, graph, {
+      yaml: "",
+      role: "user",
+      orgId: testOrgId,
+      executionModel: "durable-v2",
+    });
+    await runs.queueAuthorizedRun(runId);
+    await runs.claimForExecution(runId);
+    const lease = await new WorkflowExecutionJournalStore(db).acquire(runId);
+    if (!lease) throw new Error("Missing invocation lease");
+    const resolver = new SandboxExecutionResolver(db);
+    const executor = new SandboxNodeExecutor({
+      db,
+      workflowRunId: runId,
+      executionLease: lease,
+      submittedBy: testUserId,
+      orgId: testOrgId,
+      userRole: "user",
+      jobService: restrictedService,
+      federationTargets: [
+        { providerOrgId: testOrgId, clusterId: "cluster", agentId: "agent", queueId: "queue" },
+      ],
+      defaultExecutionIdentity: { type: "MappedAuto" },
+      limits: { pids: 64, outputBytes: 1024, logBytes: 1024 },
+      authorizeJobSubmission: async () => {},
+      resolver: {
+        resolveSource: resolver.resolveSource.bind(resolver),
+        resolveRuntime: async () => ({
+          id: profileId,
+          language: "python",
+          sifDigest: "sha256:" + "a".repeat(64),
+        }),
+      },
+      orchestrator: {
+        placeAndDispatch: async (
+          input: Parameters<SandboxNodeExecutorOptions["orchestrator"]["placeAndDispatch"]>[0],
+        ) => {
+          expect(input.job.licensedMaterials).toEqual(materials);
+          expect(input.restrictedNoEgress).toBe(true);
+          throw new Error("Verified placement input");
+        },
+      },
+    } as unknown as SandboxNodeExecutorOptions);
+    try {
+      await expect(executor.execute(node, {}, { path: '["node","licensed"]' })).rejects.toThrow(
+        "Verified placement input",
+      );
+      const [bound] = await db
+        .select()
+        .from(workflowExecutionJobs)
+        .where(eq(workflowExecutionJobs.runId, runId));
+      expect(bound?.intent).toMatchObject({ licensedMaterials: materials });
+      if (bound) testJobIds.push(bound.jobId);
+    } finally {
+      await lease.release();
+      await db.delete(workflowRuns).where(eq(workflowRuns.id, runId));
+    }
     const accepted = await restrictedService.submit(restrictedJob, testUserId, {
       trustedMaterialization: true,
       trustedSandboxScript: trustedScript,

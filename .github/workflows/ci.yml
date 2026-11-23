@@ -414,7 +414,7 @@ jobs:
       - name: Type check cross-package workflow contracts
         run: >-
           bun node_modules/typescript/bin/tsc --noEmit --strict
-          --noUncheckedIndexedAccess --skipLibCheck --target ESNext
+          --noUncheckedIndexedAccess --skipLibCheck --target ESNext --lib ESNext
           --module ESNext --moduleResolution bundler --types bun-types
           scripts/workflow-software.pg.test.ts
 

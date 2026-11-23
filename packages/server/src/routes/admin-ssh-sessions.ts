@@ -23,7 +23,7 @@ import type { AuthzService } from "../authz/service";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { assertRole } from "../middleware/rbac";
 import { writeAudit } from "../services/audit-log-writer";
-import type { SshGateway } from "../services/ssh-gateway";
+import type { SshSessionSummary } from "../services/ssh-gateway";
 
 export interface AdminSshSessionRouteOptions {
   resolveAgentProviderOrg?: AgentProviderOrgResolver;
@@ -32,7 +32,10 @@ export interface AdminSshSessionRouteOptions {
 
 export function createAdminSshSessionRoutes(
   db: PgDb,
-  gateway: SshGateway,
+  gateway: {
+    listSessions(): SshSessionSummary[] | Promise<SshSessionSummary[]>;
+    closeSession(id: string, reason: string): void | Promise<void>;
+  },
   opts: AdminSshSessionRouteOptions = {},
 ): Hono {
   const r = new Hono();
@@ -47,10 +50,12 @@ export function createAdminSshSessionRoutes(
       if (visibleIds.length === 0) return c.json({ sessions: [] });
       const visible = new Set(visibleIds);
       return c.json({
-        sessions: gateway.listSessions().filter((session) => visible.has(session.sessionId)),
+        sessions: (await gateway.listSessions()).filter((session) =>
+          visible.has(session.sessionId),
+        ),
       });
     }
-    const sessions = gateway.listSessions();
+    const sessions = await gateway.listSessions();
     const visible = [];
     for (const session of sessions) {
       const resource = agentResourceFromProviderOrg(
@@ -76,7 +81,7 @@ export function createAdminSshSessionRoutes(
     const actorUserId = requireCanonicalSshSessionAdminActor(c);
     const sessionId = c.req.param("sessionId");
     if (!sessionId) throw new AppError(ErrorCode.VALIDATION_ERROR, "Missing sessionId", 400);
-    const session = gateway.listSessions().find((s) => s.sessionId === sessionId);
+    const session = (await gateway.listSessions()).find((s) => s.sessionId === sessionId);
     if (!session) {
       throw new AppError(ErrorCode.NOT_FOUND, "No such active session", 404);
     }
@@ -93,7 +98,7 @@ export function createAdminSshSessionRoutes(
     ).allowed;
     await requireSshSessionPermission(c, opts.authz, sessionId, "close", localAllowed);
 
-    gateway.closeSession(sessionId, `force-closed by ${actorUserId}`);
+    await gateway.closeSession(sessionId, `force-closed by ${actorUserId}`);
     await writeAudit(db, {
       actor: actorUserId,
       action: "ssh.session.force_close",

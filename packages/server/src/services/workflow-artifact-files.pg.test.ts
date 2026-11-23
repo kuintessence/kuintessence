@@ -2,7 +2,9 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   agents,
+  artifactReplicas,
   createPgDb,
+  fileTransfers,
   jobs,
   netdriveFiles,
   users,
@@ -11,10 +13,10 @@ import {
   workflowRuns,
 } from "@kuintessence/db";
 import { createUsecaseExecutor, type JobSubmission, workflowDsl } from "@kuintessence/shared";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { artifactBatchHash } from "./artifact-members";
 import { PgArtifactStore, WorkflowArtifactService } from "./workflow-artifact";
-import { WorkflowArtifactFiles } from "./workflow-artifact-files";
+import { publishSandboxArtifactFile, WorkflowArtifactFiles } from "./workflow-artifact-files";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -42,7 +44,10 @@ afterAll(async () => {
   await db.delete(users).where(eq(users.id, ownerId));
   await db.$client.end({ timeout: 5 });
 });
-async function fixture(batch: boolean) {
+async function fixture(
+  batch: boolean,
+  durability: "Ephemeral" | "Persistent" | "Checkpoint" = "Ephemeral",
+) {
   const workflowRunId = randomUUID();
   runIds.push(workflowRunId);
   await db.insert(workflowRuns).values({
@@ -78,7 +83,7 @@ async function fixture(batch: boolean) {
     ioType: batch ? ("FileBatch" as const) : ("File" as const),
     contentHash: fileMembers ? artifactBatchHash(fileMembers) : "c".repeat(64),
     sizeBytes: fileMembers ? 5 : 4,
-    durability: "Ephemeral" as const,
+    durability,
     ownerId,
     agentId,
     siteId: "site",
@@ -89,22 +94,66 @@ async function fixture(batch: boolean) {
   const { artifact, replica } = await store.registerLocal(registration);
   const attempts: string[] = [];
   let failure = "";
-  const publish: ConstructorParameters<typeof WorkflowArtifactFiles>[1] = async (input) => {
-    attempts.push(input.source);
-    if (input.source === failure) throw new Error("transfer offline");
-    const [file] = await db
-      .insert(netdriveFiles)
-      .values({
-        ownerId: input.ownerId,
-        path: input.target,
-        storageKey: input.target,
-        sha256: input.sha256,
-        size: input.sizeBytes,
-      })
-      .returning();
-    if (!file) throw new Error("Missing uploaded file");
-    return { netdriveFileId: file.id, storageRef: file.path };
-  };
+  let loseReceipt = false;
+  const publish: ConstructorParameters<typeof WorkflowArtifactFiles>[1] = (input) =>
+    publishSandboxArtifactFile(
+      input,
+      async (transfer) => {
+        const ids = await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${transfer.transferId},0))`,
+          );
+          const [receipt] = await tx
+            .select()
+            .from(fileTransfers)
+            .where(eq(fileTransfers.id, transfer.transferId));
+          if (receipt) {
+            expect(transfer.target).toBe(receipt.target);
+            return receipt.netdriveFileIds;
+          }
+          attempts.push(input.source);
+          if (input.source === failure) throw new Error("transfer offline");
+          const [file] = await tx
+            .insert(netdriveFiles)
+            .values({
+              ownerId,
+              path: transfer.target,
+              storageKey: transfer.target,
+              sha256: input.sha256,
+              size: input.sizeBytes,
+            })
+            .returning();
+          if (!file) throw new Error("Missing uploaded file");
+          await tx.insert(fileTransfers).values({
+            id: transfer.transferId,
+            userId: ownerId,
+            state: "succeeded",
+            direction: "cluster_to_cloud",
+            source: transfer.source,
+            workflowRunId: transfer.workflowRunId,
+            agentId: transfer.agentId,
+            jobId: transfer.jobId,
+            target: transfer.target,
+            netdriveFileIds: [file.id],
+          });
+          return [file.id];
+        });
+        if (loseReceipt) {
+          loseReceipt = false;
+          throw new Error("Lost commit response");
+        }
+        return ids;
+      },
+      {
+        getFileById: async (id) =>
+          (
+            await db
+              .select()
+              .from(netdriveFiles)
+              .where(and(eq(netdriveFiles.id, id), isNull(netdriveFiles.deletedAt)))
+          )[0] ?? null,
+      },
+    );
   const make = () => {
     const bridge = new WorkflowArtifactFiles(db, publish);
     const service = new WorkflowArtifactService(store, bridge);
@@ -123,12 +172,377 @@ async function fixture(batch: boolean) {
     registration,
     make,
     attempts,
+    loseReceipt: () => {
+      loseReceipt = true;
+    },
     ref: { artifactId: artifact.id, type: artifact.ioType },
     fail: (source: string) => {
       failure = source;
     },
   };
 }
+
+async function orphan(
+  f: Awaited<ReturnType<typeof fixture>>,
+  name: string,
+  sha256: string,
+  size: number,
+  source: string,
+) {
+  const path = `workflow-runs/${f.workflowRunId}/artifacts/${f.artifact.id}/copies/${randomUUID()}/${name}`;
+  const [file] = await db
+    .insert(netdriveFiles)
+    .values({ ownerId, path, storageKey: randomUUID(), size, sha256 })
+    .returning();
+  if (!file) throw new Error("Missing fixture file");
+  await db.insert(fileTransfers).values({
+    id: randomUUID(),
+    userId: ownerId,
+    state: "succeeded",
+    direction: "cluster_to_cloud",
+    agentId,
+    workflowRunId: f.workflowRunId,
+    jobId: f.producer.id,
+    source,
+    target: path,
+    netdriveFileIds: [file.id],
+  });
+  return file;
+}
+
+test("a successful transfer with a random copy path restores an unmapped file after its local replica expires", async () => {
+  const f = await fixture(false, "Checkpoint");
+  const { contentHash, sizeBytes } = f.artifact;
+  const unrelated = await orphan(f, "result", contentHash, sizeBytes, f.replica.storageRef);
+  await db
+    .update(fileTransfers)
+    .set({ netdriveFileIds: [randomUUID()] })
+    .where(eq(fileTransfers.target, unrelated.path));
+  await orphan(f, "result", contentHash, sizeBytes, "/another/source");
+  await orphan(f, "result.extra", contentHash, sizeBytes, f.replica.storageRef);
+  await orphan(f, "result", "a".repeat(64), sizeBytes, f.replica.storageRef);
+  await db
+    .update(artifactReplicas)
+    .set({ status: "expired" })
+    .where(eq(artifactReplicas.id, f.replica.id));
+  await expect(f.make().resolve(f.ref)).rejects.toThrow("no verified local replica");
+  const file = await orphan(f, "result", contentHash, sizeBytes, f.replica.storageRef);
+  await f.make().service.awaitCheckpointPersistence(f.workflowRunId);
+  expect(await f.make().resolve(f.ref)).toEqual({
+    fileMetadataId: file.id,
+    fileMetadataName: "result",
+  });
+  expect(await store.pendingPersistence(f.workflowRunId)).toEqual([]);
+  expect(f.attempts).toEqual([]);
+});
+
+async function interruptedUpload(
+  f: Awaited<ReturnType<typeof fixture>>,
+  member: { relativePath: string; sha256: string; sizeBytes: number },
+  source: string,
+  totalBytes: number | null,
+) {
+  const file = await orphan(f, member.relativePath, member.sha256, member.sizeBytes, source);
+  const session = {
+    storageKey: file.storageKey,
+    uploadId: randomUUID(),
+    partSize: 5242880,
+    agentId,
+    source,
+    target: file.path,
+    size: totalBytes ?? 0,
+    completion: {
+      copiedBytes: file.size,
+      sha256: file.sha256,
+      parts: [{ partNumber: 1, etag: "part" }],
+    },
+  };
+  await db
+    .update(fileTransfers)
+    .set({
+      state: "failed",
+      totalBytes: totalBytes,
+      netdriveFileIds: [],
+      error: "TRANSFER_INTERRUPTED_BY_SERVER_RESTART",
+      resumeSession: session,
+    })
+    .where(eq(fileTransfers.target, file.path));
+  return { file, session };
+}
+
+test.each([
+  false,
+  true,
+])("recovers the committed upload before its transfer receipt was saved (batch=%s)", async (batch) => {
+  const f = await fixture(batch, "Checkpoint");
+  const members = f.registration.fileMembers ?? [
+    { relativePath: "result", sha256: f.artifact.contentHash, sizeBytes: f.artifact.sizeBytes },
+  ];
+  const expected = [];
+  for (const member of members) {
+    const source = batch ? `${f.replica.storageRef}/${member.relativePath}` : f.replica.storageRef;
+    const { file } = await interruptedUpload(f, member, source, batch ? member.sizeBytes : null);
+    expected.push({
+      fileMetadataId: file.id,
+      fileMetadataName: member.relativePath,
+      ...(batch ? { relativePath: member.relativePath } : {}),
+    });
+  }
+  await db
+    .update(artifactReplicas)
+    .set({ status: "expired" })
+    .where(eq(artifactReplicas.id, f.replica.id));
+  await Promise.all([
+    f.make().service.awaitCheckpointPersistence(f.workflowRunId),
+    f.make().resolve(f.ref),
+  ]);
+  expect(await f.make().resolve(f.ref)).toEqual(batch ? expected : expected[0]);
+  const receipts = await db
+    .select()
+    .from(fileTransfers)
+    .where(eq(fileTransfers.workflowRunId, f.workflowRunId));
+  expect(receipts).toHaveLength(expected.length);
+  for (const item of expected)
+    expect(receipts).toContainEqual(
+      expect.objectContaining({
+        state: "succeeded",
+        error: null,
+        netdriveFileIds: [item.fileMetadataId],
+      }),
+    );
+  expect(f.attempts).toEqual([]);
+});
+
+test("a matching path alone cannot recover an interrupted or cancelled transfer", async () => {
+  const f = await fixture(false, "Checkpoint");
+  const { file, session } = await interruptedUpload(
+    f,
+    { relativePath: "result", sha256: f.artifact.contentHash, sizeBytes: f.artifact.sizeBytes },
+    f.replica.storageRef,
+    f.artifact.sizeBytes,
+  );
+  await db
+    .update(artifactReplicas)
+    .set({ status: "expired" })
+    .where(eq(artifactReplicas.id, f.replica.id));
+  const target = eq(fileTransfers.target, file.path);
+  for (const change of [
+    { resumeSession: { ...session, storageKey: randomUUID() } },
+    { resumeSession: { ...session, source: "/another/source" } },
+    {
+      resumeSession: { ...session, completion: { ...session.completion, sha256: "0".repeat(64) } },
+    },
+    { resumeSession: { ...session, completion: undefined } },
+    { cancelRequest: randomUUID() },
+    { dispatchOwner: randomUUID() },
+    { state: "cancelled" },
+  ]) {
+    await db
+      .update(fileTransfers)
+      .set({
+        state: "failed",
+        cancelRequest: null,
+        dispatchOwner: null,
+        resumeSession: session,
+        ...change,
+      })
+      .where(target);
+    await expect(f.make().resolve(f.ref)).rejects.toThrow("no verified local replica");
+    const [transfer] = await db.select().from(fileTransfers).where(target);
+    expect(transfer?.state).toBe(change.state ?? "failed");
+    expect(transfer?.netdriveFileIds).toEqual([]);
+  }
+  expect(f.attempts).toEqual([]);
+});
+
+test("partial batch recovery reuses verified nested receipts and waits for a live source for missing members", async () => {
+  const f = await fixture(true);
+  const file = await orphan(f, "nested/b.dat", "b".repeat(64), 3, "/isolated/result/nested/b.dat");
+  await db
+    .update(artifactReplicas)
+    .set({ expiresAt: new Date(0) })
+    .where(eq(artifactReplicas.id, f.replica.id));
+  await expect(f.make().resolve(f.ref)).rejects.toThrow("awaits a verified local replica");
+  expect(f.attempts).toEqual([]);
+  await store.registerLocal(f.registration);
+  const files = await f.make().resolve(f.ref);
+  expect(files).toContainEqual({
+    fileMetadataId: file.id,
+    fileMetadataName: "nested/b.dat",
+    relativePath: "nested/b.dat",
+  });
+  expect(f.attempts).toEqual(["/isolated/result/a.dat"]);
+});
+
+test.each([
+  false,
+  true,
+])("soft-deleted persistent files are repaired on job replay (batch=%s)", async (batch) => {
+  const f = await fixture(batch, "Persistent");
+  const result = await f.make().resolve(f.ref);
+  const id = (Array.isArray(result) ? result[0] : result) as { fileMetadataId: string };
+  await db
+    .update(netdriveFiles)
+    .set({ deletedAt: new Date() })
+    .where(eq(netdriveFiles.id, id.fileMetadataId));
+  expect(await store.pendingPersistence(f.workflowRunId)).toHaveLength(1);
+  const before = f.attempts.length;
+  const repaired = await f.make().service.registerLocal(f.registration);
+  expect(repaired.persistentAt).toBeInstanceOf(Date);
+  if (!batch) expect(repaired.netdriveFileId).not.toBe(id.fileMetadataId);
+  expect(f.attempts.length).toBe(before + 1);
+  expect(await store.pendingPersistence(f.workflowRunId)).toHaveLength(0);
+  expect(await f.make().resolve(f.ref)).not.toEqual(result);
+});
+
+test("GC rebuilds a missed expiry from the run end and a replay cannot revive a released source", async () => {
+  const f = await fixture(false);
+  const finished = new Date("2026-01-05T00:00:00Z");
+  const deadline = new Date("2026-01-06T00:00:00Z");
+  const removed: string[] = [];
+  const gc = new WorkflowArtifactService(store, undefined, async (item) => {
+    removed.push(item.storageRef);
+  });
+  await db
+    .update(workflowRuns)
+    .set({ status: "completed", completedAt: finished })
+    .where(eq(workflowRuns.id, f.workflowRunId));
+  expect(await gc.collectGarbage(new Date(deadline.getTime() - 1))).toBe(0);
+  const replay = await store.registerLocal(f.registration);
+  expect(replay.replica.expiresAt).toEqual(deadline);
+  await gc.markWorkflowTerminal(f.workflowRunId, new Date(deadline));
+  expect(await gc.collectGarbage(deadline)).toBe(1);
+  expect(removed).toEqual([f.replica.storageRef]);
+  expect((await store.registerLocal(f.registration)).replica.status).toBe("expired");
+  const late = await store.registerLocal({
+    ...f.registration,
+    descriptor: "extra",
+    storageRef: "/isolated/extra",
+  });
+  expect(late.replica.expiresAt).toEqual(deadline);
+  expect(await gc.collectGarbage(deadline)).toBe(1);
+  expect(removed).toEqual([f.replica.storageRef, "/isolated/extra"]);
+});
+
+test("a replaced mutable output at a released path is scheduled for cleanup again", async () => {
+  const f = await fixture(false);
+  const input = {
+    ...f.registration,
+    producerJobId: null,
+    descriptor: "scratch",
+    storageRef: "/isolated/scratch",
+  };
+  const { replica } = await store.registerLocal(input);
+  const terminal = new Date("2026-02-01T00:00:00Z"),
+    deadline = new Date("2026-02-02T00:00:00Z");
+  await db
+    .update(workflowRuns)
+    .set({ status: "completed", completedAt: terminal })
+    .where(eq(workflowRuns.id, f.workflowRunId));
+  await store.expireEphemeral(f.workflowRunId, 86400000);
+  const removed: string[] = [];
+  const release = async (item: { storageRef: string }) => {
+    removed.push(item.storageRef);
+  };
+  expect(await store.releaseExpired(replica.id, deadline, release)).toBe(true);
+  const replacement = await store.registerLocal({ ...input, contentHash: "d".repeat(64) });
+  expect(replacement.replica.expiresAt).toEqual(deadline);
+  expect(await store.releaseExpired(replacement.replica.id, deadline, release)).toBe(true);
+  expect(removed).toEqual([input.storageRef, input.storageRef]);
+  await store.releaseExpired(f.replica.id, deadline, release);
+});
+
+test("GC preserves active and durable sources and drains only the current release on shutdown", async () => {
+  const active = await fixture(false),
+    durable = await fixture(false, "Checkpoint"),
+    ephemeral = await fixture(false);
+  const second = await store.registerLocal({
+    ...ephemeral.registration,
+    descriptor: "second",
+    storageRef: "/isolated/second",
+  });
+  const finished = new Date("2026-01-05T00:00:00Z"),
+    now = new Date("2026-01-07T00:00:00Z");
+  await db
+    .update(workflowRuns)
+    .set({ status: "failed", completedAt: finished })
+    .where(inArray(workflowRuns.id, [durable.workflowRunId, ephemeral.workflowRunId]));
+  await db
+    .update(artifactReplicas)
+    .set({ expiresAt: finished })
+    .where(inArray(artifactReplicas.id, [active.replica.id, durable.replica.id]));
+  const stop = new AbortController();
+  const removed: string[] = [];
+  const gc = new WorkflowArtifactService(store, undefined, async (replica) => {
+    removed.push(replica.id);
+    stop.abort();
+  });
+  expect(await gc.collectGarbage(now, stop.signal)).toBe(1);
+  expect(await gc.collectGarbage(now)).toBe(1);
+  expect(removed.sort()).toEqual([ephemeral.replica.id, second.replica.id].sort());
+  expect(
+    (await store.availableReplicas([durable.artifact.id, active.artifact.id]))
+      .map((item) => item.id)
+      .sort(),
+  ).toEqual([durable.replica.id, active.replica.id].sort());
+});
+
+test("GC rechecks expiry, skips in-flight releases and retries a missing Agent acknowledgement", async () => {
+  const f = await fixture(false);
+  const deadline = new Date("2026-03-03T00:00:00Z");
+  await db
+    .update(workflowRuns)
+    .set({ status: "cancelled", completedAt: new Date("2026-03-02T00:00:00Z") })
+    .where(eq(workflowRuns.id, f.workflowRunId));
+  await store.expireEphemeral(f.workflowRunId, 86400000);
+  expect(await store.collectExpired(deadline)).toContain(f.replica.id);
+  const extend = new Date(deadline.getTime() + 60000);
+  await db
+    .update(artifactReplicas)
+    .set({ expiresAt: extend })
+    .where(eq(artifactReplicas.id, f.replica.id));
+  let releases = 0;
+  const ack = Promise.withResolvers<void>(),
+    started = Promise.withResolvers<void>();
+  const release = async () => {
+    releases++;
+    started.resolve();
+    await ack.promise;
+  };
+  expect(await store.releaseExpired(f.replica.id, deadline, release)).toBe(false);
+  expect(releases).toBe(0);
+  const first = store.releaseExpired(f.replica.id, extend, release);
+  await started.promise;
+  try {
+    expect(
+      await new PgArtifactStore(db).releaseExpired(f.replica.id, extend, async () => {
+        releases++;
+      }),
+    ).toBe(false);
+  } finally {
+    ack.reject(new Error("Agent offline"));
+    await expect(first).rejects.toThrow("Agent offline");
+  }
+  expect(releases).toBe(1);
+  expect(await store.collectExpired(extend)).toContain(f.replica.id);
+  expect(
+    await store.releaseExpired(f.replica.id, extend, async () => {
+      releases++;
+    }),
+  ).toBe(true);
+  expect(await store.collectExpired(extend)).not.toContain(f.replica.id);
+  expect(releases).toBe(2);
+});
+
+test("a late failure from a concurrent publisher leaves the committed replica available", async () => {
+  const f = await fixture(false);
+  const attempt = await store.beginPersistence(f.artifact, f.replica);
+  await f.make().resolve(f.ref);
+  await store.failPersistence(attempt.id, "delayed failure");
+  expect(
+    (await store.availableReplicas([f.artifact.id])).some((replica) => replica.id === attempt.id),
+  ).toBe(true);
+});
 
 test("single-file bridge shares concurrent publication, keeps references stable, and checks scope and export policy", async () => {
   const f = await fixture(false);
@@ -149,6 +563,19 @@ test("single-file bridge shares concurrent publication, keeps references stable,
   await db.update(jobs).set({ restrictedNoEgress: true }).where(eq(jobs.id, f.producer.id));
   await expect(first.resolve(f.ref)).rejects.toThrow("does not permit file export");
   expect(f.attempts).toHaveLength(1);
+});
+
+test("a fresh Sandbox publisher recovers the exact committed receipt after a lost response", async () => {
+  const f = await fixture(false);
+  f.loseReceipt();
+  await expect(f.make().resolve(f.ref)).rejects.toThrow("publication is pending");
+  await f.make().resolve(f.ref);
+  expect(f.attempts).toEqual(["/isolated/result"]);
+  const receipts = await db
+    .select()
+    .from(fileTransfers)
+    .where(eq(fileTransfers.source, "/isolated/result"));
+  expect(receipts.filter((row) => row.target.includes(f.artifact.id))).toHaveLength(1);
 });
 
 test("a delayed publisher reuses the live file despite its stale snapshot and replaces a deleted file", async () => {

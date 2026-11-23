@@ -10,8 +10,9 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { FormField } from "../ui/form-field";
-import { Input, Textarea } from "../ui/input";
+import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
+import { SpackSourceEditor } from "./SpackSourceEditor";
 import { optionalText, parseTagInput, sourceLabel } from "./software-fields";
 
 export function SpackCatalogPackageForm({
@@ -78,7 +79,7 @@ export function SpackCatalogPackageForm({
           source,
           description: optionalText(description),
           tags: parseTagInput(tags),
-          packageFile: optionalText(packageFile),
+          packageFile: packageFile.trim() ? packageFile : undefined,
         });
       }}
     >
@@ -125,22 +126,15 @@ export function SpackCatalogPackageForm({
           />
         )}
       </FormField>
-      <label htmlFor={`${id}-packageFile`} className="grid min-w-0 gap-1.5 text-sm">
-        <span>package.py</span>
-        <Textarea
-          id={`${id}-packageFile`}
-          value={packageFile}
-          onChange={(e) => {
-            currentParse.current = null;
-            setPackageFile(e.target.value);
-            setMetadata(null);
-            setParseError(null);
-          }}
-          placeholder={t("software.manage.packageFilePlaceholder")}
-          className="min-h-32 font-mono text-xs"
-          data-testid="software-spack-package-file"
-        />
-      </label>
+      <SpackSourceEditor
+        value={packageFile}
+        onChange={(value) => {
+          currentParse.current = null;
+          setPackageFile(value);
+          setMetadata(null);
+          setParseError(null);
+        }}
+      />
       <div className="flex flex-wrap items-center gap-2">
         <Button
           type="button"

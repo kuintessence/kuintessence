@@ -109,3 +109,34 @@ describe("evalCel — errors", () => {
     expect(() => evalCel("(1 + 2", {})).toThrow();
   });
 });
+
+test("CEL maps, membership and string methods work in guards without exposing prototype fields", () => {
+  expect(evalCel(`{"stage": "test"}.stage in ["build", "test"]`, {})).toBe(true);
+  expect(evalCel(`"stage" in {"stage": null}`, {})).toBe(true);
+  expect(
+    evalCel(`"ready".startsWith("re") && "ready".contains("ad") && "ready".endsWith("dy")`, {}),
+  ).toBe(true);
+  expect(evalCel(`has({}.constructor) || "toString" in {}`, {})).toBe(false);
+  expect(() => evalCel(`"x".toUpperCase()`, {})).toThrow();
+});
+
+test("bounded map/filter macros have lexical variables and explicit math functions", () => {
+  const ctx = { x: 42, rows: [{ n: -3 }, { n: 4 }] };
+  expect(evalCel("rows.map(x, math.abs(x.n)).filter(x, x > 3)", ctx)).toEqual([4]);
+  expect(ctx.x).toBe(42);
+  expect(evalCel("[2,3].map(x, [4].map(y, math.pow(x, y)))", {})).toEqual([[16], [81]]);
+  expect(() => evalCel("[1].filter(x,x)", {})).toThrow("boolean");
+  expect(() => evalCel("math.random()", {})).toThrow("unknown math");
+  expect(() => evalCel("has(xs.map(x, xs.filter(y,y==x)))", { xs: Array(1000).fill(0) })).toThrow(
+    "limit",
+  );
+});
+
+test("counts repeated references in expanded map results and bounds concatenated strings", () => {
+  const ctx = { rows: [1, 2], payload: { text: "a".repeat(501_000) } };
+  expect(() => evalCel("rows.map(row, payload)", ctx)).toThrow("limit");
+  expect(() => evalCel("has(payload.text + payload.text)", ctx)).toThrow("limit");
+  expect(evalCel("rows.map(row, payload.text.startsWith('a'))", { ...ctx, rows: [1] })).toEqual([
+    true,
+  ]);
+});

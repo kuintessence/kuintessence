@@ -906,6 +906,9 @@ async function run() {
     paymentCorrectionStatus.blockNumber,
     paymentLostStatus.blockNumber,
   ]) {
+    const paymentBlock =
+      blockNumber === paymentStatus.blockNumber ||
+      blockNumber === paymentCorrectionStatus.blockNumber;
     for (const [name, endpoint, expected] of [
       ["A", "A", true],
       ["B", "B", true],
@@ -931,6 +934,7 @@ async function run() {
               "Public block leaked commercial material",
             );
           const writes: Buffer[] = [];
+          const paymentKeys: string[] = [];
           for (const [, tx] of event.getPrivateDataMapMap().entries())
             for (const ns of tx.getNsPvtRwsetList())
               if (ns.getNamespace() === network.chaincode)
@@ -938,16 +942,7 @@ async function run() {
                   for (const write of ledger.rwset.kvrwset.KVRWSet.deserializeBinary(
                     collection.getRwset_asU8(),
                   ).getWritesList()) {
-                    if (
-                      blockNumber === paymentStatus.blockNumber ||
-                      blockNumber === paymentCorrectionStatus.blockNumber
-                    )
-                      assert(
-                        ["payment", "payment-head"].includes(
-                          write.getKey().split("\u0000")[1] ?? "",
-                        ),
-                        "Payment evidence must not modify balances, bills, or execution state",
-                      );
+                    if (paymentBlock) paymentKeys.push(write.getKey().split("\u0000")[1] ?? "");
                     if (blockNumber === freezeStatus.blockNumber)
                       assert.equal(
                         write.getKey().split("\u0000")[1],
@@ -969,24 +964,31 @@ async function run() {
             blockNumber !== lost.blockNumber &&
             blockNumber !== paymentLostStatus.blockNumber
           ) {
-            assert.equal(
-              writes.length,
-              blockNumber === valid.blockNumber ||
-                blockNumber === discountStatus.blockNumber ||
-                blockNumber === freezeStatus.blockNumber
-                ? 1
-                : blockNumber === refundBlock
-                  ? 3
-                  : 2,
-            );
+            if (paymentBlock) {
+              assert.deepEqual(paymentKeys.sort(), [
+                "bill-payment-member",
+                "bill-payments",
+                "payment",
+                "payment-head",
+              ]);
+            } else
+              assert.equal(
+                writes.length,
+                blockNumber === valid.blockNumber ||
+                  blockNumber === discountStatus.blockNumber ||
+                  blockNumber === freezeStatus.blockNumber
+                  ? 1
+                  : blockNumber === refundBlock
+                    ? 3
+                    : 2,
+              );
             assert(
               writes.some((bytes) =>
                 bytes.includes(
                   Buffer.from(
                     blockNumber === freezeStatus.blockNumber
                       ? disputeProbe
-                      : blockNumber === paymentStatus.blockNumber ||
-                          blockNumber === paymentCorrectionStatus.blockNumber
+                      : paymentBlock
                         ? paymentProbe
                         : blockNumber === valid.blockNumber
                           ? contractProbe

@@ -9,18 +9,20 @@ import {
 import { FederationParameterOverridesSchema } from "../federation/assets";
 import { FederationWorkflowMarketSchema } from "../federation/market";
 import { FederationAssetRefSchema, FederationDigestSchema } from "../federation/references";
+import { LicensedMaterialRequestSchema } from "../schemas/job";
 import { RequirementsSchema, SchedulingStrategySchema, SlugSchema, UuidSchema } from "./common";
 import { ExprSchema, IntOrExprSchema } from "./expr";
 import { ValueOutputSchema } from "./extract";
 import { GenOutputSchema, GenRuleSchema } from "./generate";
 import { LoopCarrySchema, LoopOutputSchema } from "./loop";
-import { ReduceOutputSchema, ReducerSchema } from "./reduce";
+import { ReduceOutputSchema, type Reducer, ReducerSchema } from "./reduce";
 import {
   AssetSelectorSchema,
   FrozenUsecaseAssetRevisionsSchema,
   LoopOutputRefSchema,
 } from "./refs";
 import {
+  AssetRevisionSourceSchema,
   ExecutionIdentitySchema,
   PlacementConstraintSchema,
   SandboxRuntimeContractRefSchema,
@@ -43,6 +45,25 @@ const nodeCommon = {
   description: z.string().nullish(),
   when: ExprSchema.optional(),
 };
+
+const hookFields = {
+  executionIdentity: ExecutionIdentitySchema.default({ type: "Inherit" }),
+  inputs: z.record(z.string().min(1), ScriptInputSpecSchema).default({}),
+  outputs: z.record(z.string().min(1), ScriptOutputSpecSchema).default({}),
+};
+
+const UsecaseHookSchema = z.union([
+  z.strictObject({
+    ...hookFields,
+    source: AssetRevisionSourceSchema,
+    runtimeProfileId: UuidSchema,
+  }),
+  z.strictObject({
+    ...hookFields,
+    scriptRef: ScriptRefSchema,
+    runtimeContractRef: SandboxRuntimeContractRefSchema,
+  }),
+]);
 
 const NonDatasetInputSlotsSchema = z.array(NodeInputSlotSchema).superRefine((slots, ctx) => {
   for (const [index, slot] of slots.entries()) {
@@ -150,6 +171,13 @@ export const WorkflowNodeSchema = z.union([
     .strictObject({
       ...nodeCommon,
       type: z.literal("SoftwareUsecaseComputing"),
+      hooks: z
+        .strictObject({
+          pre: UsecaseHookSchema.optional(),
+          post: UsecaseHookSchema.optional(),
+        })
+        .refine((hooks) => hooks.pre || hooks.post, "Declare at least one usecase hook")
+        .optional(),
       usecaseVersionId: UuidSchema.optional(),
       softwareVersionId: UuidSchema.optional(),
       usecaseRef: AssetSelectorSchema.optional(),
@@ -198,6 +226,14 @@ export const WorkflowNodeSchema = z.union([
       type: z.literal("Script"),
       source: ScriptSourceSchema.optional(),
       scriptRef: ScriptRefSchema.optional(),
+      licensedMaterials: z
+        .array(
+          LicensedMaterialRequestSchema.extend({
+            targetPath: z.string().regex(/^(?:inputs\/)?[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/),
+          }),
+        )
+        .max(32)
+        .optional(),
       runtimeProfileId: UuidSchema.optional(),
       runtimeContractRef: SandboxRuntimeContractRefSchema.optional(),
       executionIdentity: ExecutionIdentitySchema.default({ type: "Inherit" }),
@@ -219,6 +255,11 @@ export const WorkflowNodeSchema = z.union([
           });
         }
       }
+      if (node.licensedMaterials?.length && Object.keys(node.outputs).length)
+        ctx.addIssue({
+          code: "custom",
+          message: "Licensed Sandbox inputs require an output-free script",
+        });
       const hasSource = node.source !== undefined;
       const hasNamedSource = node.scriptRef !== undefined;
       const hasRuntimeProfile = node.runtimeProfileId !== undefined;
@@ -292,3 +333,64 @@ export const WorkflowNodeSchema = z.union([
   }),
 ]);
 export type WorkflowNode = z.infer<typeof WorkflowNodeSchema>;
+
+/** The same managed leaf is used for admission, placement, dispatch and federation binding. */
+export function commandExecutionNode(
+  node: WorkflowNode,
+): Extract<WorkflowNode, { type: "Script" | "SoftwareUsecaseComputing" }> | undefined {
+  if (node.type !== "Reduce" || node.reducer.kind !== "Command") return undefined;
+  const inputSlot = {
+    type: "Text" as const,
+    optional: false,
+    descriptor: "items",
+    rule: { type: "Json" as const },
+    from: { node: node.from.loop, output: node.from.output },
+  };
+  const common = { id: node.id, name: node.name, inputSlots: [inputSlot] };
+  if ("usecaseRef" in node.reducer) {
+    const binding =
+      "softwareRef" in node.reducer
+        ? { usecaseRef: node.reducer.usecaseRef, softwareRef: node.reducer.softwareRef }
+        : { ...node.reducer.usecaseRef, frozenAssetRevisions: node.reducer.frozenAssetRevisions };
+    return { ...common, type: "SoftwareUsecaseComputing", ...binding };
+  }
+  return {
+    ...common,
+    type: "Script",
+    ...node.reducer.script,
+    executionIdentity: node.reducer.script.executionIdentity ?? { type: "Inherit" },
+    schedulingStrategy: { type: "Auto" },
+    inputs: { items: { type: "JSON", required: true } },
+    outputs: { [node.output.descriptor]: ScriptOutputSpecSchema.parse({ type: "JSON" }) },
+  };
+}
+
+/** Store the receiver's resolved revisions in the original Reduce node. */
+export function boundCommandReducer(
+  node?: WorkflowNode,
+): Extract<Reducer, { kind: "Command" }> | undefined {
+  if (
+    node?.type === "SoftwareUsecaseComputing" &&
+    node.usecaseVersionId &&
+    node.softwareVersionId
+  ) {
+    return {
+      kind: "Command",
+      usecaseRef: {
+        usecaseVersionId: node.usecaseVersionId,
+        softwareVersionId: node.softwareVersionId,
+      },
+      frozenAssetRevisions: node.frozenAssetRevisions,
+    };
+  }
+  if (node?.type === "Script" && node.source && node.runtimeContractRef) {
+    return {
+      kind: "Command",
+      script: {
+        source: node.source,
+        runtimeContractRef: node.runtimeContractRef,
+        executionIdentity: node.executionIdentity,
+      },
+    };
+  }
+}

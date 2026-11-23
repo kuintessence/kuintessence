@@ -112,7 +112,32 @@ export function createAdminSshCredentialRoutes(
       await requireSshCredentialPermission(c, opts.authz, agentId, "manage", localAllowed);
       const input = c.req.valid("json");
 
+      if (input.jumpAgentIds?.length) {
+        const provider = await resolveAgentProviderOrg(agentId);
+        if (!provider || input.jumpAgentIds.includes(agentId) || !input.hostKeySha256)
+          throw new AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "SSH route requires a pinned destination and distinct provider-owned hops",
+            400,
+          );
+        for (const hop of input.jumpAgentIds) {
+          if ((await resolveAgentProviderOrg(hop)) !== provider)
+            throw new AppError(
+              ErrorCode.FORBIDDEN,
+              "SSH jump credential belongs to a different provider",
+              403,
+            );
+          await requireSshCredentialPermission(
+            c,
+            opts.authz,
+            hop,
+            "manage",
+            await credentialLocalAllowed(c, hop, "manage"),
+          );
+        }
+      }
       await saveSshCredential(db, opts.secretWrappingKey, {
+        jumpAgentIds: input.jumpAgentIds,
         agentId,
         host: input.host,
         port: input.port,

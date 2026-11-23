@@ -33,9 +33,9 @@ export function createTerminalRoutes(service: TerminalService, deps: TerminalRou
   const routes = new Hono();
   const { dispatcher, shellExecRegistry } = deps;
 
-  routes.get("/terminal/sessions", (c) => {
+  routes.get("/terminal/sessions", async (c) => {
     const actorUserId = requireTerminalActorUserId(c);
-    return c.json({ sessions: service.list(actorUserId) });
+    return c.json({ sessions: await service.list(actorUserId) });
   });
 
   routes.post(
@@ -53,24 +53,24 @@ export function createTerminalRoutes(service: TerminalService, deps: TerminalRou
         localAccess,
       );
       assertAgentOnline(dispatcher, data.agentId);
-      const session = service.create(actorUserId, data);
+      const session = await service.create(actorUserId, data);
       return c.json(session, 201);
     },
   );
 
-  routes.get("/terminal/sessions/:id", (c) => {
+  routes.get("/terminal/sessions/:id", async (c) => {
     const actorUserId = requireTerminalActorUserId(c);
-    return c.json(service.get(actorUserId, c.req.param("id")));
+    return c.json(await service.get(actorUserId, c.req.param("id")));
   });
 
-  routes.delete("/terminal/sessions/:id", (c) => {
+  routes.delete("/terminal/sessions/:id", async (c) => {
     const actorUserId = requireTerminalActorUserId(c);
-    return c.json(service.close(actorUserId, c.req.param("id")));
+    return c.json(await service.close(actorUserId, c.req.param("id")));
   });
 
-  routes.get("/terminal/sessions/:id/audit", (c) => {
+  routes.get("/terminal/sessions/:id/audit", async (c) => {
     const actorUserId = requireTerminalActorUserId(c);
-    return c.json({ frames: service.audit(actorUserId, c.req.param("id")) });
+    return c.json({ frames: await service.audit(actorUserId, c.req.param("id")) });
   });
 
   routes.post(
@@ -80,7 +80,7 @@ export function createTerminalRoutes(service: TerminalService, deps: TerminalRou
       const actorUserId = requireTerminalActorUserId(c);
       const { input } = c.req.valid("json");
       const sessionId = c.req.param("id");
-      const session = service.get(actorUserId, sessionId);
+      const session = await service.get(actorUserId, sessionId);
       const localAccess = await resolveLocalAgentAccess(c, deps, session.agentId);
       await requireAgentOperate(c, deps.authz, session.agentId, "terminal-exec", localAccess);
       assertAgentOnline(dispatcher, session.agentId);
@@ -91,52 +91,45 @@ export function createTerminalRoutes(service: TerminalService, deps: TerminalRou
       }
       if (!dispatcher || !shellExecRegistry) throwTerminalUnavailable(session.agentId);
 
+      await service.admitExec(actorUserId, sessionId, input);
       const requestId = crypto.randomUUID();
       const timeoutMs = deps.shellExecTimeoutMs ?? 30_000;
-      const pending = shellExecRegistry.await(requestId, timeoutMs);
+      const pending = shellExecRegistry.await(requestId, timeoutMs, session.agentId);
       const queued = dispatcher.pushShellExec(session.agentId, requestId, trimmed, 30);
       if (!queued) {
         shellExecRegistry.discard(requestId);
         throwTerminalUnavailable(session.agentId);
       }
 
-      try {
-        const result = await pending;
-        const realOutput = `${result.stdout}${result.stderr}`;
-        return c.json(service.recordExec(actorUserId, sessionId, input, realOutput));
-      } catch {
-        throw new AppError(ErrorCode.AGENT_OFFLINE, "Terminal command did not complete", 504, {
+      const result = await pending.catch(() => {
+        throw new AppError(ErrorCode.AGENT_OFFLINE, "Terminal command timed out", 504, {
           reason: "TERMINAL_EXEC_TIMEOUT",
           agentId: session.agentId,
         });
-      }
+      });
+      if (result.error)
+        throw new AppError(ErrorCode.AGENT_OFFLINE, "Agent could not execute the command", 503);
+      return c.json(
+        await service.recordOutput(actorUserId, sessionId, result.stdout + result.stderr),
+      );
     },
   );
 
   routes.post(
     "/terminal/sessions/:id/resize",
     kqValidator("json", TerminalResizeSchema, "Invalid terminal resize body"),
-    (c) => {
+    async (c) => {
       const actorUserId = requireTerminalActorUserId(c);
       const { cols, rows } = c.req.valid("json");
-      return c.json(service.resize(actorUserId, c.req.param("id"), cols, rows));
+      return c.json(await service.resize(actorUserId, c.req.param("id"), cols, rows));
     },
   );
-
-  // This terminal uses HTTP execution; interactive SSH has a separate endpoint.
-  routes.get("/terminal/ws/:id", () => {
-    throw new AppError(
-      ErrorCode.INTERNAL_ERROR,
-      "WebSocket terminal streaming is unavailable; use POST /terminal/sessions/:id/exec",
-      501,
-    );
-  });
 
   return routes;
 }
 
 function assertAgentOnline(dispatcher: AgentDispatcher | undefined, agentId: string): void {
-  if (!dispatcher?.isOnline(agentId)) {
+  if (!dispatcher?.interactionChannel(agentId)) {
     throwTerminalUnavailable(agentId);
   }
 }

@@ -46,7 +46,7 @@ function fixture() {
       if (!row || row.state !== previousState) return false;
       row.state = "running";
       activations++;
-      return true;
+      return new Date();
     },
     finish: async (_value, event) => {
       finishes++;
@@ -108,9 +108,9 @@ test("transfer row exists before start and durable success is reused without red
   const h = fixture();
   const saved = Promise.withResolvers<boolean>();
   const finish = h.deps.store.finish;
-  h.deps.store.finish = async (value, event) => {
+  h.deps.store.finish = async (value, event, startedAt) => {
     await saved.promise;
-    return finish(value, event);
+    return finish(value, event, startedAt);
   };
   let settled = false;
   const wait = waitForOutputTransfer(h.deps, input).then((ids) => {
@@ -149,21 +149,17 @@ test.each([
   expect(h.starts).toBe(0);
 });
 
-test("aborted wait preserves the transfer session and ignores late callbacks before resume", async () => {
+test("aborting a waiter still persists the Agent receipt for the next caller", async () => {
   const h = fixture();
   const controller = new AbortController();
   const wait = waitForOutputTransfer(h.deps, input, controller.signal);
   await h.started;
   controller.abort();
   await expect(wait).rejects.toThrow("interrupted");
-  h.fire({ state: "succeeded", copiedBytes: 7, netdriveFileIds: ["late"] });
-  expect(h.finishes).toBe(0);
-  expect(h.row?.state).toBe("running");
-  const resumed = waitForOutputTransfer(h.deps, input);
-  await Promise.resolve();
-  h.fire({ state: "succeeded", copiedBytes: 7, netdriveFileIds: ["resumed"] });
-  expect(await resumed).toEqual(["resumed"]);
-  expect(h.starts).toBe(2);
+  await expect(waitForOutputTransfer(h.deps, input)).rejects.toThrow("already in progress");
+  h.fire({ state: "succeeded", copiedBytes: 7, netdriveFileIds: ["committed"] });
+  expect(await waitForOutputTransfer(h.deps, input)).toEqual(["committed"]);
+  expect(h.starts).toBe(1);
 });
 
 test("start failure removes the abort listener and retains the same row for retry", async () => {
@@ -178,8 +174,8 @@ test("start failure removes the abort listener and retains the same row for retr
       "Agent offline",
     );
     expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
-    expect(h.row?.state).toBe("running");
-    expect(h.finishes).toBe(0);
+    expect(h.row?.state).toBe("failed");
+    expect(h.finishes).toBe(1);
   } finally {
     remove.mockRestore();
   }
@@ -200,20 +196,6 @@ test("terminal failure is durably recorded and the same transfer can resume", as
   expect(h.starts).toBe(2);
   expect(h.row?.state).toBe("succeeded");
   expect(h.activations).toBe(2);
-});
-
-test("already-running recovery can resume without requiring a queued or failed CAS", async () => {
-  const h = fixture();
-  await h.deps.store.ensure(input);
-  if (h.row) h.row.state = "running";
-  h.deps.store.activate = async () => {
-    throw new Error("must not CAS a running recovery");
-  };
-  const wait = waitForOutputTransfer(h.deps, input);
-  await h.started;
-  h.fire({ state: "succeeded", copiedBytes: 7, netdriveFileIds: ["committed"] });
-  expect(await wait).toEqual(["committed"]);
-  expect(h.activations).toBe(0);
 });
 
 test.each([

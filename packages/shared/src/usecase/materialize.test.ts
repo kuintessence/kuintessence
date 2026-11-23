@@ -184,11 +184,11 @@ describe("materialize (Spack facility, arg/env/file refs)", () => {
             },
           ],
         },
-        environments: [{ descriptor: "omp", key: "OMP_NUM_THREADS", valueFormat: "{}" }],
+        environments: [{ descriptor: "omp", key: "OMP_NUM_THREADS", valueFormat: " {}  " }],
         inputs: { threads: "8" },
       }),
     );
-    expect(r.envVars).toEqual({ OMP_NUM_THREADS: "8" });
+    expect(r.envVars).toEqual({ OMP_NUM_THREADS: " 8  " });
   });
 
   test("maps a FileInputRef to an input-staging entry at the material's path", () => {

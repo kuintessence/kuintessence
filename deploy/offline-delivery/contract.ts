@@ -1,5 +1,6 @@
 import {
   OfflineDeliverySchema,
+  SignedOfflineDeliverySchema,
   SpackMaterialImportSchema,
   SpackMaterialManifestSchema,
   SpackMaterialPublishSchema,
@@ -12,13 +13,20 @@ if (argument === "--schema") {
   process.stdout.write(JSON.stringify({
     version: 1,
     delivery: z.toJSONSchema(OfflineDeliverySchema),
+    signedDelivery: z.toJSONSchema(SignedOfflineDeliverySchema),
     materialPack: z.toJSONSchema(SpackMaterialImportSchema),
     materialPublish: z.toJSONSchema(SpackMaterialPublishSchema),
     materialManifest: z.toJSONSchema(SpackMaterialManifestSchema),
     signedEcosystemBundle: z.toJSONSchema(SignedEcosystemBundleEnvelopeSchema),
   }, null, 2));
 } else if (argument) {
-  const result = OfflineDeliverySchema.safeParse(await Bun.file(argument).json());
+  const input = await Bun.file(argument).json();
+  const envelope = SignedOfflineDeliverySchema.safeParse(input);
+  let plan:unknown = input;
+  if (envelope.success) {
+    try {plan = JSON.parse(envelope.data.payload);} catch {plan = null;}
+  }
+  const result = OfflineDeliverySchema.safeParse(plan);
   process.stdout.write(JSON.stringify(result.success
     ? { valid: true, validation: "contract-only" }
     : { valid: false, issues: result.error.issues }, null, 2));

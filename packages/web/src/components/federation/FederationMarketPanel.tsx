@@ -76,6 +76,7 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
   const [txPage, setTxPage] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [operation, setOperation] = useState<string | null>(null);
+  const [reopening, setReopening] = useState<MarketDemandState>();
   const [creating, setCreating] = useState(false);
   const [claiming, setClaiming] = useState(false);
   const [intent, setIntent] = useState<Intent | null>(null);
@@ -446,6 +447,7 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
           <Button
             disabled={busy}
             onClick={() => {
+              setReopening(undefined);
               setCreating(true);
               setSelected(null);
               setOperation(null);
@@ -496,6 +498,7 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
       ) : null}
       {creating && localSiteId && !intent ? (
         <MarketDemandForm
+          previous={reopening}
           localSiteId={localSiteId}
           disabled={busy || !enabled}
           onReview={(input) => review({ kind: "submit", input })}
@@ -558,6 +561,22 @@ function MarketPanel({ scope, switching }: { scope: ApiOrganizationScope; switch
                         }
                         onCancel={() => setClaiming(false)}
                       />
+                    ) : null}
+                    {["CLOSED", "CANCELLED"].includes(demand.status) &&
+                    enabled &&
+                    !readOnly &&
+                    !intent &&
+                    demand.demand.sourceSiteId === localSiteId &&
+                    grants.includes("market.publish") ? (
+                      <Button
+                        disabled={busy || detail.isFetching}
+                        onClick={() => {
+                          setReopening(demand);
+                          setCreating(true);
+                        }}
+                      >
+                        {t("federation.market.reopen")}
+                      </Button>
                     ) : null}
                     {demand.status === "OPEN" && enabled && localSiteId && !readOnly && !intent ? (
                       <div className="flex flex-wrap gap-2">

@@ -8,13 +8,19 @@ import {
   jobCancellations,
   jobDataBindings,
   jobs,
+  sandboxPvcReleases,
   softwareOperations,
   users,
   workflowRuns,
 } from "@kuintessence/db";
 import type { ServerMessage } from "@kuintessence/proto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { AgentDispatcher, JobCancellationOutbox } from "../grpc/dispatcher";
+import { AgentSessions } from "../grpc/agent-sessions";
+import {
+  AgentDispatcher,
+  JobCancellationOutbox,
+  JobWorkRootReleaseOutbox,
+} from "../grpc/dispatcher";
 import { WorkflowAsyncRunner } from "../workflow/async-runner";
 import { cancelWorkflowJobs } from "../workflow/cancel-jobs";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
@@ -395,4 +401,69 @@ test("production Workflow cancellation coordinator waits for every installer bef
   } finally {
     await db.delete(workflowRuns).where(eq(workflowRuns.id, runId));
   }
+});
+
+test("PVC retries rotate past a full offline batch and acknowledge only the owning Agent", async () => {
+  const ids = Array.from({ length: 129 }, () => crypto.randomUUID());
+  jobIds.push(...ids);
+  await db.insert(jobs).values(
+    ids.map((id) => ({
+      id,
+      name: "sandbox",
+      command: "sandbox-manifest",
+      cpus: 1,
+      memoryMb: 128,
+      agentId: compute,
+      status: "completed",
+      submittedBy: userId,
+    })),
+  );
+  await db.insert(sandboxPvcReleases).values(ids.map((jobId) => ({ jobId, agentId: compute })));
+  const seen = new Set<string>();
+  const dispatcher = new AgentDispatcher();
+  dispatcher.register(compute, {
+    push: (message) => {
+      if (message.payload.case === "releaseSandboxPvc") seen.add(message.payload.value.jobId);
+    },
+    close: () => {},
+  });
+  const outbox = new JobWorkRootReleaseOutbox(db, dispatcher);
+  await outbox.redeliverPvc(compute);
+  expect(seen.size).toBe(128);
+  await outbox.redeliverPvc(compute);
+  expect(seen.size).toBe(129);
+  const [id] = ids;
+  if (!id) throw new Error("missing fixture job");
+  const acknowledged = async () =>
+    (await db.select().from(sandboxPvcReleases).where(eq(sandboxPvcReleases.jobId, id)))[0]
+      ?.acknowledgedAt;
+  await outbox.acknowledgePvc(installerA, id);
+  expect(await acknowledged()).toBeNull();
+  await outbox.acknowledgePvc(compute, id);
+  expect(await acknowledged()).toBeInstanceOf(Date);
+});
+
+test("replacing the Agent session waits for active handlers and fences late heartbeat and disconnect", async () => {
+  const a = new AgentSessions(db, 90),
+    b = new AgentSessions(db, 90);
+  const old = crypto.randomUUID(),
+    current = crypto.randomUUID(),
+    caps = { schedulerLimits: true, pinnedSpack: false };
+  await a.claim(compute, old, caps);
+  const release = await a.enter(compute, old);
+  if (!release) throw new Error("session missing");
+  const takeover = b.claim(compute, current, caps);
+  try {
+    expect((await a.live()).get(compute)?.serverId).toBe(a.serverId);
+  } finally {
+    await release();
+  }
+  await takeover;
+  expect(await a.enter(compute, old, true)).toBeUndefined();
+  await a.release(compute, old);
+  expect((await b.live()).get(compute)?.sessionId).toBe(current);
+  const renewed = await b.enter(compute, current, true);
+  expect(renewed).toBeDefined();
+  await renewed?.();
+  await b.release(compute, current);
 });

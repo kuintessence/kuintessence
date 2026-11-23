@@ -8,7 +8,7 @@ import {
   type PgTransaction,
 } from "@kuintessence/db";
 import { FederationError } from "@kuintessence/shared/federation";
-import { and, asc, eq, gt, inArray, isNull, lte, ne, notExists } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, ne, notExists, sql } from "drizzle-orm";
 import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota";
 import type { MinioBackend } from "../storage/minio-client";
 import { federationMaterialDigest } from "./assets";
@@ -137,7 +137,7 @@ export class FederationInputPublication {
             storageVersionId: file.versionId,
             etag: file.etag,
             mtime: this.clock(),
-            createdAt: this.clock(),
+            createdAt: sql`clock_timestamp() at time zone 'UTC'`,
           })),
         );
         await tx

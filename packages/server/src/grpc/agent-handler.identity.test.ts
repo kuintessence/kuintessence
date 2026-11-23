@@ -460,6 +460,7 @@ describe("agent-handler identity pinning", () => {
     });
   });
   test("advertises heartbeat ACK support and acks only applied heartbeat sequences", async () => {
+    const key = "a".repeat(64);
     const heartbeatSequences: bigint[] = [];
     const { router, handlers } = createMockRouter();
     registerAgentHandler(router, {
@@ -468,13 +469,24 @@ describe("agent-handler identity pinning", () => {
         heartbeat: async () => undefined,
       } as unknown as AgentManager,
       jobService: {} as unknown as JobService,
+      transferCheckpoints: {
+        releasedCheckpointKeys: async (agentId, keys) => {
+          expect(agentId).toBe("agent-1");
+          expect(keys).toEqual([key]);
+          return keys;
+        },
+      },
       logger: silent,
       dispatcher: new AgentDispatcher(),
     });
     const heartbeat = create(AgentMessageSchema, {
       payload: {
         case: "heartbeat",
-        value: create(HeartbeatSchema, { sequence: 41n }),
+        value: create(HeartbeatSchema, {
+          agentId: "untrusted",
+          sequence: 41n,
+          uploadCheckpointKeys: [key],
+        }),
       },
     });
 
@@ -484,6 +496,7 @@ describe("agent-handler identity pinning", () => {
     );
     for (const response of responses) {
       if (response.payload.case === "heartbeatAck") {
+        expect(response.payload.value.releasedUploadCheckpointKeys).toEqual([key]);
         heartbeatSequences.push(response.payload.value.sequence);
       }
     }
@@ -660,7 +673,7 @@ describe("agent-handler identity pinning", () => {
       denyList: string[];
     }> = [];
     const fakePolicyStore = {
-      getForAgent: async (agentId: string) => ({
+      effectiveForAgent: async (agentId: string) => ({
         agentId,
         scope: "agent",
         version: "v-reconnect",

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 
 interface PendingRelease {
+  agentId: string;
   replicaId: string;
   resolve: () => void;
   reject: (error: Error) => void;
@@ -23,7 +24,13 @@ export class SandboxArtifactReleaseService {
         this.pending.delete(requestId);
         reject(new Error("Sandbox artifact release acknowledgement timed out"));
       }, this.timeoutMs);
-      this.pending.set(requestId, { replicaId: replica.id, resolve, reject, timer });
+      this.pending.set(requestId, {
+        agentId: replica.agentId,
+        replicaId: replica.id,
+        resolve,
+        reject,
+        timer,
+      });
       const pushed = this.dispatcher.pushSandboxArtifactRelease(replica.agentId, requestId, [
         { replicaId: replica.id, storageRef: replica.storageRef },
       ]);
@@ -36,12 +43,13 @@ export class SandboxArtifactReleaseService {
   }
 
   resolve(input: {
+    agentId: string;
     requestId: string;
     releasedReplicaIds: readonly string[];
     failures: Readonly<Record<string, string>>;
   }): boolean {
     const pending = this.pending.get(input.requestId);
-    if (!pending) return false;
+    if (!pending || pending.agentId !== input.agentId) return false;
     clearTimeout(pending.timer);
     this.pending.delete(input.requestId);
     const failure = input.failures[pending.replicaId];

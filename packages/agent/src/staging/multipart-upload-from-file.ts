@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { readSiteTransport, siteFetch } from "@kuintessence/shared/site-transport";
 import { z } from "zod";
@@ -68,6 +68,10 @@ const defaultPut = async (
  * sha256 is computed from the part slices in ascending order.
  */
 const checkpointWriters = new Map<string, Promise<void>>();
+
+export function uploadCheckpointInUse(path: string): boolean {
+  return checkpointWriters.has(resolve(path));
+}
 
 export async function multipartUploadFromFile(
   opts: MultipartFromFileOptions,
@@ -289,14 +293,18 @@ async function uploadFromFile(opts: MultipartFromFileOptions): Promise<Multipart
           additionalBytes: Buffer.byteLength(checkpoint),
           additionalInodes: 1,
         });
-        await writeFile(temporary, checkpoint, { mode: 0o600, flag: "wx" });
-        const handle = await open(temporary, "r");
+        const handle = await open(temporary, "wx", 0o600);
         try {
-          await handle.sync();
+          try {
+            await handle.writeFile(checkpoint);
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          await rename(temporary, opts.checkpoint.path);
         } finally {
-          await handle.close();
+          await rm(temporary, { force: true });
         }
-        await rename(temporary, opts.checkpoint.path);
         const directory = await open(dirname(opts.checkpoint.path), "r");
         try {
           await directory.sync();

@@ -45,7 +45,7 @@ Kuintessence 将 Slurm、OpenPBS、Torque、Kubernetes 等计算资源接入同�
 - 平台只展示当前用户有权访问的资源；菜单不可见通常表示尚未获得对应角色或组织授权。
 - 作业是否能够运行取决于软件可用性、队列授权、集群账号映射、资源余量和算力中心策略。
 - 隔离运行环境（Sandbox）仅开放已验证的调度系统与执行模式组合，尚未作为正式可用（GA）能力提供。
-- Parquet 导出、完整源码镜像任务和离线包执行器仍在规划中，当前不可用。
+- 完整源码镜像任务和离线包执行器仍在规划中，当前不可用。
 
 ## 2. 角色与权限
 
@@ -394,7 +394,8 @@ kq cancel <job-id>
 | `kq metering` | 计量查询与导出 |
 | `kq dsl` | 工作流 schema 和校验 |
 | `kq agent` | 接入代理查询和外部接入代理服务 |
-| `kq ssh` | 通过 Server SSH 网关打开会话 |
+| `kq sftp` / `kq scp` | 经 SSH 网关在本机和指定 Agent 登录节点之间传输文件，支持 SFTP 批处理及目录复制 |
+| `kq ssh` | 通过 Server SSH 网关打开会话；`--record <file>` 将终端输出保存为当前用户的 asciinema v2 文件 |
 
 ### 12.2 TUI 与本地 GUI
 

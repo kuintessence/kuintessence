@@ -36,6 +36,8 @@ import {
   type FederationParameterOverrides,
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
+  type FederationSubmission,
+  FederationSubmissionSchema,
   federationCanonicalJson,
   federationExecutionDeadline,
 } from "@kuintessence/shared/federation";
@@ -47,6 +49,7 @@ import { and, asc, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import { FederationArbitrationPolicyService } from "./arbitration-policy";
 import type { FederationAssetService } from "./assets";
+import { federationMaterialDigest } from "./assets";
 import { cancellationSummary, FederationCancellationSender } from "./cancellation-outbound";
 import { assertManagedClusterRequest } from "./cluster-queues";
 import { allocateTaskCompletion } from "./completion-capacity";
@@ -54,7 +57,7 @@ import { type FederationDownloadStorage, signedDownloadExpiry } from "./download
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { stopCancelledExecution } from "./execution-stop";
 import { FabricClientFailure } from "./fabric-client";
-import { FederationWorkflowInputExports } from "./input-exports";
+import { FederationWorkflowInputExports, pinLocalInputFiles } from "./input-exports";
 import type { FederationMarketRequestService } from "./market-requests";
 import type { FederationMediaImportOperations } from "./media-import-operations";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -201,6 +204,7 @@ export class FederationOutboundService {
     request: FederationDelegation,
     materials: Awaited<ReturnType<FederationOutboundService["materials"]>>,
     allowReplay = false,
+    localSnapshot?: NonNullable<Outbound["localInputSnapshot"]>,
   ) {
     const [binding] = await tx
       .select()
@@ -290,7 +294,13 @@ export class FederationOutboundService {
       .from(federationSites)
       .where(eq(federationSites.id, terms.targetSiteId));
     if (!target) throw new FederationError("UNTRUSTED_IDENTITY");
-    const inputExport = await this.inputExports.forDelegation(tx, actor, request, terms);
+    const inputExport = await this.inputExports.forDelegation(
+      tx,
+      actor,
+      request,
+      terms,
+      localSnapshot,
+    );
     if (confirmation && confirmation.expiresAtUnixMs <= this.clock().getTime())
       throw new FabricClientFailure("LEDGER_PENDING");
     return {
@@ -303,8 +313,45 @@ export class FederationOutboundService {
     };
   }
 
-  async enqueue(actor: FederationActor, raw: FederationDelegation) {
-    return this.enqueueRequest(actor, raw);
+  async enqueue(actor: FederationActor, raw: FederationSubmission) {
+    const { localInputFiles, ...request } = FederationSubmissionSchema.parse(raw);
+    if (!localInputFiles) return this.enqueueRequest(actor, request);
+    const pinned = await this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "delegation.submit");
+      const [prior] = await tx
+        .select()
+        .from(federationOutbound)
+        .where(this.key(request.operationId));
+      if (prior) {
+        if (
+          prior.submittedBy !== actor.userId ||
+          prior.localOrgId !== actor.orgId ||
+          !prior.localInputSnapshot ||
+          !prior.request.inputFilesDigest ||
+          federationCanonicalJson(prior.localInputSnapshot.selection) !==
+            federationCanonicalJson(localInputFiles)
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        return { digest: prior.request.inputFilesDigest, snapshot: prior.localInputSnapshot };
+      }
+      const files = await pinLocalInputFiles(tx, actor, localInputFiles);
+      return {
+        digest: files.manifestDigest,
+        snapshot: {
+          selection: localInputFiles,
+          bindingsDigest: federationMaterialDigest(files.bindings),
+        },
+      };
+    });
+    if (request.inputFilesDigest && request.inputFilesDigest !== pinned.digest)
+      throw new FederationError("OPERATION_CONFLICT");
+    return this.enqueueRequest(
+      actor,
+      { ...request, inputFilesDigest: pinned.digest },
+      undefined,
+      undefined,
+      pinned.snapshot,
+    );
   }
 
   async enqueueForWorkflow(
@@ -376,6 +423,7 @@ export class FederationOutboundService {
     raw: FederationDelegation,
     lease?: LeasedWorkflowJournal,
     market?: FederationWorkflowMarket,
+    localSnapshot?: NonNullable<Outbound["localInputSnapshot"]>,
   ) {
     const request = FederationDelegationSchema.parse(raw);
     const transaction = <T>(operation: (tx: PgTransaction) => Promise<T>) =>
@@ -407,6 +455,8 @@ export class FederationOutboundService {
       if (
         row.localOrgId !== actor.orgId ||
         row.submittedBy !== actor.userId ||
+        federationCanonicalJson(row.localInputSnapshot ?? null) !==
+          federationCanonicalJson(localSnapshot ?? null) ||
         federationCanonicalJson(row.request) !== federationCanonicalJson(request)
       )
         throw new FederationError("OPERATION_CONFLICT");
@@ -444,7 +494,7 @@ export class FederationOutboundService {
       await this.confirmations.refreshForExecution(actor.orgId, request, "admission");
     }
     const authorized = await this.db.transaction((tx) =>
-      this.authorize(tx, actor, request, materials, true),
+      this.authorize(tx, actor, request, materials, true, localSnapshot),
     );
     const requestJws = await signFederationMessage(
       FederationDelegationSchema,
@@ -468,6 +518,8 @@ export class FederationOutboundService {
         if (
           row.localOrgId !== actor.orgId ||
           row.submittedBy !== actor.userId ||
+          federationCanonicalJson(row.localInputSnapshot ?? null) !==
+            federationCanonicalJson(localSnapshot ?? null) ||
           row.requestDigest !== verified.digest
         )
           throw new FederationError("OPERATION_CONFLICT");
@@ -484,6 +536,7 @@ export class FederationOutboundService {
         request,
         materials,
         true,
+        localSnapshot,
       );
       // Another request can commit while authorization waits for institutional locks.
       const duplicate = await existing();
@@ -543,6 +596,7 @@ export class FederationOutboundService {
           endpoint,
           request,
           requestJws,
+          localInputSnapshot: localSnapshot,
           requestDigest: verified.digest,
           nextAttemptAt: this.clock(),
         })

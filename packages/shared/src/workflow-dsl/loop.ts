@@ -6,7 +6,7 @@ import { NodeOutputRefSchema } from "./refs";
 export const LoopOutputSchema = z.strictObject({
   descriptor: z.string(),
   from: NodeOutputRefSchema,
-  aggregate: z.enum(["Collect", "Concat", "Reduce"]).optional(),
+  aggregate: z.enum(["Collect", "Concat"]).optional(),
 });
 export type LoopOutput = z.infer<typeof LoopOutputSchema>;
 

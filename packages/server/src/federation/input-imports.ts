@@ -13,7 +13,7 @@ import {
   FederationInputFilesSchema,
   federationExecutionDeadline,
 } from "@kuintessence/shared/federation";
-import { and, asc, eq, inArray, isNull, lte, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota";
 import { federationMaterialDigest } from "./assets";
 import { renewTaskCompletion } from "./completion-capacity";
@@ -60,7 +60,7 @@ export async function cancelFederationInputImport(
     for (const { member, attempt } of published)
       await tx
         .update(netdriveFiles)
-        .set({ deletedAt: now })
+        .set({ deletedAt: sql`clock_timestamp() at time zone 'UTC'` })
         .where(
           and(
             eq(netdriveFiles.id, member.id),

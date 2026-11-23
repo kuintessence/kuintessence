@@ -44,7 +44,10 @@ export interface SpackActivationInput {
   timeoutMs?: number;
   spawner?: Spawner;
   invalidate?: (hashes: string[]) => void;
-  schedule?: (prepare: () => Promise<string>) => Promise<string>;
+  schedule?: (
+    loadEnvironment: (signal: AbortSignal) => Promise<string>,
+    signal: AbortSignal,
+  ) => Promise<string>;
   trackCleanup?: (pending: Promise<void>) => void;
 }
 
@@ -81,19 +84,19 @@ export async function activateWorkflowSpack(input: SpackActivationInput): Promis
     removeAbortListener = () => signal.removeEventListener("abort", onAbort);
   });
   const manager = input.manager;
-  const prepare = async () => {
-    signal.throwIfAborted();
+  const loadEnvironment = async (loadSignal: AbortSignal) => {
+    loadSignal.throwIfAborted();
     if (execution.data.pin && !manager.loadPinnedWorkflow)
       throw new Error(SPACK_ACTIVATION_FAILURE);
     const outcome =
       execution.data.pin && manager.loadPinnedWorkflow
-        ? await manager.loadPinnedWorkflow(execution.data.spec, execution.data.pin, signal)
-        : await manager.runSoftwareOperation("load", execution.data.spec, undefined, signal);
+        ? await manager.loadPinnedWorkflow(execution.data.spec, execution.data.pin, loadSignal)
+        : await manager.runSoftwareOperation("load", execution.data.spec, undefined, loadSignal);
     // A cancelled/expired verification can still withdraw a previously advertised install.
     if ("invalidatedHashes" in outcome && outcome.invalidatedHashes?.length) {
       input.invalidate?.(outcome.invalidatedHashes);
     }
-    signal.throwIfAborted();
+    loadSignal.throwIfAborted();
     if (outcome.outcome !== "succeeded") throw new Error(SPACK_ACTIVATION_FAILURE);
     const shell = outcome.stdout;
     if (
@@ -110,12 +113,14 @@ export async function activateWorkflowSpack(input: SpackActivationInput): Promis
       stdin: script,
       timeoutMs: 5_000,
     });
-    signal.throwIfAborted();
+    loadSignal.throwIfAborted();
     if (checked.exitCode !== 0) throw new Error(SPACK_ACTIVATION_FAILURE);
-    return `set -e\neval ${shellQuote(script)}\n${execution.data.command}`;
+    return script;
   };
   try {
-    const preparation = input.schedule ? input.schedule(prepare) : prepare();
+    const preparation = input.schedule
+      ? input.schedule(loadEnvironment, signal)
+      : loadEnvironment(signal);
     // Cancellation rejects promptly, while shutdown must still account for runtime cleanup.
     input.trackCleanup?.(
       preparation.then(
@@ -123,7 +128,9 @@ export async function activateWorkflowSpack(input: SpackActivationInput): Promis
         () => {},
       ),
     );
-    return await Promise.race([preparation, aborted]);
+    const shell = await Promise.race([preparation, aborted]);
+    signal.throwIfAborted();
+    return `set -e\neval ${shellQuote(shell)}\n${execution.data.command}`;
   } catch {
     throw new Error(deadlineExpired ? SPACK_ACTIVATION_TIMEOUT : SPACK_ACTIVATION_FAILURE);
   } finally {

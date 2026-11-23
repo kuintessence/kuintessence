@@ -11,6 +11,7 @@ import {
   type SpackMaterialManifest,
   type SpackMaterialSummary,
   spackMaterialBlobs,
+  spackMaterialCatalogPosition,
 } from "@kuintessence/shared";
 import {
   checkNamespaceAccess,
@@ -19,6 +20,7 @@ import {
   type RbacPrincipal,
 } from "./namespace";
 import { RecipeStoreError } from "./recipe-git";
+import { indexedMaterialDigests } from "./spack-material-name-index";
 import {
   isMissing,
   type MaterialMetadataReadOptions,
@@ -55,7 +57,7 @@ export class SpackMaterialCatalogLimitError extends SpackMaterialError {
   }
 }
 
-/** Read the publication source of truth; no mutable or potentially stale secondary index. */
+/** Read and authorize the immutable manifest for every index candidate. */
 export class SpackMaterialCatalogReader {
   private readonly limits: typeof DEFAULT_LIMITS;
   private active = 0;
@@ -82,7 +84,10 @@ export class SpackMaterialCatalogReader {
     signal?.throwIfAborted();
     const parsed = SpackMaterialCatalogQuerySchema.safeParse(query);
     if (!parsed.success) throw new SpackMaterialError(422, "Invalid material catalog query");
-    const repository = parsed.data.repository;
+    const { repository, limit, after } = parsed.data;
+    const repositoryId = repository && createHash("sha256").update(repository).digest("hex");
+    if (repositoryId && after && !after.startsWith(`${repositoryId}.`))
+      throw new SpackMaterialError(422, "Catalog cursor does not match repository");
     if (repository && !canRead(repository, actor)) return { releases: [] };
     if (this.active >= this.limits.maxConcurrent) {
       throw new SpackMaterialError(429, "Too many material catalog scans");
@@ -100,6 +105,18 @@ export class SpackMaterialCatalogReader {
       checkpoint();
       if (++entries > this.limits.maxEntries) throw new SpackMaterialCatalogLimitError();
     };
+    const repositoryIds = async (path: string) => {
+      const result: string[] = [];
+      for await (const entry of await opendir(path)) {
+        countEntry();
+        if (!/^[a-f0-9]{64}$/.test(entry.name)) continue;
+        if (!entry.isDirectory())
+          throw new SpackMaterialError(500, "Invalid material catalog entry");
+        result.push(entry.name);
+      }
+      return result.sort();
+    };
+    let nextCursor: string | undefined;
     const root = join(this.root, "manifests");
     const scanRepository = async (id: string, rootInfo: Stats, required: boolean) => {
       checkpoint();
@@ -122,12 +139,17 @@ export class SpackMaterialCatalogReader {
           throw new SpackMaterialCatalogLimitError();
         }
       };
-      const directory = await opendir(path);
-      for await (const entry of directory) {
-        countEntry();
-        if (!/^[a-f0-9]{64}\.json$/.test(entry.name)) continue;
-        if (!entry.isFile()) throw new SpackMaterialError(500, "Invalid material catalog file");
-        const manifestDigest = `sha256:${entry.name.slice(0, -5)}`;
+      const lower = after?.startsWith(`${id}.`) ? after.slice(65) : undefined;
+      for await (const hex of indexedMaterialDigests(
+        this.root,
+        id,
+        lower,
+        checkpoint,
+        countEntry,
+        () => new SpackMaterialCatalogLimitError(),
+      )) {
+        checkpoint();
+        const manifestDigest = `sha256:${hex}`;
         let stored: StoredSpackMaterialManifest;
         try {
           stored = await this.store.getManifest(id, manifestDigest, {
@@ -164,6 +186,12 @@ export class SpackMaterialCatalogReader {
           throw error;
         }
         checkpoint();
+        const last = releases.at(-1);
+        if (last && releases.length === limit) {
+          // Only signal another page after authorizing one more visible manifest.
+          nextCursor = spackMaterialCatalogPosition(last);
+          break;
+        }
         if (releases.length >= this.limits.maxReleases) {
           throw new SpackMaterialCatalogLimitError();
         }
@@ -189,25 +217,18 @@ export class SpackMaterialCatalogReader {
         checkpoint();
         return { releases };
       }
-      if (repository) {
-        await scanRepository(
-          createHash("sha256").update(repository).digest("hex"),
-          rootInfo,
-          false,
-        );
+      if (repositoryId) {
+        await scanRepository(repositoryId, rootInfo, false);
       } else {
-        const directory = await opendir(root);
-        for await (const entry of directory) {
-          countEntry();
-          if (!/^[a-f0-9]{64}$/.test(entry.name)) continue;
-          if (!entry.isDirectory()) {
-            throw new SpackMaterialError(500, "Invalid material catalog directory");
-          }
-          await scanRepository(entry.name, rootInfo, true);
+        for (const id of await repositoryIds(root)) {
+          if (after && id < after.slice(0, 64)) continue;
+          await scanRepository(id, rootInfo, true);
+          if (nextCursor) break;
         }
       }
       await assertDirectoryIdentity(root, rootInfo);
       checkpoint();
+      if (limit) return nextCursor ? { releases, nextCursor } : { releases };
       releases.sort((a, b) => {
         for (const field of ["repository", "spec", "target", "manifestDigest"] as const) {
           if (a[field] !== b[field]) return a[field] < b[field] ? -1 : 1;

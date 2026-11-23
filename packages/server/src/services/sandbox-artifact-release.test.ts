@@ -15,6 +15,15 @@ describe("SandboxArtifactReleaseService", () => {
     const released = service.release({ id: "replica-1", agentId: "agent-1", storageRef: "/x" });
     expect(
       service.resolve({
+        agentId: "other-agent",
+        requestId,
+        releasedReplicaIds: ["replica-1"],
+        failures: {},
+      }),
+    ).toBe(false);
+    expect(
+      service.resolve({
+        agentId: "agent-1",
         requestId,
         releasedReplicaIds: ["replica-1"],
         failures: {},

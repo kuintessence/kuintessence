@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createSqliteDb } from "@kuintessence/db";
 import { JobCleanupIntents, JobRevocationTombstones } from "./job-cleanup-intents";
 
@@ -92,4 +95,48 @@ describe("JobCleanupIntents", () => {
 
     expect(await tombstones.revokedEpoch("job-fence")).toBe(3);
   });
+});
+
+test("PVC cleanup survives restart, preserves a failed binding and isolates adjacent jobs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kq-pvc-"));
+  const path = join(root, "agent.db");
+  const db = createSqliteDb(path);
+  const next = createSqliteDb(path);
+  try {
+    const intents = new JobCleanupIntents(db);
+    const binding = {
+      claimUid: crypto.randomUUID(),
+      namespace: "mapped",
+      serviceAccount: "worker",
+      claim: "materials",
+      image: "pinned",
+    };
+    const first = { jobId: crypto.randomUUID(), preparationId: crypto.randomUUID(), binding };
+    const sibling = { ...first, jobId: crypto.randomUUID(), preparationId: crypto.randomUUID() };
+    await intents.recordPvc(first);
+    await intents.recordPvc(sibling);
+    await intents.recordPvc(first);
+    await expect(
+      intents.recordPvc({ ...first, binding: { ...binding, claimUid: crypto.randomUUID() } }),
+    ).rejects.toThrow("binding changed");
+    const restored = new JobCleanupIntents(next);
+    await expect(
+      restored.releasePvcs(first.jobId, async () => {
+        throw new Error("unavailable");
+      }),
+    ).rejects.toThrow("unavailable");
+    const removed: string[] = [];
+    const remove = async (entry: { preparationId: string }) => {
+      removed.push(entry.preparationId);
+    };
+    await restored.releasePvcs(first.jobId, remove);
+    await restored.releasePvcs(first.jobId, remove);
+    expect(removed).toEqual([first.preparationId]);
+    await restored.releasePvcs(sibling.jobId, remove);
+    expect(removed).toEqual([first.preparationId, sibling.preparationId]);
+  } finally {
+    db.$client.close();
+    next.$client.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

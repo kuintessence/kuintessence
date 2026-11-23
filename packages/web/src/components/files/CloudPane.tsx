@@ -1,4 +1,4 @@
-import type { CloudObject } from "@kuintessence/shared/browser";
+import type { NetDriveListItem } from "@kuintessence/shared/browser";
 import {
   ArrowUp,
   Check,
@@ -24,7 +24,7 @@ import { buildCloudBrowserRows, fmtBytes, parentCloudPrefix } from "./path-picke
 
 type SortKey = "name" | "size" | "modified";
 
-export type CloudPaneEntry = CloudObject;
+export type CloudPaneEntry = NetDriveListItem;
 
 export interface CloudPaneProps {
   title: string;
@@ -39,7 +39,7 @@ export interface CloudPaneProps {
   uploading?: boolean;
   uploadStatus?: string;
   onPrefixChange?: (next: string) => void;
-  onDownload?: (obj: CloudObject) => void;
+  onDownload?: (obj: NetDriveListItem) => void;
   onDelete?: (obj: CloudPaneEntry) => void;
   deletingId?: string | null;
 }
@@ -86,8 +86,8 @@ export function CloudPane({
         return rightSize - leftSize;
       }
       if (sortKey === "modified") {
-        const leftModified = left.kind === "dir" ? left.latestModifiedAt : left.obj.modifiedAt;
-        const rightModified = right.kind === "dir" ? right.latestModifiedAt : right.obj.modifiedAt;
+        const leftModified = left.kind === "dir" ? left.latestModifiedAt : left.obj.mtime;
+        const rightModified = right.kind === "dir" ? right.latestModifiedAt : right.obj.mtime;
         return new Date(rightModified).getTime() - new Date(leftModified).getTime();
       }
       const leftName = left.kind === "dir" ? left.name : left.displayName;
@@ -371,7 +371,7 @@ export function CloudPane({
                         x: event.clientX,
                         y: event.clientY,
                         label: r.displayName,
-                        path: r.obj.key,
+                        path: r.obj.path,
                         kind: "file",
                         resourceId: r.obj.id,
                       });
@@ -410,9 +410,9 @@ export function CloudPane({
                     </TableCell>
                     <TableCell
                       className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground tabular-nums md:table-cell"
-                      title={r.obj.modifiedAt}
+                      title={r.obj.mtime}
                     >
-                      {relativeFromNow(r.obj.modifiedAt, undefined, language)}
+                      {relativeFromNow(r.obj.mtime, undefined, language)}
                     </TableCell>
                     <TableCell className="px-1 py-0 text-right">
                       <div className="flex items-center justify-end">
@@ -452,7 +452,7 @@ export function CloudPane({
                             openContextMenu(
                               {
                                 label: r.displayName,
-                                path: r.obj.key,
+                                path: r.obj.path,
                                 kind: "file",
                                 resourceId: r.obj.id,
                               },

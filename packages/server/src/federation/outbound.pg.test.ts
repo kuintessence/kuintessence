@@ -3407,20 +3407,23 @@ test.each([
     const service = new NetDriveService(db, backend, {
       commitSecret: "result-quota-test-commit-secret-for-isolated-fixture",
     });
-    const path = `result-quota/${crypto.randomUUID()}`;
-    const minted = await service.mintUploadUrl(actor.userId, { path, size: 3 });
-    await backend.putBlob(minted.storageKey, Buffer.from("abc"), "text/plain");
+    const upload = async () => {
+      const path = `result-quota/${crypto.randomUUID()}`;
+      const minted = await service.mintUploadUrl(actor.userId, { path, size: 3 });
+      await backend.putBlob(minted.storageKey, Buffer.from("abc"), "text/plain");
+      return service.commitFile(actor.userId, {
+        path,
+        size: 3,
+        sha256: new Bun.CryptoHasher("sha256").update("abc").digest("hex"),
+        storageKey: minted.storageKey,
+        commitToken: minted.commitToken,
+      });
+    };
     const results = await Promise.allSettled([
       first.imports.enqueue(actor, first.imported.operationId, firstId),
       competitor === "import"
         ? second.imports.enqueue(actor, second.imported.operationId, secondId)
-        : service.commitFile(actor.userId, {
-            path,
-            size: 3,
-            sha256: new Bun.CryptoHasher("sha256").update("abc").digest("hex"),
-            storageKey: minted.storageKey,
-            commitToken: minted.commitToken,
-          }),
+        : upload(),
     ]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     const rejected = results.find((result) => result.status === "rejected");
@@ -4982,6 +4985,12 @@ async function acceptedInputInventory(
   const saved = await row(operation.operationId);
   if (!saved.receipt || !saved.request.inputFilesDigest)
     throw new Error("Missing input acceptance");
+  return { ...f, saved, ...(await inputInventoryQuery(saved)) };
+}
+
+async function inputInventoryQuery(saved: Awaited<ReturnType<typeof row>>) {
+  if (!saved.receipt || !saved.request.inputFilesDigest)
+    throw new Error("Missing input acceptance");
   const query = FederationMaterialQuerySchema.parse({
     protocolVersion: 1,
     kind: "material-query",
@@ -5000,8 +5009,72 @@ async function acceptedInputInventory(
     expiresAt: new Date(clock().getTime() + 30_000).toISOString(),
   });
   const jws = await signFederationMessage(FederationMaterialQuerySchema, query, b.signing);
-  return { ...f, saved, query, jws, reservationId: saved.receipt.reservationId };
+  return { query, jws, reservationId: saved.receipt.reservationId };
 }
+
+test("manual input files stay private, pin their version and require bilateral disclosure authority", async () => {
+  const f = await fixture(undefined, {}, inputPolicy, { input: { type: "File", required: true } });
+  const fileId = crypto.randomUUID();
+  sourceInputFileIds.push(fileId);
+  const original = {
+    id: fileId,
+    ownerId: actor.userId,
+    path: "private/manual.txt",
+    size: 4,
+    sha256: "a".repeat(64),
+    storageKey: `netdrive/objects/${fileId}`,
+    storageVersionId: "manual-version",
+  };
+  await db.insert(netdriveFiles).values(original);
+  const localInputFiles = [
+    { descriptor: "input", type: "File" as const, files: [{ fileId, path: "input.txt" }] },
+  ];
+  const service = f.service();
+  const request = { ...f.request, localInputFiles };
+  const denied = await fixture(undefined, {}, { ...inputPolicy, maxBytes: 3 });
+  await expect(
+    denied.service().enqueue(actor, { ...denied.request, localInputFiles }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await db
+    .update(netdriveFiles)
+    .set({ ownerId: receiver.userId })
+    .where(eq(netdriveFiles.id, fileId));
+  await expect(service.enqueue(actor, request)).rejects.toThrow("POLICY_DENIED");
+  await db.update(netdriveFiles).set({ ownerId: actor.userId }).where(eq(netdriveFiles.id, fileId));
+  const [first, replay] = await Promise.all([
+    service.enqueue(actor, request),
+    service.enqueue(actor, request),
+  ]);
+  expect(first.operationId).toBe(replay.operationId);
+  await expect(
+    service.enqueue(actor, {
+      ...request,
+      localInputFiles: localInputFiles.map((input) => ({ ...input, descriptor: "changed" })),
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await service.deliverNext();
+  const saved = await row(first.operationId);
+  for (const text of [fileId, original.storageKey, original.storageVersionId, original.path]) {
+    expect(JSON.stringify(saved.request)).not.toContain(text);
+  }
+  expect(saved.request.inputFilesDigest).toBeDefined();
+  const { jws } = await inputInventoryQuery(saved);
+  const signed = await verifyFederationMessage(
+    FederationMaterialChunkSchema,
+    await service.materialChunk(jws, targetFingerprint),
+    await trust.resolveKey(a.signing.siteId, a.signing.keyId, clock()),
+    clock(),
+  );
+  const manifest = JSON.parse(Buffer.from(signed.payload.bytes, "base64").toString());
+  expect(manifest.inputs[0].files).toEqual([
+    { path: "input.txt", sha256: original.sha256, sizeBytes: 4 },
+  ]);
+  await db
+    .update(netdriveFiles)
+    .set({ storageVersionId: "replaced" })
+    .where(eq(netdriveFiles.id, fileId));
+  await expect(service.materialChunk(jws, targetFingerprint)).rejects.toThrow("OPERATION_CONFLICT");
+});
 
 test("input inventory is signed and invocation-bound, and receiver waits for actual managed copies", async () => {
   const f = await acceptedInputInventory();

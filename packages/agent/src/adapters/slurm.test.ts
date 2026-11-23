@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { JobLogUnavailableError, type Spawner } from "./base";
 import { SlurmAdapter } from "./slurm";
 
@@ -1710,4 +1713,237 @@ test.each([
   expect(result.status).toBe(expected);
   if (expected === "found") expect(result).toEqual({ status: "found", schedulerJobId: "123" });
   expect(calls.map((argv) => argv[0])).toEqual(["squeue", "sacct", "scontrol"]);
+});
+
+describe("ready ForEach array members", () => {
+  const group = "a".repeat(64);
+  const member = () => ({
+    jobId: crypto.randomUUID(),
+    name: "worker",
+    forEachGroup: group,
+    schedulerName: `kqa-${group}`,
+    cpus: 1,
+    gpus: 0,
+    memoryMb: 64,
+    wallTimeSec: 30,
+    workingDir: "/tmp",
+    envVars: {},
+    command: "true",
+  });
+  test("batches by directives and group, limits array width, and retains individual identities", async () => {
+    const { spawner, stdin } = mockSpawner(
+      Array.from({ length: 5 }, (_, i) => ({ exitCode: 0, stdout: String(100 + i) })),
+    );
+    const adapter = new SlurmAdapter("23", { spawner });
+    const specs = Array.from({ length: 7 }, member);
+    const otherGroup = "b".repeat(64);
+    const results = await Promise.all(
+      [
+        ...specs,
+        { ...member(), cpus: 2 },
+        { ...member(), forEachGroup: otherGroup, schedulerName: `kqa-${otherGroup}` },
+        { ...member(), forEachGroup: undefined },
+      ].map((spec) => adapter.submit(spec)),
+    );
+    expect(stdin).toHaveLength(5);
+    expect(stdin.filter((script) => script?.includes("#SBATCH --array="))).toHaveLength(1);
+    expect(stdin[0]).toContain("#SBATCH --array=0-5");
+    expect(stdin[0]).toContain(
+      specs
+        .slice(0, 6)
+        .map((spec) => spec.jobId)
+        .join(","),
+    );
+    expect(results.slice(0, 6).map((r) => r.schedulerJobId)).toEqual([
+      "100_0",
+      "100_1",
+      "100_2",
+      "100_3",
+      "100_4",
+      "100_5",
+    ]);
+    expect(new Set(results.map((r) => r.schedulerJobId)).size).toBe(10);
+  });
+
+  test("each bash branch preserves its cwd, quoting, stdin, exit code and retained log", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kq-array-"));
+    try {
+      const { spawner, stdin } = mockSpawner([{ exitCode: 0, stdout: "120" }]);
+      const adapter = new SlurmAdapter("23", { spawner, logDir: root });
+      const specs = [0, 1].map((i) => ({
+        ...member(),
+        workingDir: join(root, `item '${i}`),
+        stdinText: `input '${i}`,
+        envVars: { LABEL: `label '${i}` },
+        command: `pwd; echo "$LABEL"; cat; exit ${i * 7}`,
+      }));
+      for (const spec of specs) await mkdir(spec.workingDir);
+      await Promise.all(specs.map((spec) => adapter.submit(spec)));
+      const script = stdin[0];
+      if (!script) throw new Error("array script missing");
+      for (const [i, spec] of specs.entries()) {
+        const child = Bun.spawn(["/bin/bash"], {
+          stdin: new TextEncoder().encode(script),
+          env: { ...process.env, SLURM_ARRAY_TASK_ID: String(i) },
+        });
+        expect(await child.exited).toBe(i * 7);
+        expect(await Bun.file(join(root, `kq-${spec.jobId}.out`)).text()).toBe(
+          `${spec.workingDir}\nlabel '${i}\ninput '${i}\n`,
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("only a definitive rejection of the array format permits single-job fallback", async () => {
+    for (const definitive of [true, false]) {
+      const { spawner, calls, stdin } = mockSpawner([
+        {
+          exitCode: 1,
+          stdout: "",
+          stderr: definitive
+            ? "sbatch: error: Batch job submission failed: Invalid job array specification"
+            : "controller reply lost",
+        },
+        { exitCode: 0, stdout: "600" },
+        { exitCode: 0, stdout: "601" },
+      ]);
+      const adapter = new SlurmAdapter("23", { spawner });
+      const results = await Promise.allSettled([
+        adapter.submit(member()),
+        adapter.submit(member()),
+      ]);
+      expect(calls).toHaveLength(definitive ? 3 : 1);
+      expect(results.map((r) => r.status)).toEqual(
+        definitive ? ["fulfilled", "fulfilled"] : ["rejected", "rejected"],
+      );
+      for (const script of stdin.slice(1)) expect(script).toContain("#SBATCH --comment=KQ_JOB_ID=");
+    }
+  });
+
+  test("status ignores parent, siblings and unset element zero, and accounts by displayed element ID", async () => {
+    const { spawner, calls } = mockSpawner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          jobs: [
+            {
+              job_id: 100,
+              array_job_id: 100,
+              array_task_id: { set: false, number: 0 },
+              job_state: "FAILED",
+            },
+            { job_id: 101, array_job_id: 100, array_task_id: 1, job_state: "RUNNING" },
+            {
+              job_id: 102,
+              array_job_id: 100,
+              array_task_id: { set: true, number: 0 },
+              job_state: "PENDING",
+            },
+          ],
+        }),
+      },
+      { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_state: "RUNNING" }] }) },
+      { exitCode: 0, stdout: "COMPLETED|0:0|100_0|3|1|00:00:01\nFAILED|7:0|100_1|4|1|00:00:02" },
+    ]);
+    const adapter = new SlurmAdapter("23", { spawner });
+    expect(await adapter.status("100_0")).toEqual({ status: "queued" });
+    expect(await adapter.status("100_1")).toMatchObject({
+      status: "failed",
+      exitCode: 7,
+      accounting: { schedulerJobId: "100_1" },
+    });
+    expect(calls[2]?.join(" ")).toContain("JobID%64");
+  });
+
+  test("a folded pending row is expanded before reporting the requested member", async () => {
+    const { spawner } = mockSpawner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          jobs: [
+            {
+              job_id: 90,
+              array_job_id: 90,
+              array_task_id: { set: false, number: 0 },
+              job_state: "PENDING",
+            },
+          ],
+        }),
+      },
+      { exitCode: 0, stdout: "90_0|PENDING\n90_1|PENDING" },
+    ]);
+    expect(await new SlurmAdapter("23", { spawner }).status("90_1")).toEqual({ status: "queued" });
+  });
+
+  test("conflicting identity for one element in live and accounting records remains unresolved", async () => {
+    const first = member(),
+      second = member();
+    const row = (ids: string[]) => `90_1|${first.schedulerName}|KQ_ARRAY=${ids.join(",")}|compute`;
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: row([first.jobId, second.jobId]) },
+      { exitCode: 0, stdout: row([second.jobId, first.jobId]) },
+    ]);
+    const result = await new SlurmAdapter("23", { spawner }).findByKuintessenceJobId({
+      jobId: first.jobId,
+      schedulerName: first.schedulerName,
+      executionUser: { uid: 1000, username: "test" },
+      includeCompleted: true,
+      submittedAfter: "2026-11-20",
+    });
+    expect(result.status).toBe("indeterminate");
+  });
+
+  test("pending cancellation holds only its element and waits for an unambiguous split", async () => {
+    const pending = "JobId=100 ArrayJobId=100 ArrayTaskId=0-2 JobState=PENDING";
+    for (const split of [true, false]) {
+      const { spawner, calls } = mockSpawner([
+        { exitCode: 0, stdout: pending },
+        { exitCode: 0, stdout: "" },
+        {
+          exitCode: 0,
+          stdout: split ? "JobId=102 ArrayJobId=100 ArrayTaskId=1 JobState=PENDING" : pending,
+        },
+        { exitCode: 0, stdout: "" },
+      ]);
+      const adapter = new SlurmAdapter("23", { spawner });
+      if (split) await adapter.cancel("100_1");
+      else await expect(adapter.cancel("100_1")).rejects.toThrow("unconfirmed");
+      expect(calls[1]).toEqual(["scontrol", "hold", "100_1"]);
+      expect(calls.filter((argv) => argv[0] === "scancel")).toEqual(
+        split ? [["scancel", "100_1"]] : [],
+      );
+    }
+  });
+
+  test("controller recovery binds only the UUID at the exact element index", async () => {
+    const first = member(),
+      second = member();
+    const comment = `KQ_ARRAY=${first.jobId},${second.jobId}`;
+    const row = (n: number, id: number) =>
+      `JobId=${id} ArrayJobId=100 ArrayTaskId=${n} JobName=${first.schedulerName} Comment=${comment} Account=a UserId=test(10)`;
+    for (const secondRow of [
+      row(1, 101),
+      row(1, 101).replace("test(10)", "other(11)"),
+      row(1, 101).replace(second.jobId, first.jobId),
+    ]) {
+      const { spawner } = mockSpawner([
+        { exitCode: 0, stdout: "" },
+        { exitCode: 0, stdout: [row(0, 100), secondRow].join("\n") },
+      ]);
+      const result = await new SlurmAdapter("23", {
+        spawner,
+        terminalStatusBackend: "scontrol",
+      }).findByKuintessenceJobId({
+        jobId: second.jobId,
+        schedulerName: second.schedulerName,
+        executionUser: { uid: 10, username: "test" },
+        includeCompleted: true,
+        submittedAfter: "2026-11-20",
+      });
+      expect(result.status).toBe(secondRow === row(1, 101) ? "found" : "indeterminate");
+      if (result.status === "found") expect(result.schedulerJobId).toBe("100_1");
+    }
+  });
 });

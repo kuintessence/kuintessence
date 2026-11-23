@@ -1,8 +1,7 @@
 /**
  * SSH credential vault (PRD F17).
  *
- * Replaces the not-for-production `SSH_CRED_<AGENT_ID>` env resolver
- * (`routes/ssh.ts` `envCredentialResolver`). The authentication material
+ * The authentication material
  * (password / private key / passphrase) is encrypted at rest via
  * `secret-cipher` under the dedicated {@link SSH_CRED_DOMAIN} label, so it is
  * cryptographically isolated from the SSO client-secret domain. The connection
@@ -14,8 +13,7 @@
  * production it is wired end-to-end: the `ssh_credentials` table backs
  * `makePgSshRowLoader` (`ssh-credential-store.ts`), and `index.ts` passes
  * `makeVaultResolver(loadRow, SSO_SECRET_KEY ?? JWT_SECRET)` as the route's
- * `resolveCredentials` dep when `NODE_ENV === "production"`; the dev env-mock
- * (`envCredentialResolver`) is the route default otherwise.
+ * credential resolver.
  */
 
 import type { SshCredentials } from "../services/ssh-gateway";
@@ -33,6 +31,7 @@ export interface SshSecretMaterial {
 
 /** A persisted row: clear coordinates + the encrypted secret envelope. */
 export interface EncryptedSshRow {
+  jumpAgentIds?: string[];
   host: string;
   port: number;
   username: string;
@@ -90,13 +89,30 @@ export async function decryptSshRow(
  * agent has no stored credentials so the route closes the WebSocket with 4404,
  * exactly as the env-mock path did.
  */
-export function makeVaultResolver(
-  loadRow: LoadSshRow,
-  wrappingKey: string,
-): (agentId: string) => Promise<SshCredentials | null> {
-  return async (agentId: string) => {
+export function makeVaultResolver(loadRow: LoadSshRow, wrappingKey: string) {
+  return async (
+    agentId: string,
+    authorizeHop?: (hop: string) => Promise<void>,
+  ): Promise<SshCredentials | null> => {
     const row = await loadRow(agentId);
     if (!row) return null;
-    return decryptSshRow(row, wrappingKey);
+    const names = row.jumpAgentIds ?? [];
+    if (!names.length) return decryptSshRow(row, wrappingKey);
+    if (
+      !authorizeHop ||
+      names.length > 4 ||
+      new Set([agentId, ...names]).size !== names.length + 1 ||
+      !row.hostKeySha256
+    )
+      throw new Error("Invalid SSH credential route");
+    const jumps = [];
+    for (const name of names) {
+      await authorizeHop(name);
+      const hop = await loadRow(name);
+      if (!hop?.hostKeySha256 || !hop.secretEncrypted || hop.jumpAgentIds?.length)
+        throw new Error("Invalid SSH jump credential");
+      jumps.push(await decryptSshRow(hop, wrappingKey));
+    }
+    return { ...(await decryptSshRow(row, wrappingKey)), jumps };
   };
 }

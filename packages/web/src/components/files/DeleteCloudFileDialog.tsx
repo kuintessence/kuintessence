@@ -48,7 +48,7 @@ export function DeleteCloudFileDialog({
         </DialogHeader>
         <DialogBody className="space-y-3">
           <div className=" border-border p-3">
-            <div className="break-all font-mono text-sm font-medium">{displayFile?.key}</div>
+            <div className="break-all font-mono text-sm font-medium">{displayFile?.path}</div>
             <div className="mt-1 text-xs text-muted-foreground">
               {t("files.deleteDialog.size", { size: fmtBytes(displayFile?.size) })}
             </div>

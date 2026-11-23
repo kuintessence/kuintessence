@@ -76,6 +76,10 @@ class Memory {
   };
   getPrivateDataHash = async (collection: string, key: string) =>
     this.hashes.get(`${collection}:${key}`) ?? new Uint8Array();
+  purgePrivateData = async (collection: string, key: string) => {
+    this.privateState.delete(collection + ":" + key);
+    this.hashes.delete(collection + ":" + key);
+  };
   putPrivateData = async (collection: string, key: string, value: Uint8Array) => {
     this.privateState.set(`${collection}:${key}`, value);
     this.hashes.set(`${collection}:${key}`, createHash("sha256").update(value).digest());
@@ -669,4 +673,36 @@ test("case arbitration commitment rejects mismatched domains, future dates, revo
   f.memory.transient.clear();
   await f.ledger.invoke(f.memory, f.identity(2, "trust-admin"));
   await expect(f.invoke(d.input, 2)).rejects.toThrow("UNTRUSTED_IDENTITY");
+});
+
+test("case custodians verify one publication, independently retain and hold it, then explicitly purge the original", async () => {
+  const f = await fixture();
+  const receipt = JSON.parse((await f.invoke(f.input)).toString());
+  const call = async (index: number, change?: Record<string, unknown>) => {
+    f.memory.fcn = change ? "ChangeCaseRetention" : "InspectCaseRetention";
+    f.memory.params = [f.domain.domainId, f.input.recordId];
+    f.memory.transient = new Map(
+      change ? [["retention", Buffer.from(JSON.stringify(change))]] : [],
+    );
+    const value = await f.ledger.invoke(f.memory, f.identity(index, "case-custodian"));
+    return JSON.parse(value.toString());
+  };
+  const when = new Date(+f.memory.now + 3000).toISOString();
+  let state = await call(0);
+  expect(state.receipt).toEqual(receipt);
+  await expect(call(3)).rejects.toThrow("POLICY_DENIED");
+  const change = (index: number, action: string, other = {}) =>
+    call(index, { action, digest: state.digest, revision: state.revision, ...other });
+  for (const index of [0, 1, 2]) state = await change(index, "archive", { retainUntil: when });
+  state = await change(1, "hold");
+  await expect(change(0, "purge")).rejects.toThrow("POLICY_DENIED");
+  f.memory.now = new Date(+f.memory.now + 4000);
+  await f.invoke(await f.revoke());
+  await expect(change(0, "purge")).rejects.toThrow("POLICY_DENIED");
+  state = await change(1, "release-hold");
+  state = await change(2, "purge");
+  expect(state.purged).toBe(true);
+  expect(await change(2, "purge")).toEqual(state);
+  await expect(f.invoke(f.input)).rejects.toThrow("POLICY_DENIED");
+  expect((await call(1)).receipt).toEqual(receipt);
 });

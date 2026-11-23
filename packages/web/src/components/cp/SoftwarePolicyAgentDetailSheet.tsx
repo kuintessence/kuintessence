@@ -5,11 +5,12 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useSta
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useActiveOrganizationId } from "../../lib/active-organization";
-import type {
-  CpSoftwareAgentView,
-  PolicyOverlayInput,
-  SoftwareOperation,
-  SoftwareOperationAction,
+import {
+  type CpSoftwareAgentView,
+  estimateInstallation,
+  type PolicyOverlayInput,
+  type SoftwareOperation,
+  type SoftwareOperationAction,
 } from "../../lib/cp-client";
 import {
   listSpackCatalog,
@@ -593,6 +594,13 @@ export function AgentDetailSheet({
                     {t("cp.software.operations.submit")}
                   </Button>
                 </form>
+                {operationAction === "install" && operationSpec.trim() && canManage && (
+                  <InstallEstimate
+                    agentId={agent.agentId}
+                    spec={operationSpec.trim()}
+                    orgId={activeOrganizationId}
+                  />
+                )}
                 {operationPolicyRejection ? (
                   <PolicyRejectionHint reason={operationPolicyRejection} />
                 ) : null}
@@ -965,5 +973,86 @@ function UsecasePolicyList({
         </>
       )}
     </div>
+  );
+}
+
+function InstallEstimate({
+  agentId,
+  spec,
+  orgId,
+}: {
+  agentId: string;
+  spec: string;
+  orgId: string | null | undefined;
+}) {
+  const { t } = useTranslation();
+  const [cores, setCores] = useState("1");
+  const [minutes, setMinutes] = useState("");
+  const query = useQuery({
+    queryKey: ["cp-install-estimate", orgId, agentId, spec, cores, minutes],
+    queryFn: () =>
+      estimateInstallation(agentId, spec, Number(cores), minutes ? Number(minutes) : undefined),
+    enabled: false,
+    retry: false,
+  });
+  return (
+    <details className="my-2 text-sm">
+      <summary className="cursor-pointer">{t("cp.software.operations.estimate.title")}</summary>
+      <form
+        className="mt-2 flex flex-wrap items-end gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void query.refetch();
+        }}
+      >
+        <label>
+          {t("cp.software.operations.estimate.cpus")}
+          <Input
+            type="number"
+            min={1}
+            max={65536}
+            required
+            value={cores}
+            onChange={(e) => setCores(e.target.value)}
+          />
+        </label>
+        <label>
+          {t("cp.software.operations.estimate.minutes")}
+          <Input
+            type="number"
+            min="0.01"
+            max={525600}
+            step="any"
+            value={minutes}
+            onChange={(e) => setMinutes(e.target.value)}
+          />
+        </label>
+        <Button type="submit" variant="outline" size="sm" disabled={query.isFetching}>
+          {t("cp.software.operations.estimate.calculate")}
+        </Button>
+      </form>
+      {query.isError && (
+        <p role="alert">{toUserFacingError(query.error, t("software.unreachable"))}</p>
+      )}
+      {query.isSuccess && (
+        <p role="status" className="mt-2">
+          {!minutes && t("cp.software.operations.estimate.samples", { count: query.data.samples })}{" "}
+          {query.data.seconds === null
+            ? t("cp.software.operations.estimate.noDuration")
+            : t("cp.software.operations.estimate.hours", {
+                hours: query.data.cpuHours?.toLocaleString(undefined, {
+                  maximumSignificantDigits: 4,
+                }),
+              })}{" "}
+          {query.data.rate === null
+            ? t("cp.software.operations.estimate.noRate")
+            : t("cp.software.operations.estimate.rate", { rate: query.data.rate })}{" "}
+          {query.data.cost !== null &&
+            t("cp.software.operations.estimate.cost", {
+              cost: query.data.cost.toLocaleString(undefined, { maximumSignificantDigits: 4 }),
+            })}
+        </p>
+      )}
+    </details>
   );
 }

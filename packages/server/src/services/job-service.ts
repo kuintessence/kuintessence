@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, randomUUID, verify as verifySignature } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   type AuthorizationSubjectId,
   agentJobStatusEvents,
@@ -65,7 +65,10 @@ import type { DataRequirement } from "./data-prerequisite";
 import { PgDataPrerequisiteRepository } from "./data-prerequisite-repository-drizzle";
 import { persistJobCancellations } from "./job-cancellation";
 import type { JobUsageRecord } from "./metering";
+import { enqueueNotification } from "./notifications";
+import { verifyReleaseSignature } from "./release-signature";
 import { assertRestrictedNoEgressSubmission } from "./restricted-no-egress";
+import { enqueueTerminalSandboxPvc } from "./sandbox-pvc-release";
 
 const logger = createLogger("job-service");
 
@@ -405,19 +408,7 @@ export function verifiesTrustedEcosystemUsecaseBinding(
     ) {
       return false;
     }
-    const publicKeyDer = trustedPublicKeys[binding.signingKeyId];
-    if (!publicKeyDer) return false;
-    const key = createPublicKey({
-      key: Buffer.from(publicKeyDer, "base64"),
-      format: "der",
-      type: "spki",
-    });
-    return verifySignature(
-      null,
-      Buffer.from(canonicalJson(binding.manifest)),
-      key,
-      Buffer.from(binding.signature, "base64"),
-    );
+    return verifyReleaseSignature(binding, trustedPublicKeys);
   } catch {
     return false;
   }
@@ -456,19 +447,7 @@ export function verifiesTrustedEcosystemSandboxScriptBinding(
     ) {
       return false;
     }
-    const publicKeyDer = trustedPublicKeys[binding.signingKeyId];
-    if (!publicKeyDer) return false;
-    const key = createPublicKey({
-      key: Buffer.from(publicKeyDer, "base64"),
-      format: "der",
-      type: "spki",
-    });
-    return verifySignature(
-      null,
-      Buffer.from(canonicalJson(binding.manifest)),
-      key,
-      Buffer.from(binding.signature, "base64"),
-    );
+    return verifyReleaseSignature(binding, trustedPublicKeys);
   } catch {
     return false;
   }
@@ -723,8 +702,9 @@ export class JobService {
         memoryMb: data.resources.memoryMb,
         gpus: data.resources.gpus ?? 0,
         wallTimeSec: data.resources.wallTimeSec ?? null,
+        schedulerLimits: data.resources.schedulerLimits ?? null,
         workingDir: data.workingDir ?? null,
-        envVars: data.envVars ?? null,
+        envVars: data.envVars ? { ...data.envVars } : null,
         submittedBy,
         appTemplateKey: data.appTemplateKey ?? null,
         softwareRequirements: data.softwareRequirements ?? null,
@@ -996,6 +976,18 @@ export class JobService {
       if (!written) {
         throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
       }
+      if (isTerminal && written.submittedBy)
+        await enqueueNotification(
+          tx,
+          {
+            userId: written.submittedBy,
+            orgId: written.orgId,
+            eventKey: `job:${jobId}:${status}`,
+            kind: `job.${status}`,
+            message: `${jobId} · ${status}`,
+          },
+          { inboxOnly: written.restrictedNoEgress },
+        );
       if (isTerminal)
         await persistFederationTerminalEvidence(
           tx,
@@ -1005,6 +997,8 @@ export class JobService {
           agentEventId,
           schedulerDetails?.accounting,
         );
+      if (status === JobStatus.CANCELLED || status === JobStatus.FAILED)
+        await enqueueTerminalSandboxPvc(tx, written);
       if (status === JobStatus.CANCELLED) await persistJobCancellations(tx, written);
       changed = true;
       return written;
@@ -1045,6 +1039,19 @@ export class JobService {
       if (!written) {
         throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
       }
+      if (written.submittedBy)
+        await enqueueNotification(
+          tx,
+          {
+            userId: written.submittedBy,
+            orgId: written.orgId,
+            eventKey: `job:${jobId}:cancelled`,
+            kind: "job.cancelled",
+            message: `${jobId} · cancelled`,
+          },
+          { inboxOnly: written.restrictedNoEgress },
+        );
+      await enqueueTerminalSandboxPvc(tx, written);
       await persistFederationTerminalEvidence(tx, jobId, current, "platform-cancellation");
       await persistJobCancellations(tx, written);
       return written;

@@ -217,46 +217,6 @@ function makeAppWithRootResolver(
 }
 
 describe("legacy file routes", () => {
-  test("legacy cloud ownership uses canonical principal user id instead of token email", async () => {
-    const service = new FileService();
-    const oldEmailApp = makeAppWithFileService(service, undefined, {
-      email: "old-cloud@files.test",
-      principalUserId: "canonical-cloud-user",
-    });
-    const created = await oldEmailApp.request("/api/files/cloud", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        key: "inputs/a.dat",
-        size: 128,
-        contentType: "application/octet-stream",
-      }),
-    });
-    expect(created.status).toBe(201);
-    const object = (await created.json()) as { id: string; userId: string };
-    expect(object.userId).toBe("canonical-cloud-user");
-
-    const newEmailApp = makeAppWithFileService(service, undefined, {
-      email: "new-cloud@files.test",
-      principalUserId: "canonical-cloud-user",
-    });
-    const listed = await newEmailApp.request("/api/files/cloud");
-    const listedBody = (await listed.json()) as { entries: Array<{ id: string }> };
-    expect(listedBody.entries.map((entry) => entry.id)).toContain(object.id);
-
-    const renamed = await newEmailApp.request(`/api/files/cloud/${object.id}/rename`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ key: "inputs/renamed.dat" }),
-    });
-    expect(renamed.status).toBe(200);
-
-    const deleted = await newEmailApp.request(`/api/files/cloud/${object.id}`, {
-      method: "DELETE",
-    });
-    expect(deleted.status).toBe(200);
-  });
-
   test("normalizes cluster paths without escaping above root", () => {
     expect(normalizeClusterPath("/home/alice/../bob")).toBe("/home/bob");
     expect(normalizeClusterPath("../../etc")).toBe("/etc");
@@ -471,19 +431,20 @@ describe("legacy file routes", () => {
 
   test("buildClusterDownloadCommand single-quotes the requested path", () => {
     const command = buildClusterDownloadCommand("/scratch/me/a'$(touch pwned).txt");
-    expect(command).toContain("base64 '/scratch/me/a'\\''$(touch pwned).txt'");
-    expect(command).toContain("test -f '/scratch/me/a'\\''$(touch pwned).txt'");
+    expect(command).toContain("realpath -m -- '/scratch/me/a'\\''$(touch pwned).txt'");
+    expect(command).toContain('exec 3<"$p"');
+    expect(command).toContain("base64 <&3");
   });
 
-  test("cluster transfer preflight commands single-quote requested paths", () => {
+  test("cluster transfer preflight commands check the canonical path", () => {
     const path = "/scratch/me/a'$(touch pwned).txt";
-
-    expect(buildClusterSourceFileCheckCommand(path)).toBe(
-      "test -f '/scratch/me/a'\\''$(touch pwned).txt'",
-    );
-    expect(buildClusterTargetParentCheckCommand(path)).toContain(
-      "dirname -- '/scratch/me/a'\\''$(touch pwned).txt'",
-    );
+    for (const command of [
+      buildClusterSourceFileCheckCommand(path),
+      buildClusterTargetParentCheckCommand(path),
+    ]) {
+      expect(command).toContain("realpath -m -- '/scratch/me/a'\\''$(touch pwned).txt'");
+      expect(command).toContain("*/.kq-replicas/*");
+    }
   });
 
   test("cloud-to-cluster preflight accepts a missing nested target under a writable ancestor", async () => {
@@ -1350,6 +1311,38 @@ describe("legacy file routes", () => {
 
     expect(res.status).toBe(400);
     expect(body.error?.details?.reason).toBe("TRANSFER_AGENT_REQUIRED");
+  });
+
+  test("resume checks root access and only requires a live source for an unfinished upload", async () => {
+    const service = new FileService();
+    const owner = "org_admin-user-id";
+    const data = {
+      direction: "cluster_to_cloud",
+      source: "/scratch/out",
+      target: "out",
+      agentId: "agent-a",
+    } as const;
+    const transfer = await service.createTransfer(owner, data, owner);
+    const app = makeApp("org_admin", { service });
+    const resume = (id: string) =>
+      app.request(`/api/files/transfers/${id}/resume`, { method: "POST" });
+    const started: string[] = [];
+    let receipt = false;
+    service.attachRunner({
+      canHandle: () => false,
+      canResume: async () => receipt,
+      start: async (_owner, id, _data, progress, completionOnly) => {
+        if (completionOnly) started.push(id);
+        progress({ state: "succeeded", copiedBytes: 9 });
+      },
+      cancel: async () => true,
+    });
+    expect((await resume(transfer.id)).status).toBe(503);
+    receipt = true;
+    const denied = await service.createTransfer(owner, { ...data, source: "/private/out" }, owner);
+    expect((await resume(denied.id)).status).toBe(403);
+    expect((await resume(transfer.id)).status).toBe(200);
+    expect(started).toEqual([transfer.id]);
   });
 
   test("POST /api/files/transfers/:id/cancel remains available to the transfer owner", async () => {

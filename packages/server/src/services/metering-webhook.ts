@@ -25,6 +25,7 @@ export interface WebhookConfig {
 }
 
 export interface WebhookEvent {
+  summaryId?: string;
   event: string; // 'usage.daily' | 'usage.monthly' | ...
   orgId: string;
   payload: unknown;
@@ -95,6 +96,7 @@ export class WebhookDispatcher {
     }
     const body = JSON.stringify({
       event: event.event,
+      ...(event.summaryId ? { summaryId: event.summaryId } : {}),
       orgId: event.orgId,
       occurredAt: event.occurredAt.toISOString(),
       payload: event.payload,
@@ -109,6 +111,7 @@ export class WebhookDispatcher {
           "content-type": "application/json",
           "x-kq-signature": `sha256=${signature}`,
           "x-kq-event": event.event,
+          ...(event.summaryId ? { "idempotency-key": event.summaryId } : {}),
           "x-kq-delivery-attempt": String(attempt),
         };
         const r = await this.dispatchWithRedirects(webhook.url, headers, body);

@@ -246,6 +246,14 @@ describe("buildOidcAuthUrl", () => {
       redirectUri: "https://kq.example/api/auth/oidc/callback",
     });
     expect(scope).toBe("openid profile email groups");
+    for (const providerType of ["saml", "ldap"] as const) {
+      const result = await buildOidcAuthUrl(stubConfig(), {
+        redirectUri: "https://kq.example/cb",
+        providerType,
+      });
+      expect(new URL(result.url).searchParams.get("connector_id")).toBe(providerType);
+      expect(scope).toContain("federated:id");
+    }
   });
 });
 
@@ -279,6 +287,25 @@ describe("completeOidcCallback", () => {
     });
   }
 
+  test.each([
+    "saml",
+    "ldap",
+  ] as const)("requires a matching %s connector before creating a session", async (providerType) => {
+    const options = {
+      providerType,
+      config: stubConfig(),
+      callbackUrl: new URL("https://kq.example/cb"),
+      expectedState: "s",
+      codeVerifier: "v",
+      groupMapping: {},
+    };
+    for (const tokenClaims of [{}, { federated_claims: { connector_id: "other" } }]) {
+      setupMock({ tokenClaims });
+      await expect(completeOidcCallback(options)).rejects.toThrow("upstream connector");
+    }
+    setupMock({ tokenClaims: { federated_claims: { connector_id: providerType } } });
+    expect((await completeOidcCallback(options)).sub).toBe("user-sub-123");
+  });
   test("resolves role from group claim via group mapping", async () => {
     setupMock({ rawGroups: ["platform-admins"] });
     const result = await completeOidcCallback({

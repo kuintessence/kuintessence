@@ -1,7 +1,7 @@
 import {
   apiErrorReason,
-  type CloudObject,
   type ClusterEntry,
+  type NetDriveListItem,
   type StorageQuotaSummary,
   type Transfer,
   type TransferDirection,
@@ -39,21 +39,6 @@ import {
 import { StorageQuotaRequestDialog } from "./StorageQuotaRequestDialog";
 import { TransfersTray } from "./TransfersTray";
 
-interface NetDriveListResp {
-  success: true;
-  data: {
-    files: Array<{
-      id: string;
-      path: string;
-      size: number;
-      mtime: string;
-      ownerId?: string;
-      canUse: boolean;
-      canDelete: boolean;
-    }>;
-    total: number;
-  };
-}
 interface ClusterResp {
   entries: ClusterEntry[];
   siteId: string;
@@ -128,7 +113,7 @@ export function FilesPage() {
 
   const cloudQ = useQuery({
     queryKey: ["files-cloud"],
-    queryFn: () => listAllNetDriveFiles() as Promise<NetDriveListResp>,
+    queryFn: listAllNetDriveFiles,
     refetchInterval: 30_000,
   });
   const storageSummaryQ = useQuery({
@@ -227,22 +212,7 @@ export function FilesPage() {
     }
   };
 
-  const cloudObjects: CloudPaneEntry[] = useMemo(
-    () =>
-      (cloudQ.data?.data.files ?? []).map((f) => ({
-        id: f.id,
-        userId: f.ownerId ?? "",
-        key: f.path,
-        size: f.size,
-        contentType: "application/octet-stream",
-        createdAt: f.mtime,
-        modifiedAt: f.mtime,
-        etag: "",
-        canUse: f.canUse === true,
-        canDelete: f.canDelete === true,
-      })),
-    [cloudQ.data],
-  );
+  const cloudObjects = useMemo(() => cloudQ.data?.data.files ?? [], [cloudQ.data]);
   const clusterEntries = clusterQ.data?.entries ?? [];
   const selectedClusterEntry =
     clusterSelected && clusterQ.data?.path === clusterPath
@@ -267,7 +237,7 @@ export function FilesPage() {
 
   useEffect(() => {
     if (!cloudQ.isSuccess || !cloudSelected || !selectedCloudObject) return;
-    const targetPrefix = parentCloudPrefix(selectedCloudObject.key);
+    const targetPrefix = parentCloudPrefix(selectedCloudObject.path);
     if (targetPrefix !== null && targetPrefix !== cloudPrefix) {
       setCloudPrefix(targetPrefix);
     }
@@ -363,12 +333,12 @@ export function FilesPage() {
 
   const filenameFromPath = (value: string) => value.split("/").filter(Boolean).pop() ?? "download";
 
-  const handleCloudDownload = async (obj: CloudObject) => {
+  const handleCloudDownload = async (obj: NetDriveListItem) => {
     try {
       const minted = await api.get<NetDriveDownloadUrlResp>(
         `/netdrive/files/${encodeURIComponent(obj.id)}/download-url`,
       );
-      downloadFromUrl(minted.data.downloadUrl, filenameFromPath(obj.key));
+      downloadFromUrl(minted.data.downloadUrl, filenameFromPath(obj.path));
     } catch (err) {
       toast.error(toUserFacingError(err, t("files.downloadNetdriveFailed")));
     }
@@ -396,7 +366,7 @@ export function FilesPage() {
       await api.delete(`/netdrive/files/${encodeURIComponent(target.id)}`);
       setCloudSelected((current) => (current === target.id ? null : current));
       setDeleteTarget(null);
-      toast.success(t("files.deleteDialog.succeeded", { name: filenameFromPath(target.key) }));
+      toast.success(t("files.deleteDialog.succeeded", { name: filenameFromPath(target.path) }));
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["files-cloud"] }),
         queryClient.invalidateQueries({ queryKey: ["storage-summary"] }),
@@ -478,9 +448,9 @@ export function FilesPage() {
             {t("files.selectionBar")}
           </div>
           <div className="mt-0.5 grid gap-1 font-mono text-[11px] text-muted-foreground md:grid-cols-2">
-            <span className="truncate" title={selectedCloudObject?.key ?? t("files.globalCloud")}>
+            <span className="truncate" title={selectedCloudObject?.path ?? t("files.globalCloud")}>
               {cloudSelectionVerified
-                ? t("files.cloudSelected", { value: selectedCloudObject?.key ?? "" })
+                ? t("files.cloudSelected", { value: selectedCloudObject?.path ?? "" })
                 : t("files.globalCloud")}
             </span>
             <span

@@ -104,11 +104,22 @@ describe("gallery control-flow templates execute end-to-end", () => {
   });
 
   test("scatter-gather: the loop scatters and ExtractTable gathers a real CSV", async () => {
-    const result = await run(await readTemplate("scatter-gather.yaml"));
+    const receipt = { fileMetadataId: "fake-table-file", fileMetadataName: "results.csv" };
+    const runWithStorage = createWorkflowRunner({
+      ...fakeDeps,
+      publishGeneratedFiles: async (items, _invocation, output) => {
+        expect(output).toEqual({
+          kind: "SingleFile",
+          descriptor: "table",
+          fileName: "results.csv",
+        });
+        expect(items).toEqual(["shard_result,metric\n1,1\n1,1\n1,1\n"]);
+        return [receipt];
+      },
+    });
+    const result = await runWithStorage(await readTemplate("scatter-gather.yaml"));
     expect(result.status.scatter).toBe("Succeeded");
     expect(result.status.gather).toBe("Succeeded");
-    // One header row + one row per scattered iteration (over ['a','b','c']);
-    // shard_result from the node's value output, metric regex'd from the log.
-    expect(result.values.gather?.values.table).toBe("shard_result,metric\n1,1\n1,1\n1,1\n");
+    expect(result.values.gather?.values.table).toEqual(receipt);
   });
 });

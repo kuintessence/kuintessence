@@ -31,6 +31,10 @@ export const StorageObservationSchema = z.discriminatedUnion("state", [
       availableBytes: Bytes,
       totalInodes: Bytes.nullable(),
       availableInodes: Bytes.nullable(),
+      history: z
+        .array(z.strictObject({ observedAt: z.iso.datetime(), availableBytes: Bytes }))
+        .max(12)
+        .optional(),
       completionReserve: CompletionReserveObservationSchema.optional(),
     })
     .refine(
@@ -173,6 +177,74 @@ export function signStorageObservation(observation: StorageObservation, key: Key
   });
 }
 
+export async function readSignedStorageObservation(path: string, key: KeyObject) {
+  const signed = SignedObservation.parse(JSON.parse(await readStorageFile(path)));
+  const bytes = Buffer.from(signed.payload, "base64url");
+  if (!verify(null, bytes, key, Buffer.from(signed.signature, "base64url")))
+    throw new Error("Invalid observation signature");
+  return StorageObservationSchema.parse(JSON.parse(bytes.toString("utf8")));
+}
+
+export function extendStorageHistory(
+  report: StorageObservation,
+  previous: StorageObservation | null,
+  intervalSec: number,
+): StorageObservation {
+  if (report.state !== "observed" || previous?.state !== "observed") return report;
+  const now = Date.parse(report.observedAt),
+    last = Date.parse(previous.observedAt);
+  if (
+    now <= last ||
+    now - last > (2 * intervalSec + 5) * 1000 ||
+    report.storageId !== previous.storageId ||
+    report.volumeId !== previous.volumeId ||
+    report.device !== previous.device ||
+    report.filesystemType !== previous.filesystemType ||
+    report.totalBytes !== previous.totalBytes ||
+    report.completionReserve?.reserveId !== previous.completionReserve?.reserveId ||
+    report.completionReserve?.state !== previous.completionReserve?.state ||
+    report.completionReserve?.allocatedBytes !== previous.completionReserve?.allocatedBytes
+  )
+    return report;
+  const history = (previous.history ?? []).filter(
+    (sample) =>
+      Date.parse(sample.observedAt) >= now - 3_600_000 && Date.parse(sample.observedAt) < last,
+  );
+  const newest = history.at(-1);
+  if (!newest || last - Date.parse(newest.observedAt) >= 300_000)
+    history.push({ observedAt: previous.observedAt, availableBytes: previous.availableBytes });
+  return { ...report, history: history.slice(-12) };
+}
+
+function capacityForecast(
+  report: Extract<StorageObservation, { state: "observed" }>,
+  floor: bigint,
+) {
+  const anchor = report.history?.[0];
+  if (!anchor) return null;
+  const elapsed = Date.parse(report.observedAt) - Date.parse(anchor.observedAt);
+  if (
+    elapsed < 60_000 ||
+    elapsed > 3_600_000 ||
+    BigInt(anchor.availableBytes) > BigInt(report.totalBytes)
+  )
+    return null;
+  const available = BigInt(report.availableBytes),
+    loss = BigInt(anchor.availableBytes) - available;
+  const remaining = available - floor;
+  const divisor = loss * 1000n;
+  return {
+    since: anchor.observedAt,
+    growthBytesPerDay: ((loss * 86_400_000n) / BigInt(elapsed)).toString(),
+    secondsToByteThreshold:
+      remaining <= 0n
+        ? "0"
+        : loss > 0n
+          ? ((remaining * BigInt(elapsed) + divisor - 1n) / divisor).toString()
+          : null,
+  };
+}
+
 export class FederationStorageGuard {
   private readonly latestObserved = new Map<string, number>();
   private constructor(
@@ -205,16 +277,12 @@ export class FederationStorageGuard {
             name: volume.name,
             component: volume.component,
             modes: volume.modes,
+            forecast: null,
           };
           try {
-            const signed = SignedObservation.parse(
-              JSON.parse(await readStorageFile(volume.reportFile)),
-            );
-            const bytes = Buffer.from(signed.payload, "base64url");
             const key = this.keys.get(volume.volumeId);
-            if (!key || !verify(null, bytes, key, Buffer.from(signed.signature, "base64url")))
-              throw new Error("Invalid observation signature");
-            const report = StorageObservationSchema.parse(JSON.parse(bytes.toString("utf8")));
+            if (!key) throw new Error("Missing observer key");
+            const report = await readSignedStorageObservation(volume.reportFile, key);
             if (report.volumeId !== volume.volumeId || report.storageId !== volume.storageId)
               throw new Error("Unexpected storage identity");
             const ageMs = this.clock().getTime() - Date.parse(report.observedAt);
@@ -252,6 +320,7 @@ export class FederationStorageGuard {
               state:
                 lowBytes || lowInodes || lowReserve ? ("pressure" as const) : ("healthy" as const),
               observedAt: report.observedAt,
+              forecast: capacityForecast(report, requiredBytes),
               totalBytes: report.totalBytes,
               availableBytes: report.availableBytes,
               availableInodes: report.availableInodes,

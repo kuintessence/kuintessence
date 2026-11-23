@@ -2,12 +2,11 @@ import { z } from "zod";
 
 /**
  * Safe expression (D1 = CEL subset). The string is not evaluated here — it is
- * carried verbatim and type-checked / evaluated by the engine's CEL host. We
- * keep `lang` open for a future second backend but default it to `cel`.
+ * carried verbatim and type-checked / evaluated by the engine's CEL host.
  */
 export const ExprSchema = z.strictObject({
   expr: z.string().min(1),
-  lang: z.string().default("cel"),
+  lang: z.literal("cel").default("cel"),
 });
 export type Expr = z.infer<typeof ExprSchema>;
 

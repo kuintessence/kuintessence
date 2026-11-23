@@ -1,8 +1,10 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { rename, rm, stat } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { Readable } from "node:stream";
 import { create } from "@bufbuild/protobuf";
 import {
   type AgentMessage,
@@ -10,6 +12,7 @@ import {
   CancelJobAckSchema,
   ComputeHealthSchema,
   DataDeliveryRevokeAckSchema,
+  type DataReplicaReceipt,
   DataScanFileSchema,
   DataScanResultSchema,
   type DispatchJob,
@@ -42,6 +45,8 @@ import {
   QueueInventorySchema,
   QueueValidationShadowRejectionSchema,
   RegisterRequestSchema,
+  type ReplicaRange,
+  type ReplicaRangeResult,
   SandboxArtifactReleaseAckSchema,
   SandboxCapabilitySchema,
   SandboxRuntimeCacheEntrySchema,
@@ -89,6 +94,7 @@ import {
 } from "./adapters/base";
 import { unavailableQueueInventory } from "./adapters/queue-inventory";
 import type { DataDeliveryExecutor } from "./data-market/data-delivery";
+import type { AgentReplicaStore } from "./data-market/data-replica";
 import type {
   CpLocalDataScanner,
   CpLocalDataScanRequest,
@@ -117,6 +123,7 @@ import { FederationTransferSlot } from "./federation/transfer-session";
 import {
   buildCloudToClusterArgv,
   buildHostCloudToClusterArgv,
+  containerTransferSourceArgv,
   hasPathTraversal,
   normalizeClusterToCloudSourceError,
 } from "./file-transfer";
@@ -183,9 +190,12 @@ import {
   workflowSpackIntent,
 } from "./spack/workflow-activation";
 import type { SshHandler, SshOutgoingMessage } from "./ssh";
+import type { DownloadPartials } from "./staging/download-partials";
 import { downloadToFile } from "./staging/download-to-file";
 import { multipartUploadFromFile } from "./staging/multipart-upload-from-file";
 import { streamUploadToPresignedUrl } from "./staging/stream-upload";
+import { openTransferSource } from "./staging/transfer-path";
+import { UploadCheckpointGc } from "./staging/upload-checkpoint-gc";
 import { assertStorageCapacity, normalizeStorageCapacityError } from "./storage-capacity";
 
 // ---------------------------------------------------------------------------
@@ -261,7 +271,7 @@ type OutboundItem =
       kind: "fileTransferProgress";
       requestId: string;
       copiedBytes: number;
-      state: "running" | "succeeded" | "failed";
+      state: "running" | "succeeded" | "failed" | "cancelled";
       error: string;
       sha256: string;
       parts: { partNumber: number; etag: string }[];
@@ -282,6 +292,9 @@ type OutboundItem =
   | { kind: "federationInputCopyReport"; report: FederationInputCopyReport }
   | { kind: "federationResultGrantRequest"; request: FederationResultGrantRequest }
   | { kind: "federationResultCopyReport"; report: FederationResultCopyReport }
+  | { kind: "replicaRangeRequest"; range: ReplicaRange }
+  | { kind: "replicaRangeResult"; result: ReplicaRangeResult }
+  | { kind: "dataReplicaReceipt"; receipt: DataReplicaReceipt }
   | { kind: "federationExecutionRequest"; request: FederationExecutionRequest }
   | {
       kind: "sandboxArtifactReleaseAck";
@@ -308,6 +321,10 @@ type OutboundItem =
     }
   | {
       kind: "jobWorkRootReleaseAck";
+      jobId: string;
+    }
+  | {
+      kind: "sandboxPvcReleaseAck";
       jobId: string;
     };
 
@@ -431,6 +448,24 @@ function epochFromDispatchId(jobId: string, dispatchId?: string): number | undef
   if (!/^\d+$/.test(value)) return undefined;
   const epoch = Number(value);
   return Number.isSafeInteger(epoch) ? epoch : undefined;
+}
+
+function slurmForEachGroup(adapterType: string, dispatch: DispatchJob): string | undefined {
+  if (
+    adapterType !== "slurm" ||
+    !/^[a-f0-9]{64}$/.test(dispatch.forEachGroup) ||
+    dispatch.federationExecution ||
+    dispatch.sandboxExecution ||
+    dispatch.restrictedNoEgress ||
+    dispatch.licensedMaterialMounts.length ||
+    dispatch.dataDeliveries.length
+  )
+    return undefined;
+  if (!dispatch.spackExecution) return dispatch.forEachGroup;
+  const { spec, pin } = workflowSpackIntent(dispatch.spackExecution);
+  return createHash("sha256")
+    .update(JSON.stringify([dispatch.forEachGroup, spec, pin]))
+    .digest("hex");
 }
 
 function schedulerSubmissionTag(jobId: string): string {
@@ -719,6 +754,7 @@ export interface AgentStreamDeps {
   fileTransferRetryBackoffSec?: number;
   fileTransferConnectTo?: string;
   fileTransferStateDir?: string;
+  downloadPartials?: DownloadPartials;
   containerFileTransferConnectTo?: string;
   sandboxProcessor?: Pick<SandboxDispatchProcessor, "prepare" | "cleanup">;
   assertSandboxRuntimeAttestation?: (
@@ -734,10 +770,12 @@ export interface AgentStreamDeps {
   releaseSandboxArtifacts?: (
     items: Array<{ replicaId: string; storageRef: string }>,
   ) => Promise<{ releasedReplicaIds: string[]; failures: Record<string, string> }>;
-  licensedMaterialResolver?: Pick<LicensedMaterialResolver, "prepare" | "release">;
+  licensedMaterialResolver?: Pick<LicensedMaterialResolver, "prepare" | "release"> &
+    Partial<Pick<LicensedMaterialResolver, "sandboxInputs">>;
   prepareJobWorkRoot?: (jobId: string) => Promise<string>;
   removeJobWorkRoot?: (jobId: string) => Promise<void>;
   stageInputFile?: (sourceUrl: string, targetPath: string) => Promise<void>;
+  replicaStore?: AgentReplicaStore;
   dataScanner?: CpLocalDataScanner;
   managedDatasetRootIds?: readonly string[];
   dataScanTimeoutMs?: number;
@@ -856,6 +894,7 @@ export class AgentStream {
   private lastTransferState: SiteChannel["state"] = "idle";
   private installationState: SiteChannel | undefined;
   private activeInstallationOperationId: string | undefined;
+  private readonly transferAttempts = new Map<string, { requestId: string; done: Promise<void> }>();
   private readonly activeFileTransfers = new Map<string, AbortController>();
   private pool: ExecutorPool;
   private logger: Logger;
@@ -879,6 +918,14 @@ export class AgentStream {
   private installedSoftware: InstalledSpec[];
   private installedSoftwareKnown: boolean;
   private softwareOperationQueue: Promise<void> = Promise.resolve();
+  private sharedSpackLoad?: {
+    group: string;
+    policy: ReturnType<SpackManager["currentPolicy"]>;
+    tail: Promise<void>;
+    result: Promise<string>;
+    controller: AbortController;
+    members: number;
+  };
   private readonly pendingSoftwareResultSpills = new Set<Promise<void>>();
   private softwareOperationShutdown: Promise<void> | undefined;
   private readonly spackActivations = new Map<
@@ -913,6 +960,7 @@ export class AgentStream {
   private readonly dispatchIdsByJob = new Map<string, string>();
   private heartbeatSequence = 0n;
   private heartbeatAckSupported = false;
+  private readonly pendingReplicaRanges = new Map<string, (result: ReplicaRangeResult) => void>();
   private jobStatusAckSupported = false;
   private queueValidationShadowRejectionAckSupported = false;
   private computeHealthV1Supported = false;
@@ -943,7 +991,11 @@ export class AgentStream {
     | undefined;
   private heartbeatFollowUpRequested = false;
 
+  private readonly uploadCheckpointGc?: UploadCheckpointGc;
+
   constructor(private deps: AgentStreamDeps) {
+    if (deps.fileTransferStateDir)
+      this.uploadCheckpointGc = new UploadCheckpointGc(deps.fileTransferStateDir);
     const transferSlot = new FederationTransferSlot();
     if (deps.federationMediaExport)
       this.federationMediaExport = new FederationMediaExportClient(
@@ -1289,13 +1341,10 @@ export class AgentStream {
             );
         }
         const mounts = this.licensedMaterialMounts.get(jobId);
-        const [dataCleanup, licensedCleanup, restrictedRootCleanup] = await Promise.allSettled([
+        const [dataCleanup, licensedCleanup] = await Promise.allSettled([
           this.deps.dataDeliveryExecutor?.release(jobId),
           mounts && this.deps.licensedMaterialResolver
             ? this.deps.licensedMaterialResolver.release(mounts)
-            : Promise.resolve(),
-          this.restrictedWorkRoots.has(jobId)
-            ? this.removeRestrictedWorkRoot(jobId)
             : Promise.resolve(),
         ]);
         if (dataCleanup.status === "rejected") {
@@ -1315,20 +1364,12 @@ export class AgentStream {
             "Failed to release licensed material mounts",
           );
         }
-        if (restrictedRootCleanup.status === "fulfilled") {
-          this.restrictedWorkRoots.delete(jobId);
-        } else {
-          this.logger.error(
-            { err: restrictedRootCleanup.reason, jobId },
-            "Failed to remove restricted execution work root",
-          );
-        }
-        if (
-          dataCleanup.status === "fulfilled" &&
-          licensedCleanup.status === "fulfilled" &&
-          restrictedRootCleanup.status === "fulfilled"
-        ) {
+        if (dataCleanup.status === "fulfilled" && licensedCleanup.status === "fulfilled") {
           try {
+            if (this.restrictedWorkRoots.has(jobId)) {
+              await this.removeRestrictedWorkRoot(jobId);
+              this.restrictedWorkRoots.delete(jobId);
+            }
             await this.activeRemoteJobs?.markFinished(jobId);
             await this.cleanupIntents?.clear(jobId);
           } catch (err) {
@@ -1589,6 +1630,7 @@ export class AgentStream {
       controller.abort("agent shutdown");
     }
     this.activeFileTransfers.clear();
+    this.transferAttempts.clear();
     this.signalOutbound(); // wake the generator so it can exit
     this.softwareOperationShutdown = this.drainSoftwareOperations();
     return this.softwareOperationShutdown;
@@ -1599,6 +1641,7 @@ export class AgentStream {
     const drained = async () => {
       // The final disconnect must register its spills before an empty queue is considered drained.
       await this.streamAttemptCompletion;
+      await this.uploadCheckpointGc?.close();
       await Promise.all([this.remoteJobRecoveryCycle, this.activeRemoteJobRecovery]);
       let pending: Promise<void>;
       do {
@@ -2044,33 +2087,7 @@ export class AgentStream {
           } else if (intent.schedulerSubmissionTag) {
             throw new Error("Scheduler submission outcome is unknown; retaining cleanup intent");
           }
-          const cleanupResults = await Promise.allSettled([
-            (async () => {
-              if (intent.dataDeliveries.length === 0) return;
-              const executor = this.deps.dataDeliveryExecutor;
-              if (!executor) throw new Error("Data Market cleanup executor is unavailable");
-              await executor.recover(
-                intent.jobId,
-                intent.dataDeliveries.map((delivery) => ({ ...delivery, protectedPath: true })),
-              );
-              await executor.release(intent.jobId);
-            })(),
-            (async () => {
-              if (intent.licensedMounts.length === 0) return;
-              const resolver = this.deps.licensedMaterialResolver;
-              if (!resolver) throw new Error("Licensed material cleanup resolver is unavailable");
-              await resolver.release(intent.licensedMounts);
-            })(),
-            intent.restrictedWorkRoot
-              ? this.removeRestrictedWorkRoot(intent.jobId)
-              : Promise.resolve(),
-          ]);
-          const failures = cleanupResults.flatMap((result) =>
-            result.status === "rejected" ? [result.reason] : [],
-          );
-          if (failures.length > 0) {
-            throw new AggregateError(failures, "Orphaned job cleanup failed");
-          }
+          await this.cleanupCancellationIntent(intent);
           await this.activeRemoteJobs?.markFinished(intent.jobId);
           await this.cleanupIntents.clear(intent.jobId);
         } catch (err) {
@@ -2418,6 +2435,9 @@ export class AgentStream {
         case: "register",
         value: create(RegisterRequestSchema, {
           agentId: this.deps.agentId,
+          dataReplicaCopy: !!this.deps.replicaStore,
+          replicaRangeTransfer: !!this.deps.replicaStore,
+          jobSchedulerLimits: true,
           agentUpdateV1: !!this.deps.receiveAgentUpdate,
           siteName: this.deps.siteName,
           schedulerType: schedulerTypeToProto(this.deps.adapter.type),
@@ -2734,6 +2754,18 @@ export class AgentStream {
                 }),
               },
             });
+          } else if (item.kind === "replicaRangeRequest") {
+            yield create(AgentMessageSchema, {
+              payload: { case: "replicaRangeRequest", value: item.range },
+            });
+          } else if (item.kind === "replicaRangeResult") {
+            yield create(AgentMessageSchema, {
+              payload: { case: "replicaRangeResult", value: item.result },
+            });
+          } else if (item.kind === "dataReplicaReceipt") {
+            yield create(AgentMessageSchema, {
+              payload: { case: "dataReplicaReceipt", value: item.receipt },
+            });
           } else if (item.kind === "dataScanResult") {
             yield this.dataScanResultToProto(item);
           } else if (item.kind === "dataDeliveryRevokeAck") {
@@ -2754,10 +2786,13 @@ export class AgentStream {
                 }),
               },
             });
-          } else if (item.kind === "jobWorkRootReleaseAck") {
+          } else if (
+            item.kind === "jobWorkRootReleaseAck" ||
+            item.kind === "sandboxPvcReleaseAck"
+          ) {
             yield create(AgentMessageSchema, {
               payload: {
-                case: "jobWorkRootReleaseAck",
+                case: item.kind,
                 value: create(JobWorkRootReleaseAckSchema, { jobId: item.jobId }),
               },
             });
@@ -2978,6 +3013,12 @@ export class AgentStream {
             schedulerQueuedJobs,
             sandboxCapability: this.sandboxCapabilityToProto(),
             restrictedDataIsolation: this.hasTrustedRestrictedExecutionProfile(),
+            uploadCheckpointKeys: await this.uploadCheckpointGc
+              ?.inventory(sequence)
+              .catch((err) => {
+                this.logger.warn({ err }, "Upload checkpoint inventory will retry");
+                return [];
+              }),
             sequence,
             ...(computeHealth ? { computeHealth: this.computeHealthToProto(computeHealth) } : {}),
             ...(reportedQueueInventory
@@ -3583,6 +3624,12 @@ export class AgentStream {
     if (payload.case === "heartbeatAck") {
       const pending = this.pendingHeartbeatAcks.has(payload.value.sequence);
       this.acknowledgeHeartbeat(payload.value.sequence);
+      if (pending)
+        await this.uploadCheckpointGc
+          ?.release(payload.value.sequence, payload.value.releasedUploadCheckpointKeys)
+          .catch((err) => {
+            this.logger.warn({ err }, "Upload checkpoint cleanup will retry");
+          });
       if (pending && this.deps.confirmAgentUpdate) {
         try {
           if (await this.deps.confirmAgentUpdate()) this.enqueueHeartbeat();
@@ -3679,6 +3726,9 @@ export class AgentStream {
 
     if (payload.case === "dispatchJob") {
       const dj = payload.value;
+      // A rejected dispatch can also receive a release request for its empty preparation set.
+      if (dj.sandboxExecution?.runtime?.kind === SandboxRuntimeKind.OCI)
+        await this.cleanupIntents?.observePvcJob(dj.jobId);
       if (
         dj.federationExecution &&
         (!this.federationExecutionSupported || !this.federationExecutionCapable())
@@ -3725,6 +3775,20 @@ export class AgentStream {
       // next reconnect (see generateOutbound). The proto has no separate
       // dispatch_id field, so we use jobId — onConflictDoNothing makes the
       // duplicate-delivery case (Server re-dispatches mid-recovery) safe.
+      const schedulerLimits = dj.schedulerLimits && {
+        nodeCount: dj.schedulerLimits.nodeCount,
+        maxCpuTime: dj.schedulerLimits.maxCpuTime,
+        stopTime:
+          dj.schedulerLimits.stopTime === undefined
+            ? undefined
+            : Number(dj.schedulerLimits.stopTime),
+      };
+      const forEachGroup = slurmForEachGroup(this.deps.adapter.type, dj);
+      const schedulerName = dj.federationExecution
+        ? federationSchedulerName(dj.dispatchEpoch)
+        : forEachGroup
+          ? `kqa-${forEachGroup}`
+          : schedulerSubmissionTag(dj.jobId);
       const dispatchId = `${dj.jobId}:${dispatchEpoch}`;
       if (this.inboundAcks && recoveredDispatchId !== dispatchId) {
         try {
@@ -3736,9 +3800,7 @@ export class AgentStream {
               federationDispatchEpoch: dj.federationExecution
                 ? Number(dj.dispatchEpoch)
                 : undefined,
-              schedulerName: dj.federationExecution
-                ? federationSchedulerName(dj.dispatchEpoch)
-                : schedulerSubmissionTag(dj.jobId),
+              schedulerName,
               command: dj.command,
               ...(dj.spackExecution
                 ? {
@@ -3749,6 +3811,7 @@ export class AgentStream {
               memoryMb: Number(dj.memoryMb),
               gpus: dj.gpus,
               wallTimeSec: Number(dj.wallTimeSec),
+              schedulerLimits,
               workingDir: dj.workingDir,
               queueName: dj.queueName,
               queueTargetMode,
@@ -3869,11 +3932,11 @@ export class AgentStream {
         return;
       }
       if (dj.sandboxExecution) {
-        if (dj.licensedMaterialMounts.length > 0) {
+        if (dj.licensedMaterialMounts.length > 0 && !dj.federationExecution) {
           await this.onJobTransition({
             jobId: dj.jobId,
             status: "failed",
-            message: "Licensed material mounts are unsupported for Sandbox jobs",
+            message: "Licensed Sandbox inputs require federation execution renewal",
           });
           return;
         }
@@ -3885,6 +3948,10 @@ export class AgentStream {
             message: "Sandbox execution is unsupported by this Agent",
           });
           return;
+        }
+        if (dj.restrictedNoEgress) {
+          await this.cleanupIntents?.recordRestrictedWorkRoot(dj.jobId);
+          this.restrictedWorkRoots.add(dj.jobId);
         }
         this.preparingDispatches.add(dispatchId);
         const preparation = this.prepareWithFederationAuthorization(
@@ -3980,6 +4047,40 @@ export class AgentStream {
                 "Restricted no-egress Sandbox requires a mapped Unix execution identity",
               );
             }
+            if (dj.licensedMaterialMounts.length) {
+              const resolver = this.deps.licensedMaterialResolver;
+              if (
+                !resolver?.sandboxInputs ||
+                prepared.sandbox.runtimeKind !== "SIF" ||
+                prepared.sandbox.executionMode !== "RootImpersonation" ||
+                !prepared.sandbox.executionProfile
+              )
+                throw new Error("Licensed material execution profile is unavailable");
+              const resolve = resolver.sandboxInputs.bind(resolver);
+              prepared.sandbox.licensedInputs = await this.prepareWithFederationAuthorization(
+                dj,
+                async (current, signal) => {
+                  const mounts = current().licensedMaterialMounts;
+                  if (mounts.length !== dj.licensedMaterialMounts.length)
+                    throw new Error("Licensed input authority changed");
+                  try {
+                    return await resolve(
+                      mounts.map((m) => ({
+                        selectorId: m.selector,
+                        targetPath: m.targetPath,
+                        fingerprint: m.expectedFingerprint,
+                        requiredElements: m.requiredElements,
+                      })),
+                      signal,
+                    );
+                  } catch {
+                    signal.throwIfAborted();
+                    throw new Error("Provider could not verify licensed Sandbox inputs");
+                  }
+                },
+                async () => {},
+              );
+            }
             const spec: JobSpec = {
               jobId: dj.jobId,
               name: dj.name,
@@ -3994,6 +4095,7 @@ export class AgentStream {
               memoryMb: Number(dj.memoryMb),
               gpus: dj.gpus,
               wallTimeSec: Number(dj.wallTimeSec),
+              schedulerLimits,
               workingDir: prepared.workingDir,
               envVars: {},
               queueName: dj.queueName || undefined,
@@ -4003,24 +4105,36 @@ export class AgentStream {
               sandbox: prepared.sandbox,
               restrictedNoEgress: dj.restrictedNoEgress,
             };
-            if (dj.restrictedNoEgress) this.restrictedWorkRoots.add(dj.jobId);
-            if (dj.restrictedNoEgress) {
-              await this.cleanupIntents?.recordRestrictedWorkRoot(dj.jobId);
-            }
             await this.assertDispatchEpochAllowed(dj.jobId, dispatchEpoch);
+            const pvc = await this.deps.adapter.identifySandboxPvc?.(prepared.sandbox, dj.jobId);
+            if (pvc) {
+              if (!this.cleanupIntents) throw new Error("Missing durable Sandbox PVC journal");
+              await this.cleanupIntents.recordPvc(pvc);
+              prepared.sandbox.kubernetesArtifactPvcUid = pvc.binding.claimUid;
+            }
             this.sandboxRuntimeDigests.set(spec, prepared.runtimeDigest);
             if (dj.federationExecution) this.federationSpecs.add(spec);
             return this.pool.submit(spec, { expectedOutputs: sandboxOutputs });
           })
           .catch(async (err) => {
-            if (dj.restrictedNoEgress) {
-              await this.removeRestrictedWorkRoot(dj.jobId).catch((cleanupError) => {
+            if (
+              dj.restrictedNoEgress &&
+              !this.unreconciledSubmittedJobs.has(dj.jobId) &&
+              !this.pool.get(dj.jobId)
+            ) {
+              try {
+                const intent = await this.findCleanupIntent(dj.jobId);
+                if (intent) await this.cleanupCancellationIntent(intent);
+                else {
+                  await this.removeRestrictedWorkRoot(dj.jobId);
+                  this.restrictedWorkRoots.delete(dj.jobId);
+                }
+              } catch (cleanupError) {
                 this.logger.error(
                   { err: cleanupError, jobId: dj.jobId },
-                  "Failed to remove rejected restricted work root",
+                  "Restricted Sandbox cleanup remains pending",
                 );
-              });
-              this.restrictedWorkRoots.delete(dj.jobId);
+              }
             }
             if (!this.running) {
               this.logger.info({ jobId: dj.jobId }, "Sandbox preparation stopped for shutdown");
@@ -4041,14 +4155,14 @@ export class AgentStream {
         jobId: dj.jobId,
         name: dj.name,
         federationDispatchEpoch: dj.federationExecution ? Number(dj.dispatchEpoch) : undefined,
-        schedulerName: dj.federationExecution
-          ? federationSchedulerName(dj.dispatchEpoch)
-          : schedulerSubmissionTag(dj.jobId),
+        schedulerName,
+        forEachGroup,
         command: dj.command,
         cpus: dj.cpus,
         memoryMb: Number(dj.memoryMb),
         gpus: dj.gpus,
         wallTimeSec: Number(dj.wallTimeSec),
+        schedulerLimits,
         workingDir: dj.workingDir,
         envVars: Object.fromEntries(Object.entries(dj.envVars)),
         queueName: dj.queueName || undefined,
@@ -4059,7 +4173,7 @@ export class AgentStream {
         restrictedNoEgress: dj.restrictedNoEgress,
       };
       this.preparingDispatches.add(dispatchId);
-      const preparation = this.submitWithLicensedMaterials(dj, spec, expectedOutputs, dispatchEpoch)
+      const preparation = this.submitManagedJob(dj, spec, expectedOutputs, dispatchEpoch)
         .catch(async (err) => {
           if (!this.running) {
             this.logger.info({ jobId: dj.jobId }, "Job preparation stopped for shutdown");
@@ -4111,6 +4225,31 @@ export class AgentStream {
       } catch (err) {
         this.logger.error({ err, jobId }, "Job cancellation did not safely converge");
         return;
+      }
+      return;
+    }
+
+    if (payload.case === "releaseSandboxPvc") {
+      const { jobId } = payload.value;
+      if (
+        !this.cleanupIntents ||
+        this.pool.get(jobId) ||
+        this.jobPreparations.has(jobId) ||
+        this.unreconciledSubmittedJobs.has(jobId) ||
+        (await this.activeRemoteJobs?.get(jobId))
+      )
+        return;
+      try {
+        const confirmed = await this.cleanupIntents.releasePvcs(jobId, async (entry) => {
+          if (!this.deps.adapter.releaseSandboxPvc)
+            throw new Error("Sandbox PVC collector is unavailable");
+          await this.deps.adapter.releaseSandboxPvc(entry);
+        });
+        if (!confirmed) return;
+        this.outboundQueue.push({ kind: "sandboxPvcReleaseAck", jobId });
+        this.signalOutbound();
+      } catch (err) {
+        this.logger.warn({ err, jobId }, "Sandbox PVC release will retry");
       }
       return;
     }
@@ -4209,6 +4348,32 @@ export class AgentStream {
       return;
     }
 
+    if (payload.case === "replicaRangeResult") {
+      if (payload.value.range)
+        this.pendingReplicaRanges.get(payload.value.range.requestId)?.(payload.value);
+      return;
+    }
+    if (payload.case === "replicaRangeRead") {
+      void this.deps.replicaStore?.reader.read(payload.value).then((result) => {
+        if (!this.connected || payload.value.expiresAtUnixMs <= BigInt(Date.now())) return;
+        this.outboundQueue.push({ kind: "replicaRangeResult", result });
+        this.signalOutbound();
+      });
+      return;
+    }
+    if (payload.case === "dataReplicaCommand") {
+      const store = this.deps.replicaStore;
+      if (store)
+        void this.trackMaintenanceTask(
+          store
+            .execute(payload.value, (range, signal) => this.requestReplicaRange(range, signal))
+            .then((receipt) => {
+              this.outboundQueue.push({ kind: "dataReplicaReceipt", receipt });
+              this.signalOutbound();
+            }),
+        );
+      return;
+    }
     if (payload.case === "dataScanRequest") {
       const request: CpLocalDataScanRequest = {
         requestId: payload.value.requestId,
@@ -4436,8 +4601,13 @@ export class AgentStream {
       return;
     }
 
-    if (payload.case === "sshOpen") {
-      const open = payload.value;
+    if (
+      payload.case === "sshOpen" ||
+      payload.case === "sftpOpen" ||
+      payload.case === "sshRouteOpen"
+    ) {
+      const open = payload.case === "sshRouteOpen" ? payload.value.destination : payload.value;
+      if (!open) return;
       if (!this.sshHandler) {
         this.logger.warn(
           { sessionId: open.sessionId },
@@ -4451,6 +4621,20 @@ export class AgentStream {
         return;
       }
       this.sshHandler.handleOpen({
+        sftp: payload.case === "sshRouteOpen" ? payload.value.sftp : payload.case === "sftpOpen",
+        ...(payload.case === "sshRouteOpen"
+          ? {
+              jumps: payload.value.jumps.map((hop) => ({
+                host: hop.host,
+                port: hop.port,
+                username: hop.username,
+                password: hop.auth?.password || undefined,
+                privateKey: hop.auth?.privateKey || undefined,
+                passphrase: hop.auth?.passphrase || undefined,
+                expectedHostKeySha256: hop.hostKeySha256,
+              })),
+            }
+          : {}),
         sessionId: open.sessionId,
         host: open.host,
         port: open.port,
@@ -4550,13 +4734,18 @@ export class AgentStream {
 
     if (payload.case === "fileTransferRequest") {
       const r = payload.value;
-      this.activeFileTransfers.get(r.requestId)?.abort("superseded transfer request");
+      const transferId = r.transferId || r.requestId;
+      const previous = this.transferAttempts.get(transferId);
+      if (previous?.requestId === r.requestId) return;
+      if (previous)
+        this.activeFileTransfers.get(previous.requestId)?.abort("superseded transfer request");
       const controller = new AbortController();
       this.activeFileTransfers.set(r.requestId, controller);
-      void this.trackMaintenanceTask(
+      const run = () =>
         this.runFileTransfer(
           {
             requestId: r.requestId,
+            transferId,
             direction: r.direction,
             sourceUrl: r.sourceUrl,
             sourcePath: r.sourcePath,
@@ -4564,16 +4753,24 @@ export class AgentStream {
             targetPath: r.targetPath,
             totalBytes: Number(r.totalBytes),
             expectedSha256: r.expectedSha256,
+            workflowInput: r.workflowInput,
             uploadId: r.uploadId,
             partSize: Number(r.partSize),
           },
           controller.signal,
-        ).finally(() => {
-          if (this.activeFileTransfers.get(r.requestId) === controller) {
-            this.activeFileTransfers.delete(r.requestId);
-          }
-        }),
-      );
+        );
+      // The previous attempt may still be writing a checkpoint or cleaning up its spool.
+      const done = (previous ? previous.done.then(run) : run()).finally(() => {
+        if (controller.signal.reason === "transfer cancelled by Server")
+          this.emitProgress(r.requestId, 0, "cancelled");
+        if (this.activeFileTransfers.get(r.requestId) === controller) {
+          this.activeFileTransfers.delete(r.requestId);
+          if (this.transferAttempts.get(transferId)?.requestId === r.requestId)
+            this.transferAttempts.delete(transferId);
+        }
+      });
+      this.transferAttempts.set(transferId, { requestId: r.requestId, done });
+      void this.trackMaintenanceTask(done);
       return;
     }
 
@@ -4947,7 +5144,43 @@ export class AgentStream {
     }
   }
 
-  private async submitWithLicensedMaterials(
+  private scheduleSpackLoad(
+    load: (signal: AbortSignal) => Promise<string>,
+    signal: AbortSignal,
+    group?: string,
+  ): Promise<string> {
+    const policy = this.spackManager?.currentPolicy();
+    let shared = this.sharedSpackLoad;
+    // An intervening software operation must run before another member observes the store.
+    if (
+      !group ||
+      shared?.group !== group ||
+      shared.policy !== policy ||
+      shared.tail !== this.softwareOperationQueue ||
+      shared.controller.signal.aborted
+    ) {
+      const controller = new AbortController();
+      const result = this.softwareOperationQueue.then(() =>
+        load(group ? controller.signal : signal),
+      );
+      const finish = () => {
+        if (this.sharedSpackLoad?.result === result) this.sharedSpackLoad = undefined;
+      };
+      this.softwareOperationQueue = result.then(finish, finish);
+      if (!group) return result;
+      shared = { group, policy, controller, result, tail: this.softwareOperationQueue, members: 0 };
+      this.sharedSpackLoad = shared;
+    }
+    const entry = shared;
+    entry.members++;
+    const leave = () => {
+      if (--entry.members === 0) entry.controller.abort();
+    };
+    signal.addEventListener("abort", leave, { once: true });
+    return entry.result.finally(() => signal.removeEventListener("abort", leave));
+  }
+
+  private async submitManagedJob(
     dispatch: DispatchJob,
     spec: JobSpec,
     expectedOutputs: ExpectedOutput[],
@@ -4968,15 +5201,7 @@ export class AgentStream {
           timeoutMs: this.deps.spackActivationTimeoutMs,
           spawner: this.deps.spackActivationSpawner,
           invalidate: (hashes) => this.invalidateInstalledSoftware(hashes),
-          schedule: (prepare) => {
-            const pending = this.softwareOperationQueue.then(prepare);
-            // Hold the shared store queue until the actual load and cleanup settle.
-            this.softwareOperationQueue = pending.then(
-              () => {},
-              () => {},
-            );
-            return pending;
-          },
+          schedule: (load, signal) => this.scheduleSpackLoad(load, signal, spec.forEachGroup),
           trackCleanup: (pending) => {
             this.pendingSpackLoadCleanups.add(pending);
             void pending.then(() => this.pendingSpackLoadCleanups.delete(pending));
@@ -5068,49 +5293,13 @@ export class AgentStream {
       if (requiresImplicitFileWorkRoot && !federatedNetdrive) {
         await this.stageDispatchInputs(dispatch, deliveredSpec);
       }
-      const mounts = dispatch.licensedMaterialMounts;
-      let protectedExpectedOutputs = expectedOutputs;
-      if (mounts.length > 0) {
-        const resolver = this.deps.licensedMaterialResolver;
-        if (!resolver) throw new Error("Licensed material resolver is unavailable on this Agent");
-        const requests = mounts.map((mount) => ({
-          selectorId: mount.selector,
-          targetPath: mount.targetPath,
-          fingerprint: mount.expectedFingerprint,
-          requiredElements: mount.requiredElements,
-        }));
-        const prepared = await resolver.prepare(requests, deliveredSpec.workingDir, {
-          beforeMount: async (mount) => {
-            await this.cleanupIntents?.recordLicensedMount(deliveredSpec.jobId, mount);
-          },
-        });
-        this.licensedMaterialMounts.set(deliveredSpec.jobId, prepared);
-        const protectedPaths = prepared.flatMap((mount) => [mount.targetPath, mount.sourcePath]);
-        const protectedMounts = prepared.map((mount) => ({
-          selectorId: mount.selectorId,
-          sourcePath: mount.sourcePath,
-          targetPath: mount.targetPath,
-        }));
-        protectedExpectedOutputs = expectedOutputs.map((output) => ({
-          ...output,
-          protectedPaths,
-          protectedMounts,
-        }));
-      }
-      const protectedSpec: JobSpec =
-        mounts.length > 0
-          ? {
-              ...deliveredSpec,
-              licensedMaterialCleanup: this.licensedMaterialMounts.get(deliveredSpec.jobId) ?? [],
-            }
-          : deliveredSpec;
-      await this.assertDispatchEpochAllowed(protectedSpec.jobId, dispatchEpoch);
+      await this.assertDispatchEpochAllowed(deliveredSpec.jobId, dispatchEpoch);
       this.lifecycleController.signal.throwIfAborted();
       if (dispatch.spackExecution) {
-        this.spackDispatchEpochs.set(protectedSpec, dispatchEpoch);
+        this.spackDispatchEpochs.set(deliveredSpec, dispatchEpoch);
       }
-      if (dispatch.federationExecution) this.federationSpecs.add(protectedSpec);
-      await this.pool.submit(protectedSpec, { expectedOutputs: protectedExpectedOutputs });
+      if (dispatch.federationExecution) this.federationSpecs.add(deliveredSpec);
+      await this.pool.submit(deliveredSpec, { expectedOutputs });
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       try {
@@ -5156,8 +5345,12 @@ export class AgentStream {
           this.deps.slurmContainerId,
           input.sourceUrl,
           targetPath,
-          new AbortController().signal,
+          this.lifecycleController.signal,
+          "job-input",
           false,
+          input.expectedSha256
+            ? { sha256: input.expectedSha256, size: Number(input.totalBytes) }
+            : undefined,
         );
       } else {
         await this.runHostCloudToCluster(
@@ -5537,7 +5730,6 @@ export class AgentStream {
         if (!resolver) throw new Error("Licensed material cleanup resolver is unavailable");
         await resolver.release(intent.licensedMounts);
       })(),
-      intent.restrictedWorkRoot ? this.removeRestrictedWorkRoot(intent.jobId) : Promise.resolve(),
     ]);
     const failures = cleanup.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
@@ -5546,7 +5738,10 @@ export class AgentStream {
       throw new AggregateError(failures, "Cancellation cleanup failed");
     }
     this.licensedMaterialMounts.delete(intent.jobId);
-    if (intent.restrictedWorkRoot) this.restrictedWorkRoots.delete(intent.jobId);
+    if (intent.restrictedWorkRoot) {
+      await this.removeRestrictedWorkRoot(intent.jobId);
+      this.restrictedWorkRoots.delete(intent.jobId);
+    }
   }
 
   private async isDispatchEpochAllowed(jobId: string, dispatchEpoch: number): Promise<boolean> {
@@ -5610,6 +5805,27 @@ export class AgentStream {
     await remove(jobId);
   }
 
+  private async requestReplicaRange(
+    range: ReplicaRange,
+    signal: AbortSignal,
+  ): Promise<ReplicaRangeResult> {
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
+    deadline.throwIfAborted();
+    let stop: () => void = () => {};
+    try {
+      return await new Promise<ReplicaRangeResult>((resolve, reject) => {
+        stop = () => reject(new Error("Replica range interrupted"));
+        deadline.addEventListener("abort", stop, { once: true });
+        this.pendingReplicaRanges.set(range.requestId, resolve);
+        this.outboundQueue.push({ kind: "replicaRangeRequest", range });
+        this.signalOutbound();
+      });
+    } finally {
+      deadline.removeEventListener("abort", stop);
+      this.pendingReplicaRanges.delete(range.requestId);
+    }
+  }
+
   private wakeOutbound(): void {
     this.signalOutbound();
   }
@@ -5617,7 +5833,7 @@ export class AgentStream {
   private emitProgress(
     requestId: string,
     copiedBytes: number,
-    state: "running" | "succeeded" | "failed",
+    state: "running" | "succeeded" | "failed" | "cancelled",
     error = "",
     sha256 = "",
     parts: { partNumber: number; etag: string }[] = [],
@@ -5639,6 +5855,7 @@ export class AgentStream {
   private async runFileTransfer(
     req: {
       requestId: string;
+      transferId?: string;
       direction: string;
       sourceUrl: string;
       sourcePath: string;
@@ -5646,15 +5863,13 @@ export class AgentStream {
       targetPath: string;
       totalBytes: number;
       expectedSha256?: string;
+      workflowInput?: boolean;
       uploadId: string;
       partSize: number;
     },
     signal: AbortSignal,
   ): Promise<void> {
     const containerId = this.deps.slurmContainerId;
-    // Defense in depth: reject paths that escape the per-job run dir via `..`
-    // (stagePath is user-authored and unvalidated upstream — tbd #12). Covers
-    // both download targetPath and upload sourcePath at the single chokepoint.
     const guardedPath =
       req.direction === "cloud_to_cluster"
         ? req.targetPath
@@ -5675,6 +5890,9 @@ export class AgentStream {
             req.sourceUrl,
             req.targetPath,
             signal,
+            req.workflowInput ? "job-input" : "transfer",
+            true,
+            req.expectedSha256 ? { sha256: req.expectedSha256, size: req.totalBytes } : undefined,
           );
         } else {
           await this.runHostCloudToCluster(
@@ -5696,6 +5914,7 @@ export class AgentStream {
             req.uploadId,
             req.partSize,
             signal,
+            req.transferId,
           );
         } else {
           await this.runHostClusterToCloud(
@@ -5705,6 +5924,7 @@ export class AgentStream {
             req.uploadId,
             req.partSize,
             signal,
+            req.transferId,
           );
         }
       } else {
@@ -5716,7 +5936,11 @@ export class AgentStream {
         req.requestId,
         0,
         "failed",
-        err instanceof Error ? err.message : String(err),
+        req.direction === "cluster_to_cloud"
+          ? normalizeClusterToCloudSourceError(err)
+          : err instanceof Error
+            ? err.message
+            : String(err),
       );
     }
   }
@@ -5727,72 +5951,52 @@ export class AgentStream {
     url: string,
     targetPath: string,
     signal: AbortSignal,
-    reportProgress = true,
+    purpose: "transfer" | "job-input",
+    reportProgress: boolean,
+    content?: { sha256: string; size: number },
   ): Promise<void> {
-    // url + targetPath are passed as positional args (not interpolated) — see
-    // file-transfer.ts. targetPath derives from an unvalidated workflow
-    // stagePath and runs as root, so interpolation would be a root RCE vector.
-    const partialPath = `${targetPath}.kq-transfer-${requestId}.part`;
     const argv = buildCloudToClusterArgv(
       containerId,
       url,
-      partialPath,
+      targetPath,
       this.deps.fileTransferMaxRetries ?? DEFAULT_FILE_TRANSFER_MAX_RETRIES,
       this.deps.fileTransferRetryBackoffSec ?? DEFAULT_FILE_TRANSFER_RETRY_BACKOFF_SEC,
       this.deps.containerFileTransferConnectTo ?? this.deps.fileTransferConnectTo ?? "",
+      content,
+      true,
+      purpose,
     );
-    const proc = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", signal });
+    await this.runDownloadCommand(argv, requestId, signal, reportProgress, content?.sha256);
+  }
 
-    const poller = reportProgress
-      ? setInterval(async () => {
-          const stat = Bun.spawn(
-            ["docker", "exec", "-u", "root", containerId, "stat", "-c", "%s", partialPath],
-            { stdout: "pipe", stderr: "ignore" },
-          );
-          const out = (await new Response(stat.stdout).text()).trim();
-          await stat.exited;
-          const bytes = Number.parseInt(out, 10);
-          if (!Number.isNaN(bytes) && bytes > 0) {
-            this.emitProgress(requestId, bytes, "running");
-          }
-        }, 500)
-      : undefined;
-
-    try {
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
-      const exitCode = await proc.exited;
-      throwIfTransferAborted(signal);
-      if (exitCode !== 0) {
-        throw new Error(stderr.trim() || stdout.trim() || "curl failed");
+  private async runDownloadCommand(
+    argv: string[],
+    requestId: string,
+    signal: AbortSignal,
+    reportProgress: boolean,
+    digest?: string,
+  ) {
+    const proc = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "pipe", signal });
+    const errors = new Response(proc.stderr).text();
+    let bytes: number | undefined;
+    for await (const line of createInterface({
+      input: Readable.from(proc.stdout),
+      crlfDelay: Infinity,
+    })) {
+      if (/^ready \d+$/.test(line)) {
+        if (!signal.aborted) proc.stdin.write("publish\n");
+        await proc.stdin.end();
+        continue;
       }
-      const statProc = Bun.spawn(
-        ["docker", "exec", "-u", "root", containerId, "stat", "-c", "%s", partialPath],
-        { stdout: "pipe", stderr: "ignore" },
-      );
-      const finalSize =
-        Number.parseInt((await new Response(statProc.stdout).text()).trim(), 10) || 0;
-      await statProc.exited;
-      throwIfTransferAborted(signal);
-      const publish = Bun.spawn(
-        ["docker", "exec", "-u", "root", containerId, "mv", "-f", "--", partialPath, targetPath],
-        { stdout: "ignore", stderr: "pipe" },
-      );
-      const publishError = await new Response(publish.stderr).text();
-      if ((await publish.exited) !== 0) {
-        throw new Error(publishError.trim() || "failed to publish downloaded file");
-      }
-      if (reportProgress) this.emitProgress(requestId, finalSize, "succeeded");
-    } finally {
-      if (poller) clearInterval(poller);
-      const cleanup = Bun.spawn(
-        ["docker", "exec", "-u", "root", containerId, "rm", "-f", "--", partialPath],
-        { stdout: "ignore", stderr: "ignore" },
-      );
-      await cleanup.exited.catch(() => -1);
+      if (!/^\d+$/.test(line)) continue;
+      bytes = Number(line);
+      if (reportProgress && bytes > 0 && !signal.aborted)
+        this.emitProgress(requestId, bytes, "running");
     }
+    const [exit, stderr] = await Promise.all([proc.exited, errors]);
+    throwIfTransferAborted(signal);
+    if (exit !== 0 || bytes === undefined) throw new Error(stderr.trim() || "Download failed");
+    if (reportProgress) this.emitProgress(requestId, bytes, "succeeded", "", digest);
   }
 
   private async runHostCloudToCluster(
@@ -5808,6 +6012,8 @@ export class AgentStream {
         url,
         targetPath,
         ...content,
+        userTransfer: reportProgress,
+        partials: this.deps.downloadPartials,
         signal,
         connectTo: this.deps.fileTransferConnectTo,
         maxAttempts: this.deps.fileTransferMaxRetries ?? DEFAULT_FILE_TRANSFER_MAX_RETRIES,
@@ -5824,42 +6030,15 @@ export class AgentStream {
         this.emitProgress(requestId, content.size, "succeeded", "", content.sha256);
       return;
     }
-    const partialPath = `${targetPath}.kq-transfer-${requestId}.part`;
     const argv = buildHostCloudToClusterArgv(
       url,
-      partialPath,
+      targetPath,
       this.deps.fileTransferMaxRetries ?? DEFAULT_FILE_TRANSFER_MAX_RETRIES,
       this.deps.fileTransferRetryBackoffSec ?? DEFAULT_FILE_TRANSFER_RETRY_BACKOFF_SEC,
       this.deps.fileTransferConnectTo ?? "",
+      true,
     );
-    const proc = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", signal });
-
-    const poller = reportProgress
-      ? setInterval(async () => {
-          const result = await stat(partialPath).catch(() => null);
-          if (result && result.size > 0) {
-            this.emitProgress(requestId, result.size, "running");
-          }
-        }, 500)
-      : undefined;
-
-    try {
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
-      const exitCode = await proc.exited;
-      throwIfTransferAborted(signal);
-      if (exitCode !== 0) {
-        throw new Error(stderr.trim() || stdout.trim() || "curl failed");
-      }
-      const finalSize = (await stat(partialPath).catch(() => null))?.size ?? 0;
-      await rename(partialPath, targetPath);
-      if (reportProgress) this.emitProgress(requestId, finalSize, "succeeded");
-    } finally {
-      if (poller) clearInterval(poller);
-      await rm(partialPath, { force: true });
-    }
+    await this.runDownloadCommand(argv, requestId, signal, reportProgress);
   }
 
   private async runClusterToCloud(
@@ -5870,6 +6049,7 @@ export class AgentStream {
     uploadId: string,
     partSize: number,
     signal: AbortSignal,
+    transferId = requestId,
   ): Promise<void> {
     if (uploadId) {
       await this.runClusterToCloudMultipart(
@@ -5879,6 +6059,7 @@ export class AgentStream {
         partSize,
         signal,
         uploadId,
+        transferId,
       );
       return;
     }
@@ -5892,12 +6073,24 @@ export class AgentStream {
     uploadId: string,
     partSize: number,
     signal: AbortSignal,
+    transferId = requestId,
   ): Promise<void> {
-    if (uploadId) {
-      await this.runHostClusterToCloudMultipart(requestId, sourcePath, partSize, signal, uploadId);
-      return;
+    const file = await openTransferSource(sourcePath);
+    try {
+      const pinned = `/proc/self/fd/${file.fd}`;
+      if (uploadId)
+        await this.runHostClusterToCloudMultipart(
+          requestId,
+          pinned,
+          partSize,
+          signal,
+          uploadId,
+          transferId,
+        );
+      else await this.runHostClusterToCloudSinglePut(requestId, pinned, uploadUrl, signal);
+    } finally {
+      await file.close();
     }
-    await this.runHostClusterToCloudSinglePut(requestId, sourcePath, uploadUrl, signal);
   }
 
   private async runHostClusterToCloudSinglePut(
@@ -5942,7 +6135,7 @@ export class AgentStream {
     uploadUrl: string,
     signal: AbortSignal,
   ): Promise<void> {
-    const proc = Bun.spawn(["docker", "exec", "-u", "root", containerId, "cat", sourcePath], {
+    const proc = Bun.spawn(containerTransferSourceArgv(containerId, sourcePath), {
       stdout: "pipe",
       stderr: "pipe",
       signal,
@@ -5997,6 +6190,7 @@ export class AgentStream {
     partSize: number,
     signal: AbortSignal,
     uploadId: string,
+    transferId = requestId,
   ): Promise<void> {
     const tmpPath = join(tmpdir(), `kq-upload-${crypto.randomUUID()}.bin`);
     let copied = 0;
@@ -6008,7 +6202,7 @@ export class AgentStream {
           ? {
               path: join(
                 this.deps.fileTransferStateDir,
-                `${createHash("sha256").update(requestId).digest("hex")}.json`,
+                `${createHash("sha256").update(transferId).digest("hex")}.json`,
               ),
               uploadId,
             }
@@ -6049,6 +6243,7 @@ export class AgentStream {
     partSize: number,
     signal: AbortSignal,
     uploadId: string,
+    transferId = requestId,
   ): Promise<void> {
     let copied = 0;
     try {
@@ -6059,7 +6254,7 @@ export class AgentStream {
           ? {
               path: join(
                 this.deps.fileTransferStateDir,
-                `${createHash("sha256").update(requestId).digest("hex")}.json`,
+                `${createHash("sha256").update(transferId).digest("hex")}.json`,
               ),
               uploadId,
             }
@@ -6104,7 +6299,7 @@ export class AgentStream {
     signal: AbortSignal,
   ): Promise<number> {
     await assertStorageCapacity({ path: tmpPath, additionalBytes: 0, additionalInodes: 1 });
-    const proc = Bun.spawn(["docker", "exec", "-u", "root", containerId, "cat", sourcePath], {
+    const proc = Bun.spawn(containerTransferSourceArgv(containerId, sourcePath), {
       stdout: "pipe",
       stderr: "pipe",
       signal,

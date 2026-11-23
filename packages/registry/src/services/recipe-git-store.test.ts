@@ -4,15 +4,21 @@ import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { RecipeRepositorySchema } from "@kuintessence/shared";
 import { Hono } from "hono";
+import { cleanupMaterials, materialFixture } from "../routes/spack-materials.test-helpers";
 import { createSpackRepositoryRoutes } from "../routes/spack-repositories";
+import { BASE, headers, ORG, OWNER, SUPER } from "../routes/spack-repositories.test-helpers";
 import { RecipeGitStore } from "./recipe-git-store";
+import { withMaterialStorageLock } from "./spack-material-collection";
 import { materialDigest } from "./spack-material-storage";
+import { SpackMaterialStore } from "./spack-material-store";
 import { SpackUpstreamImportService } from "./spack-upstream-import";
 
 const exec = promisify(execFile);
 const directories: string[] = [];
 
+afterEach(cleanupMaterials);
 afterEach(async () => {
   await Promise.all(
     directories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
@@ -83,6 +89,197 @@ async function fixture() {
 }
 
 describe("RecipeGitStore", () => {
+  test("grants apply to a single repository and queued writes recheck revocation", async () => {
+    const f = await fixture();
+    const bundle = await f.bundle();
+    const source = await f.store.importBundle(`org/${ORG}/recipes`, bundle.bytes, OWNER.sub);
+    await f.store.importBundle(`org/${ORG}/another`, bundle.bytes, OWNER.sub);
+    const subject = "55555555-5555-4555-8555-555555555555";
+    const guest = { sub: subject, role: "org_admin" as const, orgIds: [] };
+    const app = new Hono().route(
+      "/api",
+      createSpackRepositoryRoutes(f.store, { allowTestHeader: true }),
+    );
+    const base = `${BASE}/${source.id}`;
+    const grant = (access: "read" | "write") =>
+      app.request(`${base}/grants`, {
+        method: "PUT",
+        headers: headers(OWNER),
+        body: JSON.stringify({ subject, access }),
+      });
+    const upload = (actor = guest) =>
+      app.request(`${BASE}/import?repository=${encodeURIComponent(source.repository)}`, {
+        method: "POST",
+        headers: headers(actor, "application/octet-stream"),
+        body: bundle.bytes,
+      });
+    expect((await app.request(base, { headers: headers(guest) })).status).toBe(404);
+    expect((await grant("read")).status).toBe(200);
+    const visible = await (await app.request(BASE, { headers: headers(guest) })).json();
+    expect(visible).toEqual({ repositories: [source] });
+    expect((await upload()).status).toBe(403);
+    expect((await grant("write")).status).toBe(200);
+    expect((await app.request(base, { headers: headers(guest) })).status).toBe(200);
+    expect(await (await upload()).json()).toMatchObject({ id: source.id, delegatedWrite: true });
+    expect((await app.request(`${base}/grants`, { headers: headers(guest) })).status).toBe(403);
+    expect(
+      (await app.request(`${base}/migrate`, { method: "POST", headers: headers(guest) })).status,
+    ).toBe(403);
+    expect(
+      (
+        await app.request(`${base}/snapshots/${bundle.commit}`, {
+          method: "DELETE",
+          headers: headers(guest),
+        })
+      ).status,
+    ).toBe(403);
+    const regular = { ...guest, role: "user" as const };
+    expect(
+      (await app.request(`${base}/active`, { method: "PUT", headers: headers(regular) })).status,
+    ).toBe(403);
+    const tar = await app.request(`${base}/snapshots/${bundle.commit}/archive`, {
+      headers: headers(regular),
+    });
+    expect(tar.status).toBe(200);
+    await tar.arrayBuffer();
+    const restarted = new RecipeGitStore(f.store.root);
+    expect(await restarted.grants(source.id)).toEqual([{ subject, access: "write" }]);
+    const revoke = restarted.setGrant(source.id, subject, null);
+    const activation = restarted.activate(source.id, bundle.commit, null, subject, true);
+    await expect(activation).rejects.toMatchObject({ status: 403 });
+    await revoke;
+    expect((await app.request(base, { headers: headers(guest) })).status).toBe(404);
+    expect(
+      (
+        await app.request(`${base}/grants/${subject}`, {
+          method: "DELETE",
+          headers: headers(OWNER),
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  test("migration preserves material bindings, export bytes and history; collection checks the material lock and Git reachability", async () => {
+    const f = await fixture();
+    const first = await f.bundle();
+    const name = `org/${ORG}/science`;
+    const source = await f.store.importBundle(name, first.bytes, OWNER.sub);
+    const m = await materialFixture({}, source);
+    await m.seed();
+    const materials = new SpackMaterialStore(m.root, f.store);
+    const binding = await materials.publish(
+      {
+        ...m.input,
+        recipes: [{ repositoryId: source.id, commit: first.commit, roots: ["spack_repo/science"] }],
+      },
+      OWNER,
+    );
+    const stored = await materials.getManifest(binding.repositoryId, binding.manifestDigest);
+    const bytes = async (id: string) =>
+      new Uint8Array(
+        await new Response((await f.store.archive(id, first.commit)).stream).arrayBuffer(),
+      );
+    const before = await bytes(source.id);
+    await writeFile(join(f.source, "README.md"), "second");
+    const second = await f.bundle();
+    await f.store.importBundle(name, second.bytes, OWNER.sub);
+    const active = await f.store.activate(source.id, second.commit, null, OWNER.sub);
+    await f.store.setGrant(source.id, "55555555-5555-4555-8555-555555555555", "read");
+    const app = new Hono().route(
+      "/api",
+      createSpackRepositoryRoutes(f.store, { allowTestHeader: true }, materials),
+    );
+    const move = (repository: string, consent = false, actor = SUPER) =>
+      app.request(`${BASE}/${source.id}/migrate`, {
+        method: "POST",
+        headers: headers(actor),
+        body: JSON.stringify({
+          repository,
+          ...(consent ? { acknowledgePublicHistory: true } : {}),
+        }),
+      });
+    const remove = (id: string, commit: string) =>
+      app.request(`${BASE}/${id}/snapshots/${commit}`, {
+        method: "DELETE",
+        headers: headers(SUPER),
+      });
+    expect((await move("public/science", true, OWNER)).status).toBe(403);
+    expect((await move("public/science")).status).toBe(422);
+    await f.store.importBundle("public/existing", first.bytes, SUPER.sub);
+    expect((await move("public/existing", true)).status).toBe(409);
+    expect((await remove(source.id, second.commit)).status).toBe(409);
+    const moved = await move("public/science", true);
+    expect(moved.status).toBe(200);
+    const target = RecipeRepositorySchema.parse(await moved.json());
+    expect(target).toMatchObject({
+      id: RecipeGitStore.repositoryId("public/science"),
+      snapshots: active.snapshots,
+      activeCommit: second.commit,
+    });
+    expect(await (await move("public/science", true)).json()).toEqual(target);
+    expect(await f.store.grants(target.id)).toEqual([]);
+    expect(await f.store.get(source.id)).toMatchObject({ migrated: true, activeCommit: null });
+    await expect(f.store.importBundle(name, second.bytes, SUPER.sub)).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(await bytes(source.id)).toEqual(before);
+    expect(await bytes(target.id)).toEqual(before);
+    expect(
+      (await materials.getManifest(binding.repositoryId, binding.manifestDigest)).bytes,
+    ).toEqual(stored.bytes);
+    const protectedSnapshot = await remove(source.id, first.commit);
+    expect(protectedSnapshot.status).toBe(409);
+    expect(await protectedSnapshot.json()).toMatchObject({
+      error: { code: "RECIPE_SNAPSHOT_IN_USE" },
+    });
+    const materialTar = await materials.getBlob(
+      binding.repositoryId,
+      binding.manifestDigest,
+      materialDigest(before),
+      OWNER,
+    );
+    expect(new Uint8Array(await new Response(materialTar.stream).arrayBuffer())).toEqual(before);
+    await withMaterialStorageLock(m.root, false, async () => {
+      expect((await remove(source.id, second.commit)).status).toBe(503);
+    });
+    const outstanding = await f.store.archive(source.id, second.commit);
+    expect((await remove(source.id, second.commit)).status).toBe(204);
+    expect((await new Response(outstanding.stream).arrayBuffer()).byteLength).toBeGreaterThan(0);
+    expect((await remove(source.id, second.commit)).status).toBe(204);
+    await expect(f.store.getSnapshot(source.id, second.commit)).rejects.toMatchObject({
+      status: 404,
+    });
+    const bare = join(f.store.root, "repositories", `${source.id}.git`);
+    await expect(exec("git", ["-C", bare, "cat-file", "-e", second.commit])).rejects.toThrow();
+    expect(
+      (await exec("git", ["-C", bare, "rev-list", "--count", "refs/kq/audit/head"])).stdout.trim(),
+    ).toBe("2");
+    expect(await bytes(source.id)).toEqual(before);
+    expect((await f.store.get(target.id)).activeCommit).toBe(second.commit);
+  });
+
+  test("a restart finishes an interrupted migration before another write", async () => {
+    const f = await fixture();
+    const first = await f.bundle();
+    const source = await f.store.importBundle("user/alice/recipes", first.bytes, "alice");
+    await f.store.activate(source.id, first.commit, null, "alice");
+    const lock = join(f.store.root, "repositories", `${source.id}.git`, "refs/kq/audit/head.lock");
+    await writeFile(lock, "");
+    await expect(f.store.migrate(source.id, "public/new", "alice")).rejects.toMatchObject({
+      status: 409,
+    });
+    await rm(lock);
+    const restarted = new RecipeGitStore(f.store.root);
+    await expect(
+      restarted.importBundle(source.repository, first.bytes, "alice"),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await restarted.migrate(source.id, "public/new", "alice")).toMatchObject({
+      activeCommit: first.commit,
+    });
+    expect(await restarted.get(source.id)).toMatchObject({ migrated: true, activeCommit: null });
+    expect(await readdir(join(f.store.root, "staging"))).toEqual([]);
+  });
+
   test("online imports persist a real Git bundle and preserve post-commit cancellation", async () => {
     const f = await fixture();
     const bundle = await f.bundle();

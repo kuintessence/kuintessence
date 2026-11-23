@@ -46,6 +46,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 const cpClient = vi.hoisted(() => ({
+  estimateInstallation: vi.fn(),
   getSoftwareOverview: vi.fn(),
   previewSoftwareAvailability: vi.fn(),
   saveProviderSoftwarePolicy: vi.fn(),
@@ -2838,6 +2839,35 @@ describe("SoftwarePolicyTable", () => {
         spec: "hdf5@1.14.3",
       });
     });
+  });
+
+  test("calculates an estimate for the selected Agent and spec without requesting installation", async () => {
+    cpClient.getSoftwareOverview.mockResolvedValue(overview);
+    cpClient.listSoftwareOperations.mockResolvedValue([]);
+    cpClient.estimateInstallation.mockResolvedValue({
+      samples: 0,
+      seconds: 1800,
+      cpuHours: 1,
+      rate: 3,
+      cost: 3,
+    });
+    render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
+    fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
+    fireEvent.change(
+      nativeControl(screen.getByPlaceholderText("cp.software.operations.specPlaceholder")),
+      { target: { value: "zlib" } },
+    );
+    fireEvent.click(screen.getByText("cp.software.operations.estimate.title"));
+    fireEvent.change(screen.getByLabelText("cp.software.operations.estimate.cpus"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("cp.software.operations.estimate.minutes"), {
+      target: { value: "30" },
+    });
+    fireEvent.click(screen.getByText("cp.software.operations.estimate.calculate"));
+    await screen.findByText(/cp.software.operations.estimate.cost/);
+    expect(cpClient.estimateInstallation).toHaveBeenCalledWith("agent-a", "zlib", 2, 30);
+    expect(cpClient.requestSoftwareOperation).not.toHaveBeenCalled();
   });
 
   test("shows an error toast when an operation cannot be dispatched", async () => {

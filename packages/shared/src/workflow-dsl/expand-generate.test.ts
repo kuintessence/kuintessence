@@ -92,7 +92,40 @@ describe("expandGenerate — deterministic rules", () => {
     ).toThrow(/same length|Zip/i);
   });
 
-  test("throws NotImplemented for runtime/external rules", () => {
+  test("draws reproducible batches with stratification, grid and Sobol coordinates", () => {
+    const dims = ["x", "y"].map((name) => ({
+      name,
+      dist: { kind: "Uniform" as const, min: 0, max: 1 },
+    }));
+    const rule = { kind: "Sampling" as const, count: 4, dims };
+    for (const method of ["LatinHypercube", "Random", "Sobol", "Grid"] as const) {
+      const seeded = { ...rule, method, seed: 34 };
+      const first = expandGenerate(seeded) as { x: number; y: number }[];
+      expect(expandGenerate(seeded)).toEqual(first);
+      expect(first.every(({ x, y }) => x >= 0 && x < 1 && y >= 0 && y < 1)).toBe(true);
+      if (method === "LatinHypercube") {
+        expect(new Set(first.map((p) => Math.floor(p.y * 4))).size).toBe(4);
+      }
+      if (method === "Grid") expect(new Set(first.map((p) => p.x)).size).toBe(2);
+    }
+    expect(expandGenerate({ ...rule, method: "Sobol" }).slice(0, 2)).toEqual([
+      { x: 0.5, y: 0.5 },
+      { x: 0.75, y: 0.25 },
+    ]);
+    expect(
+      expandGenerate({
+        ...rule,
+        method: "Grid",
+        count: 1,
+        dims: [
+          { name: "z", dist: { kind: "Normal", mean: 7, std: 3 } },
+          { name: "label", dist: { kind: "Choice", items: ["a", "b"] } },
+        ],
+      }),
+    ).toEqual([{ z: 7, label: "b" }]);
+  });
+
+  test("rejects empty sampling dimensions", () => {
     expect(() =>
       expandGenerate({ kind: "Sampling", method: "Random", count: 4, dims: [] }),
     ).toThrow();

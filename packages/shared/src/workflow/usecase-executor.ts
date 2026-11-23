@@ -4,6 +4,8 @@ import {
   type FederationInputSelection,
   FederationInputSelectionSchema,
 } from "../federation/input-files";
+import { JobSchedulerLimitsSchema, type ResourceRequest } from "../schemas/job";
+import type { SiteRuntime } from "../software-governance";
 import * as usecase from "../usecase";
 import * as workflowDsl from "../workflow-dsl";
 import {
@@ -34,11 +36,14 @@ export interface ResolvedPackage {
   filesomeInputs: usecase.FilesomeInputMaterial[];
   filesomeOutputs: usecase.FilesomeOutputMaterial[];
   valueOutputs: workflowDsl.ValueOutput[];
-  resources?: { memoryMiB?: number };
+  resources?: usecase.GovernedUsecasePackage["resources"];
+  outputs?: usecase.GovernedUsecasePackage["outputs"];
   spackExecutionPin?: SpackExecutionPin;
+  siteRuntime?: SiteRuntime;
   licensedMaterials?: usecase.MaterializedTask["licensedMaterials"];
   softwareRequirements?: Array<{
     assetId?: string;
+    siteRuntimeRevisionId?: string;
     spec?: string;
     name: string;
     version?: string;
@@ -69,23 +74,31 @@ export interface JobSubmission {
   licensedMaterials?: usecase.MaterializedTask["licensedMaterials"];
   softwareRequirements?: Array<{
     assetId?: string;
+    siteRuntimeRevisionId?: string;
     spec?: string;
     name: string;
     version?: string;
     installable: boolean;
   }>;
   /** Node CPU/walltime requirements and governed usecase memory, when declared. */
-  resources?: { cpus?: number; memoryMb?: number; wallTimeSec?: number };
+  resources?: Partial<ResourceRequest>;
   schedulingStrategy?: { queueId: string } | { preferredQueueIds: string[] };
 }
 
 /** Package resolution, job dispatch and output collection dependencies. */
 export interface UsecaseExecutorDeps {
+  notifyMilestone?: (
+    node: Extract<workflowDsl.WorkflowNode, { type: "Milestone" }>,
+    invocation?: NodeInvocation,
+  ) => Promise<void>;
   /** Production Agents activate Spack through their governed managed installation. */
   deferSpackActivation?: boolean;
   resolveFileInput?(value: unknown): Promise<unknown>;
   resolvePackage(usecaseVersionId: string, softwareVersionId: string): Promise<ResolvedPackage>;
-  submitJob(spec: JobSubmission): Promise<{
+  submitJob(
+    spec: JobSubmission,
+    forEachGroup?: string,
+  ): Promise<{
     jobId: string;
     status: JobStatusName;
     collected: Record<string, string>;
@@ -113,10 +126,14 @@ export interface UsecaseExecutorDeps {
  * The engine (engine) handles control flow; this is the per-leaf execution.
  */
 export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
-  return async (node, ctx, invocation) => {
+  return async (node, ctx, invocation, forEachGroup) => {
     if (node.type === "Federation" && deps.executeFederation) {
       const inputs = await federationInputs(node, ctx, deps.resolveFileInput);
       return deps.executeFederation(node, invocation, inputs.parameters, inputs.files);
+    }
+    if (node.type === "Milestone" && deps.notifyMilestone) {
+      await deps.notifyMilestone(node, invocation);
+      return { status: "Succeeded", values: {} };
     }
     if (node.type === "NoAction") {
       return { status: "Succeeded", values: {} };
@@ -161,16 +178,26 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
             ...(pkg.spackExecutionPin ? { pin: pkg.spackExecutionPin } : {}),
           })
         : undefined;
+    const siteJob = pkg.siteRuntime ? usecase.wrapSiteRuntime(task, pkg.siteRuntime) : undefined;
     const command = spackExecution?.pin
       ? SPACK_PINNED_EXECUTION_PLACEHOLDER
       : spackExecution
         ? SPACK_EXECUTION_PLACEHOLDER
-        : usecase.wrapCommand(task);
+        : (siteJob?.command ?? usecase.wrapCommand(task));
     const dataInputs = collectDatasetInputs(node);
-    const resources = mapResources(node.requirements, pkg.resources?.memoryMiB);
+    const resources = workflowJobResources(node.requirements, pkg.resources);
     const schedulingStrategy = mapSchedulingStrategy(node.schedulingStrategy);
     const valueOutputs = node.valueOutputsOverride ?? pkg.valueOutputs;
-    const fileOutputDescriptors = declaredFileOutputDescriptors(node);
+    const validatedFiles = (pkg.outputs ?? []).filter(
+      (output) =>
+        output.validators.length && (output.type === "File" || output.type === "FileBatch"),
+    );
+    const fileOutputDescriptors = [
+      ...new Set([
+        ...declaredFileOutputDescriptors(node),
+        ...validatedFiles.map((output) => output.descriptor),
+      ]),
+    ];
     const contentOutputDescriptors = new Set([
       ...valueOutputs.map((output) => output.from.collectedOutDescriptor),
       ...requiredCollectedOutputs(ctx),
@@ -180,34 +207,37 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
       ...contentOutputDescriptors,
     ]);
     const { status, collected, collectedFiles, errorMessage, reason, exitCode, jobId } =
-      await deps.submitJob({
-        nodeId: node.id,
-        ...(invocation ? { invocation } : {}),
-        ...(pkg.usecaseVersionId ? { usecaseVersionId: pkg.usecaseVersionId } : {}),
-        ...(pkg.usecasePackageId ? { usecasePackageId: pkg.usecasePackageId } : {}),
-        name: node.name,
-        command,
-        ...(spackExecution ? { spackExecution } : {}),
-        envVars: task.envVars,
-        ...(Object.keys(dataInputs).length > 0 ? { dataInputs } : {}),
-        inputStaging: task.inputStaging,
-        expectedOutputs: task.expectedOutputs
-          .filter((output) => requiredOutputDescriptors.has(output.descriptor))
-          .map((output) =>
-            fileOutputDescriptors.includes(output.descriptor) &&
-            !contentOutputDescriptors.has(output.descriptor)
-              ? { ...output, pathsOnly: true }
-              : output,
-          ),
-        fileOutputDescriptors,
-        ...(task.stdinText !== undefined ? { stdinText: task.stdinText } : {}),
-        ...(task.licensedMaterials && task.licensedMaterials.length > 0
-          ? { licensedMaterials: task.licensedMaterials }
-          : {}),
-        ...(pkg.softwareRequirements ? { softwareRequirements: pkg.softwareRequirements } : {}),
-        ...(resources ? { resources } : {}),
-        ...(schedulingStrategy ? { schedulingStrategy } : {}),
-      });
+      await deps.submitJob(
+        {
+          nodeId: node.id,
+          ...(invocation ? { invocation } : {}),
+          ...(pkg.usecaseVersionId ? { usecaseVersionId: pkg.usecaseVersionId } : {}),
+          ...(pkg.usecasePackageId ? { usecasePackageId: pkg.usecasePackageId } : {}),
+          name: node.name,
+          command,
+          ...(spackExecution ? { spackExecution } : {}),
+          envVars: siteJob?.envVars ?? task.envVars,
+          ...(Object.keys(dataInputs).length > 0 ? { dataInputs } : {}),
+          inputStaging: task.inputStaging,
+          expectedOutputs: task.expectedOutputs
+            .filter((output) => requiredOutputDescriptors.has(output.descriptor))
+            .map((output) =>
+              fileOutputDescriptors.includes(output.descriptor) &&
+              !contentOutputDescriptors.has(output.descriptor)
+                ? { ...output, pathsOnly: true }
+                : output,
+            ),
+          fileOutputDescriptors,
+          ...(task.stdinText !== undefined ? { stdinText: task.stdinText } : {}),
+          ...(task.licensedMaterials && task.licensedMaterials.length > 0
+            ? { licensedMaterials: task.licensedMaterials }
+            : {}),
+          ...(pkg.softwareRequirements ? { softwareRequirements: pkg.softwareRequirements } : {}),
+          ...(resources ? { resources } : {}),
+          ...(schedulingStrategy ? { schedulingStrategy } : {}),
+        },
+        forEachGroup,
+      );
     if (status !== "completed") {
       const message =
         errorMessage?.trim() ||
@@ -229,14 +259,24 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
     // Surface the raw collected bundle under a reserved key so a downstream
     // `Reduce.ExtractTable` `collectedOut` column can regex it per iteration;
     // the engine strips it from the persisted result.
-    return {
-      status: "Succeeded",
-      values: {
-        ...resolveFileOutputs(node, collectedFiles ?? {}),
-        ...usecase.extractValues(collected, valueOutputs),
-        [NODE_COLLECTED_KEY]: collected,
-      },
+    const values = {
+      ...resolveFileOutputs(node, collectedFiles ?? {}),
+      ...usecase.extractValues(collected, valueOutputs),
     };
+    for (const output of pkg.outputs ?? [])
+      for (const validator of output.validators)
+        workflowDsl.validateOutput(
+          output.descriptor,
+          validator,
+          output.type === "File" || output.type === "FileBatch"
+            ? collectedFiles && Object.hasOwn(collectedFiles, output.descriptor)
+              ? collectedFiles[output.descriptor]
+              : undefined
+            : Object.hasOwn(values, output.descriptor)
+              ? values[output.descriptor]
+              : undefined,
+        );
+    return { status: "Succeeded", values: { ...values, [NODE_COLLECTED_KEY]: collected } };
   };
 }
 
@@ -274,20 +314,24 @@ function mapSchedulingStrategy(
 }
 
 /** Preserve declared resources; leave undeclared fields to the submitter defaults. */
-function mapResources(
+export function workflowJobResources(
   reqs: workflowDsl.Requirements | null | undefined,
-  memoryMiB: number | undefined,
+  defaults?: usecase.GovernedUsecasePackage["resources"],
 ): JobSubmission["resources"] {
   const resources: NonNullable<JobSubmission["resources"]> = {};
-  if (reqs?.cpuCores != null) {
-    resources.cpus = reqs.cpuCores;
+  if (reqs && (reqs.nodeCount != null || reqs.maxCpuTime != null || reqs.stopTime != null)) {
+    resources.schedulerLimits = JobSchedulerLimitsSchema.parse({
+      nodeCount: reqs.nodeCount ?? undefined,
+      maxCpuTime: reqs.maxCpuTime ?? undefined,
+      stopTime: reqs.stopTime ?? undefined,
+    });
   }
-  if (reqs?.maxWallTime != null) {
-    resources.wallTimeSec = reqs.maxWallTime;
-  }
-  if (memoryMiB !== undefined) {
-    resources.memoryMb = memoryMiB;
-  }
+  const cpus = reqs?.cpuCores ?? defaults?.cpu ?? reqs?.nodeCount;
+  const wall = reqs?.maxWallTime ?? defaults?.walltimeSeconds;
+  if (cpus != null) resources.cpus = cpus;
+  if (wall != null) resources.wallTimeSec = wall;
+  if (defaults?.memoryMiB !== undefined) resources.memoryMb = defaults.memoryMiB;
+  if (defaults?.gpus !== undefined) resources.gpus = defaults.gpus;
   return Object.keys(resources).length > 0 ? resources : undefined;
 }
 
@@ -403,6 +447,10 @@ function assignInput(
   value: unknown,
 ): void {
   if (slot.type === "Text") {
+    if (slot.rule?.type === "Json" && typeof value === "object") {
+      inputs[slot.descriptor] = JSON.stringify(value);
+      return;
+    }
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
       inputs[slot.descriptor] = String(value);
       return;

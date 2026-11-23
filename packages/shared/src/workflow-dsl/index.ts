@@ -43,11 +43,14 @@ export {
 } from "./generate";
 export { type LoopCarry, LoopCarrySchema, type LoopOutput, LoopOutputSchema } from "./loop";
 export {
+  boundCommandReducer,
+  commandExecutionNode,
   type WorkflowNode,
   WorkflowNodeSchema,
   type WorkflowSpec,
   WorkflowSpecSchema,
 } from "./node";
+export { validateOutput } from "./output-validator";
 export {
   type ReduceColumn,
   ReduceColumnSchema,
@@ -97,8 +100,6 @@ export {
   ScriptInputSpecSchema,
   type ScriptIoType,
   ScriptIoTypeSchema,
-  type ScriptOriginKind,
-  ScriptOriginKindSchema,
   type ScriptOutputSpec,
   ScriptOutputSpecSchema,
   type ScriptRef,

@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -149,6 +150,60 @@ test("runtime API and startup seed produce identical immutable materials and evi
       await readFile(join(f.root, "input/NOTICE.txt"), "utf8"),
     );
     expect((await f.service.history(f.plan, actor.sub)).length).toBeGreaterThan(3);
+  } finally {
+    f.stage.mockRestore();
+  }
+});
+
+test("trusted signed deliveries replay through API and startup seed; stripped and altered manifests cannot import", async () => {
+  const f = await fixture();
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const service = new OfflineDeliveryService({
+    ...f.service.options,
+    deliveryKeys: { issuer: publicKey.export({ type: "spki", format: "der" }).toString("base64") },
+  });
+  const payload = JSON.stringify(f.plan, null, 2);
+  const format = "kq-signed-offline-delivery-v1";
+  const digest = createHash("sha256").update(payload).digest("hex");
+  const envelope = {
+    format,
+    payload,
+    keyId: "issuer",
+    signature: sign(null, Buffer.from([format, "issuer", digest].join("\n")), privateKey).toString(
+      "base64",
+    ),
+  };
+  try {
+    const app = new Hono().route(
+      "/api",
+      createOfflineDeliveryRoutes(service, { allowTestHeader: true }),
+    );
+    const post = (action: string, body: unknown) =>
+      app.request(`/api/offline-deliveries/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Test-Principal": JSON.stringify(actor) },
+        body: JSON.stringify(body),
+      });
+    for (const body of [
+      f.plan,
+      { ...envelope, payload: `${payload} ` },
+      { ...envelope, keyId: "constructor" },
+    ]) {
+      expect((await post("verify", body)).status).toBe(403);
+      expect((await post("import", body)).status).toBe(403);
+    }
+    expect(f.receipts.records.size).toBe(0);
+    expect((await post("verify", envelope)).status).toBe(200);
+    const file = join(f.root, "input/delivery.json");
+    await writeFile(file, JSON.stringify(envelope));
+    expect((await seedOfflineDelivery(service, file, actor.sub)).status).toBe("completed");
+    const replay = await post("import", envelope);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({
+      status: "completed",
+      signature: { keyId: "issuer", payloadSha256: digest },
+    });
+    expect(() => f.service.parse(envelope)).toThrow("DELIVERY_SIGNING_KEY_UNKNOWN");
   } finally {
     f.stage.mockRestore();
   }

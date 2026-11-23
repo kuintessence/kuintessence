@@ -635,6 +635,52 @@ describe("runWorkflow — Generate + ForEach fan-out", () => {
     expect(r.values.sweep?.values.results).toEqual([1, 2, 3, 4]);
   });
 
+  test("array groups survive replay and separate runs, nested instances, and serial loops", async () => {
+    const loop = (id: string, nodes: unknown[], maxParallel = 2) => ({
+      type: "Loop",
+      id,
+      name: id,
+      mode: "ForEach",
+      over: { expr: "[1,2]" },
+      maxIterations: 2,
+      maxParallel,
+      body: { nodeDrafts: nodes, nodeRelations: [] },
+    });
+    const flow = wf({
+      nodeDrafts: [
+        loop("outer", [
+          suc("a"),
+          suc("b"),
+          loop("inner", [suc("c")]),
+          loop("serial", [suc("d")], 1),
+        ]),
+      ],
+      nodeRelations: [],
+    });
+    const collect = async (runId: string) => {
+      const groups: Record<string, string | undefined> = {};
+      const result = await runWorkflow(
+        flow,
+        async (_, __, invocation, group) => {
+          if (!invocation) throw new Error("missing invocation");
+          groups[invocation.path] = group;
+          return { status: "Succeeded" };
+        },
+        { runId },
+      );
+      expect(result.status.outer).toBe("Succeeded");
+      return groups;
+    };
+    const first = await collect("first");
+    expect(await collect("first")).toEqual(first);
+    const other = await collect("second");
+    const parallel = Object.values(first).filter((group): group is string => group !== undefined);
+    expect(parallel).toHaveLength(8);
+    expect(new Set(parallel).size).toBe(4);
+    expect(Object.values(first).filter((group) => group === undefined)).toHaveLength(4);
+    expect(Object.values(other).some((group) => group && parallel.includes(group))).toBe(false);
+  });
+
   test("ForEach preserves the failed iteration's job diagnostics", async () => {
     const exec: NodeExecutor = async (node, ctx) => {
       const item = (ctx as { loop?: { item?: number } }).loop?.item;
@@ -1098,12 +1144,47 @@ describe("runWorkflow — Reduce", () => {
     name: "gather",
     from: { loop: "sweep", output: "results" },
     reducer: { kind },
-    output: { kind: "SingleFile", descriptor: "all" },
+    output: { kind: "Value", descriptor: "all" },
   });
   const echo: NodeExecutor = async (node, ctx) =>
     node.id === "work"
       ? { status: "Succeeded", values: { out: (ctx as { loop?: { item?: unknown } }).loop?.item } }
       : { status: "Succeeded", values: {} };
+
+  test.each([
+    { usecaseRef: { usecaseVersionId: UUID, softwareVersionId: UUID } },
+    {
+      script: {
+        source: { type: "Inline", language: "python", content: "pass" },
+        runtimeProfileId: UUID,
+      },
+    },
+  ])("runs Command with the ordered collection and the durable node invocation", async (config) => {
+    const workflow = wf({
+      nodeDrafts: [
+        genVals([3, 1]),
+        sweepAll,
+        { ...reduce("Command"), reducer: { kind: "Command", ...config } },
+      ],
+      nodeRelations: [
+        { fromId: "gen", toId: "sweep", slotRelations: [] },
+        { fromId: "sweep", toId: "gather", slotRelations: [] },
+      ],
+    });
+    const result = await runWorkflow(workflow, async (node, ctx, invocation) => {
+      if (node.id !== "gather") return echo(node, ctx, invocation);
+      expect(node.type).toBe("script" in config ? "Script" : "SoftwareUsecaseComputing");
+      expect(node).toMatchObject({
+        inputSlots: [{ descriptor: "items", from: { node: "sweep", output: "results" } }],
+      });
+      expect(ctx.nodes).toMatchObject({ sweep: { values: { results: [3, 1] } } });
+      expect(invocation?.path).toContain("gather");
+      return { status: "Succeeded", values: { all: 4, extra: "not a declared output" } };
+    });
+    expect(result.values.gather?.values).toEqual({ all: 4 });
+    const missing = await runWorkflow(workflow, echo);
+    expect(missing.values.gather?.failure?.message).toContain("did not produce output");
+  });
 
   test("Collect passes the gathered list through", async () => {
     const r = await runWorkflow(
@@ -1119,6 +1200,49 @@ describe("runWorkflow — Reduce", () => {
     expect(r.values.gather?.values.all).toEqual([1, 2, 3]);
   });
 
+  test("returns file receipts in iteration order for a published reduction", async () => {
+    const result = await runWorkflow(
+      wf({
+        nodeDrafts: [
+          genVals([2, 1]),
+          sweepAll,
+          { ...reduce("Collect"), output: { kind: "OrderedFolder", descriptor: "files" } },
+        ],
+        nodeRelations: [
+          { fromId: "gen", toId: "sweep", slotRelations: [] },
+          { fromId: "sweep", toId: "gather", slotRelations: [] },
+        ],
+      }),
+      echo,
+      {
+        publishGeneratedFiles: async (items, invocation, output) => {
+          expect(items).toEqual([2, 1]);
+          expect(invocation.path).toContain("gather");
+          expect(output?.kind).toBe("OrderedFolder");
+          return ["first", "second"];
+        },
+      },
+    );
+    expect(result.values.gather?.values.files).toEqual(["first", "second"]);
+  });
+  test("ForEach concatenation preserves iteration order", async () => {
+    const result = await runWorkflow(
+      wf({
+        nodeDrafts: [
+          genVals(["c", "a"]),
+          {
+            ...sweepAll,
+            outputs: [
+              { descriptor: "text", from: { node: "work", output: "out" }, aggregate: "Concat" },
+            ],
+          },
+        ],
+        nodeRelations: [{ fromId: "gen", toId: "sweep", slotRelations: [] }],
+      }),
+      echo,
+    );
+    expect(result.values.sweep?.values.text).toBe("ca");
+  });
   test("Concat joins the gathered list", async () => {
     const r = await runWorkflow(
       wf({
@@ -1177,7 +1301,7 @@ describe("runWorkflow — Reduce", () => {
             name: "gather",
             from: { loop: "sweep", output: "missing" },
             reducer: { kind: "Collect" },
-            output: { kind: "SingleFile", descriptor: "all" },
+            output: { kind: "Value", descriptor: "all" },
           },
         ],
         nodeRelations: [
@@ -1416,10 +1540,7 @@ describe("runWorkflow — Reduce ExtractTable + Statistics", () => {
       { descriptor: "results", from: { node: "work", output: "out" }, aggregate: "Collect" },
     ],
   };
-  const reduce = (
-    reducer: unknown,
-    output: unknown = { kind: "SingleFile", descriptor: "table" },
-  ) => ({
+  const reduce = (reducer: unknown, output: unknown = { kind: "Value", descriptor: "table" }) => ({
     type: "Reduce",
     id: "gather",
     name: "gather",
@@ -1635,4 +1756,33 @@ describe("runWorkflow — Reduce ExtractTable + Statistics", () => {
     expect(top.values.solo?.values.metric).toBe(1);
     expect(Object.keys(top.values.solo?.values ?? {})).not.toContain(NODE_COLLECTED_KEY);
   });
+});
+
+test("Generate passes an upstream file through parsing and waits for BatchFiles publication", async () => {
+  const spec = wf({
+    nodeDrafts: [
+      suc("source"),
+      {
+        id: "generate",
+        name: "generate",
+        type: "Generate",
+        rule: { kind: "FromFile", format: "JSONL", source: { node: "source", output: "file" } },
+        output: { descriptor: "files", as: "BatchFiles" },
+      },
+    ],
+    nodeRelations: [{ fromId: "source", toId: "generate", slotRelations: [] }],
+  });
+  const file = { fileMetadataId: UUID, fileMetadataName: "input.jsonl" };
+  const result = await runWorkflow(spec, okExecutor({ source: { file } }), {
+    readGenerateFile: async (ref) => {
+      expect(ref).toEqual(file);
+      return '{"value":2}\n';
+    },
+    publishGeneratedFiles: async (items, invocation) => {
+      expect(items).toEqual([{ value: 2 }]);
+      expect(invocation.path).toContain("generate");
+      return [file];
+    },
+  });
+  expect(result.values.generate?.values.files).toEqual([file]);
 });

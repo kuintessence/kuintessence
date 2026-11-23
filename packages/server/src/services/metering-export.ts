@@ -1,8 +1,13 @@
-// CSV export of metering query results.
+import {
+  ByteWriter,
+  type ColumnSource,
+  ParquetWriter,
+  schemaFromColumnData,
+} from "hyparquet-writer";
 
 import type { QueryResult, QueryResultRow } from "./metering";
 
-const CSV_HEADER = [
+const COLUMNS = [
   "groupKey",
   "cpuCoreSeconds",
   "gpuSeconds",
@@ -10,7 +15,7 @@ const CSV_HEADER = [
   "storageMbSeconds",
   "networkEgressMb",
   "jobCount",
-];
+] as const;
 
 function csvEscape(value: string | number): string {
   const s = String(value);
@@ -21,22 +26,52 @@ function csvEscape(value: string | number): string {
 }
 
 export function rowToCsv(row: QueryResultRow): string {
-  return [
-    row.groupKey,
-    row.cpuCoreSeconds,
-    row.gpuSeconds,
-    row.memoryMbSeconds,
-    row.storageMbSeconds,
-    row.networkEgressMb,
-    row.jobCount,
-  ]
-    .map(csvEscape)
-    .join(",");
+  return COLUMNS.map((key) => csvEscape(row[key])).join(",");
 }
 
-export function exportCsv(result: QueryResult): string {
-  const lines = [CSV_HEADER.join(","), ...result.rows.map(rowToCsv)];
-  return `${lines.join("\n")}\n`;
+function columns(rows: QueryResultRow[]): ColumnSource[] {
+  return COLUMNS.map((name) => ({
+    name,
+    type: name === "groupKey" ? "STRING" : "DOUBLE",
+    data: rows.map((row) => row[name]),
+  }));
+}
+
+export async function* exportChunks(
+  format: "csv" | "json" | "parquet",
+  pages: AsyncIterable<QueryResult>,
+) {
+  const encode = new TextEncoder();
+  if (format === "parquet") {
+    const buffer = new ByteWriter();
+    const writer = new ParquetWriter({
+      writer: buffer,
+      schema: schemaFromColumnData({ columnData: columns([]) }),
+    });
+    for await (const { rows } of pages) {
+      if (!rows.length) continue;
+      await writer.write({ columnData: columns(rows) });
+      yield buffer.getBytes().slice();
+      buffer.index = 0;
+    }
+    await writer.finish();
+    yield buffer.getBytes().slice();
+    return;
+  }
+  let first = true;
+  let total = 0;
+  yield encode.encode(format === "csv" ? `${COLUMNS.join(",")}\n` : '{"rows":[');
+  for await (const page of pages) {
+    total = page.total;
+    if (!page.rows.length) continue;
+    yield encode.encode(
+      format === "csv"
+        ? `${page.rows.map(rowToCsv).join("\n")}\n`
+        : (first ? "" : ",") + page.rows.map((row) => JSON.stringify(row)).join(","),
+    );
+    first = false;
+  }
+  if (format === "json") yield encode.encode(`],"total":${total}}`);
 }
 
 export function suggestedFilename(format: "csv" | "parquet", from: Date, to: Date): string {

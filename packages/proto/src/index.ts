@@ -11,3 +11,6 @@ export {
   sameInstallationIntent,
 } from "./dispatch-intent.js";
 export * from "./generated/kuintessence/v1/agent_service_pb.js";
+
+/** Maximum plaintext bytes in one managed replica range. */
+export const REPLICA_RANGE_BYTES = 1024 * 1024;

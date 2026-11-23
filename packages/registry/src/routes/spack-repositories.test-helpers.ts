@@ -61,6 +61,10 @@ export function createStore(repositories: RecipeRepository[] = [repository()]) {
   });
   const store = {
     limits,
+    grants: mock(async () => []),
+    setGrant: mock(async () => []),
+    migrate: mock(async (_id: string, name: string) => repository(name)),
+    collectSnapshot: mock(async () => {}),
     list: mock(async () => repositories),
     get,
     getSnapshot: mock(async (id: string, commit: string, checkpoint?: () => void) => {

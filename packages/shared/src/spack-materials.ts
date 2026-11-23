@@ -25,6 +25,12 @@ export const SpackMaterialBlobSchema = z.strictObject({
     .positive()
     .max(16 * 1024 ** 3),
 });
+export const SPACK_MATERIAL_CHUNK_BYTES = 8 * 1024 ** 2;
+export const SpackMaterialUploadProgressSchema = z.union([
+  z.strictObject({ offset: z.number().int().nonnegative() }),
+  SpackMaterialBlobSchema,
+]);
+
 export type SpackMaterialBlob = z.infer<typeof SpackMaterialBlobSchema>;
 
 export const SpackMaterialEvidenceSchema = z.strictObject({

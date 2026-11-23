@@ -8,6 +8,7 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import { Hono } from "hono";
+import { parquetReadObjects } from "hyparquet";
 import pino from "pino";
 import type { AuthzCheck, AuthzService, ShadowCheckInput } from "../../authz/service";
 import { createErrorHandler } from "../../middleware/error-handler";
@@ -577,18 +578,24 @@ describe("metering routes", () => {
       );
     });
 
-    it("rejects Parquet until a real writer is enabled", async () => {
-      const { app } = makeApp(PRINCIPAL_SUPER);
+    it("exports all authorized groups to a readable Parquet file", async () => {
+      const { app, service } = makeApp(PRINCIPAL_ORG_A);
+      for (let i = 0; i < 1001; i++) await seedRecord(service, { userId: crypto.randomUUID() });
+      await seedRecord(service, { orgId: ORG_B_ID, userId: "outside", cpu: 700 });
       const url =
-        "http://test/api/metering/export?from=2026-04-28T00:00:00Z&to=2026-04-30T00:00:00Z" +
-        "&period=raw&grouping=user&format=parquet";
+        "http://test/api/metering/export?from=2026-04-28T00:00:00Z&to=2026-04-30T00:00:00Z&period=raw&grouping=user&format=parquet";
       const res = await app.fetch(new Request(url));
-      expect(res.status).toBe(422);
-      const body = (await res.json()) as {
-        error: { code: string; details?: { reason?: string } };
-      };
-      expect(body.error.code).toBe("EXPORT_FORMAT_NOT_SUPPORTED");
-      expect(body.error.details?.reason).toBe("EXPORT_FORMAT_NOT_SUPPORTED");
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("application/vnd.apache.parquet");
+      const rows = await parquetReadObjects({ file: await res.arrayBuffer() });
+      expect(rows).toHaveLength(1001);
+      expect(rows.every((row) => row.cpuCoreSeconds === 600 && row.groupKey !== "outside")).toBe(
+        true,
+      );
+      const page = await app.fetch(new Request(`${url}&limit=1&offset=1000`));
+      expect(await parquetReadObjects({ file: await page.arrayBuffer() })).toEqual(
+        rows.slice(1000),
+      );
     });
   });
 

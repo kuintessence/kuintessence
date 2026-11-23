@@ -48,13 +48,13 @@ import {
 import { getAuthState } from "../../lib/auth";
 import {
   deleteSpackCatalogPackage,
+  getSpackCatalogSource,
   listSpackCatalog,
   listUsecasePackagePage,
   listWorkflowTemplatePage,
   SoftwareError,
   type SpackCatalog,
   type SpackCatalogPackage,
-  type SpackCatalogPackageCreate,
   type SpackCatalogPackageUpdate,
   type SpackCatalogSourceFilter,
   type UsecasePackage,
@@ -89,7 +89,6 @@ import {
 import { FormField } from "../ui/form-field";
 import { Input, Textarea } from "../ui/input";
 import { ListToolbar } from "../ui/list-toolbar";
-import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
 import { PaginationControls } from "../ui/pagination-controls";
 import { RefreshButton } from "../ui/refresh-button";
@@ -117,6 +116,7 @@ import { SoftwareCard } from "./SoftwareCard";
 import { SoftwareCardGrid } from "./SoftwareCardGrid";
 import { CatalogPackagePickerField, SpackCatalogPickerDialog } from "./SpackCatalogPicker";
 import { SpackMaterialsPanel } from "./SpackMaterialsPanel";
+import { SpackSourceEditor } from "./SpackSourceEditor";
 import { SpackSpecConfigSheet, SpackSpecPickerField } from "./SpackSpecPicker";
 import { optionalText, parseTagInput, sourceLabel } from "./software-fields";
 import { catalogPackageKey, SPACK_CATALOG_PAGE_SIZE } from "./spack-catalog";
@@ -2094,6 +2094,7 @@ function SpackCatalogPackageList({
             </SheetHeader>
             <SheetBody>
               <SpackCatalogPackageEditForm
+                key={`${editingPackage.id}-${activeOrganizationId}`}
                 pkg={editingPackage}
                 isPending={updatePackagePending}
                 onCancel={() => setEditingId(null)}
@@ -2172,9 +2173,18 @@ function SpackCatalogPackageEditForm({
   const { t } = useTranslation();
   const id = useId();
   const [name, setName] = useState(pkg.name);
-  const [source, setSource] = useState<SpackCatalogPackageCreate["source"]>(
-    pkg.source === "vendor" ? "vendor" : "official",
-  );
+  const source = pkg.source === "vendor" ? "vendor" : "official";
+  const orgId = useActiveOrganizationId();
+  const recipe = useQuery({
+    queryKey: ["spack-catalog-source", pkg.id, orgId, getAuthState().revision],
+    queryFn: () => getSpackCatalogSource(pkg.id ?? ""),
+    retry: false,
+    gcTime: 0,
+  });
+  const [draft, setDraft] = useState<{
+    packageFile: string;
+    expectedSourceDigest: string | null;
+  }>();
   const [description, setDescription] = useState(pkg.description ?? "");
   const [tags, setTags] = useState(pkg.tags.join(","));
   return (
@@ -2189,6 +2199,7 @@ function SpackCatalogPackageEditForm({
           source,
           description: optionalText(description),
           tags: parseTagInput(tags),
+          ...draft,
         });
       }}
     >
@@ -2198,15 +2209,7 @@ function SpackCatalogPackageEditForm({
         </FormField>
         <label htmlFor={`${id}-source`} className="grid min-w-0 gap-1.5 text-sm">
           <span>{t("software.manage.catalogPackageSource")}</span>
-          <NativeSelect
-            id={`${id}-source`}
-            value={source}
-            onChange={(e) => setSource(e.target.value as SpackCatalogPackageCreate["source"])}
-            aria-label={t("software.manage.catalogPackageSource")}
-          >
-            <option value="official">{sourceLabel(t, "official")}</option>
-            <option value="vendor">{sourceLabel(t, "vendor")}</option>
-          </NativeSelect>
+          <Input id={`${id}-source`} readOnly value={sourceLabel(t, source)} />
         </label>
       </div>
       <FormField id={`${id}-description`} label={t("software.manage.catalogPackageDescription")}>
@@ -2217,6 +2220,23 @@ function SpackCatalogPackageEditForm({
       <FormField id={`${id}-tags`} label={t("software.manage.catalogPackageTags")}>
         {(field) => <Input {...field} value={tags} onChange={(e) => setTags(e.target.value)} />}
       </FormField>
+      {recipe.data && (
+        <SpackSourceEditor
+          value={draft?.packageFile ?? recipe.data.content ?? ""}
+          onChange={(packageFile) => {
+            const expectedSourceDigest = draft ? draft.expectedSourceDigest : recipe.data.digest;
+            setDraft({ packageFile, expectedSourceDigest });
+          }}
+        />
+      )}
+      {recipe.isError && (
+        <div role="alert">
+          {toUserFacingError(recipe.error, t("software.unreachable"))}{" "}
+          <Button type="button" variant="outline" onClick={() => void recipe.refetch()}>
+            {t("common.retry")}
+          </Button>
+        </div>
+      )}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" onClick={onCancel} disabled={isPending}>
           <Undo2 />

@@ -16,7 +16,7 @@
 // content-addressed blob on PUT (?digest=…). The session row is
 // retained for diagnostics and removed on DELETE.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   auditRelease,
   ociBlob,
@@ -28,9 +28,11 @@ import {
   ociTag,
   ociUploadSession,
   type PgDb,
+  type PgTransaction,
   spackPackage,
 } from "@kuintessence/db";
-import { and, asc, desc, eq, lt, sql } from "drizzle-orm";
+import type { SpackMaterialBlob } from "@kuintessence/shared";
+import { and, asc, desc, eq, isNull, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   BlobDigestMismatchError,
@@ -55,7 +57,7 @@ export class RegistryError extends Error {
       | "TAG_IMMUTABLE"
       | "DENIED",
     message: string,
-    public readonly status: 400 | 401 | 403 | 404 | 409 | 413 | 429 = 400,
+    public readonly status: 400 | 401 | 403 | 404 | 409 | 413 | 416 | 429 = 400,
     public readonly detail?: unknown,
   ) {
     super(message);
@@ -94,10 +96,19 @@ export interface SpackIndexEntry {
   hash: string;
   arch: string;
   buildcacheUrl: string;
-  manifestUrl: string;
+  manifestUrl: string | null;
   sizeBytes: number | null;
 }
 
+export const nativeSpackMetadataSchema = z.object({
+  spec: z.object({
+    nodes: z.array(z.looseObject({ name: z.string(), hash: z.string() })).min(1),
+  }),
+  binary_cache_checksum: z.object({
+    hash_algorithm: z.literal("sha256"),
+    hash: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
+});
 const SHA_RE = /^sha256:[0-9a-f]{64}$/;
 const manifestBodySchema = z.object({
   config: z.object({ digest: z.string().regex(SHA_RE) }).optional(),
@@ -131,13 +142,16 @@ function repoFullName(ns: ParsedNamespace): string {
 }
 
 export interface AuditPort {
-  recordPush(input: {
-    actor: string;
-    resourceKind: "oci-tag" | "spack-package" | "oci-repository";
-    resourceId: string;
-    metadata: Record<string, unknown>;
-    forced?: boolean;
-  }): Promise<void>;
+  recordPush(
+    input: {
+      actor: string;
+      resourceKind: "oci-tag" | "spack-package" | "oci-repository";
+      resourceId: string;
+      metadata: Record<string, unknown>;
+      forced?: boolean;
+    },
+    transaction?: PgTransaction,
+  ): Promise<void>;
   recordDelete(input: {
     actor: string;
     resourceKind: "oci-tag" | "spack-package" | "oci-repository";
@@ -152,14 +166,17 @@ export interface AuditPort {
  */
 export class DrizzleAuditPort implements AuditPort {
   constructor(private readonly db: PgDb) {}
-  async recordPush(input: {
-    actor: string;
-    resourceKind: "oci-tag" | "spack-package" | "oci-repository";
-    resourceId: string;
-    metadata: Record<string, unknown>;
-    forced?: boolean;
-  }): Promise<void> {
-    await this.db.insert(auditRelease).values({
+  async recordPush(
+    input: {
+      actor: string;
+      resourceKind: "oci-tag" | "spack-package" | "oci-repository";
+      resourceId: string;
+      metadata: Record<string, unknown>;
+      forced?: boolean;
+    },
+    transaction?: PgTransaction,
+  ): Promise<void> {
+    await (transaction ?? this.db).insert(auditRelease).values({
       action: input.forced ? "force-push" : "push",
       resourceKind: input.resourceKind,
       resourceId: input.resourceId,
@@ -199,6 +216,11 @@ export class NoopAuditPort implements AuditPort {
   }): Promise<void> {}
 }
 
+export interface UploadRange {
+  start: number;
+  end: number;
+}
+
 export interface UploadLimits {
   /** Hard ceiling on one staged upload. Exceeding it aborts the upload with 413. */
   maxUploadBytes: number;
@@ -223,7 +245,6 @@ const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
  */
 export class RegistryService {
   private readonly limits: UploadLimits;
-  private readonly uploadOperations = new Map<string, Promise<void>>();
 
   constructor(
     private readonly db: PgDb,
@@ -276,17 +297,17 @@ export class RegistryService {
     });
   }
 
-  private async uploadSession(repositoryId: string, uploadId: string) {
+  async uploadStatus(repositoryId: string, uploadId: string) {
     const [session] = await this.db
-      .select()
+      .select({ totalUploaded: ociUploadSession.totalUploaded })
       .from(ociUploadSession)
       .where(
         and(
-          eq(ociUploadSession.uuidToken, uploadId),
           eq(ociUploadSession.repositoryId, repositoryId),
+          eq(ociUploadSession.uuidToken, uploadId),
+          isNull(ociUploadSession.completedDigest),
         ),
-      )
-      .limit(1);
+      );
     if (!session)
       throw new RegistryError("BLOB_UPLOAD_UNKNOWN", "unknown upload in repository", 404);
     return session;
@@ -367,13 +388,17 @@ export class RegistryService {
   // ---------- Blob uploads ----------
 
   async startUpload(repoId: string): Promise<{ uploadId: string }> {
-    return this.serializeUpload("registry", async () => {
-      const [usage] = await this.db
+    return this.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended('oci-upload-admission',0))`,
+      );
+      const [usage] = await tx
         .select({
           active: sql<number>`count(*)::int`,
           repositoryActive: sql<number>`count(*) filter (where ${ociUploadSession.repositoryId} = ${repoId})::int`,
         })
-        .from(ociUploadSession);
+        .from(ociUploadSession)
+        .where(isNull(ociUploadSession.completedDigest));
       if (Number(usage?.active ?? 0) >= this.limits.maxActiveUploads) {
         throw new RegistryError(
           "BLOB_UPLOAD_INVALID",
@@ -390,18 +415,9 @@ export class RegistryService {
       }
       const uuid = randomUUID();
       const storageKey = `_uploads/${uuid}`;
-      await this.blobs.startUpload(uuid);
-      try {
-        await this.db.insert(ociUploadSession).values({
-          repositoryId: repoId,
-          uuidToken: uuid,
-          totalUploaded: 0,
-          storageKey,
-        });
-      } catch (error) {
-        await this.blobs.cancelUpload(uuid);
-        throw error;
-      }
+      await tx
+        .insert(ociUploadSession)
+        .values({ repositoryId: repoId, uuidToken: uuid, totalUploaded: 0, storageKey });
       return { uploadId: uuid };
     });
   }
@@ -410,47 +426,10 @@ export class RegistryService {
     repositoryId: string,
     uploadId: string,
     chunk: ReadableStream<Uint8Array> | Uint8Array,
-  ): Promise<{ totalUploaded: number }> {
-    return this.serializeUpload(uploadId, () =>
-      this.appendChunkUnlocked(repositoryId, uploadId, chunk),
-    );
-  }
-
-  private async appendChunkUnlocked(
-    repositoryId: string,
-    uploadId: string,
-    chunk: ReadableStream<Uint8Array> | Uint8Array,
-  ): Promise<{ totalUploaded: number }> {
-    const session = await this.uploadSession(repositoryId, uploadId);
-    let newSize: number;
-    try {
-      newSize = await this.blobs.appendUpload(uploadId, chunk, this.limits.maxUploadBytes);
-    } catch (error) {
-      if (!(error instanceof BlobUploadTooLargeError)) throw error;
-      await this.cancelUploadUnlocked(uploadId);
-      throw new RegistryError(
-        "BLOB_UPLOAD_INVALID",
-        `upload ${uploadId} exceeds maxUploadBytes (${this.limits.maxUploadBytes})`,
-        413,
-      );
-    }
-    const [usage] = await this.db
-      .select({ totalUploaded: sql<number>`coalesce(sum(${ociUploadSession.totalUploaded}), 0)` })
-      .from(ociUploadSession);
-    const projectedBytes = Number(usage?.totalUploaded ?? 0) - session.totalUploaded + newSize;
-    if (projectedBytes > this.limits.maxIncompleteUploadBytes) {
-      await this.cancelUploadUnlocked(uploadId);
-      throw new RegistryError(
-        "BLOB_UPLOAD_INVALID",
-        "registry incomplete upload byte quota exceeded",
-        413,
-      );
-    }
-    await this.db
-      .update(ociUploadSession)
-      .set({ totalUploaded: newSize, createdAt: new Date() })
-      .where(eq(ociUploadSession.uuidToken, uploadId));
-    return { totalUploaded: newSize };
+    range?: UploadRange,
+  ) {
+    const result = await this.writeUpload(repositoryId, uploadId, chunk, range);
+    return { totalUploaded: result.size };
   }
 
   async completeUpload(
@@ -458,93 +437,140 @@ export class RegistryService {
     uploadId: string,
     expectedDigest: string,
     finalChunk?: ReadableStream<Uint8Array> | Uint8Array,
-  ): Promise<{ digest: string; size: number }> {
-    return this.serializeUpload(uploadId, async () => {
-      assertDigest(expectedDigest);
-      await this.uploadSession(repositoryId, uploadId);
-      await this.initializeRepositoryScope(repositoryId);
-      if (finalChunk) await this.appendChunkUnlocked(repositoryId, uploadId, finalChunk);
-      let stored: { digest: string; size: number };
-      try {
-        stored = await this.blobs.completeUpload(uploadId, expectedDigest);
-      } catch (e) {
-        if (e instanceof BlobDigestMismatchError) {
-          throw new RegistryError("DIGEST_INVALID", `expected ${e.expected} got ${e.actual}`, 400);
-        }
-        throw e;
+    range?: UploadRange,
+  ) {
+    assertDigest(expectedDigest);
+    await this.initializeRepositoryScope(repositoryId);
+    const result = await this.writeUpload(
+      repositoryId,
+      uploadId,
+      finalChunk ?? new Uint8Array(),
+      range,
+      expectedDigest,
+    );
+    // The completed receipt remains available for retry and the expiry worker also removes staging.
+    await this.blobs.cancelUpload(uploadId);
+    return { digest: expectedDigest, size: result.size };
+  }
+
+  private async writeUpload(
+    repositoryId: string,
+    uploadId: string,
+    body: ReadableStream<Uint8Array> | Uint8Array,
+    range?: UploadRange,
+    digest?: string,
+  ) {
+    const result = await this.db.transaction(async (tx) => {
+      const [session] = await tx
+        .select()
+        .from(ociUploadSession)
+        .where(
+          and(
+            eq(ociUploadSession.uuidToken, uploadId),
+            eq(ociUploadSession.repositoryId, repositoryId),
+          ),
+        )
+        .for("update");
+      if (!session)
+        throw new RegistryError("BLOB_UPLOAD_UNKNOWN", "unknown upload in repository", 404);
+      if (session.completedDigest) {
+        if (digest === session.completedDigest) return { size: session.totalUploaded };
+        throw new RegistryError("BLOB_UPLOAD_UNKNOWN", "upload already completed", 404);
       }
-      await this.db.transaction(async (tx) => {
-        await tx
-          .insert(ociBlob)
-          .values({
-            digest: stored.digest,
-            size: stored.size,
-            storageKey: digestToStorageKey(stored.digest),
-          })
-          .onConflictDoNothing();
-        await tx
-          .insert(ociRepositoryBlob)
-          .values({ repositoryId, digest: stored.digest })
-          .onConflictDoNothing();
-        await tx
-          .delete(ociUploadSession)
-          .where(
-            and(
-              eq(ociUploadSession.uuidToken, uploadId),
-              eq(ociUploadSession.repositoryId, repositoryId),
-            ),
+      const offset = session.totalUploaded;
+      if (range && offset !== range.start)
+        throw new RegistryError("BLOB_UPLOAD_INVALID", "unexpected upload offset", 416);
+      try {
+        const size = await this.blobs.appendUpload(
+          uploadId,
+          body,
+          this.limits.maxUploadBytes,
+          offset,
+        );
+        if (range && size !== range.end + 1)
+          throw new RegistryError(
+            "BLOB_UPLOAD_INVALID",
+            "body length differs from Content-Range",
+            416,
           );
-      });
-      return stored;
+        // Serialize quota accounting after the streamed body is staged; independent clients can send concurrently.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('oci-upload-quota',0))`);
+        const [usage] = await tx
+          .select({ bytes: sql<number>`coalesce(sum(${ociUploadSession.totalUploaded}),0)` })
+          .from(ociUploadSession)
+          .where(isNull(ociUploadSession.completedDigest));
+        if (Number(usage?.bytes ?? 0) - offset + size > this.limits.maxIncompleteUploadBytes)
+          return this.rejectOversize(
+            tx,
+            uploadId,
+            "registry incomplete upload byte quota exceeded",
+          );
+        if (digest) {
+          await lockBlob(tx, digest);
+          await this.blobs.completeUpload(uploadId, digest, true);
+          await tx
+            .insert(ociBlob)
+            .values({ digest, size, storageKey: digestToStorageKey(digest) })
+            .onConflictDoNothing();
+          await tx.insert(ociRepositoryBlob).values({ repositoryId, digest }).onConflictDoNothing();
+        }
+        await tx
+          .update(ociUploadSession)
+          .set({ totalUploaded: size, createdAt: new Date(), completedDigest: digest ?? null })
+          .where(eq(ociUploadSession.id, session.id));
+        return { size };
+      } catch (error) {
+        if (error instanceof BlobDigestMismatchError)
+          throw new RegistryError("DIGEST_INVALID", error.message);
+        if (error instanceof BlobUploadTooLargeError)
+          return this.rejectOversize(tx, uploadId, error.message);
+        throw error;
+      }
     });
+    if ("error" in result) throw new RegistryError("BLOB_UPLOAD_INVALID", result.error, 413);
+    return result;
+  }
+
+  private async rejectOversize(tx: PgTransaction, uploadId: string, error: string) {
+    await this.blobs.cancelUpload(uploadId);
+    await tx.delete(ociUploadSession).where(eq(ociUploadSession.uuidToken, uploadId));
+    return { error };
   }
 
   async cancelUpload(repositoryId: string, uploadId: string): Promise<void> {
-    await this.serializeUpload(uploadId, async () => {
-      await this.uploadSession(repositoryId, uploadId);
-      await this.cancelUploadUnlocked(uploadId);
+    await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(ociUploadSession)
+        .where(
+          and(
+            eq(ociUploadSession.repositoryId, repositoryId),
+            eq(ociUploadSession.uuidToken, uploadId),
+            isNull(ociUploadSession.completedDigest),
+          ),
+        )
+        .for("update");
+      if (!row) throw new RegistryError("BLOB_UPLOAD_UNKNOWN", "unknown upload in repository", 404);
+      await this.blobs.cancelUpload(uploadId);
+      await tx.delete(ociUploadSession).where(eq(ociUploadSession.id, row.id));
     });
   }
 
-  private async cancelUploadUnlocked(uploadId: string): Promise<void> {
-    await this.blobs.cancelUpload(uploadId);
-    await this.db.delete(ociUploadSession).where(eq(ociUploadSession.uuidToken, uploadId));
-  }
-
-  private async serializeUpload<T>(uploadId: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.uploadOperations.get(uploadId) ?? Promise.resolve();
-    let release = (): void => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
+  async sweepStaleUploads(nowMs = Date.now()): Promise<number> {
+    return this.db.transaction(async (tx) => {
+      const stale = await tx
+        .select()
+        .from(ociUploadSession)
+        .where(lt(ociUploadSession.createdAt, new Date(nowMs - this.limits.uploadIdleMs)))
+        .orderBy(asc(ociUploadSession.createdAt))
+        .limit(100)
+        .for("update", { skipLocked: true });
+      for (const row of stale) {
+        await this.blobs.cancelUpload(row.uuidToken);
+        await tx.delete(ociUploadSession).where(eq(ociUploadSession.id, row.id));
+      }
+      return stale.filter((row) => !row.completedDigest).length;
     });
-    const tail = previous.then(() => gate);
-    this.uploadOperations.set(uploadId, tail);
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-      if (this.uploadOperations.get(uploadId) === tail) this.uploadOperations.delete(uploadId);
-    }
-  }
-
-  /**
-   * Drop upload sessions idle longer than `uploadIdleMs`. Returns the count
-   * swept. Bounds staging storage against abandoned `docker push` sessions that never
-   * reach PUT or DELETE. `nowMs` is injectable for deterministic tests.
-   */
-  async sweepStaleUploads(nowMs: number = Date.now()): Promise<number> {
-    const stale = await this.db
-      .select({
-        uuidToken: ociUploadSession.uuidToken,
-        repositoryId: ociUploadSession.repositoryId,
-      })
-      .from(ociUploadSession)
-      .where(lt(ociUploadSession.createdAt, new Date(nowMs - this.limits.uploadIdleMs)));
-    for (const session of stale) {
-      await this.cancelUpload(session.repositoryId, session.uuidToken);
-    }
-    return stale.length;
   }
 
   /** Mount only a blob owned by the authorized source repository, then persist destination reachability. */
@@ -567,10 +593,26 @@ export class RegistryService {
     }
     const repo = await this.ensureRepository(input.dstNs, input.principal);
     await this.initializeRepositoryScope(repo.id);
-    await this.db
-      .insert(ociRepositoryBlob)
-      .values({ repositoryId: repo.id, digest: input.digest })
-      .onConflictDoNothing();
+    const mounted = await this.db.transaction(async (tx) => {
+      await lockBlob(tx, input.digest);
+      const [owned] = await tx
+        .select({ digest: ociRepositoryBlob.digest })
+        .from(ociRepositoryBlob)
+        .where(
+          and(
+            eq(ociRepositoryBlob.repositoryId, source.id),
+            eq(ociRepositoryBlob.digest, input.digest),
+          ),
+        )
+        .for("share");
+      if (!owned || !(await this.blobs.exists(input.digest))) return false;
+      await tx
+        .insert(ociRepositoryBlob)
+        .values({ repositoryId: repo.id, digest: input.digest })
+        .onConflictDoNothing();
+      return true;
+    });
+    if (!mounted) return { mounted: false };
     await this.audit.recordPush({
       actor: input.principal.sub,
       resourceKind: "oci-repository",
@@ -816,6 +858,7 @@ export class RegistryService {
       .where(
         and(
           eq(spackPackage.namespaceKind, ns.kind),
+          eq(spackPackage.repositoryName, ns.name),
           ns.owner == null
             ? sql`${spackPackage.namespaceOwner} IS NULL`
             : eq(spackPackage.namespaceOwner, ns.owner),
@@ -843,7 +886,7 @@ export class RegistryService {
       throw new RegistryError("MANIFEST_UNKNOWN", `spack hash ${input.hash} not found`, 404);
     }
     const url = input.kind === "spec" ? row.manifestUrl : row.buildcacheUrl;
-    const digest = url.startsWith("blob:") ? url.slice("blob:".length) : null;
+    const digest = blobDigestFromUrl(url);
     if (!digest) {
       throw new RegistryError(
         "BLOB_UNKNOWN",
@@ -871,47 +914,40 @@ export class RegistryService {
         `filename package ${input.package} does not match spec ${input.spec}`,
       );
     }
-    const blob = await this.blobs.put(input.body);
-    const buildcacheUrl = `blob:${blob.digest}`;
-    const manifestUrl = `blob:${blob.digest}`;
-    const existing = await this.findSpackRow(input.ns, input.package, input.hash);
-    const previousDigests = existing
-      ? new Set(
-          [existing.buildcacheUrl, existing.manifestUrl]
-            .map(blobDigestFromUrl)
-            .filter((digest): digest is string => digest !== null),
-        )
-      : new Set<string>();
-    if (existing) {
-      await this.db
-        .update(spackPackage)
-        .set({
-          spec: input.spec,
-          arch: input.arch,
-          buildcacheUrl,
-          manifestUrl,
-          sizeBytes: blob.size,
-          uploadedBy: input.principal.sub,
-          uploadedAt: new Date(),
-        })
-        .where(eq(spackPackage.id, existing.id));
-    } else {
-      await this.db.insert(spackPackage).values({
-        namespaceKind: input.ns.kind,
-        namespaceOwner: input.ns.owner,
+    const { row, blob, previousDigests } = await this.db.transaction(async (tx) => {
+      const prior = await this.lockSpackRow(tx, input.ns, input.package, input.hash);
+      const blob = await this.storeSpackBlob(tx, input.body);
+      const buildcacheUrl = `blob:${blob.digest}`;
+      const values = {
         spec: input.spec,
-        hash: input.hash,
         arch: input.arch,
         buildcacheUrl,
-        manifestUrl,
         sizeBytes: blob.size,
         uploadedBy: input.principal.sub,
-      });
-    }
-    const row = await this.findSpackRow(input.ns, input.package, input.hash);
-    if (!row) {
-      throw new RegistryError("MANIFEST_UNKNOWN", "spack row missing after write", 500 as 400);
-    }
+      };
+      const [row] = prior
+        ? await tx
+            .update(spackPackage)
+            .set({
+              ...values,
+              manifestUrl: prior.buildcacheUrl === buildcacheUrl ? prior.manifestUrl : null,
+              uploadedAt: new Date(),
+            })
+            .where(eq(spackPackage.id, prior.id))
+            .returning()
+        : await tx
+            .insert(spackPackage)
+            .values({
+              ...values,
+              namespaceKind: input.ns.kind,
+              namespaceOwner: input.ns.owner,
+              repositoryName: input.ns.name,
+              hash: input.hash,
+            })
+            .returning();
+      if (!row) throw new Error("Spack artifact write did not return a row");
+      return { row, blob, previousDigests: prior ? spackDigests(prior) : [] };
+    });
     await this.audit.recordPush({
       actor: input.principal.sub,
       resourceKind: "spack-package",
@@ -931,23 +967,170 @@ export class RegistryService {
     };
   }
 
+  private async verifyStoredBinary(blob: SpackMaterialBlob): Promise<boolean> {
+    let stored: Awaited<ReturnType<BlobStore["get"]>>;
+    try {
+      stored = await this.blobs.get(blob.digest);
+    } catch (error) {
+      if (error instanceof BlobNotFoundError) return false;
+      throw error;
+    }
+    const hash = createHash("sha256");
+    let size = 0;
+    for await (const bytes of stored.stream) {
+      size += bytes.byteLength;
+      if (size > blob.size) break;
+      hash.update(bytes);
+    }
+    if (size !== blob.size || `sha256:${hash.digest("hex")}` !== blob.digest)
+      throw new RegistryError("DIGEST_INVALID", "Stored binary differs from its descriptor", 409);
+    return true;
+  }
+
+  async verifyRepositoryBinary(repoId: string, blob: SpackMaterialBlob) {
+    await this.headBlob(repoId, blob.digest);
+    if (!(await this.verifyStoredBinary(blob)))
+      throw new RegistryError("BLOB_UNKNOWN", "Binary is missing", 404);
+  }
+
+  async importSpackPair(input: {
+    ns: ParsedNamespace;
+    pkg: string;
+    hash: string;
+    spec: string;
+    arch: string;
+    archive: SpackMaterialBlob;
+    metadata: Uint8Array;
+    actor: RbacPrincipal;
+    archiveStream?: ReadableStream<Uint8Array>;
+  }) {
+    const { ns, pkg, hash, spec, arch, archive, metadata, actor, archiveStream } = input;
+    const metadataDigest = `sha256:${await sha256Hex(metadata)}`;
+    const buildcacheUrl = `blob:${archive.digest}`;
+    const manifestUrl = `blob:${metadataDigest}`;
+    const receipt = { hash, spec, arch, buildcacheUrl, manifestUrl, sizeBytes: archive.size };
+    const written = new Set<string>();
+    try {
+      return await this.db.transaction(async (tx) => {
+        // Use the same lock as native PUT/DELETE, across all Registry processes.
+        const prior = await this.lockSpackRow(tx, ns, undefined, hash);
+        if (
+          prior &&
+          (prior.buildcacheUrl !== buildcacheUrl ||
+            prior.sizeBytes !== archive.size ||
+            (prior.manifestUrl && prior.manifestUrl !== manifestUrl) ||
+            spackPackageName(prior.spec) !== pkg ||
+            prior.arch !== arch ||
+            prior.spec !== spec)
+        )
+          throw new RegistryError(
+            "MANIFEST_INVALID",
+            "Buildcache hash already has different content",
+            409,
+          );
+        const existing =
+          prior?.manifestUrl === manifestUrl &&
+          (await this.verifyStoredBinary(archive)) &&
+          (await this.verifyStoredBinary({ digest: metadataDigest, size: metadata.byteLength }));
+        if (!archiveStream || existing) return { existing, receipt };
+        for (const digest of [...new Set([archive.digest, metadataDigest])].sort())
+          await lockBlob(tx, digest);
+        if (!(await this.verifyStoredBinary(archive))) {
+          await this.blobs.put(archiveStream, archive.digest);
+          written.add(archive.digest);
+        }
+        if (
+          !(await this.verifyStoredBinary({ digest: metadataDigest, size: metadata.byteLength }))
+        ) {
+          await this.blobs.put(metadata, metadataDigest);
+          written.add(metadataDigest);
+        }
+        const values = { ...receipt, uploadedBy: actor.sub, uploadedAt: new Date() };
+        const [saved] = prior
+          ? await tx
+              .update(spackPackage)
+              .set(values)
+              .where(eq(spackPackage.id, prior.id))
+              .returning()
+          : await tx
+              .insert(spackPackage)
+              .values({
+                ...values,
+                namespaceKind: ns.kind,
+                namespaceOwner: ns.owner,
+                repositoryName: ns.name,
+              })
+              .returning();
+        if (!saved) throw new Error("Missing buildcache index row");
+        await this.audit.recordPush(
+          {
+            actor: actor.sub,
+            resourceKind: "spack-package",
+            resourceId: saved.id,
+            metadata: receipt,
+          },
+          tx,
+        );
+        return { existing: false, receipt };
+      });
+    } catch (error) {
+      for (const digest of written) await this.pruneBlobIfUnreferenced(digest);
+      throw error;
+    }
+  }
+
+  async putSpackMetadata(
+    ns: ParsedNamespace,
+    pkg: string,
+    hash: string,
+    body: Uint8Array,
+    principal: RbacPrincipal,
+  ) {
+    let metadata: z.infer<typeof nativeSpackMetadataSchema>;
+    try {
+      metadata = nativeSpackMetadataSchema.parse(
+        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)),
+      );
+    } catch {
+      throw new RegistryError("MANIFEST_INVALID", "Invalid Spack buildcache metadata");
+    }
+    const node = metadata.spec.nodes[0];
+    if (node?.name !== pkg || node.hash !== hash)
+      throw new RegistryError("MANIFEST_INVALID", "Spec identity differs from filename");
+    const { row, blob, manifestUrl } = await this.db.transaction(async (tx) => {
+      const row = await this.lockSpackRow(tx, ns, pkg, hash);
+      if (row?.buildcacheUrl !== `blob:sha256:${metadata.binary_cache_checksum.hash}`)
+        throw new RegistryError("DIGEST_INVALID", "Matching binary is required", 409);
+      const blob = await this.storeSpackBlob(tx, body);
+      const manifestUrl = `blob:${blob.digest}`;
+      await tx.update(spackPackage).set({ manifestUrl }).where(eq(spackPackage.id, row.id));
+      return { row, blob, manifestUrl };
+    });
+    await this.audit.recordPush({
+      actor: principal.sub,
+      resourceKind: "spack-package",
+      resourceId: row.id,
+      metadata: { hash, digest: blob.digest },
+    });
+    const prior = blobDigestFromUrl(row.manifestUrl);
+    if (prior && prior !== blob.digest) await this.pruneBlobIfUnreferenced(prior);
+    return { hash, manifestUrl };
+  }
+
   async deleteSpackArtifact(input: {
     ns: ParsedNamespace;
     package: string;
     hash: string;
     principal: RbacPrincipal;
   }): Promise<void> {
-    const row = await this.findSpackRow(input.ns, input.package, input.hash);
-    if (!row) {
-      throw new RegistryError("MANIFEST_UNKNOWN", `spack hash ${input.hash} not found`, 404);
-    }
-    const digests = new Set(
-      [row.buildcacheUrl, row.manifestUrl]
-        .map(blobDigestFromUrl)
-        .filter((digest): digest is string => digest !== null),
-    );
-    await this.db.delete(spackPackage).where(eq(spackPackage.id, row.id));
-    for (const digest of digests) {
+    const row = await this.db.transaction(async (tx) => {
+      const row = await this.lockSpackRow(tx, input.ns, input.package, input.hash);
+      if (!row)
+        throw new RegistryError("MANIFEST_UNKNOWN", `spack hash ${input.hash} not found`, 404);
+      await tx.delete(spackPackage).where(eq(spackPackage.id, row.id));
+      return row;
+    });
+    for (const digest of spackDigests(row)) {
       await this.pruneBlobIfUnreferenced(digest);
     }
     await this.audit.recordDelete({
@@ -990,8 +1173,8 @@ export class RegistryService {
     await this.pruneManifestIfUnreferenced(digest);
   }
 
-  private async hasLegacyRepositories(): Promise<boolean> {
-    const rows = await this.db
+  private async hasLegacyRepositories(db: PgDb | PgTransaction = this.db): Promise<boolean> {
+    const rows = await db
       .select({ id: ociRepository.id })
       .from(ociRepository)
       .leftJoin(ociRepositoryScope, eq(ociRepositoryScope.repositoryId, ociRepository.id))
@@ -1040,42 +1223,45 @@ export class RegistryService {
   }
 
   private async pruneBlobIfUnreferenced(digest: string): Promise<void> {
-    if (await this.hasLegacyRepositories()) return;
-    const associations = await this.db
-      .select()
-      .from(ociRepositoryBlob)
-      .where(eq(ociRepositoryBlob.digest, digest))
-      .limit(1);
-    if (associations.length > 0) return;
-    const manifests = await this.db
-      .select({ configDigest: ociManifest.configDigest, layers: ociManifest.layers })
-      .from(ociManifest);
-    if (
-      manifests.some(
-        (manifest) =>
-          manifest.configDigest === digest ||
-          manifest.layers.some((layer) => layer.digest === digest),
-      )
-    ) {
-      return;
-    }
-    const packages = await this.db
-      .select({
-        buildcacheUrl: spackPackage.buildcacheUrl,
-        manifestUrl: spackPackage.manifestUrl,
-      })
-      .from(spackPackage);
-    if (
-      packages.some(
-        (pkg) =>
-          blobDigestFromUrl(pkg.buildcacheUrl) === digest ||
-          blobDigestFromUrl(pkg.manifestUrl) === digest,
-      )
-    ) {
-      return;
-    }
-    await this.blobs.delete(digest);
-    await this.db.delete(ociBlob).where(eq(ociBlob.digest, digest));
+    await this.db.transaction(async (tx) => {
+      await lockBlob(tx, digest);
+      if (await this.hasLegacyRepositories(tx)) return;
+      const associations = await tx
+        .select()
+        .from(ociRepositoryBlob)
+        .where(eq(ociRepositoryBlob.digest, digest))
+        .limit(1);
+      if (associations.length > 0) return;
+      const manifests = await tx
+        .select({ configDigest: ociManifest.configDigest, layers: ociManifest.layers })
+        .from(ociManifest);
+      if (
+        manifests.some(
+          (manifest) =>
+            manifest.configDigest === digest ||
+            manifest.layers.some((layer) => layer.digest === digest),
+        )
+      ) {
+        return;
+      }
+      const packages = await tx
+        .select({
+          buildcacheUrl: spackPackage.buildcacheUrl,
+          manifestUrl: spackPackage.manifestUrl,
+        })
+        .from(spackPackage);
+      if (
+        packages.some(
+          (pkg) =>
+            blobDigestFromUrl(pkg.buildcacheUrl) === digest ||
+            blobDigestFromUrl(pkg.manifestUrl) === digest,
+        )
+      ) {
+        return;
+      }
+      await this.blobs.delete(digest);
+      await tx.delete(ociBlob).where(eq(ociBlob.digest, digest));
+    });
   }
 
   private async pruneEmptyRepository(repositoryId: string): Promise<void> {
@@ -1106,25 +1292,50 @@ export class RegistryService {
     }
   }
 
-  private async findSpackRow(ns: ParsedNamespace, packageName: string, hash: string) {
-    const rows = await this.db
+  private async lockSpackRow(
+    tx: PgTransaction,
+    ns: ParsedNamespace,
+    pkg: string | undefined,
+    hash: string,
+  ) {
+    const identity = JSON.stringify([ns.kind, ns.owner, ns.name, hash]);
+    await tx.execute(sql`select pg_advisory_xact_lock(70401,hashtext(${identity}))`);
+    return this.findSpackRow(ns, pkg, hash, tx);
+  }
+
+  private async storeSpackBlob(tx: PgTransaction, body: Uint8Array) {
+    const digest = `sha256:${await sha256Hex(body)}`;
+    await lockBlob(tx, digest);
+    return this.blobs.put(body);
+  }
+
+  private async findSpackRow(
+    ns: ParsedNamespace,
+    packageName: string | undefined,
+    hash: string,
+    db: PgDb | PgTransaction = this.db,
+  ) {
+    const rows = await db
       .select()
       .from(spackPackage)
       .where(
         and(
           eq(spackPackage.namespaceKind, ns.kind),
+          eq(spackPackage.repositoryName, ns.name),
           ns.owner == null
             ? sql`${spackPackage.namespaceOwner} IS NULL`
             : eq(spackPackage.namespaceOwner, ns.owner),
           eq(spackPackage.hash, hash),
         ),
       );
-    return rows.find((row) => spackPackageName(row.spec) === packageName);
+    return packageName === undefined
+      ? rows[0]
+      : rows.find((row) => spackPackageName(row.spec) === packageName);
   }
 }
 
-function blobDigestFromUrl(url: string): string | null {
-  return url.startsWith("blob:") ? url.slice("blob:".length) : null;
+function blobDigestFromUrl(url: string | null): string | null {
+  return url?.startsWith("blob:") ? url.slice("blob:".length) : null;
 }
 
 function spackPackageName(spec: string): string {
@@ -1150,4 +1361,15 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   // integrator can swap to Bun.CryptoHasher for streaming if needed.
   const { createHash } = await import("node:crypto");
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function lockBlob(tx: PgTransaction, digest: string) {
+  return tx.execute(sql`select pg_advisory_xact_lock(70402,hashtext(${digest}))`);
+}
+function spackDigests(row: typeof spackPackage.$inferSelect) {
+  return new Set(
+    [row.buildcacheUrl, row.manifestUrl]
+      .map(blobDigestFromUrl)
+      .filter((d): d is string => d !== null),
+  );
 }

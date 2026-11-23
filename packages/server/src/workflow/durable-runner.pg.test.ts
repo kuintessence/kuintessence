@@ -248,7 +248,6 @@ function harness(
       yaml: stringify(definition(parallel)),
       submittedBy: userId,
       role: "user",
-      executionModel: "durable-v2",
       authorizeRun: async () => {},
     });
     runIds.push(result.runId);
@@ -406,6 +405,43 @@ test("heartbeat keeps an idle executor leased and cancellation aborts its result
     ).rejects.toBeInstanceOf(WorkflowExecutionInterrupted);
   } finally {
     await stop();
+    await lease.release();
+  }
+});
+
+test("retains scheduler resources across concurrent durable submission and replay", async () => {
+  const id = await manualRun();
+  const lease = await journal.acquire(id);
+  if (!lease) throw new Error("Missing lease");
+  try {
+    const submit = () =>
+      submitWorkflowJob({
+        jobService,
+        submittedBy: userId,
+        role: "user",
+        orgId: null,
+        runId: id,
+        lease,
+        spec: {
+          nodeId: "solve",
+          invocation: { path: '["node","solve"]' },
+          name: "Resources",
+          command: "true",
+          envVars: {},
+          inputStaging: [],
+          expectedOutputs: [],
+          resources: { cpus: 4, memoryMb: 512, schedulerLimits: { nodeCount: 2, maxCpuTime: 60 } },
+        },
+      });
+    const [a, b] = await Promise.all([submit(), submit()]);
+    expect(a.id).toBe(b.id);
+    expect(await jobService.getById(a.id)).toMatchObject({
+      cpus: 4,
+      memoryMb: 512,
+      schedulerLimits: { nodeCount: 2, maxCpuTime: 60 },
+    });
+    expect((await submit()).id).toBe(a.id);
+  } finally {
     await lease.release();
   }
 });

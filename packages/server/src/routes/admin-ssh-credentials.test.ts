@@ -399,6 +399,30 @@ describe("admin SSH credential routes", () => {
     expect(res.status).toBe(200);
   });
 
+  test("saving a route refuses a jump owned by another provider before writing credentials", async () => {
+    const { db, state } = fakeDb();
+    const app = makeApp(
+      "org_admin",
+      db,
+      async (agent) => (agent === "agent-1" ? "org-a" : "org-b"),
+      "org-a",
+    );
+    const res = await app.request("/api/admin/ssh-credentials/agent-1", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        host: "login",
+        port: 22,
+        username: "user",
+        password: "fixture",
+        hostKeySha256: Buffer.alloc(32, 1).toString("base64"),
+        jumpAgentIds: ["jump"],
+      }),
+    });
+    expect(res.status).toBe(403);
+    expect(state.saved).toHaveLength(0);
+  });
+
   test("PUT bootstraps through agent#manage in enforce mode", async () => {
     const { db, state } = fakeDb();
     const fake = fakeEnforceAuthz();

@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appTemplates, type PgDb, softwareAssets } from "@kuintessence/db";
+import { appTemplates, type PgDb, softwareAssets, spackCatalogSources } from "@kuintessence/db";
 import type { LicensePolicy, SoftwareAssetSummary } from "@kuintessence/shared";
 import {
   AppError,
@@ -62,6 +63,7 @@ export interface SpackCatalogPackageInput {
   description?: string;
   tags?: string[];
   packageFile?: string;
+  expectedSourceDigest?: string | null;
 }
 
 const CATALOG_TAG = "spack-catalog";
@@ -163,6 +165,7 @@ export class SpackCatalogService {
         })
         .returning();
       if (!row) throw new AppError(ErrorCode.INTERNAL_ERROR, "Insert returned no rows", 500);
+      if (data.packageFile !== undefined) await savePackageSource(tx, row.id, data.packageFile);
       await this.syncCustomAsset(rowToPackage(row), principal, tx);
       return rowToPackage(row);
     });
@@ -194,15 +197,41 @@ export class SpackCatalogService {
         409,
       );
     }
-    const metadata = parseOptionalPackageFile(data.packageFile) ?? existing.metadata;
     return this.db.transaction(async (tx) => {
+      if (data.packageFile !== undefined) {
+        // Serialize source comparison and replacement, including the first write to a catalog-only row.
+        await tx
+          .select({ id: appTemplates.id })
+          .from(appTemplates)
+          .where(eq(appTemplates.id, id))
+          .for("update");
+        const [current] = await tx
+          .select({ digest: spackCatalogSources.digest })
+          .from(spackCatalogSources)
+          .where(eq(spackCatalogSources.packageId, id));
+        if (
+          data.expectedSourceDigest !== undefined &&
+          data.expectedSourceDigest !== (current?.digest ?? null)
+        )
+          throw new AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "The package source has changed. Reopen the editor before saving.",
+            409,
+          );
+      }
       const [updated] = await tx
         .update(appTemplates)
         .set({
           name: data.name,
           version: CATALOG_VERSION,
           description: data.description ?? null,
-          spec: JSON.stringify({ packageFileMetadata: metadata }),
+          ...(data.packageFile === undefined
+            ? {}
+            : {
+                spec: JSON.stringify({
+                  packageFileMetadata: parseOptionalPackageFile(data.packageFile),
+                }),
+              }),
           specKind: "spack",
           tags: customPackageTags(data, existing.ownerOrgId),
           updatedAt: sql`now()`,
@@ -212,9 +241,20 @@ export class SpackCatalogService {
       if (!updated) {
         throw new AppError(ErrorCode.NOT_FOUND, `Spack catalog package ${id} not found`, 404);
       }
+      if (data.packageFile !== undefined) await savePackageSource(tx, id, data.packageFile);
       await this.syncCustomAsset(rowToPackage(updated), principal, tx);
       return rowToPackage(updated);
     });
+  }
+
+  async getSource(id: string, principal: RbacPrincipal) {
+    const pkg = await this.getCustomPackage(id);
+    assertCatalogWriteAllowed(pkg.source as CustomSpackCatalogSource, principal, pkg.ownerOrgId);
+    const [source] = await this.db
+      .select({ content: spackCatalogSources.content, digest: spackCatalogSources.digest })
+      .from(spackCatalogSources)
+      .where(eq(spackCatalogSources.packageId, id));
+    return source ?? { content: null, digest: null };
   }
 
   async deleteById(id: string, principal: RbacPrincipal) {
@@ -423,6 +463,14 @@ export class SpackCatalogService {
   }
 }
 
+async function savePackageSource(tx: PgTransaction, packageId: string, content: string) {
+  const digest = createHash("sha256").update(content).digest("hex");
+  await tx
+    .insert(spackCatalogSources)
+    .values({ packageId, content, digest })
+    .onConflictDoUpdate({ target: spackCatalogSources.packageId, set: { content, digest } });
+}
+
 export function isCatalogPackageVisible(
   pkg: SpackCatalogPackage,
   principal: RbacPrincipal | null,
@@ -475,8 +523,7 @@ function assertCatalogWriteAllowed(
   if (
     source === "vendor" &&
     principal.role === "org_admin" &&
-    ownerOrgId &&
-    !principal.orgIds.includes(ownerOrgId)
+    (!ownerOrgId || !principal.orgIds.includes(ownerOrgId))
   ) {
     throw new AppError(
       ErrorCode.FORBIDDEN,
@@ -490,7 +537,12 @@ function customPackageTags(data: SpackCatalogPackageInput, ownerOrgId?: string |
   const tags = new Set([CATALOG_TAG, `${SOURCE_PREFIX}${data.source}`]);
   for (const tag of data.tags ?? []) {
     const trimmed = tag.trim();
-    if (trimmed.length > 0 && trimmed !== CATALOG_TAG && !trimmed.startsWith(SOURCE_PREFIX)) {
+    if (
+      trimmed.length > 0 &&
+      trimmed !== CATALOG_TAG &&
+      !trimmed.startsWith(SOURCE_PREFIX) &&
+      !trimmed.startsWith(VENDOR_ORG_PREFIX)
+    ) {
       tags.add(trimmed);
     }
   }

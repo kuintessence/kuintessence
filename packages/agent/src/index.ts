@@ -20,6 +20,7 @@ import {
   makeContainerReadOutput,
 } from "./container-io";
 import { DataDeliveryExecutor, LinuxBindReadonlyMountDriver } from "./data-market/data-delivery";
+import { AgentReplicaStore } from "./data-market/data-replica";
 import { createCpLocalDataScanner, createCpLocalDataScanSigner } from "./data-market/data-scan";
 import { AgentDataRoots } from "./data-market/local-data-security";
 import { runFederationWatchdog } from "./federation-watchdog";
@@ -71,6 +72,7 @@ import { ManagedSpackInstallation } from "./spack/managed-installation";
 import { slurmSpackProcess } from "./spack/slurm-process";
 import { SpackSourceAuditor } from "./spack/source-auditor";
 import { SshHandler } from "./ssh";
+import { DownloadPartials } from "./staging/download-partials";
 import { AgentStream } from "./stream";
 
 async function main() {
@@ -149,8 +151,7 @@ async function main() {
     }
     spawner = new ContainerSpawner(containerId);
     const containerLogDir = "/var/tmp/kq-slurm-shared";
-    const makeContainerDirectory = makeContainerMkdir(containerId);
-    await makeContainerDirectory(containerLogDir);
+    await makeContainerMkdir(containerId, true)(containerLogDir);
     slurmDeps = {
       logDir: containerLogDir,
       terminalStatusBackend: "scontrol",
@@ -169,7 +170,7 @@ async function main() {
     };
     outputReader = makeContainerReadOutput(containerId);
     globScanner = makeContainerGlobScanner(containerId);
-    ensureWorkingDir = makeContainerDirectory;
+    ensureWorkingDir = makeContainerMkdir(containerId);
   } else {
     spawner = realSpawner;
     const logDir = dataRoots.schedulerLogDir();
@@ -624,7 +625,9 @@ async function main() {
     process.env.KQ_AGENT_REMOTE_UPDATE === "1" && process.env.KQ_AGENT_SUPERVISED === "1",
     process.env.KQ_RUNNING_RELEASE,
   );
+  const downloadPartials = new DownloadPartials(db);
   const stream = new AgentStream({
+    downloadPartials,
     ...(process.env.KQ_AGENT_SUPERVISED === "1"
       ? {
           confirmAgentUpdate: () => updateController.confirm(),
@@ -731,6 +734,7 @@ async function main() {
     removeJobWorkRoot: (jobId) => dataRoots.removeJobRoot(jobId),
     dataDeliveryExecutor,
     dataScanner,
+    replicaStore: mtls.enabled ? new AgentReplicaStore(dataRoots) : undefined,
     managedDatasetRootIds: Object.keys(config.AGENT_DATASET_ROOTS_JSON),
   });
 
@@ -776,9 +780,23 @@ async function main() {
     void stream.stop();
   });
 
+  let cleanup: Promise<void> | undefined;
+  const sweepPartials = () => {
+    cleanup ??= downloadPartials
+      .sweep()
+      .catch((err) => logger.warn({ err }, "Download partial cleanup will retry"))
+      .finally(() => {
+        cleanup = undefined;
+      });
+  };
+  sweepPartials();
+  const partialTimer = setInterval(sweepPartials, 3_600_000);
+  partialTimer.unref();
   try {
     await stream.start();
   } finally {
+    clearInterval(partialTimer);
+    await cleanup;
     if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
     await stream.stop();
     await maintenance?.close();

@@ -4095,7 +4095,32 @@ describe("AgentStream", () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
     let released = false;
-    const { client } = makeMockClient([]);
+    const { client, sent } = makeMockClient(
+      [
+        create(ServerMessageSchema, {
+          payload: {
+            case: "registerResponse",
+            value: create(RegisterResponseSchema, { accepted: true }),
+          },
+        }),
+        create(ServerMessageSchema, {
+          payload: {
+            case: "dispatchJob",
+            value: create(DispatchJobSchema, {
+              jobId: "prepare-failure",
+              name: "failure",
+              command: "true",
+              cpus: 1,
+              memoryMb: 64n,
+              wallTimeSec: 60n,
+              workingDir: "/agent/jobs/prepare-failure",
+              dataDeliveries: [create(DataDeliveryBindingSchema, {})],
+            }),
+          },
+        }),
+      ],
+      20,
+    );
     const stream = new AgentStream({
       client,
       adapter: makeAdapter(),
@@ -4120,36 +4145,22 @@ describe("AgentStream", () => {
         },
       },
     });
-    const dispatch = create(DispatchJobSchema, {
-      jobId: "prepare-failure",
-      dataDeliveries: [create(DataDeliveryBindingSchema, {})],
-    });
-    const harness = stream as unknown as {
-      submitWithLicensedMaterials: (
-        message: typeof dispatch,
-        spec: JobSpec,
-        expectedOutputs: [],
-      ) => Promise<void>;
-    };
-
-    await expect(
-      harness.submitWithLicensedMaterials(
-        dispatch,
-        {
-          jobId: "prepare-failure",
-          name: "failure",
-          command: "true",
-          cpus: 1,
-          memoryMb: 64,
-          gpus: 0,
-          wallTimeSec: 60,
-          workingDir: "/agent/jobs/prepare-failure",
-          envVars: {},
-        },
-        [],
-      ),
-    ).rejects.toThrow("prepare failed");
-
+    activeStreams.push(stream);
+    const run = stream.start();
+    await settle(20);
+    stream.stop();
+    await run;
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          case: "jobStatus",
+          value: expect.objectContaining({
+            jobId: "prepare-failure",
+            message: expect.stringContaining("prepare failed"),
+          }),
+        }),
+      }),
+    );
     expect(released).toBe(true);
     expect(await intents.list()).toEqual([]);
   });
@@ -4619,23 +4630,59 @@ describe("AgentStream", () => {
       heartbeatIntervalMs: 60_000,
       logger: silent,
     });
-    const controller = new AbortController();
+    const cleanup = Promise.withResolvers<void>();
+    let signal: AbortSignal | undefined;
     const harness = stream as unknown as {
-      activeFileTransfers: Map<string, AbortController>;
+      runFileTransfer: (req: unknown, stopped: AbortSignal) => Promise<void>;
+      outboundQueue: { kind: string; state?: string; requestId?: string }[];
       handleServerMessage: (message: unknown) => Promise<void>;
     };
-    harness.activeFileTransfers.set("transfer-cancel", controller);
-
+    harness.runFileTransfer = async (_req, stopped) => {
+      signal = stopped;
+      await cleanup.promise;
+    };
+    await harness.handleServerMessage(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "fileTransferRequest",
+          value: { requestId: "round", transferId: "transfer" },
+        },
+      }),
+    );
     await harness.handleServerMessage(
       create(ServerMessageSchema, {
         payload: {
           case: "fileTransferCancel",
-          value: create(FileTransferCancelSchema, { requestId: "transfer-cancel" }),
+          value: create(FileTransferCancelSchema, { requestId: "round" }),
         },
       }),
     );
-
-    expect(controller.signal.aborted).toBe(true);
+    expect(signal?.aborted).toBe(true);
+    expect(harness.outboundQueue.some((m) => m.state === "cancelled")).toBe(false);
+    const next = Promise.withResolvers<void>();
+    let nextStarted = false;
+    harness.runFileTransfer = async () => {
+      nextStarted = true;
+      next.resolve();
+    };
+    await harness.handleServerMessage(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "fileTransferRequest",
+          value: { transferId: "transfer", requestId: "next-round" },
+        },
+      }),
+    );
+    expect(nextStarted).toBe(false);
+    cleanup.resolve();
+    await next.promise;
+    expect(harness.outboundQueue).toContainEqual(
+      expect.objectContaining({
+        kind: "fileTransferProgress",
+        state: "cancelled",
+        requestId: "round",
+      }),
+    );
     stream.stop();
   });
   test("returns a bounded typed job-log response through the Agent stream", async () => {
@@ -5707,7 +5754,7 @@ describe("AgentStream", () => {
     });
     spackManager.runSoftwareOperation = async () => ({
       outcome: "rejected",
-      reason: "managed offline Spack execution is not enabled yet",
+      reason: "Managed Spack operations require audited materials and a configured site installer",
       stdout: report,
     });
     const stream = softwareStream({
@@ -7669,6 +7716,116 @@ describe("AgentStream workflow Spack dispatch", () => {
       drain: () => Promise.all([...harness.pendingSpackPreparations]),
     };
   }
+  test.each([
+    false,
+    true,
+  ])("revoking a grouped Spack member only aborts the load after the last member leaves (cancel both=%s)", async (cancelBoth) => {
+    let loads = 0;
+    let loadSignal: AbortSignal | undefined;
+    const release = Promise.withResolvers<void>();
+    const f = await fixture(async (_action, _spec, _materials, signal) => {
+      loads++;
+      loadSignal = signal;
+      await release.promise;
+      return loadSuccess;
+    });
+    const group = "e".repeat(64);
+    const [first, second] = [crypto.randomUUID(), crypto.randomUUID()] as const;
+    try {
+      for (const jobId of [first, second])
+        await deliverServerMessage(f.stream, dispatch({ jobId, forEachGroup: group }));
+      await waitForCondition(() => f.harness.pendingSpackLoadCleanups.size === 2 && loads === 1);
+      await deliverServerMessage(f.stream, cancelJobMessage(first, 1));
+      expect(loadSignal?.aborted).toBe(false);
+      if (cancelBoth) {
+        await deliverServerMessage(f.stream, cancelJobMessage(second, 1));
+        expect(loadSignal?.aborted).toBe(true);
+      }
+      release.resolve();
+      await f.drain();
+      await waitForCondition(
+        () =>
+          f.harness.pendingSpackLoadCleanups.size === 0 && (cancelBoth || f.submitted.length === 1),
+      );
+      expect(f.submitted.map((spec) => spec.jobId)).toEqual(cancelBoth ? [] : [second]);
+      expect(loads).toBe(1);
+    } finally {
+      release.resolve();
+    }
+  });
+  test.each([
+    "store queue",
+    "policy change",
+    "different pin",
+  ])("a grouped pinned load is revalidated after %s", async (barrier) => {
+    const group = "f".repeat(64);
+    const release = Promise.withResolvers<void>();
+    const pins: string[] = [];
+    let standaloneLoads = 0;
+    const f = await fixture(async () => {
+      standaloneLoads++;
+      return loadSuccess;
+    });
+    const pin = {
+      dagHash: "a".repeat(32),
+      manifestDigest: `sha256:${"b".repeat(64)}`,
+      lockfileDigest: `sha256:${"c".repeat(64)}`,
+      spackVersion: "1.0.0",
+      target: "linux-ubuntu24.04-x86_64",
+    };
+    f.spackManager.loadPinnedWorkflow = async (_spec, actual) => {
+      pins.push(actual.dagHash);
+      if (pins.length === 1) {
+        await release.promise;
+        return loadSuccess;
+      }
+      return { outcome: "rejected", reason: "installation no longer verifies" };
+    };
+    const first = crypto.randomUUID(),
+      second = crypto.randomUUID();
+    const pinned = (jobId: string, dagHash: string) =>
+      dispatch({
+        jobId,
+        forEachGroup: group,
+        command: SPACK_PINNED_EXECUTION_PLACEHOLDER,
+        spackExecution: { ...intent, pin: { ...pin, dagHash } },
+      });
+    try {
+      await deliverServerMessage(f.stream, pinned(first, pin.dagHash));
+      await waitForCondition(() => pins.length === 1);
+      if (barrier === "store queue") {
+        await deliverServerMessage(f.stream, dispatch({ jobId: crypto.randomUUID() }));
+        await waitForCondition(() => f.harness.pendingSpackLoadCleanups.size === 2);
+      }
+      if (barrier === "policy change")
+        await f.spackManager.applyPolicy({
+          policyVersion: "updated",
+          lockEnabled: true,
+          allowList: [],
+          denyList: [],
+        });
+      const secondHash = barrier === "different pin" ? "b".repeat(32) : pin.dagHash;
+      await deliverServerMessage(f.stream, pinned(second, secondHash));
+      await waitForCondition(
+        () => f.harness.pendingSpackLoadCleanups.size === (barrier === "store queue" ? 3 : 2),
+      );
+      release.resolve();
+      await f.drain();
+      await waitForCondition(() => f.submitted.some((spec) => spec.jobId === first));
+      expect(pins).toEqual([pin.dagHash, secondHash]);
+      expect(standaloneLoads).toBe(barrier === "store queue" ? 1 : 0);
+      expect(f.submitted.some((spec) => spec.jobId === second)).toBe(false);
+      expect(f.reports).toContainEqual(
+        expect.objectContaining({
+          jobId: second,
+          status: "failed",
+          message: SPACK_ACTIVATION_FAILURE,
+        }),
+      );
+    } finally {
+      release.resolve();
+    }
+  });
   test("persists pinned execution and rejects a mismatched environment before scheduler submission", async () => {
     let legacy = 0;
     const f = await fixture(async () => {
@@ -11196,6 +11353,7 @@ test("container multipart rebuilds spool after Agent restart but reuses verified
           uploadId: string,
           partSize: number,
           signal: AbortSignal,
+          transferId: string,
         ): Promise<void>;
         spoolFromContainer(
           containerId: string,
@@ -11223,39 +11381,42 @@ test("container multipart rebuilds spool after Agent restart but reuses verified
       return harness;
     };
     await makeStream().runClusterToCloud(
-      "same-request",
+      crypto.randomUUID(),
       "container",
       "/output",
       "",
       "same-upload",
       4,
       new AbortController().signal,
+      "stable-transfer",
     );
     expect(uploaded).toEqual([1, 2]);
     expect(states).toEqual(["failed"]);
     uploaded.length = 0;
     interrupted = false;
     await makeStream().runClusterToCloud(
-      "same-request",
+      crypto.randomUUID(),
       "container",
       "/output",
       "",
       "same-upload",
       4,
       new AbortController().signal,
+      "stable-transfer",
     );
     expect(uploaded).toEqual([2]);
     expect(states).toEqual(["failed", "succeeded"]);
     source = "changed!";
     uploaded.length = 0;
     await makeStream().runClusterToCloud(
-      "same-request",
+      crypto.randomUUID(),
       "container",
       "/output",
       "",
       "same-upload",
       4,
       new AbortController().signal,
+      "stable-transfer",
     );
     expect(uploaded).toEqual([]);
     expect(states.at(-1)).toBe("failed");
@@ -11263,13 +11424,14 @@ test("container multipart rebuilds spool after Agent restart but reuses verified
     const cancelled = new AbortController();
     cancelled.abort(new Error("superseded transfer"));
     await makeStream().runClusterToCloud(
-      "same-request",
+      crypto.randomUUID(),
       "container",
       "/output",
       "",
       "same-upload",
       4,
       cancelled.signal,
+      "stable-transfer",
     );
     expect(states).toHaveLength(terminalCount);
     expect(new Set(spools).size).toBe(4);
@@ -11568,4 +11730,239 @@ test("only a pending heartbeat ACK can confirm an updated Agent", async () => {
   expect(confirmations).toBe(1);
   await stream.stop();
   await running;
+});
+
+test.each([
+  "cancel",
+  "expiry",
+] as const)("leased licensed Sandbox resolves site bytes and stops the mapped job on %s", async (mode) => {
+  const { LicensedMaterialResolver } = await import("./licensed-material-resolver");
+  const { chmod } = await import("node:fs/promises");
+  const { createHash } = await import("node:crypto");
+  const root = await mkdtemp(join(tmpdir(), "kq-stream-material-"));
+  const file = join(root, "material");
+  await writeFile(file, "fixture");
+  await chmod(file, 0o444);
+  const digest = createHash("sha256").update("fixture").digest("hex");
+  const jobId = crypto.randomUUID(),
+    db = createSqliteDb(":memory:");
+  const profile = {
+    profileId: crypto.randomUUID(),
+    apptainerCanonicalPath: "/site/apptainer",
+    apptainerSha256: "a".repeat(64),
+    sifCanonicalPath: "/site/approved.sif",
+    sifSha256: "b".repeat(64),
+    trustedWrapperCanonicalPath: "/site/wrapper",
+    trustedWrapperSha256: "c".repeat(64),
+  };
+  const dispatch = create(DispatchJobSchema, {
+    jobId,
+    dispatchEpoch: 1n,
+    federationExecution: true,
+    restrictedNoEgress: true,
+    cpus: 1,
+    memoryMb: 128n,
+    wallTimeSec: 300n,
+    sandboxExecution: {
+      networkDisabled: true,
+      envelope: { manifestSha256: "fixed", nonce: "initial", expiresAtUnixMs: 1n },
+    },
+    licensedMaterialMounts: [
+      {
+        selector: "site",
+        targetPath: "inputs/material",
+        requiredElements: ["Si"],
+        expectedFingerprint: digest,
+      },
+    ],
+  });
+  const submitted: JobSpec[] = [],
+    reports: JobStatusReport[] = [];
+  let grants = 0,
+    stopped = false;
+  const stream = new AgentStream({
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 60000,
+    inboundAcks: new InboundAcks(db),
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+    assertFederationRuntimeWatchdog: async () => {},
+    assertRestrictedExecutionProfileIdentity: async () => {},
+    assertSandboxRuntimeAttestation: async () => {},
+    ensureWorkingDir: async () => {},
+    removeRestrictedWorkRoot: async () => {},
+    licensedMaterialResolver: new LicensedMaterialResolver({
+      restrictedRoot: root,
+      registry: { site: { localRelativePath: "material" } },
+    }),
+    restrictedExecutionProfile: {
+      enabled: true,
+      ready: true,
+      runtimeDigest: "sha256:" + profile.sifSha256,
+      runtimePath: profile.sifCanonicalPath,
+      apptainerPath: profile.apptainerCanonicalPath,
+      trustedWrapperPath: profile.trustedWrapperCanonicalPath,
+      missingRequirements: [],
+      executionProfile: profile,
+    },
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (
+          message.payload.case !== "federationExecutionRequest" ||
+          (mode === "expiry" && submitted.length)
+        )
+          return;
+        const request = message.payload.value;
+        const renewed = clone(DispatchJobSchema, dispatch);
+        if (!renewed.sandboxExecution?.envelope) throw new Error("Missing fixture");
+        renewed.sandboxExecution.envelope.nonce = "renewed" + ++grants;
+        renewed.sandboxExecution.envelope.expiresAtUnixMs = BigInt(Date.now() + 30000);
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: {
+                requestId: request.requestId,
+                jobId,
+                dispatchEpoch: 1n,
+                decision: FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 600),
+                dispatch: renewed,
+              },
+            },
+          }),
+        );
+      },
+    }),
+    sandboxProcessor: {
+      cleanup: async () => {},
+      prepare: async (_job, execution) => {
+        expect(execution?.envelope?.nonce).toMatch(/^renewed/);
+        return {
+          workingDir: root,
+          runtimeDigest: "sha256:" + profile.sifSha256,
+          sandbox: {
+            language: "python",
+            entrypoint: "main.py",
+            scriptContent: "pass",
+            scriptHostPath: join(root, "main.py"),
+            contextHostPath: join(root, "context.json"),
+            runtimeKind: "SIF",
+            runtimePath: profile.sifCanonicalPath,
+            executionMode: "RootImpersonation",
+            executionProfile: profile,
+            identity: {
+              mode: "MappedAccount",
+              backend: "Unix",
+              accountId: crypto.randomUUID(),
+              username: "fixture",
+              uid: 1001,
+              gid: 1001,
+              allowedQueues: [],
+            },
+            mounts: [],
+            resources: { cpus: 1, memoryMb: 128 },
+            limits: { pids: 32, outputBytes: 1000, logBytes: 1000 },
+          },
+        };
+      },
+    },
+    adapter: {
+      ...makeAdapter(),
+      submit: async (spec) => {
+        submitted.push(spec);
+        return { schedulerJobId: "fixture-1" };
+      },
+      status: async () => ({ status: stopped ? "failed" : "running" }),
+      cancel: async () => {
+        stopped = true;
+      },
+    },
+    jobPollIntervalMs: 25,
+  });
+  stream.enqueueStatusUpdate = async (r) => {
+    reports.push(r);
+  };
+  activeStreams.push(stream);
+  const run = stream.start();
+  try {
+    await settle(20);
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: dispatch } }),
+    );
+    await waitForCondition(
+      () => submitted.length > 0 || reports.some((r) => r.status === "failed"),
+    );
+    expect(reports.filter((r) => r.status === "failed")).toEqual([]);
+    expect(submitted[0]?.sandbox?.licensedInputs).toEqual([
+      { hostPath: file, containerPath: "/kq/inputs/material", sha256: digest },
+    ]);
+    expect(grants).toBeGreaterThanOrEqual(3);
+    if (mode === "cancel")
+      await deliverServerMessage(
+        stream,
+        create(ServerMessageSchema, {
+          payload: { case: "cancelJob", value: { jobId, revokedEpoch: 1n } },
+        }),
+      );
+    await waitForCondition(() => stopped, 4000);
+    expect(await Bun.file(file).text()).toBe("fixture");
+  } finally {
+    await stream.stop();
+    await run;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a live heartbeat releases a checkpoint only on its matching acknowledgement", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "kq-acked-checkpoint-"));
+  const key = "a".repeat(64);
+  const path = join(dir, `${key}.json`);
+  await writeFile(path, "receipt", { mode: 0o600 });
+  let sequence = 0n;
+  const client = makePendingRegisteredClient(true, false, {
+    supported: false,
+    onMessage: async (message) => {
+      if (
+        message.payload.case === "heartbeat" &&
+        message.payload.value.uploadCheckpointKeys.includes(key)
+      )
+        sequence = message.payload.value.sequence;
+    },
+  });
+  const stream = new AgentStream({
+    client,
+    adapter: makeAdapter(),
+    agentId: "a",
+    siteName: "lab",
+    fileTransferStateDir: dir,
+    heartbeatIntervalMs: 10,
+    heartbeatAckTimeoutMs: 3000,
+    logger: silent,
+  });
+  const running = stream.start();
+  try {
+    await waitForCondition(() => sequence !== 0n);
+    const ack = (id: bigint) =>
+      create(ServerMessageSchema, {
+        payload: {
+          case: "heartbeatAck",
+          value: { sequence: id, releasedUploadCheckpointKeys: [key] },
+        },
+      });
+    await deliverServerMessage(stream, ack(sequence + 1n));
+    expect(await Bun.file(path).exists()).toBe(true);
+    await deliverServerMessage(stream, ack(sequence));
+    expect(await Bun.file(path).exists()).toBe(false);
+  } finally {
+    await stream.stop();
+    await running;
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -33,7 +33,7 @@ export interface SlurmCluster {
 
 // Use /var/tmp so it survives across the sudo boundary inside the container;
 // it is world-writable after chmod 1777, suitable for test scripts dropped via exec.
-const CONTAINER_WORK_DIR = "/var/tmp/kq-slurm-shared";
+export const CONTAINER_WORK_DIR = "/var/tmp/kq-slurm-shared";
 
 /**
  * Start a self-contained Slurm-in-Docker cluster for integration testing.

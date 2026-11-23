@@ -23,7 +23,7 @@ import { FederationNodeFields } from "./FederationNodeFields";
  * whole body in the YAML pane and shows it here read-only as a formatted block.
  */
 
-import type { workflowDsl } from "@kuintessence/shared/browser";
+import { workflowDsl } from "@kuintessence/shared/browser";
 import { Check, Copy, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { type ChangeEvent, type ReactNode, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -394,7 +394,7 @@ function PropertiesForm({
       onPatch(id, { when: undefined, raw: rest as GraphNodeData["raw"] });
       return;
     }
-    const expr = { expr: next, lang: "cel" };
+    const expr = { expr: next, lang: "cel" as const };
     onPatch(id, {
       when: expr,
       raw: { ...raw, when: expr },
@@ -533,7 +533,10 @@ function UsecaseFields({ id, raw, onPatch, usecases, catalogState }: UsecaseFiel
   function commitRequirement(field: RequirementField) {
     const text = (reqs[field] ?? "").trim();
     const parsed = text === "" ? undefined : Number(text);
-    if (parsed !== undefined && !Number.isFinite(parsed)) return;
+    if (!workflowDsl.RequirementsSchema.shape[field].safeParse(parsed).success) {
+      setReqs((prev) => ({ ...prev, [field]: String(raw.requirements?.[field] ?? "") }));
+      return;
+    }
 
     const nextReqs: Record<string, number> = {};
     for (const key of REQUIREMENT_FIELDS) {
@@ -628,6 +631,8 @@ function UsecaseFields({ id, raw, onPatch, usecases, catalogState }: UsecaseFiel
               <Input
                 data-testid={`rf-prop-req-${field}`}
                 type="number"
+                step={1}
+                min={field === "cpuCores" || field === "maxWallTime" ? 0 : 1}
                 value={reqs[field]}
                 onChange={(e: ChangeEvent<HTMLInputElement>) =>
                   setReqs((prev) => ({ ...prev, [field]: e.target.value }))
@@ -1362,6 +1367,7 @@ function ReduceFields({ id, raw, onPatch, nodes }: ReduceFieldsProps) {
           value={raw.output.kind}
           onChange={(e: ChangeEvent<HTMLSelectElement>) => changeOutputKind(e.target.value)}
         >
+          <option value="Value">Value</option>
           <option value="SingleFile">SingleFile</option>
           <option value="OrderedFolder">OrderedFolder</option>
         </NativeSelect>

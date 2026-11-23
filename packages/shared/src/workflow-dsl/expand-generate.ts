@@ -1,12 +1,7 @@
 import type { GenAxis, GenRule } from "./generate";
 
-/**
- * Expand a deterministic Generate rule into its list of items.
- * Scalar rules yield scalars; CartesianProduct / Zip yield maps keyed
- * by axis name. `Sampling` and `FromFile` are resolved at runtime (sampling
- * needs a seed/RNG, FromFile reads produced/uploaded data) and throw here —
- * the engine handles them with runtime inputs. Pure & deterministic.
- */
+import { sample } from "./sampling";
+
 /**
  * Anti-OOM ceiling on a Generate rule's materialized list size. `expandGenerate`
  * builds the whole list in memory, so an unbounded Range/Linspace/FixedCount or
@@ -48,6 +43,9 @@ export function expandGenerate(rule: GenRule): unknown[] {
       return cartesian(rule.axes);
     case "Zip":
       return zip(rule.axes);
+    case "Sampling":
+      assertGenerateSize(rule.count * rule.dims.length, "Sampling");
+      return sample(rule);
     default:
       throw new Error(`expandGenerate: "${rule.kind}" is resolved at runtime, not statically`);
   }

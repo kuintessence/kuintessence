@@ -2,18 +2,25 @@
 // step at the bottom of each test removes only this suite's data.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import {
+  authzOutbox,
   createPgDb,
   fileTransfers,
   netdriveFiles,
   netdriveReplicas,
   netdriveTransferLog,
+  netdriveUploadReservations,
   type PgDb,
   users,
+  workflowRuns,
 } from "@kuintessence/db";
 import { and, eq } from "drizzle-orm";
 import * as jose from "jose";
+import { AuthzService } from "../authz/service";
 import { FakeMinioBackend } from "../storage/minio-client.test";
+import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
+import { publishGeneratedFiles } from "../workflow/generated-files";
 import { NetDriveService } from "./netdrive";
+import { StorageQuotaService } from "./storage-quota";
 import { PgTransferSessionStore } from "./transfer-session-store";
 
 const TEST_DB_URL = process.env.DATABASE_URL ?? "postgres://kq:kq@localhost:5432/kuintessence";
@@ -28,6 +35,12 @@ async function seedUser(db: PgDb, id: string, email: string): Promise<void> {
     .insert(users)
     .values({ id, email, displayName: "netdrive-test", role: "user" })
     .onConflictDoNothing();
+}
+
+function partUploadId(url: string): string {
+  const id = new URL(url).searchParams.get("uploadId");
+  if (!id) throw new Error("Missing presigned upload ID");
+  return id;
 }
 
 function bytesOf(s: string): Buffer {
@@ -54,12 +67,15 @@ describe("NetDriveService", () => {
   }
 
   beforeAll(async () => {
-    db = createPgDb(TEST_DB_URL);
+    db = createPgDb(TEST_DB_URL, { max: 4 });
     await seedUser(db, OWNER_ID, `netdrive-${OWNER_ID}@test`);
     await seedUser(db, OTHER_OWNER_ID, `netdrive-${OTHER_OWNER_ID}@test`);
   });
 
   beforeEach(async () => {
+    await db
+      .delete(netdriveUploadReservations)
+      .where(eq(netdriveUploadReservations.ownerId, OWNER_ID));
     await db.delete(netdriveFiles).where(eq(netdriveFiles.ownerId, OWNER_ID));
     await db.delete(netdriveFiles).where(eq(netdriveFiles.ownerId, OTHER_OWNER_ID));
   });
@@ -71,6 +87,142 @@ describe("NetDriveService", () => {
     await db.delete(users).where(eq(users.id, OTHER_OWNER_ID));
   });
 
+  test("retries a partially staged workflow batch, publishes permissions atomically and preserves referenced versions", async () => {
+    const runId = crypto.randomUUID();
+    const { service, backend } = makeService();
+    const authz = new AuthzService({
+      db,
+      mode: "off",
+      endpoint: "localhost:50051",
+      token: "fixture",
+      schemaPath: "authz/schema.zed",
+      platformAdminDegrade: false,
+    });
+    await db
+      .insert(workflowRuns)
+      .values({ id: runId, name: "generated batch", submittedBy: OWNER_ID, status: "running" });
+    try {
+      const lease = await new WorkflowExecutionJournalStore(db).acquire(runId);
+      if (!lease) throw new Error("Missing lease");
+      const publish = () =>
+        publishGeneratedFiles(service, lease, authz, OWNER_ID, null, "generate", [
+          { n: 1 },
+          { n: 2 },
+        ]);
+      const put = backend.putBlob.bind(backend);
+      let puts = 0;
+      backend.putBlob = async (...args) => {
+        if (++puts === 2) throw new Error("interrupted upload");
+        return put(...args);
+      };
+      await expect(publish()).rejects.toThrow("interrupted upload");
+      const files = () =>
+        db.select().from(netdriveFiles).where(eq(netdriveFiles.ownerId, OWNER_ID));
+      expect(await files()).toHaveLength(0);
+      const enqueue = authz.enqueueMany.bind(authz);
+      let calls = 0;
+      authz.enqueueMany = async (...args) => {
+        await enqueue(...args);
+        if (++calls === 2) throw new Error("outbox unavailable");
+      };
+      await expect(publish()).rejects.toThrow("outbox unavailable");
+      expect(await files()).toHaveLength(0);
+      const ownerTuples = () =>
+        db
+          .select()
+          .from(authzOutbox)
+          .where(
+            and(eq(authzOutbox.resourceType, "netdrive_file"), eq(authzOutbox.subjectId, OWNER_ID)),
+          );
+      expect(await ownerTuples()).toHaveLength(0);
+      const published = await publish();
+      expect(await publish()).toEqual(published);
+      expect(await ownerTuples()).toHaveLength(2);
+      expect(await files()).toHaveLength(2);
+      const first = published[0];
+      if (!first) throw new Error("Missing published file");
+      expect(await service.readGenerateFile(OWNER_ID, first.fileMetadataId)).toBe('{"n":1}');
+      await expect(
+        service.readGenerateFile(OTHER_OWNER_ID, first.fileMetadataId),
+      ).rejects.toMatchObject({ statusCode: 404 });
+      const exported = await publishGeneratedFiles(
+        service,
+        lease,
+        authz,
+        OWNER_ID,
+        null,
+        "gather",
+        ["a,b\n1,2"],
+        { kind: "SingleFile", descriptor: "table", fileName: "summary.csv" },
+      );
+      expect(exported[0]?.fileMetadataName).toBe("summary.csv");
+      expect(await service.readGenerateFile(OWNER_ID, exported[0]!.fileMetadataId)).toBe(
+        "a,b\n1,2",
+      );
+      const ordered = await publishGeneratedFiles(
+        service,
+        lease,
+        authz,
+        OWNER_ID,
+        null,
+        "folder",
+        [first, exported[0]],
+        { kind: "OrderedFolder", descriptor: "files", fileName: "data" },
+      );
+      expect(ordered.map((file) => file.fileMetadataName)).toEqual(["0001-data", "0002-data"]);
+      expect(await service.readGenerateFile(OWNER_ID, ordered[0]!.fileMetadataId)).toBe('{"n":1}');
+      const quotas = await new StorageQuotaService(db).getSummary(OWNER_ID);
+      expect(quotas.reservedBytes).toBe(0);
+      const deleted = await service.deleteFile(OWNER_ID, first.fileMetadataId);
+      await service.cleanDeletedVersions();
+      expect(
+        await backend.head(deleted.storageKey, deleted.storageVersionId ?? undefined),
+      ).toBeTruthy();
+      await expect(
+        publishGeneratedFiles(service, lease, authz, OWNER_ID, null, "generate", [1, 2]),
+      ).rejects.toThrow("content changed");
+      await lease.release();
+    } finally {
+      const rows = await db.select().from(netdriveFiles).where(eq(netdriveFiles.ownerId, OWNER_ID));
+      for (const row of rows)
+        await db.delete(authzOutbox).where(eq(authzOutbox.resourceId, row.id));
+      await db.delete(workflowRuns).where(eq(workflowRuns.id, runId));
+    }
+  });
+
+  test("abandoned generated bytes release quota and retry failed version cleanup", async () => {
+    const backend = new FakeMinioBackend();
+    let now = Date.now();
+    const drive = new NetDriveService(db, backend, {
+      commitSecret: COMMIT_SECRET,
+      now: () => now,
+      uploadTtlSec: 5,
+    });
+    const blob = await drive.stageGeneratedFile(
+      OWNER_ID,
+      crypto.randomUUID(),
+      crypto.randomUUID(),
+      bytesOf("123"),
+      await sha256Hex("123"),
+    );
+    now += 6_000;
+    const remove = backend.delete.bind(backend);
+    backend.delete = async () => {
+      throw new Error("storage offline");
+    };
+    await drive.pruneExpiredReservations();
+    const holds = () =>
+      db
+        .select()
+        .from(netdriveUploadReservations)
+        .where(eq(netdriveUploadReservations.storageKey, blob.storageKey));
+    expect(await holds()).toHaveLength(1);
+    backend.delete = remove;
+    await drive.pruneExpiredReservations();
+    expect(await holds()).toHaveLength(0);
+    expect(await backend.head(blob.storageKey)).toBeNull();
+  });
+
   test("mintUploadUrl returns a signed commit token bound to ownerId/storageKey/size", async () => {
     const fake = new FakeMinioBackend();
     const svc = new NetDriveService(db, fake, { commitSecret: COMMIT_SECRET });
@@ -79,7 +231,7 @@ describe("NetDriveService", () => {
       size: 12,
       contentType: "text/plain",
     });
-    expect(minted.uploadUrl).toContain("/upload/");
+    expect(new URL(minted.uploadUrl).searchParams.get("partNumber")).toBe("1");
     expect(minted.storageKey).toMatch(/^netdrive\/objects\/[a-f0-9-]{36}$/);
     expect(minted.storageKey).not.toContain(OWNER_ID);
     expect(minted.commitToken.split(".")).toHaveLength(3); // JWS format
@@ -145,20 +297,29 @@ describe("NetDriveService", () => {
       contentType: "application/octet-stream",
     });
     // Simulate the client uploading via the presigned URL.
-    await fake.putBlob(minted.storageKey, body, "application/octet-stream");
+    const { etag } = await fake.putUploadedPart(
+      minted.storageKey,
+      partUploadId(minted.uploadUrl),
+      1,
+      body,
+    );
 
     const file = await svc.commitFile(OWNER_ID, {
       path: "data/r.bin",
       size: body.length,
       contentType: "application/octet-stream",
       sha256: sha,
+      etag,
       storageKey: minted.storageKey,
       commitToken: minted.commitToken,
     });
     expect(file.path).toBe("data/r.bin");
     expect(file.size).toBe(body.length);
     expect(file.sha256).toBe(sha);
-    expect(file.etag).toBeDefined();
+    const stored = await fake.head(file.storageKey);
+    if (!stored) throw new Error("Missing assembled object");
+    expect(file.etag).toBe(stored.etag);
+    expect(file.etag).not.toBe(etag);
   });
 
   test("recordReplica upserts replica status and records mirror transfer when available", async () => {
@@ -180,7 +341,16 @@ describe("NetDriveService", () => {
       commitToken: minted.commitToken,
     });
 
-    await svc.recordReplica({ ownerId: OWNER_ID, fileId: file.id, siteId: "site-alpha" });
+    const identity = { ownerId: OWNER_ID, fileId: file.id, siteId: "site-alpha" };
+    // A missing job makes the accounting insert fail; retry must still be able to confirm this copy.
+    await expect(
+      svc.recordReplica({ ...identity, context: { jobId: crypto.randomUUID() } }),
+    ).rejects.toThrow();
+    expect(
+      await db.select().from(netdriveReplicas).where(eq(netdriveReplicas.fileId, file.id)),
+    ).toEqual([]);
+    const report = () => svc.recordReplica(identity);
+    await Promise.all([report(), report(), report()]);
 
     const [replica] = await db
       .select()
@@ -352,6 +522,13 @@ describe("NetDriveService", () => {
     const live = files.filter((f) => f.path === path);
     expect(live).toHaveLength(1);
     expect(total).toBe(1);
+    const versions = await db
+      .select()
+      .from(netdriveFiles)
+      .where(and(eq(netdriveFiles.ownerId, OWNER_ID), eq(netdriveFiles.path, path)));
+    expect(versions.find((row) => row.deletedAt)?.deletedAt?.toISOString()).toBe(
+      live[0]?.createdAt,
+    );
   });
 
   test("listFiles is per-owner scoped and supports prefix + paging", async () => {
@@ -559,6 +736,196 @@ describe("NetDriveService", () => {
     await expect(svc.deleteFile(OWNER_ID, file.id)).rejects.toMatchObject({ statusCode: 404 });
   });
 
+  test("reserves competing uploads under the owner lock and releases abandoned holds on expiry", async () => {
+    let now = Date.now();
+    const service = new NetDriveService(db, new FakeMinioBackend(), {
+      commitSecret: COMMIT_SECRET,
+      now: () => now,
+      uploadTtlSec: 30,
+    });
+    const quota = new StorageQuotaService(db, () => new Date(now));
+    const size = (await quota.getSummary(OWNER_ID)).availableBytes;
+    const results = await Promise.allSettled(
+      ["a", "b"].map((path) => service.mintUploadUrl(OWNER_ID, { path, size })),
+    );
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect((await quota.getSummary(OWNER_ID)).reservedBytes).toBe(size);
+    now += 31_000;
+    await service.pruneExpiredReservations();
+    expect((await quota.getSummary(OWNER_ID)).reservedBytes).toBe(0);
+  });
+
+  test("reclaims abandoned PUTs, retries assembled bytes, and preserves resumable transfers", async () => {
+    let now = Date.now();
+    const backend = new FakeMinioBackend();
+    const service = new NetDriveService(db, backend, {
+      commitSecret: COMMIT_SECRET,
+      now: () => now,
+      uploadTtlSec: 5,
+      multipartTtlSec: 5,
+    });
+    const abandoned = await service.mintUploadUrl(OWNER_ID, { path: "a", size: 3 });
+    const uploadId = partUploadId(abandoned.uploadUrl);
+    await backend.putUploadedPart(abandoned.storageKey, uploadId, 1, bytesOf("abc"));
+    const assembled = await service.mintUploadUrl(OWNER_ID, { path: "b", size: 3 });
+    const assembledId = partUploadId(assembled.uploadUrl);
+    const part = await backend.putUploadedPart(
+      assembled.storageKey,
+      assembledId,
+      1,
+      bytesOf("abc"),
+    );
+    await backend.completeMultipartUpload(assembled.storageKey, assembledId, [
+      { partNumber: 1, ...part },
+    ]);
+    const resume = await service.initiateMultipart(OWNER_ID, { path: "c", size: 3 });
+    await backend.putUploadedPart(resume.storageKey, resume.uploadId, 1, bytesOf("abc"));
+    const [transfer] = await db
+      .insert(fileTransfers)
+      .values({
+        userId: OWNER_ID,
+        direction: "cluster_to_cloud",
+        source: "/c",
+        target: "c",
+        state: "failed",
+        resumeSession: { storageKey: resume.storageKey },
+      })
+      .returning();
+    if (!transfer) throw new Error("Missing resumable transfer");
+    try {
+      now += 6000;
+      const remove = backend.delete.bind(backend);
+      backend.delete = async () => {
+        throw new Error("storage unavailable");
+      };
+      await service.pruneExpiredReservations();
+      expect(
+        await db
+          .select()
+          .from(netdriveUploadReservations)
+          .where(eq(netdriveUploadReservations.ownerId, OWNER_ID)),
+      ).toHaveLength(2);
+      await expect(
+        backend.putUploadedPart(abandoned.storageKey, uploadId, 1, bytesOf("late")),
+      ).rejects.toThrow("NoSuchUpload");
+      backend.delete = remove;
+      await service.pruneExpiredReservations();
+      expect(await backend.head(assembled.storageKey)).toBeNull();
+      expect(await backend.listUploadParts(resume.storageKey, resume.uploadId)).toHaveLength(1);
+    } finally {
+      await db.delete(fileTransfers).where(eq(fileTransfers.id, transfer.id));
+    }
+  });
+
+  test("expiry cannot reclaim bytes while a verified upload is committing", async () => {
+    let now = Date.now();
+    const backend = new FakeMinioBackend();
+    const service = new NetDriveService(db, backend, {
+      commitSecret: COMMIT_SECRET,
+      now: () => now,
+      uploadTtlSec: 5,
+    });
+    const minted = await service.mintUploadUrl(OWNER_ID, { path: "slow", size: 3 });
+    await backend.putUploadedPart(
+      minted.storageKey,
+      partUploadId(minted.uploadUrl),
+      1,
+      bytesOf("abc"),
+    );
+    const verified = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const hash = backend.sha256.bind(backend);
+    backend.sha256 = async (key, version) => {
+      verified.resolve();
+      await resume.promise;
+      return hash(key, version);
+    };
+    const commit = service.commitFile(OWNER_ID, {
+      ...minted,
+      path: "slow",
+      size: 3,
+      sha256: await sha256Hex("abc"),
+    });
+    await Promise.race([
+      verified.promise,
+      commit.then(() => {
+        throw new Error("Expected verification");
+      }),
+    ]);
+    now += 6000;
+    const sweep = service.pruneExpiredReservations();
+    try {
+      let waiting = false;
+      for (let i = 0; i < 200 && !waiting; i++) {
+        const [lock] =
+          await db.$client`select exists(select 1 from pg_locks where locktype = 'advisory'
+            and not granted and objid = (hashtextextended(${minted.storageKey}, 0) & 4294967295)::oid) as waiting`;
+        waiting = lock?.waiting === true;
+        if (!waiting) await Bun.sleep(5);
+      }
+      expect(waiting).toBe(true);
+    } finally {
+      resume.resolve();
+    }
+    const [file] = await Promise.all([commit, sweep]);
+    const stored = await backend.head(file.storageKey);
+    if (!stored?.versionId) throw new Error("Missing committed version after sweep");
+    expect(file.storageVersionId).toBe(stored.versionId);
+  });
+
+  test("replays a committed upload once and retries a failed delete against its exact version", async () => {
+    let now = Date.now();
+    const backend = new FakeMinioBackend();
+    const service = new NetDriveService(db, backend, {
+      commitSecret: COMMIT_SECRET,
+      now: () => now,
+    });
+    const minted = await service.mintUploadUrl(OWNER_ID, { path: "test.bin", size: 1 });
+    await backend.putBlob(minted.storageKey, bytesOf("x"), "application/octet-stream");
+    const request = { ...minted, path: "test.bin", size: 1, sha256: await sha256Hex("x") };
+    // An absent job makes the real ledger FK fail after the file insert.
+    await expect(
+      service.commitFile(OWNER_ID, request, { jobId: crypto.randomUUID() }),
+    ).rejects.toThrow();
+    expect(
+      await db.select().from(netdriveFiles).where(eq(netdriveFiles.storageKey, minted.storageKey)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(netdriveUploadReservations)
+        .where(eq(netdriveUploadReservations.storageKey, minted.storageKey)),
+    ).toHaveLength(1);
+    const [first, second] = await Promise.all([
+      service.commitFile(OWNER_ID, request),
+      service.commitFile(OWNER_ID, request),
+    ]);
+    expect(first.id).toBe(second.id);
+    expect(
+      await db.select().from(netdriveTransferLog).where(eq(netdriveTransferLog.fileId, first.id)),
+    ).toMatchObject([{ direction: "upload", bytes: 1 }]);
+    expect((await new StorageQuotaService(db).getSummary(OWNER_ID)).reservedBytes).toBe(0);
+    await service.deleteFile(OWNER_ID, first.id);
+    const remove = backend.delete.bind(backend);
+    backend.delete = async () => {
+      throw new Error("storage unavailable");
+    };
+    await service.cleanDeletedVersions();
+    expect(await backend.head(first.storageKey)).toBeTruthy();
+    backend.delete = async (key, version) => {
+      expect(version).toBe(first.storageVersionId ?? undefined);
+      await remove(key, version);
+    };
+    await backend.putBlob(first.storageKey, bytesOf("newer bytes"), "text/plain");
+    const otherVersion = await backend.head(first.storageKey);
+    expect(otherVersion?.versionId).not.toBe(first.storageVersionId);
+    now += 61_000;
+    await service.cleanDeletedVersions();
+    expect(await backend.head(first.storageKey)).toEqual(otherVersion);
+    const [cleaned] = await db.select().from(netdriveFiles).where(eq(netdriveFiles.id, first.id));
+    expect(cleaned?.cleanupAfter).toBeNull();
+  });
+
   test("mintPartUrls returns one presigned URL per requested part", async () => {
     const { service } = makeService();
     const init = await service.initiateMultipart(OWNER_ID, {
@@ -749,6 +1116,12 @@ describe("NetDriveService", () => {
       sha256: await sha256Hex("real"),
       parts: [{ partNumber: 1, etag: part.etag }],
     };
+    await expect(
+      service.completeMultipart(OWNER_ID, request, { jobId: crypto.randomUUID() }),
+    ).rejects.toThrow();
+    expect(
+      await db.select().from(netdriveFiles).where(eq(netdriveFiles.storageKey, init.storageKey)),
+    ).toHaveLength(0);
     let authorized = 0;
     const onCommit = async () => {
       authorized++;
@@ -759,6 +1132,12 @@ describe("NetDriveService", () => {
     ]);
     expect(results[0]?.file.id).toBe(results[1]?.file.id);
     expect(authorized).toBe(1);
+    expect(
+      await db
+        .select()
+        .from(netdriveTransferLog)
+        .where(eq(netdriveTransferLog.fileId, results[0].file.id)),
+    ).toMatchObject([{ direction: "upload", bytes: 4 }]);
     const rows = await db
       .select()
       .from(netdriveFiles)

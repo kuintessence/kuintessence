@@ -124,6 +124,20 @@ describe.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)(
       expect(argv.slice(-3)).toEqual([f.sif, "/bin/bash", "/kq/script/main.sh"]);
     });
 
+    test("the compute node rechecks licensed bytes and permissions before the interpreter starts", async () => {
+      const f = await fixture();
+      const input = join(f.root, "licensed");
+      await writeFile(input, "entitled", { mode: 0o440 });
+      const args = [...f.prefix];
+      args.splice(args.indexOf("--"), 0, "--licensed-input", input, hash("entitled"));
+      const run = () => f.run([...args, "--bind", input + ":/kq/inputs/material:ro", ...f.tail]);
+      expect((await run()).exitCode).toBe(0);
+      await chmod(input, 0o640);
+      expect((await run()).exitCode).toBe(126);
+      await writeFile(input, "changed");
+      await chmod(input, 0o440);
+      expect((await run()).exitCode).toBe(126);
+    });
     test("rejects missing native identity and checker failures before starting the runtime", async () => {
       const f = await fixture();
       expect((await f.run(undefined, [])).exitCode).toBe(126);

@@ -21,7 +21,7 @@ import {
   type FederationResultVerifyTask,
   FederationResultVerifyTaskSchema,
 } from "@kuintessence/shared/federation";
-import { and, asc, eq, gte, inArray, isNull, lte, ne, notExists, or } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte, ne, notExists, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
@@ -642,7 +642,7 @@ export class FederationResultImports {
             storageVersionId: file.versionId,
             etag: file.etag,
             mtime: this.clock(),
-            createdAt: this.clock(),
+            createdAt: sql`clock_timestamp() at time zone 'UTC'`,
           })),
         );
         await tx

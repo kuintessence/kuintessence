@@ -5,6 +5,7 @@ import type {
   SpackMaterialManifest,
   SpackMaterialPublish,
 } from "@kuintessence/shared/browser";
+import { spackMaterialInputBlobs } from "@kuintessence/shared/browser";
 import { fireEvent, screen } from "@testing-library/react";
 import { expect, vi } from "vitest";
 import { setAuth } from "../../lib/auth";
@@ -97,6 +98,10 @@ export async function resetMaterials() {
   localStorage.setItem("kq.lang", "en");
   await i18n.changeLanguage("en");
   const fixture = materialFixture();
+  vi.mocked(client.getSpackMaterialImportStatus).mockImplementation(async (release) => ({
+    state: "pending",
+    missing: spackMaterialInputBlobs(release).map((blob) => blob.digest),
+  }));
   vi.mocked(client.uploadSpackMaterial).mockImplementation(async (_repository, blob) => blob);
   vi.mocked(client.publishSpackMaterial).mockResolvedValue(fixture.binding);
   vi.mocked(client.getSpackMaterial).mockResolvedValue(fixture.manifest);

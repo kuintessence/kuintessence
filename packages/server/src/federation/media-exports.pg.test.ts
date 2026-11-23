@@ -603,24 +603,14 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
         { state: "revoked" },
         { counterpartyApprovalJws: null },
         { localOrgId: other.orgId },
-        { localSiteId: target.signing.siteId },
       ]) {
         // Each exclusion starts from the same approved revision.
         await db.update(federationAgreementApprovals).set(patch).where(where);
         expect((await media.options(actor, { kind: "agreements" })).data).toEqual([]);
-        await db
-          .update(federationAgreementApprovals)
-          .set(original)
-          .where(
-            and(
-              eq(federationAgreementApprovals.revisionId, terms.agreementRevisionId),
-              eq(
-                federationAgreementApprovals.localSiteId,
-                patch.localSiteId ?? source.signing.siteId,
-              ),
-            ),
-          );
+        await db.update(federationAgreementApprovals).set(original).where(where);
       }
+      const unrelatedSite = new FederationMediaPackageService(db, crypto.randomUUID());
+      expect((await unrelatedSite.options(actor, { kind: "agreements" })).data).toEqual([]);
       const late = new FederationMediaPackageService(
         db,
         source.signing.siteId,
@@ -628,15 +618,7 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       );
       expect((await late.options(actor, { kind: "agreements" })).data).toHaveLength(1);
     } finally {
-      await db
-        .update(federationAgreementApprovals)
-        .set(original)
-        .where(
-          and(
-            eq(federationAgreementApprovals.revisionId, terms.agreementRevisionId),
-            eq(federationAgreementApprovals.approvedBy, actor.userId),
-          ),
-        );
+      await db.update(federationAgreementApprovals).set(original).where(where);
     }
   });
 

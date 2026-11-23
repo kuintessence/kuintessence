@@ -79,7 +79,7 @@ export function registerMeteringCommand(program: Command): void {
     );
 
   m.command("export")
-    .description("Export usage data as CSV")
+    .description("Export usage data as CSV, JSON or Parquet")
     .requiredOption("--from <iso>", "Window start (ISO 8601)")
     .requiredOption("--to <iso>", "Window end (ISO 8601)")
     .requiredOption("--out <file>", "Output file path")

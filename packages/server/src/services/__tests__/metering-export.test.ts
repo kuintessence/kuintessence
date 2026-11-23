@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { QueryResult } from "../metering";
-import { exportCsv, rowToCsv, suggestedFilename } from "../metering-export";
+import { exportChunks, rowToCsv, suggestedFilename } from "../metering-export";
 
 const baseResult: QueryResult = {
   total: 2,
@@ -27,8 +27,15 @@ const baseResult: QueryResult = {
 };
 
 describe("exportCsv", () => {
-  it("emits a header row plus data rows", () => {
-    const csv = exportCsv(baseResult);
+  it("emits a header row plus data rows", async () => {
+    const chunks = exportChunks(
+      "csv",
+      (async function* () {
+        yield baseResult;
+      })(),
+    );
+    let csv = "";
+    for await (const chunk of chunks) csv += new TextDecoder().decode(chunk);
     const lines = csv.trim().split("\n");
     expect(lines[0]).toBe(
       "groupKey,cpuCoreSeconds,gpuSeconds,memoryMbSeconds,storageMbSeconds,networkEgressMb,jobCount",

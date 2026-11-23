@@ -28,6 +28,7 @@ export function makePgSshRowLoader(db: PgDb): LoadSshRow {
     const row = rows[0];
     if (!row) return null;
     return {
+      jumpAgentIds: row.jumpAgentIds,
       host: row.host,
       port: row.port,
       username: row.username,
@@ -46,6 +47,7 @@ export interface SaveSshCredentialInput {
   secret: SshSecretMaterial;
   /** Base64 SHA-256 host-key pin (clear); "" / omitted leaves the host unverified. */
   hostKeySha256?: string;
+  jumpAgentIds?: string[];
   updatedBy: string;
 }
 
@@ -66,6 +68,7 @@ export async function saveSshCredential(
     port: input.port,
     username: input.username,
     secretEncrypted,
+    jumpAgentIds: input.jumpAgentIds,
     hostKeySha256: input.hostKeySha256 ?? "",
     updatedAt: new Date(),
     updatedBy: input.updatedBy,
@@ -80,6 +83,7 @@ export async function saveSshCredential(
         port: row.port,
         username: row.username,
         secretEncrypted: row.secretEncrypted,
+        jumpAgentIds: row.jumpAgentIds,
         hostKeySha256: row.hostKeySha256,
         updatedAt: row.updatedAt,
         updatedBy: row.updatedBy,
@@ -112,6 +116,7 @@ function sshCredentialViews(rows: Array<typeof sshCredentials.$inferSelect>): Ss
     port: r.port,
     username: r.username,
     hasSecret: r.secretEncrypted.length > 0,
+    ...(r.jumpAgentIds?.length ? { jumpAgentIds: r.jumpAgentIds } : {}),
     hostKeySha256: r.hostKeySha256 ?? "",
     updatedAt: r.updatedAt ? r.updatedAt.toISOString() : null,
     updatedBy: r.updatedBy,

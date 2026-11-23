@@ -461,6 +461,10 @@ export class FederationClusterQueueService {
     const selected = await this.selected(actor, queueId);
     if (!selected) return null;
     const { row, terms } = selected;
+    if (data.softwareRequirements?.some((requirement) => requirement.siteRuntimeRevisionId))
+      unavailable("Site runtime revisions require local execution");
+    if (data.resources.schedulerLimits)
+      unavailable("Remote job scheduler limits must be defined in the bound remote template");
     const profile = row.config.profiles.find((p) =>
       data.usecasePackageId
         ? p.source.kind === "usecase" && p.source.packageId === data.usecasePackageId

@@ -64,7 +64,10 @@ export interface SpackMaterialReferencePort {
   resolveOperation(
     input: SpackInstallPreparation & { providerOrgId: string | null },
   ): Promise<SpackMaterialBinding>;
-  acquireOperation(input: SpackInstallPreparation & SpackMaterialBinding): Promise<void>;
+  acquireOperation(
+    input: SpackInstallPreparation & SpackMaterialBinding,
+    recipes?: Array<{ repositoryId: string; commit: string }>,
+  ): Promise<void>;
 }
 
 export interface SpackMaterialDeliveryOptions {
@@ -187,7 +190,10 @@ export class SpackMaterialDelivery {
       )
         throw denied("Spack material release differs from the authorized execution pin");
     }
-    await this.acquireReference(claims);
+    await this.acquireReference(
+      claims,
+      manifest.value.recipes.map(({ repositoryId, commit }) => ({ repositoryId, commit })),
+    );
     await this.options.onPrepared?.({
       ...input,
       ...binding,
@@ -356,16 +362,22 @@ export class SpackMaterialDelivery {
     }
   }
 
-  private async acquireReference(claims: MaterialClaims): Promise<void> {
+  private async acquireReference(
+    claims: MaterialClaims,
+    recipes?: Array<{ repositoryId: string; commit: string }>,
+  ): Promise<void> {
     try {
-      await this.options.references.acquireOperation({
-        operationId: claims.operationId,
-        agentId: claims.agentId,
-        requestedBy: claims.requestedBy,
-        spec: claims.spec,
-        repositoryId: claims.repositoryId,
-        manifestDigest: claims.manifestDigest,
-      });
+      await this.options.references.acquireOperation(
+        {
+          operationId: claims.operationId,
+          agentId: claims.agentId,
+          requestedBy: claims.requestedBy,
+          spec: claims.spec,
+          repositoryId: claims.repositoryId,
+          manifestDigest: claims.manifestDigest,
+        },
+        recipes,
+      );
     } catch {
       throw referenceFailure();
     }

@@ -252,6 +252,35 @@ test("failed status refresh hides stale retry controls and preserves signed term
   expect(api.post).not.toHaveBeenCalled();
 });
 
+test("edits scoped agreement fields and preserves exact allowances and optional file policy before signing", async () => {
+  mount();
+  const open = await screen.findByRole("button", { name: "Import agreement terms" });
+  await waitFor(() => expect((open as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(open);
+  fireEvent.change(screen.getByLabelText("Terms JSON"), {
+    target: { value: JSON.stringify(terms) },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Edit agreement fields" }));
+  fireEvent.change(screen.getByLabelText("Total allowance"), {
+    target: { value: "90071992547409939" },
+  });
+  fireEvent.click(screen.getByLabelText("Include Input file authorization"));
+  fireEvent.change(screen.getByLabelText("Maximum file count"), { target: { value: "3" } });
+  fireEvent.change(screen.getByLabelText("Maximum total bytes"), { target: { value: "4096" } });
+  fireEvent.click(screen.getByRole("button", { name: "Terms JSON" }));
+  const edited = JSON.parse((screen.getByLabelText("Terms JSON") as HTMLTextAreaElement).value);
+  expect(edited.budgetLimit).toBe("90071992547409939");
+  expect(edited.templates).toEqual(terms.templates);
+  expect(edited.inputPolicy).toEqual({
+    scope: "workflow-input-files",
+    maxFiles: 3,
+    maxBytes: 4096,
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Review terms" }));
+  fireEvent.click(screen.getByRole("button", { name: "Sign agreement" }));
+  expect(api.post).not.toHaveBeenCalled();
+});
+
 test("reviews exact integer allowances then signs only after explicit confirmation under the captured organization", async () => {
   mount();
   await importTerms();

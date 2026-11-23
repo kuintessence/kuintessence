@@ -4,24 +4,32 @@
 // completeMultipart, which inserts the netdrive_files row.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { create } from "@bufbuild/protobuf";
 import {
   createPgDb,
+  fileTransfers,
   netdriveFiles,
   orgs,
   type PgDb,
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
-import type { ServerMessage } from "@kuintessence/proto";
+import { AgentMessageSchema, type ServerMessage } from "@kuintessence/proto";
 import type { TransferCreate } from "@kuintessence/shared";
 import { eq } from "drizzle-orm";
 import type { AuthzCheck, AuthzService, AuthzTuple } from "../authz/service";
 import { type AgentChannel, AgentDispatcher } from "../grpc/dispatcher";
+import { receiveInteraction } from "../grpc/interaction-receiver";
 import { FakeMinioBackend } from "../storage/minio-client.test";
+import { waitForOutputTransfer } from "../workflow/output-transfer";
+import { pgOutputTransferStore } from "../workflow/pg-output-transfer-store";
+import { FileService } from "./file-service";
 import { NetDriveService } from "./netdrive";
+import { PgFileTransferStore } from "./pg-file-transfer-store";
 import { TransferRegistry } from "./transfer-registry";
 import { TransferRunner } from "./transfer-runner";
+import { PgTransferSessionStore } from "./transfer-session-store";
 
 const TEST_DB_URL = process.env.DATABASE_URL ?? "postgres://kq:kq@localhost:5432/kuintessence";
 const COMMIT_SECRET = "transfer-runner-test-commit-secret-please-rotate-in-prod";
@@ -115,6 +123,197 @@ describe("TransferRunner.startClusterToCloud (multipart)", () => {
     target: "outputs/run1/out.dat",
   };
 
+  test("PostgreSQL accepts terminal progress only for the current running attempt", async () => {
+    const store = new PgFileTransferStore(db);
+    const transfer = await new FileService(store).createTransfer(OWNER_ID, transferData, OWNER_ID);
+    const start = "2026-01-01T00:00:00.001Z";
+    await store.transition(OWNER_ID, transfer.id, "failed", { state: "running", startedAt: start });
+    const finish = { state: "succeeded" } as const;
+    expect(
+      await store.transition(OWNER_ID, transfer.id, "running", finish, "2026-01-01T00:00:00.000Z"),
+    ).toBeNull();
+    expect((await store.transition(OWNER_ID, transfer.id, "running", finish, start))?.state).toBe(
+      "succeeded",
+    );
+    expect(
+      await store.transition(OWNER_ID, transfer.id, "running", { state: "failed" }, start),
+    ).toBeNull();
+  });
+
+  async function until(check: () => Promise<boolean>) {
+    for (let n = 0; n < 200; n++) {
+      if (await check()) return;
+      await Bun.sleep(10);
+    }
+    throw new Error("Expected transfer state was not reached");
+  }
+
+  test("workflow waiters reuse a late receipt and another Server can take over a failed start", async () => {
+    const first = pgOutputTransferStore(db, new PgFileTransferStore(db));
+    const second = pgOutputTransferStore(db, new PgFileTransferStore(db));
+    const input = {
+      ownerId: OWNER_ID,
+      transferId: randomUUID(),
+      agentId: AGENT_ID,
+      source: "/output",
+      target: "result",
+    };
+    const fail = async () => {
+      throw new Error("offline");
+    };
+    await expect(
+      waitForOutputTransfer({ store: first, runner: { start: fail } }, input),
+    ).rejects.toThrow("offline");
+    const started = Promise.withResolvers<Parameters<TransferRunner["start"]>[3]>();
+    const ctrl = new AbortController();
+    const waiting = waitForOutputTransfer(
+      {
+        store: second,
+        runner: {
+          start: async (_owner, _id, _data, onProgress) => {
+            started.resolve(onProgress);
+          },
+        },
+      },
+      input,
+      ctrl.signal,
+    );
+    const notify = await started.promise;
+    ctrl.abort();
+    await expect(waiting).rejects.toThrow("interrupted");
+    await expect(
+      waitForOutputTransfer({ store: first, runner: { start: fail } }, input),
+    ).rejects.toThrow("already in progress");
+    const file = randomUUID();
+    notify({ state: "succeeded", copiedBytes: 1, netdriveFileIds: [file] });
+    await until(async () => (await first.ensure(input))?.state === "succeeded");
+    expect(await waitForOutputTransfer({ store: first, runner: { start: fail } }, input)).toEqual([
+      file,
+    ]);
+  });
+
+  test("a second Server preserves a live lease and waits for the owning Agent to acknowledge cancellation", async () => {
+    const a = new PgFileTransferStore(db),
+      b = new PgFileTransferStore(db);
+    const left = new FileService(a),
+      right = new FileService(b);
+    const { runner, channel, transferRegistry } = makeRunner();
+    left.attachRunner(runner);
+    const row = await left.createTransfer(OWNER_ID, transferData, OWNER_ID);
+    await until(async () => channel.pushed.length === 1);
+    const attempt = fileTransferReq(channel).requestId;
+    expect(await right.reconcileInterruptedTransfers()).toBe(0);
+    expect((await b.getByUser(OWNER_ID, row.id))?.state).toBe("running");
+    const cancelled = right.cancelTransfer(OWNER_ID, row.id);
+    await until(async () => {
+      await a.maintain((row) => left.cancelOwned(row));
+      return channel.pushed.some((m) => m.payload.case === "fileTransferCancel");
+    });
+    expect((await b.getByUser(OWNER_ID, row.id))?.state).toBe("running");
+    const ack = create(AgentMessageSchema, {
+      payload: { case: "fileTransferProgress", value: { requestId: attempt, state: "cancelled" } },
+    });
+    await receiveInteraction({ transferRegistry }, "another-agent", ack, () => {});
+    expect((await b.getByUser(OWNER_ID, row.id))?.state).toBe("running");
+    await receiveInteraction({ transferRegistry }, AGENT_ID, ack, () => {});
+    expect((await cancelled).state).toBe("cancelled");
+    expect(transferRegistry.update(attempt, { state: "running", copiedBytes: 1 }, AGENT_ID)).toBe(
+      false,
+    );
+  });
+
+  test("a cancellation in flight cannot report success after the active owner loses its lease", async () => {
+    const owner = new PgFileTransferStore(db);
+    const peer = new PgFileTransferStore(db);
+    const service = new FileService(owner);
+    const row = await service.createTransfer(OWNER_ID, transferData, OWNER_ID);
+    const startedAt = new Date().toISOString();
+    await owner.transition(OWNER_ID, row.id, "failed", { state: "running", startedAt });
+    const pending = peer.coordinateCancel(OWNER_ID, row.id, async () => {
+      throw new Error("wrong owner");
+    });
+
+    await until(async () =>
+      Boolean(
+        (
+          await db
+            .select({ token: fileTransfers.cancelRequest })
+            .from(fileTransfers)
+            .where(eq(fileTransfers.id, row.id))
+        )[0]?.token,
+      ),
+    );
+    await db
+      .update(fileTransfers)
+      .set({ dispatchExpiresAt: new Date(0) })
+      .where(eq(fileTransfers.id, row.id));
+    await peer.markInterrupted("TRANSFER_INTERRUPTED_BY_SERVER_RESTART");
+    await expect(pending).rejects.toThrow("not accepted");
+    expect((await peer.getByUser(OWNER_ID, row.id))?.state).toBe("failed");
+    await expect(
+      new PgTransferSessionStore(db, owner.serverId).verifyRunningOwner(OWNER_ID, row.id, db),
+    ).rejects.toThrow("expired");
+    expect(
+      await owner.transition(OWNER_ID, row.id, "running", { state: "succeeded" }, startedAt),
+    ).toBeNull();
+  });
+
+  test("only expired leases are recovered and a resumed queued upload retries cancellation cleanup", async () => {
+    const a = new PgFileTransferStore(db),
+      b = new PgFileTransferStore(db);
+    const service = new FileService(a),
+      remote = new FileService(b);
+    const sessions = new PgTransferSessionStore(db, a.serverId);
+    const row = await service.createTransfer(OWNER_ID, transferData, OWNER_ID);
+    await a.transition(OWNER_ID, row.id, "failed", { state: "queued" });
+    const saved = {
+      source: transferData.source,
+      target: transferData.target,
+      agentId: AGENT_ID,
+      size: 0,
+      storageKey: `netdrive/objects/${randomUUID()}`,
+      uploadId: "original",
+      partSize: 5242880,
+    };
+    await new PgTransferSessionStore(db).save(OWNER_ID, row.id, saved);
+    await db
+      .update(fileTransfers)
+      .set({ dispatchExpiresAt: new Date(0) })
+      .where(eq(fileTransfers.id, row.id));
+    expect(await remote.reconcileInterruptedTransfers()).toBe(1);
+    expect(await a.transition(OWNER_ID, row.id, "queued", { state: "running" })).toBeNull();
+    let aborts = 0;
+    const dispatcher = new AgentDispatcher();
+    dispatcher.register(AGENT_ID, new RecordingChannel());
+    service.attachRunner(
+      new TransferRunner({
+        db,
+        dispatcher,
+        transferRegistry: new TransferRegistry(),
+        sessionStore: sessions,
+        netdriveService: {
+          restoreMultipartSession: async () => ({ ...saved, commitToken: "restored" }),
+          abortMultipart: async () => {
+            if (++aborts === 1) throw new Error("Object store busy");
+          },
+        } as unknown as NetDriveService,
+      }),
+    );
+    const guard = Promise.withResolvers<undefined>();
+    await service.resumeTransfer(OWNER_ID, row.id, { beforeDispatch: () => guard.promise });
+    const cancelled = remote.cancelTransfer(OWNER_ID, row.id);
+    await until(async () => {
+      await a.maintain((row) => service.cancelOwned(row));
+      return aborts === 1;
+    });
+    expect((await sessions.load(OWNER_ID, row.id))?.uploadId).toBe("original");
+    guard.resolve(undefined);
+    await a.maintain((row) => service.cancelOwned(row));
+    expect((await cancelled).state).toBe("cancelled");
+    expect(aborts).toBe(2);
+    expect(await sessions.load(OWNER_ID, row.id)).toBeUndefined();
+  });
+
   test("pushes a FileTransferRequest carrying uploadId/commitToken/partSize", async () => {
     const { runner, channel } = makeRunner();
     await runner.start(OWNER_ID, "transfer-a", transferData, () => {});
@@ -131,30 +330,32 @@ describe("TransferRunner.startClusterToCloud (multipart)", () => {
     const { runner, channel, transferRegistry } = makeRunner();
     await runner.start(OWNER_ID, "transfer-cancel", transferData, () => {});
 
-    expect(await runner.cancel("transfer-cancel")).toBe(true);
+    const cancellation = runner.cancel("transfer-cancel");
+    transferRegistry.confirmCancellation(fileTransferReq(channel).requestId, AGENT_ID);
+    expect(await cancellation).toBe(true);
     expect(channel.pushed.map((message) => message.payload.case)).toEqual([
       "fileTransferRequest",
       "fileTransferCancel",
     ]);
     expect(
-      transferRegistry.update("transfer-cancel", {
+      transferRegistry.update(fileTransferReq(channel).requestId, {
         copiedBytes: 1,
         state: "succeeded",
         sha256: "a".repeat(64),
         parts: [],
       }),
     ).toBe(false);
-    await expect(runner.mintPartUrlsFor("transfer-cancel", [1])).rejects.toThrow(
+    await expect(runner.mintPartUrlsFor(fileTransferReq(channel).requestId, [1])).rejects.toThrow(
       "no pending multipart upload",
     );
   });
 
   test("rejects cancellation after a terminal event crosses the commit boundary", async () => {
-    const { runner, transferRegistry } = makeRunner();
+    const { runner, channel, transferRegistry } = makeRunner();
     await runner.start(OWNER_ID, "transfer-terminal", transferData, () => {});
 
     expect(
-      transferRegistry.update("transfer-terminal", {
+      transferRegistry.update(fileTransferReq(channel).requestId, {
         copiedBytes: 0,
         state: "failed",
         error: "agent failed",
@@ -333,7 +534,7 @@ describe("TransferRunner.startClusterToCloud (multipart)", () => {
 
     const req = fileTransferReq(channel);
     // Resolve the storageKey by minting part URLs (the fake URL encodes the key).
-    const urls = await runner.mintPartUrlsFor("transfer-b", [1, 2]);
+    const urls = await runner.mintPartUrlsFor(fileTransferReq(channel).requestId, [1, 2]);
     const keyFromUrl = decodeURIComponent(
       new URL(urls[0]?.url ?? "").pathname.replace(/^\/part\//, ""),
     );
@@ -343,7 +544,7 @@ describe("TransferRunner.startClusterToCloud (multipart)", () => {
     const e2 = await backend.putUploadedPart(keyFromUrl, req.uploadId, 2, Buffer.from("BB"));
 
     // The agent reports terminal success with the per-part ETags.
-    const updated = transferRegistry.update("transfer-b", {
+    const updated = transferRegistry.update(fileTransferReq(channel).requestId, {
       copiedBytes: 6,
       state: "succeeded",
       sha256: createHash("sha256").update("AAAABB").digest("hex"),
@@ -381,12 +582,12 @@ describe("TransferRunner.startClusterToCloud (multipart)", () => {
     await runner.start(OWNER_ID, "transfer-authz", transferData, () => {});
 
     const req = fileTransferReq(channel);
-    const urls = await runner.mintPartUrlsFor("transfer-authz", [1]);
+    const urls = await runner.mintPartUrlsFor(fileTransferReq(channel).requestId, [1]);
     const keyFromUrl = decodeURIComponent(
       new URL(urls[0]?.url ?? "").pathname.replace(/^\/part\//, ""),
     );
     const part = await backend.putUploadedPart(keyFromUrl, req.uploadId, 1, Buffer.from("CCCC"));
-    const updated = transferRegistry.update("transfer-authz", {
+    const updated = transferRegistry.update(fileTransferReq(channel).requestId, {
       copiedBytes: 4,
       state: "succeeded",
       sha256: createHash("sha256").update("CCCC").digest("hex"),

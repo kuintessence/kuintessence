@@ -69,8 +69,15 @@ import {
   sql,
 } from "drizzle-orm";
 import type { CpScope } from "../middleware/cp-rbac";
+import {
+  defaultPolicyInput,
+  mergePolicyInputs,
+  normalizeInstallMode,
+  uniqueMirrors,
+  uniqueSorted,
+} from "../software-governance/effective-policy";
 import type { PolicyPusher } from "../software-governance/policy-pusher";
-import type { PolicyBundle, PolicyStore } from "../software-governance/policy-store";
+import type { PolicyStore } from "../software-governance/policy-store";
 import type { AgentManager } from "./agent-manager";
 import type {
   AgentsServicePort,
@@ -80,7 +87,6 @@ import type {
   CpSoftwareOverview,
   InstallMode,
   JobsServicePort,
-  MirrorInput,
   NetdriveServicePort,
   OrganizationDirectoryPort,
   PolicyOverlayInput,
@@ -354,7 +360,7 @@ function makeSoftwarePort(deps: CpBindingsDeps): SoftwareGovernancePort {
           input,
         });
       }
-      await syncLegacyPoliciesForProviders(deps, scope, providerOrgIds);
+      await pushProviderPolicies(deps, scope, providerOrgIds);
       return buildSoftwareOverview(deps, scope);
     },
     async saveClusterPolicy(scope, clusterId, input) {
@@ -383,7 +389,7 @@ function makeSoftwarePort(deps: CpBindingsDeps): SoftwareGovernancePort {
         });
       }
       for (const agent of targets) {
-        await syncLegacyPolicyForAgent(deps, agent);
+        await pushEffectivePolicy(deps, agent);
       }
       return buildSoftwareOverview(deps, scope);
     },
@@ -400,7 +406,7 @@ function makeSoftwarePort(deps: CpBindingsDeps): SoftwareGovernancePort {
         agentId,
         input,
       });
-      await syncLegacyPolicyForAgent(deps, agent);
+      await pushEffectivePolicy(deps, agent);
       return buildSoftwareOverview(deps, scope);
     },
     async setPolicy({ scope, cluster, list, specs }) {
@@ -409,8 +415,7 @@ function makeSoftwarePort(deps: CpBindingsDeps): SoftwareGovernancePort {
       );
       const currentOverview = await buildSoftwareOverview(deps, scope);
       const current = currentOverview.clusters.find((row) => row.cluster === cluster);
-      const effective =
-        current?.clusterPolicy ?? current?.agents[0]?.effectivePolicy ?? defaultPolicyInput();
+      const effective = current?.clusterPolicy ?? defaultPolicyInput();
       const input = {
         ...effective,
         allowList: list === "whitelist" ? specs : effective.allowList,
@@ -428,7 +433,7 @@ function makeSoftwarePort(deps: CpBindingsDeps): SoftwareGovernancePort {
         });
       }
       for (const agent of targets) {
-        await syncLegacyPolicyForAgent(deps, agent);
+        await pushEffectivePolicy(deps, agent);
       }
     },
     async reviewPreinstalledMapping(scope, input) {
@@ -461,7 +466,6 @@ function makeSoftwarePort(deps: CpBindingsDeps): SoftwareGovernancePort {
 type SoftwareScope = Pick<CpScope, "orgIds" | "isPlatformWide">;
 type AgentRow = typeof agentsTable.$inferSelect;
 type InstalledSoftwareRow = typeof agentInstalledSoftware.$inferSelect;
-type LegacyPolicyRow = typeof softwarePolicies.$inferSelect;
 type OverlayRow = typeof softwarePolicyOverlays.$inferSelect;
 type PreinstalledMappingRow = typeof preinstalledSoftwareMappings.$inferSelect;
 
@@ -480,9 +484,10 @@ async function buildSoftwareOverview(
   const { db } = deps;
   const agentRows = await loadScopedAgentRows(db, scope);
   const agentIds = agentRows.map((agent) => agent.agentId);
-  const providerOrgIds = uniqueSorted(
-    agentRows.flatMap((agent) => (agent.providerOrgId ? [agent.providerOrgId] : [])),
-  );
+  const providerOrgIds = uniqueSorted([
+    ...scope.orgIds,
+    ...agentRows.flatMap((agent) => (agent.providerOrgId ? [agent.providerOrgId] : [])),
+  ]);
 
   const [overlays, installedRows, mappingRows, legacyPolicies] = await Promise.all([
     loadPolicyOverlays(db, agentIds, providerOrgIds),
@@ -514,7 +519,10 @@ async function buildSoftwareOverview(
       (overlay) => overlay.scope === "provider" && overlay.providerOrgId === agent.providerOrgId,
     );
     const agentOverlay = overlays.find(
-      (overlay) => overlay.scope === "agent" && overlay.agentId === agent.agentId,
+      (overlay) =>
+        overlay.scope === "agent" &&
+        overlay.providerOrgId === agent.providerOrgId &&
+        overlay.agentId === agent.agentId,
     );
     const clusterOverlay = clusterOverlays.find(
       (overlay) =>
@@ -656,55 +664,59 @@ async function resolveProviderOrgIds(
 }
 
 async function upsertPolicyOverlay(db: PgDb, data: UpsertOverlayInput): Promise<void> {
-  const version = `v${Date.now()}`;
-  const existing = await db
-    .select({ id: softwarePolicyOverlays.id })
-    .from(softwarePolicyOverlays)
-    .where(
-      and(
-        eq(softwarePolicyOverlays.scope, data.scope),
-        data.providerOrgId
-          ? eq(softwarePolicyOverlays.providerOrgId, data.providerOrgId)
-          : isNull(softwarePolicyOverlays.providerOrgId),
-        data.clusterId
-          ? eq(softwarePolicyOverlays.clusterId, data.clusterId)
-          : isNull(softwarePolicyOverlays.clusterId),
-        data.agentId
-          ? eq(softwarePolicyOverlays.agentId, data.agentId)
-          : isNull(softwarePolicyOverlays.agentId),
-      ),
-    )
-    .limit(1);
-  const values = {
-    scope: data.scope,
-    providerOrgId: data.providerOrgId,
-    clusterId: data.clusterId,
-    agentId: data.agentId,
-    installMode: data.input.installMode,
-    allowList: uniqueSorted(data.input.allowList),
-    denyList: uniqueSorted(data.input.denyList),
-    lockEnabled: data.input.lockEnabled,
-    trustedPublicAutoInstall: data.input.trustedPublicAutoInstall,
-    usecaseDefaultAllow: data.input.usecaseDefaultAllow,
-    usecaseAllowList: uniqueSorted(data.input.usecaseAllowList),
-    usecaseDenyList: uniqueSorted(data.input.usecaseDenyList),
-    mirrors: uniqueMirrors(data.input.mirrors),
-    preinstallList: uniqueSorted(data.input.preinstallList),
-    version,
-    updatedAt: new Date(),
-  };
-  const existingId = existing[0]?.id;
-  if (existingId) {
-    await db
-      .update(softwarePolicyOverlays)
-      .set(values)
-      .where(eq(softwarePolicyOverlays.id, existingId));
-    return;
-  }
-  await db.insert(softwarePolicyOverlays).values(values);
+  return db.transaction(async (tx) => {
+    const key = JSON.stringify([data.scope, data.providerOrgId, data.clusterId, data.agentId]);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key},0))`);
+    const version = `v${crypto.randomUUID()}`;
+    const existing = await tx
+      .select({ id: softwarePolicyOverlays.id })
+      .from(softwarePolicyOverlays)
+      .where(
+        and(
+          eq(softwarePolicyOverlays.scope, data.scope),
+          data.providerOrgId
+            ? eq(softwarePolicyOverlays.providerOrgId, data.providerOrgId)
+            : isNull(softwarePolicyOverlays.providerOrgId),
+          data.clusterId
+            ? eq(softwarePolicyOverlays.clusterId, data.clusterId)
+            : isNull(softwarePolicyOverlays.clusterId),
+          data.agentId
+            ? eq(softwarePolicyOverlays.agentId, data.agentId)
+            : isNull(softwarePolicyOverlays.agentId),
+        ),
+      )
+      .limit(1);
+    const values = {
+      scope: data.scope,
+      providerOrgId: data.providerOrgId,
+      clusterId: data.clusterId,
+      agentId: data.agentId,
+      installMode: data.input.installMode,
+      allowList: uniqueSorted(data.input.allowList),
+      denyList: uniqueSorted(data.input.denyList),
+      lockEnabled: data.input.lockEnabled,
+      trustedPublicAutoInstall: data.input.trustedPublicAutoInstall,
+      usecaseDefaultAllow: data.input.usecaseDefaultAllow,
+      usecaseAllowList: uniqueSorted(data.input.usecaseAllowList),
+      usecaseDenyList: uniqueSorted(data.input.usecaseDenyList),
+      mirrors: uniqueMirrors(data.input.mirrors),
+      preinstallList: uniqueSorted(data.input.preinstallList),
+      version,
+      updatedAt: new Date(),
+    };
+    const existingId = existing[0]?.id;
+    if (existingId) {
+      await tx
+        .update(softwarePolicyOverlays)
+        .set(values)
+        .where(eq(softwarePolicyOverlays.id, existingId));
+      return;
+    }
+    await tx.insert(softwarePolicyOverlays).values(values);
+  });
 }
 
-async function syncLegacyPoliciesForProviders(
+async function pushProviderPolicies(
   deps: CpBindingsDeps,
   scope: SoftwareScope,
   providerOrgIds: string[],
@@ -713,33 +725,14 @@ async function syncLegacyPoliciesForProviders(
     (agent) => agent.providerOrgId && providerOrgIds.includes(agent.providerOrgId),
   );
   for (const agent of agents) {
-    await syncLegacyPolicyForAgent(deps, agent);
+    await pushEffectivePolicy(deps, agent);
   }
 }
 
-async function syncLegacyPolicyForAgent(deps: CpBindingsDeps, agent: AgentRow): Promise<void> {
-  const overview = await buildSoftwareOverview(deps, {
-    orgIds: agent.providerOrgId ? [agent.providerOrgId] : [],
-    isPlatformWide: agent.providerOrgId === null,
-  });
-  const view = overview.agents.find((item) => item.agentId === agent.agentId);
-  if (!view) return;
-  const bundle: PolicyBundle = {
-    allowList: view.effectivePolicy.allowList,
-    denyList: view.effectivePolicy.denyList,
-    lockEnabled: view.effectivePolicy.lockEnabled,
-    mirrors: view.effectivePolicy.mirrors,
-    preinstallList: view.effectivePolicy.preinstallList,
-  };
-  const stored = await deps.policyStore.upsertForAgent(agent.agentId, bundle);
-  deps.policyPusher?.pushToAgent(agent.agentId, {
-    version: stored.version,
-    allowList: stored.allowList,
-    denyList: stored.denyList,
-    lockEnabled: stored.lockEnabled,
-    mirrors: stored.mirrors,
-    preinstallList: stored.preinstallList,
-  });
+async function pushEffectivePolicy(deps: CpBindingsDeps, agent: AgentRow): Promise<void> {
+  if (!deps.policyPusher) return;
+  const policy = await deps.policyStore.effectiveForAgent(agent.agentId);
+  if (policy) deps.policyPusher.pushToAgent(agent.agentId, policy);
 }
 
 function overlayToView(row: OverlayRow): PolicyOverlayView {
@@ -763,118 +756,8 @@ function overlayToView(row: OverlayRow): PolicyOverlayView {
   };
 }
 
-function mergePolicyInputs(
-  provider: OverlayRow | undefined,
-  cluster: OverlayRow | undefined,
-  agent: OverlayRow | undefined,
-  legacy: LegacyPolicyRow | undefined,
-): PolicyOverlayInput {
-  const base = defaultPolicyInput();
-  return {
-    installMode: normalizeInstallMode(
-      agent?.installMode ?? cluster?.installMode ?? provider?.installMode ?? base.installMode,
-    ),
-    allowList: uniqueSorted([
-      ...(provider?.allowList ?? []),
-      ...(cluster?.allowList ?? []),
-      ...(legacy?.allowList ?? []),
-      ...(agent?.allowList ?? []),
-    ]),
-    denyList: uniqueSorted([
-      ...(provider?.denyList ?? []),
-      ...(cluster?.denyList ?? []),
-      ...(legacy?.denyList ?? []),
-      ...(agent?.denyList ?? []),
-    ]),
-    lockEnabled:
-      (provider?.lockEnabled ?? false) ||
-      (cluster?.lockEnabled ?? false) ||
-      (legacy?.lockEnabled ?? false) ||
-      (agent?.lockEnabled ?? false),
-    trustedPublicAutoInstall:
-      agent?.trustedPublicAutoInstall ??
-      cluster?.trustedPublicAutoInstall ??
-      provider?.trustedPublicAutoInstall ??
-      false,
-    usecaseDefaultAllow:
-      agent?.usecaseDefaultAllow ??
-      cluster?.usecaseDefaultAllow ??
-      provider?.usecaseDefaultAllow ??
-      true,
-    usecaseAllowList: uniqueSorted([
-      ...(provider?.usecaseAllowList ?? []),
-      ...(cluster?.usecaseAllowList ?? []),
-      ...(agent?.usecaseAllowList ?? []),
-    ]),
-    usecaseDenyList: uniqueSorted([
-      ...(provider?.usecaseDenyList ?? []),
-      ...(cluster?.usecaseDenyList ?? []),
-      ...(agent?.usecaseDenyList ?? []),
-    ]),
-    mirrors: uniqueMirrors([
-      ...(agent?.mirrors ?? []),
-      ...(legacy?.mirrors ?? []),
-      ...(cluster?.mirrors ?? []),
-      ...(provider?.mirrors ?? []),
-    ]),
-    preinstallList: uniqueSorted([
-      ...(agent?.preinstallList ?? []),
-      ...(legacy?.preinstallList ?? []),
-      ...(cluster?.preinstallList ?? []),
-      ...(provider?.preinstallList ?? []),
-    ]),
-  };
-}
-
-function defaultPolicyInput(): PolicyOverlayInput {
-  return {
-    installMode: "explicit-install-grant",
-    allowList: [],
-    denyList: [],
-    lockEnabled: false,
-    trustedPublicAutoInstall: false,
-    usecaseDefaultAllow: true,
-    usecaseAllowList: [],
-    usecaseDenyList: [],
-    mirrors: [],
-    preinstallList: [],
-  };
-}
-
-function normalizeInstallMode(value: string): InstallMode {
-  if (
-    value === "preinstalled-only" ||
-    value === "trusted-public-auto-install" ||
-    value === "explicit-install-grant"
-  ) {
-    return value;
-  }
-  return "explicit-install-grant";
-}
-
-function uniqueSorted(values: string[]): string[] {
-  return [
-    ...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)),
-  ].sort();
-}
-
 function uniqueInstallModes(values: InstallMode[]): InstallMode[] {
   return [...new Set(values)].sort();
-}
-
-function uniqueMirrors(mirrors: MirrorInput[]): MirrorInput[] {
-  const byName = new Map<string, MirrorInput>();
-  for (const mirror of mirrors) {
-    const name = mirror.name.trim();
-    const url = mirror.url.trim();
-    if (!name || !url || byName.has(name)) continue;
-    byName.set(name, {
-      name,
-      url,
-      ...(mirror.priority != null ? { priority: mirror.priority } : {}),
-    });
-  }
-  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function groupInstalledSoftwareByAgent(

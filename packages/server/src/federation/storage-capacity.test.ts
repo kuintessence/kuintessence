@@ -4,6 +4,7 @@ import { chmod, mkdtemp, readFile, rm, stat, statfs, symlink, writeFile } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  extendStorageHistory,
   FederationStorageGuard,
   loadStorageObserverKey,
   observeStorage,
@@ -290,4 +291,37 @@ test("an observer-declared released reserve blocks admission even before the pol
   await expect((await f.guard()).assertAdmission("bilateral_attested")).rejects.toThrow(
     "STORAGE_PRESSURE",
   );
+});
+
+test("signed rolling observations project byte pressure without changing admission", async () => {
+  const f = await fixture(),
+    guard = await f.guard();
+  const prior = {
+    ...f.report,
+    observedAt: new Date(now.getTime() - 60_000).toISOString(),
+    availableBytes: "241",
+  };
+  const current = extendStorageHistory(f.report, prior, 30);
+  await f.publish(current);
+  expect((await guard.inspect())[0]).toMatchObject({
+    state: "healthy",
+    forecast: { since: prior.observedAt, growthBytesPerDay: "172800", secondsToByteThreshold: "1" },
+  });
+  const projected = async (availableBytes: string) => {
+    await f.publish(extendStorageHistory({ ...f.report, availableBytes }, prior, 30));
+    return (await guard.inspect())[0]?.forecast;
+  };
+  expect(await projected("60")).toMatchObject({ secondsToByteThreshold: "0" });
+  expect(await projected("251")).toMatchObject({
+    secondsToByteThreshold: null,
+    growthBytesPerDay: "-14400",
+  });
+  for (const previous of [
+    { ...prior, device: "2" },
+    { ...prior, totalBytes: "2000" },
+    { ...prior, observedAt: new Date(now.getTime() - 360_001).toISOString() },
+  ]) {
+    await f.publish(extendStorageHistory(f.report, previous, 30));
+    expect((await guard.inspect())[0]?.forecast).toBeNull();
+  }
 });

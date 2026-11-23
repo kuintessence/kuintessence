@@ -75,7 +75,7 @@ $defs:
     required: [expr]
     properties:
       expr: { type: string }
-      lang: { type: string, default: cel }
+      lang: { const: cel, default: cel }
 
   IntOrExpr:
     oneOf:
@@ -124,9 +124,26 @@ $defs:
 
   Node_SoftwareUsecaseComputing:
     type: object
-    required: [type, usecaseVersionId, softwareVersionId]
+    required: [type]
+    oneOf:
+      - required: [usecaseVersionId, softwareVersionId]
+        not:
+          anyOf: [{ required: [usecaseRef] }, { required: [softwareRef] }]
+      - required: [usecaseRef, softwareRef]
+        not:
+          anyOf: [{ required: [usecaseVersionId] }, { required: [softwareVersionId] }]
     properties:
       type: { const: SoftwareUsecaseComputing }
+      hooks:
+        type: object
+        additionalProperties: false
+        minProperties: 1
+        properties:
+          pre: { $ref: "#/$defs/UsecaseHook" }
+          post: { $ref: "#/$defs/UsecaseHook" }
+      usecaseRef: { $ref: "#/$defs/AssetSelector" }
+      softwareRef: { $ref: "#/$defs/AssetSelector" }
+      frozenAssetRevisions: { $ref: "#/$defs/FrozenUsecaseAssetRevisions" }
       usecaseVersionId: { $ref: "#/$defs/Uuid" }
       softwareVersionId: { $ref: "#/$defs/Uuid" }
       schedulingStrategy: { $ref: "#/$defs/SchedulingStrategy" }
@@ -414,7 +431,7 @@ $defs:
     properties:
       descriptor: { type: string }
       from: { $ref: "#/$defs/NodeOutputRef" }
-      aggregate: { enum: [Collect, Concat, Reduce] }
+      aggregate: { enum: [Collect, Concat] }
 
   LoopCarry:
     type: object
@@ -472,11 +489,24 @@ $defs:
           columns: { type: array, minItems: 1, items: { $ref: "#/$defs/ReduceColumn" } }
       - type: object
         additionalProperties: false
-        required: [kind]
+        required: [kind, usecaseRef]
         properties:
           kind: { const: Command }
           usecaseRef: { $ref: "#/$defs/UsecaseRef" }
-          script: { $ref: "#/$defs/ScriptOriginKind" }
+          frozenAssetRevisions: { $ref: "#/$defs/FrozenUsecaseAssetRevisions" }
+      - type: object
+        additionalProperties: false
+        required: [kind, usecaseRef, softwareRef]
+        properties:
+          kind: { const: Command }
+          usecaseRef: { $ref: "#/$defs/AssetSelector" }
+          softwareRef: { $ref: "#/$defs/AssetSelector" }
+      - type: object
+        additionalProperties: false
+        required: [kind, script]
+        properties:
+          kind: { const: Command }
+          script: { $ref: "#/$defs/CommandScript" }
       - type: object
         additionalProperties: false
         required: [kind]
@@ -523,7 +553,7 @@ $defs:
     additionalProperties: false
     required: [kind, descriptor]
     properties:
-      kind: { enum: [SingleFile, OrderedFolder] }
+      kind: { enum: [Value, SingleFile, OrderedFolder] }
       descriptor: { type: string }
       fileName: { type: [string, "null"] }
 
@@ -777,10 +807,10 @@ $defs:
     additionalProperties: false
     properties:
       cpuCores: { type: [integer, "null"], minimum: 0 }
-      nodeCount: { type: [integer, "null"], minimum: 0 }
+      nodeCount: { type: [integer, "null"], minimum: 1, maximum: 2147483647 }
       maxWallTime: { type: [integer, "null"], minimum: 0 }
-      maxCpuTime: { type: [integer, "null"], minimum: 0 }
-      stopTime: { type: [integer, "null"], minimum: 0 }
+      maxCpuTime: { type: [integer, "null"], minimum: 1, maximum: 2147483647 }
+      stopTime: { type: [integer, "null"], minimum: 1, maximum: 253402300799 }
 
   FileInput:
     type: object
@@ -830,6 +860,23 @@ $defs:
   # ---------------------------------------------------------------------------
   # Script canonical source、runtime、身份与 I/O manifest
   # ---------------------------------------------------------------------------
+  FrozenUsecaseAssetRevisions:
+    type: object
+    additionalProperties: false
+    required: [usecase, software]
+    properties:
+      usecase: { $ref: "#/$defs/FrozenAssetRevision" }
+      software: { $ref: "#/$defs/FrozenAssetRevision" }
+
+  FrozenAssetRevision:
+    type: object
+    additionalProperties: false
+    required: [assetId, revisionId, revision]
+    properties:
+      assetId: { $ref: "#/$defs/Uuid" }
+      revisionId: { $ref: "#/$defs/Uuid" }
+      revision: { type: integer, minimum: 1 }
+
   AssetSelector:
     type: object
     additionalProperties: false
@@ -847,17 +894,37 @@ $defs:
         then:
           required: [providerOrgId]
 
+  UsecaseHook:
+    type: object
+    additionalProperties: false
+    properties:
+      source: { $ref: "#/$defs/AssetRevisionSource" }
+      runtimeProfileId: { $ref: "#/$defs/Uuid" }
+      scriptRef: { $ref: "#/$defs/AssetSelector" }
+      runtimeContractRef: { $ref: "#/$defs/SandboxRuntimeContractRef" }
+      executionIdentity: { $ref: "#/$defs/ExecutionIdentity" }
+      inputs: { $ref: "#/$defs/Node_Script/properties/inputs" }
+      outputs: { $ref: "#/$defs/Node_Script/properties/outputs" }
+    oneOf:
+      - required: [source, runtimeProfileId]
+        not: { anyOf: [{ required: [scriptRef] }, { required: [runtimeContractRef] }] }
+      - required: [scriptRef, runtimeContractRef]
+        not: { anyOf: [{ required: [source] }, { required: [runtimeProfileId] }] }
+
+  AssetRevisionSource:
+    type: object
+    additionalProperties: false
+    required: [type, assetId, revision, sha256]
+    properties:
+      type: { const: AssetRevision }
+      assetId: { $ref: "#/$defs/Uuid" }
+      assetRevisionId: { $ref: "#/$defs/Uuid" }
+      revision: { type: integer, minimum: 1 }
+      sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+
   ScriptSource:
     oneOf:
-      - type: object
-        additionalProperties: false
-        required: [type, assetId, revision, sha256]
-        properties:
-          type: { const: AssetRevision }
-          assetId: { $ref: "#/$defs/Uuid" }
-          assetRevisionId: { $ref: "#/$defs/Uuid" }
-          revision: { type: integer, minimum: 1 }
-          sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+      - { $ref: "#/$defs/AssetRevisionSource" }
       - type: object
         additionalProperties: false
         required: [type, language, content]
@@ -913,7 +980,17 @@ $defs:
     properties:
       type: { $ref: "#/$defs/ScriptIoType" }
       required: { type: boolean, default: true }
-      validator: true
+      validator:
+        oneOf:
+          - { type: "null" }
+          - type: object
+            required: [kind]
+            properties: { kind: { const: finite } }
+            additionalProperties: false
+          - type: object
+            required: [kind, expr]
+            properties: { kind: { const: cel }, expr: { type: string, minLength: 1, maxLength: 4096 } }
+            additionalProperties: false
       locality:
         $ref: "#/$defs/OutputLocality"
         default: { type: Auto }
@@ -982,21 +1059,24 @@ $defs:
       clusterIds: { type: array, items: { type: string, minLength: 1 }, default: [] }
       dataMovement: { enum: [Allow, Forbid], default: Allow }
 
-  # 仅供 Reduce.Command.script 使用，与当前 reduce.ts 契约一致；该 reducer 尚未接入执行。
-  ScriptOriginKind:
-    oneOf:
-      - type: object
-        additionalProperties: false
-        required: [type, url]
-        properties:
-          type: { const: Git }
-          url: { type: string }
-      - type: object
-        additionalProperties: false
-        required: [type, content]
-        properties:
-          type: { const: Edit }
-          content: { type: string }
+  CommandScript:
+    type: object
+    additionalProperties: false
+    properties:
+      source: { $ref: "#/$defs/ScriptSource" }
+      scriptRef: { $ref: "#/$defs/AssetSelector" }
+      runtimeProfileId: { $ref: "#/$defs/Uuid" }
+      runtimeContractRef: { $ref: "#/$defs/SandboxRuntimeContractRef" }
+      executionIdentity: { $ref: "#/$defs/ExecutionIdentity" }
+    allOf:
+      - oneOf:
+          - required: [source]
+          - required: [scriptRef]
+      - if: { required: [scriptRef] }
+        then: { required: [runtimeContractRef] }
+      - oneOf:
+          - required: [runtimeProfileId]
+          - required: [runtimeContractRef]
 
   Slug:
     type: string

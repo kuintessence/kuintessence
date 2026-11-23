@@ -17,10 +17,12 @@ import {
   SPACK_LOCK_MAX_BYTES,
   type SpackLockReport,
   type SpackMaterialBinding,
+  SpackMaterialBindingSchema,
   type SpackMaterialBlob,
   SpackMaterialBlobSchema,
   type SpackMaterialCatalogQuery,
   SpackMaterialDigestSchema,
+  type SpackMaterialImportStatus,
   type SpackMaterialManagementQuery,
   SpackMaterialManagementQuerySchema,
   type SpackMaterialManifest,
@@ -36,9 +38,21 @@ import { RecipeStoreError } from "./recipe-git";
 import type { RecipeGitStore } from "./recipe-git-store";
 import { SpackMaterialCatalogReader } from "./spack-material-catalog";
 import {
+  collectMaterialBlobs,
+  materialManifests,
+  releaseMaterialMetadata,
+  withMaterialStorageLock,
+} from "./spack-material-collection";
+import {
   SpackMaterialManagementCatalogReader,
   SpackMaterialManagementLimitError,
 } from "./spack-material-management-catalog";
+import { invalidateMaterialNameIndex } from "./spack-material-name-index";
+import {
+  collectMaterialPartials,
+  type MaterialUploadChunk,
+  resumeMaterialPartial,
+} from "./spack-material-partials";
 import {
   cancelMaterialInput,
   DEFAULT_MATERIAL_TIMEOUTS,
@@ -71,7 +85,7 @@ export type SpackMaterialLifecyclePort = Pick<
   SpackMaterialLifecycle,
   "assertAvailable" | "inspect" | "transition"
 > &
-  Partial<Pick<SpackMaterialLifecycle, "inspectCatalog">>;
+  Partial<Pick<SpackMaterialLifecycle, "inspectCatalog" | "purgeWithdrawn">>;
 type ManagementSnapshot = Awaited<ReturnType<RecipeGitStore["getSnapshot"]>>;
 export interface SpackMaterialLimits {
   maxBlobBytes: number;
@@ -263,10 +277,50 @@ export class SpackMaterialStore {
     await this.assertRuntime(input);
     const id = SpackMaterialStore.repositoryId(repository);
     parseMaterial(SpackMaterialDigestSchema, digest, "material digest");
-    const blob = await this.putBlob(input, digest);
-    await this.assertRuntime(input);
-    await writeMaterialMetadata(this.receiptPath(id, digest), encode(blob));
-    return blob;
+    return this.putBlob(input, digest, undefined, async (blob) => {
+      await this.assertRuntime(input);
+      await writeMaterialMetadata(this.receiptPath(id, digest), encode(blob));
+    });
+  }
+
+  async resumeUpload(
+    repository: string,
+    subject: string,
+    blob: SpackMaterialBlob,
+    chunk?: MaterialUploadChunk,
+  ) {
+    await this.assertRuntime(chunk?.input);
+    const id = SpackMaterialStore.repositoryId(repository);
+    const expected = parseMaterial(SpackMaterialBlobSchema, blob, "material blob");
+    if (this.uploads >= 4) throw new SpackMaterialError(429, "Too many material uploads");
+    this.uploads++;
+    try {
+      return await withMaterialStorageLock(this.root, false, async () => {
+        if (await this.hasReceipt(id, expected)) {
+          try {
+            await this.blobs.verify(expected.digest, expected.size);
+            return expected;
+          } catch (error) {
+            if (!(error instanceof SpackMaterialError && error.status === 404)) throw error;
+          }
+        }
+        return resumeMaterialPartial(
+          this.root,
+          subject,
+          repository,
+          expected,
+          chunk,
+          this.limits,
+          async (path) => {
+            await this.blobs.installPartial(path, expected, this.limits.totalTimeoutMs);
+            await this.assertRuntime();
+            await writeMaterialMetadata(this.receiptPath(id, expected.digest), encode(expected));
+          },
+        );
+      });
+    } finally {
+      this.uploads--;
+    }
   }
 
   async getUploadedBlob(repository: string, blob: SpackMaterialBlob) {
@@ -274,6 +328,77 @@ export class SpackMaterialStore {
     const parsed = SpackMaterialBlobSchema.parse(blob);
     await this.requireReceipt(SpackMaterialStore.repositoryId(repository), parsed);
     return this.blobs.get(parsed.digest, parsed.size);
+  }
+
+  private importReceiptPath(id: string, request: SpackMaterialPublish, subject: string) {
+    const key = materialDigest(encode([subject, request])).slice(7);
+    return join(this.root, "imports", id, `${key}.json`);
+  }
+
+  async importStatus(
+    input: SpackMaterialPublish,
+    actor: RbacPrincipal,
+    signal?: AbortSignal,
+  ): Promise<SpackMaterialImportStatus> {
+    await this.assertRuntime();
+    const request = this.parseRelease(input);
+    const id = SpackMaterialStore.repositoryId(request.repository);
+    assertReadable(actor, request.repository);
+    const checkpoint = () => signal?.throwIfAborted();
+    if (this.publications >= 4) throw new SpackMaterialError(429, "Too many material requests");
+    this.publications++;
+    try {
+      for (const selection of request.recipes) {
+        await this.checkRecipe(request.repository, selection, actor, checkpoint);
+      }
+      let receipt: Buffer | undefined;
+      try {
+        receipt = await readMaterialMetadata(this.importReceiptPath(id, request, actor.sub), {
+          checkpoint,
+        });
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+      }
+      if (receipt) {
+        const binding = SpackMaterialBindingSchema.parse(JSON.parse(receipt.toString("utf8")));
+        if (binding.repositoryId !== id)
+          throw new SpackMaterialError(500, "Invalid import receipt");
+        await this.assertReleaseAvailable(id, binding.manifestDigest);
+        // A crash can leave the intent just before its manifest was linked.
+        try {
+          const { manifest } = await this.readManifest(id, binding.manifestDigest, { checkpoint });
+          const published = SpackMaterialPublishSchema.parse({
+            ...manifest,
+            recipes: manifest.recipes.map(({ archive: _archive, ...recipe }) => recipe),
+          });
+          if (JSON.stringify(published) !== JSON.stringify(request))
+            throw new SpackMaterialError(500, "Import receipt does not match release");
+          return { state: "published", binding };
+        } catch (error) {
+          if (!(error instanceof SpackMaterialError && error.status === 404)) throw error;
+        }
+      }
+      const missing: string[] = [];
+      for (const blob of spackMaterialInputBlobs(request)) {
+        checkpoint();
+        if (!(await this.hasReceipt(id, blob))) {
+          missing.push(blob.digest);
+          continue;
+        }
+        // Opening checks the stored file and size; publication streams and hashes its content.
+        try {
+          const { stream } = await this.blobs.get(blob.digest, blob.size);
+          await stream.cancel();
+        } catch (error) {
+          if (!(error instanceof SpackMaterialError && error.status === 404)) throw error;
+          missing.push(blob.digest);
+        }
+      }
+      checkpoint();
+      return { state: "pending", missing };
+    } finally {
+      this.publications--;
+    }
   }
 
   async publish(
@@ -288,36 +413,46 @@ export class SpackMaterialStore {
     if (this.publications >= 4) throw new SpackMaterialError(429, "Too many material publications");
     this.publications += 1;
     try {
-      const report = await this.inspectReleaseLock(request, actor, signal);
-      signal?.throwIfAborted();
-      if (!report.valid) {
-        throw new SpackMaterialError(422, "Spack lock preflight failed", report);
-      }
-      const recipes: SpackMaterialManifest["recipes"] = [];
-      for (const selection of request.recipes) {
+      return await withMaterialStorageLock(this.root, false, async () => {
+        const report = await this.inspectReleaseLock(request, actor, signal);
         signal?.throwIfAborted();
-        const archive = await this.recipes.archive(selection.repositoryId, selection.commit);
-        if (signal?.aborted) {
-          cancelMaterialInput(archive.stream);
-          signal.throwIfAborted();
+        if (!report.valid) {
+          throw new SpackMaterialError(422, "Spack lock preflight failed", report);
         }
-        const blob = await this.putBlob(archive.stream, undefined, archive.size);
-        signal?.throwIfAborted();
-        recipes.push({ ...selection, archive: blob });
-      }
-      const manifest = parseMaterial(
-        SpackMaterialManifestSchema,
-        { ...request, recipes },
-        "material manifest",
-      );
-      const bytes = encode(manifest);
-      const manifestDigest = materialDigest(bytes);
-      await this.assertRuntime();
-      await writeMaterialMetadata(this.manifestPath(repositoryId, manifestDigest), bytes, signal);
-      // Re-import preserves immutable bytes and must never restore withdrawn state.
-      await this.assertReleaseAvailable(repositoryId, manifestDigest);
-      // Ingest returns only this content's binding; it neither grants reads nor resets policy.
-      return { repositoryId, manifestDigest };
+        const recipes: SpackMaterialManifest["recipes"] = [];
+        for (const selection of request.recipes) {
+          signal?.throwIfAborted();
+          const archive = await this.recipes.archive(selection.repositoryId, selection.commit);
+          if (signal?.aborted) {
+            cancelMaterialInput(archive.stream);
+            signal.throwIfAborted();
+          }
+          const blob = await this.putBlob(archive.stream, undefined, archive.size);
+          signal?.throwIfAborted();
+          recipes.push({ ...selection, archive: blob });
+        }
+        const manifest = parseMaterial(
+          SpackMaterialManifestSchema,
+          { ...request, recipes },
+          "material manifest",
+        );
+        const bytes = encode(manifest);
+        const manifestDigest = materialDigest(bytes);
+        await this.assertRuntime();
+        await this.assertReleaseAvailable(repositoryId, manifestDigest);
+        // Both files are immutable. A replay only completes once the manifest exists.
+        await writeMaterialMetadata(
+          this.importReceiptPath(repositoryId, request, actor.sub),
+          encode({ repositoryId, manifestDigest }),
+          signal,
+        );
+        await invalidateMaterialNameIndex(this.root, repositoryId);
+        await writeMaterialMetadata(this.manifestPath(repositoryId, manifestDigest), bytes, signal);
+        // Re-import preserves immutable bytes and must never restore withdrawn state.
+        await this.assertReleaseAvailable(repositoryId, manifestDigest);
+        // Ingest returns only this content's binding; it neither grants reads nor resets policy.
+        return { repositoryId, manifestDigest };
+      });
     } finally {
       this.publications -= 1;
     }
@@ -404,6 +539,59 @@ export class SpackMaterialStore {
     return { manifest: parsed.data, bytes: new Uint8Array(bytes) };
   }
 
+  async releaseReceipt(repository: string, digest: string) {
+    await this.assertRuntime();
+    const path = this.receiptPath(SpackMaterialStore.repositoryId(repository), digest);
+    await withMaterialStorageLock(this.root, true, () => releaseMaterialMetadata(path));
+  }
+
+  async purgeWithdrawn(id: string, digest: string, subject: string, expectedRevision: number) {
+    await this.assertRuntime();
+    const path = this.manifestPath(id, digest);
+    const lifecycle = this.lifecycle;
+    if (!lifecycle?.purgeWithdrawn)
+      throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_UNAVAILABLE");
+    const purge = lifecycle.purgeWithdrawn.bind(lifecycle);
+    await withMaterialStorageLock(this.root, true, () =>
+      purge({ repositoryId: id, manifestDigest: digest }, subject, expectedRevision, async () => {
+        await invalidateMaterialNameIndex(this.root, id);
+        await releaseMaterialMetadata(path);
+      }),
+    );
+  }
+
+  async withUnreferencedRecipe(id: string, commit: string, collect: () => Promise<void>) {
+    await this.assertRuntime();
+    await withMaterialStorageLock(this.root, true, async () => {
+      for await (const item of materialManifests(this.root)) {
+        const { manifest } = await this.readManifest(
+          item.group,
+          `sha256:${item.name.slice(0, -5)}`,
+        );
+        if (
+          manifest.recipes.some((recipe) => recipe.repositoryId === id && recipe.commit === commit)
+        )
+          throw new RecipeStoreError(
+            409,
+            "A material manifest still references this recipe snapshot",
+            "RECIPE_SNAPSHOT_IN_USE",
+          );
+      }
+      await collect();
+    });
+  }
+
+  async collect() {
+    await this.assertRuntime();
+    return withMaterialStorageLock(this.root, true, async () => {
+      const result = await collectMaterialBlobs(this.root, (id, digest) =>
+        this.readManifest(id, digest),
+      );
+      await collectMaterialPartials(this.root);
+      return result;
+    });
+  }
+
   async manageLifecycle(
     id: string,
     digest: string,
@@ -412,7 +600,9 @@ export class SpackMaterialStore {
     publisherRoles?: RegistryRole[],
     signal?: AbortSignal,
   ) {
-    if (!this.lifecycle || !this.recipes.getSnapshot || this.managementReads >= 2) {
+    const lifecycle = this.lifecycle;
+    const getSnapshot = this.recipes.getSnapshot?.bind(this.recipes);
+    if (!lifecycle || !getSnapshot || this.managementReads >= 2) {
       throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_UNAVAILABLE");
     }
     const binding = {
@@ -427,42 +617,47 @@ export class SpackMaterialStore {
     };
     this.managementReads++;
     try {
-      // Immutable metadata may be loaded before taking the global DB lock. At most
-      // 32 snapshots of 2 MiB each; pending disk I/O retains its admission slot.
-      const { manifest } = await this.readManifest(id, digest, { checkpoint });
-      const recipes = new Map<string, Awaited<ReturnType<RecipeGitStore["getSnapshot"]>>>();
-      for (const selection of manifest.recipes) {
-        checkpoint();
-        const key = `${selection.repositoryId}/${selection.commit}`;
-        if (!recipes.has(key)) {
-          recipes.set(
-            key,
-            await this.recipes.getSnapshot(selection.repositoryId, selection.commit, checkpoint),
-          );
-        }
-      }
-      // Only in-memory policy work runs under canonical user/membership row locks.
-      const authorize: Parameters<SpackMaterialLifecycle["inspect"]>[2] = async (principal) => {
-        checkpoint();
-        const actor = { ...principal, role: RegistryRoleSchema.parse(principal.role) };
-        const namespace = parseNamespace(manifest.repository);
-        checkNamespaceAccess(actor, namespace, "read", publisherRoles);
-        checkNamespaceAccess(actor, namespace, "write", publisherRoles);
+      const inspect = async () => {
+        // Immutable metadata may be loaded before taking the global DB lock. At most
+        // 32 snapshots of 2 MiB each; pending disk I/O retains its admission slot.
+        const { manifest } = await this.readManifest(id, digest, { checkpoint });
+        const recipes = new Map<string, Awaited<ReturnType<RecipeGitStore["getSnapshot"]>>>();
         for (const selection of manifest.recipes) {
-          const recipe = recipes.get(`${selection.repositoryId}/${selection.commit}`);
-          if (!recipe) throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_UNAVAILABLE");
-          authorizeRecipe(manifest.repository, selection, actor, {
-            repository: recipe.repository,
-            snapshots: [recipe.snapshot],
-          });
+          checkpoint();
+          const key = `${selection.repositoryId}/${selection.commit}`;
+          if (!recipes.has(key)) {
+            recipes.set(
+              key,
+              await getSnapshot(selection.repositoryId, selection.commit, checkpoint),
+            );
+          }
         }
+        // Only in-memory policy work runs under canonical user/membership row locks.
+        const authorize: Parameters<SpackMaterialLifecycle["inspect"]>[2] = async (principal) => {
+          checkpoint();
+          const actor = { ...principal, role: RegistryRoleSchema.parse(principal.role) };
+          const namespace = parseNamespace(manifest.repository);
+          checkNamespaceAccess(actor, namespace, "read", publisherRoles);
+          checkNamespaceAccess(actor, namespace, "write", publisherRoles);
+          for (const selection of manifest.recipes) {
+            const recipe = recipes.get(`${selection.repositoryId}/${selection.commit}`);
+            if (!recipe) throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_UNAVAILABLE");
+            authorizeRecipe(manifest.repository, selection, actor, {
+              repository: recipe.repository,
+              snapshots: [recipe.snapshot],
+            });
+          }
+          checkpoint();
+        };
         checkpoint();
+        const status = await (change
+          ? lifecycle.transition(binding, subject, change, authorize)
+          : lifecycle.inspect(binding, subject, authorize));
+        return { ...status, binding, repository: manifest.repository };
       };
-      checkpoint();
-      const status = await (change
-        ? this.lifecycle.transition(binding, subject, change, authorize)
-        : this.lifecycle.inspect(binding, subject, authorize));
-      return { ...status, binding, repository: manifest.repository };
+      return change?.action === "restore"
+        ? await withMaterialStorageLock(this.root, false, inspect)
+        : await inspect();
     } catch (error) {
       if (error instanceof SpackMaterialLifecycleError) throw error;
       if (
@@ -593,6 +788,7 @@ export class SpackMaterialStore {
     input: ReadableStream<Uint8Array>,
     digest?: string,
     size?: number,
+    recordReceipt?: (blob: SpackMaterialBlob) => Promise<void>,
   ): Promise<SpackMaterialBlob> {
     if (this.uploads >= 4 || (size !== undefined && size > this.limits.maxBlobBytes)) {
       cancelMaterialInput(input);
@@ -603,19 +799,21 @@ export class SpackMaterialStore {
     }
     this.uploads += 1;
     try {
-      return await this.blobs.put(
-        input,
-        { ...this.limits, maxBytes: this.limits.maxBlobBytes },
-        digest,
-        size,
-      );
+      const write = () =>
+        this.blobs.put(input, { ...this.limits, maxBytes: this.limits.maxBlobBytes }, digest, size);
+      if (!recordReceipt) return await write();
+      return await withMaterialStorageLock(this.root, false, async () => {
+        const blob = await write();
+        await recordReceipt(blob);
+        return blob;
+      });
     } finally {
       this.uploads -= 1;
       if (!input.locked) cancelMaterialInput(input);
     }
   }
 
-  private async requireReceipt(id: string, blob: SpackMaterialBlob): Promise<void> {
+  private async hasReceipt(id: string, blob: SpackMaterialBlob): Promise<boolean> {
     if (blob.size > this.limits.maxBlobBytes) {
       throw new SpackMaterialError(413, "Material exceeds the byte limit");
     }
@@ -628,13 +826,17 @@ export class SpackMaterialStore {
       if (receipt.digest !== blob.digest || receipt.size !== blob.size) {
         throw new SpackMaterialError(422, "Material receipt does not match the referenced blob");
       }
-      await this.blobs.verify(blob.digest, blob.size);
+      return true;
     } catch (error) {
-      if (isMissing(error)) {
-        throw new SpackMaterialError(422, "Material blob has not been uploaded to this repository");
-      }
+      if (isMissing(error)) return false;
       throw error;
     }
+  }
+
+  private async requireReceipt(id: string, blob: SpackMaterialBlob): Promise<void> {
+    if (!(await this.hasReceipt(id, blob)))
+      throw new SpackMaterialError(422, "Material blob has not been uploaded to this repository");
+    await this.blobs.verify(blob.digest, blob.size);
   }
 
   private receiptPath(id: string, digest: string): string {

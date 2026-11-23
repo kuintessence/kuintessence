@@ -1,5 +1,12 @@
-import { jobCleanupIntents, jobRevocationTombstones, type SqliteDb } from "@kuintessence/db";
+import {
+  jobCleanupIntents,
+  jobRevocationTombstones,
+  type SqliteDb,
+  sandboxPvcJobs,
+  sandboxPvcPreparations,
+} from "@kuintessence/db";
 import { asc, eq, sql } from "drizzle-orm";
+import type { SandboxPvcPreparation } from "../adapters/base";
 
 export interface DataDeliveryCleanupIntent {
   bindingId: string;
@@ -27,6 +34,52 @@ export interface JobCleanupIntent {
 
 export class JobCleanupIntents {
   constructor(private readonly db: SqliteDb) {}
+
+  async observePvcJob(jobId: string) {
+    await this.db.insert(sandboxPvcJobs).values({ jobId }).onConflictDoNothing();
+  }
+
+  async recordPvc(preparation: SandboxPvcPreparation) {
+    const [inserted] = await this.db
+      .insert(sandboxPvcPreparations)
+      .values(preparation)
+      .onConflictDoNothing()
+      .returning();
+    if (inserted) {
+      await this.observePvcJob(preparation.jobId);
+      return;
+    }
+    const row = await this.db
+      .select()
+      .from(sandboxPvcPreparations)
+      .where(eq(sandboxPvcPreparations.preparationId, preparation.preparationId))
+      .get();
+    if (
+      row?.jobId !== preparation.jobId ||
+      !row ||
+      JSON.stringify(row.binding) !== JSON.stringify(preparation.binding)
+    )
+      throw new Error("PVC preparation binding changed");
+  }
+
+  async releasePvcs(jobId: string, remove: (entry: SandboxPvcPreparation) => Promise<void>) {
+    const rows = await this.db
+      .select()
+      .from(sandboxPvcPreparations)
+      .where(eq(sandboxPvcPreparations.jobId, jobId));
+    for (const row of rows) {
+      await this.observePvcJob(jobId);
+      await remove(row);
+      await this.db
+        .delete(sandboxPvcPreparations)
+        .where(eq(sandboxPvcPreparations.preparationId, row.preparationId));
+    }
+    return !!(await this.db
+      .select({ jobId: sandboxPvcJobs.jobId })
+      .from(sandboxPvcJobs)
+      .where(eq(sandboxPvcJobs.jobId, jobId))
+      .get());
+  }
 
   async recordDataDelivery(jobId: string, delivery: DataDeliveryCleanupIntent): Promise<void> {
     await this.mutate(jobId, (current) => ({

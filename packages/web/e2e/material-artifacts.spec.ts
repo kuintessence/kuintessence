@@ -17,6 +17,7 @@ import {
   MeCapabilitiesSchema,
   RecipeBootstrapManifestSchema,
   RecipeRepositorySchema,
+  SPACK_MATERIAL_CHUNK_BYTES,
   type SpackMaterialBinding,
   SpackMaterialBindingSchema,
   SpackMaterialCatalogSchema,
@@ -257,7 +258,7 @@ test("real artifact import through the application", async ({ page }) => {
   page.on("request", (request) => {
     if (request.method() !== "POST") return;
     const path = new URL(request.url()).pathname;
-    if (path === `${materialApi}/blobs`) writes.blobs++;
+    if (path === `${materialApi}/blobs` || path === `${materialApi}/blob-uploads`) writes.blobs++;
     if (path === `${materialApi}/releases`) writes.releases++;
   });
 
@@ -378,12 +379,20 @@ test("real artifact import through the application", async ({ page }) => {
         const before = { ...writes };
         await selectMaterialPack(page, join(fixture.materialPack, "manifest.json"), directory);
         const panel = page.getByTestId("spack-materials-panel");
-        await expect(
-          panel.getByRole("alert").filter({ hasText: materialLabels.invalidFiles }),
-        ).toBeVisible();
-        await expect(
-          panel.getByRole("button", { name: materialLabels.import, exact: true }),
-        ).toBeDisabled();
+        const submit = panel.getByRole("button", { name: materialLabels.import, exact: true });
+        const alert = panel.getByRole("alert");
+        if (kind === "missing-file") {
+          // A partial pack is valid when the repository already holds the omitted blobs.
+          await submit.click();
+          const omitted = fixture.pack.files[0];
+          assert(omitted);
+          await expect(alert).toHaveText(
+            materialLabels.missingFiles.replace("{{paths}}", omitted.path),
+          );
+        } else {
+          await expect(alert.filter({ hasText: materialLabels.invalidFiles })).toBeVisible();
+          await expect(submit).toBeDisabled();
+        }
         await assertEmpty(page, fixture.release.repository);
         assert.deepEqual(writes, before);
       });
@@ -409,7 +418,12 @@ test("real artifact import through the application", async ({ page }) => {
         await expect(
           panel.getByRole("status").filter({ hasText: "1 published, 0 failed, 0 unconfirmed" }),
         ).toBeVisible();
-        assert.equal(writes.blobs, fixture.pack.files.length);
+        const expectedUploads = fixture.pack.files.reduce((count, { blob }) => {
+          if (blob.size <= SPACK_MATERIAL_CHUNK_BYTES) return count + 1;
+          // A fresh chunked upload opens the session, then sends one request per chunk.
+          return count + 1 + Math.ceil(blob.size / SPACK_MATERIAL_CHUNK_BYTES);
+        }, 0);
+        assert.equal(writes.blobs, expectedUploads);
         assert.equal(writes.releases, 1);
       });
       const published = await stage("material-catalog-binding", async () => {
