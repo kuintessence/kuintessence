@@ -610,6 +610,13 @@
       "when": 1795240398075,
       "tag": "0086_site_runtime_assets",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1795397493167,
+      "tag": "0087_spack_repository_binding",
+      "breakpoints": true
     }
   ]
 }

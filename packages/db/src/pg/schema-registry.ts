@@ -214,9 +214,7 @@ export const ociUploadSession = pgTable("oci_upload_session", {
 });
 
 /**
- * Spack buildcache index row. `(hash, arch)` is the natural key — the
- * same Spack DAG hash can produce different binaries per arch, so both
- * fields are needed.
+ * A Spack DAG hash belongs to one entry within a namespaced repository.
  */
 export const spackPackage = pgTable(
   "spack_package",
@@ -224,7 +222,7 @@ export const spackPackage = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     namespaceKind: varchar("namespace_kind", { length: 16 }).notNull(),
     namespaceOwner: uuid("namespace_owner"),
-    repositoryName: text("repository_name"),
+    repositoryName: text("repository_name").notNull(),
     spec: varchar("spec", { length: 500 }).notNull(),
     /** Spack 32-char DAG hash. */
     hash: varchar("hash", { length: 64 }).notNull(),

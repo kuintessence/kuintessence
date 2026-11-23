@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseNamespace } from "@kuintessence/shared/registry-namespace";
 import postgres from "postgres";
 import {
   applyDataMarket0043StagePathBackfill,
@@ -23,6 +24,7 @@ export interface PgMigrationFile {
 }
 
 export interface PgMigrationTransaction extends DataMarket0043UpgradePort {
+  bindSpackRepositories(): Promise<void>;
   acquireMigrationLock(): Promise<void>;
   ensureMigrationJournal(): Promise<void>;
   getLatestAppliedMigrationMillis(): Promise<number | null>;
@@ -98,6 +100,8 @@ export async function runPgMigrations(
       ) {
         await runAuthorizationSubjects0047Migration(transaction, migration);
       } else {
+        if (migration.tag === "0087_spack_repository_binding")
+          await transaction.bindSpackRepositories();
         await executeMigration(transaction, migration);
       }
     }
@@ -229,6 +233,43 @@ function isMigrationJournal(value: unknown): value is MigrationJournal {
 
 class PostgresMigrationTransaction implements PgMigrationTransaction {
   constructor(private readonly sql: postgres.TransactionSql) {}
+
+  async bindSpackRepositories(): Promise<void> {
+    await this.sql`LOCK TABLE spack_package IN SHARE ROW EXCLUSIVE MODE`;
+    const rows = await this.sql<
+      { id: string; namespace_kind: string; namespace_owner: string | null }[]
+    >`
+      SELECT id, namespace_kind, namespace_owner FROM spack_package WHERE repository_name IS NULL ORDER BY id`;
+    if (!rows.length) return;
+    const path = process.env.SPACK_REPOSITORY_BINDINGS_FILE;
+    if (!path)
+      throw new Error(
+        `Set SPACK_REPOSITORY_BINDINGS_FILE to map ${rows.length} unassigned spack_package rows by id`,
+      );
+    const bindings: unknown = JSON.parse(await readFile(path, "utf8"));
+    if (
+      !bindings ||
+      typeof bindings !== "object" ||
+      Array.isArray(bindings) ||
+      Object.keys(bindings).length !== rows.length
+    )
+      throw new Error("Expected exactly one repository path per unassigned spack_package id");
+    for (const row of rows) {
+      const value: unknown = (bindings as Record<string, unknown>)[row.id];
+      if (typeof value !== "string")
+        throw new Error(`Missing repository path for spack_package ${row.id}`);
+      const ns = parseNamespace(value);
+      const prefix = ns.kind === "public" ? "public" : `${ns.kind}/${ns.owner}`;
+      if (
+        ns.kind !== row.namespace_kind ||
+        ns.owner !== row.namespace_owner ||
+        value !== `${prefix}/${ns.name}`
+      )
+        throw new Error(`Invalid repository binding for spack_package ${row.id}`);
+      await this.sql`UPDATE spack_package SET repository_name = ${ns.name},
+        manifest_url = nullif(manifest_url, buildcache_url) WHERE id = ${row.id}`;
+    }
+  }
 
   async acquireMigrationLock(): Promise<void> {
     await this.sql`SELECT pg_advisory_xact_lock(hashtext('kuintessence:pg-migrations'))`;

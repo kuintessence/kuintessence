@@ -97,6 +97,8 @@ seed/
 
 `metadata` 上限为 2 MiB。原生 JSON 的 `spec.nodes[0]` 须含 `name`、`version`、`hash`、`arch`，`binary_cache_checksum` 须声明 SHA-256 和对应归档的摘要。导入结束后可通过 `/buildcache/<repository>/index.json` 检查索引，通过同仓库 `build_cache/<name>-<hash>.spack` 和 `.spec.json` 读取文件。
 
+升级时，如果已有 Spack 缓存缺少仓库归属，迁移会整体回滚并提示设置 `SPACK_REPOSITORY_BINDINGS_FILE`。运维人员可查询 `spack_package` 的 `id, namespace_kind, namespace_owner, spec, hash`，按发布记录确认每一行的目标仓库。将 JSON 文件挂载到迁移进程并把该变量指向文件，例如 `{"00000000-0000-4000-8000-000000000001":"public/science"}`。重跑迁移后，索引和下载只在所指定的仓库可见。目标路径必须与原命名空间及所有者一致；缺项、冲突或跨命名空间的映射都会中止迁移。归档没有独立 spec 时，可通过同一 buildcache 接口补传原生元数据。
+
 若接收端要求签名，用上文的合同检查命令校验手工清单，再签名到单独的输出文件。
 
 ```sh
