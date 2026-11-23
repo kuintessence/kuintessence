@@ -4,7 +4,10 @@ import { eq } from "drizzle-orm";
 import { enqueueNotification, NotificationService } from "./notifications";
 
 describe("notification channels", () => {
-  const db = createPgDb(process.env.DATABASE_URL ?? "postgres://kq:kq@localhost:5432/kuintessence");
+  const db = createPgDb(
+    process.env.DATABASE_URL ?? "postgres://kq:kq@localhost:5432/kuintessence",
+    { max: 2 },
+  );
   const id = crypto.randomUUID();
   const inboxEvent = {
     userId: id,
@@ -60,10 +63,10 @@ describe("notification channels", () => {
     await service.read(id, notice.id);
     expect((await service.inbox(id, 0))[0]?.readAt).toBeInstanceOf(Date);
     const now = new Date(Date.now() + 1000);
-    await Promise.all([service.deliverDue(now), service.deliverDue(now)]);
+    await Promise.all([service.deliverDue(() => now), service.deliverDue(() => now)]);
     expect(emails).toEqual([notice.id]);
     expect(deliveries).toEqual([notice.id]);
-    await service.deliverDue(new Date(now.getTime() + 60_000));
+    await service.deliverDue(() => new Date(now.getTime() + 60_000));
     expect(deliveries).toEqual([notice.id, notice.id]);
     expect(emails).toHaveLength(1);
     const rows = await db
@@ -74,11 +77,46 @@ describe("notification channels", () => {
     await db.transaction((tx) =>
       enqueueNotification(tx, { ...inboxEvent, eventKey: "restricted" }, { inboxOnly: true }),
     );
-    await service.deliverDue(new Date(now.getTime() + 120_000));
+    await service.deliverDue(() => new Date(now.getTime() + 120_000));
     expect(await db.select().from(notifications).where(eq(notifications.userId, id))).toHaveLength(
       2,
     );
     expect(deliveries).toHaveLength(2);
+  });
+  test("a second server skips an in-flight send even after five minutes", async () => {
+    let now = Date.now() + 1000;
+    const clock = () => new Date(now);
+    const received: string[] = [];
+    const webhook = { send: async () => ({ ok: true, attempts: 1 }) };
+    const second = new NotificationService(db, webhook, async (_to, notice) => {
+      received.push(notice.id);
+    });
+    const first = new NotificationService(db, webhook, async (_to, notice) => {
+      received.push(notice.id);
+      const [claim] = await db
+        .select()
+        .from(notificationDeliveries)
+        .where(eq(notificationDeliveries.notificationId, notice.id));
+      expect(claim?.attempts).toBe(1);
+      expect(claim?.nextAttemptAt?.getTime()).toBe(now + 5 * 60_000);
+      now += 6 * 60_000;
+      // Let another worker poll while this receiver is still processing the same email.
+      await second.deliverDue(clock);
+    });
+    await first.configure(id, { emailEnabled: true, webhookUrl: null });
+    await db.transaction((tx) =>
+      enqueueNotification(tx, { ...inboxEvent, eventKey: "slow-delivery" }),
+    );
+    await first.deliverDue(clock);
+    expect(received).toHaveLength(1);
+    const [deliveryId] = received;
+    if (!deliveryId) throw new Error("Missing email");
+    const [result] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.notificationId, deliveryId));
+    expect(result?.deliveredAt?.getTime()).toBe(now);
+    expect(result?.attempts).toBe(1);
   });
   test("a disabled channel and a replaced webhook do not receive old retries", async () => {
     const sent: string[] = [];
@@ -107,20 +145,20 @@ describe("notification channels", () => {
       enqueueNotification(tx, { ...inboxEvent, eventKey: "retry-before-switch" }),
     );
     const now = Date.now() + 1000;
-    await service.deliverDue(new Date(now));
+    await service.deliverDue(() => new Date(now));
     expect(sent).toEqual([old]);
     await service.configure(id, {
       emailEnabled: false,
       webhookUrl: replacement,
       webhookSecret: "test-replacement-secret",
     });
-    await service.deliverDue(new Date(now + 60_000));
+    await service.deliverDue(() => new Date(now + 60_000));
     expect(sent).toEqual([old]);
     expect(mailAttempts).toBe(1);
     await db.transaction((tx) =>
       enqueueNotification(tx, { ...inboxEvent, eventKey: "after-switch" }),
     );
-    await service.deliverDue(new Date(now + 65_000));
+    await service.deliverDue(() => new Date(now + 65_000));
     expect(sent).toEqual([old, replacement]);
     expect(mailAttempts).toBe(1);
   });

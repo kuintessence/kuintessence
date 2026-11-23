@@ -131,13 +131,13 @@ export class NotificationService {
     });
   }
 
-  async deliverDue(now = new Date()) {
+  async deliverDue(now: () => Date = () => new Date()) {
     for (let i = 0; i < 25; i++) {
-      const claimed = await this.db.transaction(async (tx) => {
+      const claim = await this.db.transaction(async (tx) => {
         const [pending] = await tx
           .select()
           .from(notificationDeliveries)
-          .where(lte(notificationDeliveries.nextAttemptAt, now))
+          .where(lte(notificationDeliveries.nextAttemptAt, now()))
           .orderBy(asc(notificationDeliveries.nextAttemptAt))
           .limit(1)
           .for("update", { skipLocked: true });
@@ -147,10 +147,16 @@ export class NotificationService {
           eq(notificationDeliveries.notificationId, pending.notificationId),
           eq(notificationDeliveries.channel, pending.channel),
         );
+        // Persist the attempt before sending so a crash preserves its retry delay and count.
         await tx
           .update(notificationDeliveries)
-          .set({ attempts, nextAttemptAt: new Date(now.getTime() + 5 * 60_000) })
+          .set({ attempts, nextAttemptAt: new Date(now().getTime() + 5 * 60_000) })
           .where(key);
+        return { key, attempts, channel: pending.channel };
+      });
+      if (!claim) break;
+      const { key, attempts, channel } = claim;
+      await this.db.transaction(async (tx) => {
         const [item] = await tx
           .select({
             notice: notifications,
@@ -158,38 +164,36 @@ export class NotificationService {
             suspended: users.suspended,
             preferences: notificationPreferences,
           })
-          .from(notifications)
+          .from(notificationDeliveries)
+          .innerJoin(notifications, eq(notifications.id, notificationDeliveries.notificationId))
           .innerJoin(users, eq(users.id, notifications.userId))
           .leftJoin(notificationPreferences, eq(notificationPreferences.userId, users.id))
-          .where(eq(notifications.id, pending.notificationId));
-        return { attempts, key, channel: pending.channel, item };
-      });
-      if (!claimed) break;
-      const { attempts, key, channel, item } = claimed;
-      let deliveredAt: Date | null = null;
-      let nextAttemptAt: Date | null = null;
-      if (attempts <= 12 && item && !item.suspended && item.preferences) {
-        try {
-          if (await this.send(channel, item.notice, item.recipient, item.preferences))
-            deliveredAt = now;
-        } catch {
-          if (attempts < 12)
-            nextAttemptAt = new Date(
-              now.getTime() + Math.min(3_600_000, 30_000 * 2 ** (attempts - 1)),
-            );
+          .where(
+            and(
+              key,
+              eq(notificationDeliveries.attempts, attempts),
+              isNotNull(notificationDeliveries.nextAttemptAt),
+            ),
+          )
+          .for("update", { of: notificationDeliveries });
+        // A cancellation or a newer claim may have won before this transaction started.
+        if (!item) return;
+        let deliveredAt: Date | null = null;
+        let nextAttemptAt: Date | null = null;
+        if (attempts <= 12 && !item.suspended && item.preferences) {
+          try {
+            if (await this.send(channel, item.notice, item.recipient, item.preferences))
+              deliveredAt = now();
+          } catch {
+            if (attempts < 12)
+              nextAttemptAt = new Date(
+                now().getTime() + Math.min(3_600_000, 30_000 * 2 ** (attempts - 1)),
+              );
+          }
         }
-      }
-      // Fence a late worker after a lease expires or the recipient cancels pending deliveries.
-      await this.db
-        .update(notificationDeliveries)
-        .set({ deliveredAt, nextAttemptAt })
-        .where(
-          and(
-            key,
-            eq(notificationDeliveries.attempts, attempts),
-            isNotNull(notificationDeliveries.nextAttemptAt),
-          ),
-        );
+        // Keep this one row locked through the send so even a slow recipient has only one sender.
+        await tx.update(notificationDeliveries).set({ deliveredAt, nextAttemptAt }).where(key);
+      });
     }
   }
 
