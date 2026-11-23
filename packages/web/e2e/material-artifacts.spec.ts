@@ -17,6 +17,7 @@ import {
   MeCapabilitiesSchema,
   RecipeBootstrapManifestSchema,
   RecipeRepositorySchema,
+  SPACK_MATERIAL_CHUNK_BYTES,
   type SpackMaterialBinding,
   SpackMaterialBindingSchema,
   SpackMaterialCatalogSchema,
@@ -257,7 +258,7 @@ test("real artifact import through the application", async ({ page }) => {
   page.on("request", (request) => {
     if (request.method() !== "POST") return;
     const path = new URL(request.url()).pathname;
-    if (path === `${materialApi}/blobs`) writes.blobs++;
+    if (path === `${materialApi}/blobs` || path === `${materialApi}/blob-uploads`) writes.blobs++;
     if (path === `${materialApi}/releases`) writes.releases++;
   });
 
@@ -417,7 +418,12 @@ test("real artifact import through the application", async ({ page }) => {
         await expect(
           panel.getByRole("status").filter({ hasText: "1 published, 0 failed, 0 unconfirmed" }),
         ).toBeVisible();
-        assert.equal(writes.blobs, fixture.pack.files.length);
+        const expectedUploads = fixture.pack.files.reduce((count, { blob }) => {
+          if (blob.size <= SPACK_MATERIAL_CHUNK_BYTES) return count + 1;
+          // A fresh chunked upload opens the session, then sends one request per chunk.
+          return count + 1 + Math.ceil(blob.size / SPACK_MATERIAL_CHUNK_BYTES);
+        }, 0);
+        assert.equal(writes.blobs, expectedUploads);
         assert.equal(writes.releases, 1);
       });
       const published = await stage("material-catalog-binding", async () => {

@@ -75,7 +75,7 @@ describe("LocalBackend × SlurmAdapter (full local stack)", () => {
       "tail",
       "scancel",
     ]);
-    expect(calls[1]?.slice(0, 3)).toEqual(["squeue", "--user", "1000"]);
+    expect(calls[1]?.slice(0, 4)).toEqual(["squeue", "--array", "--user", "1000"]);
   });
 
   test("surfaces node + start time in the job detail through the real adapter", async () => {
