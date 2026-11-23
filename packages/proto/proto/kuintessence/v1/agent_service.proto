@@ -1130,6 +1130,8 @@ message FileTransferRequest {
   // Server-authorized content identity for resumable cloud_to_cluster downloads.
   // Empty only for legacy senders; total_bytes is authoritative when present.
   string expected_sha256 = 11;
+  // Stable checkpoint identity across distinct request_id attempts.
+  string transfer_id = 12;
 }
 
 // Server→Agent cooperative cancellation for an in-flight FileTransferRequest.
@@ -1140,7 +1142,8 @@ message FileTransferCancel {
 
 // Multi-shot progress event. Server treats `state="running"` updates as
 // in-flight byte counters, and `state in {"succeeded","failed"}` as
-// terminal events that release the registry entry.
+// terminal events that release the registry entry. A "cancelled" acknowledgement
+// identifies the stopped request after Agent cleanup.
 // `sha256` is set on cluster_to_cloud success so the Server can persist a
 // netdrive_files row without a separate hash pass.
 // `parts` is set on a multipart cluster_to_cloud success so the Server can call

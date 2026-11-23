@@ -28,8 +28,12 @@ export interface OutputTransferRecord {
 
 export interface OutputTransferStore {
   ensure(input: OutputTransferInput): Promise<OutputTransferRecord | undefined>;
-  activate(input: OutputTransferInput, previousState: "queued" | "failed"): Promise<boolean>;
-  finish(input: OutputTransferInput, event: TransferProgressEvent): Promise<boolean>;
+  activate(input: OutputTransferInput, previousState: "queued" | "failed"): Promise<Date | false>;
+  finish(
+    input: OutputTransferInput,
+    event: TransferProgressEvent,
+    startedAt: Date,
+  ): Promise<boolean>;
 }
 
 export interface OutputTransferRunner {
@@ -38,13 +42,26 @@ export interface OutputTransferRunner {
     transferId: string,
     data: TransferCreate,
     onProgress: (event: TransferProgressEvent) => void,
+    completionOnly?: boolean,
+    onCancelled?: () => void,
   ): Promise<void>;
 }
 
 /** A separate UUID namespace prevents an artifact ID from also naming its transfer. */
-export function sandboxArtifactTransferId(artifactId: string, replicaId: string): string {
+export function sandboxArtifactTransferId(
+  artifactId: string,
+  replicaId: string,
+  member?: string,
+): string {
   const bytes = createHash("sha256")
-    .update(JSON.stringify(["kq-sandbox-transfer-v1", artifactId, replicaId]))
+    .update(
+      JSON.stringify([
+        "kq-sandbox-transfer-v1",
+        artifactId,
+        replicaId,
+        ...(member === undefined ? [] : [member]),
+      ]),
+    )
     .digest()
     .subarray(0, 16);
   bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x80;
@@ -75,13 +92,10 @@ export async function waitForOutputTransfer(
     throw new Error("Workflow output transfer cancelled or binding changed");
   signal?.throwIfAborted();
   if (saved.state === "succeeded") return saved.netdriveFileIds;
-  if (saved.state === "queued" || saved.state === "failed") {
-    if (!(await deps.store.activate(input, saved.state)))
-      throw new Error("Workflow output transfer changed before dispatch");
-  } else if (saved.state !== "running") {
-    throw new Error("Workflow output transfer state unavailable");
-  }
-  signal?.throwIfAborted();
+  if (saved.state !== "queued" && saved.state !== "failed")
+    throw new Error("Workflow output transfer already in progress");
+  const startedAt = await deps.store.activate(input, saved.state);
+  if (!startedAt) throw new Error("Workflow output transfer changed before dispatch");
   return new Promise<string[]>((resolve, reject) => {
     let settled = false;
     let terminalStarted = false;
@@ -94,7 +108,23 @@ export async function waitForOutputTransfer(
     };
     const aborted = () => finish(new Error("Workflow publication wait interrupted"));
     signal?.addEventListener("abort", aborted, { once: true });
-    if (signal?.aborted) return aborted();
+    // A caller may stop waiting while the Agent still owns an upload. Persist its eventual receipt.
+    const terminal = (event: TransferProgressEvent) => {
+      if (terminalStarted || event.state === "running") return;
+      terminalStarted = true;
+      void deps.store.finish(input, event, startedAt).then(
+        (saved) => {
+          if (!saved) finish(new Error("Workflow transfer was cancelled or already finalized"));
+          else if (event.state === "succeeded") finish(undefined, event.netdriveFileIds ?? []);
+          else finish(new Error(event.error || "Workflow output transfer failed"));
+        },
+        (error: unknown) => finish(error),
+      );
+    };
+    if (signal?.aborted) {
+      terminal({ state: "failed", copiedBytes: 0, error: "Workflow publication wait interrupted" });
+      return;
+    }
     void deps.runner
       .start(
         input.ownerId,
@@ -108,19 +138,16 @@ export async function waitForOutputTransfer(
           ...(input.workflowRunId ? { workflowRunId: input.workflowRunId } : {}),
           ...(input.totalBytes !== undefined ? { totalBytes: input.totalBytes } : {}),
         },
-        (event) => {
-          if (settled || terminalStarted || event.state === "running") return;
-          terminalStarted = true;
-          void deps.store.finish(input, event).then(
-            (saved) => {
-              if (!saved) finish(new Error("Workflow transfer was cancelled or already finalized"));
-              else if (event.state === "succeeded") finish(undefined, event.netdriveFileIds ?? []);
-              else finish(new Error(event.error || "Workflow output transfer failed"));
-            },
-            (error: unknown) => finish(error),
-          );
-        },
+        terminal,
+        false,
+        () => finish(new Error("Workflow output transfer cancelled")),
       )
-      .catch((error: unknown) => finish(error));
+      .catch((error: unknown) =>
+        terminal({
+          state: "failed",
+          copiedBytes: 0,
+          error: error instanceof Error ? error.message : "Workflow output transfer failed",
+        }),
+      );
   });
 }

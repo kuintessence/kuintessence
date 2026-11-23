@@ -36,7 +36,7 @@ Server 对 NetDrive 下载下发已授权文件的真实大小和 `expected_sha2
 Server 在下发下载 URL 和内容绑定前复查授权。只有提供可信摘要的主机下载才登记可回收的部分文件。
 
 容器来源的 multipart 上传现在与主机上传使用相同的持久 checkpoint（需配置 Agent 的 transfer state 目录），
-绑定 requestId/uploadId、对象大小、partSize 和每个完成 part 的 SHA-256/ETag。
+绑定稳定的 transfer_id、upload_id、对象大小、partSize 和每个完成 part 的 SHA-256/ETag。
 Agent 重启或重派后仍须重新读取容器并生成独立 spool，再逐片重算哈希；只有记录匹配的 part 才跳过上传，
 源文件内容或大小变化会拒绝复用。同一 checkpoint 的写入在 Agent 进程内串行，取消排队不会跳过前一个写入者；
 每次请求使用独立临时 spool 并仅删除自身文件，已取消请求不再上报旧终态。
@@ -47,15 +47,15 @@ part PUT 每次尝试有 5 分钟总期限，网络停滞或取消后保留已�
 配置持久 state 目录后，Agent 通过在线心跳每批核对最多 64 个本地上传断点文件。Server 查询 PostgreSQL 中属于该 Agent 的传输，只对已成功或已取消的上传确认回收。Agent 核对心跳序号、文件身份和本地写入状态后删除对应断点及遗留的临时记录。断线、等待重试、Server 缺少归属记录或确认丢失时保留断点，每轮目录扫描结束后一小时再复查。
 
 每次 multipart part URL 申请现在独立生成 `correlation_id`，同时提交固定 `upload_id`；
-`request_id` 继续表示 Server 管理的 transfer，不能由关联 ID 替代。
+每次派发生成独立的 `request_id`，用于关联进度、分片 URL 和取消确认。重试复用的 `transfer_id` 用于查找上传断点。
 Server 核对登录 Agent、当前 pending uploadId 后回显关联 ID 和 uploadId，Agent 仅接受三者均匹配的当前请求的响应。
 同一 transfer 超时重试、URL 续签或重派后的迟到响应不会消费新 pending；超时和取消只清理自身请求及监听器。
 Agent 会丢弃缺少关联 ID 的响应，等待本次请求的有效响应直至超时。
 
 Sandbox artifact 持久化与普通工作流结果发布现在共用持久传输等待逻辑：先创建并核对 `file_transfers` 行，
-再启动上传，使 `PgTransferSessionStore` 能保存 multipart session。Sandbox 使用 artifact/replica 派生的独立稳定
+再启动上传，使 `PgTransferSessionStore` 能保存 multipart session。Sandbox 使用 artifact、replica 和批内成员路径派生的稳定
 transfer UUID，重试复用同一行与 uploadId；成功回执需保存后才返回，并继续按实际 NetDrive 对象比对路径、大小与 SHA-256。
-取消等待只结束当前等待者，不主动销毁可恢复上传；已取消的行或改变的 owner/source/target/Agent/job/run 绑定拒绝复用。
+调用方中断等待后，持有租约的 Server 仍会保存 Agent 的完成回执。下一次发布可直接取回文件 ID。派发失败时释放租约，其他 Server 可用同一条传输记录重试。已取消的行或改变的 owner/source/target/Agent/job/run 绑定拒绝复用。
 这些操作只恢复原文件传输，不重新提交计算任务。
 
 普通 Workflow 的逐文件传输由[输出发布 outbox](workflow-output-recovery.md)持久关联；后台恢复已入库的 publication，不要求用户另起手动传输。文件提交与计算完成分别观察，文件恢复不会续跑已失败的 DAG。

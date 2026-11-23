@@ -13,10 +13,12 @@ import {
   canonicalJson,
   type FileInputValue,
   type FileValue,
+  type NetDriveFile,
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
+import { type OutputTransferInput, sandboxArtifactTransferId } from "../workflow/output-transfer";
 import { validateArtifactMembers } from "./artifact-members";
 import type {
   ArtifactPersister,
@@ -26,6 +28,7 @@ import type {
 
 type Publication = Parameters<ArtifactPersister["persist"]>[0];
 type FilePublication = {
+  transferId: string;
   artifact: ArtifactRecord;
   ownerId: string;
   agentId: string;
@@ -34,6 +37,46 @@ type FilePublication = {
   sha256: string;
   sizeBytes: number;
 };
+
+export async function publishSandboxArtifactFile(
+  input: FilePublication,
+  transfer: (data: OutputTransferInput) => Promise<string[]>,
+  files: {
+    getFileById(
+      id: string,
+    ): Promise<Pick<NetDriveFile, "id" | "ownerId" | "path" | "sha256" | "size"> | null>;
+  },
+) {
+  let transferId = input.transferId;
+  let target = input.target;
+  for (;;) {
+    const [fileId] = await transfer({
+      transferId,
+      target,
+      ownerId: input.ownerId,
+      source: input.source,
+      agentId: input.agentId,
+      workflowRunId: input.artifact.workflowRunId,
+      jobId: input.artifact.producerJobId ?? undefined,
+      totalBytes: input.sizeBytes,
+    });
+    if (!fileId) throw new Error("Missing Sandbox transfer receipt");
+    const file = await files.getFileById(fileId);
+    if (file) {
+      if (
+        file.ownerId !== input.ownerId ||
+        file.path !== target ||
+        file.sha256 !== input.sha256 ||
+        file.size !== input.sizeBytes
+      )
+        throw new Error("Persisted Sandbox artifact failed ownership/path/size/hash verification");
+      return { netdriveFileId: file.id, storageRef: target };
+    }
+    // A deleted published copy needs a new transfer. Its receipt fixes the next identity across retries.
+    transferId = sandboxArtifactTransferId(transferId, fileId);
+    target = input.target.replace(`/copies/${input.transferId}/`, `/copies/${transferId}/`);
+  }
+}
 
 /** Uses the existing Agent → NetDrive transfer; only references cross node boundaries. */
 export class WorkflowArtifactFiles implements ArtifactPersister {
@@ -78,12 +121,14 @@ export class WorkflowArtifactFiles implements ArtifactPersister {
           throw new Error("Published artifact failed size/hash verification");
         return { netdriveFileId: existing.file.id, storageRef: existing.file.path };
       }
+      const transferId = sandboxArtifactTransferId(artifact.id, localReplica.id);
       return this.publishFile({
+        transferId,
         artifact,
         ownerId,
         agentId: localReplica.agentId,
         source: localReplica.storageRef,
-        target: `${base}/copies/${crypto.randomUUID()}/${artifact.descriptor.replace(/[^a-zA-Z0-9._-]/g, "_")}`,
+        target: `${base}/copies/${transferId}/${artifact.descriptor.replace(/[^a-zA-Z0-9._-]/g, "_")}`,
         sha256: artifact.contentHash,
         sizeBytes: artifact.sizeBytes,
       });
@@ -92,12 +137,18 @@ export class WorkflowArtifactFiles implements ArtifactPersister {
     if (!members) throw new Error("FileBatch manifest is unavailable");
     for (const member of members) {
       if (await this.memberFile(artifact.id, member.relativePath, ownerId, member)) continue;
+      const transferId = sandboxArtifactTransferId(
+        artifact.id,
+        localReplica.id,
+        member.relativePath,
+      );
       const uploaded = await this.publishFile({
+        transferId,
         artifact,
         ownerId,
         agentId: localReplica.agentId,
         source: posix.join(localReplica.storageRef, member.relativePath),
-        target: `${base}/copies/${crypto.randomUUID()}/${member.relativePath}`,
+        target: `${base}/copies/${transferId}/${member.relativePath}`,
         sha256: member.sha256,
         sizeBytes: member.sizeBytes,
       });

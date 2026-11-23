@@ -271,7 +271,7 @@ type OutboundItem =
       kind: "fileTransferProgress";
       requestId: string;
       copiedBytes: number;
-      state: "running" | "succeeded" | "failed";
+      state: "running" | "succeeded" | "failed" | "cancelled";
       error: string;
       sha256: string;
       parts: { partNumber: number; etag: string }[];
@@ -894,6 +894,7 @@ export class AgentStream {
   private lastTransferState: SiteChannel["state"] = "idle";
   private installationState: SiteChannel | undefined;
   private activeInstallationOperationId: string | undefined;
+  private readonly transferAttempts = new Map<string, { requestId: string; done: Promise<void> }>();
   private readonly activeFileTransfers = new Map<string, AbortController>();
   private pool: ExecutorPool;
   private logger: Logger;
@@ -1629,6 +1630,7 @@ export class AgentStream {
       controller.abort("agent shutdown");
     }
     this.activeFileTransfers.clear();
+    this.transferAttempts.clear();
     this.signalOutbound(); // wake the generator so it can exit
     this.softwareOperationShutdown = this.drainSoftwareOperations();
     return this.softwareOperationShutdown;
@@ -4732,13 +4734,18 @@ export class AgentStream {
 
     if (payload.case === "fileTransferRequest") {
       const r = payload.value;
-      this.activeFileTransfers.get(r.requestId)?.abort("superseded transfer request");
+      const transferId = r.transferId || r.requestId;
+      const previous = this.transferAttempts.get(transferId);
+      if (previous?.requestId === r.requestId) return;
+      if (previous)
+        this.activeFileTransfers.get(previous.requestId)?.abort("superseded transfer request");
       const controller = new AbortController();
       this.activeFileTransfers.set(r.requestId, controller);
-      void this.trackMaintenanceTask(
+      const run = () =>
         this.runFileTransfer(
           {
             requestId: r.requestId,
+            transferId,
             direction: r.direction,
             sourceUrl: r.sourceUrl,
             sourcePath: r.sourcePath,
@@ -4750,12 +4757,19 @@ export class AgentStream {
             partSize: Number(r.partSize),
           },
           controller.signal,
-        ).finally(() => {
-          if (this.activeFileTransfers.get(r.requestId) === controller) {
-            this.activeFileTransfers.delete(r.requestId);
-          }
-        }),
-      );
+        );
+      // The previous attempt may still be writing a checkpoint or cleaning up its spool.
+      const done = (previous ? previous.done.then(run) : run()).finally(() => {
+        if (controller.signal.reason === "transfer cancelled by Server")
+          this.emitProgress(r.requestId, 0, "cancelled");
+        if (this.activeFileTransfers.get(r.requestId) === controller) {
+          this.activeFileTransfers.delete(r.requestId);
+          if (this.transferAttempts.get(transferId)?.requestId === r.requestId)
+            this.transferAttempts.delete(transferId);
+        }
+      });
+      this.transferAttempts.set(transferId, { requestId: r.requestId, done });
+      void this.trackMaintenanceTask(done);
       return;
     }
 
@@ -5817,7 +5831,7 @@ export class AgentStream {
   private emitProgress(
     requestId: string,
     copiedBytes: number,
-    state: "running" | "succeeded" | "failed",
+    state: "running" | "succeeded" | "failed" | "cancelled",
     error = "",
     sha256 = "",
     parts: { partNumber: number; etag: string }[] = [],
@@ -5839,6 +5853,7 @@ export class AgentStream {
   private async runFileTransfer(
     req: {
       requestId: string;
+      transferId?: string;
       direction: string;
       sourceUrl: string;
       sourcePath: string;
@@ -5895,6 +5910,7 @@ export class AgentStream {
             req.uploadId,
             req.partSize,
             signal,
+            req.transferId,
           );
         } else {
           await this.runHostClusterToCloud(
@@ -5904,6 +5920,7 @@ export class AgentStream {
             req.uploadId,
             req.partSize,
             signal,
+            req.transferId,
           );
         }
       } else {
@@ -6026,6 +6043,7 @@ export class AgentStream {
     uploadId: string,
     partSize: number,
     signal: AbortSignal,
+    transferId = requestId,
   ): Promise<void> {
     if (uploadId) {
       await this.runClusterToCloudMultipart(
@@ -6035,6 +6053,7 @@ export class AgentStream {
         partSize,
         signal,
         uploadId,
+        transferId,
       );
       return;
     }
@@ -6048,12 +6067,20 @@ export class AgentStream {
     uploadId: string,
     partSize: number,
     signal: AbortSignal,
+    transferId = requestId,
   ): Promise<void> {
     const file = await openTransferSource(sourcePath);
     try {
       const pinned = `/proc/self/fd/${file.fd}`;
       if (uploadId)
-        await this.runHostClusterToCloudMultipart(requestId, pinned, partSize, signal, uploadId);
+        await this.runHostClusterToCloudMultipart(
+          requestId,
+          pinned,
+          partSize,
+          signal,
+          uploadId,
+          transferId,
+        );
       else await this.runHostClusterToCloudSinglePut(requestId, pinned, uploadUrl, signal);
     } finally {
       await file.close();
@@ -6157,6 +6184,7 @@ export class AgentStream {
     partSize: number,
     signal: AbortSignal,
     uploadId: string,
+    transferId = requestId,
   ): Promise<void> {
     const tmpPath = join(tmpdir(), `kq-upload-${crypto.randomUUID()}.bin`);
     let copied = 0;
@@ -6168,7 +6196,7 @@ export class AgentStream {
           ? {
               path: join(
                 this.deps.fileTransferStateDir,
-                `${createHash("sha256").update(requestId).digest("hex")}.json`,
+                `${createHash("sha256").update(transferId).digest("hex")}.json`,
               ),
               uploadId,
             }
@@ -6209,6 +6237,7 @@ export class AgentStream {
     partSize: number,
     signal: AbortSignal,
     uploadId: string,
+    transferId = requestId,
   ): Promise<void> {
     let copied = 0;
     try {
@@ -6219,7 +6248,7 @@ export class AgentStream {
           ? {
               path: join(
                 this.deps.fileTransferStateDir,
-                `${createHash("sha256").update(requestId).digest("hex")}.json`,
+                `${createHash("sha256").update(transferId).digest("hex")}.json`,
               ),
               uploadId,
             }

@@ -75,7 +75,7 @@ export function replyFlow({ payload: p }: AgentMessage): Interaction | undefined
       return {
         kind: "transfer",
         id: p.value.requestId,
-        terminal: ["failed", "succeeded"].includes(p.value.state),
+        terminal: ["failed", "succeeded", "cancelled"].includes(p.value.state),
       };
     case "partUrlsRequest":
       return { kind: "transfer", id: p.value.requestId };

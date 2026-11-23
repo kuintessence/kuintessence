@@ -3,7 +3,6 @@ import { createSecureServer, createServer } from "node:http2";
 import {
   agentCerts,
   createPgDb,
-  fileTransfers,
   meteringCronPeriods,
   type PgDb,
   SpackMaterialReferences,
@@ -23,7 +22,7 @@ import {
   WorkflowPlacementConfigSchema,
 } from "@kuintessence/shared";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
-import { and, eq, gt, isNull, ne } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { cors } from "hono/cors";
@@ -334,7 +333,10 @@ import { TransferRunner } from "./services/transfer-runner";
 import { PgTransferSessionStore } from "./services/transfer-session-store";
 import { assertUsecasePackageExecutionAccess } from "./services/usecase-execution-authorizer";
 import { PgArtifactStore, WorkflowArtifactService } from "./services/workflow-artifact";
-import { WorkflowArtifactFiles } from "./services/workflow-artifact-files";
+import {
+  publishSandboxArtifactFile,
+  WorkflowArtifactFiles,
+} from "./services/workflow-artifact-files";
 import { registerWorkflowAuthorization } from "./services/workflow-authorization";
 import { createWorkflowPlacementBuilder } from "./services/workflow-placement-builder";
 import {
@@ -382,13 +384,10 @@ import {
   PgPublicationIntentStore,
   WorkflowPublicationIntentRecovery,
 } from "./workflow/output-publication-intent";
-import {
-  type OutputTransferInput,
-  type OutputTransferStore,
-  waitForOutputTransfer,
-} from "./workflow/output-transfer";
+import { type OutputTransferInput, waitForOutputTransfer } from "./workflow/output-transfer";
 import { createPackageResolver } from "./workflow/package-resolver";
 import { parseWorkflowYaml } from "./workflow/parser";
+import { pgOutputTransferStore } from "./workflow/pg-output-transfer-store";
 import { constrainWorkflowResources } from "./workflow/resource-limits";
 import { WorkflowRunRegistry } from "./workflow/run-registry";
 import { createWorkflowRunner } from "./workflow/runner";
@@ -479,7 +478,8 @@ const terminalExpiryTimer = setInterval(sweepTerminals, 3600000);
 const shellExecRegistry = new ShellExecRegistry();
 const transferRegistry = new TransferRegistry();
 const jobLogsService = new JobLogsService(dispatcher);
-const fileService = new FileService(new PgFileTransferStore(db));
+const fileTransferStore = new PgFileTransferStore(db, agentSessions.serverId);
+const fileService = new FileService(fileTransferStore);
 fileService.attachShell(dispatcher, shellExecRegistry);
 
 const authzService = new AuthzService({
@@ -772,104 +772,18 @@ const placementPlanService = new PlacementPlanService(
 let netdriveServiceForWorkflowOutputs: NetDriveService | undefined;
 let dataMarketObjectStore: ConstructorParameters<typeof PgDataMarketRepository>[1];
 let dataMarketUploadPort: DataUploadPort = new UnavailableDataMarketUploadPort();
-const transferSessions = new PgTransferSessionStore(db);
+const transferSessions = new PgTransferSessionStore(db, fileTransferStore.serverId);
 let transferRunner: TransferRunner | undefined;
-const workflowOutputTransferBinding = (input: OutputTransferInput) =>
-  and(
-    eq(fileTransfers.id, input.transferId),
-    eq(fileTransfers.userId, input.ownerId),
-    eq(fileTransfers.direction, "cluster_to_cloud"),
-    eq(fileTransfers.source, input.source),
-    eq(fileTransfers.target, input.target),
-    eq(fileTransfers.agentId, input.agentId),
-    input.jobId ? eq(fileTransfers.jobId, input.jobId) : isNull(fileTransfers.jobId),
-    input.workflowRunId
-      ? eq(fileTransfers.workflowRunId, input.workflowRunId)
-      : isNull(fileTransfers.workflowRunId),
-    input.totalBytes !== undefined ? eq(fileTransfers.totalBytes, input.totalBytes) : undefined,
-  );
-const workflowOutputTransferStore: OutputTransferStore = {
-  ensure: async (input) => {
-    await db
-      .insert(fileTransfers)
-      .values({
-        id: input.transferId,
-        userId: input.ownerId,
-        direction: "cluster_to_cloud",
-        source: input.source,
-        target: input.target,
-        agentId: input.agentId,
-        jobId: input.jobId,
-        workflowRunId: input.workflowRunId,
-        totalBytes: input.totalBytes,
-        state: "queued",
-      })
-      .onConflictDoNothing();
-    const [saved] = await db
-      .select()
-      .from(fileTransfers)
-      .where(eq(fileTransfers.id, input.transferId))
-      .limit(1);
-    return saved;
-  },
-  activate: async (input, previousState) => {
-    const rows = await db
-      .update(fileTransfers)
-      .set({
-        state: "running",
-        startedAt: new Date(),
-        finishedAt: null,
-        error: null,
-        updatedAt: new Date(),
-      })
-      .where(and(workflowOutputTransferBinding(input), eq(fileTransfers.state, previousState)))
-      .returning({ id: fileTransfers.id });
-    return rows.length === 1;
-  },
-  finish: async (input, event) => {
-    const rows = await db
-      .update(fileTransfers)
-      .set({
-        state: event.state,
-        error: event.state === "failed" ? "Workflow output transfer retry required" : null,
-        copiedBytes: event.copiedBytes,
-        finishedAt: new Date(),
-        updatedAt: new Date(),
-        ...(event.state === "succeeded" ? { netdriveFileIds: event.netdriveFileIds ?? [] } : {}),
-      })
-      .where(
-        and(
-          workflowOutputTransferBinding(input),
-          ne(fileTransfers.state, "cancelled"),
-          ne(fileTransfers.state, "succeeded"),
-        ),
-      )
-      .returning({ id: fileTransfers.id });
-    return rows.length === 1;
-  },
-};
+const workflowOutputTransferStore = pgOutputTransferStore(db, fileTransferStore);
 const sandboxArtifactReleaseService = new SandboxArtifactReleaseService(dispatcher);
 const workflowArtifactFiles = new WorkflowArtifactFiles(db, async (input) => {
   if (!transferRunner || !netdriveServiceForWorkflowOutputs)
     throw new Error("NetDrive is unavailable for Sandbox artifacts");
-  await waitForWorkflowOutputTransfer({
-    transferId: crypto.randomUUID(),
-    ownerId: input.ownerId,
-    source: input.source,
-    target: input.target,
-    agentId: input.agentId,
-    workflowRunId: input.artifact.workflowRunId,
-    jobId: input.artifact.producerJobId ?? undefined,
-  });
-  const listed = await netdriveServiceForWorkflowOutputs.listFiles(input.ownerId, {
-    prefix: input.target,
-    limit: 1,
-    offset: 0,
-  });
-  const file = listed.files.find((item) => item.path === input.target);
-  if (!file || file.sha256 !== input.sha256 || file.size !== input.sizeBytes)
-    throw new Error("Persisted Sandbox artifact failed size/hash verification");
-  return { netdriveFileId: file.id, storageRef: input.target };
+  return publishSandboxArtifactFile(
+    input,
+    waitForWorkflowOutputTransfer,
+    netdriveServiceForWorkflowOutputs,
+  );
 });
 const workflowArtifactService = new WorkflowArtifactService(
   new PgArtifactStore(db),
@@ -3071,6 +2985,16 @@ if (mtlsMode === "trusted-proxy" && config.MTLS_TRUSTED_PROXY_CIDRS.trim().lengt
 }
 await relay?.start();
 sshDirectory?.start();
+let transferMaintenance: Promise<void> | undefined;
+const transferTimer = setInterval(() => {
+  transferMaintenance ??= fileTransferStore
+    .maintain((row) => fileService.cancelOwned(row))
+    .catch((err) => logger.error({ err }, "Transfer maintenance failed"))
+    .finally(() => {
+      transferMaintenance = undefined;
+    });
+}, 1000);
+transferTimer.unref();
 const grpcHandler = createGrpcConnectNodeHandler(grpcDeps, {
   enabled: mtlsEnabled,
   fingerprintHeader: config.MTLS_HEADER_FINGERPRINT,
@@ -3281,6 +3205,8 @@ async function shutdown(signal: string): Promise<void> {
   try {
     clearInterval(terminalExpiryTimer);
     relay?.stop();
+    clearInterval(transferTimer);
+    await transferMaintenance;
     await sshDirectory?.stop();
     grpcServer.close();
     await federationJobs.stop();

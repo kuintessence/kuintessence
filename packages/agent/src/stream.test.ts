@@ -4619,23 +4619,59 @@ describe("AgentStream", () => {
       heartbeatIntervalMs: 60_000,
       logger: silent,
     });
-    const controller = new AbortController();
+    const cleanup = Promise.withResolvers<void>();
+    let signal: AbortSignal | undefined;
     const harness = stream as unknown as {
-      activeFileTransfers: Map<string, AbortController>;
+      runFileTransfer: (req: unknown, stopped: AbortSignal) => Promise<void>;
+      outboundQueue: { kind: string; state?: string; requestId?: string }[];
       handleServerMessage: (message: unknown) => Promise<void>;
     };
-    harness.activeFileTransfers.set("transfer-cancel", controller);
-
+    harness.runFileTransfer = async (_req, stopped) => {
+      signal = stopped;
+      await cleanup.promise;
+    };
+    await harness.handleServerMessage(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "fileTransferRequest",
+          value: { requestId: "round", transferId: "transfer" },
+        },
+      }),
+    );
     await harness.handleServerMessage(
       create(ServerMessageSchema, {
         payload: {
           case: "fileTransferCancel",
-          value: create(FileTransferCancelSchema, { requestId: "transfer-cancel" }),
+          value: create(FileTransferCancelSchema, { requestId: "round" }),
         },
       }),
     );
-
-    expect(controller.signal.aborted).toBe(true);
+    expect(signal?.aborted).toBe(true);
+    expect(harness.outboundQueue.some((m) => m.state === "cancelled")).toBe(false);
+    const next = Promise.withResolvers<void>();
+    let nextStarted = false;
+    harness.runFileTransfer = async () => {
+      nextStarted = true;
+      next.resolve();
+    };
+    await harness.handleServerMessage(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "fileTransferRequest",
+          value: { transferId: "transfer", requestId: "next-round" },
+        },
+      }),
+    );
+    expect(nextStarted).toBe(false);
+    cleanup.resolve();
+    await next.promise;
+    expect(harness.outboundQueue).toContainEqual(
+      expect.objectContaining({
+        kind: "fileTransferProgress",
+        state: "cancelled",
+        requestId: "round",
+      }),
+    );
     stream.stop();
   });
   test("returns a bounded typed job-log response through the Agent stream", async () => {
@@ -11306,6 +11342,7 @@ test("container multipart rebuilds spool after Agent restart but reuses verified
           uploadId: string,
           partSize: number,
           signal: AbortSignal,
+          transferId: string,
         ): Promise<void>;
         spoolFromContainer(
           containerId: string,
@@ -11333,39 +11370,42 @@ test("container multipart rebuilds spool after Agent restart but reuses verified
       return harness;
     };
     await makeStream().runClusterToCloud(
-      "same-request",
+      crypto.randomUUID(),
       "container",
       "/output",
       "",
       "same-upload",
       4,
       new AbortController().signal,
+      "stable-transfer",
     );
     expect(uploaded).toEqual([1, 2]);
     expect(states).toEqual(["failed"]);
     uploaded.length = 0;
     interrupted = false;
     await makeStream().runClusterToCloud(
-      "same-request",
+      crypto.randomUUID(),
       "container",
       "/output",
       "",
       "same-upload",
       4,
       new AbortController().signal,
+      "stable-transfer",
     );
     expect(uploaded).toEqual([2]);
     expect(states).toEqual(["failed", "succeeded"]);
     source = "changed!";
     uploaded.length = 0;
     await makeStream().runClusterToCloud(
-      "same-request",
+      crypto.randomUUID(),
       "container",
       "/output",
       "",
       "same-upload",
       4,
       new AbortController().signal,
+      "stable-transfer",
     );
     expect(uploaded).toEqual([]);
     expect(states.at(-1)).toBe("failed");
@@ -11373,13 +11413,14 @@ test("container multipart rebuilds spool after Agent restart but reuses verified
     const cancelled = new AbortController();
     cancelled.abort(new Error("superseded transfer"));
     await makeStream().runClusterToCloud(
-      "same-request",
+      crypto.randomUUID(),
       "container",
       "/output",
       "",
       "same-upload",
       4,
       cancelled.signal,
+      "stable-transfer",
     );
     expect(states).toHaveLength(terminalCount);
     expect(new Set(spools).size).toBe(4);

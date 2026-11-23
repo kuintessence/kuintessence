@@ -122,14 +122,9 @@ REST 提供单段和分片两套接口，由客户端选择；当前 Web 文件�
 - 已 dispatch 的传输不因 root 变更自动中止，但记录 root revision 和
   `file_transfer.root_policy_changed_during_run` 审计；失败后从当前授权上下文重新发起。
 
-owner 调用 `POST /api/files/transfers/:id/cancel` 发起协作式取消。
-Server 移除 listener、尝试 abort 未完成 multipart，并向原 Agent 下发
-`FileTransferCancel`。云端下载使用 hidden partial、有界 Range resume 和完成后的原子
-publish。若 terminal commit 已开始，取消会被拒绝，传输记录等待提交结束后更新终态，
-不得手动强写 cancelled。
+owner 调用 `POST /api/files/transfers/:id/cancel` 发起协作式取消。任一 Server 都可接收请求，持有传输的实例负责执行。已派发的任务由 Agent 停止当前请求并确认，Server 清理未完成的分片上传后记录 `cancelled`。排队中的重试也会清理原上传会话。对象存储暂时不可用时，后台保留取消请求并重试；API 等待确认超过 5 秒返回 503，可查询同一传输的状态。已开始最终提交时，取消与完成按先后顺序处理。
 
-Server 重启不会自动恢复未完成传输的 I/O。被中断的记录使用
-`TRANSFER_INTERRUPTED_BY_SERVER_RESTART` 标记，用户核对源、目标和当前授权后再重试。
+传输使用数据库时钟计时的 30 秒租约。持有实例定期续租，其他 Server 启动或滚动更新时会保留有效租约。持有实例退出且租约过期后，后台用 `TRANSFER_INTERRUPTED_BY_SERVER_RESTART` 标记中断，用户可在复核授权后恢复原传输。
 
 ### Workflow Artifact
 

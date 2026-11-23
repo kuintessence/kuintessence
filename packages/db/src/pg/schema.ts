@@ -2956,6 +2956,9 @@ export const fileTransfers = pgTable(
     siteId: varchar("site_id", { length: 255 }),
     totalBytes: bigint("total_bytes", { mode: "number" }),
     resumeSession: jsonb("resume_session").$type<unknown>(),
+    dispatchOwner: uuid("dispatch_owner"),
+    dispatchExpiresAt: timestamp("dispatch_expires_at", { withTimezone: true }),
+    cancelRequest: uuid("cancel_request"),
     copiedBytes: bigint("copied_bytes", { mode: "number" }).notNull().default(0),
     state: varchar("state", { length: 32 }).notNull(),
     startedAt: timestamp("started_at"),
@@ -2976,6 +2979,12 @@ export const fileTransfers = pgTable(
   },
   (t) => ({
     userCreatedIdx: index("file_transfers_user_created_idx").on(t.userId, t.createdAt),
+    ownerLeaseIdx: index("file_transfers_owner_lease_idx")
+      .on(t.dispatchOwner, t.dispatchExpiresAt)
+      .where(sql`dispatch_owner is not null`),
+    pendingCancelIdx: index("file_transfers_pending_cancel_idx")
+      .on(t.dispatchOwner)
+      .where(sql`cancel_request is not null`),
     terminalCheckpointIdx: index("file_transfers_terminal_checkpoint_idx")
       .on(sql`encode(sha256(${t.id}::text::bytea), 'hex')`)
       .where(sql`direction = 'cluster_to_cloud' and state in ('succeeded', 'cancelled')`),

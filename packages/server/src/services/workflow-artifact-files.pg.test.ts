@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   agents,
   createPgDb,
+  fileTransfers,
   jobs,
   netdriveFiles,
   users,
@@ -11,10 +12,10 @@ import {
   workflowRuns,
 } from "@kuintessence/db";
 import { createUsecaseExecutor, type JobSubmission, workflowDsl } from "@kuintessence/shared";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { artifactBatchHash } from "./artifact-members";
 import { PgArtifactStore, WorkflowArtifactService } from "./workflow-artifact";
-import { WorkflowArtifactFiles } from "./workflow-artifact-files";
+import { publishSandboxArtifactFile, WorkflowArtifactFiles } from "./workflow-artifact-files";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -89,22 +90,63 @@ async function fixture(batch: boolean) {
   const { artifact, replica } = await store.registerLocal(registration);
   const attempts: string[] = [];
   let failure = "";
-  const publish: ConstructorParameters<typeof WorkflowArtifactFiles>[1] = async (input) => {
-    attempts.push(input.source);
-    if (input.source === failure) throw new Error("transfer offline");
-    const [file] = await db
-      .insert(netdriveFiles)
-      .values({
-        ownerId: input.ownerId,
-        path: input.target,
-        storageKey: input.target,
-        sha256: input.sha256,
-        size: input.sizeBytes,
-      })
-      .returning();
-    if (!file) throw new Error("Missing uploaded file");
-    return { netdriveFileId: file.id, storageRef: file.path };
-  };
+  let loseReceipt = false;
+  const publish: ConstructorParameters<typeof WorkflowArtifactFiles>[1] = (input) =>
+    publishSandboxArtifactFile(
+      input,
+      async (transfer) => {
+        const ids = await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${transfer.transferId},0))`,
+          );
+          const [receipt] = await tx
+            .select()
+            .from(fileTransfers)
+            .where(eq(fileTransfers.id, transfer.transferId));
+          if (receipt) {
+            expect(transfer.target).toBe(receipt.target);
+            return receipt.netdriveFileIds;
+          }
+          attempts.push(input.source);
+          if (input.source === failure) throw new Error("transfer offline");
+          const [file] = await tx
+            .insert(netdriveFiles)
+            .values({
+              ownerId,
+              path: transfer.target,
+              storageKey: transfer.target,
+              sha256: input.sha256,
+              size: input.sizeBytes,
+            })
+            .returning();
+          if (!file) throw new Error("Missing uploaded file");
+          await tx.insert(fileTransfers).values({
+            id: transfer.transferId,
+            userId: ownerId,
+            state: "succeeded",
+            direction: "cluster_to_cloud",
+            source: transfer.source,
+            target: transfer.target,
+            netdriveFileIds: [file.id],
+          });
+          return [file.id];
+        });
+        if (loseReceipt) {
+          loseReceipt = false;
+          throw new Error("Lost commit response");
+        }
+        return ids;
+      },
+      {
+        getFileById: async (id) =>
+          (
+            await db
+              .select()
+              .from(netdriveFiles)
+              .where(and(eq(netdriveFiles.id, id), isNull(netdriveFiles.deletedAt)))
+          )[0] ?? null,
+      },
+    );
   const make = () => {
     const bridge = new WorkflowArtifactFiles(db, publish);
     const service = new WorkflowArtifactService(store, bridge);
@@ -123,6 +165,9 @@ async function fixture(batch: boolean) {
     registration,
     make,
     attempts,
+    loseReceipt: () => {
+      loseReceipt = true;
+    },
     ref: { artifactId: artifact.id, type: artifact.ioType },
     fail: (source: string) => {
       failure = source;
@@ -149,6 +194,19 @@ test("single-file bridge shares concurrent publication, keeps references stable,
   await db.update(jobs).set({ restrictedNoEgress: true }).where(eq(jobs.id, f.producer.id));
   await expect(first.resolve(f.ref)).rejects.toThrow("does not permit file export");
   expect(f.attempts).toHaveLength(1);
+});
+
+test("a fresh Sandbox publisher recovers the exact committed receipt after a lost response", async () => {
+  const f = await fixture(false);
+  f.loseReceipt();
+  await expect(f.make().resolve(f.ref)).rejects.toThrow("publication is pending");
+  await f.make().resolve(f.ref);
+  expect(f.attempts).toEqual(["/isolated/result"]);
+  const receipts = await db
+    .select()
+    .from(fileTransfers)
+    .where(eq(fileTransfers.source, "/isolated/result"));
+  expect(receipts.filter((row) => row.target.includes(f.artifact.id))).toHaveLength(1);
 });
 
 test("a delayed publisher reuses the live file despite its stale snapshot and replaces a deleted file", async () => {

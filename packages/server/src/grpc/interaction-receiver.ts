@@ -43,6 +43,10 @@ export async function receiveInteraction(
       return;
     case "fileTransferProgress": {
       const v = p.value;
+      if (v.state === "cancelled") {
+        deps.transferRegistry?.confirmCancellation(v.requestId, agent);
+        return;
+      }
       deps.transferRegistry?.update(
         v.requestId,
         {

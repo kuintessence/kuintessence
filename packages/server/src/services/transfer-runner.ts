@@ -29,9 +29,12 @@ export interface TransferRunnerDeps {
 export type TransferProgressCallback = (e: TransferProgressEvent) => void;
 
 interface ActiveTransfer {
+  requestId: string;
+  dispatched: boolean;
   agentId: string;
   cancelled: boolean;
   terminalStarted: boolean;
+  onCancelled?: () => void;
 }
 
 export class TransferRunner {
@@ -41,6 +44,7 @@ export class TransferRunner {
     string,
     {
       ownerId: string;
+      agentId: string;
       path: string;
       storageKey: string;
       uploadId: string;
@@ -49,6 +53,7 @@ export class TransferRunner {
     }
   >();
 
+  private readonly preparing = new Map<string, Promise<void>>();
   private readonly activeTransfers = new Map<string, ActiveTransfer>();
   private readonly cancelledBeforeDispatch = new Set<string>();
   private readonly terminalTransfers = new Map<string, symbol>();
@@ -78,6 +83,31 @@ export class TransferRunner {
     data: TransferCreate,
     onProgress: TransferProgressCallback,
     completionOnly = false,
+    onCancelled?: () => void,
+  ): Promise<void> {
+    const preparing = this.prepare(
+      actorUserId,
+      transferId,
+      data,
+      onProgress,
+      completionOnly,
+      onCancelled,
+    );
+    this.preparing.set(transferId, preparing);
+    try {
+      await preparing;
+    } finally {
+      if (this.preparing.get(transferId) === preparing) this.preparing.delete(transferId);
+    }
+  }
+
+  private async prepare(
+    actorUserId: string | null | undefined,
+    transferId: string,
+    data: TransferCreate,
+    onProgress: TransferProgressCallback,
+    completionOnly = false,
+    onCancelled?: () => void,
   ): Promise<void> {
     if (!actorUserId) {
       this.markTerminal(transferId);
@@ -94,6 +124,7 @@ export class TransferRunner {
         ? saved.agentId
         : await this.resolveAgentId(data);
     if (this.cancelledBeforeDispatch.delete(transferId)) {
+      onCancelled?.();
       return;
     }
     if (!agentId) {
@@ -102,20 +133,34 @@ export class TransferRunner {
       return;
     }
     this.terminalTransfers.delete(transferId);
+    const previous = this.activeTransfers.get(transferId);
+    if (previous) {
+      this.deps.transferRegistry.cancel(previous.requestId);
+      this.pendingMultipart.delete(previous.requestId);
+    }
     const active: ActiveTransfer = {
+      requestId: crypto.randomUUID(),
+      dispatched: false,
       agentId,
       cancelled: false,
       terminalStarted: false,
+      onCancelled,
     };
     this.activeTransfers.set(transferId, active);
 
-    if (data.direction === "cloud_to_cluster") {
-      await this.startCloudToCluster(actorUserId, active, transferId, data, onProgress);
-      return;
-    }
-    if (data.direction === "cluster_to_cloud") {
-      await this.startClusterToCloud(actorUserId, active, transferId, data, onProgress, saved);
-      return;
+    try {
+      if (data.direction === "cloud_to_cluster") {
+        await this.startCloudToCluster(actorUserId, active, transferId, data, onProgress);
+        return;
+      }
+      if (data.direction === "cluster_to_cloud") {
+        await this.startClusterToCloud(actorUserId, active, transferId, data, onProgress, saved);
+        return;
+      }
+    } catch (err) {
+      if (this.activeTransfers.get(transferId) === active) this.activeTransfers.delete(transferId);
+      this.pendingMultipart.delete(active.requestId);
+      throw err;
     }
     if (this.activeTransfers.get(transferId) === active) this.activeTransfers.delete(transferId);
     this.markTerminal(transferId);
@@ -126,20 +171,25 @@ export class TransferRunner {
     });
   }
 
+  async discardSession(transferId: string, ownerId: string) {
+    const saved = await this.deps.sessionStore?.load(ownerId, transferId);
+    if (!saved) return;
+    const credential = await this.deps.netdriveService.restoreMultipartSession(
+      ownerId,
+      saved,
+      false,
+    );
+    await this.deps.netdriveService.abortMultipart(ownerId, credential);
+    await this.deps.sessionStore?.save(ownerId, transferId, null);
+  }
+
   async cancel(transferId: string, ownerId?: string): Promise<boolean> {
+    // An upload allocated during dispatch must be bound to its row before cleanup.
+    const preparing = this.preparing.get(transferId);
+    if (preparing && !this.terminalTransfers.has(transferId)) await preparing.catch(() => {});
     if (this.terminalTransfers.has(transferId)) return false;
-    if (ownerId && this.deps.sessionStore && !this.activeTransfers.has(transferId)) {
-      const saved = await this.deps.sessionStore.load(ownerId, transferId);
-      if (saved) {
-        const credential = await this.deps.netdriveService.restoreMultipartSession(
-          ownerId,
-          saved,
-          false,
-        );
-        await this.deps.netdriveService.abortMultipart(ownerId, credential);
-        await this.deps.sessionStore.save(ownerId, transferId, null);
-      }
-    }
+    if (ownerId && !this.activeTransfers.has(transferId))
+      await this.discardSession(transferId, ownerId);
     if (this.terminalTransfers.has(transferId)) return false;
     const active = this.activeTransfers.get(transferId);
     if (!active) {
@@ -148,23 +198,24 @@ export class TransferRunner {
     }
     if (active.terminalStarted) return false;
 
-    active.cancelled = true;
-    this.deps.transferRegistry.cancel(transferId);
-    this.deps.dispatcher.pushFileTransferCancel(active.agentId, transferId);
-    const multipart = this.pendingMultipart.get(transferId);
-    if (multipart) {
-      await this.deps.netdriveService
-        .abortMultipart(multipart.ownerId, {
-          storageKey: multipart.storageKey,
-          uploadId: multipart.uploadId,
-          commitToken: multipart.commitToken,
-        })
-        .catch(() => {});
-      if (this.activeTransfers.get(transferId) !== active) return true;
-      await this.deps.sessionStore?.save(multipart.ownerId, transferId, null);
-      if (this.activeTransfers.get(transferId) === active) this.pendingMultipart.delete(transferId);
+    if (active.dispatched) {
+      const stopped = await this.deps.transferRegistry.requestCancellation(active.requestId, () =>
+        this.deps.dispatcher.pushFileTransferCancel(active.agentId, active.requestId),
+      );
+      if (!stopped || this.activeTransfers.get(transferId) !== active) return false;
     }
+    active.dispatched = false;
+    active.cancelled = true;
+    this.deps.transferRegistry.cancel(active.requestId);
+    const multipart = this.pendingMultipart.get(active.requestId);
+    if (ownerId && this.deps.sessionStore) {
+      await this.discardSession(transferId, ownerId);
+    } else if (multipart) {
+      await this.deps.netdriveService.abortMultipart(multipart.ownerId, multipart);
+    }
+    this.pendingMultipart.delete(active.requestId);
     if (this.activeTransfers.get(transferId) === active) this.activeTransfers.delete(transferId);
+    active.onCancelled?.();
     return true;
   }
 
@@ -210,16 +261,23 @@ export class TransferRunner {
       }
       onProgress(event);
     };
-    this.deps.transferRegistry.register(transferId, wrapped, TRANSFER_TIMEOUT_MS, active.agentId);
-    const queued = this.deps.dispatcher.pushFileTransfer(active.agentId, transferId, {
+    this.deps.transferRegistry.register(
+      active.requestId,
+      wrapped,
+      TRANSFER_TIMEOUT_MS,
+      active.agentId,
+    );
+    const queued = this.deps.dispatcher.pushFileTransfer(active.agentId, active.requestId, {
+      transferId,
       direction: "cloud_to_cluster",
       sourceUrl: downloadUrl,
       targetPath: data.target,
       totalBytes: file.size,
       expectedSha256: file.sha256,
     });
+    active.dispatched = queued;
     if (!queued) {
-      this.deps.transferRegistry.cancel(transferId);
+      this.deps.transferRegistry.cancel(active.requestId);
       if (this.activeTransfers.get(transferId) === active) this.activeTransfers.delete(transferId);
       this.markTerminal(transferId);
       onProgress({ copiedBytes: 0, state: "failed", error: "agent channel closed" });
@@ -254,8 +312,7 @@ export class TransferRunner {
           contentType: "application/octet-stream",
         });
     if (this.activeTransfers.get(transferId) !== active) {
-      if (!this.deps.sessionStore)
-        await this.deps.netdriveService.abortMultipart(ownerId, minted).catch(() => {});
+      if (!saved) await this.deps.netdriveService.abortMultipart(ownerId, minted).catch(() => {});
       return;
     }
     const proposedSession = {
@@ -271,7 +328,8 @@ export class TransferRunner {
     const session =
       (await this.deps.sessionStore?.save(ownerId, transferId, proposedSession)) ?? proposedSession;
     if (this.activeTransfers.get(transferId) !== active) return;
-    this.pendingMultipart.set(transferId, {
+    this.pendingMultipart.set(active.requestId, {
+      agentId: active.agentId,
       ownerId,
       path: data.target,
       storageKey: minted.storageKey,
@@ -288,7 +346,8 @@ export class TransferRunner {
           commitToken: minted.commitToken,
         })
         .catch(() => {});
-      if (this.activeTransfers.get(transferId) === active) this.pendingMultipart.delete(transferId);
+      if (this.activeTransfers.get(transferId) === active)
+        this.pendingMultipart.delete(active.requestId);
       return;
     }
 
@@ -346,11 +405,14 @@ export class TransferRunner {
               workflowRunId: data.workflowRunId,
               netdriveFileIds: data.netdriveFileIds,
             },
-            (result, db) => this.enqueueNetDriveAuthorization(ownerId, result, db),
+            async (result, db) => {
+              await this.deps.sessionStore?.verifyRunningOwner?.(ownerId, transferId, db);
+              await this.enqueueNetDriveAuthorization(ownerId, result, db);
+            },
           );
           if (this.activeTransfers.get(transferId) !== active) return;
           // Retain the completion receipt until the transfer row is terminal in durable storage.
-          this.pendingMultipart.delete(transferId);
+          this.pendingMultipart.delete(active.requestId);
           this.activeTransfers.delete(transferId);
           onProgress({
             ...e,
@@ -361,7 +423,7 @@ export class TransferRunner {
           if (this.activeTransfers.get(transferId) !== active) return;
           this.logger.error({ transferId, err }, "Failed to complete cluster_to_cloud multipart");
           // Keep the durable completion request: object completion or DB commit may have succeeded.
-          this.pendingMultipart.delete(transferId);
+          this.pendingMultipart.delete(active.requestId);
           this.activeTransfers.delete(transferId);
           onProgress({
             copiedBytes: e.copiedBytes,
@@ -380,7 +442,7 @@ export class TransferRunner {
             })
             .catch(() => {});
         if (this.activeTransfers.get(transferId) !== active) return;
-        this.pendingMultipart.delete(transferId);
+        this.pendingMultipart.delete(active.requestId);
         this.activeTransfers.delete(transferId);
       }
       onProgress(e);
@@ -390,8 +452,14 @@ export class TransferRunner {
       await wrapped({ ...session.completion, state: "succeeded" });
       return;
     }
-    this.deps.transferRegistry.register(transferId, wrapped, TRANSFER_TIMEOUT_MS, active.agentId);
-    const queued = this.deps.dispatcher.pushFileTransfer(active.agentId, transferId, {
+    this.deps.transferRegistry.register(
+      active.requestId,
+      wrapped,
+      TRANSFER_TIMEOUT_MS,
+      active.agentId,
+    );
+    const queued = this.deps.dispatcher.pushFileTransfer(active.agentId, active.requestId, {
+      transferId,
       direction: "cluster_to_cloud",
       sourcePath: data.source,
       uploadId: minted.uploadId,
@@ -399,9 +467,11 @@ export class TransferRunner {
       partSize: minted.partSize,
       totalBytes: data.totalBytes ?? 0,
     });
+    active.dispatched = queued;
     if (!queued) {
-      this.deps.transferRegistry.cancel(transferId);
-      if (this.activeTransfers.get(transferId) === active) this.pendingMultipart.delete(transferId);
+      this.deps.transferRegistry.cancel(active.requestId);
+      if (this.activeTransfers.get(transferId) === active)
+        this.pendingMultipart.delete(active.requestId);
       if (this.activeTransfers.get(transferId) === active) this.activeTransfers.delete(transferId);
       this.markTerminal(transferId);
       if (!this.deps.sessionStore)
@@ -437,9 +507,8 @@ export class TransferRunner {
     agentId?: string,
     expectedUploadId?: string,
   ): Promise<{ partNumber: number; url: string }[]> {
-    if (agentId && this.activeTransfers.get(requestId)?.agentId !== agentId)
-      throw new Error("Transfer Agent binding mismatch");
     const entry = this.pendingMultipart.get(requestId);
+    if (agentId && entry?.agentId !== agentId) throw new Error("Transfer Agent binding mismatch");
     if (!entry) {
       throw new Error(`no pending multipart upload for transfer ${requestId}`);
     }

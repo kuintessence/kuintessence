@@ -120,6 +120,7 @@ export interface FileTransferRunner {
     onProgress: (event: TransferProgressEvent) => void,
     completionOnly?: boolean,
   ): Promise<void>;
+  discardSession?(transferId: string, ownerId: string): Promise<void>;
   cancel(transferId: string, ownerId?: string): Promise<boolean>;
 }
 
@@ -145,6 +146,11 @@ export interface FileTransferStore {
   ): Promise<Transfer | null>;
   markRunningRootPolicyChanged(rootId: string, changedAt: string): Promise<Transfer[]>;
   markInterrupted(error: string): Promise<number>;
+  coordinateCancel?(
+    userId: string,
+    id: string,
+    cancel: (row: Transfer) => Promise<boolean>,
+  ): Promise<Transfer>;
 }
 
 export class InMemoryFileTransferStore implements FileTransferStore {
@@ -439,16 +445,15 @@ export class FileService {
   async cancelTransfer(userId: string, id: string): Promise<Transfer> {
     const t = await this.requireOwnedTransfer(userId, id);
     if (t.state !== "running" && t.state !== "queued" && t.state !== "failed") return t;
-    if (t.state === "running" || t.state === "failed") {
-      const accepted = (await this.runner?.cancel(id, userId)) ?? true;
-      if (!accepted) {
-        throw new AppError(
-          ErrorCode.VALIDATION_ERROR,
-          "Transfer can no longer be cancelled because completion has already started",
-          409,
-          { reason: "TRANSFER_CANCELLATION_NOT_ACCEPTED" },
-        );
-      }
+    if (this.transferStore.coordinateCancel)
+      return this.transferStore.coordinateCancel(userId, id, (row) => this.cancelOwned(row));
+    if (!(await this.cancelOwned(t))) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        "Transfer can no longer be cancelled because completion has already started",
+        409,
+        { reason: "TRANSFER_CANCELLATION_NOT_ACCEPTED" },
+      );
     }
     const updated = await this.transferStore.transition(userId, id, t.state, {
       state: "cancelled",
@@ -458,6 +463,16 @@ export class FileService {
       throw new AppError(ErrorCode.NOT_FOUND, "Transfer not found", 404);
     }
     return updated;
+  }
+
+  async cancelOwned(t: Transfer): Promise<boolean> {
+    if (!this.runner && this.transferStore.coordinateCancel)
+      throw new AppError(ErrorCode.INTERNAL_ERROR, "Transfer backend unavailable", 503);
+    if (t.state !== "running" && this.runner?.discardSession) {
+      await this.runner.discardSession(t.id, t.userId);
+      return true;
+    }
+    return t.state === "queued" || ((await this.runner?.cancel(t.id, t.userId)) ?? true);
   }
 
   reconcileInterruptedTransfers(): Promise<number> {

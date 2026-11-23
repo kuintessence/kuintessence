@@ -10,10 +10,13 @@ test("download content binding uses authorized NetDrive metadata rather than cli
   const dispatcher = new AgentDispatcher();
   const registry = new TransferRegistry();
   let received = false;
+  let requestId = "";
   dispatcher.register("agent", {
     push: (message) => {
       if (message.payload.case !== "fileTransferRequest") return;
       received = true;
+      requestId = message.payload.value.requestId;
+      expect(message.payload.value.transferId).toBe("download");
       expect(message.payload.value.totalBytes).toBe(6n);
       expect(message.payload.value.expectedSha256).toBe("a".repeat(64));
       expect(message.payload.value.sourceUrl).toBe("https://object.invalid/authorized");
@@ -46,7 +49,7 @@ test("download content binding uses authorized NetDrive metadata rather than cli
     );
     expect(received).toBe(true);
   } finally {
-    registry.cancel("download");
+    registry.cancel(requestId);
   }
 });
 
@@ -78,10 +81,13 @@ test("new Server runner restores the persisted uploadId rather than creating ano
   } as unknown as NetDriveService;
   const dispatcher = new AgentDispatcher();
   const uploadIds: string[] = [];
+  let requestId = "";
   dispatcher.register("agent", {
     push: (message) => {
-      if (message.payload.case === "fileTransferRequest")
+      if (message.payload.case === "fileTransferRequest") {
+        requestId = message.payload.value.requestId;
         uploadIds.push(message.payload.value.uploadId);
+      }
     },
     close() {},
   });
@@ -101,16 +107,16 @@ test("new Server runner restores the persisted uploadId rather than creating ano
   };
   try {
     await new TransferRunner(deps).start("owner", "transfer", data, () => {});
-    registry.cancel("transfer");
+    registry.cancel(requestId);
     const restarted = new TransferRunner(deps);
     await restarted.start("owner", "transfer", data, () => {});
     expect(minted).toBe(1);
     expect(restored).toBe(1);
     expect(uploadIds).toEqual(["original", "original"]);
     await expect(
-      restarted.mintPartUrlsFor("transfer", [1], "agent", "superseded-upload"),
+      restarted.mintPartUrlsFor(requestId, [1], "agent", "superseded-upload"),
     ).rejects.toThrow("upload binding mismatch");
-    await expect(restarted.mintPartUrlsFor("transfer", [1], "another-agent")).rejects.toThrow(
+    await expect(restarted.mintPartUrlsFor(requestId, [1], "another-agent")).rejects.toThrow(
       "binding mismatch",
     );
     await expect(
@@ -122,7 +128,7 @@ test("new Server runner restores the persisted uploadId rather than creating ano
       ),
     ).rejects.toThrow("binding changed");
   } finally {
-    registry.cancel("transfer");
+    registry.cancel(requestId);
   }
 });
 
@@ -130,11 +136,14 @@ test("failed finalize keeps its durable completion and restarted Server finalize
   let session: TransferSession | undefined;
   let attempts = 0;
   let dispatches = 0;
+  let requestId = "";
   let aborts = 0;
   const registry = new TransferRegistry();
   const dispatcher = new AgentDispatcher();
   dispatcher.register("agent", {
-    push: () => {
+    push: (message) => {
+      if (message.payload.case === "fileTransferRequest")
+        requestId = message.payload.value.requestId;
       dispatches++;
     },
     close() {},
@@ -183,7 +192,7 @@ test("failed finalize keeps its durable completion and restarted Server finalize
   await first.start("owner", "transfer", data, (event) => {
     if (event.state === "failed") failed.resolve();
   });
-  registry.update("transfer", {
+  registry.update(requestId, {
     state: "succeeded",
     copiedBytes: 4,
     sha256: "a".repeat(64),
