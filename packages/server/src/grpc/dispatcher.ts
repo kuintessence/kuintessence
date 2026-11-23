@@ -693,6 +693,7 @@ export class AgentDispatcher {
       targetPath?: string;
       totalBytes: number;
       expectedSha256?: string;
+      workflowInput?: boolean;
       transferId?: string;
       /** Multipart cluster_to_cloud: the Server-pre-initiated upload id. */
       uploadId?: string;
@@ -715,6 +716,7 @@ export class AgentDispatcher {
           totalBytes: BigInt(payload.totalBytes),
           expectedSha256: payload.expectedSha256 ?? "",
           transferId: payload.transferId ?? requestId,
+          workflowInput: payload.workflowInput ?? false,
           uploadId: payload.uploadId ?? "",
           commitToken: payload.commitToken ?? "",
           partSize: BigInt(payload.partSize ?? 0),

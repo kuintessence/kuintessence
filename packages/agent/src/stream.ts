@@ -4753,6 +4753,7 @@ export class AgentStream {
             targetPath: r.targetPath,
             totalBytes: Number(r.totalBytes),
             expectedSha256: r.expectedSha256,
+            workflowInput: r.workflowInput,
             uploadId: r.uploadId,
             partSize: Number(r.partSize),
           },
@@ -5346,6 +5347,7 @@ export class AgentStream {
           targetPath,
           this.lifecycleController.signal,
           "job-input",
+          false,
           input.expectedSha256
             ? { sha256: input.expectedSha256, size: Number(input.totalBytes) }
             : undefined,
@@ -5861,6 +5863,7 @@ export class AgentStream {
       targetPath: string;
       totalBytes: number;
       expectedSha256?: string;
+      workflowInput?: boolean;
       uploadId: string;
       partSize: number;
     },
@@ -5887,7 +5890,8 @@ export class AgentStream {
             req.sourceUrl,
             req.targetPath,
             signal,
-            "transfer",
+            req.workflowInput ? "job-input" : "transfer",
+            true,
             req.expectedSha256 ? { sha256: req.expectedSha256, size: req.totalBytes } : undefined,
           );
         } else {
@@ -5948,6 +5952,7 @@ export class AgentStream {
     targetPath: string,
     signal: AbortSignal,
     purpose: "transfer" | "job-input",
+    reportProgress: boolean,
     content?: { sha256: string; size: number },
   ): Promise<void> {
     const argv = buildCloudToClusterArgv(
@@ -5961,7 +5966,7 @@ export class AgentStream {
       true,
       purpose,
     );
-    await this.runDownloadCommand(argv, requestId, signal, purpose === "transfer", content?.sha256);
+    await this.runDownloadCommand(argv, requestId, signal, reportProgress, content?.sha256);
   }
 
   private async runDownloadCommand(

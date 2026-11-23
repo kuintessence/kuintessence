@@ -36,6 +36,7 @@ Server 对 NetDrive 下载下发已授权文件的真实大小和 `expected_sha2
 Server 在下发下载 URL 和内容绑定前复查授权。只有提供可信摘要的主机下载才登记可回收的部分文件。
 
 容器模式使用提交调度作业的账号创建工作目录和暂存输入文件，作业可直接读取自己的输入。
+对于先传文件再派发作业的流程，Server 在传输请求中设置 `workflow_input`，收到暂存成功回执后再派发。
 
 容器来源的 multipart 上传现在与主机上传使用相同的持久 checkpoint（需配置 Agent 的 transfer state 目录），
 绑定稳定的 transfer_id、upload_id、对象大小、partSize 和每个完成 part 的 SHA-256/ETag。

@@ -1132,6 +1132,8 @@ message FileTransferRequest {
   string expected_sha256 = 11;
   // Stable checkpoint identity across distinct request_id attempts.
   string transfer_id = 12;
+  // Pre-dispatch staging must create private directories as the scheduler job user.
+  bool workflow_input = 13;
 }
 
 // Server→Agent cooperative cancellation for an in-flight FileTransferRequest.
