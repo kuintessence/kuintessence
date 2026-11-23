@@ -78,11 +78,14 @@ test("mirror sources and native binaries publish as one inventory and shared byt
     const objects = join(root, "kq-mirror-objects");
     await unlink(join(objects, hash(src)));
     await writeFile(join(objects, hash(binary)), "broke!");
+    await expect(a.openFile(ids[0], files[0].path)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(a.openFile(ids[0], files[1].path)).rejects.toMatchObject({ statusCode: 404 });
     await a.enqueue(ids[0], inventory);
     await a.tick();
     await a.tick();
     expect(await (await b.openFile(ids[0], files[0].path)).text()).toBe(src);
     expect(await (await b.openFile(ids[0], files[1].path)).text()).toBe(binary);
+    expect(await (await b.openFile(ids[1], files[0].path)).text()).toBe(src);
     expect(calls).toBe(prior + 2);
     await a.release(ids[0]);
     await a.tick();

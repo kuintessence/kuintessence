@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, mkdir, open, opendir, realpath, rename, unlink } from "node:fs/promises";
+import { type BigIntStats, constants } from "node:fs";
+import {
+  type FileHandle,
+  lstat,
+  mkdir,
+  open,
+  opendir,
+  realpath,
+  rename,
+  unlink,
+} from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { Readable } from "node:stream";
 import {
@@ -40,14 +49,23 @@ async function remove(path: string) {
     if (err.code !== "ENOENT") throw err;
   });
 }
-// Resync checks metadata in the request; the worker hashes changed files under the digest lock.
+function stamp(stat: BigIntStats) {
+  return [stat.ino, stat.size, stat.ctimeNs, stat.mtimeNs].join("/");
+}
+async function verifyFile(file: FileHandle, stat: BigIntStats, size: number, digest: string) {
+  if (!stat.isFile() || Number(stat.size) !== size) return false;
+  const hash = createHash("sha256");
+  for await (const chunk of file.createReadStream({ start: 0, autoClose: false }))
+    hash.update(chunk);
+  return hash.digest("hex") === digest && stamp(await file.stat({ bigint: true })) === stamp(stat);
+}
 async function objectStamp(dir: string, digest: string) {
   const file = await lstat(join(dir, digest), { bigint: true }).catch(
     (err: NodeJS.ErrnoException) => {
       if (err.code !== "ENOENT") throw err;
     },
   );
-  return file?.isFile() ? [file.ino, file.size, file.ctimeNs, file.mtimeNs].join("/") : null;
+  return file?.isFile() ? stamp(file) : null;
 }
 function fileUrl(asset: string, path: string) {
   return `/api/software/mirror-cache/${asset}/files/${path.split("/").map(encodeURIComponent).join("/")}`;
@@ -182,16 +200,11 @@ export class SoftwareMirrorWorker {
       if (e.code !== "ENOENT") throw e;
       return null;
     });
-    if (!existing) return false;
+    if (!existing) return null;
     try {
-      if (!(await existing.stat()).isFile()) throw new Error("Invalid mirror object");
-      const h = createHash("sha256");
-      let n = 0;
-      for await (const chunk of existing.createReadStream({ autoClose: false })) {
-        n += chunk.length;
-        h.update(chunk);
-      }
-      return n === f.sizeBytes && h.digest("hex") === f.sha256;
+      const stat = await existing.stat({ bigint: true });
+      if (!stat.isFile()) throw new Error("Invalid mirror object");
+      return (await verifyFile(existing, stat, f.sizeBytes, f.sha256)) ? stamp(stat) : null;
     } finally {
       await existing.close();
     }
@@ -200,7 +213,8 @@ export class SoftwareMirrorWorker {
     this.validateSource(f.sourceUrl);
     const dest = join(dir, f.sha256),
       temp = dest + ".partial";
-    if (await this.validObject(dir, f)) return;
+    const verified = await this.validObject(dir, f);
+    if (verified) return verified;
     await remove(temp);
     const out = await open(temp, "wx", 0o600);
     try {
@@ -231,6 +245,7 @@ export class SoftwareMirrorWorker {
       } finally {
         await directory.close();
       }
+      return stamp(await out.stat({ bigint: true }));
     } finally {
       await out.close();
       await remove(temp);
@@ -255,11 +270,9 @@ export class SoftwareMirrorWorker {
         sourceUrl: row.sourceUrl,
       });
       await lock(tx, f.sha256);
-      let verifiedStamp: string | null;
+      let verifiedStamp: string;
       try {
-        await this.fetchFile(dir, f);
-        verifiedStamp = await objectStamp(dir, f.sha256);
-        if (!verifiedStamp) throw new Error("Verified mirror object missing");
+        verifiedStamp = await this.fetchFile(dir, f);
       } catch {
         await tx
           .update(cache)
@@ -331,18 +344,31 @@ export class SoftwareMirrorWorker {
       const file = await open(
         join(dir, f.sha256),
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      );
+      ).catch((err: NodeJS.ErrnoException) => {
+        if (err.code === "ENOENT" || err.code === "ELOOP") throw missing();
+        throw err;
+      });
       try {
-        const stat = await file.stat();
-        if (!stat.isFile() || stat.size !== f.provenance.sizeBytes) throw missing();
-        return new Response(Readable.toWeb(file.createReadStream()) as ReadableStream<Uint8Array>, {
-          headers: {
-            "content-type": "application/octet-stream",
-            "content-length": String(stat.size),
-            etag: '"' + f.sha256 + '"',
-            "cache-control": "private, no-store",
+        const stat = await file.stat({ bigint: true });
+        const size = f.provenance.sizeBytes;
+        if (!stat.isFile() || typeof size !== "number" || Number(stat.size) !== size)
+          throw missing();
+        if (
+          f.provenance.verifiedStamp !== stamp(stat) &&
+          !(await verifyFile(file, stat, size, f.sha256))
+        )
+          throw missing();
+        return new Response(
+          Readable.toWeb(file.createReadStream({ start: 0 })) as ReadableStream<Uint8Array>,
+          {
+            headers: {
+              "content-type": "application/octet-stream",
+              "content-length": String(stat.size),
+              etag: '"' + f.sha256 + '"',
+              "cache-control": "private, no-store",
+            },
           },
-        });
+        );
       } catch (e) {
         await file.close();
         throw e;

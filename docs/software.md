@@ -106,7 +106,7 @@ deprecated 通常只提示，revoked、hidden、缺 use grant 或 算力中心�
 | `GET /api/software/assets/:assetId/impact` | 下游、授权、请求和 cache 影响 |
 | `GET /api/software/mirror-cache/status` | mirror/cache 状态 |
 
-对相同清单再次发起软件镜像同步时，Server 检查已缓存文件的状态。缺失或发生变化的文件会重新排队，后台按清单中的大小和 SHA-256 校验并修复。
+对相同清单再次发起软件镜像同步时，Server 检查已缓存文件的状态。缺失或发生变化的文件会重新排队，后台按清单中的大小和 SHA-256 校验并修复。下载时，文件状态与上次校验记录不符会触发摘要复核。文件缺失或内容不符时，接口返回 HTTP 404。
 
 普通 owner 提交自己的 draft 需要 `software_provider` capability；
 平台管理员可维护所有资产。审核、fork、发布和撤销属于平台管理员。
