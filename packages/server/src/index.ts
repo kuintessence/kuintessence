@@ -791,15 +791,22 @@ const workflowArtifactService = new WorkflowArtifactService(
   (replica) => sandboxArtifactReleaseService.release(replica),
 );
 
+const artifactGcStop = new AbortController();
+let artifactGcSweep: Promise<void> | undefined;
+let artifactGcTimer: ReturnType<typeof setInterval> | undefined;
 if (config.SANDBOX_ARTIFACT_GC_INTERVAL_SEC > 0) {
-  setInterval(() => {
-    workflowArtifactService
-      .collectGarbage()
+  artifactGcTimer = setInterval(() => {
+    artifactGcSweep ??= workflowArtifactService
+      .collectGarbage(new Date(), artifactGcStop.signal)
       .then((removed) => {
         if (removed > 0) logger.info({ removed }, "Released expired Sandbox artifact replicas");
       })
-      .catch((err) => logger.warn({ err }, "Sandbox artifact GC sweep failed"));
-  }, config.SANDBOX_ARTIFACT_GC_INTERVAL_SEC * 1_000).unref?.();
+      .catch((err) => logger.warn({ err }, "Sandbox artifact GC sweep failed"))
+      .finally(() => {
+        artifactGcSweep = undefined;
+      });
+  }, config.SANDBOX_ARTIFACT_GC_INTERVAL_SEC * 1_000);
+  artifactGcTimer.unref();
 }
 const sandboxExecutionResolver = new SandboxExecutionResolver(db);
 const sandboxExecutionStats = new SandboxExecutionStatsService(db);
@@ -3204,6 +3211,9 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "Server shutting down");
   try {
     clearInterval(terminalExpiryTimer);
+    clearInterval(artifactGcTimer);
+    artifactGcStop.abort();
+    await artifactGcSweep;
     relay?.stop();
     clearInterval(transferTimer);
     await transferMaintenance;

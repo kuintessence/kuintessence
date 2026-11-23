@@ -428,10 +428,9 @@ Global 用 beam-search 联合规划静态可见图（默认 width 64），Lookah
 软计划在 dispatch 前重查全部硬过滤，保存 plan version、目标分解与替代原因，
 预算超 cap 进入 awaiting_approval。
 
-Ephemeral 本地 replica 默认 workflow terminal 后 24 小时过期；
-Checkpoint 可先同站消费，但 workflow 完成前须持久化；
-Persistent 必须上传并完成 size/hash 校验后才成功。
-跨站和最终输出走 NetDrive；TTL GC 等待 Agent release ACK，只删除受管安全路径。
+Ephemeral 副本默认从数据库记录的工作流结束时间起保留 24 小时。Server 重启后，回收扫描会补上遗漏的到期时间。同一来源的登记重放会沿用已定期限。回收前，Server 重新核对工作流终态、副本状态和到期时间，并锁定当前记录。Agent 只清理受管目录内的本地路径，Server 收到确认后才将副本标为过期。Agent 离线或确认超时会留到下轮重试。
+
+Checkpoint 可先供同站任务使用。工作流在完成前会等待持久化，包括等待期间登记的检查点。Persistent 须上传并通过大小和哈希校验才算成功。跨站和最终输出走 NetDrive。
 
 `/software/scripts` 提供目录、draft 和 revision 编辑。
 保存新 revision 与更新资产在同一 transaction；draft 删除需 owner/组织/平台权限，

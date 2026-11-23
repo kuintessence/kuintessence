@@ -276,6 +276,145 @@ test.each([
   expect(await f.make().resolve(f.ref)).not.toEqual(result);
 });
 
+test("GC rebuilds a missed expiry from the run end and a replay cannot revive a released source", async () => {
+  const f = await fixture(false);
+  const finished = new Date("2026-01-05T00:00:00Z");
+  const deadline = new Date("2026-01-06T00:00:00Z");
+  const removed: string[] = [];
+  const gc = new WorkflowArtifactService(store, undefined, async (item) => {
+    removed.push(item.storageRef);
+  });
+  await db
+    .update(workflowRuns)
+    .set({ status: "completed", completedAt: finished })
+    .where(eq(workflowRuns.id, f.workflowRunId));
+  expect(await gc.collectGarbage(new Date(deadline.getTime() - 1))).toBe(0);
+  const replay = await store.registerLocal(f.registration);
+  expect(replay.replica.expiresAt).toEqual(deadline);
+  await gc.markWorkflowTerminal(f.workflowRunId, new Date(deadline));
+  expect(await gc.collectGarbage(deadline)).toBe(1);
+  expect(removed).toEqual([f.replica.storageRef]);
+  expect((await store.registerLocal(f.registration)).replica.status).toBe("expired");
+  const late = await store.registerLocal({
+    ...f.registration,
+    descriptor: "extra",
+    storageRef: "/isolated/extra",
+  });
+  expect(late.replica.expiresAt).toEqual(deadline);
+  expect(await gc.collectGarbage(deadline)).toBe(1);
+  expect(removed).toEqual([f.replica.storageRef, "/isolated/extra"]);
+});
+
+test("a replaced mutable output at a released path is scheduled for cleanup again", async () => {
+  const f = await fixture(false);
+  const input = {
+    ...f.registration,
+    producerJobId: null,
+    descriptor: "scratch",
+    storageRef: "/isolated/scratch",
+  };
+  const { replica } = await store.registerLocal(input);
+  const terminal = new Date("2026-02-01T00:00:00Z"),
+    deadline = new Date("2026-02-02T00:00:00Z");
+  await db
+    .update(workflowRuns)
+    .set({ status: "completed", completedAt: terminal })
+    .where(eq(workflowRuns.id, f.workflowRunId));
+  await store.expireEphemeral(f.workflowRunId, 86400000);
+  const removed: string[] = [];
+  const release = async (item: { storageRef: string }) => {
+    removed.push(item.storageRef);
+  };
+  expect(await store.releaseExpired(replica.id, deadline, release)).toBe(true);
+  const replacement = await store.registerLocal({ ...input, contentHash: "d".repeat(64) });
+  expect(replacement.replica.expiresAt).toEqual(deadline);
+  expect(await store.releaseExpired(replacement.replica.id, deadline, release)).toBe(true);
+  expect(removed).toEqual([input.storageRef, input.storageRef]);
+  await store.releaseExpired(f.replica.id, deadline, release);
+});
+
+test("GC preserves active and durable sources and drains only the current release on shutdown", async () => {
+  const active = await fixture(false),
+    durable = await fixture(false, "Checkpoint"),
+    ephemeral = await fixture(false);
+  const second = await store.registerLocal({
+    ...ephemeral.registration,
+    descriptor: "second",
+    storageRef: "/isolated/second",
+  });
+  const finished = new Date("2026-01-05T00:00:00Z"),
+    now = new Date("2026-01-07T00:00:00Z");
+  await db
+    .update(workflowRuns)
+    .set({ status: "failed", completedAt: finished })
+    .where(inArray(workflowRuns.id, [durable.workflowRunId, ephemeral.workflowRunId]));
+  await db
+    .update(artifactReplicas)
+    .set({ expiresAt: finished })
+    .where(inArray(artifactReplicas.id, [active.replica.id, durable.replica.id]));
+  const stop = new AbortController();
+  const removed: string[] = [];
+  const gc = new WorkflowArtifactService(store, undefined, async (replica) => {
+    removed.push(replica.id);
+    stop.abort();
+  });
+  expect(await gc.collectGarbage(now, stop.signal)).toBe(1);
+  expect(await gc.collectGarbage(now)).toBe(1);
+  expect(removed.sort()).toEqual([ephemeral.replica.id, second.replica.id].sort());
+  expect(
+    (await store.availableReplicas([durable.artifact.id, active.artifact.id]))
+      .map((item) => item.id)
+      .sort(),
+  ).toEqual([durable.replica.id, active.replica.id].sort());
+});
+
+test("GC rechecks expiry, skips in-flight releases and retries a missing Agent acknowledgement", async () => {
+  const f = await fixture(false);
+  const deadline = new Date("2026-03-03T00:00:00Z");
+  await db
+    .update(workflowRuns)
+    .set({ status: "cancelled", completedAt: new Date("2026-03-02T00:00:00Z") })
+    .where(eq(workflowRuns.id, f.workflowRunId));
+  await store.expireEphemeral(f.workflowRunId, 86400000);
+  expect(await store.collectExpired(deadline)).toContain(f.replica.id);
+  const extend = new Date(deadline.getTime() + 60000);
+  await db
+    .update(artifactReplicas)
+    .set({ expiresAt: extend })
+    .where(eq(artifactReplicas.id, f.replica.id));
+  let releases = 0;
+  const ack = Promise.withResolvers<void>(),
+    started = Promise.withResolvers<void>();
+  const release = async () => {
+    releases++;
+    started.resolve();
+    await ack.promise;
+  };
+  expect(await store.releaseExpired(f.replica.id, deadline, release)).toBe(false);
+  expect(releases).toBe(0);
+  const first = store.releaseExpired(f.replica.id, extend, release);
+  await started.promise;
+  try {
+    expect(
+      await new PgArtifactStore(db).releaseExpired(f.replica.id, extend, async () => {
+        releases++;
+      }),
+    ).toBe(false);
+  } finally {
+    ack.reject(new Error("Agent offline"));
+    await expect(first).rejects.toThrow("Agent offline");
+  }
+  expect(releases).toBe(1);
+  expect(await store.collectExpired(extend)).toContain(f.replica.id);
+  expect(
+    await store.releaseExpired(f.replica.id, extend, async () => {
+      releases++;
+    }),
+  ).toBe(true);
+  expect(await store.collectExpired(extend)).not.toContain(f.replica.id);
+  expect(releases).toBe(2);
+});
+
 test("a late failure from a concurrent publisher leaves the committed replica available", async () => {
   const f = await fixture(false);
   const attempt = await store.beginPersistence(f.artifact, f.replica);

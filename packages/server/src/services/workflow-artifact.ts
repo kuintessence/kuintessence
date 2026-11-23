@@ -71,6 +71,18 @@ export interface PendingArtifactPersistence {
   ownerId: string | null;
 }
 
+const defaultEphemeralTtlMs = 24 * 60 * 60 * 1000;
+const terminalStatuses = ["completed", "cancelled", "failed"];
+const terminalRun = inArray(workflowRuns.status, terminalStatuses);
+const expiredReplica = (now: Date) =>
+  and(
+    inArray(artifactReplicas.status, ["available", "failed"]),
+    lte(artifactReplicas.expiresAt, now),
+    eq(workflowArtifacts.durability, "Ephemeral"),
+    terminalRun,
+    isNotNull(workflowRuns.completedAt),
+  );
+
 export interface ArtifactStore {
   publishedArtifact(id: string, ownerId: string): Promise<ArtifactRecord | undefined>;
   pendingPersistence(workflowRunId: string): Promise<PendingArtifactPersistence[]>;
@@ -87,10 +99,18 @@ export interface ArtifactStore {
     result: { netdriveFileId: string | null; storageRef: string },
   ): Promise<void>;
   failPersistence(replicaId: string, reason: string): Promise<void>;
-  expireEphemeral(workflowRunId: string, expiresAt: Date): Promise<void>;
+  expireEphemeral(
+    workflowRunId: string | undefined,
+    ttlMs: number,
+    terminalAt?: Date,
+  ): Promise<void>;
   availableReplicas(artifactIds: readonly string[]): Promise<ArtifactReplicaRecord[]>;
-  collectExpired(now: Date): Promise<ArtifactReplicaRecord[]>;
-  markExpired(replicaIds: readonly string[]): Promise<void>;
+  collectExpired(now: Date): Promise<string[]>;
+  releaseExpired(
+    id: string,
+    now: Date,
+    removeLocal?: (replica: ArtifactReplicaRecord) => Promise<void>,
+  ): Promise<boolean>;
 }
 
 export interface ArtifactPersister {
@@ -159,6 +179,18 @@ export class PgArtifactStore implements ArtifactStore {
   ): Promise<{ artifact: ArtifactRecord; replica: ArtifactReplicaRecord }> {
     const fileMembers = validateArtifactMembers(input);
     return this.db.transaction(async (tx) => {
+      const [run] =
+        input.durability === "Ephemeral"
+          ? await tx
+              .select({ completedAt: workflowRuns.completedAt, status: workflowRuns.status })
+              .from(workflowRuns)
+              .where(eq(workflowRuns.id, input.workflowRunId))
+              .for("share")
+          : [];
+      const expiresAt =
+        run?.completedAt && terminalStatuses.includes(run.status)
+          ? new Date(run.completedAt.getTime() + defaultEphemeralTtlMs)
+          : null;
       const values = {
         fileMembers,
         workflowRunId: input.workflowRunId,
@@ -232,6 +264,23 @@ export class PgArtifactStore implements ArtifactStore {
         await tx
           .delete(workflowArtifactFiles)
           .where(eq(workflowArtifactFiles.artifactId, artifact.id));
+      if (expiresAt && input.producerJobId) {
+        // A completed job has immutable outputs. A delayed replay cannot revive its released copy.
+        const [released] = await tx
+          .select()
+          .from(artifactReplicas)
+          .where(
+            and(
+              eq(artifactReplicas.artifactId, artifact.id),
+              eq(artifactReplicas.agentId, input.agentId),
+              eq(artifactReplicas.storageKind, "agent-local"),
+              eq(artifactReplicas.storageRef, input.storageRef),
+              eq(artifactReplicas.status, "expired"),
+            ),
+          );
+        if (released)
+          return { artifact: artifactRecord(artifact), replica: replicaRecord(released) };
+      }
       const [replica] = await tx
         .insert(artifactReplicas)
         .values({
@@ -243,6 +292,7 @@ export class PgArtifactStore implements ArtifactStore {
           storageRef: input.storageRef,
           status: "available",
           verifiedAt: new Date(),
+          expiresAt,
         })
         .onConflictDoUpdate({
           target: [
@@ -256,7 +306,9 @@ export class PgArtifactStore implements ArtifactStore {
             storageRef: input.storageRef,
             status: "available",
             verifiedAt: new Date(),
-            expiresAt: null,
+            expiresAt: expiresAt
+              ? sql`coalesce(${artifactReplicas.expiresAt},${expiresAt.toISOString()}::timestamp)`
+              : null,
             failureReason: null,
             updatedAt: new Date(),
           },
@@ -446,24 +498,26 @@ export class PgArtifactStore implements ArtifactStore {
       .where(and(eq(artifactReplicas.id, replicaId), eq(artifactReplicas.status, "persisting")));
   }
 
-  async expireEphemeral(workflowRunId: string, expiresAt: Date): Promise<void> {
-    const artifacts = await this.db
-      .select({ id: workflowArtifacts.id })
-      .from(workflowArtifacts)
-      .where(
-        and(
-          eq(workflowArtifacts.workflowRunId, workflowRunId),
-          eq(workflowArtifacts.durability, "Ephemeral"),
-        ),
-      );
-    if (artifacts.length === 0) return;
+  async expireEphemeral(workflowRunId: string | undefined, ttlMs: number, terminalAt?: Date) {
     await this.db
       .update(artifactReplicas)
-      .set({ expiresAt, updatedAt: new Date() })
+      .set({
+        expiresAt: terminalAt
+          ? new Date(terminalAt.getTime() + ttlMs)
+          : sql`${workflowRuns.completedAt} + ${ttlMs} * interval '1 millisecond'`,
+        updatedAt: new Date(),
+      })
+      .from(workflowArtifacts)
+      .innerJoin(workflowRuns, eq(workflowRuns.id, workflowArtifacts.workflowRunId))
       .where(
-        inArray(
-          artifactReplicas.artifactId,
-          artifacts.map((artifact) => artifact.id),
+        and(
+          eq(artifactReplicas.artifactId, workflowArtifacts.id),
+          workflowRunId ? eq(workflowRuns.id, workflowRunId) : undefined,
+          terminalRun,
+          isNotNull(workflowRuns.completedAt),
+          eq(workflowArtifacts.durability, "Ephemeral"),
+          isNull(artifactReplicas.expiresAt),
+          not(eq(artifactReplicas.status, "expired")),
         ),
       );
   }
@@ -482,25 +536,41 @@ export class PgArtifactStore implements ArtifactStore {
     return rows.map(replicaRecord);
   }
 
-  async collectExpired(now: Date): Promise<ArtifactReplicaRecord[]> {
+  async collectExpired(now: Date) {
     const rows = await this.db
-      .select()
+      .select({ id: artifactReplicas.id })
       .from(artifactReplicas)
-      .where(
-        and(
-          inArray(artifactReplicas.status, ["available", "failed"]),
-          lte(artifactReplicas.expiresAt, now),
-        ),
-      );
-    return rows.map(replicaRecord);
+      .innerJoin(workflowArtifacts, eq(workflowArtifacts.id, artifactReplicas.artifactId))
+      .innerJoin(workflowRuns, eq(workflowRuns.id, workflowArtifacts.workflowRunId))
+      .where(expiredReplica(now));
+    return rows.map((row) => row.id);
   }
 
-  async markExpired(replicaIds: readonly string[]): Promise<void> {
-    if (replicaIds.length === 0) return;
-    await this.db
-      .update(artifactReplicas)
-      .set({ status: "expired", updatedAt: new Date() })
-      .where(inArray(artifactReplicas.id, [...replicaIds]));
+  async releaseExpired(
+    id: string,
+    now: Date,
+    removeLocal?: (replica: ArtifactReplicaRecord) => Promise<void>,
+  ) {
+    return this.db.transaction(async (tx) => {
+      // Hold the current replica and artifact through the Agent acknowledgement.
+      const [current] = await tx
+        .select({ replica: artifactReplicas })
+        .from(artifactReplicas)
+        .innerJoin(workflowArtifacts, eq(workflowArtifacts.id, artifactReplicas.artifactId))
+        .innerJoin(workflowRuns, eq(workflowRuns.id, workflowArtifacts.workflowRunId))
+        .where(and(eq(artifactReplicas.id, id), expiredReplica(now)))
+        .for("update", { of: [workflowArtifacts, artifactReplicas], skipLocked: true });
+      if (!current) return false;
+      if (current.replica.storageKind === "agent-local") {
+        if (!removeLocal) return false;
+        await removeLocal(replicaRecord(current.replica));
+      }
+      await tx
+        .update(artifactReplicas)
+        .set({ status: "expired", updatedAt: new Date() })
+        .where(eq(artifactReplicas.id, id));
+      return true;
+    });
   }
 }
 
@@ -543,42 +613,48 @@ export class WorkflowArtifactService {
   }
 
   async awaitCheckpointPersistence(workflowRunId: string): Promise<void> {
-    const tasks = [...(this.checkpointTasks.get(workflowRunId) ?? [])];
-    // Wait for all local transfers before retrying their persisted records.
-    const results = await Promise.allSettled(tasks);
-    this.checkpointTasks.delete(workflowRunId);
-    const failed = results.find((result) => result.status === "rejected");
-    if (failed?.status === "rejected") throw failed.reason;
-    for (const pending of await this.store.pendingPersistence(workflowRunId)) {
-      if (!pending.ownerId) throw new Error("Durable artifact has no workflow owner");
-      await this.persist(pending, pending.ownerId);
+    for (;;) {
+      const tasks = this.checkpointTasks.get(workflowRunId);
+      if (tasks?.size) {
+        const batch = [...tasks];
+        const results = await Promise.allSettled(batch);
+        for (const task of batch) tasks.delete(task);
+        if (!tasks.size && this.checkpointTasks.get(workflowRunId) === tasks)
+          this.checkpointTasks.delete(workflowRunId);
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+        if (this.checkpointTasks.has(workflowRunId)) continue;
+      }
+      for (const pending of await this.store.pendingPersistence(workflowRunId)) {
+        if (!pending.ownerId) throw new Error("Durable artifact has no workflow owner");
+        await this.persist(pending, pending.ownerId);
+      }
+      if (!this.checkpointTasks.has(workflowRunId)) return;
     }
   }
 
   async markWorkflowTerminal(
     workflowRunId: string,
-    terminalAt = new Date(),
-    ttlMs = 24 * 60 * 60 * 1000,
-  ): Promise<void> {
-    await this.store.expireEphemeral(workflowRunId, new Date(terminalAt.getTime() + ttlMs));
+    terminalAt?: Date,
+    ttlMs = defaultEphemeralTtlMs,
+  ) {
+    this.checkpointTasks.delete(workflowRunId);
+    await this.store.expireEphemeral(workflowRunId, ttlMs, terminalAt);
   }
 
-  async collectGarbage(now = new Date()): Promise<number> {
-    const expired = await this.store.collectExpired(now);
-    const removed: string[] = [];
-    for (const replica of expired) {
+  async collectGarbage(now = new Date(), signal?: AbortSignal) {
+    // Recover missed terminal notifications and replicas recorded after a run ended.
+    await this.store.expireEphemeral(undefined, defaultEphemeralTtlMs);
+    let removed = 0;
+    for (const id of await this.store.collectExpired(now)) {
+      if (signal?.aborted) break;
       try {
-        if (replica.storageKind === "agent-local") {
-          if (!this.removeLocal) continue;
-          await this.removeLocal(replica);
-        }
-        removed.push(replica.id);
+        if (await this.store.releaseExpired(id, now, this.removeLocal)) removed++;
       } catch (err) {
-        this.logger.warn({ err, replicaId: replica.id }, "Artifact replica GC failed");
+        this.logger.warn({ err, replicaId: id }, "Artifact replica GC failed");
       }
     }
-    await this.store.markExpired(removed);
-    return removed.length;
+    return removed;
   }
 
   persist(

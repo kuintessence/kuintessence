@@ -97,8 +97,8 @@ class MemoryArtifactStore implements ArtifactStore {
     }
   }
 
-  async expireEphemeral(_workflowRunId: string, expiresAt: Date) {
-    this.expiry = expiresAt;
+  async expireEphemeral(_workflowRunId: string | undefined, ttlMs: number, terminalAt?: Date) {
+    if (terminalAt) this.expiry = new Date(terminalAt.getTime() + ttlMs);
   }
 
   async availableReplicas() {
@@ -106,11 +106,18 @@ class MemoryArtifactStore implements ArtifactStore {
   }
 
   async collectExpired() {
-    return this.local ? [this.local] : [];
+    return this.local ? [this.local.id] : [];
   }
 
-  async markExpired() {
-    if (this.local) this.local.status = "expired";
+  async releaseExpired(
+    id: string,
+    _now: Date,
+    removeLocal?: (replica: ArtifactReplicaRecord) => Promise<void>,
+  ) {
+    if (!this.local || this.local.id !== id || !removeLocal) return false;
+    await removeLocal(this.local);
+    this.local.status = "expired";
+    return true;
   }
 }
 
@@ -172,6 +179,42 @@ describe("WorkflowArtifactService", () => {
     release?.();
     await completing;
     expect(completed).toBe(true);
+  });
+
+  test("a checkpoint failure registered while finalization is waiting is observed by both waiters", async () => {
+    const store = new MemoryArtifactStore();
+    const firstUpload = Promise.withResolvers<void>();
+    const secondUpload = Promise.withResolvers<void>();
+    const service = new WorkflowArtifactService(store, {
+      persist: async ({ artifact }) => {
+        await (artifact.descriptor === "first" ? firstUpload : secondUpload).promise;
+        return { netdriveFileId: "file", storageRef: "saved/file" };
+      },
+    });
+    const register = store.registerLocal.bind(store);
+    store.registerLocal = async (input) => {
+      const saved = await register(input);
+      saved.artifact.id = input.descriptor;
+      return saved;
+    };
+    // Another server has already published the durable rows; local waiters still observe their own tasks.
+    store.pendingPersistence = async () => [];
+    await service.registerLocal({ ...registration("Checkpoint"), descriptor: "first" });
+    const first = service.awaitCheckpointPersistence("run-1").then(
+      () => "completed",
+      (err) => String(err),
+    );
+    const second = service.awaitCheckpointPersistence("run-1").then(
+      () => "completed",
+      (err) => String(err),
+    );
+    await service.registerLocal({ ...registration("Checkpoint"), descriptor: "second" });
+    firstUpload.resolve();
+    await Bun.sleep(0);
+    secondUpload.reject(new Error("storage offline"));
+    for (const result of await Promise.all([first, second]))
+      expect(result).toContain("publication is pending");
+    await service.awaitCheckpointPersistence("run-1");
   });
 
   test("Ephemeral gets terminal plus 24 hour expiry and GC removes local data", async () => {
