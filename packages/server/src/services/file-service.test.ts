@@ -267,6 +267,33 @@ describe("FileService transfer dispatch lifecycle", () => {
     expect((await service.listTransfers("user-a"))[0]?.state).toBe(state);
   });
 
+  test("a late completion from an interrupted attempt cannot finish the resumed transfer", async () => {
+    const service = new FileService(new InMemoryFileTransferStore());
+    const callbacks: Parameters<FileTransferRunner["start"]>[3][] = [];
+    service.attachRunner({
+      ...recordingRunner([]),
+      start: async (_owner, _id, _data, onProgress) => {
+        callbacks.push(onProgress);
+      },
+    });
+    const created = await service.createTransfer("owner", transferData, "owner");
+    await waitForTransferState(service, "owner", "running");
+    await service.reconcileInterruptedTransfers();
+    await service.resumeTransfer("owner", created.id, {});
+    await waitForTransferState(service, "owner", "running");
+    const [old, current] = callbacks;
+    if (!old || !current) throw new Error("Expected two dispatch attempts");
+    old({ state: "succeeded", copiedBytes: 99 });
+    await Bun.sleep(0);
+    expect((await service.listTransfers("owner"))[0]?.state).toBe("running");
+    current({ state: "failed", copiedBytes: 3, error: "interrupted" });
+    await waitForTransferState(service, "owner", "failed");
+    expect((await service.listTransfers("owner"))[0]?.copiedBytes).toBe(3);
+    old({ state: "running", copiedBytes: 98 });
+    await service.cancelTransfer("owner", created.id);
+    expect((await service.listTransfers("owner"))[0]?.state).toBe("cancelled");
+  });
+
   test("marks only running transfers dispatched through the changed root", async () => {
     const store = new InMemoryFileTransferStore();
     const service = new FileService(store);

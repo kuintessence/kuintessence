@@ -12,7 +12,7 @@ import type { AuthzService } from "../authz/service";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { NetDriveCommitDb, NetDriveCommitResult, NetDriveService } from "./netdrive";
 import type { TransferProgressEvent, TransferRegistry } from "./transfer-registry";
-import type { TransferSessionStore } from "./transfer-session-store";
+import type { TransferSession, TransferSessionStore } from "./transfer-session-store";
 
 const TRANSFER_TIMEOUT_MS = 10 * 60_000;
 const TERMINAL_CANCEL_GUARD_MS = 60_000;
@@ -77,6 +77,7 @@ export class TransferRunner {
     transferId: string,
     data: TransferCreate,
     onProgress: TransferProgressCallback,
+    completionOnly = false,
   ): Promise<void> {
     if (!actorUserId) {
       this.markTerminal(transferId);
@@ -87,6 +88,7 @@ export class TransferRunner {
       data.direction === "cluster_to_cloud"
         ? await this.deps.sessionStore?.load(actorUserId, transferId)
         : undefined;
+    if (completionOnly && !saved?.completion) throw new Error("Persisted completion unavailable");
     const agentId =
       saved?.completion && (!data.agentId || data.agentId === saved.agentId)
         ? saved.agentId
@@ -112,7 +114,7 @@ export class TransferRunner {
       return;
     }
     if (data.direction === "cluster_to_cloud") {
-      await this.startClusterToCloud(actorUserId, active, transferId, data, onProgress);
+      await this.startClusterToCloud(actorUserId, active, transferId, data, onProgress, saved);
       return;
     }
     if (this.activeTransfers.get(transferId) === active) this.activeTransfers.delete(transferId);
@@ -125,6 +127,7 @@ export class TransferRunner {
   }
 
   async cancel(transferId: string, ownerId?: string): Promise<boolean> {
+    if (this.terminalTransfers.has(transferId)) return false;
     if (ownerId && this.deps.sessionStore && !this.activeTransfers.has(transferId)) {
       const saved = await this.deps.sessionStore.load(ownerId, transferId);
       if (saved) {
@@ -229,12 +232,12 @@ export class TransferRunner {
     transferId: string,
     data: TransferCreate,
     onProgress: TransferProgressCallback,
+    saved: TransferSession | undefined,
   ): Promise<void> {
     // Size is unknown at dispatch time (the agent spools first), so we always
     // pre-initiate a multipart upload with size 0 and let completeMultipart's
     // head-check validate the agent-reported size. A 1-part multipart is valid
     // for small outputs, so this single path covers all sizes.
-    const saved = await this.deps.sessionStore?.load(ownerId, transferId);
     if (
       saved &&
       (saved.agentId !== active.agentId ||

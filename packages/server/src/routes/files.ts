@@ -278,23 +278,22 @@ export function createFileRoutes(service: FileService, options: FileRouteOptions
 
   routes.post("/files/transfers/:id/resume", async (c) => {
     const actorUserId = requireLegacyFileActorUserId(c);
-    const transfer = (await service.listTransfers(actorUserId)).find(
-      (item) => item.id === c.req.param("id"),
-    );
-    if (!transfer) throw new AppError(ErrorCode.NOT_FOUND, "Transfer not found", 404);
-    const data = TransferCreateSchema.parse({
-      ...transfer,
-      totalBytes: transfer.totalBytes ?? undefined,
-      agentId: transfer.agentId ?? undefined,
-      siteId: transfer.siteId ?? undefined,
-    });
-    await requireTransferAgentExists(options.resolveAgentProviderOrg, data.agentId ?? null);
-    await resolveCloudTransferSource(c, actorUserId, options, data);
     const context = clusterFileRootAccessContext(c);
-    await requireTransferClusterPath(context, service, options, clusterFileRoots, data);
     return c.json(
-      await service.resumeTransfer(actorUserId, transfer.id, {
-        beforeDispatch: () =>
+      await service.resumeTransfer(actorUserId, c.req.param("id"), {
+        preflight: async (data, completionOnly) => {
+          await requireTransferAgentExists(options.resolveAgentProviderOrg, data.agentId ?? null);
+          await resolveCloudTransferSource(c, actorUserId, options, data);
+          await requireTransferClusterPath(
+            context,
+            service,
+            options,
+            clusterFileRoots,
+            data,
+            completionOnly,
+          );
+        },
+        beforeDispatch: (data) =>
           requireTransferRootAuthorization(context, options, clusterFileRoots, data),
       }),
     );
@@ -302,12 +301,6 @@ export function createFileRoutes(service: FileService, options: FileRouteOptions
 
   routes.post("/files/transfers/:id/cancel", async (c) => {
     const actorUserId = requireLegacyFileActorUserId(c);
-    const transfer = (await service.listTransfers(actorUserId)).find(
-      (item) => item.id === c.req.param("id"),
-    );
-    if (!transfer) {
-      throw new AppError(ErrorCode.NOT_FOUND, "Transfer not found", 404);
-    }
     return c.json(await service.cancelTransfer(actorUserId, c.req.param("id")));
   });
 
@@ -364,6 +357,7 @@ async function requireTransferClusterPath(
     agentId?: string;
     siteId?: string;
   },
+  completionOnly = false,
 ): Promise<void> {
   const clusterPath =
     data.direction === "cloud_to_cluster"
@@ -384,6 +378,7 @@ async function requireTransferClusterPath(
       allowedRoots,
     });
   }
+  if (completionOnly) return;
   const check = await service.checkClusterTransferPath(data.direction, clusterPath, {
     agentId: data.agentId,
     siteId: data.siteId,

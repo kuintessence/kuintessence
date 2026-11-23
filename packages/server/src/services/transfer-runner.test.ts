@@ -19,7 +19,9 @@ import { eq } from "drizzle-orm";
 import type { AuthzCheck, AuthzService, AuthzTuple } from "../authz/service";
 import { type AgentChannel, AgentDispatcher } from "../grpc/dispatcher";
 import { FakeMinioBackend } from "../storage/minio-client.test";
+import { FileService } from "./file-service";
 import { NetDriveService } from "./netdrive";
+import { PgFileTransferStore } from "./pg-file-transfer-store";
 import { TransferRegistry } from "./transfer-registry";
 import { TransferRunner } from "./transfer-runner";
 
@@ -114,6 +116,23 @@ describe("TransferRunner.startClusterToCloud (multipart)", () => {
     source: "/cluster/run1/out.dat",
     target: "outputs/run1/out.dat",
   };
+
+  test("PostgreSQL accepts terminal progress only for the current running attempt", async () => {
+    const store = new PgFileTransferStore(db);
+    const transfer = await new FileService(store).createTransfer(OWNER_ID, transferData, OWNER_ID);
+    const start = "2026-01-01T00:00:00.001Z";
+    await store.transition(OWNER_ID, transfer.id, "failed", { state: "running", startedAt: start });
+    const finish = { state: "succeeded" } as const;
+    expect(
+      await store.transition(OWNER_ID, transfer.id, "running", finish, "2026-01-01T00:00:00.000Z"),
+    ).toBeNull();
+    expect((await store.transition(OWNER_ID, transfer.id, "running", finish, start))?.state).toBe(
+      "succeeded",
+    );
+    expect(
+      await store.transition(OWNER_ID, transfer.id, "running", { state: "failed" }, start),
+    ).toBeNull();
+  });
 
   test("pushes a FileTransferRequest carrying uploadId/commitToken/partSize", async () => {
     const { runner, channel } = makeRunner();

@@ -4,6 +4,8 @@ import {
   ErrorCode,
   type Transfer,
   type TransferCreate,
+  TransferCreateSchema,
+  TransferSchema,
   type TransferState,
 } from "@kuintessence/shared";
 import type { AgentDispatcher } from "../grpc/dispatcher";
@@ -116,12 +118,13 @@ export interface FileTransferRunner {
     transferId: string,
     data: TransferCreate,
     onProgress: (event: TransferProgressEvent) => void,
+    completionOnly?: boolean,
   ): Promise<void>;
   cancel(transferId: string, ownerId?: string): Promise<boolean>;
 }
 
 export interface TransferDispatchOptions {
-  beforeDispatch?: () => Promise<TransferDispatchAuthorization | undefined>;
+  beforeDispatch?: (data: TransferCreate) => Promise<TransferDispatchAuthorization | undefined>;
 }
 
 export interface FileTransferListFilter {
@@ -133,12 +136,12 @@ export interface FileTransferStore {
   listByUser(userId: string, filter?: FileTransferListFilter): Promise<Transfer[]>;
   getByUser(userId: string, id: string): Promise<Transfer | null>;
   create(transfer: Transfer): Promise<Transfer>;
-  update(userId: string, id: string, patch: FileTransferPatch): Promise<Transfer | null>;
   transition(
     userId: string,
     id: string,
     from: TransferState,
     patch: FileTransferPatch,
+    expectedStartedAt?: string,
   ): Promise<Transfer | null>;
   markRunningRootPolicyChanged(rootId: string, changedAt: string): Promise<Transfer[]>;
   markInterrupted(error: string): Promise<number>;
@@ -165,22 +168,20 @@ export class InMemoryFileTransferStore implements FileTransferStore {
     return transfer;
   }
 
-  async update(userId: string, id: string, patch: FileTransferPatch): Promise<Transfer | null> {
-    const current = await this.getByUser(userId, id);
-    if (!current) return null;
-    const updated = { ...current, ...patch };
-    this.transfers.set(id, updated);
-    return updated;
-  }
-
   async transition(
     userId: string,
     id: string,
     from: TransferState,
     patch: FileTransferPatch,
+    expectedStartedAt?: string,
   ): Promise<Transfer | null> {
-    const current = await this.getByUser(userId, id);
-    if (!current || current.state !== from) return null;
+    const current = this.transfers.get(id);
+    if (
+      current?.userId !== userId ||
+      current.state !== from ||
+      (expectedStartedAt !== undefined && current.startedAt !== expectedStartedAt)
+    )
+      return null;
     const updated = { ...current, ...patch };
     this.transfers.set(id, updated);
     return updated;
@@ -403,27 +404,22 @@ export class FileService {
   async resumeTransfer(
     userId: string,
     id: string,
-    options: TransferDispatchOptions,
+    options: TransferDispatchOptions & {
+      preflight?: (data: TransferCreate, completionOnly: boolean) => Promise<void>;
+    },
   ): Promise<Transfer> {
     const transfer = await this.requireOwnedTransfer(userId, id);
     if (transfer.state !== "failed")
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Only failed transfers can be resumed", 409);
-    const data: TransferCreate = {
-      direction: transfer.direction,
-      source: transfer.source,
-      target: transfer.target,
-      ...(transfer.agentId ? { agentId: transfer.agentId } : {}),
-      ...(transfer.siteId ? { siteId: transfer.siteId } : {}),
-      ...(transfer.totalBytes !== null ? { totalBytes: transfer.totalBytes } : {}),
-      ...(transfer.sourceFileId ? { sourceFileId: transfer.sourceFileId } : {}),
-      ...(transfer.jobId ? { jobId: transfer.jobId } : {}),
-      ...(transfer.workflowRunId ? { workflowRunId: transfer.workflowRunId } : {}),
-      ...(transfer.netdriveFileIds ? { netdriveFileIds: transfer.netdriveFileIds } : {}),
-    };
-    if (
-      !this.runner ||
-      (!this.runner.canHandle(data) && !(await this.runner.canResume?.(userId, id, data)))
-    )
+    const data = TransferCreateSchema.parse({
+      ...transfer,
+      totalBytes: transfer.totalBytes ?? undefined,
+      agentId: transfer.agentId ?? undefined,
+      siteId: transfer.siteId ?? undefined,
+    });
+    const completionOnly = (await this.runner?.canResume?.(userId, id, data)) ?? false;
+    await options.preflight?.(data, completionOnly);
+    if (!this.runner || (!completionOnly && !this.runner.canHandle(data)))
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Transfer Agent is unavailable", 409);
     const queued = await this.transferStore.transition(userId, id, "failed", {
       state: "queued",
@@ -432,7 +428,11 @@ export class FileService {
     });
     if (!queued)
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Transfer changed concurrently", 409);
-    void this.dispatchTransfer(userId, userId, id, data, options);
+    void this.dispatchTransfer(userId, userId, id, data, {
+      ...options,
+      completionOnly,
+      previousStartedAt: queued.startedAt,
+    });
     return queued;
   }
 
@@ -473,13 +473,24 @@ export class FileService {
     actorUserId: string | null | undefined,
     id: string,
     data: TransferCreate,
-    options: TransferDispatchOptions,
+    options: TransferDispatchOptions & {
+      completionOnly?: boolean;
+      previousStartedAt?: string | null;
+    },
   ): Promise<void> {
+    let startedAt: string;
     try {
-      const authorization = await options.beforeDispatch?.();
+      const authorization = await options.beforeDispatch?.(data);
+      // Distinguish attempts even after a clock adjustment or a retry in the same millisecond.
+      startedAt = new Date(
+        Math.max(
+          Date.now(),
+          options.previousStartedAt ? Date.parse(options.previousStartedAt) + 1 : 0,
+        ),
+      ).toISOString();
       const running = await this.transferStore.transition(userId, id, "queued", {
         state: "running",
-        startedAt: new Date().toISOString(),
+        startedAt,
         error: null,
         ...(authorization
           ? {
@@ -503,36 +514,55 @@ export class FileService {
     }
 
     try {
-      await this.runner.start(actorUserId, id, data, (event) => {
-        void this.applyTransferProgress(userId, id, event);
-      });
+      await this.runner.start(
+        actorUserId,
+        id,
+        data,
+        (event) => {
+          void this.applyTransferProgress(userId, id, startedAt, event);
+        },
+        options.completionOnly,
+      );
     } catch (error) {
-      await this.transferStore.transition(userId, id, "running", {
-        state: "failed",
-        finishedAt: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error),
-      });
+      await this.transferStore.transition(
+        userId,
+        id,
+        "running",
+        {
+          state: "failed",
+          finishedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : String(error),
+        },
+        startedAt,
+      );
     }
   }
 
   private async applyTransferProgress(
     userId: string,
     id: string,
+    startedAt: string,
     event: TransferProgressEvent,
   ): Promise<void> {
-    const current = await this.transferStore.getByUser(userId, id);
-    if (!current || current.state !== "running") return;
     const finished = event.state !== "running";
-    await this.transferStore.update(userId, id, {
-      copiedBytes: event.copiedBytes || current.copiedBytes,
-      state: event.state,
-      finishedAt: finished ? new Date().toISOString() : null,
-      error: event.error ?? null,
-      ...(event.netdriveFileIds ? { netdriveFileIds: event.netdriveFileIds } : {}),
-    });
+    await this.transferStore.transition(
+      userId,
+      id,
+      "running",
+      {
+        ...(event.copiedBytes ? { copiedBytes: event.copiedBytes } : {}),
+        state: event.state,
+        finishedAt: finished ? new Date().toISOString() : null,
+        error: event.error ?? null,
+        ...(event.netdriveFileIds ? { netdriveFileIds: event.netdriveFileIds } : {}),
+      },
+      startedAt,
+    );
   }
 
   private async requireOwnedTransfer(userId: string, id: string): Promise<Transfer> {
+    if (!TransferSchema.shape.id.safeParse(id).success)
+      throw new AppError(ErrorCode.NOT_FOUND, "Transfer not found", 404);
     const t = await this.transferStore.getByUser(userId, id);
     if (!t || t.userId !== userId) {
       throw new AppError(ErrorCode.NOT_FOUND, "Transfer not found", 404);

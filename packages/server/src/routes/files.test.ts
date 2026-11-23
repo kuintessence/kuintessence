@@ -1313,6 +1313,38 @@ describe("legacy file routes", () => {
     expect(body.error?.details?.reason).toBe("TRANSFER_AGENT_REQUIRED");
   });
 
+  test("resume checks root access and only requires a live source for an unfinished upload", async () => {
+    const service = new FileService();
+    const owner = "org_admin-user-id";
+    const data = {
+      direction: "cluster_to_cloud",
+      source: "/scratch/out",
+      target: "out",
+      agentId: "agent-a",
+    } as const;
+    const transfer = await service.createTransfer(owner, data, owner);
+    const app = makeApp("org_admin", { service });
+    const resume = (id: string) =>
+      app.request(`/api/files/transfers/${id}/resume`, { method: "POST" });
+    const started: string[] = [];
+    let receipt = false;
+    service.attachRunner({
+      canHandle: () => false,
+      canResume: async () => receipt,
+      start: async (_owner, id, _data, progress, completionOnly) => {
+        if (completionOnly) started.push(id);
+        progress({ state: "succeeded", copiedBytes: 9 });
+      },
+      cancel: async () => true,
+    });
+    expect((await resume(transfer.id)).status).toBe(503);
+    receipt = true;
+    const denied = await service.createTransfer(owner, { ...data, source: "/private/out" }, owner);
+    expect((await resume(denied.id)).status).toBe(403);
+    expect((await resume(transfer.id)).status).toBe(200);
+    expect(started).toEqual([transfer.id]);
+  });
+
   test("POST /api/files/transfers/:id/cancel remains available to the transfer owner", async () => {
     const calls: AuthzCheck[] = [];
     const authz = enforcingAuthz((check) => {

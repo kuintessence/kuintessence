@@ -1,6 +1,6 @@
 # Multipart 最终提交恢复
 
-Server 在调用对象存储 complete 前，将 Agent 的最终 size、sha256、parts 保存在原传输的 `resume_session.completion`。失败保留会话；恢复同一传输时先重新检查归属、Agent 和集群根授权，再重放完成请求。有完成回执时 Agent 可以离线，不再重发上传任务。
+Server 在调用对象存储 complete 前，将 Agent 的最终 size、sha256、parts 保存在原传输的 `resume_session.completion`。失败保留会话；恢复同一传输时先重新检查归属、Agent 和集群根授权，再重放完成请求。已有匹配的完成回执时，恢复接口仍复查原 Agent 的登记和当前集群根目录授权，但无需连接 Agent 检查源文件。即使 Agent 已离线或源文件已经归档，也可以重放最终提交。若回执在恢复期间消失，本次恢复会失败。其余上传仍需在线检查源文件。
 
 会话保存通过传输行的 `SELECT FOR UPDATE` 串行化：绑定字段不可变化，completion 只能首次写入或原样重试；旧进程保存不含 completion 的会话时保留既有完成回执，并将合并结果返回 dispatcher，直接进入完成重放。显式取消才会清空会话；已取消行拒绝后续写回。
 
@@ -61,5 +61,7 @@ transfer UUID，重试复用同一行与 uploadId；成功回执需保存后才�
 普通 Workflow 的逐文件传输由[输出发布 outbox](workflow-output-recovery.md)持久关联；后台恢复已入库的 publication，不要求用户另起手动传输。文件提交与计算完成分别观察，文件恢复不会续跑已失败的 DAG。
 
 工作流单文件发布在上传前重新读取已完成的持久映射，校验所有者、未删除状态、大小与摘要后复用，避免延迟请求携带旧快照重复上传。文件已删除时允许重新发布；已有有效引用保持稳定。
+
+Server 写入用户传输的进度和终态时，数据库同时核对运行状态与本轮启动时间。取消后到达的进度写入、重试后才结束的上一轮回调都会被忽略。
 
 同一 transfer 重试时，Server 会清理上一轮超时计时器，并按当前 entry 身份过滤已经排队的旧 timeout；旧轮次的异步 complete/abort 收尾也不能清除新轮次的 active/pending 映射或回报旧终态。该进程内保护与持久 uploadId/completion 绑定共同使用，不以重新提交计算规避传输失败。

@@ -179,7 +179,8 @@ test("failed finalize keeps its durable completion and restarted Server finalize
     agentId: "agent",
   };
   const failed = Promise.withResolvers<void>();
-  await new TransferRunner(deps).start("owner", "transfer", data, (event) => {
+  const first = new TransferRunner(deps);
+  await first.start("owner", "transfer", data, (event) => {
     if (event.state === "failed") failed.resolve();
   });
   registry.update("transfer", {
@@ -189,6 +190,8 @@ test("failed finalize keeps its durable completion and restarted Server finalize
     parts: [{ partNumber: 1, etag: "part" }],
   });
   await failed.promise;
+  expect(await first.cancel("transfer", "owner")).toBe(false);
+  expect(aborts).toBe(0);
   expect(session?.completion?.copiedBytes).toBe(4);
   dispatcher.unregister("agent");
   const events: string[] = [];
@@ -210,6 +213,19 @@ test("failed finalize keeps its durable completion and restarted Server finalize
   await new TransferRunner(deps).start("owner", "transfer", data, () => {});
   expect(dispatches).toBe(1);
   expect(attempts).toBe(3);
+
+  // A receipt lost between HTTP preflight and dispatch must not start a fresh upload.
+  session = undefined;
+  dispatcher.register("agent", {
+    push: () => {
+      dispatches++;
+    },
+    close() {},
+  });
+  await expect(restarted.start("owner", "transfer", data, () => {}, true)).rejects.toThrow(
+    "completion",
+  );
+  expect(dispatches).toBe(1);
 });
 
 test("dispatcher replays completion returned by a concurrent session save instead of dispatching Agent", async () => {

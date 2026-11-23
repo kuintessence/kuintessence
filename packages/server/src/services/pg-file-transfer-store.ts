@@ -56,35 +56,12 @@ export class PgFileTransferStore implements FileTransferStore {
     return mapTransferRow(requireTransferRow(row));
   }
 
-  async update(userId: string, id: string, patch: FileTransferPatch): Promise<Transfer | null> {
-    const [row] = await this.db
-      .update(fileTransfers)
-      .set({
-        ...("copiedBytes" in patch ? { copiedBytes: patch.copiedBytes } : {}),
-        ...("state" in patch ? { state: patch.state } : {}),
-        ...("startedAt" in patch ? { startedAt: parseTransferDate(patch.startedAt) } : {}),
-        ...("finishedAt" in patch ? { finishedAt: parseTransferDate(patch.finishedAt) } : {}),
-        ...("error" in patch ? { error: patch.error } : {}),
-        ...("clusterRootId" in patch ? { clusterRootId: patch.clusterRootId } : {}),
-        ...("clusterRootRevision" in patch
-          ? { clusterRootRevision: parseTransferDate(patch.clusterRootRevision) }
-          : {}),
-        ...("rootPolicyChangedAt" in patch
-          ? { rootPolicyChangedAt: parseTransferDate(patch.rootPolicyChangedAt) }
-          : {}),
-        ...("netdriveFileIds" in patch ? { netdriveFileIds: patch.netdriveFileIds } : {}),
-        updatedAt: new Date(),
-      })
-      .where(and(eq(fileTransfers.userId, userId), eq(fileTransfers.id, id)))
-      .returning();
-    return row ? mapTransferRow(row) : null;
-  }
-
   async transition(
     userId: string,
     id: string,
     from: TransferState,
     patch: FileTransferPatch,
+    expectedStartedAt?: string,
   ): Promise<Transfer | null> {
     const [row] = await this.db
       .update(fileTransfers)
@@ -109,6 +86,9 @@ export class PgFileTransferStore implements FileTransferStore {
           eq(fileTransfers.userId, userId),
           eq(fileTransfers.id, id),
           eq(fileTransfers.state, from),
+          expectedStartedAt !== undefined
+            ? eq(fileTransfers.startedAt, new Date(expectedStartedAt))
+            : undefined,
         ),
       )
       .returning();
